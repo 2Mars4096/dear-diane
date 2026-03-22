@@ -644,6 +644,40 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
             ),
         },
     ))
+    registry.register(CommandDescriptor(
+        name="/corrections",
+        kind="chat",
+        surfaces=["all"],
+        help_text="Show recent high-confidence user corrections recorded for live learning",
+        group="learning",
+        handler="dan.server.concierge.runtime.Concierge.handle_corrections_command",
+    ))
+    registry.register(CommandDescriptor(
+        name="/adaptations",
+        kind="chat",
+        surfaces=["all"],
+        help_text="Show pending, queued, and applied self-adaptation candidates",
+        group="learning",
+        handler="dan.server.concierge.runtime.Concierge.handle_adaptations_command",
+    ))
+    registry.register(CommandDescriptor(
+        name="/approve",
+        kind="chat",
+        surfaces=["all"],
+        args_schema="<adaptation-id>",
+        help_text="Approve and apply a pending adaptation candidate",
+        group="learning",
+        handler="dan.server.concierge.runtime.Concierge.handle_approve_command",
+    ))
+    registry.register(CommandDescriptor(
+        name="/reject",
+        kind="chat",
+        surfaces=["all"],
+        args_schema="<adaptation-id>",
+        help_text="Reject a pending adaptation candidate",
+        group="learning",
+        handler="dan.server.concierge.runtime.Concierge.handle_reject_command",
+    ))
 
     # Session utilities
     registry.register(CommandDescriptor(

@@ -27,16 +27,20 @@ from .autonomy import (
 from .command_registry import CommandDescriptor, CommandRegistry, get_default_registry
 from .identity import format_bare_prefix, format_prefix
 from .models import (
+    ConciergeGoal,
     ConciergeState,
+    GoalProgressEntry,
     IntentCategory,
     PendingAction,
     Project,
     ResolvedContext,
     SurfaceMessage,
+    Task,
     TaskTurn,
 )
 from .progress import ProgressReporter
 from .project_store import ProjectStore
+from .resources import ResourceTracker
 from .triage import TriageResult
 
 logger = logging.getLogger(__name__)
@@ -44,6 +48,7 @@ logger = logging.getLogger(__name__)
 _SERIALIZABLE_TYPES = (str, int, float, bool, type(None), list, dict)
 _CONCIERGE_STATE_PREFIX = "concierge_state_"
 _PREF_CONFIRM_WORDS = frozenset({"confirm all", "yes", "confirm"})
+_RUNTIME_UNIFIED_PROMPT_KEY = "prompts/runtime.unified_system"
 _BLOCKER_RE = re.compile(
     r"(?:blocked by|waiting on|need(?:ing)?|can'?t proceed until)\s+([^.\n]+)",
     re.IGNORECASE,
@@ -69,38 +74,50 @@ def _format_clarification_text(question: str, options: list[str] | None) -> str:
     return f"{question}\n\n{chr(10).join(option_lines)}"
 
 
-def _extract_task_state(conversation_text: str) -> dict[str, Any]:
+def _dedupe_keep_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _extract_task_state(text: str) -> dict[str, Any]:
     completed: list[str] = []
     pending: list[str] = []
-    for line in conversation_text.splitlines():
+    for line in text.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
         if re.match(r"[-*]?\s*\[x\]", stripped, re.IGNORECASE):
-            text = re.sub(r"^[-*]?\s*\[x\]\s*", "", stripped, flags=re.IGNORECASE).strip()
-            if text:
-                completed.append(text)
+            step_text = re.sub(r"^[-*]?\s*\[x\]\s*", "", stripped, flags=re.IGNORECASE).strip()
+            if step_text:
+                completed.append(step_text)
             continue
         if re.match(r"[-*]?\s*\[ ?\]", stripped):
-            text = re.sub(r"^[-*]?\s*\[ ?\]\s*", "", stripped).strip()
-            if text:
-                pending.append(text)
+            step_text = re.sub(r"^[-*]?\s*\[ ?\]\s*", "", stripped).strip()
+            if step_text:
+                pending.append(step_text)
 
     blocker: str | None = None
-    blocker_match = _BLOCKER_RE.search(conversation_text)
+    blocker_match = _BLOCKER_RE.search(text)
     if blocker_match:
         blocker = blocker_match.group(0).strip()
 
     artifacts: dict[str, str] = {}
-    for match in _FILE_PATH_RE.finditer(conversation_text):
+    for match in _FILE_PATH_RE.finditer(text):
         path = match.group(1)
         name = path.rsplit("/", 1)[-1] if "/" in path else path
         if name and name not in artifacts:
             artifacts[name] = path
 
     return {
-        "completed_steps": completed,
-        "pending_steps": pending,
+        "completed_steps": _dedupe_keep_order(completed),
+        "pending_steps": _dedupe_keep_order(pending),
         "current_blocker": blocker,
         "artifacts": artifacts,
     }
@@ -122,21 +139,6 @@ def _compact_task_history(steps: list[str], keep_full: int = 3) -> list[str]:
     compacted = [_summarize_step(step) for step in steps[:cutoff]]
     compacted.extend(steps[cutoff:])
     return compacted
-
-
-def _persist_task_state(project_store: ProjectStore, project_id: str, task: Any) -> None:
-    for surface_dir in sorted(project_store.base_dir.iterdir()):
-        if not surface_dir.is_dir():
-            continue
-        surface_id = surface_dir.name
-        project = project_store.get_project(project_id, surface_id)
-        if project is None:
-            continue
-        for index, stored_task in enumerate(project.tasks):
-            if stored_task.task_id == task.task_id:
-                project.tasks[index] = task
-                project_store.save_project(project)
-                return
 
 
 class AutonomyLevel(str, Enum):
@@ -193,6 +195,10 @@ class Concierge:
         self._run_manager = getattr(capability_context, "run_manager", None)
         self._graph_store = getattr(capability_context, "graph_store", None)
         self._telemetry_store = telemetry_store
+        resource_tracker = getattr(chat_manager, "_resource_tracker", None)
+        self._resource_tracker = (
+            resource_tracker if isinstance(resource_tracker, ResourceTracker) else None
+        )
         self._current_turn_event_id: str | None = None
         self._telem_is_fast_command = False
         self._telem_model: str | None = None
@@ -232,6 +238,7 @@ class Concierge:
                 ParameterDecisionLogger, PatternAccumulator,
             )
             from dan.engine.behavior_seeds import register_all_seeds
+            from dan.server.chat.prompts import UNIFIED_SYSTEM_PROMPT
 
             self._behavior_store = BehaviorStore()
             self._behavior_changelog = BehaviorChangeLog()
@@ -249,6 +256,7 @@ class Concierge:
             from dan.providers.costs import register_seed_cost_table
             register_seed_tier_maps(self._behavior_store)
             register_seed_cost_table(self._behavior_store)
+            self._behavior_store.register_seed(_RUNTIME_UNIFIED_PROMPT_KEY, UNIFIED_SYSTEM_PROMPT)
             if hasattr(self.chat_manager, "set_behavior_store"):
                 self.chat_manager.set_behavior_store(self._behavior_store)
         except Exception as exc:
@@ -258,6 +266,38 @@ class Concierge:
             self._param_registry = None
             self._param_logger = None
             self._pattern_accumulator = None
+
+        self._correction_store: Any = None
+        self._adaptation_registry: Any = None
+        self._prompt_tracker: Any = None
+        try:
+            from dan.engine.adaptation_registry import AdaptationRegistry
+            from dan.engine.correction_memory import CorrectionStore
+            from dan.engine.outcome_trackers import PromptTracker
+
+            behavior_base = getattr(self._behavior_store, "base_path", None)
+            correction_path = (
+                behavior_base / "runtime_corrections.jsonl"
+                if behavior_base is not None else None
+            )
+            adaptation_path = (
+                behavior_base / "runtime_adaptations.json"
+                if behavior_base is not None else None
+            )
+
+            self._correction_store = CorrectionStore(path=correction_path)
+            self._adaptation_registry = AdaptationRegistry(
+                changelog=self._behavior_changelog,
+                param_registry=self._param_registry,
+                path=adaptation_path,
+            )
+            if self.memory_kernel is not None:
+                self._prompt_tracker = PromptTracker(self.memory_kernel)
+        except Exception as exc:
+            logger.warning("Learning loop init failed: %s", exc)
+            self._correction_store = None
+            self._adaptation_registry = None
+            self._prompt_tracker = None
 
         self._skill_store: Any = None
         self._schedule_store: Any = None
@@ -418,9 +458,16 @@ class Concierge:
             raise RuntimeError("No provider registry available")
         model = self._resolve_triage_model()
         provider = providers.resolve(model)
-        result = await provider.complete(
-            messages=messages, model=model, temperature=0.0, max_tokens=256,
-        )
+        tracker = getattr(self, "_resource_tracker", None)
+        if tracker is not None:
+            await tracker.wait_acquire("llm")
+        try:
+            result = await provider.complete(
+                messages=messages, model=model, temperature=0.0, max_tokens=256,
+            )
+        finally:
+            if tracker is not None:
+                await tracker.release("llm")
         return result.text
 
     # ------------------------------------------------------------------
@@ -1357,6 +1404,254 @@ class Concierge:
         self.memory_kernel.store(item)
 
     # ------------------------------------------------------------------
+    # Goal progress
+    # ------------------------------------------------------------------
+
+    def _select_goal_for_context(self, context: Any) -> ConciergeGoal | None:
+        active_goals = [
+            goal for goal in self._concierge_state.active_goals
+            if goal.status in {"active", "paused"}
+        ]
+        if not active_goals:
+            return None
+        project_id = getattr(getattr(context, "project", None), "project_id", None)
+        task_id = getattr(getattr(context, "task", None), "task_id", None)
+        for goal in reversed(active_goals):
+            if goal.project_id == project_id and (not goal.task_id or goal.task_id == task_id):
+                return goal
+        for goal in reversed(active_goals):
+            if goal.project_id in {None, "", project_id}:
+                return goal
+        return active_goals[-1]
+
+    @staticmethod
+    def _goal_progress_summary(goal: ConciergeGoal) -> str:
+        pending = goal.progress.pending_steps[:2]
+        completed = goal.progress.completed_steps[-1:] if goal.progress.completed_steps else []
+        detail_parts: list[str] = []
+        if completed:
+            detail_parts.append("done: " + "; ".join(completed))
+        if pending:
+            detail_parts.append("next: " + "; ".join(pending))
+        if goal.progress.current_blocker:
+            detail_parts.append("blocker: " + goal.progress.current_blocker[:80])
+        return " | ".join(detail_parts)
+
+    def _bind_goal_to_context(self, goal: ConciergeGoal, context: Any) -> bool:
+        changed = False
+        project = getattr(context, "project", None)
+        task = getattr(context, "task", None)
+        project_id = getattr(project, "project_id", None)
+        task_id = getattr(task, "task_id", None)
+        task_label = str(getattr(task, "label", "") or "")
+        if project_id and goal.project_id != project_id:
+            if not goal.project_id:
+                goal.project_id = project_id
+                changed = True
+        if task_id and goal.task_id != task_id:
+            if not goal.task_id:
+                goal.task_id = task_id
+                changed = True
+        if goal.progress.project_id != project_id and project_id:
+            goal.progress.project_id = project_id
+            changed = True
+        if goal.progress.task_id != task_id and task_id:
+            goal.progress.task_id = task_id
+            changed = True
+        if task_label and goal.progress.task_label != task_label:
+            goal.progress.task_label = task_label
+            changed = True
+        return changed
+
+    @staticmethod
+    def _progress_patch_from_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(metadata, dict):
+            return {}
+        progress = metadata.get("progress")
+        if not isinstance(progress, dict):
+            return {}
+        patch: dict[str, Any] = {}
+        if "completed_steps" in progress:
+            patch["completed_steps"] = _dedupe_keep_order(list(progress.get("completed_steps") or []))
+        if "pending_steps" in progress:
+            patch["pending_steps"] = _dedupe_keep_order(list(progress.get("pending_steps") or []))
+        if "current_blocker" in progress:
+            blocker = str(progress.get("current_blocker") or "").strip()
+            patch["current_blocker"] = blocker or None
+        if "clear_blocker" in progress:
+            patch["clear_blocker"] = bool(progress.get("clear_blocker"))
+        if "artifacts" in progress and isinstance(progress.get("artifacts"), dict):
+            patch["artifacts"] = {
+                str(name): str(path)
+                for name, path in dict(progress.get("artifacts") or {}).items()
+                if str(name or "").strip() and str(path or "").strip()
+            }
+        if "note" in progress:
+            patch["note"] = str(progress.get("note") or "").strip()
+        return patch
+
+    def _apply_goal_progress_update(
+        self,
+        goal: ConciergeGoal,
+        update: GoalProgressEntry,
+    ) -> None:
+        snapshot = goal.progress
+        snapshot.project_id = goal.project_id or snapshot.project_id
+        snapshot.task_id = update.task_id or goal.task_id or snapshot.task_id
+        snapshot.task_label = update.task_label or snapshot.task_label
+        if update.completed_steps:
+            snapshot.completed_steps = _dedupe_keep_order(
+                [*snapshot.completed_steps, *update.completed_steps],
+            )
+        if update.pending_steps:
+            completed = set(snapshot.completed_steps)
+            snapshot.pending_steps = [
+                step for step in _dedupe_keep_order(update.pending_steps)
+                if step not in completed
+            ]
+        elif update.completed_steps and snapshot.pending_steps:
+            completed = set(snapshot.completed_steps)
+            snapshot.pending_steps = [
+                step for step in snapshot.pending_steps if step not in completed
+            ]
+        if update.clear_blocker:
+            snapshot.current_blocker = None
+        elif update.current_blocker is not None:
+            snapshot.current_blocker = update.current_blocker
+        if update.artifacts:
+            snapshot.artifacts.update(update.artifacts)
+        if update.note:
+            snapshot.last_note = update.note[:200]
+        snapshot.updated_at = update.timestamp
+        goal.updated_at = update.timestamp
+        goal.progress_log.append(update)
+        if len(goal.progress_log) > 40:
+            goal.progress_log = goal.progress_log[-40:]
+
+    def _project_goal_progress_to_task(
+        self,
+        context: Any,
+        msg: SurfaceMessage,
+        goal: ConciergeGoal,
+        *,
+        clear_blocker: bool = False,
+    ) -> None:
+        snapshot = goal.progress
+        self.project_store.update_task_progress(
+            context.project.project_id,
+            context.task.task_id,
+            msg.external_id,
+            completed_steps=_compact_task_history(snapshot.completed_steps),
+            pending_steps=snapshot.pending_steps,
+            current_blocker=snapshot.current_blocker,
+            artifacts=snapshot.artifacts,
+            goal_id=goal.id,
+            progress_updated_at=snapshot.updated_at,
+            clear_blocker=clear_blocker,
+        )
+        self._refresh_context_task_from_store(context, msg.external_id)
+
+    def _record_task_progress_event(
+        self,
+        context: Any,
+        msg: SurfaceMessage,
+        *,
+        role: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+        note: str = "",
+        clear_blocker: bool = False,
+    ) -> None:
+        text_patch = _extract_task_state(content) if content else {
+            "completed_steps": [],
+            "pending_steps": [],
+            "current_blocker": None,
+            "artifacts": {},
+        }
+        metadata_patch = self._progress_patch_from_metadata(metadata)
+        content_has_pending = bool(text_patch["pending_steps"])
+        metadata_has_pending = "pending_steps" in metadata_patch
+        completed_steps = _dedupe_keep_order([
+            *text_patch["completed_steps"],
+            *list(metadata_patch.get("completed_steps") or []),
+        ])
+        pending_steps = list(metadata_patch["pending_steps"]) if metadata_has_pending else list(text_patch["pending_steps"])
+        blocker = text_patch.get("current_blocker")
+        if "current_blocker" in metadata_patch:
+            blocker = metadata_patch.get("current_blocker")
+        artifacts = dict(text_patch.get("artifacts", {}))
+        artifacts.update(dict(metadata_patch.get("artifacts") or {}))
+        detail_note = str(metadata_patch.get("note") or note or "").strip()
+        should_apply = bool(
+            completed_steps
+            or artifacts
+            or clear_blocker
+            or metadata_has_pending
+            or content_has_pending
+            or blocker is not None
+            or detail_note
+        )
+        if not should_apply:
+            return
+
+        goal = self._select_goal_for_context(context)
+        state_scope_id = self._concierge_state_scope_key(msg.surface, msg.external_id)
+        if goal is not None:
+            self._bind_goal_to_context(goal, context)
+            update = GoalProgressEntry(
+                source=role if role in {"goal_command", "user_turn", "assistant_turn", "task_finalize", "system"} else "system",
+                task_id=context.task.task_id,
+                task_label=context.task.label,
+                note=detail_note,
+                completed_steps=completed_steps,
+                pending_steps=pending_steps if (metadata_has_pending or content_has_pending) else [],
+                current_blocker=blocker,
+                clear_blocker=clear_blocker or bool(metadata_patch.get("clear_blocker")),
+                artifacts=artifacts,
+            )
+            self._apply_goal_progress_update(goal, update)
+            self._save_concierge_state(state_scope_id, self._concierge_state)
+            self._project_goal_progress_to_task(
+                context,
+                msg,
+                goal,
+                clear_blocker=update.clear_blocker,
+            )
+            return
+
+        completed = _dedupe_keep_order([*context.task.completed_steps, *completed_steps])
+        pending = list(context.task.pending_steps)
+        if metadata_has_pending or content_has_pending:
+            completed_set = set(completed)
+            pending = [step for step in _dedupe_keep_order(pending_steps) if step not in completed_set]
+        elif completed_steps and pending:
+            completed_set = set(completed)
+            pending = [step for step in pending if step not in completed_set]
+        merged_artifacts = dict(context.task.artifacts)
+        merged_artifacts.update(artifacts)
+        if clear_blocker or bool(metadata_patch.get("clear_blocker")):
+            current_blocker = None
+            clear_task_blocker = True
+        elif blocker is not None:
+            current_blocker = blocker
+            clear_task_blocker = False
+        else:
+            current_blocker = context.task.current_blocker
+            clear_task_blocker = False
+        self.project_store.update_task_progress(
+            context.project.project_id,
+            context.task.task_id,
+            msg.external_id,
+            completed_steps=_compact_task_history(completed),
+            pending_steps=pending,
+            current_blocker=current_blocker,
+            artifacts=merged_artifacts,
+            progress_updated_at=time.time(),
+            clear_blocker=clear_task_blocker,
+        )
+        self._refresh_context_task_from_store(context, msg.external_id)
+
+    # ------------------------------------------------------------------
     # Turn recording
     # ------------------------------------------------------------------
 
@@ -1379,6 +1674,13 @@ class Concierge:
                 metadata=metadata or {},
             ),
             msg.external_id,
+        )
+        self._record_task_progress_event(
+            context,
+            msg,
+            role="assistant_turn",
+            content=content,
+            metadata=metadata,
         )
         if self.conversation_memory is not None and content and write_conversation_memory:
             summary = f"{context.project.label}: {content[:160]}"
@@ -1423,6 +1725,456 @@ class Concierge:
             logger.debug("Auto-summarize failed for project %s", context.project.project_id, exc_info=True)
 
     # ------------------------------------------------------------------
+    # Live learning loop
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _feedback_signal_threshold() -> float:
+        return 0.7
+
+    @staticmethod
+    def _prompt_proposal_min_negative_signals() -> int:
+        raw = os.environ.get("DAN_PROMPT_PROPOSAL_MIN_NEGATIVE", "20").strip()
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return 20
+
+    def _latest_assistant_turn(self, task: Task) -> TaskTurn | None:
+        for turn in reversed(task.turns):
+            if turn.role == "assistant" and turn.content.strip():
+                return turn
+        return None
+
+    def _prompt_key_for_turn(self, turn: TaskTurn | None) -> str | None:
+        if turn is None or not isinstance(getattr(turn, "metadata", None), dict):
+            return None
+        metadata = turn.metadata
+        prompt_key = str(metadata.get("active_prompt_key") or "").strip()
+        if prompt_key:
+            return prompt_key
+        if metadata.get("session_tree") or metadata.get("autonomy_resolution"):
+            return _RUNTIME_UNIFIED_PROMPT_KEY
+        return None
+
+    def _prompt_baseline_quality(self, prompt_key: str, *, limit: int = 50) -> float:
+        tracker = getattr(self, "_prompt_tracker", None)
+        if tracker is None:
+            return 1.0
+        history = tracker.get_system_prompt_history(prompt_key, limit=limit)
+        qualities = [
+            float(item.get("quality_score", 1.0) or 0.0)
+            for item in history
+            if isinstance(item, dict)
+        ]
+        if not qualities:
+            return 1.0
+        return max(0.0, min(1.0, sum(qualities) / len(qualities)))
+
+    def _record_prompt_outcome(
+        self,
+        prompt_key: str | None,
+        *,
+        outcome: bool,
+        quality_score: float,
+    ) -> None:
+        tracker = getattr(self, "_prompt_tracker", None)
+        if tracker is None or not prompt_key:
+            return
+        try:
+            tracker.record_system_prompt_outcome(
+                prompt_key,
+                outcome=outcome,
+                quality_score=quality_score,
+            )
+            self._update_prompt_candidate_measurements(prompt_key)
+        except Exception:
+            logger.debug("Failed to record prompt outcome for %s", prompt_key, exc_info=True)
+
+    def _store_correction_actions(
+        self,
+        actions: list[dict[str, Any]],
+        *,
+        project_id: str | None = None,
+    ) -> None:
+        if self.memory_kernel is None:
+            return
+        for action in actions:
+            action_type = str(action.get("type") or "").strip()
+            value = str(action.get("value") or "").strip()
+            if not value:
+                continue
+            try:
+                if action_type == "preference":
+                    self.memory_kernel.store_preference(
+                        value,
+                        confirmed=True,
+                        project_id=project_id,
+                        tags=["correction_feedback"],
+                    )
+                elif action_type == "principle":
+                    self.memory_kernel.store_principle(
+                        value,
+                        confidence=0.9,
+                        project_id=project_id,
+                        tags=["correction_feedback"],
+                    )
+            except Exception:
+                logger.debug("Failed to persist correction action %s", action_type, exc_info=True)
+
+    def _has_prompt_candidate(self, prompt_key: str) -> bool:
+        registry = getattr(self, "_adaptation_registry", None)
+        if registry is None:
+            return False
+        for candidate in [
+            *registry.list_pending(),
+            *registry.list_applied(),
+            *registry.list_queued(),
+        ]:
+            if getattr(candidate, "parameter_key", None) == prompt_key:
+                return True
+        return False
+
+    def _has_recent_prompt_rollback(self, prompt_key: str) -> bool:
+        registry = getattr(self, "_adaptation_registry", None)
+        if registry is None:
+            return False
+        cooldown_raw = os.environ.get("DAN_PROMPT_REPROPOSE_COOLDOWN_SECONDS", "3600").strip()
+        try:
+            cooldown_seconds = max(0, int(cooldown_raw))
+        except ValueError:
+            cooldown_seconds = 3600
+        now = time.time()
+        for candidate in getattr(registry, "_candidates", {}).values():
+            if getattr(candidate, "parameter_key", None) != prompt_key:
+                continue
+            if getattr(candidate, "status", None) != "rolled_back":
+                continue
+            created_at = getattr(candidate, "created_at", None)
+            created_ts = created_at.timestamp() if hasattr(created_at, "timestamp") else 0.0
+            if now - created_ts <= cooldown_seconds:
+                return True
+        return False
+
+    def _recent_corrections_for_prompt(
+        self,
+        prompt_key: str,
+        *,
+        limit: int = 20,
+    ) -> list[Any]:
+        store = getattr(self, "_correction_store", None)
+        if store is None:
+            return []
+        matches: list[Any] = []
+        for record in reversed(store.list_recent(limit * 3)):
+            if getattr(record, "active_prompt_key", None) != prompt_key:
+                continue
+            signal = getattr(record, "signal", None)
+            if signal is None or float(getattr(signal, "confidence", 0.0) or 0.0) < self._feedback_signal_threshold():
+                continue
+            matches.append(record)
+            if len(matches) >= limit:
+                break
+        return matches
+
+    def _prompt_adjustment_bullets(self, records: list[Any]) -> list[str]:
+        bullets: list[str] = []
+        for record in records:
+            signal = getattr(record, "signal", None)
+            if signal is None:
+                continue
+            correction_text = str(getattr(signal, "correction_text", "") or "").strip()
+            lower = correction_text.lower()
+            preference = str(getattr(signal, "extracted_preference", "") or "").strip()
+            principle = str(getattr(signal, "extracted_principle", "") or "").strip()
+            correction_type = str(getattr(signal, "correction_type", "") or "").strip()
+
+            if preference:
+                bullets.append(f"Honor explicit user preference: {preference}.")
+            if principle:
+                if "summarize first" in principle.lower():
+                    bullets.append("Lead with a short summary before the supporting detail when the response is long.")
+                elif any(token in principle.lower() for token in ("short", "concise")):
+                    bullets.append("Default to concise answers unless the user explicitly asks for more depth.")
+                else:
+                    bullets.append(f"Follow this response rule when relevant: {principle}.")
+            elif correction_type == "style":
+                if any(token in lower for token in ("short", "concise", "verbose", "wordy")):
+                    bullets.append("Default to concise answers unless the user explicitly asks for more depth.")
+                elif "summarize first" in lower:
+                    bullets.append("Lead with a short summary before the supporting detail when the response is long.")
+            elif correction_type == "override":
+                bullets.append("When the user explicitly overrides a prior choice, follow the replacement and do not repeat the superseded default.")
+            elif correction_type in {"negation", "redo"}:
+                bullets.append("If the user indicates the prior answer was off target, restate the corrected goal briefly and continue from the correction instead of repeating the prior framing.")
+
+        return _dedupe_keep_order([bullet.strip() for bullet in bullets if bullet.strip()])
+
+    def _build_prompt_candidate_payload(
+        self,
+        prompt_key: str,
+        records: list[Any],
+    ) -> tuple[str, str, list[str], list[str]] | None:
+        store = getattr(self, "_behavior_store", None)
+        if store is None:
+            return None
+        before_value = store.get(prompt_key, "")
+        if not isinstance(before_value, str) or not before_value.strip():
+            return None
+
+        bullets = self._prompt_adjustment_bullets(records)
+        if not bullets:
+            return None
+
+        existing_lower = before_value.lower()
+        missing = [bullet for bullet in bullets if bullet.lower() not in existing_lower]
+        if not missing:
+            return None
+
+        marker = "## Learned response adjustments"
+        if marker.lower() in existing_lower:
+            after_value = before_value.rstrip() + "\n" + "\n".join(f"- {bullet}" for bullet in missing)
+        else:
+            after_value = before_value.rstrip() + "\n\n" + marker + "\n" + "\n".join(
+                f"- {bullet}" for bullet in missing
+            )
+        evidence = _dedupe_keep_order([
+            str(getattr(getattr(record, "signal", None), "correction_text", "") or "").strip()[:160]
+            for record in records[:5]
+            if str(getattr(getattr(record, "signal", None), "correction_text", "") or "").strip()
+        ])
+        return before_value, after_value, missing, evidence
+
+    def _rollback_prompt_candidate(self, candidate: Any) -> None:
+        prompt_key = str(getattr(candidate, "parameter_key", "") or "").strip()
+        before_value = getattr(candidate, "before_value", None)
+        if not prompt_key or not isinstance(before_value, str) or self._behavior_store is None:
+            return
+        try:
+            self._behavior_store.set(
+                prompt_key,
+                before_value,
+                reason=f"Rolled back adaptation {candidate.id}",
+                evidence=[str(getattr(candidate, "last_outcome", "") or "Regression detected")],
+            )
+        except Exception:
+            logger.warning("Failed to roll back prompt candidate %s", candidate.id, exc_info=True)
+
+    def _apply_prompt_candidate(self, candidate_id: str, *, auto_apply: bool) -> bool:
+        registry = getattr(self, "_adaptation_registry", None)
+        store = getattr(self, "_behavior_store", None)
+        if registry is None or store is None:
+            return False
+        candidate = registry.get(candidate_id)
+        if candidate is None or candidate.status != "pending":
+            return False
+        prompt_key = str(getattr(candidate, "parameter_key", "") or "").strip()
+        after_value = getattr(candidate, "after_value", None)
+        before_value = getattr(candidate, "before_value", None)
+        if not prompt_key or not isinstance(after_value, str) or not isinstance(before_value, str):
+            return False
+        current_value = store.get(prompt_key, "")
+        if current_value != before_value:
+            logger.warning(
+                "Skipping stale prompt candidate %s for %s: prompt changed since proposal",
+                candidate.id,
+                prompt_key,
+            )
+            return False
+        baseline_quality = self._prompt_baseline_quality(prompt_key)
+        try:
+            store.set(
+                prompt_key,
+                after_value,
+                reason=f"{'Auto-applied' if auto_apply else 'Approved'} prompt adaptation {candidate.id}",
+                evidence=list(getattr(candidate, "evidence", []) or []),
+            )
+            if auto_apply:
+                registry.auto_apply_candidate(candidate.id, baseline_quality=baseline_quality)
+            else:
+                registry.approve(candidate.id, baseline_quality=baseline_quality)
+            return True
+        except Exception:
+            logger.warning("Failed to apply prompt candidate %s", candidate.id, exc_info=True)
+            try:
+                store.set(
+                    prompt_key,
+                    before_value,
+                    reason=f"Restore prompt after failed adaptation {candidate.id}",
+                    evidence=[],
+                )
+            except Exception:
+                logger.debug("Prompt restore after failed apply also failed", exc_info=True)
+            return False
+
+    def _maybe_propose_prompt_candidate(self, prompt_key: str) -> None:
+        tracker = getattr(self, "_prompt_tracker", None)
+        registry = getattr(self, "_adaptation_registry", None)
+        if tracker is None or registry is None or not prompt_key:
+            return
+        if self._has_prompt_candidate(prompt_key):
+            return
+        if self._has_recent_prompt_rollback(prompt_key):
+            return
+
+        proposal = tracker.propose_prompt_variant(
+            prompt_key,
+            adaptation_registry=registry,
+            min_negative_signals=self._prompt_proposal_min_negative_signals(),
+        )
+        if not proposal or not proposal.get("proposal_id"):
+            return
+
+        candidate = registry.get(str(proposal["proposal_id"]))
+        if candidate is None:
+            return
+
+        records = self._recent_corrections_for_prompt(
+            prompt_key,
+            limit=self._prompt_proposal_min_negative_signals(),
+        )
+        payload = self._build_prompt_candidate_payload(prompt_key, records)
+        if payload is None:
+            try:
+                registry.reject(candidate.id)
+            except Exception:
+                logger.debug("Failed to reject incomplete prompt candidate %s", candidate.id, exc_info=True)
+            return
+
+        before_value, after_value, bullets, evidence = payload
+        candidate.parameter_key = prompt_key
+        candidate.before_value = before_value
+        candidate.after_value = after_value
+        candidate.rollback_path = prompt_key
+        candidate.scope = "global"
+        candidate.evidence = _dedupe_keep_order([*list(candidate.evidence or []), *evidence])
+        guidance = "; ".join(bullets[:3])
+        candidate.description = (
+            f"{candidate.description} Proposed append-only guidance: {guidance}"
+            if guidance else candidate.description
+        ).strip()
+
+        if candidate.auto_apply:
+            self._apply_prompt_candidate(candidate.id, auto_apply=True)
+
+    def _update_prompt_candidate_measurements(self, prompt_key: str) -> None:
+        tracker = getattr(self, "_prompt_tracker", None)
+        registry = getattr(self, "_adaptation_registry", None)
+        if tracker is None or registry is None or not prompt_key:
+            return
+        history = tracker.get_system_prompt_history(prompt_key, limit=500)
+        if not history:
+            return
+
+        for candidate in list(registry.list_applied()):
+            if getattr(candidate, "parameter_key", None) != prompt_key:
+                continue
+            if candidate.applied_at is None:
+                continue
+            applied_ts = candidate.applied_at.timestamp()
+            post_history = [
+                item for item in history
+                if float(item.get("recorded_at", 0.0) or 0.0) >= applied_ts
+            ]
+            if not post_history:
+                continue
+
+            qualities = [
+                float(item.get("quality_score", 1.0) or 0.0)
+                for item in post_history
+                if isinstance(item, dict)
+            ]
+            quality = max(0.0, min(1.0, sum(qualities) / max(len(qualities), 1)))
+            interaction_count = len(post_history)
+            registry.record_post_adaptation_outcome(
+                candidate.id,
+                quality_metric=quality,
+                interaction_count=interaction_count,
+            )
+
+            current_candidate = registry.get(candidate.id) or candidate
+            if (
+                current_candidate.status == "applied"
+                and interaction_count >= current_candidate.measurement_target
+            ):
+                baseline_failure_rate = max(
+                    0.0,
+                    1.0 - float(current_candidate.baseline_quality or 0.0),
+                )
+                regression = tracker.check_prompt_regression(
+                    prompt_key,
+                    baseline_failure_rate=baseline_failure_rate,
+                    window_size=current_candidate.measurement_target,
+                )
+                if regression is not None and current_candidate.status == "applied":
+                    registry.rollback(
+                        current_candidate.id,
+                        (
+                            "Prompt regression detected: "
+                            f"{regression['current_failure_rate']:.0%} recent failure rate"
+                        ),
+                    )
+                    current_candidate = registry.get(current_candidate.id) or current_candidate
+                if current_candidate.status == "applied":
+                    registry.complete_measurement(current_candidate.id)
+
+            if current_candidate.status == "rolled_back":
+                self._rollback_prompt_candidate(current_candidate)
+
+    def _maybe_record_turn_feedback(
+        self,
+        context: Any,
+        msg: SurfaceMessage,
+    ) -> None:
+        task = getattr(context, "task", None)
+        if task is None:
+            return
+        previous_assistant = self._latest_assistant_turn(task)
+        if previous_assistant is None:
+            return
+
+        prompt_key = self._prompt_key_for_turn(previous_assistant)
+        project_id = getattr(getattr(context, "project", None), "project_id", None)
+        try:
+            from dan.engine.correction_memory import (
+                CorrectionRecord,
+                detect_correction,
+                route_correction,
+            )
+        except Exception:
+            logger.debug("Correction detector import failed", exc_info=True)
+            return
+
+        signal = detect_correction(msg.text, previous_assistant.content)
+        if signal is None:
+            self._record_prompt_outcome(
+                prompt_key,
+                outcome=True,
+                quality_score=1.0,
+            )
+            return
+
+        if float(getattr(signal, "confidence", 0.0) or 0.0) < self._feedback_signal_threshold():
+            return
+
+        actions = route_correction(signal)
+        record = CorrectionRecord(
+            signal=signal,
+            actions=actions,
+            active_prompt_key=prompt_key,
+        )
+        if self._correction_store is not None:
+            self._correction_store.add(record)
+        self._store_correction_actions(actions, project_id=project_id)
+        self._record_prompt_outcome(
+            prompt_key,
+            outcome=False,
+            quality_score=0.0,
+        )
+        if prompt_key:
+            self._maybe_propose_prompt_candidate(prompt_key)
+
+    # ------------------------------------------------------------------
     # Task finalization
     # ------------------------------------------------------------------
 
@@ -1451,18 +2203,14 @@ class Concierge:
 
         if status in ("completed", "paused"):
             try:
-                conversation_text = "\n".join(
-                    t.content for t in context.task.turns if t.content
-                )
-                state = _extract_task_state(conversation_text)
-                context.task.completed_steps = _compact_task_history(state["completed_steps"])
-                context.task.pending_steps = state["pending_steps"]
-                context.task.current_blocker = state.get("current_blocker")
-                context.task.artifacts = state.get("artifacts", {})
-                _persist_task_state(
-                    self.project_store,
-                    context.project.project_id,
-                    context.task,
+                self._record_task_progress_event(
+                    context,
+                    msg,
+                    role="task_finalize",
+                    content="",
+                    metadata=None,
+                    note=f"Task {status}",
+                    clear_blocker=(status == "completed"),
                 )
             except Exception:
                 logger.debug("Auto-populate task state failed", exc_info=True)
@@ -2225,8 +2973,6 @@ class Concierge:
 
     def handle_goal_command(self, msg: SurfaceMessage) -> str:
         """Handle ``/goal`` — create, list, or inspect concierge goals."""
-        from .models import ConciergeGoal
-
         text = msg.text.strip()
         args = text.split(None, 1)
         subcommand = args[1].strip() if len(args) > 1 else ""
@@ -2239,7 +2985,9 @@ class Concierge:
                 return "No active goals."
             lines = ["**Active Goals:**"]
             for g in state.active_goals:
-                lines.append(f"  [{g.status}] `{g.id}` — {g.description[:120]}")
+                summary = self._goal_progress_summary(g)
+                detail = f" ({summary})" if summary else ""
+                lines.append(f"  [{g.status}] `{g.id}` — {g.description[:120]}{detail}")
             return "\n".join(lines)
 
         if subcommand == "clear":
@@ -2249,8 +2997,33 @@ class Concierge:
             return f"Cleared {count} goal(s)."
 
         goal = ConciergeGoal(description=subcommand)
+        bound_context: ResolvedContext | None = None
+        active_projects = self.project_store.list_active(msg.external_id)
+        if active_projects:
+            project = active_projects[0]
+            task = self.project_store.get_current_task(project.project_id, msg.external_id)
+            if task is not None:
+                bound_context = ResolvedContext(
+                    project=project,
+                    task=task,
+                    is_new_project=False,
+                    is_new_task=False,
+                    confidence=1.0,
+                    domain=project.domain,
+                )
+                self._bind_goal_to_context(goal, bound_context)
+                goal.progress.completed_steps = list(task.completed_steps)
+                goal.progress.pending_steps = list(task.pending_steps)
+                goal.progress.current_blocker = task.current_blocker
+                goal.progress.artifacts = dict(task.artifacts)
+                goal.progress.updated_at = time.time()
         state.active_goals.append(goal)
         self._save_concierge_state(state_scope_id, state)
+        if bound_context is not None:
+            try:
+                self._project_goal_progress_to_task(bound_context, msg, goal)
+            except Exception:
+                logger.debug("Failed to project goal binding onto task", exc_info=True)
 
         logger.warning(
             "GoalLoopExecutor not wired — goal stored but not executed "
@@ -2264,6 +3037,122 @@ class Concierge:
             f"**Note:** Autonomous goal execution is not yet wired. "
             f"The goal is tracked for context but will not auto-execute."
         )
+
+    # ------------------------------------------------------------------
+    # Learning commands
+    # ------------------------------------------------------------------
+
+    def handle_corrections_command(self, msg: SurfaceMessage) -> str:
+        store = getattr(self, "_correction_store", None)
+        if store is None or store.count() == 0:
+            return "No corrections recorded."
+        records = list(reversed(store.list_recent(10)))
+        lines = [f"Recent corrections ({store.count()} total):"]
+        for record in records:
+            signal = getattr(record, "signal", None)
+            if signal is None:
+                continue
+            correction_type = str(getattr(signal, "correction_type", "unknown") or "unknown")
+            confidence = float(getattr(signal, "confidence", 0.0) or 0.0)
+            correction_text = str(getattr(signal, "correction_text", "") or "").strip()
+            prompt_key = str(getattr(record, "active_prompt_key", "") or "").strip()
+            line = (
+                f"- [{correction_type}] {confidence:.0%} confidence: "
+                f"{correction_text[:120] or '(no text)'}"
+            )
+            if prompt_key:
+                line += f" ({prompt_key})"
+            lines.append(line)
+        return "\n".join(lines)
+
+    def handle_adaptations_command(self, msg: SurfaceMessage) -> str:
+        registry = getattr(self, "_adaptation_registry", None)
+        if registry is None:
+            return "Adaptation registry is unavailable."
+        pending = registry.list_pending()
+        queued = registry.list_queued()
+        applied = registry.list_applied()
+        if not pending and not queued and not applied:
+            return "No adaptations."
+
+        lines: list[str] = []
+        if pending:
+            lines.append("Pending:")
+            for candidate in pending[:10]:
+                lines.append(
+                    f"- `{candidate.id}` [{candidate.source}] {candidate.description[:120]} "
+                    f"(confidence={candidate.confidence:.0%}, samples={candidate.sample_size or 0})"
+                )
+        if queued:
+            lines.append("Queued:")
+            for candidate in queued[:10]:
+                lines.append(
+                    f"- `{candidate.id}` [{candidate.source}] {candidate.description[:120]}"
+                )
+        if applied:
+            lines.append("Applied:")
+            for candidate in applied[:10]:
+                outcome = str(getattr(candidate, "last_outcome", "") or "").strip()
+                suffix = f" — {outcome[:80]}" if outcome else ""
+                lines.append(
+                    f"- `{candidate.id}` [{candidate.source}] {candidate.description[:120]}{suffix}"
+                )
+        return "\n".join(lines)
+
+    def _approve_candidate(self, candidate_id: str) -> str:
+        registry = getattr(self, "_adaptation_registry", None)
+        if registry is None:
+            return "Adaptation registry is unavailable."
+        candidate = registry.get(candidate_id)
+        if candidate is None:
+            return f"Unknown adaptation `{candidate_id}`."
+        if candidate.status != "pending":
+            return f"Adaptation `{candidate_id}` is `{candidate.status}`."
+
+        if candidate.source == "prompt_opt":
+            if self._apply_prompt_candidate(candidate_id, auto_apply=False):
+                return f"Approved and applied `{candidate_id}`."
+            return f"Failed to apply `{candidate_id}`."
+
+        baseline_quality = 0.0
+        try:
+            if candidate.parameter_key and candidate.after_value is not None and self._behavior_store is not None:
+                self._behavior_store.set(
+                    candidate.parameter_key,
+                    candidate.after_value,
+                    reason=f"Approved adaptation {candidate.id}",
+                    evidence=list(candidate.evidence or []),
+                )
+            registry.approve(candidate.id, baseline_quality=baseline_quality)
+        except Exception:
+            logger.warning("Failed to approve adaptation %s", candidate.id, exc_info=True)
+            return f"Failed to approve `{candidate_id}`."
+        return f"Approved `{candidate_id}`."
+
+    def handle_approve_command(self, msg: SurfaceMessage) -> str:
+        candidate_id = re.sub(r"^/approve\b", "", msg.text, count=1, flags=re.IGNORECASE).strip()
+        if not candidate_id:
+            return "Usage: `/approve <adaptation-id>`"
+        return self._approve_candidate(candidate_id)
+
+    def handle_reject_command(self, msg: SurfaceMessage) -> str:
+        registry = getattr(self, "_adaptation_registry", None)
+        if registry is None:
+            return "Adaptation registry is unavailable."
+        candidate_id = re.sub(r"^/reject\b", "", msg.text, count=1, flags=re.IGNORECASE).strip()
+        if not candidate_id:
+            return "Usage: `/reject <adaptation-id>`"
+        candidate = registry.get(candidate_id)
+        if candidate is None:
+            return f"Unknown adaptation `{candidate_id}`."
+        if candidate.status != "pending":
+            return f"Adaptation `{candidate_id}` is `{candidate.status}`."
+        try:
+            registry.reject(candidate.id)
+        except Exception:
+            logger.warning("Failed to reject adaptation %s", candidate.id, exc_info=True)
+            return f"Failed to reject `{candidate_id}`."
+        return f"Rejected `{candidate_id}`."
 
     # ------------------------------------------------------------------
     # Utility
@@ -2326,6 +3215,8 @@ def build_concierge(
     from .resources import ResourceBudget, ResourceTracker
 
     resource_tracker = ResourceTracker(ResourceBudget.from_env())
+    concierge._resource_tracker = resource_tracker
+    setattr(chat_manager, "_resource_tracker", resource_tracker)
     dispatcher = ConcurrentDispatcher(
         concierge,
         max_concurrent_projects=max_concurrent_projects,

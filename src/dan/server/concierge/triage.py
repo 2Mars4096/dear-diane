@@ -576,7 +576,20 @@ def _build_triage_messages(
         context_parts.append(f"Project summary: {context.project.summary[:300]}")
     if concierge_state and concierge_state.active_goals:
         goals_summary = "; ".join(
-            g.description[:80] for g in concierge_state.active_goals[:5] if g.description
+            (
+                f"{g.description[:80]}"
+                + (
+                    f" (next: {', '.join(g.progress.pending_steps[:2])})"
+                    if getattr(g, "progress", None) and g.progress.pending_steps
+                    else (
+                        f" (blocker: {str(g.progress.current_blocker)[:60]})"
+                        if getattr(g, "progress", None) and g.progress.current_blocker
+                        else ""
+                    )
+                )
+            )
+            for g in concierge_state.active_goals[:5]
+            if g.description
         )
         if goals_summary:
             context_parts.append(f"Active goals: {goals_summary}")

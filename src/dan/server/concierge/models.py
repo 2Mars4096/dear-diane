@@ -45,6 +45,8 @@ class Task(BaseModel):
     current_blocker: str | None = None
     artifacts: dict[str, str] = Field(default_factory=dict)
     last_activity: datetime | None = None
+    goal_id: str | None = None
+    progress_updated_at: float | None = None
 
 
 class PendingAction(BaseModel):
@@ -78,6 +80,32 @@ class Project(BaseModel):
 # Concierge orchestrator state (plan 29-2)
 # ---------------------------------------------------------------------------
 
+
+class GoalProgressEntry(BaseModel):
+    timestamp: float = Field(default_factory=time.time)
+    source: Literal["goal_command", "user_turn", "assistant_turn", "task_finalize", "system"] = "system"
+    task_id: str | None = None
+    task_label: str = ""
+    note: str = ""
+    completed_steps: list[str] = Field(default_factory=list)
+    pending_steps: list[str] = Field(default_factory=list)
+    current_blocker: str | None = None
+    clear_blocker: bool = False
+    artifacts: dict[str, str] = Field(default_factory=dict)
+
+
+class GoalProgressSnapshot(BaseModel):
+    project_id: str | None = None
+    task_id: str | None = None
+    task_label: str = ""
+    completed_steps: list[str] = Field(default_factory=list)
+    pending_steps: list[str] = Field(default_factory=list)
+    current_blocker: str | None = None
+    artifacts: dict[str, str] = Field(default_factory=dict)
+    last_note: str = ""
+    updated_at: float = Field(default_factory=time.time)
+
+
 class ConciergeGoal(BaseModel):
     """Single goal tracked by the concierge orchestrator."""
 
@@ -97,6 +125,10 @@ class ConciergeGoal(BaseModel):
     iteration: int = 0
     max_iterations: int = 5
     paused_at_stage: str | None = None
+    project_id: str | None = None
+    task_id: str | None = None
+    progress: GoalProgressSnapshot = Field(default_factory=GoalProgressSnapshot)
+    progress_log: list[GoalProgressEntry] = Field(default_factory=list)
 
 
 class ConciergeState(BaseModel):

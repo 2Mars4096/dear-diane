@@ -5,6 +5,7 @@ import asyncio
 import heapq
 import logging
 import os
+import time
 from enum import IntEnum
 from typing import Any
 
@@ -51,7 +52,7 @@ class ResourceTracker:
         self._budget = budget or ResourceBudget()
         self._active_llm_calls = 0
         self._active_runs = 0
-        self._lock = asyncio.Lock()
+        self._condition = asyncio.Condition()
 
     @property
     def budget(self) -> ResourceBudget:
@@ -65,25 +66,54 @@ class ResourceTracker:
 
         Supported types: ``"llm"``, ``"run"`` (default).
         """
-        async with self._lock:
-            if resource_type == "llm":
-                if self._active_llm_calls >= self._budget.max_concurrent_llm_calls:
-                    return False
-                self._active_llm_calls += 1
-                return True
-            # Default: "run" / "project"
-            if self._active_runs >= self._budget.max_concurrent_runs:
+        async with self._condition:
+            if not self._can_acquire_locked(resource_type):
                 return False
-            self._active_runs += 1
+            self._increment_locked(resource_type)
+            return True
+
+    async def wait_acquire(
+        self,
+        resource_type: str = "run",
+        *,
+        timeout: float | None = None,
+    ) -> bool:
+        """Wait until a resource slot is available, then acquire it."""
+        deadline = None if timeout is None else (time.monotonic() + timeout)
+        async with self._condition:
+            while not self._can_acquire_locked(resource_type):
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return False
+                    try:
+                        await asyncio.wait_for(self._condition.wait(), timeout=remaining)
+                    except asyncio.TimeoutError:
+                        return False
+                else:
+                    await self._condition.wait()
+            self._increment_locked(resource_type)
             return True
 
     async def release(self, resource_type: str = "run") -> None:
         """Release a previously acquired resource slot."""
-        async with self._lock:
+        async with self._condition:
             if resource_type == "llm":
                 self._active_llm_calls = max(0, self._active_llm_calls - 1)
             else:
                 self._active_runs = max(0, self._active_runs - 1)
+            self._condition.notify_all()
+
+    def _can_acquire_locked(self, resource_type: str) -> bool:
+        if resource_type == "llm":
+            return self._active_llm_calls < self._budget.max_concurrent_llm_calls
+        return self._active_runs < self._budget.max_concurrent_runs
+
+    def _increment_locked(self, resource_type: str) -> None:
+        if resource_type == "llm":
+            self._active_llm_calls += 1
+        else:
+            self._active_runs += 1
 
     @property
     def available(self) -> bool:
@@ -92,6 +122,11 @@ class ResourceTracker:
             self._active_runs < self._budget.max_concurrent_runs
             and self._active_llm_calls < self._budget.max_concurrent_llm_calls
         )
+
+    @property
+    def run_available(self) -> bool:
+        """``True`` if there is capacity for another live project/run slot."""
+        return self._active_runs < self._budget.max_concurrent_runs
 
     def snapshot(self) -> dict[str, Any]:
         """Current usage snapshot for status reporting."""

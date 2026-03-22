@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -34,6 +35,14 @@ _MULTI_ACTION_KEYWORDS = frozenset({
     "research", "analyze", "write", "build", "create",
     "develop", "design", "investigate",
 })
+_MIXED_DEPENDENT_PREFIXES = frozenset({
+    "summarize", "synthesize", "combine", "review", "finalize",
+    "draft", "write", "prepare", "present", "compile",
+})
+_MIXED_DEPENDENCY_RE = re.compile(
+    r"\b(?:based on|using|from the|from previous|from findings|review the|summarize|synthesize|combine|finalize)\b",
+    re.IGNORECASE,
+)
 _MISSING_TERMINAL_EVENT_FALLBACK = (
     "The response stream ended before a final answer was produced. "
     "Please ask me to continue from the latest progress."
@@ -103,9 +112,8 @@ _STAGE_PROMPT_OVERLAYS: dict[str, str] = {
     ),
     "workflow_build": (
         "## Concierge stage: workflow_build\n"
-        "Act as a contract-first workflow builder. Keep workflow identity explicit, use canonical node kinds, "
-        "respect exact port and schema compatibility, distinguish proposed vs applied changes, "
-        "and do not claim success before validation."
+        "Act as a workflow authoring surface. Keep workflow identity explicit and route the task through "
+        "the standard DAN workflow-edit/build path instead of inventing a separate local workflow doctrine."
     ),
     "file_review": (
         "## Concierge stage: file_review\n"
@@ -901,6 +909,7 @@ def _extract_chat_params(
     audit = result.get("audit_metadata") or {}
     audit["concierge_stage"] = stage
     audit["concierge_prompt_overlay"] = stage_overlay_id
+    audit["active_prompt_key"] = "prompts/runtime.unified_system"
     audit["session_tier"] = int(getattr(session, "tier", 1))
     audit["route_source"] = str(getattr(triage, "route_source", "") or "")
     audit["scenario_id"] = getattr(triage, "scenario_id", None)
@@ -911,6 +920,31 @@ def _extract_chat_params(
         audit["concierge_model_override"] = model_override
         result["audit_metadata"] = audit
     return result
+
+
+def _chat_result_metadata(
+    chat_params: dict[str, Any],
+    chat_manager: Any,
+    *,
+    include_memory_recorded: bool = True,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {"completion_status": "completed"}
+    if include_memory_recorded:
+        metadata["memory_recorded_by_chat_manager"] = True
+    audit = dict(chat_params.get("audit_metadata") or {})
+    active_prompt_key = str(audit.get("active_prompt_key") or "").strip()
+    if active_prompt_key:
+        metadata["active_prompt_key"] = active_prompt_key
+    if "active_prompt_version" in audit:
+        metadata["active_prompt_version"] = audit.get("active_prompt_version")
+    model_used = str(
+        chat_params.get("model_override")
+        or getattr(chat_manager, "_chat_model", "")
+        or "",
+    ).strip()
+    if model_used:
+        metadata["model_used"] = model_used
+    return metadata
 
 
 def _extract_text_chat_context_params(
@@ -1108,10 +1142,7 @@ class SingleShotExecutor:
             session.id,
             _SR(
                 content=final_content,
-                metadata={
-                    "memory_recorded_by_chat_manager": True,
-                    "completion_status": "completed",
-                },
+                metadata=_chat_result_metadata(chat_params, self._concierge.chat_manager),
                 token_usage=token_usage,
                 duration_ms=(time.monotonic() - start) * 1000,
             ),
@@ -1264,10 +1295,7 @@ class MultiStepExecutor:
             session.id,
             _SR(
                 content=final_content,
-                metadata={
-                    "memory_recorded_by_chat_manager": True,
-                    "completion_status": "completed",
-                },
+                metadata=_chat_result_metadata(chat_params, self._concierge.chat_manager),
                 token_usage=token_usage,
                 duration_ms=(time.monotonic() - start) * 1000,
             ),
@@ -1304,12 +1332,9 @@ class MultiStepExecutor:
         manager.update_state(session.id, "waiting")
 
         child_execution = getattr(session, "child_execution", "serial")
+        mixed_groups: list[list[str]] = []
         if child_execution == "mixed":
-            logger.debug(
-                "Session %s requested mixed child execution; using serial fallback until hybrid scheduling lands",
-                session.id,
-            )
-            child_execution = "serial"
+            mixed_groups = self._build_mixed_execution_groups(subtasks)
         child_results: dict[str, Any] = {}
         children: list[Any] = []
         interrupted = False
@@ -1338,6 +1363,65 @@ class MultiStepExecutor:
                             yield event
                             break
                         yield event
+            elif child_execution == "mixed":
+                previous_group_summary: str | None = None
+                groups = mixed_groups or [list(subtasks)]
+                for group in groups:
+                    if _cancel_requested(session):
+                        interrupted = True
+                        break
+                    group_children: list[Any] = []
+                    for task_desc in group:
+                        if _cancel_requested(session) or not manager.can_spawn_child(session.id):
+                            break
+                        child = self._build_child_session(session, manager, task_desc)
+                        if previous_group_summary:
+                            task_ctx = getattr(child, "task_context", {}) or {}
+                            task_ctx["previous_result"] = previous_group_summary
+                            child.task_context = task_ctx
+                        children.append(child)
+                        group_children.append(child)
+
+                    if _cancel_requested(session):
+                        interrupted = True
+                        break
+                    if not group_children:
+                        break
+
+                    if len(group_children) == 1:
+                        child = group_children[0]
+                        progress_event = self._child_progress_event(session, child)
+                        if progress_event is not None:
+                            yield progress_event
+                        try:
+                            async for event in self._run_child(child, manager):
+                                if isinstance(event, ChatInterruptedEvent):
+                                    interrupted = True
+                                    interrupted_emitted = True
+                                    yield event
+                                    break
+                                yield event
+                        except Exception:
+                            logger.exception("Child execution failed for session %s", session.id)
+                    else:
+                        async for event in self._run_children_parallel(group_children, session, manager):
+                            if isinstance(event, ChatInterruptedEvent):
+                                interrupted = True
+                                interrupted_emitted = True
+                                yield event
+                                break
+                            yield event
+
+                    group_results: dict[str, Any] = {}
+                    for child in group_children:
+                        child_state = manager.get(child.id)
+                        if child_state and getattr(child_state, "result", None):
+                            child_results[child.id] = child_state.result
+                            group_results[child.id] = child_state.result
+                    if interrupted:
+                        break
+                    if group_results:
+                        previous_group_summary = self._synthesize(session, child_results, manager)
             else:
                 previous_child = None
                 for task_desc in subtasks:
@@ -1475,7 +1559,18 @@ class MultiStepExecutor:
             session.id,
             _SR(
                 content=final_content,
-                metadata={"completion_status": "completed"},
+                metadata=(
+                    {
+                        "completion_status": "completed",
+                        "active_prompt_key": "prompts/runtime.unified_system",
+                        "model_used": str(
+                            _resolve_session_model_override(self._concierge, session)
+                            or getattr(self._concierge.chat_manager, "_chat_model", "")
+                            or ""
+                        ).strip(),
+                    }
+                    if synthesized_content is not None else {"completion_status": "completed"}
+                ),
                 token_usage=total_tokens,
                 duration_ms=(time.monotonic() - start) * 1000,
                 child_results=child_results,
@@ -1500,6 +1595,35 @@ class MultiStepExecutor:
                 return 2
         return 1
 
+    @staticmethod
+    def _mixed_subtask_depends_on_prior(task_desc: str) -> bool:
+        lower = task_desc.strip().lower()
+        if not lower:
+            return False
+        first_word = lower.split()[0]
+        if first_word in _MIXED_DEPENDENT_PREFIXES:
+            return True
+        return bool(_MIXED_DEPENDENCY_RE.search(lower))
+
+    @classmethod
+    def _build_mixed_execution_groups(cls, subtasks: list[str]) -> list[list[str]]:
+        groups: list[list[str]] = []
+        current_parallel_group: list[str] = []
+        for index, task_desc in enumerate(subtasks):
+            task_text = str(task_desc or "").strip()
+            if not task_text:
+                continue
+            if index > 0 and cls._mixed_subtask_depends_on_prior(task_text):
+                if current_parallel_group:
+                    groups.append(current_parallel_group)
+                    current_parallel_group = []
+                groups.append([task_text])
+                continue
+            current_parallel_group.append(task_text)
+        if current_parallel_group:
+            groups.append(current_parallel_group)
+        return groups
+
     async def _cheap_llm_complete(
         self,
         session: Any,
@@ -1516,14 +1640,21 @@ class MultiStepExecutor:
             return None, {}
         try:
             provider = providers.resolve(model)
-            result = await provider.complete(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                model=model,
-                temperature=0.0,
-            )
+            tracker = getattr(self._concierge, "_resource_tracker", None) or getattr(chat_manager, "_resource_tracker", None)
+            if tracker is not None:
+                await tracker.wait_acquire("llm")
+            try:
+                result = await provider.complete(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    model=model,
+                    temperature=0.0,
+                )
+            finally:
+                if tracker is not None:
+                    await tracker.release("llm")
             text = str(getattr(result, "text", "") or "").strip()
             usage = dict(getattr(result, "usage", {}) or {})
             return text or None, usage
@@ -1581,23 +1712,51 @@ class MultiStepExecutor:
         child_tier = self._estimate_child_tier(task_desc)
         parent_triage = getattr(session, "triage", None)
         child_route = _filter_child_route(getattr(parent_triage, "route", None), task_desc)
+        parent_task_context = copy.deepcopy(getattr(session, "task_context", {}) or {})
+        parent_msg = getattr(session, "msg", None)
+        parent_thread_id = None
+        if parent_msg is not None:
+            parent_metadata = getattr(parent_msg, "metadata", None)
+            if not isinstance(parent_metadata, dict):
+                parent_metadata = {}
+            parent_thread_id = (
+                str(getattr(parent_msg, "session_id", "") or parent_metadata.get("thread_id") or "").strip()
+                or None
+            )
+        handoff = {
+            "parent_session_id": session.id,
+            "root_session_id": session.root_id,
+            "parent_task": getattr(session, "task", ""),
+            "child_task": task_desc,
+            "route_target": getattr(child_route, "target", None),
+            "action_hints": list(getattr(child_route, "action_hints", None) or []),
+            "parent_thread_id": parent_thread_id,
+        }
         child = manager.create_child(
             parent_id=session.id,
             task=task_desc,
             tier=child_tier,
             task_context={
                 "parent_task": getattr(session, "task", ""),
-                "parent_context": getattr(session, "task_context", {}),
+                "parent_context": parent_task_context,
+                "handoff": handoff,
             },
         )
 
-        parent_msg = getattr(session, "msg", None)
         if parent_msg is not None:
+            child_metadata = copy.deepcopy(parent_msg.metadata)
+            if not isinstance(child_metadata, dict):
+                child_metadata = {}
+            child_lane_id = f"tiered-child-{child.id}"
             child_metadata = {
-                **parent_msg.metadata,
+                **child_metadata,
                 "tiered_parent_session_id": session.id,
                 "tiered_root_session_id": session.root_id,
                 "tiered_child_task": task_desc,
+                "tiered_child_session_id": child.id,
+                "tiered_handoff": handoff,
+                "parent_thread_id": parent_thread_id,
+                "thread_id": child_lane_id,
             }
             if child_route is not None:
                 child_metadata["route_target"] = getattr(child_route, "target", child_metadata.get("route_target"))
@@ -1611,13 +1770,17 @@ class MultiStepExecutor:
             child.msg = parent_msg.model_copy(
                 update={
                     "text": task_desc,
+                    "session_id": child_lane_id,
                     "metadata": child_metadata,
                 }
             )
         else:
             child.msg = SurfaceMessage(surface="", external_id="", text=task_desc)
 
-        child.context = session.context
+        try:
+            child.context = copy.deepcopy(session.context)
+        except Exception:
+            child.context = session.context
 
         try:
             from .triage import TriageResult

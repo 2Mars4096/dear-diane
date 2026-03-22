@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from typing import Any, AsyncIterator
@@ -23,6 +24,13 @@ _BYPASS_PREFIXES = (
 _BYPASS_EXACT = frozenset({
     "status", "cancel", "what's happening", "what's going on",
 })
+_QUEUE_CONTROL_METADATA_KEYS = frozenset({
+    "clarification_answer", "selected_option", "skip_confirm",
+})
+_SUPERSEDE_RE = re.compile(
+    r"^(?:actually|instead|ignore\b|correction\b|wait\b|hold on\b|stop\b|cancel\b|change of plan\b|new instruction\b)",
+    re.IGNORECASE,
+)
 
 
 def _is_fallthrough_fast_command(text: str) -> bool:
@@ -42,6 +50,22 @@ def _is_bypass_command(msg: SurfaceMessage) -> bool:
     if any(text.startswith(p) for p in _BYPASS_PREFIXES):
         return True
     return text in _BYPASS_EXACT
+
+
+def _should_supersede_same_project_queue(msg: SurfaceMessage) -> bool:
+    metadata = getattr(msg, "metadata", {}) or {}
+    if any(key in metadata for key in _QUEUE_CONTROL_METADATA_KEYS):
+        return True
+    text = msg.text.strip().lower()
+    if not text:
+        return False
+    if text.startswith("/retry"):
+        return True
+    if text.isdigit() or text in {"yes", "no", "y", "n", "cancel", "stop"}:
+        return True
+    if " instead" in text or text.startswith("instead "):
+        return True
+    return bool(_SUPERSEDE_RE.match(text))
 
 
 class ConcurrentDispatcher:
@@ -112,7 +136,7 @@ class ConcurrentDispatcher:
             return
 
         has_capacity = (
-            self._resource_tracker.available
+            self._resource_tracker.run_available
             if self._resource_tracker is not None
             else len(self._active_tasks) < self._max_concurrent
         )
@@ -137,7 +161,7 @@ class ConcurrentDispatcher:
             and not str(project_id).startswith("bypass:")
         )
         if track_resources:
-            acquired = await self._try_acquire_capacity_slot()
+            acquired = await self._try_acquire_run_slot()
             if not acquired:
                 context = self._concierge._resolve_context(msg)
                 async for event in self._enqueue_overflow(msg, context):
@@ -160,7 +184,7 @@ class ConcurrentDispatcher:
             finally:
                 self._active_tasks.pop(project_id, None)
                 if track_resources:
-                    await self._release_capacity_slot()
+                    await self._release_run_slot()
             try:
                 await self._drain_global_overflow()
             except Exception:
@@ -183,6 +207,7 @@ class ConcurrentDispatcher:
             self._project_queues[project_id] = asyncio.Queue(maxsize=self._max_queue_depth)
 
         q = self._project_queues[project_id]
+        await self._collapse_stale_project_queue(project_id, msg, context)
         if q.full():
             yield ChatCompleteEvent(
                 message_id=uuid.uuid4().hex[:12],
@@ -206,6 +231,40 @@ class ConcurrentDispatcher:
             correlation_id=correlation_id,
             queue_position=queue_position,
         )
+
+    async def _collapse_stale_project_queue(
+        self,
+        project_id: str,
+        msg: SurfaceMessage,
+        context: ResolvedContext,
+    ) -> None:
+        q = self._project_queues.get(project_id)
+        if q is None or q.empty() or not _should_supersede_same_project_queue(msg):
+            return
+        superseded: list[tuple[SurfaceMessage, str]] = []
+        while not q.empty():
+            superseded.append(q.get_nowait())
+        for queued_msg, channel_id in superseded:
+            bus = self._get_or_create_bus(channel_id)
+            await bus.put(ChatCompleteEvent(
+                message_id=uuid.uuid4().hex[:12],
+                content=(
+                    f"{format_prefix(context.project.label)} "
+                    f"Superseded by newer instruction: {msg.text[:120].strip()}"
+                ).strip(),
+                token_usage={},
+                context_window=0,
+                graph_revision="",
+            ))
+            await bus.put(None)
+            logger.debug(
+                "Superseded queued same-project message",
+                extra={
+                    "project_id": project_id,
+                    "superseded_text": queued_msg.text[:120],
+                    "new_text": msg.text[:120],
+                },
+            )
 
     async def _enqueue_overflow(
         self, msg: SurfaceMessage, context: ResolvedContext,
@@ -295,7 +354,7 @@ class ConcurrentDispatcher:
     async def _drain_global_overflow(self) -> None:
         """Pick up overflow-queued messages once a project slot frees up."""
         while not self._global_queue.empty() and (
-            self._resource_tracker.available
+            self._resource_tracker.run_available
             if self._resource_tracker is not None
             else len(self._active_tasks) < self._max_concurrent
         ):
@@ -319,7 +378,7 @@ class ConcurrentDispatcher:
                 continue
 
             if self._resource_tracker is not None:
-                acquired = await self._try_acquire_capacity_slot()
+                acquired = await self._try_acquire_run_slot()
                 if not acquired:
                     await self._global_queue.put(
                         (queued_msg, channel_id),
@@ -365,24 +424,16 @@ class ConcurrentDispatcher:
         except Exception:
             logger.exception("Overflow drain failed after project %s", project_id)
 
-    async def _try_acquire_capacity_slot(self) -> bool:
-        """Acquire both project and LLM slots for a live chat task."""
+    async def _try_acquire_run_slot(self) -> bool:
+        """Acquire a project/run slot for a live chat task."""
         if self._resource_tracker is None:
             return True
-        acquired_run = await self._resource_tracker.try_acquire("run")
-        if not acquired_run:
-            return False
-        acquired_llm = await self._resource_tracker.try_acquire("llm")
-        if acquired_llm:
-            return True
-        await self._resource_tracker.release("run")
-        return False
+        return await self._resource_tracker.try_acquire("run")
 
-    async def _release_capacity_slot(self) -> None:
-        """Release the slots held by `_try_acquire_capacity_slot()`."""
+    async def _release_run_slot(self) -> None:
+        """Release the run slot held by `_try_acquire_run_slot()`."""
         if self._resource_tracker is None:
             return
-        await self._resource_tracker.release("llm")
         await self._resource_tracker.release("run")
 
     # ------------------------------------------------------------------

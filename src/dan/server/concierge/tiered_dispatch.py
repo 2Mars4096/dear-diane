@@ -619,6 +619,9 @@ class TieredDispatcher:
                 from .models import TaskTurn
 
                 intent_str = session.triage.intent if session.triage else "ask"
+                record_feedback = getattr(self._concierge, "_maybe_record_turn_feedback", None)
+                if callable(record_feedback) and session.msg is not None:
+                    record_feedback(context, session.msg)
                 self._concierge.project_store.append_turn(
                     context.project.project_id,
                     context.task.task_id,
@@ -630,12 +633,24 @@ class TieredDispatcher:
                     ),
                     session.msg.external_id if session.msg else "",
                 )
+                record_progress = getattr(self._concierge, "_record_task_progress_event", None)
+                if callable(record_progress) and session.msg is not None:
+                    record_progress(
+                        context,
+                        session.msg,
+                        role="user_turn",
+                        content=session.msg.text,
+                        metadata=_sanitize_user_turn_metadata(session.msg),
+                    )
                 if result.content:
                     result_metadata = getattr(result, "metadata", {}) or {}
                     memory_already_recorded = bool(
                         result_metadata.get("memory_recorded_by_chat_manager")
                     )
-                    assistant_metadata = {"session_tree": trace_data}
+                    assistant_metadata = {
+                        **result_metadata,
+                        "session_tree": trace_data,
+                    }
                     record_assistant = getattr(self._concierge, "_record_assistant_turn", None)
                     if callable(record_assistant) and session.msg is not None:
                         record_assistant(
