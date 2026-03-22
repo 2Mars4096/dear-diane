@@ -8,6 +8,7 @@ fails fast and hands off to the 24-1 builder codegen path.
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -28,6 +29,7 @@ class StageType(str, Enum):
     code_execution = "code_execution"
     human_approval = "human_approval"
     conditional = "conditional"
+    loop = "loop"
 
 
 class DataSourceType(str, Enum):
@@ -68,6 +70,28 @@ class ConditionalRequirement(BaseModel):
     else_description: str = ""
 
 
+class LoopRequirement(BaseModel):
+    """Specifies a generic iterative loop stage."""
+
+    condition: str = "counter < 3"
+    init_code: str = 'result = {"counter": 0}'
+    body_code: str = (
+        "counter = int(counter) if counter is not None else 0\n"
+        'result = {"counter": counter + 1}'
+    )
+    result_code: str = (
+        "value = data.get('counter') if isinstance(data, dict) else data\n"
+        "result = value"
+    )
+    max_iterations: int = Field(default=10, ge=1, le=100)
+    state_schema: dict[str, Any] = Field(
+        default_factory=lambda: {"counter": {"type": "integer"}}
+    )
+    state_defaults: dict[str, Any] = Field(
+        default_factory=lambda: {"counter": 0}
+    )
+
+
 # ---------------------------------------------------------------------------
 # Stage intent
 # ---------------------------------------------------------------------------
@@ -84,6 +108,7 @@ class StageIntent(BaseModel):
     config: dict = Field(default_factory=dict)
     review: ReviewRequirement | None = None
     conditional: ConditionalRequirement | None = None
+    loop: LoopRequirement | None = None
     parallelism: int = Field(default=1, ge=1)
 
     @model_validator(mode="after")
@@ -101,6 +126,15 @@ class StageIntent(BaseModel):
             raise ValueError(
                 f"Stage '{self.name}' has stage_type 'conditional' "
                 "but no 'conditional' field — ConditionalRequirement is required"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _loop_requires_loop_config(self) -> StageIntent:
+        if self.stage_type == StageType.loop and self.loop is None:
+            raise ValueError(
+                f"Stage '{self.name}' has stage_type 'loop' "
+                "but no 'loop' field — LoopRequirement is required"
             )
         return self
 

@@ -13,7 +13,6 @@ compilation directly and fall back to LLM codegen only if compilation fails.
 from __future__ import annotations
 
 import ast
-import json
 import logging
 import re
 import tokenize
@@ -248,12 +247,6 @@ def _normalize_review_condition(
     return normalized
 
 
-def _placeholder_code(description: str) -> str:
-    """Create valid Python placeholder code for code-execution stages."""
-    payload = {"status": "placeholder", "task": description}
-    return f"result = {json.dumps(payload)}"
-
-
 # ---------------------------------------------------------------------------
 # Coverage catalog
 # ---------------------------------------------------------------------------
@@ -399,6 +392,23 @@ class DirectBuildError(Exception):
         self.underlying = underlying
 
 
+class MissingCodeStageError(DirectBuildError):
+    """Raised when a code-execution stage lacks runnable code."""
+
+    def __init__(self, stage_name: str, description: str = "") -> None:
+        detail = (
+            f"Code stage '{stage_name}' has no runnable code. "
+            "Deterministic intent compilation must fall back to real workflow code generation."
+        )
+        if description:
+            detail = f"{detail} Stage description: {description[:200]}"
+        super().__init__(
+            detail,
+            stage_name=stage_name,
+            stage_type=StageType.code_execution.value,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Intent compiler
 # ---------------------------------------------------------------------------
@@ -456,6 +466,7 @@ class IntentCompiler:
             StageType.code_execution: self._compile_code_execution,
             StageType.human_approval: self._compile_human_approval,
             StageType.conditional: self._compile_conditional,
+            StageType.loop: self._compile_loop,
         }
         return dispatch[stage.stage_type](stage, intent)
 
@@ -499,10 +510,24 @@ class IntentCompiler:
         proc_id = f"{stage.name}_proc"
         proc_var = _var_name(proc_id)
         proc_prompt = _escape(stage.description or f"Process item for: {stage.name}")
+        body_code = str(stage.config.get("body_code") or "").strip()
+        body_input_ports = stage.config.get("body_input_ports")
+        body_output_ports = stage.config.get("body_output_ports")
+
+        if body_code:
+            body_args = [f'code="{_escape(body_code)}"']
+            if body_input_ports is None:
+                body_input_ports = [{"name": "item"}, {"name": "index"}]
+            body_args.append(f"input_ports={repr(body_input_ports)}")
+            if body_output_ports is not None:
+                body_args.append(f"output_ports={repr(body_output_ports)}")
+            body_line = f'    {proc_var} = body.code("{proc_id}", {", ".join(body_args)})'
+        else:
+            body_line = f'    {proc_var} = body.llm("{proc_id}", prompt="{proc_prompt}")'
 
         lines = [
             f'with wf.for_each("{stage.name}", parallelism={parallelism}) as body:',
-            f'    {proc_var} = body.llm("{proc_id}", prompt="{proc_prompt}")',
+            body_line,
             f'{var} = NodeRef("{stage.name}", "for_each", wf)',
         ]
         return var, var, lines
@@ -545,16 +570,16 @@ class IntentCompiler:
         self, stage: StageIntent, intent: WorkflowIntent
     ) -> tuple[str, str, list[str]]:
         var = _var_name(stage.name)
-        code = stage.config.get("code")
+        code = str(stage.config.get("code") or "").strip()
         if not code:
-            desc = stage.description or stage.name
-            logger.warning(
-                "Auto-generating placeholder code for stage '%s'",
-                stage.name,
-            )
-            code = _placeholder_code(desc)
+            raise MissingCodeStageError(stage.name, stage.description or stage.name)
         escaped_code = _escape(code)
-        lines = [f'{var} = wf.code("{stage.name}", code="{escaped_code}")']
+        args = [f'code="{escaped_code}"']
+        if stage.config.get("input_ports") is not None:
+            args.append(f"input_ports={repr(stage.config['input_ports'])}")
+        if stage.config.get("output_ports") is not None:
+            args.append(f"output_ports={repr(stage.config['output_ports'])}")
+        lines = [f'{var} = wf.code("{stage.name}", {", ".join(args)})']
         return var, var, lines
 
     def _compile_human_approval(
@@ -587,6 +612,38 @@ class IntentCompiler:
         # to wire ``exit_var >> next_entry_var``.  We return a special
         # marker so compile() can wire both branches to the next stage.
         return gate_var, f"__both__:{then_var}:{else_var}", lines
+
+    def _compile_loop(
+        self, stage: StageIntent, intent: WorkflowIntent
+    ) -> tuple[str, str, list[str]]:
+        assert stage.loop is not None
+        init_var = _var_name(f"{stage.name}_init")
+        body_var = _var_name(f"{stage.name}_body")
+        gate_var = _var_name(f"{stage.name}_gate")
+        result_var = _var_name(f"{stage.name}_result")
+        condition = _escape(stage.loop.condition)
+        init_code = _escape(stage.loop.init_code)
+        body_code = _escape(stage.loop.body_code)
+        result_code = _escape(stage.loop.result_code)
+        state_schema = repr(stage.loop.state_schema)
+        state_defaults = repr(stage.loop.state_defaults)
+        lines = [
+            f'{init_var} = wf.code("{stage.name}_init", code="{init_code}", output_ports=[{{"name": "counter"}}])',
+            f'{body_var} = wf.code("{stage.name}_body", code="{body_code}", input_ports=[{{"name": "counter", "required": False}}], output_ports=[{{"name": "counter"}}])',
+            (
+                f'{gate_var} = wf.gate("{stage.name}_gate", condition="{condition}", '
+                f'gate_mode="while", max_iterations={stage.loop.max_iterations}, '
+                f'state_schema={state_schema}, state_defaults={state_defaults}, '
+                'input_ports=[{"name": "counter"}], '
+                'output_ports=[{"name": "continue"}, {"name": "done"}])'
+            ),
+            f'{result_var} = wf.code("{stage.name}_result", code="{result_code}", input_ports=[{{"name": "data", "required": False}}], output_ports=[{{"name": "result"}}])',
+            f'wf.edge({init_var}["counter"], {body_var}["counter"])',
+            f'wf.edge({body_var}["counter"], {gate_var}["counter"])',
+            f'wf.edge({gate_var}["continue"], {body_var}["counter"])',
+            f'wf.edge({gate_var}["done"], {result_var}["data"])',
+        ]
+        return init_var, result_var, lines
 
     # -- direct in-process graph construction (plan 32-7) --------------------
 
@@ -662,6 +719,7 @@ class IntentCompiler:
             StageType.code_execution: self._build_code_execution,
             StageType.human_approval: self._build_human_approval,
             StageType.conditional: self._build_conditional,
+            StageType.loop: self._build_loop,
         }
         handler = dispatch.get(stage.stage_type)
         if handler is None:
@@ -700,8 +758,22 @@ class IntentCompiler:
 
         parallelism = max(stage.parallelism, 1)
         proc_prompt = stage.description or f"Process item for: {stage.name}"
+        body_code = str(stage.config.get("body_code") or "").strip()
+        body_input_ports = stage.config.get("body_input_ports")
+        body_output_ports = stage.config.get("body_output_ports")
         with wf.for_each(stage.name, parallelism=parallelism) as body:
-            body.llm(f"{stage.name}_proc", prompt=proc_prompt)
+            if body_code:
+                if body_input_ports is None:
+                    body_input_ports = [{"name": "item"}, {"name": "index"}]
+                body_kwargs: dict[str, Any] = {
+                    "code": body_code,
+                    "input_ports": body_input_ports,
+                }
+                if body_output_ports is not None:
+                    body_kwargs["output_ports"] = body_output_ports
+                body.code(f"{stage.name}_proc", **body_kwargs)
+            else:
+                body.llm(f"{stage.name}_proc", prompt=proc_prompt)
         ref = NR(stage.name, "for_each", wf)
         return ref, ref
 
@@ -737,15 +809,15 @@ class IntentCompiler:
     def _build_code_execution(
         self, stage: StageIntent, wf: Any,
     ) -> tuple[NodeRef, NodeRef]:
-        code = stage.config.get("code")
+        code = str(stage.config.get("code") or "").strip()
         if not code:
-            desc = stage.description or stage.name
-            logger.warning(
-                "Auto-generating placeholder code for stage '%s'",
-                stage.name,
-            )
-            code = _placeholder_code(desc)
-        ref = wf.code(stage.name, code=code)
+            raise MissingCodeStageError(stage.name, stage.description or stage.name)
+        kwargs: dict[str, Any] = {"code": code}
+        if stage.config.get("input_ports") is not None:
+            kwargs["input_ports"] = stage.config["input_ports"]
+        if stage.config.get("output_ports") is not None:
+            kwargs["output_ports"] = stage.config["output_ports"]
+        ref = wf.code(stage.name, **kwargs)
         return ref, ref
 
     def _build_human_approval(
@@ -775,6 +847,43 @@ class IntentCompiler:
             name=stage.name,
         )
         return gate_ref, (then_ref, else_ref)
+
+    def _build_loop(
+        self, stage: StageIntent, wf: Any,
+    ) -> tuple[NodeRef, NodeRef]:
+        assert stage.loop is not None
+        init_ref = wf.code(
+            f"{stage.name}_init",
+            code=stage.loop.init_code,
+            output_ports=[{"name": "counter"}],
+        )
+        body_ref = wf.code(
+            f"{stage.name}_body",
+            code=stage.loop.body_code,
+            input_ports=[{"name": "counter", "required": False}],
+            output_ports=[{"name": "counter"}],
+        )
+        gate_ref = wf.gate(
+            f"{stage.name}_gate",
+            condition=stage.loop.condition,
+            gate_mode="while",
+            max_iterations=stage.loop.max_iterations,
+            state_schema=stage.loop.state_schema,
+            state_defaults=stage.loop.state_defaults,
+            input_ports=[{"name": "counter"}],
+            output_ports=[{"name": "continue"}, {"name": "done"}],
+        )
+        result_ref = wf.code(
+            f"{stage.name}_result",
+            code=stage.loop.result_code,
+            input_ports=[{"name": "data", "required": False}],
+            output_ports=[{"name": "result"}],
+        )
+        wf.edge(init_ref["counter"], body_ref["counter"])
+        wf.edge(body_ref["counter"], gate_ref["counter"])
+        wf.edge(gate_ref["continue"], body_ref["counter"])
+        wf.edge(gate_ref["done"], result_ref["data"])
+        return init_ref, result_ref
 
     # -- composed direct build (plan 32-7) ------------------------------------
 

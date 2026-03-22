@@ -16,6 +16,10 @@ from enum import IntEnum
 from typing import Any, Awaitable, Callable, Literal
 
 from pydantic import BaseModel, Field
+from dan.workflow_generation_guidance import (
+    render_workflow_generation_contract,
+    workflow_generation_contract_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -332,7 +336,7 @@ class ParameterRepairGenerator:
 class StructuralRepairPlanner:
     """LLM-driven structural repair: analyses graph topology and proposes mutations."""
 
-    _SYSTEM_PROMPT = (
+    _BASE_SYSTEM_PROMPT = (
         "You are a workflow repair engineer. Given a principle about what went wrong "
         "and the current graph structure, produce a MutationPlan (JSON) to fix the issue.\n"
         "Output a JSON object with \"operations\" (list of mutation ops) and \"description\" (string).\n"
@@ -342,9 +346,19 @@ class StructuralRepairPlanner:
         "  edit_node: {\"op\": \"edit_node\", \"node_id\": \"...\", \"updates\": {...}}\n"
         "  add_edge: {\"op\": \"add_edge\", \"edge_type\": \"data\", \"source_id\": \"...\", "
         "\"source_port\": \"output\", \"target_id\": \"...\", \"target_port\": \"input\"}\n"
-        "  remove_edge: {\"op\": \"remove_edge\", \"edge_id\": \"...\"}\n"
-        "Output ONLY valid JSON."
+        "  remove_edge: {\"op\": \"remove_edge\", \"source_id\": \"...\", "
+        "\"source_port\": \"...\", \"target_id\": \"...\", \"target_port\": \"...\"}\n"
     )
+
+    @classmethod
+    def _system_prompt(cls) -> str:
+        prompt = cls._BASE_SYSTEM_PROMPT
+        if workflow_generation_contract_enabled():
+            prompt = (
+                f"{prompt}"
+                f"{render_workflow_generation_contract('repair', tools_available=False)}\n"
+            )
+        return f"{prompt}Output ONLY valid JSON."
 
     def __init__(
         self,
@@ -371,7 +385,7 @@ class StructuralRepairPlanner:
 
         for _attempt in range(self._max_retries + 1):
             raw = await self._llm_call(
-                self._SYSTEM_PROMPT, user_prompt, self._model, 0.3,
+                self._system_prompt(), user_prompt, self._model, 0.3,
             )
             plan = self._parse_mutation_plan(raw)
             if plan is None:

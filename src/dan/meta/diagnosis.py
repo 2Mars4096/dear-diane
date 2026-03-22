@@ -20,6 +20,10 @@ from pydantic import BaseModel, Field
 
 from dan.executors.code import _ALLOWED_BUILTINS
 from dan.sandbox import SandboxResult
+from dan.workflow_generation_guidance import (
+    render_workflow_generation_contract,
+    workflow_generation_contract_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -888,9 +892,17 @@ class DiagnosisLoop:
                     max_attempts=self.max_attempts,
                 )
                 try:
-                    new_code = await llm_complete(
+                    system_prompt = (
                         "Fix the following builder code error. "
-                        "Return ONLY the corrected Python code.",
+                        "Return ONLY the corrected Python code."
+                    )
+                    if workflow_generation_contract_enabled():
+                        system_prompt = (
+                            f"{system_prompt}\n\n"
+                            f"{render_workflow_generation_contract('codegen', tools_available=False)}"
+                        )
+                    new_code = await llm_complete(
+                        system_prompt,
                         prompt,
                     )
                     if new_code and new_code.strip():

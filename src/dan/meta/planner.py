@@ -26,6 +26,10 @@ from dan.meta.workflow_contract import (
     WorkflowBuildContractReport,
     validate_workflow_build_contract,
 )
+from dan.workflow_generation_guidance import (
+    render_workflow_generation_contract,
+    workflow_generation_contract_enabled,
+)
 
 if TYPE_CHECKING:
     from dan.meta.diagnosis import DiagnosisResult, GenerationError
@@ -369,15 +373,22 @@ Output:
 Goal: "Build a RAG QA system for internal docs"
 Similar workflows: none
 Output:
-{"action": "GENERATE", "description": "RAG-based question answering pipeline", "spec": {"nodes": [{"node_type": "tool_operator", "name": "doc_indexer", "config": {"tool_id": "index_documents"}}, {"node_type": "llm_operator", "name": "retriever", "config": {"system_prompt": "Retrieve relevant passages for the question"}}, {"node_type": "llm_operator", "name": "answerer", "config": {"system_prompt": "Answer the question using retrieved passages"}}], "edges": [{"source": "doc_indexer", "target": "retriever"}, {"source": "retriever", "target": "answerer"}]}}
+{"action": "GENERATE", "description": "RAG-based question answering pipeline", "spec": {"nodes": [{"node_type": "tool_operator", "name": "load_docs", "config": {"tool_id": "file_read"}}, {"node_type": "llm_operator", "name": "retriever", "config": {"system_prompt": "Retrieve relevant passages for the question"}}, {"node_type": "llm_operator", "name": "answerer", "config": {"system_prompt": "Answer the question using retrieved passages"}}], "edges": [{"source": "load_docs", "target": "retriever"}, {"source": "retriever", "target": "answerer"}]}}
 
 Output ONLY a single valid JSON object. No markdown, no explanation."""
 
     def build_system_prompt(self) -> str:
         """Return the base planning system prompt."""
-        return self.SYSTEM_TEMPLATE.replace(
+        system_prompt = self.SYSTEM_TEMPLATE.replace(
             "__GENERATE_SPEC_NODE_TYPES__",
             _GENERATE_SPEC_NODE_TYPES_LITERAL,
+        )
+        if not workflow_generation_contract_enabled():
+            return system_prompt
+        return (
+            f"{system_prompt}\n\n"
+            f"{render_workflow_generation_contract('build', tools_available=False)}\n\n"
+            f"{render_workflow_generation_contract('mutate', tools_available=False)}"
         )
 
     def build_user_prompt(
@@ -857,10 +868,16 @@ graph = wf.build()
 
     def build_system_prompt(self, *, domain_context: str = "") -> str:
         """Return the system prompt that teaches the builder DSL."""
-        return (
+        system_prompt = (
             self._SYSTEM_PROMPT
             .replace("__AVAILABLE_TOOLS__", render_tool_catalog_markdown())
             .replace("__DOMAIN_CONTEXT__", domain_context)
+        )
+        if not workflow_generation_contract_enabled():
+            return system_prompt
+        return (
+            f"{system_prompt}\n\n"
+            f"{render_workflow_generation_contract('codegen', tools_available=False)}"
         )
 
     def build_few_shot_examples(self) -> str:

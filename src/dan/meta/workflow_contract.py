@@ -24,6 +24,10 @@ IssueCategory = Literal[
 IssueSeverity = Literal["repairable", "fatal"]
 
 _WARNING_KEYWORDS = ("warning", "deprecated", "untyped")
+_PLACEHOLDER_CODE_RE = re.compile(
+    r"result\s*=\s*\{[^{}]{0,500}[\"']status[\"']\s*:\s*[\"']placeholder[\"']",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 @dataclass(frozen=True)
@@ -274,6 +278,17 @@ def _check_run_readiness(graph: Graph) -> list[str]:
     if not graph.nodes:
         issues.append("Workflow has no nodes, so it is not run-ready.")
         return issues
+    for node in graph.nodes:
+        if getattr(node, "node_type", "") != "code_operator":
+            continue
+        code = str(getattr(node, "code", "") or "")
+        if not code.strip():
+            issues.append(f"Code node '{node.id}' has empty code, so it is not run-ready.")
+            continue
+        if _PLACEHOLDER_CODE_RE.search(code):
+            issues.append(
+                f"Code node '{node.id}' contains placeholder status payload code instead of runnable logic."
+            )
     if not graph.entry_points:
         issues.append("Workflow has no entry points, so it is not run-ready.")
     if not graph.exit_points:
