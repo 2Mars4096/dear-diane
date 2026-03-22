@@ -65,6 +65,8 @@ class GraphSummary(BaseModel):
 class ValidationResult(BaseModel):
     passed: bool = False
     errors: list[str] = []
+    run_ready: bool = True
+    run_readiness_issues: list[str] = []
 
 
 class ExecutionResult(BaseModel):
@@ -111,6 +113,12 @@ class EvalRecord(BaseModel):
     response_text: str = ""
     multi_turn_history: list[dict[str, Any]] = []
     execution_path_requested: str | None = None  # inline|codegen|auto (plan 32-7)
+    workflow_contract_variant: str | None = None  # enabled|disabled
+    audit_turn_id: str | None = None
+    audit_found: bool = False
+    prompt_module_ids: list[str] = []
+    workflow_guidance_injected: bool = False
+    workflow_guidance_surface: str = ""
 
 
 # ---------------------------------------------------------------------------

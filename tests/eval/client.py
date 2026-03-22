@@ -65,6 +65,7 @@ class DanClient:
         history: list[dict] | None = None,
         client_graph_revision: str | None = None,
         thread_id: str | None = None,
+        surface_context: dict[str, Any] | None = None,
     ) -> dict:
         body: dict[str, Any] = {
             "workflow_id": workflow_id,
@@ -73,6 +74,7 @@ class DanClient:
             "history": history or [],
             "client_graph_revision": client_graph_revision,
             "thread_id": thread_id,
+            "surface_context": surface_context or {},
         }
         resp = await self._get_http().post("/api/chat/message", json=body)
         resp.raise_for_status()

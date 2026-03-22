@@ -6,10 +6,13 @@ Usage:
     python -m tests.eval --tier T1 --tier T2      # Run T1 and T2
     python -m tests.eval --pilot                  # Run pilot subset (~10 prompts)
     python -m tests.eval --complex                # Run complex battery (T4 + multi-turn m1/m2/m3)
+    python -m tests.eval --smoke-workflows        # Run small live workflow smoke battery
+    python -m tests.eval --prompts-file tests/eval/workflow_contract_comparison_prompts.json --workflow-contract compare
     python -m tests.eval --prompt "Build a chain" # Single ad-hoc prompt
     python -m tests.eval --report results/X.jsonl # Regenerate report from JSONL
     python -m tests.eval --execute                # Enable execution testing
     python -m tests.eval --lane agent             # agent | build | both
+    python -m tests.eval --workflow-contract compare  # baseline vs treatment on the same live server
     python -m tests.eval --execution-path inline  # inline | codegen | auto (plan 32-7)
 
 See docs/eval-run-guide.md for full run commands.
@@ -28,6 +31,8 @@ from tests.eval.durability_checks import run_durability_suite
 from tests.eval.metrics import EvalLogger
 from tests.eval.report import ReportGenerator
 from tests.eval.runner import EvalRunner, load_prompts
+
+SMOKE_PROMPTS_FILE = Path(__file__).parent / "workflow_smoke_prompts.json"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -50,6 +55,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--complex",
         action="store_true",
         help="Run complex battery only (T4 + multi-turn m1/m2/m3).",
+    )
+    parser.add_argument(
+        "--smoke-workflows",
+        action="store_true",
+        help="Run the small workflow smoke battery intended for provider-backed live checks.",
+    )
+    parser.add_argument(
+        "--prompts-file",
+        type=str,
+        metavar="PATH",
+        help="Load prompts from a specific JSON file instead of tests/eval/prompts.json.",
     )
     parser.add_argument(
         "--prompt",
@@ -80,6 +96,13 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["agent", "build", "both"],
         default="both",
         help="Evaluation lane (default: both).",
+    )
+    parser.add_argument(
+        "--workflow-contract",
+        type=str,
+        choices=["enabled", "disabled", "compare", "both"],
+        default="enabled",
+        help="Request-scoped workflow-generation contract variant (default: enabled).",
     )
     parser.add_argument(
         "--execution-path",
@@ -159,7 +182,11 @@ def main() -> None:
     if args.prompt:
         prompts = [PromptFixture(id="adhoc", tier="adhoc", prompt=args.prompt)]
     else:
+        prompts_path = Path(args.prompts_file) if args.prompts_file else None
+        if args.smoke_workflows:
+            prompts_path = SMOKE_PROMPTS_FILE
         prompts = load_prompts(
+            path=prompts_path,
             tier=args.tier,
             pilot_only=args.pilot,
             complex_only=getattr(args, "complex", False),
@@ -240,6 +267,7 @@ async def _run(
         delay=args.delay,
         execution_path=getattr(args, "execution_path", "auto"),
         judge=getattr(args, "judge", False),
+        workflow_contract=getattr(args, "workflow_contract", "enabled"),
     )
     all_records: list = []
     for run_idx in range(args.runs):

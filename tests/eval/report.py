@@ -86,6 +86,10 @@ class ReportGenerator:
             "top_quality_concerns": self._top_quality_concerns(recs),
             "guard_check_summary": self._guard_check_summary(recs),
             "telemetry_completeness": self._telemetry_completeness(recs),
+            "workflow_contract_variants": self._workflow_contract_variants(recs),
+            "workflow_guidance_summary": self._workflow_guidance_summary(recs),
+            "workflow_guidance_correlation": self._workflow_guidance_correlation(recs),
+            "workflow_success_metrics": self._workflow_success_metrics(recs),
             "domain_profiles": self._domain_profiles(recs),
             "coverage_32_6": self._coverage_32_6(recs),
             "smart_defaults": self._smart_defaults(recs),
@@ -157,6 +161,170 @@ class ReportGenerator:
             "with_timing": with_timing,
             "with_telemetry": with_telemetry,
             "tokens_complete_rate": with_tokens / len(recs) if recs else 0.0,
+        }
+
+    @staticmethod
+    def _workflow_contract_variants(recs: list[EvalRecord]) -> dict[str, Any]:
+        by_variant: dict[str, dict[str, Any]] = {}
+        for r in recs:
+            variant = r.workflow_contract_variant or "unspecified"
+            bucket = by_variant.setdefault(
+                variant,
+                {
+                    "total": 0,
+                    "passed": 0,
+                    "failed": 0,
+                    "error": 0,
+                    "with_audit": 0,
+                    "with_guidance": 0,
+                },
+            )
+            bucket["total"] += 1
+            if r.status == "passed":
+                bucket["passed"] += 1
+            elif r.status == "failed":
+                bucket["failed"] += 1
+            else:
+                bucket["error"] += 1
+            if r.audit_found:
+                bucket["with_audit"] += 1
+            if r.workflow_guidance_injected:
+                bucket["with_guidance"] += 1
+        for bucket in by_variant.values():
+            total = bucket["total"] or 0
+            bucket["pass_rate"] = bucket["passed"] / total if total else 0.0
+            bucket["audit_found_rate"] = bucket["with_audit"] / total if total else 0.0
+            bucket["guidance_injection_rate"] = bucket["with_guidance"] / total if total else 0.0
+        return by_variant
+
+    @staticmethod
+    def _workflow_guidance_summary(recs: list[EvalRecord]) -> dict[str, Any]:
+        audited = [r for r in recs if r.audit_found]
+        injected = [r for r in audited if r.workflow_guidance_injected]
+        by_surface: dict[str, int] = {}
+        for r in injected:
+            surface = r.workflow_guidance_surface or "unknown"
+            by_surface[surface] = by_surface.get(surface, 0) + 1
+        return {
+            "total": len(recs),
+            "with_audit": len(audited),
+            "with_guidance": len(injected),
+            "audit_found_rate": len(audited) / len(recs) if recs else 0.0,
+            "guidance_injection_rate": len(injected) / len(audited) if audited else 0.0,
+            "by_surface": by_surface,
+        }
+
+    @staticmethod
+    def _workflow_guidance_correlation(recs: list[EvalRecord]) -> dict[str, Any]:
+        audited = [r for r in recs if r.audit_found]
+
+        def _bucket(rows: list[EvalRecord]) -> dict[str, Any]:
+            total = len(rows)
+            passed = sum(1 for r in rows if r.status == "passed")
+            run_ready = sum(
+                1
+                for r in rows
+                if r.validation is not None and bool(r.validation.run_ready)
+            )
+            return {
+                "total": total,
+                "passed": passed,
+                "pass_rate": passed / total if total else 0.0,
+                "run_ready": run_ready,
+                "run_ready_rate": run_ready / total if total else 0.0,
+            }
+
+        injected = [r for r in audited if r.workflow_guidance_injected]
+        not_injected = [r for r in audited if not r.workflow_guidance_injected]
+        return {
+            "audited_total": len(audited),
+            "injected": _bucket(injected),
+            "not_injected": _bucket(not_injected),
+        }
+
+    @staticmethod
+    def _workflow_success_metrics(recs: list[EvalRecord]) -> dict[str, Any]:
+        from collections import Counter
+
+        validated = [r for r in recs if r.graph_created and r.validation is not None]
+        structural_valid = sum(
+            1 for r in validated
+            if r.validation is not None and bool(r.validation.passed)
+        )
+        run_ready = sum(
+            1 for r in validated
+            if r.validation is not None and bool(r.validation.run_ready)
+        )
+
+        repair_turns = [
+            r for r in recs
+            if (r.workflow_guidance_surface == "repair")
+            or _looks_like_repair_turn(r.prompt)
+        ]
+        repair_sequences = {
+            _base_record_id(r.id)
+            for r in repair_turns
+        }
+
+        mechanical_counts = Counter(
+            r.failure_mode
+            for r in recs
+            if r.failure_mode in {
+                "validation_error",
+                "not_run_ready",
+                "expectation_mismatch",
+                "codegen_failed",
+            }
+        )
+        repeated_mechanical = {
+            mode: count
+            for mode, count in mechanical_counts.items()
+            if count > 1
+        }
+
+        over_claims = [
+            r for r in recs
+            if _claims_run_ready(r.response_text)
+            and (
+                r.validation is None
+                or not bool(r.validation.run_ready)
+                or r.status != "passed"
+            )
+        ]
+
+        leakage_candidates = [
+            r for r in recs
+            if r.audit_found and _looks_like_non_workflow_turn(r)
+        ]
+        leakage_hits = sum(
+            1 for r in leakage_candidates
+            if r.workflow_guidance_injected
+        )
+
+        return {
+            "validated_total": len(validated),
+            "structural_validity_rate": (
+                structural_valid / len(validated) if validated else 0.0
+            ),
+            "run_ready_rate": (
+                run_ready / len(validated) if validated else 0.0
+            ),
+            "repair_turns_total": len(repair_turns),
+            "repair_sequences": len(repair_sequences),
+            "avg_repair_turns_per_sequence": (
+                len(repair_turns) / len(repair_sequences)
+                if repair_sequences else 0.0
+            ),
+            "repeated_mechanical_mistakes": repeated_mechanical,
+            "top_mechanical_failure_modes": mechanical_counts.most_common(5),
+            "false_confidence_count": len(over_claims),
+            "false_confidence_rate": len(over_claims) / len(recs) if recs else 0.0,
+            "workflow_guidance_leakage_candidates": len(leakage_candidates),
+            "workflow_guidance_leakage_count": leakage_hits,
+            "workflow_guidance_leakage_rate": (
+                leakage_hits / len(leakage_candidates)
+                if leakage_candidates else 0.0
+            ),
         }
 
     @staticmethod
@@ -690,6 +858,51 @@ def _pct(val: float) -> str:
     return f"{val * 100:.1f}%"
 
 
+def _base_record_id(record_id: str) -> str:
+    return record_id.split("-follow")[0] if "-follow" in record_id else record_id
+
+
+def _looks_like_repair_turn(prompt: str) -> bool:
+    lower = (prompt or "").lower()
+    return any(
+        token in lower
+        for token in (
+            "repair",
+            "fix the workflow",
+            "fix it so",
+            "make it runnable",
+            "keep the external behavior the same",
+        )
+    )
+
+
+def _claims_run_ready(text: str) -> bool:
+    lower = (text or "").lower()
+    return any(
+        token in lower
+        for token in (
+            "run-ready",
+            "ready to run",
+            "runnable",
+            "successfully ran",
+            "successfully run",
+            "known to run",
+            "it can run",
+        )
+    )
+
+
+def _looks_like_non_workflow_turn(record: EvalRecord) -> bool:
+    from dan.workflow_generation_guidance import infer_workflow_generation_surface
+
+    return infer_workflow_generation_surface(
+        mode=record.lane or "agent",
+        user_message=record.prompt or "",
+        allow_mutation_tool=(record.lane == "build"),
+        graph_is_empty=(record.lane == "build"),
+    ) is None
+
+
 def _print_rich(s: dict[str, Any]) -> None:
     console = Console()
 
@@ -836,6 +1049,80 @@ def _print_rich(s: dict[str, Any]) -> None:
             f"With cost: {tc['with_cost']}/{tc['total']}  |  "
             f"Tokens complete rate: {_pct(tc['tokens_complete_rate'])}"
         )
+        console.print()
+
+    # 6d — Workflow contract compare / audit
+    wcv = s.get("workflow_contract_variants", {})
+    if wcv:
+        console.rule("[bold]Workflow Contract Variants[/bold]")
+        vc_tbl = Table(show_lines=True)
+        vc_tbl.add_column("Variant", justify="left")
+        vc_tbl.add_column("Total", justify="right")
+        vc_tbl.add_column("Passed", justify="right")
+        vc_tbl.add_column("Rate", justify="right")
+        vc_tbl.add_column("Audit", justify="right")
+        vc_tbl.add_column("Guidance", justify="right")
+        for variant, stats in sorted(wcv.items()):
+            vc_tbl.add_row(
+                variant,
+                str(stats["total"]),
+                str(stats["passed"]),
+                _pct(stats["pass_rate"]),
+                _pct(stats["audit_found_rate"]),
+                _pct(stats["guidance_injection_rate"]),
+            )
+        console.print(vc_tbl)
+        console.print()
+
+    wgs = s.get("workflow_guidance_summary", {})
+    if wgs.get("with_audit", 0) > 0:
+        console.rule("[bold]Workflow Guidance Audit[/bold]")
+        console.print(
+            f"  Audited turns: {wgs['with_audit']}/{wgs['total']}  |  "
+            f"Guidance injected: {wgs['with_guidance']}  |  "
+            f"Injection rate: {_pct(wgs['guidance_injection_rate'])}"
+        )
+        if wgs.get("by_surface"):
+            surfaces = ", ".join(
+                f"{surface}={count}"
+                for surface, count in sorted(wgs["by_surface"].items())
+            )
+            console.print(f"  Surfaces: {surfaces}")
+        wgc = s.get("workflow_guidance_correlation", {})
+        injected = wgc.get("injected", {})
+        not_injected = wgc.get("not_injected", {})
+        console.print(
+            f"  Pass rate injected/not: {_pct(injected.get('pass_rate', 0.0))} / "
+            f"{_pct(not_injected.get('pass_rate', 0.0))}"
+        )
+        console.print(
+            f"  Run-ready injected/not: {_pct(injected.get('run_ready_rate', 0.0))} / "
+            f"{_pct(not_injected.get('run_ready_rate', 0.0))}"
+        )
+        console.print()
+
+    wsm = s.get("workflow_success_metrics", {})
+    if wsm.get("validated_total", 0) > 0 or wsm.get("repair_turns_total", 0) > 0:
+        console.rule("[bold]Workflow Success Metrics[/bold]")
+        console.print(
+            f"  Structural validity: {_pct(wsm.get('structural_validity_rate', 0.0))}  |  "
+            f"Run-ready: {_pct(wsm.get('run_ready_rate', 0.0))}"
+        )
+        console.print(
+            f"  Repair turns: {wsm.get('repair_turns_total', 0)} across "
+            f"{wsm.get('repair_sequences', 0)} sequences  |  "
+            f"Avg per sequence: {wsm.get('avg_repair_turns_per_sequence', 0.0):.2f}"
+        )
+        console.print(
+            f"  False-confidence: {wsm.get('false_confidence_count', 0)}  |  "
+            f"Leakage: {_pct(wsm.get('workflow_guidance_leakage_rate', 0.0))}"
+        )
+        top_mechanical = wsm.get("top_mechanical_failure_modes", [])
+        if top_mechanical:
+            console.print(
+                "  Top mechanical failures: "
+                + ", ".join(f"{mode}={count}" for mode, count in top_mechanical[:3])
+            )
         console.print()
 
     # 6d — Domain profiles (33-3 task 7)
@@ -1097,6 +1384,68 @@ def _print_plain(s: dict[str, Any]) -> None:
             f"  With tokens: {tc['with_tokens']}/{tc['total']}, "
             f"tokens complete rate: {_pct(tc['tokens_complete_rate'])}"
         )
+        print()
+
+    wcv = s.get("workflow_contract_variants", {})
+    if wcv:
+        print("--- Workflow Contract Variants ---")
+        for variant, stats in sorted(wcv.items()):
+            print(
+                f"  {variant}: {stats['total']} total, {stats['passed']} passed, "
+                f"rate={_pct(stats['pass_rate'])}, audit={_pct(stats['audit_found_rate'])}, "
+                f"guidance={_pct(stats['guidance_injection_rate'])}"
+            )
+        print()
+
+    wgs = s.get("workflow_guidance_summary", {})
+    if wgs.get("with_audit", 0) > 0:
+        print("--- Workflow Guidance Audit ---")
+        print(
+            f"  Audited turns: {wgs['with_audit']}/{wgs['total']}, "
+            f"guidance injected: {wgs['with_guidance']}, "
+            f"injection rate: {_pct(wgs['guidance_injection_rate'])}"
+        )
+        if wgs.get("by_surface"):
+            surfaces = ", ".join(
+                f"{surface}={count}"
+                for surface, count in sorted(wgs["by_surface"].items())
+            )
+            print(f"  Surfaces: {surfaces}")
+        wgc = s.get("workflow_guidance_correlation", {})
+        print(
+            f"  Pass rate injected/not: "
+            f"{_pct(wgc.get('injected', {}).get('pass_rate', 0.0))} / "
+            f"{_pct(wgc.get('not_injected', {}).get('pass_rate', 0.0))}"
+        )
+        print(
+            f"  Run-ready injected/not: "
+            f"{_pct(wgc.get('injected', {}).get('run_ready_rate', 0.0))} / "
+            f"{_pct(wgc.get('not_injected', {}).get('run_ready_rate', 0.0))}"
+        )
+        print()
+
+    wsm = s.get("workflow_success_metrics", {})
+    if wsm.get("validated_total", 0) > 0 or wsm.get("repair_turns_total", 0) > 0:
+        print("--- Workflow Success Metrics ---")
+        print(
+            f"  Structural validity: {_pct(wsm.get('structural_validity_rate', 0.0))}, "
+            f"run-ready: {_pct(wsm.get('run_ready_rate', 0.0))}"
+        )
+        print(
+            f"  Repair turns: {wsm.get('repair_turns_total', 0)} across "
+            f"{wsm.get('repair_sequences', 0)} sequences, "
+            f"avg per sequence: {wsm.get('avg_repair_turns_per_sequence', 0.0):.2f}"
+        )
+        print(
+            f"  False-confidence: {wsm.get('false_confidence_count', 0)}, "
+            f"leakage: {_pct(wsm.get('workflow_guidance_leakage_rate', 0.0))}"
+        )
+        top_mechanical = wsm.get("top_mechanical_failure_modes", [])
+        if top_mechanical:
+            print(
+                "  Top mechanical failures: "
+                + ", ".join(f"{mode}={count}" for mode, count in top_mechanical[:3])
+            )
         print()
 
     dp = s.get("domain_profiles", {})

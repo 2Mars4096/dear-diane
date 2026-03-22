@@ -28,6 +28,7 @@ from tests.eval import (
 from tests.eval.client import DanClient
 from tests.eval.metrics import EvalLogger
 from tests.eval.telemetry_reader import TelemetryReader
+from dan.server.audit import ChatAuditStore
 
 try:
     from dan.meta.graph_quality import compute_quality_report
@@ -99,19 +100,23 @@ class EvalRunner:
         self,
         base_url: str = "http://localhost:8080",
         db_path: str | None = None,
+        audit_dir: str | Path | None = None,
         execute: bool = False,
         keep_graphs: bool = False,
         delay: float = 2.0,
         execution_path: str = "auto",
         judge: bool = False,
+        workflow_contract: str = "enabled",
     ):
         self._client = DanClient(base_url)
         self._telemetry = TelemetryReader(db_path)
+        self._audit = ChatAuditStore(audit_dir)
         self._execute = execute
         self._keep_graphs = keep_graphs
         self._delay = delay
         self._execution_path = execution_path
         self._judge = judge
+        self._workflow_contract = workflow_contract
         self._created_graphs: list[str] = []
 
     # ------------------------------------------------------------------
@@ -130,9 +135,10 @@ class EvalRunner:
         all_records: list[EvalRecord] = []
 
         total_tasks = 0
+        contract_variants = _workflow_contract_variants(self._workflow_contract)
         for f in prompts:
             f_lanes = lanes if lanes is not None else _derive_lanes(f)
-            total_tasks += len(f_lanes)
+            total_tasks += len(f_lanes) * len(contract_variants)
 
         completed = 0
         passed = 0
@@ -167,25 +173,51 @@ class EvalRunner:
             fixture_lanes = lanes if lanes is not None else _derive_lanes(fixture)
 
             for lane in fixture_lanes:
-                try:
-                    if fixture.multi_turn_follow_ups:
-                        records = await self.run_multi_turn(fixture, lane, logger)
-                    else:
-                        records = [await self.run_single(fixture, lane, logger)]
-                except Exception as exc:
-                    log.error("[%s/%s] unhandled error: %s", fixture.id, lane, exc)
-                    records = [_error_record(fixture, lane, str(exc), execution_path_requested=self._execution_path)]
-                    logger.log(records[0])
+                for workflow_contract_variant in contract_variants:
+                    try:
+                        if fixture.multi_turn_follow_ups:
+                            records = await self.run_multi_turn(
+                                fixture,
+                                lane,
+                                logger,
+                                workflow_contract_variant=workflow_contract_variant,
+                            )
+                        else:
+                            records = [
+                                await self.run_single(
+                                    fixture,
+                                    lane,
+                                    logger,
+                                    workflow_contract_variant=workflow_contract_variant,
+                                )
+                            ]
+                    except Exception as exc:
+                        log.error("[%s/%s/%s] unhandled error: %s", fixture.id, lane, workflow_contract_variant, exc)
+                        records = [
+                            _error_record(
+                                fixture,
+                                lane,
+                                str(exc),
+                                execution_path_requested=self._execution_path,
+                                workflow_contract_variant=workflow_contract_variant,
+                            )
+                        ]
+                        logger.log(records[0])
 
-                _progress(fixture.id, lane, records)
+                    progress_label = (
+                        fixture.id
+                        if len(contract_variants) == 1
+                        else f"{fixture.id}:{workflow_contract_variant}"
+                    )
+                    _progress(progress_label, lane, records)
 
-                for rec in records:
-                    all_records.append(rec)
-                    if on_record:
-                        on_record(rec)
+                    for rec in records:
+                        all_records.append(rec)
+                        if on_record:
+                            on_record(rec)
 
-                if self._delay > 0:
-                    await asyncio.sleep(self._delay)
+                    if self._delay > 0:
+                        await asyncio.sleep(self._delay)
 
         elapsed_total = time.time() - _start_time
         print(
@@ -203,11 +235,13 @@ class EvalRunner:
         fixture: PromptFixture,
         lane: str,
         logger: EvalLogger,
+        *,
+        workflow_contract_variant: str = "enabled",
     ) -> EvalRecord:
         """Evaluate one prompt in one lane."""
-        graph_id = f"eval-{fixture.id}-{lane}-{uuid4().hex[:8]}"
+        graph_id = f"eval-{fixture.id}-{lane}-{workflow_contract_variant}-{uuid4().hex[:8]}"
         self._created_graphs.append(graph_id)
-        log.info("[%s/%s] starting", fixture.id, lane)
+        log.info("[%s/%s/%s] starting", fixture.id, lane, workflow_contract_variant)
 
         error_msg: str | None = None
         events: list[dict] = []
@@ -224,7 +258,10 @@ class EvalRunner:
         try:
             await self._client.create_graph(graph_id)
             resp = await self._client.send_message(
-                workflow_id=graph_id, message=fixture.prompt, mode=lane,
+                workflow_id=graph_id,
+                message=fixture.prompt,
+                mode=lane,
+                surface_context=_eval_surface_context(workflow_contract_variant),
             )
             channel_id = resp.get("stream_channel_id", "")
         except Exception as exc:
@@ -250,7 +287,12 @@ class EvalRunner:
                     log.info("[%s/%s] auto-replying to clarification: %s", fixture.id, lane, reply)
                     try:
                         resp2 = await self._client.send_message(
-                            workflow_id=graph_id, message=reply, mode=lane,
+                            workflow_id=graph_id,
+                            message=reply,
+                            mode=lane,
+                            surface_context=_eval_surface_context(
+                                workflow_contract_variant,
+                            ),
                         )
                         ch2 = resp2.get("stream_channel_id", "")
                         if ch2:
@@ -277,6 +319,8 @@ class EvalRunner:
         if complete_at is None:
             complete_at = time.time()
 
+        audit_turn_id = _extract_turn_id(events)
+        audit_data = await self._query_audit(audit_turn_id)
         graph_created, graph_summary, graph_dict = await self._inspect_graph(graph_id)
         validation = await self._validate(graph_id) if graph_created else None
 
@@ -301,7 +345,10 @@ class EvalRunner:
                 log.debug("judge scoring failed for %s: %s", graph_id, exc)
 
         if graph_created and graph_dict:
-            logger.log_graph(fixture.id, lane, graph_dict)
+            graph_record_id = fixture.id
+            if workflow_contract_variant != "enabled":
+                graph_record_id = f"{fixture.id}__contract-{workflow_contract_variant}"
+            logger.log_graph(graph_record_id, lane, graph_dict)
 
         execution: ExecutionResult | None = None
         run_tokens: TokenInfo | None = None
@@ -318,7 +365,10 @@ class EvalRunner:
             fixture, graph_created, validation, generation_path, events,
             total_time_ms=total_time_ms, response_text=response_text,
             graph_summary=graph_summary,
+            execution=execution,
         )
+        if not error_msg and execution and execution.status != "completed":
+            error_msg = execution.error
         if error_msg and status != "passed":
             failure_mode = failure_mode or ("timeout" if "timeout" in error_msg.lower() else "error")
 
@@ -365,6 +415,12 @@ class EvalRunner:
             guard_events=guard_events_list,
             telemetry=telemetry_data,
             execution_path_requested=self._execution_path,
+            workflow_contract_variant=workflow_contract_variant,
+            audit_turn_id=audit_turn_id,
+            audit_found=bool(audit_data),
+            prompt_module_ids=list((audit_data or {}).get("prompt_module_ids") or []),
+            workflow_guidance_injected=bool((audit_data or {}).get("workflow_guidance_injected", False)),
+            workflow_guidance_surface=str((audit_data or {}).get("workflow_guidance_surface") or ""),
         )
 
         log.info(
@@ -380,17 +436,26 @@ class EvalRunner:
         fixture: PromptFixture,
         lane: str,
         logger: EvalLogger,
+        *,
+        workflow_contract_variant: str = "enabled",
     ) -> list[EvalRecord]:
         """Evaluate a multi-turn prompt sequence. Returns one record per turn."""
-        graph_id = f"eval-{fixture.id}-{lane}-{uuid4().hex[:8]}"
+        graph_id = f"eval-{fixture.id}-{lane}-{workflow_contract_variant}-{uuid4().hex[:8]}"
         self._created_graphs.append(graph_id)
-        log.info("[%s/%s] starting multi-turn (%d turns)", fixture.id, lane,
+        log.info("[%s/%s/%s] starting multi-turn (%d turns)", fixture.id, lane, workflow_contract_variant,
                  1 + len(fixture.multi_turn_follow_ups or []))
 
         try:
             await self._client.create_graph(graph_id)
         except Exception as exc:
-            rec = _error_record(fixture, lane, str(exc), graph_id=graph_id, execution_path_requested=self._execution_path)
+            rec = _error_record(
+                fixture,
+                lane,
+                str(exc),
+                graph_id=graph_id,
+                execution_path_requested=self._execution_path,
+                workflow_contract_variant=workflow_contract_variant,
+            )
             logger.log(rec)
             return [rec]
 
@@ -411,6 +476,7 @@ class EvalRunner:
                     mode=lane,
                     history=history if turn_idx > 0 else None,
                     client_graph_revision=graph_revision,
+                    surface_context=_eval_surface_context(workflow_contract_variant),
                 )
                 channel_id = resp.get("stream_channel_id", "")
             except Exception as exc:
@@ -442,6 +508,8 @@ class EvalRunner:
             history.append({"role": "user", "content": message})
             history.append({"role": "assistant", "content": response_text})
 
+            audit_turn_id = _extract_turn_id(events)
+            audit_data = await self._query_audit(audit_turn_id)
             graph_created, graph_summary, graph_dict = await self._inspect_graph(graph_id)
             if graph_dict:
                 graph_revision = graph_dict.get("metadata", {}).get("updated_at") or graph_dict.get("version")
@@ -474,7 +542,10 @@ class EvalRunner:
                     )
 
             if graph_created and graph_dict:
-                logger.log_graph(turn_id, lane, graph_dict)
+                graph_record_id = turn_id
+                if workflow_contract_variant != "enabled":
+                    graph_record_id = f"{turn_id}__contract-{workflow_contract_variant}"
+                logger.log_graph(graph_record_id, lane, graph_dict)
 
             validation = await self._validate(graph_id) if graph_created else None
             tokens, model, telemetry_data = self._query_telemetry(prompt_sent_at, graph_id)
@@ -534,6 +605,12 @@ class EvalRunner:
                 multi_turn_history=list(history),
                 telemetry=telemetry_data,
                 execution_path_requested=self._execution_path,
+                workflow_contract_variant=workflow_contract_variant,
+                audit_turn_id=audit_turn_id,
+                audit_found=bool(audit_data),
+                prompt_module_ids=list((audit_data or {}).get("prompt_module_ids") or []),
+                workflow_guidance_injected=bool((audit_data or {}).get("workflow_guidance_injected", False)),
+                workflow_guidance_surface=str((audit_data or {}).get("workflow_guidance_surface") or ""),
             )
 
             log.info("[%s/turn%d/%s] %s", fixture.id, turn_idx, lane, status)
@@ -637,9 +714,23 @@ class EvalRunner:
                 for e in raw_errors
             ]
             passed = len(raw_errors) == 0
-            return ValidationResult(passed=passed, errors=errors)
+            return ValidationResult(
+                passed=passed,
+                errors=errors,
+                run_ready=bool(resp.get("run_ready", True)),
+                run_readiness_issues=[
+                    str(issue)
+                    for issue in (resp.get("run_readiness_issues") or [])
+                    if str(issue).strip()
+                ],
+            )
         except Exception:
-            return ValidationResult(passed=False, errors=["validation_request_failed"])
+            return ValidationResult(
+                passed=False,
+                errors=["validation_request_failed"],
+                run_ready=False,
+                run_readiness_issues=["validation_request_failed"],
+            )
 
     async def _try_execute(self, graph_id: str) -> ExecutionResult:
         started_at = time.time()
@@ -714,6 +805,25 @@ class EvalRunner:
             estimated_cost=turn.get("estimated_cost", 0.0),
         )
         return tokens, turn.get("model"), turn
+
+    async def _query_audit(self, turn_id: str | None) -> dict[str, object] | None:
+        if not turn_id:
+            return None
+        for attempt in range(3):
+            try:
+                record = self._audit.load_by_turn(turn_id)
+            except Exception:
+                log.debug("audit lookup failed for %s", turn_id, exc_info=True)
+                return None
+            if record is not None:
+                return {
+                    "prompt_module_ids": list(record.prompt_module_ids or []),
+                    "workflow_guidance_injected": bool(record.workflow_guidance_injected),
+                    "workflow_guidance_surface": str(record.workflow_guidance_surface or ""),
+                }
+            if attempt < 2:
+                await asyncio.sleep(0.05)
+        return None
 
 
 # ------------------------------------------------------------------
@@ -892,11 +1002,41 @@ def _extract_generation_summary(events: list[dict]) -> dict | None:
     )
 
 
+def _extract_turn_id(events: list[dict]) -> str | None:
+    for event in reversed(events):
+        message_id = str(event.get("message_id") or "").strip()
+        if message_id:
+            return message_id
+    return None
+
+
 def _derive_lanes(fixture: PromptFixture) -> list[str]:
     lane = fixture.lane
     if lane == "both":
         return ["agent", "build"]
     return [lane]
+
+
+def _workflow_contract_variants(setting: str | None) -> list[str]:
+    normalized = str(setting or "enabled").strip().lower()
+    if normalized in {"", "enabled", "true", "1", "on"}:
+        return ["enabled"]
+    if normalized in {"disabled", "false", "0", "off"}:
+        return ["disabled"]
+    if normalized in {"compare", "both"}:
+        return ["disabled", "enabled"]
+    raise ValueError(f"Unsupported workflow contract setting: {setting}")
+
+
+def _eval_surface_context(workflow_contract_variant: str) -> dict[str, bool]:
+    normalized = str(workflow_contract_variant or "enabled").strip().lower()
+    if normalized == "enabled":
+        return {"workflow_generation_contract_enabled": True}
+    if normalized == "disabled":
+        return {"workflow_generation_contract_enabled": False}
+    raise ValueError(
+        f"Unsupported workflow contract variant: {workflow_contract_variant}",
+    )
 
 
 def _expects_no_graph(fixture: PromptFixture) -> bool:
@@ -967,6 +1107,7 @@ def _determine_status(
     total_time_ms: float = 0.0,
     response_text: str = "",
     graph_summary: GraphSummary | None = None,
+    execution: ExecutionResult | None = None,
 ) -> tuple[str, str | None]:
     if fixture.edge_case:
         if _expects_no_graph(fixture):
@@ -987,6 +1128,16 @@ def _determine_status(
 
     if validation and not validation.passed:
         return "failed", "validation_error"
+
+    if validation and not validation.run_ready:
+        return "failed", "not_run_ready"
+
+    if execution and execution.status != "completed":
+        if execution.status == "timeout":
+            return "failed", "execution_timeout"
+        if execution.status == "error":
+            return "failed", "execution_error"
+        return "failed", "execution_failed"
 
     if validation and validation.passed:
         if _check_expectations(fixture, graph_summary):
@@ -1054,6 +1205,7 @@ def _error_record(
     *,
     graph_id: str | None = None,
     execution_path_requested: str | None = None,
+    workflow_contract_variant: str | None = None,
 ) -> EvalRecord:
     now = time.time()
     return EvalRecord(
@@ -1071,6 +1223,7 @@ def _error_record(
         failure_mode="error",
         error=error,
         execution_path_requested=execution_path_requested,
+        workflow_contract_variant=workflow_contract_variant,
     )
 
 

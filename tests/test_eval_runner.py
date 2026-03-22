@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
-from tests.eval import PromptFixture
+from tests.eval import ExecutionResult, PromptFixture, ValidationResult
+from tests.eval.metrics import EvalLogger
 from tests.eval.runner import (
     EvalRunner,
     _any_event_needs_clarification,
@@ -23,6 +26,159 @@ class _FakeClient:
         assert timeout == 120.0
         for event in self._events:
             yield event
+
+
+class _TrackingEvalClient:
+    def __init__(self, channel_events: dict[str, list[dict]]) -> None:
+        self._channel_events = channel_events
+        self.send_calls: list[dict] = []
+
+    async def create_graph(self, graph_id: str) -> dict:
+        return {"graph_id": graph_id}
+
+    async def send_message(self, workflow_id: str, message: str, **kwargs: object) -> dict:
+        channel_id = f"chat-test-{len(self.send_calls) + 1}"
+        self.send_calls.append(
+            {
+                "workflow_id": workflow_id,
+                "message": message,
+                **kwargs,
+            }
+        )
+        return {"stream_channel_id": channel_id}
+
+    async def stream_events(self, channel_id: str, *, timeout: float = 120.0):
+        assert timeout == 120.0
+        for event in self._channel_events[channel_id]:
+            yield event
+
+
+@pytest.mark.asyncio
+async def test_run_single_preserves_workflow_contract_surface_context_on_clarification_reply(
+    tmp_path,
+):
+    fixture = PromptFixture(id="clarify", tier="T1", prompt="Build a workflow")
+    runner = EvalRunner(
+        db_path=tmp_path / "missing.db",
+        delay=0.0,
+        workflow_contract="disabled",
+    )
+    runner._client = _TrackingEvalClient(
+        {
+            "chat-test-1": [
+                {
+                    "type": "chat_complete",
+                    "content": "Please confirm before I do that.",
+                },
+            ],
+            "chat-test-2": [
+                {
+                    "type": "chat_complete",
+                    "content": "Done.",
+                },
+            ],
+        }
+    )
+    runner._inspect_graph = AsyncMock(return_value=(False, None, None))
+    runner._query_telemetry = lambda *_args, **_kwargs: (None, None, None)
+    runner._query_audit = AsyncMock(
+        return_value={
+            "prompt_module_ids": ["workflow_generation_contract"],
+            "workflow_guidance_injected": False,
+            "workflow_guidance_surface": "",
+        }
+    )
+
+    logger = EvalLogger(output_dir=tmp_path)
+    record = await runner.run_single(
+        fixture,
+        "build",
+        logger,
+        workflow_contract_variant="disabled",
+    )
+
+    assert len(runner._client.send_calls) == 2
+    assert runner._client.send_calls[0]["surface_context"] == {
+        "workflow_generation_contract_enabled": False
+    }
+    assert runner._client.send_calls[1]["surface_context"] == {
+        "workflow_generation_contract_enabled": False
+    }
+    assert runner._client.send_calls[1]["message"] == "yes"
+    assert record.audit_found is True
+    assert record.prompt_module_ids == ["workflow_generation_contract"]
+    assert record.workflow_guidance_injected is False
+
+
+@pytest.mark.asyncio
+async def test_run_multi_turn_preserves_workflow_contract_surface_context_across_turns(
+    tmp_path,
+):
+    fixture = PromptFixture(
+        id="multi",
+        tier="T2",
+        prompt="Build a workflow",
+        multi_turn_follow_ups=["Add a review step."],
+    )
+    runner = EvalRunner(
+        db_path=tmp_path / "missing.db",
+        delay=0.0,
+        workflow_contract="enabled",
+    )
+    runner._client = _TrackingEvalClient(
+        {
+            "chat-test-1": [
+                {
+                    "type": "chat_complete",
+                    "content": "Built the workflow.",
+                },
+            ],
+            "chat-test-2": [
+                {
+                    "type": "chat_complete",
+                    "content": "Added the review step.",
+                },
+            ],
+        }
+    )
+    runner._inspect_graph = AsyncMock(return_value=(False, None, None))
+    runner._query_telemetry = lambda *_args, **_kwargs: (None, None, None)
+    runner._query_audit = AsyncMock(
+        side_effect=[
+            {
+                "prompt_module_ids": ["workflow_generation_contract"],
+                "workflow_guidance_injected": True,
+                "workflow_guidance_surface": "build",
+            },
+            {
+                "prompt_module_ids": ["workflow_generation_contract"],
+                "workflow_guidance_injected": True,
+                "workflow_guidance_surface": "repair",
+            },
+        ]
+    )
+
+    logger = EvalLogger(output_dir=tmp_path)
+    records = await runner.run_multi_turn(
+        fixture,
+        "build",
+        logger,
+        workflow_contract_variant="enabled",
+    )
+
+    assert len(records) == 2
+    assert [record.workflow_contract_variant for record in records] == [
+        "enabled",
+        "enabled",
+    ]
+    assert [record.workflow_guidance_surface for record in records] == [
+        "build",
+        "repair",
+    ]
+    assert [call["surface_context"] for call in runner._client.send_calls] == [
+        {"workflow_generation_contract_enabled": True},
+        {"workflow_generation_contract_enabled": True},
+    ]
 
 
 @pytest.mark.asyncio
@@ -107,6 +263,32 @@ def test_determine_status_routing_blocked_when_confirm_in_events():
     )
     assert status == "failed"
     assert failure_mode == "routing_blocked"
+
+
+@pytest.mark.parametrize(
+    ("execution_status", "expected_failure_mode"),
+    [
+        ("failed", "execution_failed"),
+        ("timeout", "execution_timeout"),
+        ("error", "execution_error"),
+    ],
+)
+def test_determine_status_fails_when_execution_does_not_complete(
+    execution_status: str,
+    expected_failure_mode: str,
+):
+    fixture = PromptFixture(id="exec-fail", tier="T1", prompt="Run this workflow")
+    validation = ValidationResult(passed=True, run_ready=True)
+    status, failure_mode = _determine_status(
+        fixture,
+        graph_created=True,
+        validation=validation,
+        generation_path="intent_compile",
+        events=[],
+        execution=ExecutionResult(status=execution_status, error="boom"),
+    )
+    assert status == "failed"
+    assert failure_mode == expected_failure_mode
 
 
 def test_build_graph_summary_counts_nested_control_flow_nodes() -> None:

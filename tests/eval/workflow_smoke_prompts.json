@@ -1,0 +1,63 @@
+{
+  "prompts": [
+    {
+      "id": "smoke-01-add-two-numbers",
+      "tier": "SMOKE",
+      "lane": "build",
+      "prompt": "can you just make a tiny workflow that adds 1 and 2 and run it",
+      "tags": ["smoke", "practical", "code"],
+      "expected": {
+        "min_nodes": 1,
+        "node_types": ["code"],
+        "topology": ["code"]
+      }
+    },
+    {
+      "id": "smoke-02-slugify",
+      "tier": "SMOKE",
+      "lane": "build",
+      "prompt": "pls set up something small that turns Deep Agent Network into deep-agent-network and execute it",
+      "tags": ["smoke", "practical", "code"],
+      "expected": {
+        "min_nodes": 1,
+        "node_types": ["code"],
+        "topology": ["code"]
+      }
+    },
+    {
+      "id": "smoke-03-branch",
+      "tier": "SMOKE",
+      "lane": "build",
+      "prompt": "uh can you do a tiny branch thing, if 7 is bigger than 5 say BIG otherwise SMALL, then run it",
+      "tags": ["smoke", "conditional"],
+      "expected": {
+        "min_nodes": 3,
+        "node_types": ["gate"],
+        "topology": ["conditional"]
+      }
+    },
+    {
+      "id": "smoke-04-loop",
+      "tier": "SMOKE",
+      "lane": "build",
+      "prompt": "i want some tiny loop thing that counts up till 3 and then runs and gives me the final value",
+      "tags": ["smoke", "loop"],
+      "expected": {
+        "min_nodes": 3,
+        "node_types": ["gate", "code"]
+      }
+    },
+    {
+      "id": "smoke-05-foreach",
+      "tier": "SMOKE",
+      "lane": "build",
+      "prompt": "do a little batch thing over 1 2 3, triple each one, sum it to 18, and run it",
+      "tags": ["smoke", "fan_out", "code"],
+      "expected": {
+        "min_nodes": 3,
+        "node_types": ["for_each", "code"],
+        "topology": ["fan_out", "code"]
+      }
+    }
+  ]
+}
