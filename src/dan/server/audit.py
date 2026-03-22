@@ -117,6 +117,9 @@ class ChatAuditRecord(BaseModel):
     mode: str = ""
 
     prompt_messages: list[dict[str, str]] = Field(default_factory=list)
+    prompt_module_ids: list[str] = Field(default_factory=list)
+    workflow_guidance_injected: bool = False
+    workflow_guidance_surface: str = ""
     model: str = ""
 
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)

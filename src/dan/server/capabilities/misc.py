@@ -27,7 +27,15 @@ async def handle_load_prompt_detail(
     detail_id = str(args.get("detail_id") or "").strip()
     if not detail_id:
         return CapabilityResult(success=False, message="'detail_id' is required.")
-    detail = get_prompt_detail_body(detail_id)
+    detail = None
+    chat_manager = getattr(ctx, "chat_manager", None)
+    if chat_manager is not None and hasattr(chat_manager, "get_prompt_detail"):
+        try:
+            detail = chat_manager.get_prompt_detail(ctx.workflow_id, detail_id)
+        except Exception:
+            detail = None
+    if not detail:
+        detail = get_prompt_detail_body(detail_id)
     if not detail:
         return CapabilityResult(
             success=False,
