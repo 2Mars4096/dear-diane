@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -12,6 +13,13 @@ logger = logging.getLogger(__name__)
 
 DAN_DIR = Path.home() / ".dan"
 LOCAL_ROOT = DAN_DIR / "local"
+
+
+def _resolve_local_root() -> Path:
+    override = os.environ.get("DAN_LOCAL_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return LOCAL_ROOT
 
 
 class LocalChatRuntime:
@@ -37,11 +45,14 @@ class LocalChatRuntime:
             return
         from dan.server.chat_factory import build_chat_services
 
-        graphs_dir = LOCAL_ROOT / "graphs"
+        local_root = _resolve_local_root()
+        graphs_dir = local_root / "graphs"
         graphs_dir.mkdir(parents=True, exist_ok=True)
         self._services = build_chat_services(
             graphs_dir=str(graphs_dir),
             workspace_root=str(Path.cwd()),
+            project_store_base_dir=local_root / "projects",
+            surface="local",
         )
         if self._services.graph_store.get_graph("_scratch") is None:
             self._services.graph_store.save_graph(
@@ -94,12 +105,35 @@ class LocalChatRuntime:
         return (True, None)
 
     async def get_health(self) -> dict[str, Any]:
+        from dan.server.runtime_config import runtime_degradation_summary
+
+        try:
+            await self._ensure_init()
+        except Exception as exc:
+            message = str(exc).strip() or type(exc).__name__
+            return {
+                "status": "degraded",
+                "startup": {
+                    "status": "degraded",
+                    "issues": [
+                        {
+                            "subsystem": "local_runtime",
+                            "message": message,
+                        }
+                    ],
+                },
+            }
+
+        startup = runtime_degradation_summary(
+            getattr(self._services, "startup_degradations", [])
+        )
         return {
             "status": "ok",
-            "startup": {
-                "status": "ok",
-                "issues": [],
-            },
+            "startup": startup,
+            "mode_limitations": [
+                dict(item)
+                for item in getattr(self._services, "mode_limitations", [])
+            ],
         }
 
     async def close(self) -> None:

@@ -630,8 +630,6 @@ async def _run_adapter(adapter: Any, renderer: Any, config: Any) -> None:
         SessionState,
         should_trigger,
     )
-    from dan.engine.executor import EngineConfig
-    from dan.engine.scheduler import Engine
     from dan.loader import load
 
     session_store = AdapterSessionStore()
@@ -666,10 +664,7 @@ async def _run_adapter(adapter: Any, renderer: Any, config: Any) -> None:
 
         await session_store.update_state(session.session_id, SessionState.RUNNING)
 
-        engine = Engine(
-            config=EngineConfig(),
-            human_input_callback=human_renderer.as_callback(),
-        )
+        engine = _make_workflow_engine(human_renderer=human_renderer)
 
         try:
             result = await engine.run(graph, inputs={"message": text})
@@ -903,6 +898,16 @@ def _create_adapter(adapter_type: str, config: Any) -> Any:
         from dan.adapters.whatsapp_web_adapter import WhatsAppWebAdapter
         return WhatsAppWebAdapter(config)
     raise ValueError(f"Unknown adapter type: {adapter_type}")
+
+
+def _make_workflow_engine(*, human_renderer: Any) -> Any:
+    """Build the legacy workflow-mode engine through one explicit seam."""
+    from dan.engine import Engine, EngineConfig
+
+    return Engine(
+        config=EngineConfig(),
+        human_input_callback=human_renderer.as_callback(),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,11 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from dan.server.runtime_config import (
+    append_runtime_degradation,
+    log_runtime_degradation_summary,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,6 +62,8 @@ class ChatServices:
         concierge: Any | None = None,
         dispatcher: Any | None = None,
         mcp_bridge: Any | None = None,
+        startup_degradations: list[dict[str, str]] | None = None,
+        mode_limitations: list[dict[str, str]] | None = None,
     ) -> None:
         self.graph_store = graph_store
         self.chat_store = chat_store
@@ -72,6 +79,24 @@ class ChatServices:
         self.dispatcher = dispatcher
         self.mcp_bridge = mcp_bridge
         self.model_gateway: Any | None = None
+        self.startup_degradations = [dict(item) for item in (startup_degradations or [])]
+        self.mode_limitations = [dict(item) for item in (mode_limitations or [])]
+
+
+LOCAL_MODE_LIMITATIONS: list[dict[str, str]] = [
+    {
+        "category": "transport",
+        "message": "Local mode is in-process CLI only; it does not expose an HTTP or remote-client surface.",
+    },
+    {
+        "category": "streaming",
+        "message": "Stream channels are process-local and are not durable across restarts.",
+    },
+    {
+        "category": "lifecycle",
+        "message": "Local runtime state lives inside the CLI process and disappears when the process exits.",
+    },
+]
 
 
 def _build_engine_config() -> Any:
@@ -107,6 +132,7 @@ def build_chat_services(
     graphs_dir: str | Path | None = None,
     workspace_root: str | Path | None = None,
     project_store_base_dir: str | Path | None = None,
+    surface: str = "server",
 ) -> ChatServices:
     """Build all services needed for chat operation.
 
@@ -120,13 +146,8 @@ def build_chat_services(
     from dan.server.gateway.activity import ActivityTracker
     from dan.server.capability_registry import ChatCapabilityRegistry, CapabilityContext
     from dan.server.capability_handlers import (
-        register_base_capabilities,
-        register_experience_capabilities,
-        register_introspection_capabilities,
+        register_common_capabilities,
         register_publish_capabilities,
-        register_run_lifecycle_capabilities,
-        register_tool_capabilities,
-        register_workflow_catalog_capabilities,
     )
     from dan.server.concierge import build_concierge
 
@@ -141,6 +162,7 @@ def build_chat_services(
     engine_config = _build_engine_config()
 
     provider_registry = _build_chat_provider_registry()
+    startup_degradations: list[dict[str, str]] = []
 
     model_gateway = None
     try:
@@ -148,6 +170,11 @@ def build_chat_services(
 
         model_gateway = build_gateway(engine_config=engine_config)
     except Exception:
+        append_runtime_degradation(
+            startup_degradations,
+            "model_gateway",
+            "construction failed; shared gateway unavailable",
+        )
         logger.warning("ModelGateway construction failed; degrading", exc_info=True)
 
     mention_resolver = None
@@ -165,6 +192,11 @@ def build_chat_services(
         from dan.server.telemetry import get_telemetry_store
         telemetry_store = get_telemetry_store()
     except Exception:
+        append_runtime_degradation(
+            startup_degradations,
+            "telemetry",
+            "telemetry store failed to initialize",
+        )
         logger.debug("Telemetry store not available", exc_info=True)
 
     tool_registry = _build_tool_registry()
@@ -179,12 +211,7 @@ def build_chat_services(
     activity_tracker = ActivityTracker(run_manager)
 
     capability_registry = ChatCapabilityRegistry()
-    register_base_capabilities(capability_registry)
-    register_experience_capabilities(capability_registry)
-    register_run_lifecycle_capabilities(capability_registry)
-    register_workflow_catalog_capabilities(capability_registry)
-    register_tool_capabilities(capability_registry)
-    register_introspection_capabilities(capability_registry)
+    register_common_capabilities(capability_registry)
 
     capability_context = CapabilityContext(
         workflow_id="",
@@ -213,19 +240,25 @@ def build_chat_services(
 
     memory_kernel = None
     try:
+        from functools import partial
+
         from dan.engine.memory_kernel import MemoryKernel
         from dan.engine.memory_kernel import DualWriteAdapter
         from dan.engine.memory_adapters import ProfileAdapter, ConversationAdapter
         from dan.server.concierge.domain_learning import (
             consolidate_memory_kernel_domain_templates,
         )
+        from dan.server.concierge.feature_gates import engine_feature_enabled
 
         memory_kernel = MemoryKernel(
             dual_write_adapter=DualWriteAdapter(
                 conversation_memory=conversation_memory,
                 user_profile=user_profile,
             ),
-            domain_consolidation_hook=consolidate_memory_kernel_domain_templates,
+            domain_consolidation_hook=partial(
+                consolidate_memory_kernel_domain_templates,
+                feature_enabled=engine_feature_enabled,
+            ),
         )
         if user_profile:
             imported = ProfileAdapter.import_profile(user_profile, memory_kernel)
@@ -254,6 +287,11 @@ def build_chat_services(
                 tool_registry,
             )
         except Exception:
+            append_runtime_degradation(
+                startup_degradations,
+                "mcp_bridge",
+                "auto-connect failed; MCP-backed tools may be unavailable",
+            )
             logger.warning("MCP auto-connect failed during local chat startup", exc_info=True)
     except Exception:
         logger.debug("MCP bridge not available", exc_info=True)
@@ -274,25 +312,35 @@ def build_chat_services(
         memory_kernel=memory_kernel,
         telemetry_store=telemetry_store,
     )
+    chat_manager.model_gateway = model_gateway
     capability_context.chat_manager = chat_manager
     register_publish_capabilities(capability_registry)
-    result = build_concierge(
-        chat_manager=chat_manager,
-        capability_context=capability_context,
-        user_profile=user_profile,
-        conversation_memory=conversation_memory,
-        memory_kernel=memory_kernel,
-        enable_dispatcher=True,
-        mcp_bridge=mcp_bridge,
-        capability_registry=capability_registry,
-        tool_registry=tool_registry,
-        telemetry_store=telemetry_store,
-        project_store_base_dir=project_store_base_dir,
-    )
-    if isinstance(result, tuple):
-        concierge, dispatcher = result
-    else:
-        concierge, dispatcher = result, None
+    try:
+        result = build_concierge(
+            chat_manager=chat_manager,
+            capability_context=capability_context,
+            user_profile=user_profile,
+            conversation_memory=conversation_memory,
+            memory_kernel=memory_kernel,
+            enable_dispatcher=True,
+            mcp_bridge=mcp_bridge,
+            capability_registry=capability_registry,
+            tool_registry=tool_registry,
+            telemetry_store=telemetry_store,
+            project_store_base_dir=project_store_base_dir,
+        )
+        if isinstance(result, tuple):
+            concierge, dispatcher = result
+        else:
+            concierge, dispatcher = result, None
+    except Exception:
+        append_runtime_degradation(
+            startup_degradations,
+            "concierge",
+            "concierge dispatcher failed to initialize",
+        )
+        logger.warning("Concierge startup failed in local chat bootstrap", exc_info=True)
+        concierge, dispatcher = None, None
 
     services = ChatServices(
         graph_store=graph_store,
@@ -308,6 +356,12 @@ def build_chat_services(
         concierge=concierge,
         dispatcher=dispatcher,
         mcp_bridge=mcp_bridge,
+        startup_degradations=startup_degradations,
+        mode_limitations=LOCAL_MODE_LIMITATIONS if surface == "local" else [],
     )
     services.model_gateway = model_gateway
+    log_runtime_degradation_summary(
+        startup_degradations,
+        prefix="Local startup degradation summary",
+    )
     return services

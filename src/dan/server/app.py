@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from dan.engine.executor import EngineConfig
 from dan.models.graph import Graph
 from dan.server.chat_manager import ChatManager
+from dan.server.llm_gateway import resolve_llm_provider
 from dan.server.mention_resolver import MentionResolver
 from dan.server.chat_store import ChatStore
 from dan.server.graph_store import GraphStore
@@ -58,6 +59,7 @@ _chat_store = ChatStore(base_dir=_graphs_dir)
 _test_case_store = TestCaseStore(base_dir=_graphs_dir)
 _run_manager: RunManager | None = None
 _chat_manager: ChatManager | None = None
+_model_gateway: Any | None = None
 _meta_tasks: dict[str, asyncio.Task[Any]] = {}
 _meta_subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
 _experience_index_cache: Any | None = None
@@ -212,6 +214,7 @@ def _build_meta_controller():
         StructuralRepairPlanner,
     )
     from dan.server.run_manager import RunStatus as _RS
+    from dan.server.skill_library import SKILL_LIBRARY
 
     rm = _require_run_manager()
     memory_store = _get_memory_store()
@@ -227,9 +230,10 @@ def _build_meta_controller():
         graph_store=_graph_store,
         tool_registry=rm.tool_registry,
         self_knowledge=_self_knowledge_index,
+        skill_library=SKILL_LIBRARY,
     )
 
-    provider_registry = _chat_manager._providers if _chat_manager is not None else _build_chat_provider_registry()
+    provider_registry = None if _chat_manager is not None else _build_chat_provider_registry()
     fallback_model = os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6")
 
     async def _llm_call(
@@ -239,7 +243,22 @@ def _build_meta_controller():
         temperature: float,
     ) -> str:
         model_name = model or fallback_model
-        provider = provider_registry.resolve(model_name)
+        # Prefer llm_core gateway when startup mirrored it (retries, timeout, telemetry).
+        if _model_gateway is not None:
+            result = await _model_gateway.complete(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                model_name,
+                temperature=temperature,
+            )
+            return result.text
+        if _chat_manager is not None:
+            provider = resolve_llm_provider(_chat_manager, model=model_name)
+        else:
+            assert provider_registry is not None
+            provider = provider_registry.resolve(model_name)
         result = await provider.complete(
             messages=[
                 {"role": "system", "content": system_prompt},

@@ -81,35 +81,21 @@ def _record_startup_degradation(
     subsystem: str,
     message: str,
 ) -> None:
-    entry = {
-        "subsystem": subsystem.strip() or "unknown",
-        "message": message.strip(),
-    }
-    if entry not in state.startup_degradations:
-        state.startup_degradations.append(entry)
+    from dan.server.runtime_config import append_runtime_degradation
+
+    append_runtime_degradation(state.startup_degradations, subsystem, message)
 
 
 def get_startup_degradation_summary(state: AppState) -> dict[str, Any]:
-    issues = [dict(item) for item in state.startup_degradations]
-    return {
-        "status": "degraded" if issues else "ok",
-        "issues": issues,
-    }
+    from dan.server.runtime_config import runtime_degradation_summary
+
+    return runtime_degradation_summary(state.startup_degradations)
 
 
 def log_startup_degradation_summary(state: AppState) -> None:
-    summary = get_startup_degradation_summary(state)
-    issues = summary["issues"]
-    if not issues:
-        return
-    rendered = "; ".join(
-        f"{issue['subsystem']}: {issue['message']}" for issue in issues
-    )
-    logger.warning(
-        "Startup degradation summary | %d subsystem(s): %s",
-        len(issues),
-        rendered,
-    )
+    from dan.server.runtime_config import log_runtime_degradation_summary
+
+    log_runtime_degradation_summary(state.startup_degradations)
 
 
 def _get_engine_config():
@@ -443,23 +429,12 @@ async def init_engine(state: AppState) -> None:
 async def init_capabilities(state: AppState) -> None:
     """Phase 3: create ChatCapabilityRegistry, register 7 capability groups, create CapabilityContext."""
     from dan.server.capability_handlers import (
-        register_base_capabilities,
-        register_experience_capabilities,
-        register_introspection_capabilities,
-        register_publish_capabilities,
-        register_run_lifecycle_capabilities,
-        register_tool_capabilities,
-        register_workflow_catalog_capabilities,
+        register_common_capabilities,
     )
     from dan.server.capability_registry import CapabilityContext, ChatCapabilityRegistry
 
     state.capability_registry = ChatCapabilityRegistry()
-    register_base_capabilities(state.capability_registry)
-    register_experience_capabilities(state.capability_registry)
-    register_run_lifecycle_capabilities(state.capability_registry)
-    register_workflow_catalog_capabilities(state.capability_registry)
-    register_tool_capabilities(state.capability_registry)
-    register_introspection_capabilities(state.capability_registry)
+    register_common_capabilities(state.capability_registry)
 
     state.capability_context = CapabilityContext(
         workflow_id="",
@@ -522,17 +497,23 @@ async def init_managers(state: AppState) -> None:
     # history and can take 30+ seconds on a well-used installation.
     state.memory_kernel = None
     try:
+        from functools import partial
+
         from dan.engine.memory_kernel import DualWriteAdapter, MemoryKernel
         from dan.server.concierge.domain_learning import (
             consolidate_memory_kernel_domain_templates,
         )
+        from dan.server.concierge.feature_gates import engine_feature_enabled
 
         state.memory_kernel = MemoryKernel(
             dual_write_adapter=DualWriteAdapter(
                 conversation_memory=state.conversation_memory,
                 user_profile=state.user_profile,
             ),
-            domain_consolidation_hook=consolidate_memory_kernel_domain_templates,
+            domain_consolidation_hook=partial(
+                consolidate_memory_kernel_domain_templates,
+                feature_enabled=engine_feature_enabled,
+            ),
         )
     except Exception:
         logger.debug("Memory kernel load skipped", exc_info=True)
@@ -589,8 +570,10 @@ async def init_managers(state: AppState) -> None:
             state.run_manager.model_gateway = state.model_gateway
     except Exception:
         logger.warning("ModelGateway construction failed; degrading", exc_info=True)
-        state.startup_degradations.append(
-            {"component": "model_gateway", "reason": "construction failed"}
+        _record_startup_degradation(
+            state,
+            "model_gateway",
+            "construction failed; shared gateway unavailable",
         )
 
     state.chat_manager = ChatManager(
@@ -772,6 +755,7 @@ async def init_integrations(state: AppState, app: FastAPI) -> None:
         )
 
     from dan.meta.discovery import DiscoveryService
+    from dan.server.skill_library import SKILL_LIBRARY
 
     state.capability_context.experience_store = _exp_store
     state.capability_context.experience_index = _exp_index
@@ -784,6 +768,7 @@ async def init_integrations(state: AppState, app: FastAPI) -> None:
         ),
         self_knowledge=state.self_knowledge_index,
         memory_kernel=state.memory_kernel,
+        skill_library=SKILL_LIBRARY,
     )
     state.capability_context.principle_store = (
         state.run_manager._get_principle_store() if state.run_manager else None

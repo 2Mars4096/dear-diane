@@ -707,6 +707,7 @@ async def _run_repl(
     preference_suggestion_shown = False
     session_estimated_cost = 0.0
     startup_summary: dict[str, Any] | None = None
+    mode_limitations: list[dict[str, Any]] = []
 
     Console = None
     try:
@@ -739,7 +740,12 @@ async def _run_repl(
 
             behavior_store = BehaviorStore()
             register_seed_domains(behavior_store)
-            preference_extractor = PreferenceExtractor(behavior_store=behavior_store)
+            from dan.server.concierge.domain_learning import get_domain_keyword_map
+
+            preference_extractor = PreferenceExtractor(
+                behavior_store=behavior_store,
+                domain_keywords_provider=lambda: get_domain_keyword_map(behavior_store),
+            )
         except Exception:
             logger.debug("PreferenceExtractor unavailable in chat CLI", exc_info=True)
 
@@ -867,6 +873,21 @@ async def _run_repl(
                 )
             else:
                 _print("Startup: ok")
+        if mode_limitations:
+            labels = [
+                str(item.get("category", "unknown"))
+                for item in mode_limitations[:3]
+                if isinstance(item, dict)
+            ]
+            extra = (
+                f" +{len(mode_limitations) - len(labels)} more"
+                if len(mode_limitations) > len(labels)
+                else ""
+            )
+            _print(
+                f"Local limits: {', '.join(labels)}{extra}",
+                style="yellow" if console else None,
+            )
 
     def _help() -> None:
         from dan.server.concierge.command_registry import get_default_registry
@@ -876,14 +897,15 @@ async def _run_repl(
 
     # Fetch graph on startup for non-scratch workflows
     try:
-        startup_summary = await client.get_health()
-        startup_summary = (
-            startup_summary.get("startup")
-            if isinstance(startup_summary, dict)
-            else None
-        )
+        health_payload = await client.get_health()
+        if isinstance(health_payload, dict):
+            mode_limitations = health_payload.get("mode_limitations", [])
+            startup_summary = health_payload.get("startup")
+        else:
+            startup_summary = None
     except Exception:
         startup_summary = None
+        mode_limitations = []
 
     if workflow_id != "_scratch":
         try:

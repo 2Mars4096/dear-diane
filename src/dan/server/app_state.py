@@ -73,6 +73,9 @@ class AppState:
     engine_config: Any = None
     telemetry_store: Any = None
 
+    # -- LLM gateway (set during init_chat, wraps same provider registry) ---
+    model_gateway: Any = None
+
     # -- Memory subsystems ---------------------------------------------------
     user_profile: Any = None
     conversation_memory: Any = None

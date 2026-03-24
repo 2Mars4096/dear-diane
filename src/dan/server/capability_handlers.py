@@ -1130,6 +1130,16 @@ def register_publish_capabilities(registry: ChatCapabilityRegistry) -> None:
     registry.register("list_blocks", LIST_BLOCKS_SCHEMA, handle_list_blocks, modes=list(ALL_MODES), category="blocks")
 
 
+def register_common_capabilities(registry: ChatCapabilityRegistry) -> None:
+    """Register the capability groups shared by server and local surfaces."""
+    register_base_capabilities(registry)
+    register_experience_capabilities(registry)
+    register_run_lifecycle_capabilities(registry)
+    register_workflow_catalog_capabilities(registry)
+    register_tool_capabilities(registry)
+    register_introspection_capabilities(registry)
+
+
 def register_run_lifecycle_capabilities(registry: ChatCapabilityRegistry) -> None:
     """Register run lifecycle tools (25-4)."""
     registry.register("start_run", START_RUN_SCHEMA, handle_start_run, modes=RUN_WRITE_MODES, category="run")

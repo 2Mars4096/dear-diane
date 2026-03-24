@@ -673,6 +673,22 @@ def run_background(argv: list[str]) -> None:
     print(f"  Tail:   dan-logs {run_id} --follow")
 
 
+def _make_engine(cfg: dict[str, Any], *, human_renderer: Any, event_callback: Any) -> Any:
+    """Build the CLI execution engine through one explicit construction seam."""
+    from dan.engine import Engine, EngineConfig
+
+    engine_config = EngineConfig(
+        llm_api_key=cfg["api_key"],
+        llm_base_url=cfg["base_url"] or "https://api.vectorengine.ai/v1",
+        llm_default_model=cfg["model"] or "claude-sonnet-4-6",
+    )
+    return Engine(
+        config=engine_config,
+        event_callback=event_callback,
+        human_renderer=human_renderer,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Graceful shutdown
 # ---------------------------------------------------------------------------
@@ -904,18 +920,12 @@ async def _run_graph(
     args: argparse.Namespace,
 ) -> int:
     """Execute a loaded Graph and return exit code."""
-    from dan.engine import Engine, EngineConfig, AutoRenderer
+    from dan.engine import AutoRenderer
     try:
         from dan.notifications.terminal import maybe_ring_on_event
     except Exception:
         def maybe_ring_on_event(event_type: str) -> None:  # type: ignore[no-redef]
             _ = event_type
-
-    engine_config = EngineConfig(
-        llm_api_key=cfg["api_key"],
-        llm_base_url=cfg["base_url"] or "https://api.vectorengine.ai/v1",
-        llm_default_model=cfg["model"] or "claude-sonnet-4-6",
-    )
 
     renderer: Any
     if interactive:
@@ -933,11 +943,7 @@ async def _run_graph(
             maybe_ring_on_event(event_type)
         display.handle_event(event)
 
-    engine = Engine(
-        config=engine_config,
-        event_callback=event_cb,
-        human_renderer=renderer,
-    )
+    engine = _make_engine(cfg, human_renderer=renderer, event_callback=event_cb)
 
     display.start(total_nodes)
     try:
