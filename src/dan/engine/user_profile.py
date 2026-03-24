@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from dan.engine.domain_taxonomy import normalize_domain_list, normalize_domain_name, preserve_domain_labels
+from dan.domain_taxonomy import normalize_domain_list, normalize_domain_name, preserve_domain_labels
 
 logger = logging.getLogger(__name__)
 

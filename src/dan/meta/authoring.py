@@ -13,7 +13,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, MutableMapping
 
 from pydantic import BaseModel, Field
 
@@ -216,12 +216,14 @@ class RuntimeAuthor:
         llm_call: Callable[..., Awaitable[str]] | None = None,
         sandbox: SandboxRunner | None = None,
         tool_registry: ToolRegistry | None = None,
+        skill_library: MutableMapping[str, dict[str, Any]] | None = None,
         model: str | None = None,
         max_retries: int = 3,
     ) -> None:
         self._llm_call = llm_call
         self._sandbox = sandbox
         self._tool_registry = tool_registry
+        self._skill_library = skill_library
         self._model = model
         self._max_retries = max_retries
 
@@ -541,17 +543,18 @@ class RuntimeAuthor:
         return filepath
 
     def activate_skill(self, spec: SkillSpec) -> None:
-        """Add to ``SKILL_LIBRARY`` dict for immediate discoverability."""
-        from dan.server.skill_library import SKILL_LIBRARY
+        """Add to the configured skill library for immediate discoverability."""
+        if self._skill_library is None:
+            raise RuntimeError("No skill library configured for RuntimeAuthor")
 
-        SKILL_LIBRARY[spec.skill_id] = {
+        self._skill_library[spec.skill_id] = {
             "name": spec.name,
             "description": spec.description,
             "tags": spec.tags,
             "inject_as": "system",
             "text": spec.content,
         }
-        logger.info("Activated skill '%s' in SKILL_LIBRARY", spec.skill_id)
+        logger.info("Activated skill '%s' in configured skill library", spec.skill_id)
 
     async def create_skill(
         self,

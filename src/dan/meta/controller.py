@@ -773,7 +773,7 @@ class MetaController:
                     session.plan_result = candidate
             if override.override_type == OverrideType.MODIFY_GRAPH:
                 if session.workflow_id and isinstance(override.data, dict):
-                    from dan.server.graph_mutator import GraphMutator, MutationPlan
+                    from dan.graph_mutator import GraphMutator, MutationPlan
 
                     plan_data = override.data.get("mutation_plan", override.data)
                     try:
@@ -951,7 +951,7 @@ class MetaController:
         if not self._graph_loader or not self._graph_saver:
             return False
         try:
-            from dan.server.graph_mutator import GraphMutator, MutationPlan
+            from dan.graph_mutator import GraphMutator, MutationPlan
 
             graph_data = self._graph_loader(workflow_id)
             if graph_data is None:

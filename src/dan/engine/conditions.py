@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from dan.models.context import FeedbackSelector
+
 _SAFE_BUILTINS: dict[str, Any] = {
     "len": len,
     "min": min,
@@ -123,3 +125,26 @@ def evaluate_reducer(expr: str, inputs: Any) -> Any:
     if _IDENTIFIER_RE.match(normalized) and lowered in _NAMED_REDUCERS:
         return _NAMED_REDUCERS[lowered](inputs)
     return evaluate_expression(normalized, {"inputs": inputs})
+
+
+def apply_feedback_selector(
+    data: dict[str, Any],
+    selector: FeedbackSelector,
+) -> dict[str, Any]:
+    """Filter, rename, or transform feedback data according to *selector*."""
+    filtered = dict(data)
+
+    if selector.include is not None:
+        filtered = {k: v for k, v in filtered.items() if k in selector.include}
+    elif selector.exclude is not None:
+        filtered = {k: v for k, v in filtered.items() if k not in selector.exclude}
+
+    if selector.rename:
+        filtered = {selector.rename.get(k, k): v for k, v in filtered.items()}
+
+    if selector.transform is not None:
+        filtered = evaluate_expression(selector.transform, {"inputs": filtered})
+        if not isinstance(filtered, dict):
+            filtered = {"result": filtered}
+
+    return filtered

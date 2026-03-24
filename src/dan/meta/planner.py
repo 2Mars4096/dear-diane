@@ -1419,7 +1419,7 @@ class WorkflowPlanner:
         graph_data = self._graph_store.get_graph(plan.workflow_id)
         if not graph_data:
             raise ValueError(f"Workflow {plan.workflow_id} not found")
-        from dan.server.graph_mutator import GraphMutator, MutationPlan
+        from dan.graph_mutator import GraphMutator, MutationPlan
 
         mutation_plan = MutationPlan(
             operations=plan.mutations,

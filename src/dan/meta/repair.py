@@ -12,10 +12,10 @@ import logging
 import re
 import time
 import uuid
-from enum import IntEnum
 from typing import Any, Awaitable, Callable, Literal
 
 from pydantic import BaseModel, Field
+from dan.repair_classification import RepairClassifier, RepairLevel
 from dan.workflow_generation_guidance import (
     render_workflow_generation_contract,
     workflow_generation_contract_enabled,
@@ -40,29 +40,6 @@ __all__ = [
     "StructuralFix",
     "StructuralRepairPlanner",
 ]
-
-
-# ---------------------------------------------------------------------------
-# RepairLevel enum
-# ---------------------------------------------------------------------------
-
-
-class RepairLevel(IntEnum):
-    """Graduated severity levels for repair actions."""
-
-    PROMPT = 1
-    PARAMETER = 2
-    STRUCTURAL = 3
-    REDESIGN = 4
-
-    @staticmethod
-    def should_escalate(
-        current_level: int, failure_count: int, max_attempts: int = 2,
-    ) -> RepairLevel:
-        """Return the next level if the current one has been exhausted."""
-        if failure_count >= max_attempts and current_level < RepairLevel.REDESIGN:
-            return RepairLevel(current_level + 1)
-        return RepairLevel(current_level)
 
 
 # ---------------------------------------------------------------------------
@@ -207,68 +184,6 @@ class RepairActionStore:
 
 
 # ---------------------------------------------------------------------------
-# RepairClassifier
-# ---------------------------------------------------------------------------
-
-_PARAMETER_KEYWORDS = [
-    "model", "temperature", "max_tokens", "timeout", "tool_id",
-    "tool_config", "retry", "token_limit", "token limit",
-]
-_STRUCTURAL_KEYWORDS = [
-    "add node", "remove node", "rewire", "validation step", "fallback",
-    "error handling", "branch", "loop", "review step", "add a check",
-]
-_REDESIGN_KEYWORDS = [
-    "fundamentally wrong", "completely different", "start over",
-    "wrong approach", "redesign", "scrap", "start from scratch",
-]
-
-
-class RepairClassifier:
-    """Classifies a CausalPrinciple into an appropriate RepairLevel."""
-
-    def classify(
-        self,
-        principle: Any,
-        failure_history: list[RepairActionRecord] | None = None,
-        max_attempts_per_level: int = 2,
-    ) -> RepairLevel:
-        """Determine the repair level based on action text and escalation history."""
-        repair_level_str = getattr(principle, "repair_level", "prompt_fix")
-
-        if repair_level_str == "parameter_fix":
-            base = RepairLevel.PARAMETER
-        elif repair_level_str == "structural_fix":
-            base = RepairLevel.STRUCTURAL
-        elif repair_level_str == "redesign":
-            base = RepairLevel.REDESIGN
-        elif repair_level_str == "retry":
-            base = RepairLevel.PROMPT
-        else:
-            base = self._classify_from_text(getattr(principle, "action", ""))
-
-        if failure_history:
-            level_failures = sum(
-                1 for r in failure_history
-                if r.repair_level == base and r.status == "failed"
-            )
-            base = RepairLevel.should_escalate(base, level_failures, max_attempts_per_level)
-
-        return base
-
-    @staticmethod
-    def _classify_from_text(action_text: str) -> RepairLevel:
-        lower = action_text.lower()
-        if any(kw in lower for kw in _REDESIGN_KEYWORDS):
-            return RepairLevel.REDESIGN
-        if any(kw in lower for kw in _STRUCTURAL_KEYWORDS):
-            return RepairLevel.STRUCTURAL
-        if any(kw in lower for kw in _PARAMETER_KEYWORDS):
-            return RepairLevel.PARAMETER
-        return RepairLevel.PROMPT
-
-
-# ---------------------------------------------------------------------------
 # ParameterRepairGenerator
 # ---------------------------------------------------------------------------
 
@@ -283,7 +198,7 @@ class ParameterRepairGenerator:
 
     def generate_mutation(self, principle: Any, graph: Any) -> Any:
         """Return a MutationPlan with whitelisted EditNode operations."""
-        from dan.server.graph_mutator import MutationPlan
+        from dan.graph_mutator import MutationPlan
 
         operations: list[dict[str, Any]] = []
         suggested = getattr(principle, "suggested_parameter_changes", {})
@@ -391,7 +306,7 @@ class StructuralRepairPlanner:
             if plan is None:
                 continue
 
-            from dan.server.graph_mutator import GraphMutator
+            from dan.graph_mutator import GraphMutator
             graph_dict = graph.model_dump(mode="json")
             mutator = GraphMutator()
             result = mutator.dry_run(graph_dict, plan)
@@ -430,7 +345,7 @@ class StructuralRepairPlanner:
         text = match.group(1) if match else raw.strip()
         try:
             data = json.loads(text)
-            from dan.server.graph_mutator import MutationPlan
+            from dan.graph_mutator import MutationPlan
             return MutationPlan.model_validate(data)
         except (json.JSONDecodeError, Exception):
             logger.warning("Failed to parse structural repair plan from LLM output")

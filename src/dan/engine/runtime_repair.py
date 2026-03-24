@@ -181,7 +181,7 @@ def failure_signature(node: Any, category: RuntimeFailureCategory, error_message
 def advisory_repair_level(kind: RuntimeRepairKind, category: RuntimeFailureCategory, next_step: str) -> str:
     """Normalize runtime repair outcomes onto the shared RepairClassifier scale."""
 
-    from dan.meta.repair import RepairClassifier
+    from dan.repair_classification import RepairClassifier
 
     if kind == RuntimeRepairKind.PARAMETER_FIX:
         repair_level = "parameter_fix"

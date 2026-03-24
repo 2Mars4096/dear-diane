@@ -8,7 +8,7 @@ are relevant to a given goal.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Mapping
 
 from pydantic import BaseModel, Field
 
@@ -106,6 +106,7 @@ class DiscoveryService:
         self_knowledge: Any | None = None,
         memory_kernel: Any | None = None,
         skill_store: Any | None = None,
+        skill_library: Mapping[str, Any] | None = None,
     ) -> None:
         self._experience_index = experience_index
         self._experience_store = experience_store
@@ -114,6 +115,7 @@ class DiscoveryService:
         self._self_knowledge = self_knowledge
         self._memory_kernel = memory_kernel
         self._skill_store = skill_store
+        self._skill_library = skill_library
 
     def discover_tools(self) -> list[ToolInfo]:
         """Query the tool registry for available tools."""
@@ -123,7 +125,7 @@ class DiscoveryService:
         return [ToolInfo(tool_id=tid) for tid in ids]
 
     def discover_skills(self) -> list[SkillInfo]:
-        """Query SkillStore (preferred) or SKILL_LIBRARY for skill descriptors."""
+        """Query injected skill sources for skill descriptors."""
         if self._skill_store is not None:
             try:
                 return [
@@ -138,10 +140,11 @@ class DiscoveryService:
             except Exception:
                 logger.debug("SkillStore discovery failed, falling back", exc_info=True)
 
-        from dan.server.skill_library import SKILL_LIBRARY
+        if self._skill_library is None:
+            return []
 
         results: list[SkillInfo] = []
-        for _key, entry in SKILL_LIBRARY.items():
+        for _key, entry in self._skill_library.items():
             if not isinstance(entry, dict):
                 continue
             results.append(SkillInfo(
@@ -153,14 +156,11 @@ class DiscoveryService:
         return results
 
     def discover_patterns(self) -> list[PatternInfo]:
-        """Query PATTERN_LIBRARY for composable graph patterns."""
-        from dan.server.graph_mutator import PATTERN_LIBRARY
-
-        results: list[PatternInfo] = []
-        for name in sorted(PATTERN_LIBRARY):
-            desc = _PATTERN_DESCRIPTIONS.get(name, "")
-            results.append(PatternInfo(name=name, description=desc))
-        return results
+        """Return the documented composable graph patterns."""
+        return [
+            PatternInfo(name=name, description=description)
+            for name, description in sorted(_PATTERN_DESCRIPTIONS.items())
+        ]
 
     async def discover_workflows(
         self, query: str, top_k: int = 5,

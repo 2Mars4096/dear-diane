@@ -21,9 +21,11 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from pydantic import BaseModel, Field
+
+from dan.keyword_overlap import query_keyword_overlap
 
 logger = logging.getLogger(__name__)
 
@@ -338,13 +340,7 @@ def _preference_key(content: str) -> str:
 
 
 def _keyword_overlap(query: str, content: str) -> float:
-    if not query or not content:
-        return 0.0
-    q_words = set(query.lower().split())
-    c_words = set(content.lower().split())
-    if not q_words:
-        return 0.0
-    return len(q_words & c_words) / len(q_words)
+    return query_keyword_overlap(query, content)
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +499,8 @@ class MemoryKernel:
         embedding_provider: Any | None = None,
         embedding_model: str | None = None,
         vector_store: Any | None = None,
+        *,
+        domain_consolidation_hook: Callable[["MemoryKernel"], int] | None = None,
     ) -> None:
         self._base_dir = Path(base_dir or os.path.expanduser("~/.dan/memory_kernel"))
         self._base_dir.mkdir(parents=True, exist_ok=True)
@@ -535,6 +533,9 @@ class MemoryKernel:
 
         self._load_index()
         self._rebuild_vector_index()
+        # Injected by composition roots (server / chat_factory) — see
+        # ``domain_learning.consolidate_memory_kernel_domain_templates``.
+        self._domain_consolidation_hook = domain_consolidation_hook
 
     # -- Type index helpers -------------------------------------------------
 
@@ -1335,89 +1336,20 @@ class MemoryKernel:
         return archived
 
     def _consolidate_domain_templates(self) -> int:
-        """Consolidate domain knowledge items and update templates (31-21 task 7)."""
-        try:
-            from dan.engine.learning_tiers import is_feature_enabled
-            if not is_feature_enabled("domain_learning"):
-                return 0
-        except Exception:
+        """Consolidate domain knowledge items and update templates (31-21 task 7).
+
+        Implementation lives in ``concierge.domain_learning`` and is injected via
+        ``domain_consolidation_hook`` so this module stays free of ``server/``
+        imports.
+        """
+        hook = self._domain_consolidation_hook
+        if hook is None:
             return 0
-
-        domains_consolidated = 0
         try:
-            from dan.server.concierge.domain_learning import (
-                DomainPatternGeneralizer,
-                DomainTemplateConsolidator,
-                get_or_create_template,
-                save_domain_template,
-            )
-
-            domain_items: dict[str, list[MemoryItem]] = {}
-            for mem_type in (MemoryType.FACT, MemoryType.PREFERENCE, MemoryType.PRINCIPLE, MemoryType.WORKFLOW_PATTERN):
-                for item in self.list_by_type(mem_type):
-                    if "domain_knowledge" not in (item.tags or []):
-                        continue
-                    domain = item.metadata.get("domain")
-                    if domain:
-                        domain_items.setdefault(domain, []).append(item)
-
-            consolidator = DomainTemplateConsolidator()
-            generalizer = DomainPatternGeneralizer()
-            for domain, items in domain_items.items():
-                if len(items) >= 5:
-                    try:
-                        existing_patterns = {
-                            item.content.strip().lower()
-                            for item in self.list_by_type(MemoryType.WORKFLOW_PATTERN)
-                            if "generalized_pattern" in (item.tags or [])
-                            and item.metadata.get("domain") == domain
-                        }
-                        new_patterns = [
-                            pattern
-                            for pattern in generalizer.generalize(domain, items)
-                            if pattern.content.strip().lower() not in existing_patterns
-                        ]
-                        if new_patterns:
-                            self.store_many(new_patterns)
-                    except Exception:
-                        logger.debug(
-                            "Domain pattern generalization failed for %s",
-                            domain,
-                            exc_info=True,
-                        )
-                if len(items) < 10:
-                    continue
-                template = get_or_create_template(domain)
-                updated = consolidator.consolidate(domain, items, template)
-                if updated is not None:
-                    duplicate_ids = list(updated.metadata.get("merged_duplicate_ids") or [])
-                    if duplicate_ids:
-                        for item_id in duplicate_ids:
-                            self.delete(item_id, hard=True)
-                        updated.metadata["merged_duplicate_count"] = len(duplicate_ids)
-                        updated.metadata.pop("merged_duplicate_ids", None)
-                    save_domain_template(updated)
-                    domains_consolidated += 1
-                    evolvement_logger.info(
-                        "Domain template consolidated: %s (v%d, %d items)",
-                        domain, updated.version, len(items),
-                    )
-
-                if len(items) >= 20 and is_feature_enabled("domain_template_upgrade"):
-                    last_upgrade_count = (template.metadata or {}).get(
-                        "last_llm_upgrade_item_count", 0
-                    )
-                    if len(items) - last_upgrade_count >= 10:
-                        template.metadata["needs_llm_upgrade"] = True
-                        save_domain_template(template)
-                        evolvement_logger.info(
-                            "Domain template marked for LLM upgrade: %s (%d items)",
-                            domain, len(items),
-                        )
+            return int(hook(self))
         except Exception:
             logger.debug("Domain template consolidation failed", exc_info=True)
-
-        return domains_consolidated
+            return 0
 
     def run_consolidation(self, graph_store: Any = None) -> dict[str, int]:
         """Run all consolidation steps sequentially. Returns counts of items affected.

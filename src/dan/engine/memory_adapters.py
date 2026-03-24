@@ -13,7 +13,7 @@ import logging
 import time
 from typing import Any
 
-from dan.engine.domain_taxonomy import format_domain_label, normalize_domain_name
+from dan.domain_taxonomy import format_domain_label, normalize_domain_name
 from dan.engine.memory_kernel import (
     MemoryItem,
     MemoryType,
