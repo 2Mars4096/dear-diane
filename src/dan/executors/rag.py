@@ -9,9 +9,10 @@ from typing import Any
 from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.state import NodeStatus
 from dan.models.nodes import NodeBase, RAGOperator
-from dan.rag import DEFAULT_EMBEDDING_MODEL, EmbeddingProvider, EmbeddingRegistry
 from dan.rag.stores import QueryResult, VectorStore, VectorStoreConfig, VectorStoreFactory
 from dan.utils.template_render import render_runtime_template
+
+from .provider_runtime import resolve_completion_provider, resolve_embedding_provider
 
 logger = logging.getLogger(__name__)
 
@@ -34,34 +35,6 @@ def _get_or_create_store(config: dict[str, Any], collection: str) -> VectorStore
         )
         _store_cache[cache_key] = VectorStoreFactory.create(vs_config)
     return _store_cache[cache_key]
-
-
-def _resolve_embedding_provider(
-    node: RAGOperator, context: ExecutionContext,
-) -> tuple[EmbeddingProvider | None, str]:
-    """Resolve embedding provider and model from context or node config.
-
-    Returns (provider, model_name) or (None, "") if unavailable.
-    """
-    embedding_registry: EmbeddingRegistry | None = getattr(
-        context, "embedding_registry", None
-    )
-    default_model = getattr(
-        context.config, "default_embedding_model", DEFAULT_EMBEDDING_MODEL,
-    )
-    model = node.embedding_model or default_model
-
-    if embedding_registry is not None:
-        try:
-            return embedding_registry.resolve(model), model
-        except KeyError:
-            pass
-
-    vs_config = node.vector_store_config
-    if "embedding_provider" in vs_config:
-        return vs_config["embedding_provider"], model
-
-    return None, model
 
 
 class RAGExecutor:
@@ -95,7 +68,7 @@ class RAGExecutor:
             },
         )
 
-        provider, model = _resolve_embedding_provider(node, context)
+        provider, model = resolve_embedding_provider(node, context)
         if provider is None:
             return NodeResult(
                 outputs={},
@@ -182,12 +155,13 @@ class RAGExecutor:
         )
 
     async def _rerank_chunks(self, query: str, chunks: list[dict], top_k: int, context: ExecutionContext) -> list[dict]:
-        if not context.provider_registry:
-            return chunks[:top_k]
-            
+        model = getattr(getattr(context, "config", None), "llm_default_model", "")
         try:
-            provider = context.provider_registry.resolve(context.config.llm_default_model)
+            provider = resolve_completion_provider(context, model)
         except KeyError:
+            return chunks[:top_k]
+
+        if provider is None:
             return chunks[:top_k]
 
         import json

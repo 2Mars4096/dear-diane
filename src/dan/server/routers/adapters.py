@@ -844,16 +844,23 @@ async def _run_adapter_engine(
     session_renderer.active_session_id = session_id
     await session_store.update_state(session_id, SessionState.RUNNING)
 
-    from dan.engine import Engine, EngineConfig
+    try:
+        run_manager = get_run_manager()
+        engine = run_manager._make_engine(
+            human_renderer=session_renderer,
+            block_registry=get_block_registry(),
+        )
+    except Exception:
+        from dan.engine import Engine, EngineConfig
 
-    cfg = get_engine_config()
-    engine_config = EngineConfig(
-        llm_api_key=cfg.llm_api_key or os.environ.get("DAN_LLM_API_KEY", os.environ.get("LLM_API_KEY", "")),
-        llm_base_url=cfg.llm_base_url or "https://api.vectorengine.ai/v1",
-        llm_default_model=cfg.llm_default_model or "claude-sonnet-4-6",
-        block_registry=get_block_registry(),
-    )
-    engine = Engine(config=engine_config, human_renderer=session_renderer)
+        cfg = get_engine_config()
+        engine_config = EngineConfig(
+            llm_api_key=cfg.llm_api_key or os.environ.get("DAN_LLM_API_KEY", os.environ.get("LLM_API_KEY", "")),
+            llm_base_url=cfg.llm_base_url or "https://api.vectorengine.ai/v1",
+            llm_default_model=cfg.llm_default_model or "claude-sonnet-4-6",
+            block_registry=get_block_registry(),
+        )
+        engine = Engine(config=engine_config, human_renderer=session_renderer)
 
     inputs = {"message": message_text, "user_input": message_text, "input": message_text}
     try:

@@ -259,6 +259,7 @@ class ExecutionContext:
         layer_path: tuple[str, ...] = (),
         # -- 7-2: Multi-provider LLM registry -----------------------------------
         provider_registry: ProviderRegistry | None = None,
+        model_gateway: Any | None = None,
         tool_registry: Any | None = None,
         # -- 9-1: Embedding provider registry -----------------------------------
         embedding_registry: EmbeddingRegistry | None = None,
@@ -294,6 +295,7 @@ class ExecutionContext:
         self._run_id = run_id
         self.layer_path = layer_path
         self.provider_registry = provider_registry
+        self.model_gateway = model_gateway
         self.tool_registry = tool_registry
         self.embedding_registry = embedding_registry
         self.state_store = state_store

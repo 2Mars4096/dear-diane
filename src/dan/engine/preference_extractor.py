@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Callable
 
-from dan.engine.domain_taxonomy import normalize_domain_keyword_map
+from dan.domain_taxonomy import normalize_domain_keyword_map
 
 _MODEL_PATTERNS = {
     "claude": re.compile(r"\bclaude[-\s]?(opus|sonnet|haiku|3\.5|3|4)[\w.-]*\b", re.IGNORECASE),
@@ -62,6 +62,7 @@ class PreferenceExtractor:
         *,
         domain_keywords: dict[str, list[str]] | None = None,
         behavior_store: Any | None = None,
+        domain_keywords_provider: Callable[[], dict[str, list[str]]] | None = None,
     ) -> None:
         self._domain_keywords = (
             normalize_domain_keyword_map(domain_keywords)
@@ -69,6 +70,7 @@ class PreferenceExtractor:
             else None
         )
         self._behavior_store = behavior_store
+        self._domain_keywords_provider = domain_keywords_provider
 
     def extract_from_messages(
         self, messages: list[dict[str, str]]
@@ -123,12 +125,14 @@ class PreferenceExtractor:
     def _resolve_domain_keywords(self) -> dict[str, list[str]]:
         if self._domain_keywords is not None:
             return self._domain_keywords
-        try:
-            from dan.server.concierge.domain_learning import get_domain_keyword_map
-
-            return get_domain_keyword_map(self._behavior_store)
-        except Exception:
-            return {}
+        if self._domain_keywords_provider is not None:
+            try:
+                return normalize_domain_keyword_map(
+                    self._domain_keywords_provider()
+                )
+            except Exception:
+                return {}
+        return {}
 
     @staticmethod
     def _domain_keyword_matches(text_lower: str, keyword: str) -> bool:

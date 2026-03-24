@@ -40,6 +40,7 @@ def _build_meta_controller():
 async def meta_discover(goal: str = "", top_k: int = 5):
     rm = get_run_manager()
     from dan.meta.discovery import DiscoveryService
+    from dan.server.skill_library import SKILL_LIBRARY
 
     try:
         exp_index = get_experience_index()
@@ -51,6 +52,7 @@ async def meta_discover(goal: str = "", top_k: int = 5):
         experience_index=exp_index,
         experience_store=get_experience_store(with_index=exp_index is not None),
         graph_store=gs,
+        skill_library=SKILL_LIBRARY,
     )
     workflow_matches = await svc.discover_workflows(
         goal if goal.strip() else "generic workflow",

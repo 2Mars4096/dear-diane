@@ -23,6 +23,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from dan.engine.recipe.models import SessionState
+from dan.server.llm_gateway import resolve_llm_provider
 from dan.server.routers.dependencies import (
     get_furnace_session_store,
     is_furnace_enabled,
@@ -1718,13 +1719,24 @@ async def _compress_recipe_to_pill(
 _PROGRESS_INTERVAL_SECONDS = 3.0
 
 
-def _resolve_provider(app: Any) -> tuple[Any, str]:
+def _resolve_provider(
+    app: Any,
+    *,
+    pii_session_key: str | None = None,
+) -> tuple[Any, str]:
     """Resolve the LLM provider + model from app state or fallback registry."""
     model = os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6")
     try:
         chat_manager = app.state.dan.chat_manager
         if chat_manager is not None:
-            return chat_manager._providers.resolve(model), model
+            return (
+                resolve_llm_provider(
+                    chat_manager,
+                    model=model,
+                    pii_session_key=pii_session_key,
+                ),
+                model,
+            )
     except Exception:
         logger.debug("Chat provider resolution failed, falling back", exc_info=True)
 
@@ -1756,7 +1768,7 @@ async def _llm_call_streaming(
     cancel_event: asyncio.Event | None = None,
 ) -> str:
     """Streaming LLM call that publishes periodic phase_progress SSE events."""
-    provider, model = _resolve_provider(app)
+    provider, model = _resolve_provider(app, pii_session_key=session_id)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},

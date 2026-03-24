@@ -321,6 +321,9 @@ class Engine:
         memory_store: MemoryStore | None = None,
         human_renderer: "HumanRenderer | None" = None,
         workflow_loader: Callable[[str], Any | None] | None = None,
+        provider_registry: Any | None = None,
+        model_gateway: Any | None = None,
+        embedding_registry: Any | None = None,
     ) -> None:
         from dan.engine.executor import HumanRenderer as _HR  # noqa: F811
         self.config = config or EngineConfig()
@@ -352,69 +355,41 @@ class Engine:
         else:
             self.state_store = NullStateStore()
 
-        self.provider_registry = self._build_provider_registry()
-        self.embedding_registry = self._build_embedding_registry()
+        if provider_registry is not None:
+            self.provider_registry = provider_registry
+        else:
+            self.provider_registry = self._build_provider_registry()
+        if model_gateway is not None:
+            self.model_gateway = model_gateway
+        else:
+            self.model_gateway = self._build_model_gateway()
+        if embedding_registry is not None:
+            self.embedding_registry = embedding_registry
+        else:
+            self.embedding_registry = self._build_embedding_registry()
         self._register_defaults()
         self._active_run_states: dict[str, ExecutionState] = {}
 
     def _build_provider_registry(self):
         """Create the ProviderRegistry from engine config."""
-        from dan.providers import ProviderConfig
-        from dan.providers.registry import ProviderRegistry
-        from dan.providers.openai_provider import OpenAIProvider
+        from dan.providers.factory import build_provider_registry
 
-        registry = ProviderRegistry()
+        return build_provider_registry(self.config)
 
-        default_config = ProviderConfig(
-            api_key=self.config.llm_api_key,
-            base_url=self.config.llm_base_url,
-        )
-        registry.register("default", OpenAIProvider(default_config))
+    def _build_model_gateway(self):
+        """Create a gateway wrapper over the engine's provider registry when possible."""
+        registry = getattr(self, "provider_registry", None)
+        if registry is None or not hasattr(registry, "resolve"):
+            return None
+        from dan.llm_core.gateway import ModelGateway
 
-        for name, pconfig in self.config.providers.items():
-            if name == "default":
-                continue
-            provider = self._create_provider(name, pconfig)
-            if provider:
-                registry.register(name, provider)
-
-        for model, provider_name in self.config.model_provider_map.items():
-            registry.set_model_override(model, provider_name)
-
-        return registry
+        return ModelGateway(registry=registry)
 
     def _build_embedding_registry(self):
         """Create the EmbeddingRegistry from engine config."""
         from dan.rag import build_embedding_registry
 
         return build_embedding_registry(self.config)
-
-    @staticmethod
-    def _create_provider(name: str, config):
-        """Instantiate a provider by name, returning None on ImportError."""
-        from dan.providers.openai_provider import OpenAIProvider
-
-        if name == "openai":
-            return OpenAIProvider(config)
-
-        if name == "anthropic":
-            try:
-                from dan.providers.anthropic_provider import AnthropicProvider
-                return AnthropicProvider(config)
-            except ImportError:
-                logger.warning("anthropic package not installed; skipping provider '%s'", name)
-                return None
-
-        if name == "google":
-            try:
-                from dan.providers.google_provider import GoogleProvider
-                return GoogleProvider(config)
-            except ImportError:
-                logger.warning("google-generativeai not installed; skipping provider '%s'", name)
-                return None
-
-        # Unknown provider name — treat as OpenAI-compatible
-        return OpenAIProvider(config)
 
     def _create_embedding_provider(self, name: str, config):
         """Instantiate an embedding provider by name."""
@@ -471,67 +446,9 @@ class Engine:
 
     def _register_defaults(self) -> None:
         """Register built-in executors for all standard node types."""
-        from dan.executors.llm import LLMExecutor
-        from dan.executors.tool import ToolExecutor
-        from dan.executors.code import CodeExecutor
-        from dan.executors.input import InputExecutor
-        from dan.executors.rag import RAGExecutor
-        from dan.executors.validator import ValidatorExecutor
-        from dan.executors.control_flow import (
-            AgentTeamExecutor,
-            CompositeExecutor,
-            ForEachExecutor,
-            GateExecutor,
-            HumanNodeExecutor,
-            OrchestratorExecutor,
-            ParallelSubagentsExecutor,
-            IfElseExecutor,
-            ReduceExecutor,
-            RouterExecutor,
-            VoteExecutor,
-            WhileLoopExecutor,
-        )
+        from dan.executor_defaults import register_default_executors
 
-        human_executor = HumanNodeExecutor()
-        defaults: list[tuple[str, Any]] = [
-            ("llm_operator", LLMExecutor()),
-            ("tool_operator", ToolExecutor()),
-            ("code_operator", CodeExecutor()),
-            ("rag_operator", RAGExecutor()),
-            ("input", InputExecutor()),
-            ("if_else", IfElseExecutor()),
-            ("gate", GateExecutor()),
-            ("while_loop", WhileLoopExecutor()),
-            ("for_each", ForEachExecutor()),
-            ("parallel_subagents", ParallelSubagentsExecutor()),
-            ("orchestrator", OrchestratorExecutor()),
-            ("reduce", ReduceExecutor()),
-            ("router", RouterExecutor()),
-            ("human", human_executor),
-            ("human_in_the_loop", human_executor),
-            ("validator", ValidatorExecutor()),
-            ("composite", CompositeExecutor()),
-            ("vote", VoteExecutor()),
-            ("agent_team", AgentTeamExecutor()),
-            ("reflection", self._make_reflection_executor()),
-            ("goal_loop", self._make_goal_loop_executor()),
-        ]
-
-        for node_type, executor in defaults:
-            if not self.executor_registry.has(node_type):
-                self.executor_registry.register(node_type, executor)
-
-    @staticmethod
-    def _make_reflection_executor():
-        from dan.executors.reflection import ReflectionExecutor
-
-        return ReflectionExecutor()
-
-    @staticmethod
-    def _make_goal_loop_executor():
-        from dan.executors.control_flow import GoalLoopExecutor
-
-        return GoalLoopExecutor()
+        register_default_executors(self.executor_registry)
 
     @staticmethod
     def _apply_parameter_mutations(graph: Graph, mutations) -> Graph:
@@ -1902,8 +1819,9 @@ class Engine:
 
                     _fb_sel = getattr(gate_node, "feedback_selector", None)
                     if _fb_sel is not None:
-                        from dan.executors.control_flow import _apply_feedback_selector
-                        continue_data = _apply_feedback_selector(continue_data, _fb_sel)
+                        from dan.engine.conditions import apply_feedback_selector
+
+                        continue_data = apply_feedback_selector(continue_data, _fb_sel)
 
                 for cn in cycle_nodes:
                     state.port_data.clear_node(cn)
@@ -2877,6 +2795,7 @@ class Engine:
             run_id=state.run_id,
             layer_path=layer_path,
             provider_registry=self.provider_registry,
+            model_gateway=self.model_gateway,
             tool_registry=tool_registry,
             embedding_registry=self.embedding_registry,
             state_store=self.state_store,

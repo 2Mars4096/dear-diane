@@ -12,6 +12,8 @@ from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.state import NodeStatus
 from dan.models.nodes import NodeBase, ReflectionNode
 
+from .provider_runtime import resolve_completion_provider
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -133,8 +135,8 @@ class ReflectionExecutor:
         assert isinstance(node, ReflectionNode)
 
         model = node.reflection_model or context.config.llm_default_model
-
-        if context.provider_registry is None:
+        provider = resolve_completion_provider(context, model)
+        if provider is None:
             return NodeResult(
                 outputs={},
                 status=NodeStatus.FAILED,
@@ -161,7 +163,6 @@ class ReflectionExecutor:
         messages = self._build_messages(node, source_data, model)
 
         try:
-            provider = context.provider_registry.resolve(model)
             async with context.llm_slot():
                 result = await provider.complete(
                     messages=messages,

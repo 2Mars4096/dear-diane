@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
 
@@ -417,8 +417,15 @@ class BehaviorChangeLog:
 class ParameterDecisionLogger:
     """Wraps telemetry event emission with parameter context."""
 
-    def __init__(self, telemetry_store: Any = None) -> None:
+    def __init__(
+        self,
+        telemetry_store: Any = None,
+        *,
+        build_event: Callable[..., Any] | None = None,
+    ) -> None:
         self._store = telemetry_store
+        # Composition root supplies a builder that returns server telemetry types.
+        self._build_event = build_event
 
     def log_decision(
         self,
@@ -428,18 +435,24 @@ class ParameterDecisionLogger:
         outcome: str | None = None,
         metadata: dict | None = None,
     ) -> None:
-        from dan.server.telemetry import TelemetryEvent
-
-        event = TelemetryEvent(
-            event_type="parameter_decision",
-            parameter_key=parameter_key,
-            parameter_value=str(parameter_value),
-            metadata={
-                "decision": decision,
-                "outcome": outcome,
-                **(metadata or {}),
-            },
-        )
+        meta = {
+            "decision": decision,
+            "outcome": outcome,
+            **(metadata or {}),
+        }
+        if self._build_event is not None:
+            event = self._build_event(
+                parameter_key=parameter_key,
+                parameter_value=str(parameter_value),
+                metadata=meta,
+            )
+        else:
+            event = {
+                "event_type": "parameter_decision",
+                "parameter_key": parameter_key,
+                "parameter_value": str(parameter_value),
+                "metadata": meta,
+            }
         if self._store is not None:
             try:
                 if hasattr(self._store, "record"):

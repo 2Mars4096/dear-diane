@@ -32,6 +32,25 @@ _TIER_HIERARCHY: dict[str, int] = {
 _TIER_BY_RANK = {v: k for k, v in _TIER_HIERARCHY.items()}
 
 
+def _max_concurrent_llm_calls_from_env() -> int | None:
+    """Resolve the engine-local LLM concurrency cap from environment.
+
+    ``plan_scheduler`` only needs the numeric limit, not the concierge's
+    full ``ResourceBudget`` model.
+    """
+    raw = str(os.environ.get("DAN_MAX_CONCURRENT_LLM", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        logger.debug(
+            "Invalid DAN_MAX_CONCURRENT_LLM=%r; ignoring resource budget clamp",
+            raw,
+        )
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
@@ -1270,15 +1289,12 @@ def build_branch_dag(branch_keys: list[str], graph: Any) -> PlanDAG:
 def apply_resource_budget(
     constraints: PlanConstraints, budget: Any | None = None
 ) -> PlanConstraints:
-    """Clamp ``max_parallel`` to respect DAN_MAX_CONCURRENT_LLM via ResourceBudget."""
-    if budget is None:
-        try:
-            from dan.server.concierge.resources import ResourceBudget
-            budget = ResourceBudget.from_env()
-        except Exception:
-            return constraints
-
-    max_llm = getattr(budget, "max_concurrent_llm_calls", None)
+    """Clamp ``max_parallel`` to respect the shared LLM concurrency budget."""
+    max_llm = (
+        getattr(budget, "max_concurrent_llm_calls", None)
+        if budget is not None
+        else _max_concurrent_llm_calls_from_env()
+    )
     if max_llm is not None and constraints.max_parallel > max_llm:
         return constraints.model_copy(update={"max_parallel": max_llm})
     return constraints

@@ -6,7 +6,6 @@ import asyncio
 import inspect
 import json
 import logging
-import os
 import time
 from typing import Any
 
@@ -30,6 +29,7 @@ from dan.engine.token_optimization import (
 from dan.models.nodes import LLMOperator, NodeBase, RetryPolicy
 from dan.providers import CompletionResult
 from dan.providers.cost_tracker import TokenSaving
+from dan.executors.provider_runtime import resolve_llm_provider
 from dan.utils.template_render import render_runtime_template
 from dan.utils.tokens import estimate_tokens
 
@@ -53,66 +53,37 @@ def _escalate_tier(tier: Any) -> Any:
 
 
 class LLMExecutor:
-    """Executes LLMOperator nodes via the provider registry.
+    """Executes LLMOperator nodes via the gateway/provider runtime seam.
 
     Handles prompt rendering, chat completion calls, output normalization
     (parse/validate/re-prompt loop), and retry policy for API failures.
-    Backward compatible: falls back to direct AsyncOpenAI if no provider
-    registry is available.
+    Requires a gateway-backed runtime path, either explicitly injected on the
+    execution context or synthesized from runtime config. For backward
+    compatibility, callers may still inject an ``AsyncOpenAI`` client; that
+    path is used only when no gateway/provider registry has been prewired.
     """
 
     def __init__(self, client: AsyncOpenAI | None = None) -> None:
         self._client = client
 
-    def _get_client(self, context: ExecutionContext) -> AsyncOpenAI:
-        """Legacy fallback — used only when provider_registry is not available."""
-        if self._client is not None:
-            return self._client
-        return AsyncOpenAI(
-            api_key=context.config.llm_api_key,
-            base_url=context.config.llm_base_url,
-        )
-
     def _resolve_provider(self, model: str, context: ExecutionContext):
-        """Resolve the LLM provider for a model, with backward compat fallback."""
-        if context.provider_registry is not None:
-            provider = context.provider_registry.resolve(model)
-        else:
-            from dan.providers import ProviderConfig
+        """Resolve a provider-shaped runtime adapter for a model."""
+        # Preserve the historical test/injection seam: an explicit client
+        # should only be bypassed when the runtime already has a wired
+        # provider registry or model gateway.
+        if (
+            self._client is not None
+            and getattr(context, "provider_registry", None) is None
+            and getattr(context, "model_gateway", None) is None
+        ):
             from dan.providers.openai_provider import OpenAIProvider
 
-            if self._client is not None:
-                provider = OpenAIProvider.from_client(self._client)
-            else:
-                config = ProviderConfig(
-                    api_key=context.config.llm_api_key,
-                    base_url=context.config.llm_base_url,
-                )
-                provider = OpenAIProvider(config)
-
-        pii_required = os.environ.get("DAN_PII_PROTECTION") == "1"
-        try:
-            from dan.server.concierge.pii_tokenizer import (
-                SensitiveWordRegistry,
-                TokenizingProviderWrapper,
-                get_pii_session,
-                is_pii_enabled,
+            return OpenAIProvider.from_client(self._client)
+        provider = resolve_llm_provider(context, model)
+        if provider is None:
+            raise RuntimeError(
+                "LLMExecutor requires a model gateway or runtime config capable of building one.",
             )
-
-            pii_required = is_pii_enabled()
-            if pii_required:
-                session_key = context.pii_session_key(model)
-                return TokenizingProviderWrapper(
-                    provider=provider,
-                    session=get_pii_session(str(session_key)),
-                    registry=SensitiveWordRegistry.load(),
-                )
-        except Exception as exc:
-            if pii_required:
-                raise RuntimeError(
-                    "PII protection is enabled but provider wrapping failed.",
-                ) from exc
-            logger.debug("LLM executor PII wrapping unavailable", exc_info=True)
         return provider
 
     @staticmethod

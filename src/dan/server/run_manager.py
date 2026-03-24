@@ -156,6 +156,7 @@ class RunManager:
         memory_kernel: Any | None = None,
         telemetry_store: Any | None = None,
         graph_loader: Any | None = None,
+        model_gateway: Any | None = None,
     ) -> None:
         self._config = engine_config or EngineConfig()
         self._tool_registry = tool_registry or ToolRegistry()
@@ -163,6 +164,7 @@ class RunManager:
         self._memory_kernel = memory_kernel
         self._telemetry_store = telemetry_store
         self._graph_loader = graph_loader
+        self._model_gateway = model_gateway
         self._runs: dict[str, RunRecord] = {}
         self._subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
         self._tasks: dict[str, asyncio.Task[None]] = {}
@@ -195,8 +197,24 @@ class RunManager:
         return self._tool_registry
 
     @property
+    def model_gateway(self) -> Any | None:
+        return self._model_gateway
+
+    @model_gateway.setter
+    def model_gateway(self, value: Any | None) -> None:
+        self._model_gateway = value
+
+    @property
     def run_store(self) -> RunStore | None:
         return self._run_store
+
+    def _make_engine(self, **kwargs: Any) -> Engine:
+        return Engine(
+            config=self._config,
+            workflow_loader=self._graph_loader,
+            model_gateway=self._model_gateway,
+            **kwargs,
+        )
 
     def _hydrate_from_store(self) -> None:
         """Load historical run summaries from RunStore into the in-memory index."""
@@ -668,7 +686,7 @@ class RunManager:
         graph_revision, completed_node_ids, node_outputs keys) or
         None if no checkpoint exists.
         """
-        engine = Engine(config=self._config)
+        engine = self._make_engine()
         if engine.checkpoint_store is None:
             return None
         checkpoint = await engine.checkpoint_store.load(run_id)
@@ -702,7 +720,7 @@ class RunManager:
 
     async def list_checkpoint_runs(self) -> list[str]:
         """Return run_ids that have persisted checkpoints."""
-        engine = Engine(config=self._config)
+        engine = self._make_engine()
         if engine.checkpoint_store is None:
             return []
         return await engine.checkpoint_store.list_runs()
@@ -734,7 +752,7 @@ class RunManager:
         )
         from dan.engine.state import NodeStatus
 
-        engine = Engine(config=self._config)
+        engine = self._make_engine()
         if engine.checkpoint_store is None:
             raise ValueError("No checkpoint store configured")
 
@@ -1503,12 +1521,10 @@ class RunManager:
         run_policy: RunPolicy | dict[str, Any] | None = None,
     ) -> None:
         record.status = RunStatus.RUNNING
-        engine = Engine(
-            config=self._config,
+        engine = self._make_engine(
             executor_registry=self._make_executor_registry(),
             event_callback=self._event_callback,
             human_input_callback=self._make_human_input_callback(record.run_id),
-            workflow_loader=self._graph_loader,
         )
         # 17-1: Wire error context provider so LLMExecutor can augment prompts
         ecp = self._build_error_context_provider()
@@ -1548,12 +1564,10 @@ class RunManager:
         run_policy: RunPolicy | dict[str, Any] | None = None,
     ) -> None:
         record.status = RunStatus.RUNNING
-        engine = Engine(
-            config=self._config,
+        engine = self._make_engine(
             executor_registry=self._make_executor_registry(),
             event_callback=self._event_callback,
             human_input_callback=self._make_human_input_callback(record.run_id),
-            workflow_loader=self._graph_loader,
         )
         self._engines[record.run_id] = engine
         try:
@@ -1604,12 +1618,10 @@ class RunManager:
 
         record.status = RunStatus.RUNNING
 
-        engine = Engine(
-            config=self._config,
+        engine = self._make_engine(
             executor_registry=self._make_executor_registry(),
             event_callback=self._event_callback,
             human_input_callback=self._make_human_input_callback(record.run_id),
-            workflow_loader=self._graph_loader,
         )
         ecp = self._build_error_context_provider()
         if ecp is not None:

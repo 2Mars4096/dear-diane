@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from dan.engine.conditions import (
     ConditionError,
+    apply_feedback_selector,
     evaluate_condition,
     evaluate_expression,
     evaluate_reducer,
@@ -42,33 +43,15 @@ from dan.models.control_flow import (
     VoteNode,
     WhileLoopNode,
 )
-from dan.models.context import CompactionStrategy, FeedbackSelector, MergeStrategy
+from dan.models.context import CompactionStrategy, MergeStrategy
 from dan.models.nodes import NodeBase
 from dan.engine.state_store import LoopIterationState, TeamTurnState
 from dan.engine.token_optimization import LoopCompactor
 from dan.utils.tokens import estimate_tokens
 
+from .provider_runtime import resolve_completion_provider
+
 logger = logging.getLogger(__name__)
-
-
-def _apply_feedback_selector(data: dict[str, Any], selector: FeedbackSelector) -> dict[str, Any]:
-    """Filter/rename/transform a feedback dict according to *selector*."""
-    filtered = dict(data)
-
-    if selector.include is not None:
-        filtered = {k: v for k, v in filtered.items() if k in selector.include}
-    elif selector.exclude is not None:
-        filtered = {k: v for k, v in filtered.items() if k not in selector.exclude}
-
-    if selector.rename:
-        filtered = {selector.rename.get(k, k): v for k, v in filtered.items()}
-
-    if selector.transform is not None:
-        filtered = evaluate_expression(selector.transform, {"inputs": filtered})
-        if not isinstance(filtered, dict):
-            filtered = {"result": filtered}
-
-    return filtered
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +296,7 @@ class WhileLoopExecutor:
 
             # -- 16-4: feedback selector ----------------------------------
             if node.feedback_selector is not None:
-                feedback_data = _apply_feedback_selector(feedback_data, node.feedback_selector)
+                feedback_data = apply_feedback_selector(feedback_data, node.feedback_selector)
 
             scope["history"].append(body_output)
             if _has_schema:
@@ -966,7 +949,7 @@ class RouterExecutor:
         prompt: str,
         tier_params: dict[str, Any] | None = None,
     ) -> str:
-        """Dispatch to provider registry, falling back to direct AsyncOpenAI."""
+        """Dispatch through the shared completion runtime, building a gateway if needed."""
         messages = [{"role": "user", "content": prompt}]
 
         effective_temp = 0.0
@@ -977,27 +960,19 @@ class RouterExecutor:
                 if k not in ("temperature", "max_tokens"):
                     extra_kwargs[k] = v
 
-        if context.provider_registry is not None:
-            provider = context.provider_registry.resolve(model)
-            async with context.llm_slot():
-                result = await provider.complete(
-                    messages=messages, model=model, temperature=effective_temp,
-                    **extra_kwargs,
-                )
-            return result.text.strip()
-
-        from openai import AsyncOpenAI
-        client = AsyncOpenAI(
-            api_key=context.config.llm_api_key,
-            base_url=context.config.llm_base_url,
+        provider = resolve_completion_provider(
+            context,
+            model,
+            allow_legacy_openai_fallback=True,
         )
         async with context.llm_slot():
-            resp = await client.chat.completions.create(
-                model=model,
+            result = await provider.complete(
                 messages=messages,
+                model=model,
                 temperature=effective_temp,
+                **extra_kwargs,
             )
-        return (resp.choices[0].message.content or "").strip()
+        return result.text.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -2004,55 +1979,25 @@ class OrchestratorExecutor:
         messages: list[dict[str, Any]],
         tier_params: dict[str, Any] | None = None,
     ) -> CompletionResult:
-        if context.provider_registry is not None:
-            provider = context.provider_registry.resolve(model)
-            effective_temp = 0.0
-            extra_kwargs: dict[str, Any] = {"tools": OrchestratorExecutor.TOOL_SCHEMAS}
-            if tier_params:
-                effective_temp = tier_params.get("temperature", effective_temp)
-                for k, v in tier_params.items():
-                    if k not in ("temperature", "max_tokens"):
-                        extra_kwargs[k] = v
-            async with context.llm_slot():
-                return await provider.complete(
-                    messages=messages,
-                    model=model,
-                    temperature=effective_temp,
-                    **extra_kwargs,
-                )
-
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(
-            api_key=context.config.llm_api_key,
-            base_url=context.config.llm_base_url,
+        provider = resolve_completion_provider(
+            context,
+            model,
+            allow_legacy_openai_fallback=True,
         )
+        effective_temp = 0.0
+        extra_kwargs: dict[str, Any] = {"tools": OrchestratorExecutor.TOOL_SCHEMAS}
+        if tier_params:
+            effective_temp = tier_params.get("temperature", effective_temp)
+            for k, v in tier_params.items():
+                if k not in ("temperature", "max_tokens"):
+                    extra_kwargs[k] = v
         async with context.llm_slot():
-            resp = await client.chat.completions.create(
-                model=model,
+            return await provider.complete(
                 messages=messages,
-                temperature=0.0,
-                tools=OrchestratorExecutor.TOOL_SCHEMAS,
+                model=model,
+                temperature=effective_temp,
+                **extra_kwargs,
             )
-        msg = resp.choices[0].message
-        tool_calls_raw = None
-        if msg.tool_calls:
-            tool_calls_raw = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
-                }
-                for tc in msg.tool_calls
-            ]
-        return CompletionResult(
-            text=msg.content or "",
-            model=model,
-            tool_calls=tool_calls_raw,
-        )
 
     @staticmethod
     def _format_completion_events(
@@ -2292,29 +2237,17 @@ class VoteExecutor:
             messages.append({"role": "system", "content": node.system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        if context.provider_registry is not None:
-            provider = context.provider_registry.resolve(model)
-            async with context.llm_slot():
-                return await provider.complete(
-                    messages=messages, model=model, temperature=node.temperature,
-                )
-
-        from openai import AsyncOpenAI
-        client = AsyncOpenAI(
-            api_key=context.config.llm_api_key,
-            base_url=context.config.llm_base_url,
+        provider = resolve_completion_provider(
+            context,
+            model,
+            allow_legacy_openai_fallback=True,
         )
         async with context.llm_slot():
-            resp = await client.chat.completions.create(
-                model=model, messages=messages, temperature=node.temperature,
+            return await provider.complete(
+                messages=messages,
+                model=model,
+                temperature=node.temperature,
             )
-        from dan.providers import CompletionResult
-        text = resp.choices[0].message.content or ""
-        usage = {
-            "prompt_tokens": resp.usage.prompt_tokens if resp.usage else 0,
-            "completion_tokens": resp.usage.completion_tokens if resp.usage else 0,
-        }
-        return CompletionResult(text=text, usage=usage, model=model)
 
     @staticmethod
     def _compute_cost(model: str, usage: dict[str, int] | None) -> float:
@@ -2410,15 +2343,15 @@ class VoteExecutor:
         messages = [{"role": "user", "content": full_prompt}]
 
         try:
-            if context.provider_registry is not None:
-                provider = context.provider_registry.resolve(judge_model)
+            provider = resolve_completion_provider(context, judge_model)
+            if provider is None:
+                judge_text = "0"
+            else:
                 async with context.llm_slot():
                     result = await provider.complete(
                         messages=messages, model=judge_model, temperature=0.0,
                     )
                 judge_text = result.text.strip()
-            else:
-                judge_text = "0"
 
             chosen_idx = int("".join(c for c in judge_text if c.isdigit()) or "0")
             for v in votes:

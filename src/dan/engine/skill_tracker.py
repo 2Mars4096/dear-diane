@@ -16,7 +16,7 @@ import logging
 import os
 import time
 from collections import defaultdict
-from typing import Any
+from typing import Any, Callable
 
 from dan.engine.memory_kernel import (
     MemoryItem,
@@ -279,8 +279,13 @@ class SkillRefiner:
     via ``related_ids`` for lineage tracking.
     """
 
-    def __init__(self, memory_kernel: Any) -> None:
+    def __init__(
+        self,
+        memory_kernel: Any,
+        skill_text_lookup: Callable[[str], str | None] | None = None,
+    ) -> None:
         self.memory_kernel = memory_kernel
+        self._skill_text_lookup = skill_text_lookup
 
     def propose_refinement(
         self, skill_name: str, effectiveness: dict[str, Any],
@@ -371,14 +376,15 @@ class SkillRefiner:
         )
 
     def _find_skill_text(self, skill_name: str) -> str | None:
-        """Look up skill text from the skill library or memory kernel."""
-        try:
-            from dan.server.skill_library import SKILL_LIBRARY
-
-            if skill_name in SKILL_LIBRARY:
-                return SKILL_LIBRARY[skill_name].get("text", "")
-        except ImportError:
-            pass
+        """Look up skill text from an injected lookup, then memory kernel."""
+        if self._skill_text_lookup is not None:
+            try:
+                text = self._skill_text_lookup(skill_name)
+            except Exception:
+                logger.debug("skill_text_lookup failed", exc_info=True)
+            else:
+                if text:
+                    return text
 
         patterns = self.memory_kernel.list_by_type(
             MemoryType.WORKFLOW_PATTERN, limit=200,

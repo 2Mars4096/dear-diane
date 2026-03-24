@@ -261,12 +261,14 @@ class LocalRuntime(PublishRuntime):
         self,
         engine_config: Any | None = None,
         human_timeout: float = 300.0,
+        model_gateway: Any | None = None,
     ) -> None:
         from dan.engine.executor import EngineConfig
         from dan.publish.session import PublishSessionStore
 
         self._config = engine_config or EngineConfig()
         self._human_timeout = human_timeout
+        self._model_gateway = model_gateway
         self._store = PublishSessionStore()
         self._tasks: dict[str, asyncio.Task] = {}
 
@@ -279,6 +281,15 @@ class LocalRuntime(PublishRuntime):
         """Expose session store for SSE/WebSocket endpoints that need direct access."""
         return self._store
 
+    def _make_engine(self, *, human_renderer: Any | None = None) -> Any:
+        from dan.engine import Engine
+
+        return Engine(
+            config=self._config,
+            human_renderer=human_renderer,
+            model_gateway=self._model_gateway,
+        )
+
     # -- dispatch -----------------------------------------------------------
 
     async def run_sync(
@@ -287,10 +298,8 @@ class LocalRuntime(PublishRuntime):
         graph: Graph,
         inputs: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        from dan.engine import Engine
-
         session = await self._store.create(workflow_id)
-        engine = Engine(config=self._config)
+        engine = self._make_engine()
 
         try:
             result = await engine.run(graph, inputs=inputs or None)
@@ -316,14 +325,13 @@ class LocalRuntime(PublishRuntime):
         graph: Graph,
         inputs: dict[str, Any] | None,
     ) -> str:
-        from dan.engine import Engine
         from dan.publish.session import PublishedHumanRenderer
 
         session = await self._store.create(workflow_id)
         renderer = PublishedHumanRenderer(self._store, timeout=self._human_timeout)
         renderer.active_session_id = session.session_id
 
-        engine = Engine(config=self._config, human_renderer=renderer)
+        engine = self._make_engine(human_renderer=renderer)
 
         task = asyncio.create_task(
             self._background_run(engine, graph, inputs, session.session_id)
@@ -399,6 +407,7 @@ async def create_publish_runtime(
     force_local: bool = False,
     engine_config: Any | None = None,
     human_timeout: float = 300.0,
+    model_gateway: Any | None = None,
 ) -> PublishRuntime:
     """Detect dan-serve availability and return the appropriate runtime.
 
@@ -426,7 +435,11 @@ async def create_publish_runtime(
         await client.close()
 
     logger.info("Publish running in local mode")
-    return LocalRuntime(engine_config=engine_config, human_timeout=human_timeout)
+    return LocalRuntime(
+        engine_config=engine_config,
+        human_timeout=human_timeout,
+        model_gateway=model_gateway,
+    )
 
 
 # ---------------------------------------------------------------------------
