@@ -570,7 +570,7 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         help_text="Manage PII protection settings",
         group="safety",
         requires=["pii_enabled"],
-        handler="dan.server.concierge.pii_tokenizer.handle_pii_command",
+        handler="dan.llm_core.pii_tokenizer.handle_pii_command",
         subcommands={
             "add": SubcommandDescriptor(
                 name="add",

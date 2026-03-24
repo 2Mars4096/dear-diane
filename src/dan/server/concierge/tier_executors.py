@@ -2,77 +2,64 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import json
 import logging
 import re
 import time
 import uuid
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, AsyncIterator, Protocol
 
 if TYPE_CHECKING:
     from .session import Session, SessionManager, SessionResult, SessionTier
     from .triage import TriageResult
 
-from dan.server.chat_manager import (
+from dan.chat_events import (
     ChatCompleteEvent,
     ChatErrorEvent,
     ChatInterruptedEvent,
     ChatStreamEvent,
 )
+from dan.agent_runtime.synthesis import (
+    SynthesisGapReview,
+    collect_followup_signals as _collect_followup_signals_impl,
+    collect_synthesis_uncertainties as _collect_synthesis_uncertainties_impl,
+    deterministic_synthesis_gap_review as _deterministic_synthesis_gap_review_impl,
+    extract_json_candidate as _extract_json_candidate_impl,
+    find_synthesis_gap_reason as _find_synthesis_gap_reason_impl,
+    normalize_subtask_items as _normalize_subtask_items_impl,
+    parse_subtask_decomposition_response as _parse_subtask_decomposition_response_impl,
+    parse_synthesis_review_response as _parse_synthesis_review_response_impl,
+    planned_subtasks as _planned_subtasks_impl,
+    significant_terms as _significant_terms_impl,
+)
+from dan.agent_runtime.orchestration import (
+    build_mixed_execution_groups as _build_mixed_execution_groups_impl,
+    estimate_child_tier as _estimate_child_tier_impl,
+    execute_child_execution_policy as _execute_child_execution_policy_impl,
+    merge_child_result_usage as _merge_child_result_usage_impl,
+    merge_token_usage as _merge_token_usage_impl,
+    mixed_subtask_depends_on_prior as _mixed_subtask_depends_on_prior_impl,
+    plan_child_session as _plan_child_session_impl,
+    should_llm_synthesize as _should_llm_synthesize_impl,
+    synthesize_child_results as _synthesize_child_results_impl,
+)
+from dan.agent_runtime.synthesis_runtime import (
+    cheap_llm_complete as _cheap_llm_complete_impl,
+    maybe_llm_synthesize as _maybe_llm_synthesize_impl,
+    plan_decomposition as _plan_decomposition_impl,
+    resolve_default_llm_model as _resolve_default_llm_model_impl,
+    review_synthesis_gap_reason_with_llm as _review_synthesis_gap_reason_with_llm_impl,
+)
 
 from .autonomy import autonomy_max_tool_turns, build_autonomy_announcement
 from .identity import format_prefix
 from .models import IntentCategory, PendingAction, ResolvedContext, RouteDecision, SurfaceMessage, TaskTurn
+from .pending_actions import resolve_pending_reply
 
 logger = logging.getLogger(__name__)
 
-_SINGLE_ACTION_VERBS = frozenset({
-    "search", "read", "find", "lookup", "check", "get",
-    "fetch", "calculate", "compute", "summarize", "translate",
-})
-_MULTI_ACTION_KEYWORDS = frozenset({
-    "research", "analyze", "write", "build", "create",
-    "develop", "design", "investigate",
-})
-_MIXED_DEPENDENT_PREFIXES = frozenset({
-    "summarize", "synthesize", "combine", "review", "finalize",
-    "draft", "write", "prepare", "present", "compile",
-})
-_MIXED_DEPENDENCY_RE = re.compile(
-    r"\b(?:based on|using|from the|from previous|from findings|review the|summarize|synthesize|combine|finalize)\b",
-    re.IGNORECASE,
-)
 _MISSING_TERMINAL_EVENT_FALLBACK = (
     "The response stream ended before a final answer was produced. "
     "Please ask me to continue from the latest progress."
-)
-_GOAL_REVIEW_STOPWORDS = frozenset({
-    "about", "across", "after", "against", "before", "brief", "child", "children",
-    "combined", "deliverable", "finish", "from", "goal", "into", "original",
-    "parent", "remaining", "result", "results", "review", "session", "task",
-    "tasks", "that", "them", "then", "this", "with", "work",
-})
-_PENDING_CHECKBOX_RE = re.compile(r"(?im)^\s*[-*]?\s*\[\s\]\s+(.+)$")
-_OPEN_LOOP_REVIEW_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (
-        re.compile(r"\b(?:todo|fixme)\b", re.IGNORECASE),
-        "contains TODO-style follow-up markers",
-    ),
-    (
-        re.compile(
-            r"\b(?:could not|couldn't|unable to|failed to|blocked by|waiting on)\b",
-            re.IGNORECASE,
-        ),
-        "reports incomplete execution",
-    ),
-    (
-        re.compile(
-            r"\b(?:not yet|not implemented|not found|follow[- ]up|remaining|next steps?|pending)\b",
-            re.IGNORECASE,
-        ),
-        "calls out remaining follow-up work",
-    ),
 )
 _WORKFLOW_ACTIVITY_RE = re.compile(
     r"\b(?:workflow|graph|node|edge|mutation|plan_graph_mutations|watchlist|ticker|equity)\b",
@@ -146,12 +133,6 @@ class TierExecutor(Protocol):
 # Helpers
 # ---------------------------------------------------------------------------
 
-
-@dataclass(frozen=True)
-class _SynthesisGapReview:
-    hard_gap_reason: str | None = None
-    ambiguous_gap_reason: str | None = None
-
 def _complete_event(content: str, **kwargs: Any) -> ChatCompleteEvent:
     return ChatCompleteEvent(
         message_id=uuid.uuid4().hex[:12],
@@ -195,10 +176,6 @@ def _autonomy_level(session: Any, default: str = "balanced") -> str:
     resolution = getattr(session, "autonomy_resolution", None)
     level = getattr(resolution, "effective_level", "") if resolution is not None else ""
     return str(level or default)
-
-
-def _task_mentions_workflow(task_desc: str) -> bool:
-    return bool(re.search(r"\b(?:workflow|graph|node|edge|mutation|build|edit)\b", task_desc, re.IGNORECASE))
 
 
 def _history_has_workflow_activity(history: list[dict[str, str]]) -> bool:
@@ -254,42 +231,6 @@ def _should_prefer_workflow_run_followup(
     return bool(_WORKFLOW_RUN_RE.search(text) and _ANAPHORA_RE.search(text))
 
 
-def _filter_child_route(parent_route: Any, task_desc: str) -> Any:
-    if parent_route is None:
-        return None
-    action_hints = [
-        str(hint).strip()
-        for hint in getattr(parent_route, "action_hints", None) or []
-        if str(hint).strip()
-    ]
-    if not action_hints and not getattr(parent_route, "target", None):
-        return parent_route
-
-    workflow_related = {"workflow_edit", "workflow_build", "workflow_query"}
-    if _task_mentions_workflow(task_desc):
-        filtered_hints = action_hints
-        target = getattr(parent_route, "target", "general")
-    else:
-        filtered_hints = [hint for hint in action_hints if hint not in workflow_related]
-        target = "general" if getattr(parent_route, "target", "") == "workflow" else getattr(parent_route, "target", "general")
-
-    if (
-        filtered_hints == action_hints
-        and target == getattr(parent_route, "target", None)
-    ):
-        return parent_route
-
-    try:
-        return parent_route.model_copy(
-            update={
-                "target": target,
-                "action_hints": filtered_hints,
-            }
-        )
-    except Exception:
-        return parent_route
-
-
 def _prepend_autonomy_announcement(session: Any, content: str) -> str:
     if getattr(session, "parent_id", None) is not None:
         return content
@@ -337,266 +278,50 @@ def _resolve_session_model_override(concierge: Any, session: Any) -> str | None:
 
 
 def _planned_subtasks(session: Any) -> list[str]:
-    triage = getattr(session, "triage", None)
-    if triage is not None and getattr(triage, "subtasks", None):
-        return [
-            str(task).strip()
-            for task in getattr(triage, "subtasks", [])
-            if str(task).strip()
-        ]
-    task_context = getattr(session, "task_context", None)
-    if isinstance(task_context, dict):
-        return [
-            str(task).strip()
-            for task in task_context.get("subtasks", [])
-            if str(task).strip()
-        ]
-    return []
+    return _planned_subtasks_impl(session)
 
 
 def _significant_terms(text: str, *, limit: int | None = None) -> list[str]:
-    terms: list[str] = []
-    seen: set[str] = set()
-    for raw in re.findall(r"[a-z0-9][a-z0-9._/-]*", text.lower()):
-        token = raw.strip("._/-")
-        if len(token) < 4 or token.isdigit() or token in _GOAL_REVIEW_STOPWORDS:
-            continue
-        if token in seen:
-            continue
-        seen.add(token)
-        terms.append(token)
-        if limit is not None and len(terms) >= limit:
-            break
-    return terms
+    return _significant_terms_impl(text, limit=limit)
 
 
 def _collect_followup_signals(text: str, *, limit: int = 2) -> list[str]:
-    if not str(text or "").strip():
-        return []
-    signals: list[str] = []
-    pending_items = [
-        item.strip()
-        for item in _PENDING_CHECKBOX_RE.findall(text)
-        if str(item).strip()
-    ]
-    if pending_items:
-        preview = "; ".join(pending_items[:2])
-        signals.append(f"contains pending checklist items ({preview})")
-    for pattern, label in _OPEN_LOOP_REVIEW_PATTERNS:
-        if pattern.search(text):
-            signals.append(label)
-        if len(signals) >= limit:
-            break
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for signal in signals:
-        if signal in seen:
-            continue
-        seen.add(signal)
-        deduped.append(signal)
-        if len(deduped) >= limit:
-            break
-    return deduped
+    return _collect_followup_signals_impl(text, limit=limit)
 
 
 def _collect_synthesis_uncertainties(child_results: dict[str, Any], manager: Any) -> list[str]:
-    uncertainties: list[str] = []
-    for child_id, result in child_results.items():
-        child = manager.get(child_id)
-        label = getattr(child, "task", child_id)
-        content = str(getattr(result, "content", "") or "").strip()
-        error = str(getattr(result, "error", "") or "").strip()
-        if error:
-            uncertainties.append(f"- {label}: {error}")
-            continue
-        for signal in _collect_followup_signals(content, limit=1):
-            uncertainties.append(f"- {label}: {signal}")
-    return uncertainties
+    return _collect_synthesis_uncertainties_impl(child_results, manager)
 
 
 def _deterministic_synthesis_gap_review(
     session: Any,
     child_results: dict[str, Any],
     manager: Any,
-) -> _SynthesisGapReview:
-    if not child_results:
-        return _SynthesisGapReview(hard_gap_reason="no child sessions produced usable output")
-    missing_output: list[str] = []
-    errored: list[str] = []
-    child_labels: list[str] = []
-    combined_evidence_parts: list[str] = []
-    for child_id, result in child_results.items():
-        child = manager.get(child_id)
-        label = getattr(child, "task", child_id)
-        child_labels.append(label)
-        content = str(getattr(result, "content", "") or "").strip()
-        error = str(getattr(result, "error", "") or "").strip()
-        if error:
-            errored.append(f"{label}: {error}")
-        elif not content:
-            missing_output.append(label)
-        else:
-            combined_evidence_parts.append(f"{label}\n{content}")
-    if errored:
-        return _SynthesisGapReview(
-            hard_gap_reason="one or more child sessions failed: " + "; ".join(errored[:3]),
-        )
-    if missing_output:
-        return _SynthesisGapReview(
-            hard_gap_reason="one or more child sessions produced no content: "
-            + ", ".join(missing_output[:3]),
-        )
-    expected_subtasks = _planned_subtasks(session)
-    if expected_subtasks:
-        missing_subtasks = [task for task in expected_subtasks if task not in child_labels]
-        if missing_subtasks:
-            return _SynthesisGapReview(
-                hard_gap_reason="planned subtasks were not completed: "
-                + ", ".join(missing_subtasks[:3]),
-            )
-    ambiguous_reasons: list[str] = []
-    uncertainties = _collect_synthesis_uncertainties(child_results, manager)
-    if uncertainties:
-        trimmed = [item.removeprefix("- ").strip() for item in uncertainties[:3]]
-        ambiguous_reasons.append(
-            "child results still show unresolved follow-up work: " + "; ".join(trimmed),
-        )
-    triage = getattr(session, "triage", None)
-    goal_text = "\n".join(
-        part for part in [
-            str(getattr(session, "task", "") or "").strip(),
-            str(getattr(triage, "goal", "") or "").strip(),
-            str(getattr(triage, "deliverable", "") or "").strip(),
-        ]
-        if part
-    )
-    goal_terms = _significant_terms(goal_text, limit=6)
-    if len(goal_terms) < 3:
-        return _SynthesisGapReview(
-            ambiguous_gap_reason="; ".join(ambiguous_reasons[:2]) if ambiguous_reasons else None,
-        )
-    evidence_terms = set(_significant_terms("\n\n".join(combined_evidence_parts)))
-    missing_goal_terms = [term for term in goal_terms if term not in evidence_terms]
-    if len(missing_goal_terms) >= max(2, len(goal_terms) // 2):
-        ambiguous_reasons.append(
-            "combined child results do not clearly cover the original goal: keyword coverage is missing for "
-            + ", ".join(missing_goal_terms[:3]),
-        )
-    return _SynthesisGapReview(
-        ambiguous_gap_reason="; ".join(ambiguous_reasons[:2]) if ambiguous_reasons else None,
-    )
+) -> SynthesisGapReview:
+    return _deterministic_synthesis_gap_review_impl(session, child_results, manager)
 
 
 def _find_synthesis_gap_reason(session: Any, child_results: dict[str, Any], manager: Any) -> str | None:
-    review = _deterministic_synthesis_gap_review(session, child_results, manager)
-    return review.hard_gap_reason or review.ambiguous_gap_reason
+    return _find_synthesis_gap_reason_impl(session, child_results, manager)
 
 
 def _parse_synthesis_review_response(content: str) -> tuple[str | None, str]:
-    text = str(content or "").strip()
-    if not text:
-        return None, ""
-    candidate = text
-    if candidate.startswith("```"):
-        first_newline = candidate.find("\n")
-        if first_newline != -1:
-            candidate = candidate[first_newline + 1 :]
-        if candidate.endswith("```"):
-            candidate = candidate[:-3]
-        candidate = candidate.strip()
-    try:
-        payload = json.loads(candidate)
-    except json.JSONDecodeError:
-        start = candidate.find("{")
-        end = candidate.rfind("}")
-        if start == -1 or end <= start:
-            return None, text
-        try:
-            payload = json.loads(candidate[start : end + 1])
-        except json.JSONDecodeError:
-            return None, text
-    if not isinstance(payload, dict):
-        return None, text
-    decision = str(payload.get("decision", "") or "").strip().lower()
-    reason = str(payload.get("reason", "") or "").strip()
-    if decision not in {"accept", "remediate"}:
-        return None, text
-    return decision, reason or text
+    return _parse_synthesis_review_response_impl(content)
 
 
 def _extract_json_candidate(text: str) -> Any | None:
-    candidate = str(text or "").strip()
-    if not candidate:
-        return None
-    if candidate.startswith("```"):
-        first_newline = candidate.find("\n")
-        if first_newline != -1:
-            candidate = candidate[first_newline + 1 :]
-        if candidate.endswith("```"):
-            candidate = candidate[:-3]
-        candidate = candidate.strip()
-    try:
-        return json.loads(candidate)
-    except json.JSONDecodeError:
-        start_obj = candidate.find("{")
-        end_obj = candidate.rfind("}")
-        if start_obj != -1 and end_obj > start_obj:
-            try:
-                return json.loads(candidate[start_obj : end_obj + 1])
-            except json.JSONDecodeError:
-                pass
-        start_list = candidate.find("[")
-        end_list = candidate.rfind("]")
-        if start_list != -1 and end_list > start_list:
-            try:
-                return json.loads(candidate[start_list : end_list + 1])
-            except json.JSONDecodeError:
-                pass
-    return None
+    return _extract_json_candidate_impl(text)
 
 
 def _normalize_subtask_items(tasks: list[Any], *, fallback_task: str) -> list[str]:
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for raw in tasks:
-        item = str(raw or "").strip()
-        if not item:
-            continue
-        item = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", item).strip()
-        if not item:
-            continue
-        key = item.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        normalized.append(item)
-        if len(normalized) >= 8:
-            break
-    return normalized or ([fallback_task] if fallback_task else [])
+    return _normalize_subtask_items_impl(tasks, fallback_task=fallback_task)
 
 
 def _parse_subtask_decomposition_response(content: str, *, fallback_task: str) -> list[str] | None:
-    payload = _extract_json_candidate(content)
-    raw_tasks: list[Any] | None = None
-    if isinstance(payload, dict):
-        candidate = payload.get("subtasks")
-        if isinstance(candidate, list):
-            raw_tasks = candidate
-    elif isinstance(payload, list):
-        raw_tasks = payload
-
-    if raw_tasks is None:
-        bullets = [
-            re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip()
-            for line in str(content or "").splitlines()
-            if re.match(r"^\s*(?:[-*]|\d+[.)])\s+", line)
-        ]
-        if bullets:
-            raw_tasks = bullets
-
-    if raw_tasks is None:
-        return None
-    return _normalize_subtask_items(raw_tasks, fallback_task=fallback_task)
+    return _parse_subtask_decomposition_response_impl(
+        content,
+        fallback_task=fallback_task,
+    )
 
 
 def _cancel_event(session: Any) -> Any | None:
@@ -939,7 +664,7 @@ def _chat_result_metadata(
         metadata["active_prompt_version"] = audit.get("active_prompt_version")
     model_used = str(
         chat_params.get("model_override")
-        or getattr(chat_manager, "_chat_model", "")
+        or _resolve_default_llm_model_impl(chat_manager)
         or "",
     ).strip()
     if model_used:
@@ -1045,18 +770,14 @@ class InstantExecutor:
         reply = getattr(session, "msg", None)
         if reply is None:
             return None
-        text = reply.text.strip().lower()
+        resolution = resolve_pending_reply(pending, reply.text)
 
-        if pending.kind == "confirm":
-            if text in {"no", "n", "cancel", "stop"}:
-                return f"{format_prefix(project.label)} Cancelled."
-            if text in {"yes", "y", "ok", "sure", "go", "proceed"}:
-                return None  # caller should replay original
-        elif pending.kind == "clarify":
-            if pending.options and text.isdigit():
-                idx = int(text) - 1
-                if 0 <= idx < len(pending.options):
-                    return pending.options[idx]
+        if resolution.action == "cancel":
+            return f"{format_prefix(project.label)} Cancelled."
+        if resolution.action == "resume" and resolution.pending_kind == "clarify":
+            return resolution.resolved_value or resolution.replay_text
+        if resolution.action == "prompt_retry":
+            return f"{format_prefix(project.label)} {resolution.response_text}"
         return None
 
 
@@ -1343,133 +1064,71 @@ class MultiStepExecutor:
         synthesis_usage: dict[str, int] = {}
 
         try:
-            if child_execution == "parallel":
-                for task_desc in subtasks:
-                    if _cancel_requested(session) or not manager.can_spawn_child(session.id):
-                        break
-                    children.append(self._build_child_session(session, manager, task_desc))
+            execution_resolution = None
 
-                if _cancel_requested(session):
-                    interrupted = True
-                elif not children:
-                    async for event in self._execute_directly(session, manager, start):
-                        yield event
-                    return
-                else:
-                    async for event in self._run_children_parallel(children, session, manager):
-                        if isinstance(event, ChatInterruptedEvent):
-                            interrupted = True
-                            interrupted_emitted = True
-                            yield event
-                            break
-                        yield event
-            elif child_execution == "mixed":
-                previous_group_summary: str | None = None
-                groups = mixed_groups or [list(subtasks)]
-                for group in groups:
-                    if _cancel_requested(session):
-                        interrupted = True
-                        break
-                    group_children: list[Any] = []
-                    for task_desc in group:
-                        if _cancel_requested(session) or not manager.can_spawn_child(session.id):
-                            break
-                        child = self._build_child_session(session, manager, task_desc)
-                        if previous_group_summary:
-                            task_ctx = getattr(child, "task_context", {}) or {}
-                            task_ctx["previous_result"] = previous_group_summary
-                            child.task_context = task_ctx
-                        children.append(child)
-                        group_children.append(child)
+            def _build_execution_child(task_desc: str, previous_result: str | None) -> Any:
+                child = self._build_child_session(session, manager, task_desc)
+                if previous_result:
+                    task_ctx = getattr(child, "task_context", {}) or {}
+                    task_ctx["previous_result"] = previous_result
+                    child.task_context = task_ctx
+                return child
 
-                    if _cancel_requested(session):
-                        interrupted = True
-                        break
-                    if not group_children:
-                        break
+            async def _run_single_child(child: Any) -> AsyncIterator[ChatStreamEvent]:
+                async for event in self._run_child(child, manager):
+                    yield event
 
-                    if len(group_children) == 1:
-                        child = group_children[0]
-                        progress_event = self._child_progress_event(session, child)
-                        if progress_event is not None:
-                            yield progress_event
-                        try:
-                            async for event in self._run_child(child, manager):
-                                if isinstance(event, ChatInterruptedEvent):
-                                    interrupted = True
-                                    interrupted_emitted = True
-                                    yield event
-                                    break
-                                yield event
-                        except Exception:
-                            logger.exception("Child execution failed for session %s", session.id)
-                    else:
-                        async for event in self._run_children_parallel(group_children, session, manager):
-                            if isinstance(event, ChatInterruptedEvent):
-                                interrupted = True
-                                interrupted_emitted = True
-                                yield event
-                                break
-                            yield event
+            async def _run_parallel_children(children_to_run: Any) -> AsyncIterator[ChatStreamEvent]:
+                async for event in self._run_children_parallel(list(children_to_run), session, manager):
+                    yield event
 
-                    group_results: dict[str, Any] = {}
-                    for child in group_children:
-                        child_state = manager.get(child.id)
-                        if child_state and getattr(child_state, "result", None):
-                            child_results[child.id] = child_state.result
-                            group_results[child.id] = child_state.result
-                    if interrupted:
-                        break
-                    if group_results:
-                        previous_group_summary = self._synthesize(session, child_results, manager)
-            else:
-                previous_child = None
-                for task_desc in subtasks:
-                    if _cancel_requested(session):
-                        interrupted = True
-                        break
-                    if not manager.can_spawn_child(session.id):
-                        break
+            def _child_result(child: Any) -> Any | None:
+                child_state = manager.get(child.id)
+                if child_state is None:
+                    return None
+                return getattr(child_state, "result", None)
 
-                    child = self._build_child_session(session, manager, task_desc)
-                    children.append(child)
-                    if previous_child is not None:
-                        prev = manager.get(previous_child.id)
-                        if (
-                            prev
-                            and getattr(prev, "result", None)
-                            and getattr(prev.result, "content", None)
-                        ):
-                            task_ctx = getattr(child, "task_context", {}) or {}
-                            task_ctx["previous_result"] = prev.result.content
-                            child.task_context = task_ctx
-                    previous_child = child
+            def _child_result_content(result: Any) -> str | None:
+                return getattr(result, "content", None) if result is not None else None
 
-                    progress_event = self._child_progress_event(session, child)
-                    if progress_event is not None:
-                        yield progress_event
+            def _synthesize_results(current_child_results: Any) -> str:
+                return self._synthesize(session, dict(current_child_results), manager)
 
-                    try:
-                        async for event in self._run_child(child, manager):
-                            if isinstance(event, ChatInterruptedEvent):
-                                interrupted = True
-                                interrupted_emitted = True
-                                yield event
-                                break
-                            yield event
-                    except Exception:
-                        logger.exception("Child execution failed for session %s", session.id)
+            def _on_single_child_error(_child: Any, _exc: Exception) -> None:
+                logger.exception("Child execution failed for session %s", session.id)
 
-                    child_state = manager.get(child.id)
-                    if child_state and getattr(child_state, "result", None):
-                        child_results[child.id] = child_state.result
-                    if interrupted:
-                        break
+            async for item in _execute_child_execution_policy_impl(
+                subtasks,
+                child_execution=child_execution,
+                build_child=_build_execution_child,
+                run_child=_run_single_child,
+                run_parallel_children=_run_parallel_children,
+                child_progress_event=lambda child: self._child_progress_event(session, child),
+                child_result=_child_result,
+                child_result_content=_child_result_content,
+                synthesize_results=_synthesize_results,
+                is_cancelled=lambda: _cancel_requested(session),
+                can_spawn_child=lambda: manager.can_spawn_child(session.id),
+                mixed_groups=mixed_groups,
+                on_single_child_error=_on_single_child_error,
+            ):
+                if isinstance(item, ChatStreamEvent):
+                    yield item
+                    continue
+                execution_resolution = item
 
-            for child in children:
-                c = manager.get(child.id)
-                if c and getattr(c, "result", None):
-                    child_results[child.id] = c.result
+            if execution_resolution is None:
+                raise RuntimeError("Child execution policy produced no resolution")
+
+            children = list(execution_resolution.children)
+            child_results = dict(execution_resolution.child_results)
+            interrupted = execution_resolution.interrupted
+            interrupted_emitted = execution_resolution.interrupted_emitted
+
+            if child_execution == "parallel" and not children and not interrupted and not _cancel_requested(session):
+                async for event in self._execute_directly(session, manager, start):
+                    yield event
+                return
         except Exception:
             logger.exception("Child execution failed for session %s", session.id)
 
@@ -1544,16 +1203,12 @@ class MultiStepExecutor:
         final_content = _prepend_autonomy_announcement(session, final_content)
 
         from .session import SessionResult as _SR
-        total_tokens: dict[str, int] = {}
-        for r in child_results.values():
-            for k, v in (getattr(r, "token_usage", {}) or {}).items():
-                total_tokens[k] = total_tokens.get(k, 0) + v
-        for k, v in synthesis_review_usage.items():
-            total_tokens[k] = total_tokens.get(k, 0) + v
-        for k, v in synthesis_usage.items():
-            total_tokens[k] = total_tokens.get(k, 0) + v
-        for k, v in decomposition_usage.items():
-            total_tokens[k] = total_tokens.get(k, 0) + v
+        total_tokens = _merge_token_usage_impl(
+            _merge_child_result_usage_impl(child_results.values()),
+            synthesis_review_usage,
+            synthesis_usage,
+            decomposition_usage,
+        )
 
         manager.set_result(
             session.id,
@@ -1565,7 +1220,7 @@ class MultiStepExecutor:
                         "active_prompt_key": "prompts/runtime.unified_system",
                         "model_used": str(
                             _resolve_session_model_override(self._concierge, session)
-                            or getattr(self._concierge.chat_manager, "_chat_model", "")
+                            or _resolve_default_llm_model_impl(self._concierge.chat_manager)
                             or ""
                         ).strip(),
                     }
@@ -1583,46 +1238,15 @@ class MultiStepExecutor:
 
     @staticmethod
     def _estimate_child_tier(task_desc: str) -> int:
-        first_word = task_desc.strip().split()[0].lower() if task_desc.strip() else ""
-        if first_word in _SINGLE_ACTION_VERBS:
-            return 1
-
-        lower = task_desc.lower()
-        if len(_fallback_split_task(lower)) > 1:
-            return 2
-        for kw in _MULTI_ACTION_KEYWORDS:
-            if kw in lower:
-                return 2
-        return 1
+        return _estimate_child_tier_impl(task_desc)
 
     @staticmethod
     def _mixed_subtask_depends_on_prior(task_desc: str) -> bool:
-        lower = task_desc.strip().lower()
-        if not lower:
-            return False
-        first_word = lower.split()[0]
-        if first_word in _MIXED_DEPENDENT_PREFIXES:
-            return True
-        return bool(_MIXED_DEPENDENCY_RE.search(lower))
+        return _mixed_subtask_depends_on_prior_impl(task_desc)
 
     @classmethod
     def _build_mixed_execution_groups(cls, subtasks: list[str]) -> list[list[str]]:
-        groups: list[list[str]] = []
-        current_parallel_group: list[str] = []
-        for index, task_desc in enumerate(subtasks):
-            task_text = str(task_desc or "").strip()
-            if not task_text:
-                continue
-            if index > 0 and cls._mixed_subtask_depends_on_prior(task_text):
-                if current_parallel_group:
-                    groups.append(current_parallel_group)
-                    current_parallel_group = []
-                groups.append([task_text])
-                continue
-            current_parallel_group.append(task_text)
-        if current_parallel_group:
-            groups.append(current_parallel_group)
-        return groups
+        return _build_mixed_execution_groups_impl(subtasks)
 
     async def _cheap_llm_complete(
         self,
@@ -1631,116 +1255,75 @@ class MultiStepExecutor:
         system_prompt: str,
         user_prompt: str,
     ) -> tuple[str | None, dict[str, int]]:
-        chat_manager = getattr(self._concierge, "chat_manager", None)
-        providers = getattr(chat_manager, "_providers", None) if chat_manager is not None else None
-        if providers is None or not hasattr(providers, "resolve"):
-            return None, {}
-        model = _resolve_session_model_override(self._concierge, session) or getattr(chat_manager, "_chat_model", "")
-        if not model:
-            return None, {}
-        try:
-            provider = providers.resolve(model)
-            tracker = getattr(self._concierge, "_resource_tracker", None) or getattr(chat_manager, "_resource_tracker", None)
-            if tracker is not None:
-                await tracker.wait_acquire("llm")
-            try:
-                result = await provider.complete(
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    model=model,
-                    temperature=0.0,
-                )
-            finally:
-                if tracker is not None:
-                    await tracker.release("llm")
-            text = str(getattr(result, "text", "") or "").strip()
-            usage = dict(getattr(result, "usage", {}) or {})
-            return text or None, usage
-        except Exception:
-            logger.debug("Lightweight concierge LLM helper failed", exc_info=True)
-            return None, {}
+        return await _cheap_llm_complete_impl(
+            self._concierge,
+            session,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model_override=_resolve_session_model_override(self._concierge, session),
+        )
 
     # -- plan decomposition -------------------------------------------------
 
     async def _plan_decomposition(self, session: Any) -> tuple[list[str], dict[str, int]]:
-        task = str(getattr(session, "task", "") or "").strip()
-        if not task:
-            return [], {}
-
-        fallback = _fallback_split_task(task)
-        triage = getattr(session, "triage", None)
-        goal = str(getattr(triage, "goal", "") or "").strip()
-        deliverable = str(getattr(triage, "deliverable", "") or "").strip()
-        prompt_parts = [f"Task: {task}"]
-        if goal and goal != task:
-            prompt_parts.append(f"Goal: {goal}")
-        if deliverable and deliverable not in {task, goal}:
-            prompt_parts.append(f"Deliverable: {deliverable}")
-
-        content, usage = await self._cheap_llm_complete(
+        return await _plan_decomposition_impl(
+            self._concierge,
             session,
-            system_prompt=(
-                "Decompose the user's task into the smallest useful ordered subtasks. "
-                "Prefer 2-6 concrete steps. Do not invent new goals. "
-                "If the task should stay as one step, return a single-item list. "
-                'Return JSON only in one of these forms: {"subtasks":["step 1","step 2"]} or ["step 1","step 2"].'
-            ),
-            user_prompt="\n".join(prompt_parts),
+            model_override=_resolve_session_model_override(self._concierge, session),
         )
-        if content:
-            parsed = _parse_subtask_decomposition_response(content, fallback_task=task)
-            if parsed:
-                return parsed, usage
-        return fallback, {}
 
     @staticmethod
     def _should_llm_synthesize(session: Any, child_results: dict[str, Any]) -> bool:
-        if not child_results:
-            return False
-        level = _autonomy_level(session)
-        if level == "aggressive":
-            return True
-        if level == "balanced":
-            return len(child_results) >= 3
-        return False
+        return _should_llm_synthesize_impl(
+            autonomy_level=_autonomy_level(session),
+            child_results_count=len(child_results),
+        )
 
     # -- running children --------------------------------------------------
 
     def _build_child_session(self, session: Any, manager: Any, task_desc: str) -> Any:
-        child_tier = self._estimate_child_tier(task_desc)
         parent_triage = getattr(session, "triage", None)
-        child_route = _filter_child_route(getattr(parent_triage, "route", None), task_desc)
-        parent_task_context = copy.deepcopy(getattr(session, "task_context", {}) or {})
         parent_msg = getattr(session, "msg", None)
-        parent_thread_id = None
+        parent_route = getattr(parent_triage, "route", None)
+        parent_metadata: dict[str, Any] = {}
         if parent_msg is not None:
-            parent_metadata = getattr(parent_msg, "metadata", None)
-            if not isinstance(parent_metadata, dict):
-                parent_metadata = {}
-            parent_thread_id = (
-                str(getattr(parent_msg, "session_id", "") or parent_metadata.get("thread_id") or "").strip()
-                or None
-            )
-        handoff = {
-            "parent_session_id": session.id,
-            "root_session_id": session.root_id,
-            "parent_task": getattr(session, "task", ""),
-            "child_task": task_desc,
-            "route_target": getattr(child_route, "target", None),
-            "action_hints": list(getattr(child_route, "action_hints", None) or []),
-            "parent_thread_id": parent_thread_id,
-        }
+            raw_parent_metadata = getattr(parent_msg, "metadata", None)
+            if isinstance(raw_parent_metadata, dict):
+                parent_metadata = raw_parent_metadata
+
+        child_plan = _plan_child_session_impl(
+            task_desc=task_desc,
+            parent_session_id=session.id,
+            root_session_id=session.root_id,
+            parent_task=getattr(session, "task", ""),
+            parent_task_context=getattr(session, "task_context", {}) or {},
+            has_parent_route=parent_route is not None,
+            parent_route_target=getattr(parent_route, "target", None),
+            parent_action_hints=getattr(parent_route, "action_hints", None) or [],
+            parent_message_session_id=getattr(parent_msg, "session_id", None),
+            parent_message_thread_id=parent_metadata.get("thread_id"),
+        )
+        child_route = parent_route
+        if parent_route is not None:
+            planned_hints = list(child_plan.action_hints)
+            current_hints = list(getattr(parent_route, "action_hints", None) or [])
+            current_target = getattr(parent_route, "target", None)
+            if planned_hints != current_hints or child_plan.route_target != current_target:
+                try:
+                    child_route = parent_route.model_copy(
+                        update={
+                            "target": child_plan.route_target,
+                            "action_hints": planned_hints,
+                        }
+                    )
+                except Exception:
+                    child_route = parent_route
+
         child = manager.create_child(
             parent_id=session.id,
             task=task_desc,
-            tier=child_tier,
-            task_context={
-                "parent_task": getattr(session, "task", ""),
-                "parent_context": parent_task_context,
-                "handoff": handoff,
-            },
+            tier=child_plan.child_tier,
+            task_context=child_plan.task_context,
         )
 
         if parent_msg is not None:
@@ -1750,23 +1333,10 @@ class MultiStepExecutor:
             child_lane_id = f"tiered-child-{child.id}"
             child_metadata = {
                 **child_metadata,
-                "tiered_parent_session_id": session.id,
-                "tiered_root_session_id": session.root_id,
-                "tiered_child_task": task_desc,
+                **child_plan.metadata_patch,
                 "tiered_child_session_id": child.id,
-                "tiered_handoff": handoff,
-                "parent_thread_id": parent_thread_id,
                 "thread_id": child_lane_id,
             }
-            if child_route is not None:
-                child_metadata["route_target"] = getattr(child_route, "target", child_metadata.get("route_target"))
-                child_metadata["allow_mutation_tool"] = bool(
-                    getattr(child_route, "target", "") == "workflow"
-                    and any(
-                        hint in {"workflow_edit", "workflow_build"}
-                        for hint in getattr(child_route, "action_hints", None) or []
-                    )
-                )
             child.msg = parent_msg.model_copy(
                 update={
                     "text": task_desc,
@@ -1786,7 +1356,7 @@ class MultiStepExecutor:
             from .triage import TriageResult
 
             child.triage = TriageResult(
-                tier=child_tier,
+                tier=child_plan.child_tier,
                 intent=getattr(parent_triage, "intent", "ask"),
                 route=child_route,
                 confidence=getattr(parent_triage, "confidence", 0.6),
@@ -1910,81 +1480,18 @@ class MultiStepExecutor:
         manager: Any,
         ambiguous_reason: str,
     ) -> tuple[str | None, dict[str, int]]:
-        chat_manager = getattr(self._concierge, "chat_manager", None)
-        if chat_manager is None or not hasattr(chat_manager, "send_message"):
-            return None, {}
-        triage = getattr(session, "triage", None)
-        planned_subtasks = _planned_subtasks(session)
-        child_sections: list[str] = []
-        for child_id, result in child_results.items():
-            child = manager.get(child_id)
-            label = getattr(child, "task", child_id)
-            content = str(getattr(result, "content", "") or "").strip()
-            error = str(getattr(result, "error", "") or "").strip()
-            body = error or content or "(no output)"
-            if len(body) > 1200:
-                body = body[:1200].rstrip() + "..."
-            child_sections.append(f"### {label}\n{body}")
-        review_payload_parts = [
-            f"Original goal: {str(getattr(triage, 'goal', '') or getattr(session, 'task', '') or '').strip()}",
-            f"Deliverable: {str(getattr(triage, 'deliverable', '') or '').strip()}",
-        ]
-        if planned_subtasks:
-            review_payload_parts.append("Planned subtasks:\n- " + "\n- ".join(planned_subtasks[:8]))
-        review_payload_parts.append(f"Deterministic ambiguous signal: {ambiguous_reason}")
-        review_payload_parts.append("Child outputs:\n" + "\n\n".join(child_sections[:6]))
-        review_payload = "\n\n".join(part for part in review_payload_parts if part.strip())
-        final_content = ""
-        token_usage: dict[str, int] = {}
         review_chat_params = _extract_text_chat_context_params(
             session,
             model_override=_resolve_session_model_override(self._concierge, session),
         )
-        try:
-            async for event in chat_manager.send_message(
-                workflow_id=review_chat_params["workflow_id"],
-                message=review_payload,
-                history=[],
-                thread_id=review_chat_params["thread_id"],
-                client_graph_revision=review_chat_params["client_graph_revision"],
-                mode="agent",
-                cancel_event=review_chat_params["cancel_event"],
-                prompt_context=(
-                    "You are doing an internal execution-quality review for the parent session. "
-                    "Judge whether the child results fully satisfy the original goal.\n\n"
-                    "Use the deterministic signal only as a hint. If the apparent issue is just wording "
-                    "or keyword mismatch, choose accept. If there is a real missing requirement or unfinished work, "
-                    "choose remediate.\n\n"
-                    "Return JSON only in this exact schema:\n"
-                    '{"decision":"accept"|"remediate","reason":"one sentence"}'
-                ),
-                surface_context=review_chat_params["surface_context"],
-                surface=review_chat_params["surface"],
-                extra_system_instructions=review_chat_params["extra_system_instructions"],
-                memory_project_id=review_chat_params["memory_project_id"],
-                include_memory_kernel_context=review_chat_params["include_memory_kernel_context"],
-                model_override=review_chat_params["model_override"],
-                autonomy_resolution=review_chat_params["autonomy_resolution"],
-                record_summary=False,
-            ):
-                if isinstance(event, ChatErrorEvent):
-                    logger.warning("Synthesis review fallback failed: %s", event.error)
-                    return None, {}
-                if hasattr(event, "accumulated"):
-                    final_content = str(getattr(event, "accumulated", "") or final_content)
-                if isinstance(event, (ChatCompleteEvent, ChatInterruptedEvent)):
-                    final_content = str(getattr(event, "content", "") or final_content)
-                    token_usage = dict(getattr(event, "token_usage", {}) or {})
-                    break
-        except Exception:
-            logger.warning("Synthesis review fallback raised unexpectedly", exc_info=True)
-            return None, {}
-        decision, reason = _parse_synthesis_review_response(final_content)
-        if decision == "remediate":
-            return reason or ambiguous_reason, token_usage
-        if decision != "accept":
-            logger.warning("Synthesis review fallback returned unparseable content: %r", final_content[:400])
-        return None, token_usage
+        return await _review_synthesis_gap_reason_with_llm_impl(
+            self._concierge,
+            session,
+            child_results,
+            manager,
+            ambiguous_reason,
+            review_chat_params=review_chat_params,
+        )
 
     async def _maybe_llm_synthesize(
         self,
@@ -1994,57 +1501,26 @@ class MultiStepExecutor:
     ) -> tuple[str | None, dict[str, int]]:
         if not self._should_llm_synthesize(session, child_results):
             return None, {}
-
-        triage = getattr(session, "triage", None)
-        child_sections: list[str] = []
-        for child_id, result in child_results.items():
-            child = manager.get(child_id)
-            label = getattr(child, "task", child_id)
-            content = str(getattr(result, "content", "") or "").strip()
-            error = str(getattr(result, "error", "") or "").strip()
-            body = error or content or "(no output)"
-            if len(body) > 1200:
-                body = body[:1200].rstrip() + "..."
-            child_sections.append(f"## {label}\n{body}")
-
-        user_prompt_parts = [
-            f"Original task: {str(getattr(session, 'task', '') or '').strip()}",
-            f"Goal: {str(getattr(triage, 'goal', '') or '').strip()}",
-            f"Deliverable: {str(getattr(triage, 'deliverable', '') or '').strip()}",
-        ]
-        planned_subtasks = _planned_subtasks(session)
-        if planned_subtasks:
-            user_prompt_parts.append("Planned subtasks:\n- " + "\n- ".join(planned_subtasks[:8]))
-        uncertainties = _collect_synthesis_uncertainties(child_results, manager)
-        if uncertainties:
-            user_prompt_parts.append("Known uncertainties:\n" + "\n".join(uncertainties[:6]))
-        user_prompt_parts.append("Child outputs:\n" + "\n\n".join(child_sections[:6]))
-
-        content, usage = await self._cheap_llm_complete(
+        return await _maybe_llm_synthesize_impl(
+            self._concierge,
             session,
-            system_prompt=(
-                "You are synthesizing child task outputs into one coherent final response for the user. "
-                "Merge overlapping information, preserve important specifics, and do not invent facts. "
-                "If any child output is incomplete, blocked, or uncertain, mention that clearly in the final response. "
-                "Return plain text only."
-            ),
-            user_prompt="\n\n".join(part for part in user_prompt_parts if part.strip()),
+            child_results,
+            manager,
+            model_override=_resolve_session_model_override(self._concierge, session),
         )
-        return (content, usage) if content else (None, {})
 
     @staticmethod
     def _synthesize(session: Any, child_results: dict[str, Any], manager: Any) -> str:
-        parts: list[str] = []
+        child_outputs: list[tuple[str, str | None]] = []
         for child_id, result in child_results.items():
             child = manager.get(child_id)
             content = getattr(result, "content", None) if result else None
             if child and content:
                 task_label = getattr(child, "task", child_id)
-                parts.append(f"## {task_label}\n\n{content}")
-        if not parts:
-            return "Task completed but no content was produced."
-        combined = "\n\n".join(parts)
+                child_outputs.append((task_label, content))
         uncertainties = _collect_synthesis_uncertainties(child_results, manager)
-        if _autonomy_level(session) == "careful" and uncertainties:
-            combined = f"{combined}\n\n## Uncertainties\n" + "\n".join(uncertainties)
-        return combined
+        return _synthesize_child_results_impl(
+            child_outputs,
+            include_uncertainties=_autonomy_level(session) == "careful",
+            uncertainties=uncertainties,
+        )

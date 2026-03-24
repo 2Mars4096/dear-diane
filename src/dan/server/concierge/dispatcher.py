@@ -9,7 +9,7 @@ import time
 import uuid
 from typing import Any, AsyncIterator
 
-from dan.server.chat_manager import ChatCompleteEvent, ChatQueuedEvent, ChatStreamEvent
+from dan.chat_events import ChatCompleteEvent, ChatQueuedEvent, ChatStreamEvent
 
 from .command_registry import get_default_registry
 from .identity import format_prefix

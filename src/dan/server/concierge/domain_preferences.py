@@ -6,11 +6,13 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from dan.engine.domain_taxonomy import (
+from dan.domain_taxonomy import (
     format_domain_label,
     normalize_domain_list,
     normalize_domain_name,
 )
+
+from .profile_domain_sync import persist_profile_domains
 
 logger = logging.getLogger(__name__)
 
@@ -64,44 +66,6 @@ def _known_domains(behavior_store: Any = None) -> list[str]:
     except Exception:
         logger.debug("Failed to resolve known domains", exc_info=True)
         return []
-
-
-def _sync_profile_domain_memory(user_profile: Any, memory_kernel: Any = None) -> None:
-    if memory_kernel is None:
-        return
-    try:
-        from dan.engine.memory_adapters import ProfileAdapter
-        from dan.engine.memory_kernel import MemoryScope, MemoryType
-
-        existing_domain_ids = {
-            item.id
-            for item in memory_kernel.list_by_type(
-                MemoryType.FACT,
-                scope=MemoryScope.USER,
-                limit=500,
-            )
-            if str(getattr(item, "id", "")).startswith("fact:domain:")
-        }
-        desired_items = [
-            item
-            for item in ProfileAdapter.to_memory_items(user_profile)
-            if item.id.startswith("fact:domain:")
-        ]
-        desired_ids = {item.id for item in desired_items}
-        for stale_id in existing_domain_ids - desired_ids:
-            memory_kernel.delete(stale_id, hard=True)
-        if desired_items:
-            memory_kernel.store_many(desired_items)
-    except Exception:
-        logger.debug("Failed to sync profile domains into memory kernel", exc_info=True)
-
-
-def _persist_profile_domains(user_profile: Any, memory_kernel: Any = None) -> None:
-    from dan.engine.user_profile import save_user_profile
-
-    save_user_profile(user_profile)
-    _sync_profile_domain_memory(user_profile, memory_kernel)
-
 
 def _render_saved_domains(user_profile: Any, behavior_store: Any = None) -> str:
     saved = _current_profile_domains(user_profile)
@@ -175,7 +139,7 @@ def handle_domains_command(
         user_profile.common_domains = current
         _touch_profile(user_profile)
         try:
-            _persist_profile_domains(user_profile, memory_kernel)
+            persist_profile_domains(user_profile, memory_kernel)
         except Exception as exc:
             logger.debug("Failed to save added domains", exc_info=True)
             return f"Failed to save domains: {exc}"
@@ -212,7 +176,7 @@ def handle_domains_command(
         user_profile.common_domains = [domain for domain in current if domain not in removed_ids]
         _touch_profile(user_profile)
         try:
-            _persist_profile_domains(user_profile, memory_kernel)
+            persist_profile_domains(user_profile, memory_kernel)
         except Exception as exc:
             logger.debug("Failed to save removed domains", exc_info=True)
             return f"Failed to save domains: {exc}"
@@ -234,7 +198,7 @@ def handle_domains_command(
         user_profile.common_domains = []
         _touch_profile(user_profile)
         try:
-            _persist_profile_domains(user_profile, memory_kernel)
+            persist_profile_domains(user_profile, memory_kernel)
         except Exception as exc:
             logger.debug("Failed to clear domains", exc_info=True)
             return f"Failed to save domains: {exc}"

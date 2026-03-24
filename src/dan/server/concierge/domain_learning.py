@@ -13,28 +13,28 @@ import json
 import logging
 import re
 import time
+from collections.abc import Callable
 from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from dan.engine.domain_taxonomy import (
+from dan.domain_taxonomy import (
     normalize_domain_keyword_map,
     normalize_domain_name,
 )
-from dan.engine.learning_tiers import is_feature_enabled
+from dan.keyword_overlap import query_keyword_overlap
 from dan.engine.memory_kernel import (
     MemoryItem,
     MemoryLifecycle,
     MemoryScope,
     MemoryType,
-    _keyword_overlap,
 )
 
+from .feature_gates import engine_feature_enabled
+
 if TYPE_CHECKING:
-    from dan.engine.behavior_store import BehaviorStore
-    from dan.engine.memory_kernel import MemoryKernel
     from dan.providers.base import LLMProvider
     from dan.server.concierge.models import Project, TaskTurn
 
@@ -143,7 +143,7 @@ def get_domain_keyword_map(behavior_store: Any = None) -> dict[str, list[str]]:
     return normalize_domain_keyword_map(_DOMAIN_KEYWORDS)
 
 
-def register_seed_domains(store: BehaviorStore) -> None:
+def register_seed_domains(store: Any) -> None:
     """Register domain keyword maps as seed defaults."""
     store.register_seed("domains/keyword_maps", get_domain_keyword_map())
 
@@ -344,11 +344,13 @@ def _normalize_domain_category(category: str) -> str:
 class DomainReflector:
     def __init__(
         self,
-        memory_kernel: MemoryKernel | None = None,
+        memory_kernel: Any | None = None,
         llm: Any | None = None,
+        feature_enabled: Callable[[str], bool] | None = None,
     ) -> None:
         self._kernel = memory_kernel
         self._llm: LLMProvider | None = llm  # type: ignore[assignment]
+        self._feature_enabled = feature_enabled or engine_feature_enabled
 
     def reflect(
         self,
@@ -357,7 +359,7 @@ class DomainReflector:
         outcome: str = "completed",
     ) -> list[MemoryItem]:
         """Extract domain knowledge items from completed task turns via LLM."""
-        if not is_feature_enabled("domain_learning"):
+        if not self._feature_enabled("domain_learning"):
             return []
         if self._llm is None:
             return []
@@ -524,7 +526,7 @@ class DomainTemplateConsolidator:
                 item_bucket = _domain_scope_bucket(item)
                 if any(
                     _domain_scope_bucket(keep) == item_bucket
-                    and _keyword_overlap(item.content, keep.content) > 0.8
+                    and query_keyword_overlap(item.content, keep.content) > 0.8
                     for keep in unique_items
                 ):
                     duplicate_ids.append(item.id)
@@ -708,7 +710,7 @@ class DomainPatternGeneralizer:
                 for other in cat_items[i + 1:]:
                     if other.id in assigned:
                         continue
-                    if _keyword_overlap(anchor.content, other.content) > 0.7:
+                    if query_keyword_overlap(anchor.content, other.content) > 0.7:
                         cluster.append(other)
                         assigned.add(other.id)
                 if len(cluster) >= 3:
@@ -925,11 +927,6 @@ def check_context_sufficiency(
     return None
 
 
-# ---------------------------------------------------------------------------
-# Domain auto-discovery (task 8-3, plan 31-22)
-# ---------------------------------------------------------------------------
-
-
 def apply_new_domain(
     domain_name: str,
     keywords: list[str],
@@ -951,159 +948,113 @@ def apply_new_domain(
     template = create_generic_template(canonical_domain)
     save_domain_template(template)
 
-
-def propose_domain_discoveries(
-    pattern_accumulator: Any,
-    behavior_store: Any = None,
-    adaptation_registry: Any = None,
-) -> list[dict]:
-    """Propose or auto-apply newly discovered domains from accumulated patterns."""
-    from dan.engine.adaptation_registry import AdaptationCandidate
-
-    clusters = pattern_accumulator.get_clusters("domain", min_count=3)
-    if not clusters:
-        return []
-
-    existing_domains = set(get_domain_keyword_map(behavior_store).keys())
-
-    proposals: list[dict] = []
-    for cluster in clusters:
-        keywords = cluster.get("keywords", [])
-        domain_name = "_".join(w.lower() for w in keywords[:3])
-        if domain_name in existing_domains:
-            continue
-
-        count = cluster.get("count", 0)
-        examples = cluster.get("examples", [])
-        proposal = {
-            "name": domain_name,
-            "keywords": keywords,
-            "count": count,
-            "examples": examples,
-        }
-
-        if is_feature_enabled("domain_auto_discovery"):
-            candidate = AdaptationCandidate(
-                source="domain_discovery",
-                auto_apply=True,
-                parameter_key="domains/keyword_maps",
-                description=(
-                    f"Auto-discovered domain '{domain_name}' with keywords "
-                    f"{keywords} from {count} unrecognized messages. "
-                    f"Examples: {examples[:3]}"
-                ),
-                sample_size=count,
-            )
-            if adaptation_registry is not None:
-                adaptation_registry.add(candidate)
-            if behavior_store is not None:
-                apply_new_domain(domain_name, keywords, behavior_store)
-        elif is_feature_enabled("domain_discovery_proposal"):
-            candidate = AdaptationCandidate(
-                source="domain_discovery",
-                parameter_key="domains/keyword_maps",
-                description=(
-                    f"Propose new domain '{domain_name}' with keywords "
-                    f"{keywords} from {count} unrecognized messages. "
-                    f"Examples: {examples[:3]}"
-                ),
-                sample_size=count,
-            )
-            if adaptation_registry is not None:
-                adaptation_registry.add(candidate)
-        else:
-            logger.debug(
-                "Tier 0: discovered potential domain '%s' (%d occurrences)",
-                domain_name,
-                count,
-            )
-
-        proposals.append(proposal)
-    return proposals
+from .domain_learning_adaptations import (
+    propose_domain_discoveries,
+    propose_keyword_expansion,
+)
 
 
 # ---------------------------------------------------------------------------
-# Keyword expansion (task 8-4, plan 31-22)
+# Memory-kernel consolidation hook (41-4 — engine must not import concierge)
 # ---------------------------------------------------------------------------
 
+_evolvement_log = logging.getLogger("dan.evolvement")
 
-def propose_keyword_expansion(
-    domain: str,
-    message: str,
-    task_succeeded: bool,
-    behavior_store: Any = None,
-    adaptation_registry: Any = None,
-) -> dict | None:
-    """Propose expanding a domain's keywords after a successful marginal match."""
-    from dan.engine.adaptation_registry import AdaptationCandidate
 
-    if not task_succeeded:
-        return None
+def consolidate_memory_kernel_domain_templates(
+    kernel: Any,
+    *,
+    feature_enabled: Callable[[str], bool] | None = None,
+) -> int:
+    """Consolidate domain-knowledge memory items into templates (31-21 task 7).
 
-    kw_map = get_domain_keyword_map(behavior_store)
-    domain = normalize_domain_name(domain) or domain
+    Called from :meth:`dan.engine.memory_kernel.MemoryKernel.run_consolidation`
+    via an injected hook so ``memory_kernel`` does not import this module.
 
-    current_keywords = kw_map.get(domain, [])
-    if not current_keywords:
-        return None
+    Returns the number of domains for which a template was consolidated.
+    """
+    feature_gate = feature_enabled or engine_feature_enabled
+    try:
+        if not feature_gate("domain_learning"):
+            return 0
+    except Exception:
+        return 0
 
-    msg_lower = message.lower()
-    hit_count = sum(1 for kw in current_keywords if kw in msg_lower)
-    if hit_count != 1:
-        return None
+    domains_consolidated = 0
+    try:
+        domain_items: dict[str, list[MemoryItem]] = {}
+        for mem_type in (
+            MemoryType.FACT,
+            MemoryType.PREFERENCE,
+            MemoryType.PRINCIPLE,
+            MemoryType.WORKFLOW_PATTERN,
+        ):
+            for item in kernel.list_by_type(mem_type):
+                if "domain_knowledge" not in (item.tags or []):
+                    continue
+                domain = item.metadata.get("domain")
+                if domain:
+                    domain_items.setdefault(domain, []).append(item)
 
-    existing_lower = {kw.lower() for kw in current_keywords}
-    word_freq: dict[str, int] = {}
-    for w in re.findall(r"\b\w{4,}\b", msg_lower):
-        if w not in existing_lower:
-            word_freq[w] = word_freq.get(w, 0) + 1
+        consolidator = DomainTemplateConsolidator()
+        generalizer = DomainPatternGeneralizer()
+        for domain, items in domain_items.items():
+            if len(items) >= 5:
+                try:
+                    existing_patterns = {
+                        item.content.strip().lower()
+                        for item in kernel.list_by_type(MemoryType.WORKFLOW_PATTERN)
+                        if "generalized_pattern" in (item.tags or [])
+                        and item.metadata.get("domain") == domain
+                    }
+                    new_patterns = [
+                        pattern
+                        for pattern in generalizer.generalize(domain, items)
+                        if pattern.content.strip().lower() not in existing_patterns
+                    ]
+                    if new_patterns:
+                        kernel.store_many(new_patterns)
+                except Exception:
+                    logger.debug(
+                        "Domain pattern generalization failed for %s",
+                        domain,
+                        exc_info=True,
+                    )
+            if len(items) < 10:
+                continue
+            template = get_or_create_template(domain)
+            updated = consolidator.consolidate(domain, items, template)
+            if updated is not None:
+                duplicate_ids = list(
+                    updated.metadata.get("merged_duplicate_ids") or []
+                )
+                if duplicate_ids:
+                    for item_id in duplicate_ids:
+                        kernel.delete(item_id, hard=True)
+                    updated.metadata["merged_duplicate_count"] = len(duplicate_ids)
+                    updated.metadata.pop("merged_duplicate_ids", None)
+                save_domain_template(updated)
+                domains_consolidated += 1
+                _evolvement_log.info(
+                    "Domain template consolidated: %s (v%d, %d items)",
+                    domain,
+                    updated.version,
+                    len(items),
+                )
 
-    new_keywords = sorted(word_freq, key=word_freq.__getitem__, reverse=True)[:3]
-    if not new_keywords:
-        return None
+            if len(items) >= 20 and feature_gate("domain_template_upgrade"):
+                last_upgrade_count = (template.metadata or {}).get(
+                    "last_llm_upgrade_item_count", 0
+                )
+                if len(items) - last_upgrade_count >= 10:
+                    template.metadata["needs_llm_upgrade"] = True
+                    save_domain_template(template)
+                    _evolvement_log.info(
+                        "Domain template marked for LLM upgrade: %s (%d items)",
+                        domain,
+                        len(items),
+                    )
+    except Exception:
+        logger.debug("Domain template consolidation failed", exc_info=True)
 
-    proposal: dict = {
-        "domain": domain,
-        "existing_keywords": current_keywords,
-        "new_keywords": new_keywords,
-        "message_preview": message[:200],
-    }
-
-    if is_feature_enabled("domain_auto_discovery"):
-        candidate = AdaptationCandidate(
-            source="domain_discovery",
-            auto_apply=True,
-            parameter_key="domains/keyword_maps",
-            description=(
-                f"Auto-expand domain '{domain}' keywords with {new_keywords} "
-                f"after successful marginal-match task"
-            ),
-        )
-        if adaptation_registry is not None:
-            adaptation_registry.add(candidate)
-        if behavior_store is not None:
-            kw_map[domain] = list(set(kw_map.get(domain, []) + new_keywords))
-            behavior_store.set(
-                "domains/keyword_maps",
-                kw_map,
-                reason=f"keyword expansion for domain '{domain}': +{new_keywords}",
-            )
-    elif is_feature_enabled("domain_discovery_proposal"):
-        candidate = AdaptationCandidate(
-            source="domain_discovery",
-            parameter_key="domains/keyword_maps",
-            description=(
-                f"Propose expanding domain '{domain}' keywords with "
-                f"{new_keywords} after successful marginal-match task"
-            ),
-        )
-        if adaptation_registry is not None:
-            adaptation_registry.add(candidate)
-    else:
-        logger.debug(
-            "Tier 0: potential keyword expansion for '%s': %s",
-            domain,
-            new_keywords,
-        )
-
-    return proposal
+    return domains_consolidated

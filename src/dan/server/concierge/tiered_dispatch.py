@@ -368,7 +368,7 @@ class TieredDispatcher:
         self._concierge = concierge
 
     async def dispatch(self, msg: SurfaceMessage) -> AsyncIterator[Any]:
-        from dan.server.chat_manager import ChatStreamEvent
+        from dan.chat_events import ChatStreamEvent
         from .autonomy import resolve_autonomy
 
         state_scope_id = self._concierge._concierge_state_scope_key(msg.surface, msg.external_id)
@@ -611,6 +611,13 @@ class TieredDispatcher:
                     "token_usage": t.token_usage,
                     "tools_used": t.tools_used,
                     "error": t.error,
+                    "route_target": t.route_target,
+                    "action_hints": t.action_hints,
+                    "route_source": t.route_source,
+                    "scenario_id": t.scenario_id,
+                    "scenario_confidence": t.scenario_confidence,
+                    "concierge_stage": t.concierge_stage,
+                    "autonomy_level": t.autonomy_level,
                 }
                 for t in tree_trace
             ]

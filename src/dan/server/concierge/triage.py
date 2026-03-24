@@ -15,7 +15,6 @@ from .models import ConciergeState, IntentCategory, ResolvedContext, RouteDecisi
 from .triage_scenarios import LexicalScenario, evaluate_lexical_scenarios
 
 if TYPE_CHECKING:
-    from dan.engine.behavior_store import BehaviorStore
     from .project_store import ProjectStore
 
 logger = logging.getLogger(__name__)
@@ -1186,7 +1185,7 @@ async def triage(
     llm_complete: LLMCompleteFunc,
     *,
     concierge_state: ConciergeState | None = None,
-    behavior_store: BehaviorStore | None = None,
+    behavior_store: Any | None = None,
     project_store: ProjectStore | None = None,
 ) -> TriageResult:
     fast = fast_classify_text(text)

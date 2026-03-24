@@ -76,6 +76,13 @@ class SessionTrace(BaseModel):
     model_used: str | None = None
     tools_used: list[str] = Field(default_factory=list)
     error: str | None = None
+    route_target: str | None = None
+    action_hints: list[str] = Field(default_factory=list)
+    route_source: str | None = None
+    scenario_id: str | None = None
+    scenario_confidence: float | None = None
+    concierge_stage: str | None = None
+    autonomy_level: str | None = None
     children: list[str] = Field(default_factory=list)
     created_at: float = 0
     started_at: float | None = None
@@ -317,6 +324,113 @@ class SessionManager:
 
     # -- telemetry / export -------------------------------------------------
 
+    @staticmethod
+    def _session_metadata(session: Session) -> dict[str, Any]:
+        msg = getattr(session, "msg", None)
+        metadata = getattr(msg, "metadata", None)
+        return metadata if isinstance(metadata, dict) else {}
+
+    @staticmethod
+    def _session_result_metadata(session: Session) -> dict[str, Any]:
+        result = getattr(session, "result", None)
+        metadata = getattr(result, "metadata", None) if result is not None else None
+        return metadata if isinstance(metadata, dict) else {}
+
+    @staticmethod
+    def _handoff_metadata(session: Session) -> dict[str, Any]:
+        task_context = getattr(session, "task_context", None)
+        if not isinstance(task_context, dict):
+            return {}
+        handoff = task_context.get("handoff")
+        return handoff if isinstance(handoff, dict) else {}
+
+    @classmethod
+    def _session_provenance(cls, session: Session) -> dict[str, Any]:
+        msg_metadata = cls._session_metadata(session)
+        result_metadata = cls._session_result_metadata(session)
+        handoff = cls._handoff_metadata(session)
+        triage = getattr(session, "triage", None)
+        route = getattr(triage, "route", None)
+
+        route_target = (
+            str(getattr(route, "target", "") or "").strip()
+            or str(handoff.get("route_target", "") or "").strip()
+            or str(msg_metadata.get("route_target", "") or "").strip()
+            or str(result_metadata.get("route_target", "") or "").strip()
+            or None
+        )
+
+        raw_action_hints = (
+            list(getattr(route, "action_hints", None) or [])
+            or list(handoff.get("action_hints", []) or [])
+            or list(msg_metadata.get("action_hints", []) or [])
+            or list(result_metadata.get("action_hints", []) or [])
+        )
+        action_hints = [
+            str(item).strip()
+            for item in raw_action_hints
+            if str(item).strip()
+        ]
+
+        scenario_confidence = getattr(triage, "scenario_confidence", None)
+        if scenario_confidence is None:
+            scenario_confidence = msg_metadata.get("scenario_confidence")
+        if scenario_confidence is None:
+            scenario_confidence = result_metadata.get("scenario_confidence")
+        if scenario_confidence is not None:
+            try:
+                scenario_confidence = float(scenario_confidence)
+            except (TypeError, ValueError):
+                scenario_confidence = None
+
+        autonomy_level = None
+        autonomy_resolution = getattr(session, "autonomy_resolution", None)
+        if autonomy_resolution is not None:
+            autonomy_level = str(
+                getattr(autonomy_resolution, "effective_level", "") or ""
+            ).strip() or None
+        if autonomy_level is None:
+            raw_resolution = msg_metadata.get("autonomy_resolution")
+            if isinstance(raw_resolution, dict):
+                autonomy_level = str(
+                    raw_resolution.get("effective_level", "") or ""
+                ).strip() or None
+        if autonomy_level is None:
+            raw_resolution = result_metadata.get("autonomy_resolution")
+            if isinstance(raw_resolution, dict):
+                autonomy_level = str(
+                    raw_resolution.get("effective_level", "") or ""
+                ).strip() or None
+
+        route_source = str(getattr(triage, "route_source", "") or "").strip() or None
+        if route_source is None:
+            route_source = str(msg_metadata.get("route_source", "") or "").strip() or None
+        if route_source is None:
+            route_source = str(result_metadata.get("route_source", "") or "").strip() or None
+
+        scenario_id = getattr(triage, "scenario_id", None)
+        if scenario_id is None:
+            scenario_id = msg_metadata.get("scenario_id")
+        if scenario_id is None:
+            scenario_id = result_metadata.get("scenario_id")
+        scenario_id = str(scenario_id).strip() or None if scenario_id is not None else None
+
+        concierge_stage = (
+            str(msg_metadata.get("concierge_stage", "") or "").strip()
+            or str(result_metadata.get("concierge_stage", "") or "").strip()
+            or None
+        )
+
+        return {
+            "route_target": route_target,
+            "action_hints": action_hints,
+            "route_source": route_source,
+            "scenario_id": scenario_id,
+            "scenario_confidence": scenario_confidence,
+            "concierge_stage": concierge_stage,
+            "autonomy_level": autonomy_level,
+        }
+
     def build_trace(self, root_id: str) -> list[SessionTrace]:
         traces: list[SessionTrace] = []
         stack = [root_id]
@@ -340,6 +454,7 @@ class SessionManager:
                 tools_used = s.result.tools_used
                 model_used = s.result.model_used
                 error = s.result.error
+            provenance = self._session_provenance(s)
 
             traces.append(SessionTrace(
                 session_id=s.id,
@@ -354,6 +469,13 @@ class SessionManager:
                 model_used=model_used,
                 tools_used=tools_used,
                 error=error,
+                route_target=provenance["route_target"],
+                action_hints=provenance["action_hints"],
+                route_source=provenance["route_source"],
+                scenario_id=provenance["scenario_id"],
+                scenario_confidence=provenance["scenario_confidence"],
+                concierge_stage=provenance["concierge_stage"],
+                autonomy_level=provenance["autonomy_level"],
                 children=list(s.children),
                 created_at=s.created_at,
                 started_at=s.started_at,
@@ -367,6 +489,7 @@ class SessionManager:
             s = self._sessions.get(sid)
             if s is None:
                 return None
+            provenance = self._session_provenance(s)
             node: dict[str, Any] = {
                 "id": s.id,
                 "parent_id": s.parent_id,
@@ -375,6 +498,13 @@ class SessionManager:
                 "state": s.state.value,
                 "task": s.task,
                 "child_execution": s.child_execution,
+                "route_target": provenance["route_target"],
+                "action_hints": provenance["action_hints"],
+                "route_source": provenance["route_source"],
+                "scenario_id": provenance["scenario_id"],
+                "scenario_confidence": provenance["scenario_confidence"],
+                "concierge_stage": provenance["concierge_stage"],
+                "autonomy_level": provenance["autonomy_level"],
                 "created_at": s.created_at,
                 "started_at": s.started_at,
                 "completed_at": s.completed_at,

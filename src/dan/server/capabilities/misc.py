@@ -5,7 +5,7 @@ import os
 from typing import Any
 
 from dan.server.capability_registry import CapabilityContext, CapabilityResult
-from dan.server.chat.prompts import get_prompt_detail_body
+from dan.chat_prompts import get_prompt_detail_body
 
 
 async def handle_current_datetime(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
