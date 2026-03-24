@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from typing import get_args
 
+from dan.chat_prompts import NODE_TYPES
+from dan.graph_mutator import GraphMutator, MutationPlan
 from dan.models.graph import Graph
 from dan.models.graph import Node
-from dan.server.chat.prompts import NODE_TYPES
-from dan.server.graph_mutator import GraphMutator, MutationPlan, _node_uses_body_graph
+from dan.server.graph_mutator import _node_uses_body_graph
 
 
 def _empty_graph() -> dict:

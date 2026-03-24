@@ -69,6 +69,18 @@ class FakeGraphStore:
         return self._graphs.get(graph_id)
 
 
+def _sample_skill_library() -> dict[str, dict[str, Any]]:
+    return {
+        "code_reviewer": {
+            "name": "Code Reviewer",
+            "description": "Reviews code for bugs and style",
+            "tags": ["review", "quality"],
+            "inject_as": "system",
+            "text": "Check for bugs and style issues.",
+        }
+    }
+
+
 # ---------------------------------------------------------------------------
 # Tests: Discovery models
 # ---------------------------------------------------------------------------
@@ -116,7 +128,7 @@ class TestDiscoveryService:
         assert "review_loop" in names
 
     def test_discover_skills(self):
-        svc = DiscoveryService()
+        svc = DiscoveryService(skill_library=_sample_skill_library())
         skills = svc.discover_skills()
         assert len(skills) > 0
 

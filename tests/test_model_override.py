@@ -11,7 +11,13 @@ import pytest
 
 from dan.providers import CompletionResult, StreamChunk
 from dan.providers.registry import ProviderRegistry
-from dan.server.chat_manager import ChatManager, ChatCompleteEvent, ChatTokenEvent
+from dan.server.chat_manager import (
+    ChatCompleteEvent,
+    ChatGenerationSummaryEvent,
+    ChatGraphCreatedEvent,
+    ChatManager,
+    ChatTokenEvent,
+)
 
 
 MINIMAL_GRAPH: dict[str, Any] = {
@@ -44,8 +50,11 @@ class _RecordingProvider:
     def __init__(self) -> None:
         self.recorded_models: list[str] = []
 
-    async def stream(self, **kwargs: Any):
-        self.recorded_models.append(kwargs.get("model", ""))
+    async def stream(self, *args: Any, **kwargs: Any):
+        model = kwargs.get("model", "")
+        if not model and len(args) >= 2:
+            model = str(args[1] or "")
+        self.recorded_models.append(model)
         text = "Hello from the model."
         yield StreamChunk(
             delta=text,
@@ -54,8 +63,11 @@ class _RecordingProvider:
             usage={"prompt_tokens": 10, "completion_tokens": 5},
         )
 
-    async def complete(self, **kwargs: Any) -> CompletionResult:
-        self.recorded_models.append(kwargs.get("model", ""))
+    async def complete(self, *args: Any, **kwargs: Any) -> CompletionResult:
+        model = kwargs.get("model", "")
+        if not model and len(args) >= 2:
+            model = str(args[1] or "")
+        self.recorded_models.append(model)
         return CompletionResult(
             text="Done.",
             tool_calls=[],
@@ -231,6 +243,99 @@ async def test_send_message_with_tools_passes_override_model_to_build_messages(
 
 
 @pytest.mark.asyncio
+async def test_send_message_with_tools_uses_model_gateway_tool_completion_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _RecordingProvider()
+    mgr = _make_manager(provider, default_model="default-model")
+    gateway_calls: list[dict[str, Any]] = []
+
+    class _Gateway:
+        def __init__(self) -> None:
+            self.registry = SimpleNamespace(get=lambda name: provider if name == "default" else None)
+
+        def resolve(self, model: str) -> Any:
+            return _NonToolProvider()
+
+        async def complete(self, **kwargs: Any) -> CompletionResult:
+            gateway_calls.append(kwargs)
+            return CompletionResult(
+                text="Done via gateway.",
+                tool_calls=[],
+                usage={"prompt_tokens": 10, "completion_tokens": 5},
+            )
+
+    async def _fake_build_messages(self, *args, **kwargs):
+        return [{"role": "user", "content": "hi"}]
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+    mgr.model_gateway = _Gateway()
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="hello",
+            history=[],
+            model_override="gpt-4o-override",
+        )
+    )
+
+    complete_events = [e for e in events if isinstance(e, ChatCompleteEvent)]
+    assert complete_events
+    assert provider.recorded_models == []
+    assert gateway_calls
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_synthesizes_model_gateway_from_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _RecordingProvider()
+    mgr = _make_manager(provider, default_model="default-model")
+    resolve_provider_calls: list[str | None] = []
+
+    class _GatewayAwareProvider(_RecordingProvider):
+        supports_tool_calls = True
+
+    tool_provider = _GatewayAwareProvider()
+    mgr._providers.register("default", tool_provider)
+
+    async def _fake_build_messages(self, *args, **kwargs):
+        return [{"role": "user", "content": "hi"}]
+
+    original_resolve_provider = mgr._resolve_provider
+
+    def _recording_resolve_provider(
+        *,
+        pii_session_key: str | None = None,
+        model: str | None = None,
+    ) -> Any:
+        resolve_provider_calls.append(model)
+        return original_resolve_provider(
+            pii_session_key=pii_session_key,
+            model=model,
+        )
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+    monkeypatch.setattr(mgr, "_resolve_provider", _recording_resolve_provider)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="hello",
+            history=[],
+            model_override="gpt-4o-override",
+        )
+    )
+
+    complete_events = [e for e in events if isinstance(e, ChatCompleteEvent)]
+    assert complete_events
+    assert resolve_provider_calls == []
+    assert getattr(mgr, "model_gateway", None) is not None
+    assert tool_provider.recorded_models == ["gpt-4o-override"]
+
+
+@pytest.mark.asyncio
 async def test_send_message_with_tools_passes_override_model_to_codegen(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -260,6 +365,67 @@ async def test_send_message_with_tools_passes_override_model_to_codegen(
 
     assert seen_codegen_models == ["gpt-4o-override"]
     assert any(isinstance(e, ChatCompleteEvent) for e in events)
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_codegen_success_saves_graph_and_emits_created_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _RecordingProvider()
+    registry = ProviderRegistry()
+    registry.register("default", provider)
+    saved_calls: list[tuple[str, dict[str, Any]]] = []
+    generated_graph = {
+        "version": "dan_graph_v1",
+        "metadata": {"name": "generated"},
+        "nodes": [
+            {
+                "id": "n1",
+                "name": "Draft Plan",
+                "node_type": "llm_operator",
+                "model": "test-model",
+                "prompt_template": "Write the draft",
+            }
+        ],
+        "edges": [],
+    }
+    graph_store = SimpleNamespace(
+        get_graph=lambda workflow_id: dict(EMPTY_GRAPH),
+        save_graph=lambda workflow_id, graph: (
+            saved_calls.append((workflow_id, dict(graph))) or dict(graph)
+        ),
+    )
+    mgr = ChatManager(registry, graph_store=graph_store)
+    mgr._chat_model = "default-model"
+
+    async def _fake_codegen(self, *args, **kwargs):
+        return generated_graph, [
+            ChatGenerationSummaryEvent(path_taken="codegen", wall_clock_ms=420),
+        ]
+
+    monkeypatch.setattr(ChatManager, "_generate_workflow_from_intent", _fake_codegen)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf-build",
+            message="build me a workflow",
+            history=[],
+        )
+    )
+
+    assert saved_calls == [("wf-build", generated_graph)]
+    created = [e for e in events if isinstance(e, ChatGraphCreatedEvent)]
+    assert len(created) == 1
+    assert created[0].workflow_id == "wf-build"
+    assert created[0].node_count == 1
+    assert created[0].edge_count == 0
+
+    complete = [e for e in events if isinstance(e, ChatCompleteEvent)]
+    assert len(complete) == 1
+    assert "Workflow saved to current id `wf-build`" in complete[0].content
+    assert "Created with 1 nodes and 0 edges." in complete[0].content
+    assert "Validated and run-ready." in complete[0].content
+    assert any(isinstance(e, ChatGenerationSummaryEvent) for e in events)
 
 
 @pytest.mark.asyncio

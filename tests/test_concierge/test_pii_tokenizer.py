@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from dan.providers import CompletionResult, StreamChunk
-from dan.server.concierge.pii_tokenizer import (
+from dan.llm_core.pii_tokenizer import (
     PIICategory,
     PIISession,
     SensitiveWord,
@@ -25,6 +25,7 @@ from dan.server.concierge.pii_tokenizer import (
     detect_auto_pii,
     detokenize,
     get_current_pii_session,
+    get_pii_session,
     handle_pii_command,
     is_pii_enabled,
     set_current_pii_session,
@@ -674,8 +675,6 @@ class TestHandlePiiCommand:
         assert "no active" in result.lower()
 
     def test_clear_session_with_live_mapping(self) -> None:
-        from dan.server.concierge.pii_tokenizer import get_pii_session
-
         reg = SensitiveWordRegistry()
         session = get_pii_session("test-session")
         session.get_or_create_placeholder("Alice", "name")

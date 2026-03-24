@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, AsyncIterator
 from unittest import mock
@@ -227,7 +228,10 @@ class TestResourceTracker:
         assert tracker.snapshot()["active_runs"] == 3
 
 
-def test_build_concierge_wires_resource_tracker_from_env(monkeypatch):
+def test_build_concierge_wires_resource_tracker_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
     from dan.server.concierge.runtime import build_concierge
 
     monkeypatch.setenv("DAN_MAX_CONCURRENT_RUNS", "2")
@@ -237,6 +241,7 @@ def test_build_concierge_wires_resource_tracker_from_env(monkeypatch):
         chat_manager=mock.MagicMock(),
         capability_context=SimpleNamespace(run_manager=None, activity_tracker=None),
         enable_dispatcher=True,
+        project_store_base_dir=tmp_path / "projects",
     )
 
     assert isinstance(result, tuple)
@@ -245,6 +250,46 @@ def test_build_concierge_wires_resource_tracker_from_env(monkeypatch):
     assert tracker is not None
     assert tracker.budget.max_concurrent_runs == 2
     assert tracker.budget.max_concurrent_llm_calls == 7
+
+
+def test_build_concierge_injects_learning_bundle_from_composition_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    from dan.server.concierge.runtime import build_concierge
+    from dan.server.concierge.learning_bundle import ConciergeLearningBundle
+
+    memory_services = object()
+    bundle = ConciergeLearningBundle(
+        behavior_store=object(),
+        correction_store=object(),
+        adaptation_registry=object(),
+        feature_enabled=lambda feature: feature == "domain_learning",
+        analyze_turn_feedback=lambda **kwargs: {"marker": "analysis"},
+    )
+
+    monkeypatch.setattr(
+        "dan.server.concierge.learning_bundle.build_concierge_learning_bundle",
+        lambda **kwargs: bundle,
+    )
+    monkeypatch.setattr(
+        "dan.server.concierge.runtime.build_memory_services",
+        lambda **kwargs: memory_services,
+    )
+
+    concierge = build_concierge(
+        chat_manager=mock.MagicMock(),
+        capability_context=SimpleNamespace(run_manager=None, activity_tracker=None),
+        enable_dispatcher=False,
+        project_store_base_dir=tmp_path / "projects",
+    )
+
+    assert concierge._behavior_store is bundle.behavior_store
+    assert concierge._correction_store is bundle.correction_store
+    assert concierge._adaptation_registry is bundle.adaptation_registry
+    assert concierge._feature_enabled("domain_learning") is True
+    assert concierge._analyze_turn_feedback is bundle.analyze_turn_feedback
+    assert concierge._memory_services is memory_services
 
 
 # =======================================================================

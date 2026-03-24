@@ -125,6 +125,10 @@ class FakeToolRegistry:
         return None
 
 
+def _make_skill_library() -> dict[str, dict[str, Any]]:
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # Tests: ToolSpec
 # ---------------------------------------------------------------------------
@@ -475,9 +479,8 @@ class TestRuntimeAuthorSkillPipeline:
         assert "pre_prompt" in content
 
     def test_activate_skill(self):
-        from dan.server.skill_library import SKILL_LIBRARY
-
-        author = RuntimeAuthor()
+        skill_library = _make_skill_library()
+        author = RuntimeAuthor(skill_library=skill_library)
         spec = SkillSpec(
             skill_id="test_skill_19_6",
             name="Test Skill",
@@ -486,22 +489,33 @@ class TestRuntimeAuthorSkillPipeline:
             tags=["test"],
         )
         author.activate_skill(spec)
-        assert "test_skill_19_6" in SKILL_LIBRARY
-        entry = SKILL_LIBRARY["test_skill_19_6"]
+        assert "test_skill_19_6" in skill_library
+        entry = skill_library["test_skill_19_6"]
         assert entry["name"] == "Test Skill"
         assert entry["text"] == "Test instructions"
-        del SKILL_LIBRARY["test_skill_19_6"]
+
+    def test_activate_skill_no_library_raises(self):
+        author = RuntimeAuthor()
+        spec = SkillSpec(
+            skill_id="test_skill_19_6",
+            name="Test Skill",
+            description="For testing",
+            content="Test instructions",
+        )
+        with pytest.raises(RuntimeError, match="No skill library"):
+            author.activate_skill(spec)
 
     @pytest.mark.asyncio
     async def test_create_skill_full_pipeline(self, tmp_path: Path):
-        from dan.server.skill_library import SKILL_LIBRARY
-
-        author = RuntimeAuthor(llm_call=_make_fake_llm(_SKILL_SPEC_JSON))
+        skill_library = _make_skill_library()
+        author = RuntimeAuthor(
+            llm_call=_make_fake_llm(_SKILL_SPEC_JSON),
+            skill_library=skill_library,
+        )
         spec = await author.create_skill("review code", target_dir=tmp_path)
         assert isinstance(spec, SkillSpec)
-        assert spec.skill_id in SKILL_LIBRARY
+        assert spec.skill_id in skill_library
         assert (tmp_path / f"{spec.skill_id}.md").exists()
-        del SKILL_LIBRARY[spec.skill_id]
 
     @pytest.mark.asyncio
     async def test_create_skill_invalid_raises(self):

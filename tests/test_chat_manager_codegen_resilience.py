@@ -15,6 +15,11 @@ import dan.server.chat_manager as chat_manager_module
 from dan.meta.planner import CodegenResult, ValidationResult
 from dan.providers import CompletionResult
 from dan.providers.registry import ProviderRegistry
+from dan.server.agent_runtime.workflow_generation_helpers import (
+    exec_deterministic_builder_code,
+    extract_code_from_response,
+    parse_intent_from_result,
+)
 from dan.server.chat_manager import ChatManager
 
 
@@ -56,6 +61,195 @@ def _default_provider(manager: ChatManager) -> SequenceProvider:
     provider = manager._providers.get("default")
     assert isinstance(provider, SequenceProvider)
     return provider
+
+
+def test_parse_intent_from_result_reads_tool_call_arguments() -> None:
+    result = CompletionResult(
+        text="",
+        tool_calls=[
+            {
+                "function": {
+                    "name": "emit_workflow_intent",
+                    "arguments": (
+                        '{"goal":"Build a draft workflow","stages":[{"name":"draft"}]}'
+                    ),
+                }
+            }
+        ],
+    )
+
+    intent = parse_intent_from_result(result)
+
+    assert intent is not None
+    assert intent.goal == "Build a draft workflow"
+    assert len(intent.stages) == 1
+    assert intent.stages[0].name == "draft"
+
+
+def test_parse_intent_from_result_reads_fenced_json() -> None:
+    result = CompletionResult(
+        text=(
+            "Here is the intent\n"
+            "```json\n"
+            '{"goal":"Build a draft workflow","stages":[{"name":"draft"}]}\n'
+            "```"
+        ),
+    )
+
+    intent = parse_intent_from_result(result)
+
+    assert intent is not None
+    assert intent.goal == "Build a draft workflow"
+    assert intent.stages[0].name == "draft"
+
+
+def test_extract_code_from_response_strips_python_fences() -> None:
+    assert (
+        extract_code_from_response("```python\ngraph = {'nodes': [], 'edges': []}\n```")
+        == "graph = {'nodes': [], 'edges': []}"
+    )
+
+
+def test_exec_deterministic_builder_code_returns_graph_dict() -> None:
+    graph_dict = exec_deterministic_builder_code(
+        "from dan.models.graph import Graph\n"
+        "graph = Graph(nodes=[], edges=[])\n"
+    )
+
+    assert graph_dict is not None
+    assert graph_dict["nodes"] == []
+    assert graph_dict["edges"] == []
+
+
+def _load_workflow_acceptance_helper() -> Any:
+    module = pytest.importorskip(
+        "dan.server.agent_runtime.workflow_generation_acceptance"
+    )
+    for name in (
+        "accept_candidate_graph",
+        "accept_generated_graph",
+        "evaluate_candidate_graph",
+    ):
+        helper = getattr(module, name, None)
+        if callable(helper):
+            return helper
+    pytest.skip("workflow_generation_acceptance helper entrypoint not available")
+
+
+def _call_workflow_acceptance_helper(
+    helper: Any,
+    *,
+    graph_dict: dict[str, Any],
+    validation_result: Any,
+    quality_report: Any,
+    quality_threshold: int = 50,
+) -> Any:
+    emitted_events: list[Any] = []
+
+    def _quality_error_for_graph(_graph: dict[str, Any]) -> Any | None:
+        if quality_report.overall_score >= quality_threshold:
+            return None
+        return SimpleNamespace(
+            error_type=SimpleNamespace(value="quality_error"),
+            message=f"Quality score {quality_report.overall_score} below threshold {quality_threshold}",
+        )
+
+    return helper(
+        graph_dict,
+        validate_graph=lambda _graph: validation_result,
+        build_validation_event=lambda validation: SimpleNamespace(
+            success=getattr(validation, "success", False),
+        ),
+        emit_event=emitted_events.append,
+        quality_error_for_graph=_quality_error_for_graph,
+        fit_check=lambda _graph: None,
+        record_gen_outcome=lambda *args, **kwargs: None,
+        success_method="codegen",
+        failure_method="codegen",
+        failure_fix_needed=True,
+        pattern="wf-test",
+    )
+
+
+def test_workflow_generation_acceptance_helper_accepts_valid_graph() -> None:
+    helper = _load_workflow_acceptance_helper()
+    graph_dict = {"nodes": [{"id": "n1"}], "edges": []}
+    validation_result = SimpleNamespace(
+        success=True,
+        run_ready=True,
+        errors=[],
+        graph=SimpleNamespace(model_dump=lambda mode="json": graph_dict),
+        contract_report=None,
+    )
+    quality_report = SimpleNamespace(
+        overall_score=95,
+        concerns=[],
+    )
+
+    result = _call_workflow_acceptance_helper(
+        helper,
+        graph_dict=graph_dict,
+        validation_result=validation_result,
+        quality_report=quality_report,
+    )
+
+    assert result.accepted_graph == graph_dict
+    assert result.errors == ()
+
+
+def test_workflow_generation_acceptance_helper_rejects_low_quality_graph() -> None:
+    helper = _load_workflow_acceptance_helper()
+    graph_dict = {"nodes": [{"id": "n1"}], "edges": []}
+    validation_result = SimpleNamespace(
+        success=True,
+        run_ready=True,
+        errors=[],
+        graph=SimpleNamespace(model_dump=lambda mode="json": graph_dict),
+        contract_report=None,
+    )
+    quality_report = SimpleNamespace(
+        overall_score=10,
+        concerns=["underspecified graph"],
+    )
+
+    result = _call_workflow_acceptance_helper(
+        helper,
+        graph_dict=graph_dict,
+        validation_result=validation_result,
+        quality_report=quality_report,
+        quality_threshold=50,
+    )
+
+    assert result.accepted_graph is None
+    assert result.errors
+    assert result.errors[0].message == "Quality score 10 below threshold 50"
+
+
+def test_workflow_generation_acceptance_helper_reports_validation_failure() -> None:
+    helper = _load_workflow_acceptance_helper()
+    graph_dict = {"nodes": [], "edges": []}
+    validation_result = SimpleNamespace(
+        success=False,
+        run_ready=False,
+        errors=[SimpleNamespace(message="missing required node")],
+        graph=None,
+        contract_report=None,
+    )
+    quality_report = SimpleNamespace(
+        overall_score=0,
+        concerns=[],
+    )
+
+    result = _call_workflow_acceptance_helper(
+        helper,
+        graph_dict=graph_dict,
+        validation_result=validation_result,
+        quality_report=quality_report,
+    )
+
+    assert result.accepted_graph is None
+    assert result.errors
+    assert result.errors[0].message == "missing required node"
 
 
 @pytest.mark.asyncio

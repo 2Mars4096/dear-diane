@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from dan.server.concierge.tier_executors import _STAGE_PROMPT_OVERLAYS
 from dan.server.concierge.tiering import CONCIERGE_STAGE_TIERS, ConciergeTierResolver
 
 
@@ -15,6 +16,15 @@ FULL_TIER_MAP = {
 }
 
 FALLBACK = "claude-sonnet-4-6"
+ORCHESTRATION_STAGES = {
+    "conversation",
+    "conversation_plan",
+    "conversation_debug",
+    "workflow_build",
+    "file_review",
+    "direct_task",
+    "experience_fallback",
+}
 
 
 class TestResolveTier:
@@ -150,6 +160,10 @@ class TestIntegrationWithNormalize:
 
         for tier in CONCIERGE_STAGE_TIERS.values():
             assert tier in _TIER_KEYS, f"stage tier {tier!r} not in canonical set"
+
+    def test_orchestration_stages_have_tier_rows_and_prompt_overlays(self):
+        assert ORCHESTRATION_STAGES <= set(CONCIERGE_STAGE_TIERS)
+        assert ORCHESTRATION_STAGES <= set(_STAGE_PROMPT_OVERLAYS)
 
     def test_numeric_map_all_stages_smoke(self):
         """7-4: Build resolver with numeric DAN_TIER_MAP and verify all stages."""

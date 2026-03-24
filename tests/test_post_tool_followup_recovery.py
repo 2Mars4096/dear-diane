@@ -80,7 +80,14 @@ class _SequenceProvider:
         self._responses = list(responses)
         self.requests: list[dict[str, Any]] = []
 
-    async def complete(self, **kwargs: Any) -> CompletionResult:
+    async def complete(self, *args: Any, **kwargs: Any) -> CompletionResult:
+        if args:
+            normalized = dict(kwargs)
+            if len(args) >= 1:
+                normalized.setdefault("messages", args[0])
+            if len(args) >= 2:
+                normalized.setdefault("model", args[1])
+            kwargs = normalized
         self.requests.append(kwargs)
         if not self._responses:
             raise AssertionError("No more provider responses configured")
@@ -193,6 +200,17 @@ async def _fake_build_messages_with_prompt_detail(
         {"role": "system", "content": system_content},
         {"role": "user", "content": "hello"},
     ]
+
+
+async def _fake_build_messages_with_prompt_detail_disabled_via_metadata(
+    self,
+    *args: Any,
+    **kwargs: Any,
+) -> list[dict[str, str]]:
+    prompt_metadata_sink = kwargs.get("prompt_metadata_sink")
+    if isinstance(prompt_metadata_sink, dict):
+        prompt_metadata_sink["supports_load_prompt_detail"] = False
+    return await _fake_build_messages_with_prompt_detail(self, *args, **kwargs)
 
 
 def test_post_tool_followup_retry_delay_parses_retry_after_http_date() -> None:
@@ -565,6 +583,195 @@ async def test_send_message_with_tools_surfaces_updated_followup_rate_limit_erro
         "The provider hit a rate or quota limit while generating the final answer from completed tool results."
     )
     assert "stub capability" in complete_events[-1].content
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_resolves_fallback_model_via_public_provider_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_call_log: list[dict[str, Any]] = []
+    monkeypatch.setenv("DAN_SHOW_COST", "0")
+    primary_provider = _SequenceProvider(
+        [
+            CompletionResult(
+                text="Let me check that.",
+                tool_calls=[_tool_call(7)],
+                usage={"prompt_tokens": 9, "completion_tokens": 4},
+            ),
+            _FollowupRateLimitError("rate limit on final answer"),
+            _FollowupRateLimitError("rate limit on retry 1"),
+            _FollowupRateLimitError("rate limit on retry 2"),
+            _FollowupRateLimitError("rate limit during synthesis"),
+        ]
+    )
+    fallback_provider = _SequenceProvider(
+        [
+            CompletionResult(
+                text="Recovered with fallback model.",
+                tool_calls=[],
+                usage={"prompt_tokens": 5, "completion_tokens": 3},
+            )
+        ]
+    )
+    mgr = _make_manager(primary_provider, tool_call_log=tool_call_log)
+    mgr._providers.register("openai", fallback_provider)
+    mgr._providers.set_model_override("alt-model", "default")
+    mgr._providers.set_model_override("default-model", "openai")
+
+    resolve_models: list[str | None] = []
+    surface_calls: list[dict[str, Any]] = []
+    original_resolve_provider = mgr._resolve_provider
+    original_complete_chat_surface = chat_manager_module.complete_chat_surface
+
+    def _recording_resolve_provider(
+        *,
+        pii_session_key: str | None = None,
+        model: str | None = None,
+    ) -> Any:
+        resolve_models.append(model)
+        return original_resolve_provider(
+            pii_session_key=pii_session_key,
+            model=model,
+        )
+
+    async def _recording_complete_chat_surface(*args: Any, **kwargs: Any) -> Any:
+        surface_calls.append(dict(kwargs))
+        return await original_complete_chat_surface(*args, **kwargs)
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+    monkeypatch.setattr(
+        chat_manager_module,
+        "_post_tool_followup_retry_delay_seconds",
+        lambda exc, retry_index: 0.0,
+    )
+    monkeypatch.setattr(mgr, "_resolve_provider", _recording_resolve_provider)
+    monkeypatch.setattr(
+        chat_manager_module,
+        "complete_chat_surface",
+        _recording_complete_chat_surface,
+    )
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Use the tool, then answer.",
+            history=[],
+            model_override="alt-model",
+        )
+    )
+
+    complete_events = [event for event in events if isinstance(event, ChatCompleteEvent)]
+    assert tool_call_log == [{"args": {"value": 7}, "workflow_id": "wf1"}]
+    assert complete_events
+    assert complete_events[-1].content == "Recovered with fallback model."
+    assert resolve_models == []
+    assert getattr(mgr, "model_gateway", None) is not None
+    assert [call["model"] for call in surface_calls] == ["alt-model", "default-model"]
+    assert surface_calls[0]["temperature"] == 0.7
+    assert int(surface_calls[0]["max_tokens"]) > 0
+    assert surface_calls[0]["pii_session_key"] == "wf1"
+    assert surface_calls[1]["pii_session_key"] == "wf1"
+    assert any(
+        "final answer" in str(message.get("content") or "")
+        for message in surface_calls[0]["messages"]
+        if isinstance(message, dict)
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_uses_gateway_for_fallback_model_recovery_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_call_log: list[dict[str, Any]] = []
+    monkeypatch.setenv("DAN_SHOW_COST", "0")
+
+    class _ResolvedProvider:
+        supports_tool_calls = True
+
+    class _Gateway:
+        def __init__(self, responses: list[Any]) -> None:
+            self._responses = list(responses)
+            self.calls: list[dict[str, Any]] = []
+            self.registry = SimpleNamespace(get=lambda name: None)
+
+        def resolve(self, model: str) -> Any:
+            return _ResolvedProvider()
+
+        async def complete(self, **kwargs: Any) -> CompletionResult:
+            self.calls.append(dict(kwargs))
+            if not self._responses:
+                raise AssertionError("No more gateway responses configured")
+            response = self._responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+    gateway = _Gateway(
+        [
+            CompletionResult(
+                text="Let me check that.",
+                tool_calls=[_tool_call(9)],
+                usage={"prompt_tokens": 9, "completion_tokens": 4},
+            ),
+            _FollowupRateLimitError("rate limit on final answer"),
+            _FollowupRateLimitError("rate limit on retry 1"),
+            _FollowupRateLimitError("rate limit on retry 2"),
+            _FollowupRateLimitError("rate limit during synthesis"),
+            CompletionResult(
+                text="Recovered with gateway fallback model.",
+                tool_calls=[],
+                usage={"prompt_tokens": 5, "completion_tokens": 3},
+            ),
+        ]
+    )
+    mgr = _make_manager(_SequenceProvider([]), tool_call_log=tool_call_log)
+    mgr.model_gateway = gateway
+    mgr._chat_model = "default-model"
+
+    resolve_models: list[str | None] = []
+    original_resolve_provider = mgr._resolve_provider
+
+    def _recording_resolve_provider(
+        *,
+        pii_session_key: str | None = None,
+        model: str | None = None,
+    ) -> Any:
+        resolve_models.append(model)
+        return original_resolve_provider(
+            pii_session_key=pii_session_key,
+            model=model,
+        )
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+    monkeypatch.setattr(
+        chat_manager_module,
+        "_post_tool_followup_retry_delay_seconds",
+        lambda exc, retry_index: 0.0,
+    )
+    monkeypatch.setattr(mgr, "_resolve_provider", _recording_resolve_provider)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Use the tool, then answer.",
+            history=[],
+            model_override="alt-model",
+        )
+    )
+
+    complete_events = [event for event in events if isinstance(event, ChatCompleteEvent)]
+    assert tool_call_log == [{"args": {"value": 9}, "workflow_id": "wf1"}]
+    assert complete_events
+    assert complete_events[-1].content == "Recovered with gateway fallback model."
+    assert resolve_models == []
+    assert [call["model"] for call in gateway.calls] == [
+        "alt-model",
+        "alt-model",
+        "alt-model",
+        "alt-model",
+        "alt-model",
+        "default-model",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1011,6 +1218,65 @@ async def test_tool_fallback_rebuilds_messages_without_prompt_detail_tool_hint(
     system_messages = [m for m in captured_messages if m.get("role") == "system"]
     assert system_messages
     assert "load_prompt_detail" not in system_messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_prefers_prompt_metadata_for_prompt_detail_support(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _SequenceProvider([CompletionResult(text="OK", tool_calls=[])])
+
+    async def _load_prompt_detail(
+        args: dict[str, Any], context: CapabilityContext
+    ) -> CapabilityResult:
+        return CapabilityResult(success=True, message="Prompt detail", data={"detail_id": args.get("detail_id")})
+
+    capability_registry = ChatCapabilityRegistry()
+    capability_registry.register(
+        "load_prompt_detail",
+        build_tool_schema(
+            "load_prompt_detail",
+            "Load expanded prompt detail for the current turn.",
+            {
+                "type": "object",
+                "properties": {
+                    "detail_id": {"type": "string"},
+                },
+                "required": ["detail_id"],
+            },
+        ),
+        _load_prompt_detail,
+        modes=["agent"],
+    )
+
+    mgr = _make_manager(
+        provider,
+        tool_call_log=[],
+        capability_registry=capability_registry,
+    )
+
+    monkeypatch.setattr(
+        ChatManager,
+        "_build_messages",
+        _fake_build_messages_with_prompt_detail_disabled_via_metadata,
+    )
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Use the tool, then answer.",
+            history=[],
+        )
+    )
+
+    assert any(isinstance(event, ChatCompleteEvent) for event in events)
+    assert provider.requests
+    tool_names = [
+        str(((tool.get("function") or {}).get("name")) or "")
+        for tool in (provider.requests[0].get("tools") or [])
+        if isinstance(tool, dict)
+    ]
+    assert "load_prompt_detail" not in tool_names
 
 
 @pytest.mark.asyncio

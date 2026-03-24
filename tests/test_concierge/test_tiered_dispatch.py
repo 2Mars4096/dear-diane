@@ -1235,6 +1235,10 @@ async def test_root_assistant_turn_persists_session_tree_metadata(tmp_path: Path
     assert assistant_turn.content == "You are on the tiered path."
     assert isinstance(getattr(assistant_turn, "metadata", None), dict)
     assert assistant_turn.metadata["session_tree"]
+    root_trace = assistant_turn.metadata["session_tree"][0]
+    assert root_trace["concierge_stage"] == "conversation"
+    assert root_trace["route_source"] == "llm"
+    assert root_trace["autonomy_level"] == "balanced"
 
 
 # ---------------------------------------------------------------------------
@@ -1333,6 +1337,12 @@ def test_determine_stage_requested_build_mode_override() -> None:
 
 def test_determine_stage_workflow_edit_action_hint() -> None:
     route = _FakeRoute(action_hints=["workflow_edit"])
+    session = _FakeSession(triage=_FakeTriage(route=route))
+    assert _determine_stage(session) == "workflow_build"
+
+
+def test_determine_stage_workflow_build_action_hint() -> None:
+    route = _FakeRoute(action_hints=["workflow_build"])
     session = _FakeSession(triage=_FakeTriage(route=route))
     assert _determine_stage(session) == "workflow_build"
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from dan.agent_runtime import tokens as runtime_tokens
 from dan.server.chat import tokens as chat_tokens
 from dan.server import mention_resolver
 from dan.utils import tokens as shared_tokens
@@ -36,6 +37,7 @@ class _BrokenTikToken:
     "module, estimate_name",
     [
         (shared_tokens, "estimate_tokens"),
+        (runtime_tokens, "estimate_tokens"),
         (chat_tokens, "estimate_tokens"),
         (mention_resolver, "_estimate_tokens"),
     ],
@@ -58,6 +60,7 @@ def test_estimate_tokens_uses_local_encoding_maps(monkeypatch, module, estimate_
     "module, estimate_name",
     [
         (shared_tokens, "estimate_tokens"),
+        (runtime_tokens, "estimate_tokens"),
         (chat_tokens, "estimate_tokens"),
         (mention_resolver, "_estimate_tokens"),
     ],

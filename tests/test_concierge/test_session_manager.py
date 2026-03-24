@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from types import SimpleNamespace
 
 import pytest
 
@@ -184,6 +185,20 @@ def test_build_trace_includes_root_and_child_duration_and_error_fields() -> None
     root.created_at = 0.5
     root.started_at = 1.0
     root.completed_at = 3.5
+    root.triage = SimpleNamespace(
+        route=SimpleNamespace(
+            target="workflow",
+            action_hints=["workflow_build"],
+        ),
+        route_source="scenario",
+        scenario_id="workflow_build",
+        scenario_confidence=0.92,
+    )
+    root.msg = _make_msg()
+    root.msg.metadata = {
+        "concierge_stage": "workflow_build",
+        "autonomy_resolution": {"effective_level": "aggressive"},
+    }
     root.result = SessionResult(
         token_usage={"total_tokens": 10},
         tools_used=["file_read"],
@@ -194,6 +209,12 @@ def test_build_trace_includes_root_and_child_duration_and_error_fields() -> None
     child.created_at = 1.5
     child.started_at = 2.0
     child.completed_at = 5.0
+    child.task_context = {
+        "handoff": {
+            "route_target": "file",
+            "action_hints": ["read"],
+        }
+    }
     child.result = SessionResult(
         error="child failed",
         token_usage={"total_tokens": 4},
@@ -208,6 +229,15 @@ def test_build_trace_includes_root_and_child_duration_and_error_fields() -> None
     assert traces[child.id].duration_ms == pytest.approx(3000.0)
     assert traces[root.id].children == [child.id]
     assert traces[child.id].error == "child failed"
+    assert traces[root.id].route_target == "workflow"
+    assert traces[root.id].action_hints == ["workflow_build"]
+    assert traces[root.id].route_source == "scenario"
+    assert traces[root.id].scenario_id == "workflow_build"
+    assert traces[root.id].scenario_confidence == pytest.approx(0.92)
+    assert traces[root.id].concierge_stage == "workflow_build"
+    assert traces[root.id].autonomy_level == "aggressive"
+    assert traces[child.id].route_target == "file"
+    assert traces[child.id].action_hints == ["read"]
 
 
 def test_export_tree_returns_nested_children_structure() -> None:
@@ -216,10 +246,16 @@ def test_export_tree_returns_nested_children_structure() -> None:
     branch = manager.create_child(root.id, "branch", SessionTier.MULTI)
     leaf = manager.create_child(branch.id, "leaf", SessionTier.SINGLE)
     sibling = manager.create_child(root.id, "sibling", SessionTier.SINGLE)
+    root.triage = SimpleNamespace(route=SimpleNamespace(target="workflow", action_hints=["workflow_edit"]))
+    root.msg = _make_msg()
+    root.msg.metadata = {"concierge_stage": "workflow_build"}
 
     exported = manager.export_tree(root.id)
 
     assert exported["id"] == root.id
     assert exported["tier"] == "MULTI"
+    assert exported["route_target"] == "workflow"
+    assert exported["action_hints"] == ["workflow_edit"]
+    assert exported["concierge_stage"] == "workflow_build"
     assert [child["id"] for child in exported["children"]] == [branch.id, sibling.id]
     assert exported["children"][0]["children"][0]["id"] == leaf.id
