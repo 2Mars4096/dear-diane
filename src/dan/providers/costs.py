@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from dan.engine.behavior_store import BehaviorStore
+from typing import Any, Protocol
 
 COST_PER_1K_TOKENS: dict[str, dict[str, float]] = {
     # OpenAI
@@ -32,7 +29,13 @@ COST_PER_1K_TOKENS: dict[str, dict[str, float]] = {
 }
 
 
-def register_seed_cost_table(store: BehaviorStore) -> None:
+class SeedStore(Protocol):
+    """Minimal behavior-store shape needed for seed registration."""
+
+    def register_seed(self, key: str, value: Any) -> None: ...
+
+
+def register_seed_cost_table(store: SeedStore) -> None:
     """Register cost table as seed default."""
     store.register_seed("models/cost_table", dict(COST_PER_1K_TOKENS))
 

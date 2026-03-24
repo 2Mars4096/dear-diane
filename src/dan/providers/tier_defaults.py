@@ -8,10 +8,7 @@ name (e.g. Anthropic reasoning/critical both use Opus), per-tier
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from dan.engine.behavior_store import BehaviorStore
+from typing import Any, Protocol
 
 DEFAULT_TIER_MAPS: dict[str, dict[str, str]] = {
     "anthropic": {
@@ -51,6 +48,12 @@ _NUMERIC_TO_CANONICAL: dict[str, list[str]] = {
 _PROVIDER_PREFERENCE = ["anthropic", "openai", "google"]
 
 
+class SeedStore(Protocol):
+    """Minimal behavior-store shape needed for tier-map seeding."""
+
+    def register_seed(self, key: str, value: Any) -> None: ...
+
+
 def normalize_tier_map(raw: dict[str, str] | None) -> dict[str, str] | None:
     """Normalize a user-supplied tier map so all keys are canonical tier names.
 
@@ -80,7 +83,7 @@ def normalize_tier_map(raw: dict[str, str] | None) -> dict[str, str] | None:
     return result or None
 
 
-def register_seed_tier_maps(store: BehaviorStore) -> None:
+def register_seed_tier_maps(store: SeedStore) -> None:
     """Register default tier maps as seed defaults."""
     store.register_seed("models/tier_maps", dict(DEFAULT_TIER_MAPS))
 
