@@ -11,7 +11,7 @@ The domain keyword seed map only covers six domains (`paper_rendering`, `equity_
 Relevant code:
 - `src/dan/server/concierge/domain_learning.py`: shared seed keyword map
 - `src/dan/engine/preference_extractor.py`: `_extract_domains()`
-- `src/dan/engine/domain_taxonomy.py`: alias coverage
+- `src/dan/domain_taxonomy.py`: alias coverage
 - `src/dan/engine/memory_adapters.py`: `ProfileAdapter` normalization
 
 Failing tests:
@@ -48,4 +48,4 @@ Failing tests:
 
 - The module audit suggests surfacing inferred domains to the user for confirmation rather than silently storing them. That's a UX improvement beyond this plan's scope but worth noting for future work.
 - Consider whether the taxonomy should be extensible at runtime (user adds their own domain) vs. curated at build time.
-- Validation: `tests/test_engine/test_preference_extractor.py`, `tests/test_engine/test_domain_taxonomy.py`, `tests/test_engine/test_consolidation.py`, and `tests/test_engine/test_memory_kernel.py`.
+- Validation: `tests/test_domain_taxonomy.py`, `tests/test_concierge/test_domain_learning.py`, and `tests/test_concierge/test_domain_preferences.py`.

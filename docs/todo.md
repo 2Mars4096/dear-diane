@@ -3,11 +3,11 @@
 ## Current Backlog
 - [ ] [41-internal-runtime-submodule-restructure](plans/41-internal-runtime-submodule-restructure.md) — restructure DAN into `llm_core`, `agent_runtime`, `concierge_orchestrator`, and `workflow_runtime`, with shared composition roots and parity guardrails before any future package split
   - [ ] [41-1-llm-core-and-model-gateway](plans/41-1-llm-core-and-model-gateway.md)
-  - [ ] [41-2-agent-runtime-extraction](plans/41-2-agent-runtime-extraction.md)
+  - [ ] [41-2-agent-runtime-extraction](plans/41-2-agent-runtime-extraction.md) — graph-summary/token helpers moved; prompt/context/tool-loop extraction still in progress
   - [ ] [41-3-concierge-orchestrator-narrowing](plans/41-3-concierge-orchestrator-narrowing.md)
   - [ ] [41-4-workflow-runtime-isolation](plans/41-4-workflow-runtime-isolation.md)
   - [ ] [41-5-composition-root-and-surface-parity](plans/41-5-composition-root-and-surface-parity.md)
-  - [ ] [41-6-module-contracts-and-regressions](plans/41-6-module-contracts-and-regressions.md)
+  - [x] [41-6-module-contracts-and-regressions](plans/41-6-module-contracts-and-regressions.md)
 - [ ] [38-8 concierge scope follow-up](plans/38-8-concierge-triage-correctness.md) — sharpen tier-vs-stage semantics, add stage-specific prompt overlays, keep root concierge orchestration-focused, and make stage/tier/routing behavior observable
 - [ ] [38-15 lexical triage scenario catalog](plans/38-15-lexical-triage-scenario-catalog.md) — highest-priority triage follow-up; define every regex/keyword-matched scenario explicitly, add negative examples and provenance, narrow over-broad patterns, and require LLM fallback whenever lexical matches overlap or confidence is weak
 - [ ] [38-16 workflow build contract and repair hardening](plans/38-16-workflow-build-contract-and-repair.md) — add one explicit build-boundary validator, clear `proposed`/`validated`/`applied`/`run_ready` states, run-readiness distinction, and bounded mechanical repair before workflows are claimed saveable/applied/runnable

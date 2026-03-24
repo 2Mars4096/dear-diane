@@ -114,8 +114,8 @@
 
 ## Server Startup & State
 
-- `src/dan/server/app_state.py` — `AppState` dataclass: typed container for all server-side runtime state (stores, managers, registries, integrations, background tasks, adapters). Attached to `app.state.dan` during lifespan. Includes `require_*` accessor guards that raise HTTP 503 if a subsystem isn't initialized yet.
-- `src/dan/server/startup.py` — server lifespan and phased initialization (Plan 35-5). Contains all helper functions moved from `app.py` (`_get_engine_config`, `_build_chat_provider_registry`, MCP bridge helpers, `_auto_register_published_workflows`, `_consolidation_loop`, `_build_tool_registry`) plus 8 phased init functions: `init_learning_tiers()`, `init_stores(state)`, `init_engine(state)`, `init_capabilities(state)`, `init_managers(state)`, `init_integrations(state, app)`, `init_background(state, app)`, `shutdown(state)`. Startup also emits configuration warnings for missing/placeholder `DAN_LLM_API_KEY` values and explicitly disabled shell sandboxing. The `lifespan(app)` async context manager composes all phases and mirrors state to `app.py` module globals via `_mirror_state_to_globals()` for backward compat.
+- `src/dan/server/app_state.py` — `AppState` dataclass: typed container for all server-side runtime state (stores, managers, registries, integrations, background tasks, adapters). Attached to `app.state.dan` during lifespan. Includes `require_*` accessor guards that raise HTTP 503 if a subsystem isn't initialized yet. Has `model_gateway` field (set during phase 4 `init_managers`) wrapping the same provider surface as the legacy registry via `llm_core.factory.build_gateway()`.
+- `src/dan/server/startup/__init__.py` — server lifespan and phased initialization (Plan 35-5). Contains all helper functions moved from `app.py` (`_get_engine_config`, `_build_chat_provider_registry`, `_build_model_gateway`, MCP bridge helpers, `_auto_register_published_workflows`, `_consolidation_loop`, `_build_tool_registry`) plus 8 phased init functions: `init_learning_tiers()`, `init_stores(state)`, `init_engine(state)`, `init_capabilities(state)`, `init_managers(state)`, `init_integrations(state, app)`, `init_background(state, app)`, `shutdown(state)`. Startup also emits configuration warnings for missing/placeholder `DAN_LLM_API_KEY` values and explicitly disabled shell sandboxing. The `lifespan(app)` async context manager composes all phases and mirrors state to `app.py` module globals via `_mirror_state_to_globals()` for backward compat.
 - Furnace runtime hardening: `FurnaceSessionStore` is lazy about creating `~/.dan/furnace/sessions`, `BlockRegistry` treats index writes as best-effort during startup, and telemetry resolves `DAN_TELEMETRY_DB` / `DAN_TELEMETRY_RETENTION_DAYS` at call time rather than freezing them at module import.
 - `src/dan/server/routers/furnace.py` now models session lifecycle explicitly with `SessionState` (`queued`, `active`, `paused`, `cancelling`, `cancelled`, `failed`, `completed`), keeps per-session worker-task and cancellation registries in memory, sanitizes source IDs before persistence, guards artifact paths with containment checks, and fans SSE progress events out to multiple subscribers instead of a single queue.
 - `app.py` is the composition root (397 lines): `FastAPI(lifespan=lifespan)`, CORS middleware, `include_router()` calls for 10 router modules, compatibility re-exports, and static file serving. All route handlers live in `src/dan/server/routers/`. Module globals (`_graph_store`, `_run_manager`, etc.) are kept as a compatibility layer, populated from `AppState` during lifespan.
@@ -319,7 +319,7 @@ Guards are heuristic (not LLM-heavy), on by default (`DAN_GUARD_PIPELINE=0` to d
 
 ### Unified Telemetry (31-20)
 
-Single `TelemetryEvent` model + SQLite-backed `TelemetryStore` (`src/dan/server/telemetry.py`) captures every LLM interaction with timing, token counts, cost, and project/surface/model scope. Event types: `chat_turn`, `fast_command`, `workflow_run`, `workflow_node`, `guard_check`, `classification`, `memory_retrieval`, `tool_call`. Three store backends: `SQLiteTelemetryStore` (default, WAL mode), `InMemoryTelemetryStore` (tests), `NullTelemetryStore` (disabled). Emission sites: `Concierge.process()` (chat turns), `RunManager._enrich_and_persist()` (workflow runs/nodes), guard functions, `classify_intent_llm()`, `MemoryKernel.retrieve()`. `/analytics` command provides aggregated reports with `--by model|surface|day|intent`, `--since Nd`, project drill-down, and JSONL/CSV export. Lifecycle: created in `app.py` lifespan and `chat_factory.py`, passed to `Concierge` and `RunManager`. Env: `DAN_TELEMETRY`, `DAN_TELEMETRY_DB`, `DAN_TELEMETRY_RETENTION_DAYS`.
+Single `TelemetryEvent` model + SQLite-backed `TelemetryStore` (`src/dan/server/telemetry.py`) captures every LLM interaction with timing, token counts, cost, and project/surface/model scope. Event types: `chat_turn`, `fast_command`, `workflow_run`, `workflow_node`, `guard_check`, `classification`, `memory_retrieval`, `tool_call`. Three store backends: `SQLiteTelemetryStore` (default, WAL mode), `InMemoryTelemetryStore` (tests), `NullTelemetryStore` (disabled). Emission sites: `Concierge.process()` (chat turns), `RunManager._enrich_and_persist()` (workflow runs/nodes), guard functions, `classify_intent_llm()`, `MemoryKernel.retrieve()`. `/analytics` command provides aggregated reports with `--by model|surface|day|intent`, `--since Nd`, project drill-down, and JSONL/CSV export. Lifecycle: created in `app.py` lifespan and `chat_factory/__init__.py`, passed to `Concierge` and `RunManager`. Env: `DAN_TELEMETRY`, `DAN_TELEMETRY_DB`, `DAN_TELEMETRY_RETENTION_DAYS`.
 
 ### Solver Runtime Layer (25-8 through 25-11)
 
@@ -365,6 +365,13 @@ deep-agent-network/
     plans/                       # Numbered detailed plans (just-in-time); 11 = Phase 7.1 structure review
   src/dan/                       # Python package
     __init__.py                  # Top-level package exports
+    chat_events.py               # Phase 41-3/41-6 — neutral chat event models/shared stream unions outside server/
+    chat_prompts.py              # Phase 41-3/41-6 — neutral prompt entry points used by concierge/runtime without importing server/chat/
+    domain_taxonomy.py           # Phase 41-3/41-6 — neutral canonical-domain helpers shared by engine, concierge, and chat surfaces
+    keyword_overlap.py           # Phase 41-3 — neutral token-overlap helper shared by memory-kernel ranking and concierge domain-learning clustering
+    llm_surface.py               # Phase 41-3/41-6 — neutral chat-surface gateway/provider resolution helpers
+    telemetry_api.py             # Phase 41-3/41-6 — neutral telemetry model/helpers facade over server telemetry
+    web_surface.py               # Phase 41-3/41-6 — neutral web capability facade for orchestration/runtime layers
     models/                      # Phase 0 — formal type system
       ports.py                   # InputPort, OutputPort
       context.py                 # NodeLocalState, SharedContextDeclaration, ArtifactRef, ContextProjection, FeedbackSelector, CompactionRule, policies
@@ -379,7 +386,23 @@ deep-agent-network/
     migration/
       gate_migration.py          # Legacy IfElse/WhileLoop → GateNode graph-dict migration helpers
     registry.py                  # NodeTypeRegistry — maps node_type strings to classes
-    providers/                   # Phase 4 — multi-provider LLM abstraction
+    llm_core/                    # Phase 41-1 — unified LLM gateway wrapping providers/
+      __init__.py                # Re-exports ModelGateway, GatewayConfig, build_gateway, plus all providers/ types
+      gateway/                   # Stable package-backed module path for ModelGateway
+        __init__.py              # ModelGateway — uniform PII, retry, timeout, budget, telemetry, fallback over any ProviderRegistry
+      pii_tokenizer.py           # PII registry/session + TokenizingProviderWrapper (shared by chat, executors, concierge shim)
+      config.py                  # GatewayConfig — concern toggles (pii, retry, timeout, telemetry, budget, fallback)
+      factory.py                 # build_gateway() — single entry point for constructing a fully-configured gateway
+      types.py                   # GatewayCall — per-call telemetry metadata
+    agent_runtime/               # Phase 41-2 — reusable single-agent loop extracted from ChatManager
+      __init__.py                # Re-exports runtime contracts plus canonical graph-summary/token helpers
+      types.py                   # AgentProfile enum, AgentRequest, AgentEvent, AgentResult dataclasses
+      runtime.py                 # AgentRuntime protocol + BaseAgentRuntime stub (gateway delegation, streaming)
+      graph_summary.py           # GraphSummary building, revision hashing, prompt serialization
+      tokens.py                  # Context-window lookup, token estimation, history compaction
+    graph_mutator/               # Phase 41-6 — neutral graph-mutation facade for non-server callers
+      __init__.py                # Canonical import for GraphMutator/MutationPlan outside server/
+    providers/                   # Phase 4 — multi-provider LLM abstraction (wrapped by llm_core/)
       __init__.py                # LLMProvider protocol, CompletionResult, StreamChunk, ProviderConfig, ModelBehaviorProfile, get_model_behavior(), _unwrap_provider()
       openai_provider.py         # OpenAIProvider — wraps AsyncOpenAI (any OpenAI-compatible endpoint); get_model_behavior() for per-model quirks (e.g. Kimi exact/required tool choice disabled); _serialize_assistant_message() for raw assistant replay
       anthropic_provider.py      # AnthropicProvider — wraps AsyncAnthropic (optional dep)
@@ -437,7 +460,7 @@ deep-agent-network/
       state_store.py             # Phase 10 (18-3) — StateStore protocol, FileSystemStateStore (atomic JSON), NullStateStore; typed schemas (LoopIterationState, TeamTurnState, NodeExecutionSummary)
       token_optimization.py      # Phase 10 (18-1/18-3/18-4) — SummarizationConfig, PromptAnalyzer, ContextSelector, PayloadPruner, ToolSchemaResolver, ContextToolProvider, HistoryManager, LoopCompactor, TokenBudgetAdvisor, TokenWasteAnalyzer, WasteFinding, TokenOptimizationReport, OptimizationPlaybook, PlaybookEntry
       cache.py                   # Phase 10 (18-2) — NodeResultCache (LRU+TTL+disk) and SemanticCache (EmbeddingRegistry + VectorStore)
-      domain_taxonomy.py         # Phase 21 follow-up — canonical domain ids, legacy alias cleanup, safe slug fallback, display-label formatting, and keyword-map normalization helpers shared by profile + concierge paths
+      domain_taxonomy.py         # Compatibility facade over `dan.domain_taxonomy` for legacy engine-path imports
       user_profile.py            # Phase 16 (26-3) — UserProfile Pydantic model, RecentWorkflow, frequent search_dirs, canonicalized common_domains with load/merge/save cleanup, DAN_PROFILE_PATH-aware load/save, format_recent_workflows()
       preference_extractor.py    # Phase 16 (26-3) — PreferenceExtractor heuristic extraction (model preferences, shared-domain-map-backed domain hints, output format) from conversation history; strips path/file-like tokens and filters low-signal domain keywords before durable profile inference
       memory_extractor.py        # Phase 29-6 — MemoryExtractor heuristic extraction (facts, preferences, episodes) from user/assistant interactions; role-aware directory facts (`papers directory`, `notes directory`) and heuristic+LLM merge
@@ -570,7 +593,8 @@ deep-agent-network/
       __init__.py
       __main__.py                # CLI entry point: `dan-serve` / `python -m dan.server`
       app.py                     # FastAPI application — CRUD, runs, WebSocket, built-in tool registry, experience APIs, and meta-orchestrator APIs (plan/validate/run/pause/resume/events); lifespan wires ChatManager with user profile + conversation memory and manages NotificationManager subscription to GlobalEventBus
-      chat_factory.py            # Shared factory for LocalChatRuntime chat dependencies; now builds capability context + concierge for local parity (26-1, 25-6)
+      chat_factory/              # Shared factory package for LocalChatRuntime chat dependencies
+        __init__.py              # Builds capability context + concierge for local parity (26-1, 25-6)
       exec.py                    # execute_python() — shared Python executor for run_python and run_strategy_script
       graph_store.py             # Filesystem-based graph JSON persistence
       graph_mutator.py           # GraphMutator: applies MutationPlan (add/remove/edit nodes+edges) to graph dicts with transactional semantics + dry-run; TOOL_PORT_MANIFESTS for tool-specific port declarations; ApplySkill + replace_body_graph mutation ops; auto-scaffolds body sub-graphs for control-flow nodes
@@ -581,7 +605,14 @@ deep-agent-network/
       chat_store.py              # Filesystem-based chat persistence (per-workflow threads)
       concierge/                # Phase 15 (25-6/25-7) — deterministic routing/runtime layer: project/task store, classifier, handlers, policy, queue, progress, promotion, goal loop (31-6)
         completion_guard.py      # Phase 21 (31-9) — Completion guard: RequirementExtractor (heuristic+LLM), CompletionChecker (keyword+LLM), augment_response(), run_completion_check(), /completion command, CompletionStats
-        pii_tokenizer.py         # Phase 21 (31-10) — PII tokenization: SensitiveWordRegistry, PIISession, tokenize/detokenize, TokenizingProviderWrapper, /pii commands, auto-detection (email/phone/SSN/CC/IP)
+        pii_tokenizer.py         # Phase 41-3/41-1 — compatibility facade over llm_core/pii_tokenizer.py for legacy concierge imports
+        learning_bundle.py       # Phase 41-3 — bootstrap helper that assembles engine-backed learning stores plus injected learning hooks before constructing Concierge
+        feature_gates.py         # Phase 41-3 — central feature-gate seam over engine learning-tier config for concierge helpers
+        memory_services.py       # Phase 41-3 — injected memory-kernel adapter used by concierge runtime instead of direct engine imports
+        correction_feedback.py   # Phase 41-3 — dedicated turn-feedback analysis seam over engine correction-memory primitives
+        memory_enrichment.py     # Phase 41-3 — post-turn preference/memory extraction seam over engine enrichment helpers
+        profile_domain_sync.py   # Phase 41-3 — helper for persisting `/domains` edits through engine-backed profile/memory stores
+        domain_learning_adaptations.py  # Phase 41-3 — auto-discovery / keyword-expansion helper holding adaptation-registry integration
         computer_policy.py       # Phase 21 (31-17) — Computer control policy: ComputerControlConfig, ChunkPolicies (6 chunks), BrowserDomainRule, SessionOverride, VisionExportPolicy, FileSafetyPolicy, action classification, domain/app allowlists, AuditLog
         computer_use.py          # Phase 21 (31-17) — Computer use controller: UIObservation, ObservedElement, ComputerUseLeaseManager, ComputerUseController (observe/act/verify, progress emissions, approval integration), /computer commands
         learning.py              # Phase 21 (31-15) — /corrections and /adaptations command handlers
@@ -705,6 +736,45 @@ deep-agent-network/
   .env.example                   # Environment variable template
   .cursor/rules/                 # AI agent rules
 ```
+
+## Module Dependency Rules
+
+Allowed dependency directions between internal modules. Arrows point from dependent → dependency. Violations are enforced by `tests/test_module_boundaries.py`.
+
+```
+models/                → (no runtime deps — pure schema)
+llm_core/              → providers/ only (no server, engine, concierge, cli)
+agent_runtime/         → llm_core, models/, neutral shared contracts like chat_events (no server transport, no concierge)
+concierge_orchestrator/→ agent_runtime, llm_core (no direct engine, no server internals)
+workflow_runtime       → llm_core, models/ (no server, concierge, cli)
+  (engine/, executors/, builder/, loader/)
+meta/                  → models/, llm_core, graph_mutator/, optionally agent_runtime (no server/)
+server/, cli/          → composition roots, may depend on all modules above
+```
+
+- **Pure layers** (`models/`, `providers/`) must not import from any higher-level module.
+- **Gateway layer** (`llm_core/`) wraps `providers/` and must not reach into server, engine, or orchestration code.
+- **Composition roots and bootstrap helpers** (`server/startup/__init__.py`, `server/chat_factory/__init__.py`, `server/concierge/learning_bundle.py`, `cli/chat_local.py`) are the only places that should wire modules together.
+- `KNOWN_VIOLATIONS` and `KNOWN_CIRCULAR_PAIRS` in `tests/test_module_boundaries.py` are currently empty. Any new forbidden import direction or circular boundary pair now fails the test immediately.
+
+## Module Ownership Guide
+
+| If you're adding... | Put it in... | Not in... |
+|---|---|---|
+| New LLM provider | `providers/` (register in `llm_core/` factory) | `server/`, `engine/` |
+| New model concern (PII, retry) | `llm_core/` gateway | `chat_manager.py`, `concierge/` |
+| New agent capability/tool | `agent_runtime/` | `chat_manager.py` |
+| New workflow node type | `executors/` + register in `engine/` | `server/`, `concierge/` |
+| New orchestration route | `concierge/` | `engine/`, `executors/` |
+| Startup/bootstrap wiring | Composition helpers (`startup/__init__.py`, `chat_factory/__init__.py`, `concierge/learning_bundle.py`, `chat_local.py`) | Module internals |
+
+## Agent Runtime Profiles
+
+- `src/dan/agent_runtime/types.py` defines the canonical `AgentProfile` contract: `direct_task`, `build`, `planning`, `debug`, and `review`.
+- The base runtime stays transport-neutral and small: `BaseAgentRuntime` plus the helper modules under `agent_runtime/` own the guarded completion loop, streaming, no-tools continuation, capability planning/execution helpers, post-tool follow-up recovery, prompt/context assembly, and mutation-preview helpers.
+- `build` behavior is an explicit adapter layer above the base runtime, not a special case inside it. Workflow-generation/codegen/acceptance/handoff/outcome logic lives under `src/dan/server/agent_runtime/workflow_generation*.py`, `workflow_handoff.py`, and `workflow_outcomes.py`.
+- `direct_task`, `planning`, `debug`, and `review` share the same underlying loop and differ through prompt overlays, tool availability, and follow-up policy rather than by copying the loop into surface adapters.
+- Future specialized agents should extend the runtime through explicit profile overlays or injected helper seams. They should not reimplement guarded completion, tool-loop continuation, or post-tool follow-up orchestration inside `ChatManager` or other server adapters.
 
 ## Import and API Conventions
 
@@ -961,7 +1031,7 @@ When classifying node forms, DAN uses four buckets:
 
 - `src/dan/models/graph.py` is the authoritative runtime taxonomy source.
 - `src/dan/models/node_taxonomy.py` is the canonical policy layer derived from that runtime union. It centralizes ordered runtime kinds, deprecated aliases, mutation-surface kinds, subgraph-bearing kinds, and authoring-only pseudo-type policy.
-- `src/dan/registry.py`, `src/dan/validation/graph.py`, `src/dan/server/chat/prompts.py`, `src/dan/server/chat/mutation_parser.py`, `src/dan/server/graph_mutator.py`, `editor/src/types/graph.ts`, and decompiler/materializer tables must either derive from that source or be protected by explicit regression tests.
+- `src/dan/registry.py`, `src/dan/validation/graph.py`, `src/dan/server/chat/prompts.py`, `src/dan/server/chat/mutation_parser.py`, `src/dan/graph_mutator/__init__.py`, `src/dan/server/graph_mutator.py`, `editor/src/types/graph.ts`, and decompiler/materializer tables must either derive from that source or be protected by explicit regression tests.
 - Adding a new runtime node kind requires an explicit schema/runtime decision. Discovery-only registration is not enough.
 
 #### Versioning and Deprecation
@@ -1450,7 +1520,7 @@ Bidirectional conversion layer (`graphAdapter.ts`):
 - Graph-aware system prompt: serializes current workflow as `GraphSummary` for LLM context
 - `@` mention system: reference nodes, workflows, sub-graphs with Cursor-style autocomplete
 - Thread management: per-workflow persistent chat history, thread list, auto-restore
-- **Context window management:** `compact_history()` transparently compacts chat history to fit within model context window. 4-phase sliding window: (1) system prompt always kept, (2) recent N messages in full, (3) older assistant messages truncated (first + last sentence), (4) oldest dropped. `MODEL_CONTEXT_WINDOWS` lookup table (20 models). Configurable via `DAN_CHAT_MAX_CONTEXT_RATIO` (default 0.8) and `DAN_CHAT_RECENT_MESSAGES` (default 10). Token counting via `tiktoken` with `len//4` fallback. Header shows "~Xk / Yk" context usage indicator.
+- **Context window management:** `compact_history()` transparently compacts chat history to fit within model context window. The canonical implementation now lives in `src/dan/agent_runtime/tokens.py`, with `server/chat/tokens.py` preserved as a compatibility alias. Behavior remains the same: 4-phase sliding window with (1) system prompt always kept, (2) recent N messages in full, (3) older assistant messages truncated (first + last sentence), and (4) oldest dropped. `MODEL_CONTEXT_WINDOWS` lookup table (20 models). Configurable via `DAN_COMPACT_CONTEXT_RATIO` and `DAN_CHAT_RECENT_MESSAGES` (default 10). Token counting via `tiktoken` with `len//4` fallback. Header shows "~Xk / Yk" context usage indicator.
 
 ### NL→Graph Mutation Engine
 - `GraphMutator` applies atomic operations (add/remove/edit nodes and edges) to graph dicts
@@ -1469,7 +1539,7 @@ Bidirectional conversion layer (`graphAdapter.ts`):
 - **Two-mode chat:** `ChatMessageRequest.mode` accepts `"mutate"` (default) or `"build"`. Mode `"build"` uses `BUILD_FROM_INTENT_PROMPT` (intent-first workflow creation); `"mutate"` uses `SYSTEM_PROMPT_TEMPLATE` (graph-aware editing). Empty graphs auto-switch to build mode regardless of the `mode` parameter.
 - **Intent-first prompt:** `BUILD_FROM_INTENT_PROMPT` guides the LLM through task decomposition (goal → stages → node types → data flow), references the pattern library (chain, review_loop, fan_out, rag_qa), and maps common intents to patterns (paper writing → review_loop + chain, RAG QA → rag_qa).
 - **Template registry:** `WORKFLOW_TEMPLATES` dict maps template names (paper_writing, rag_qa, chain_3) to pre-built `expand_pattern` operation sequences. Templates reduce LLM variability for common workflows.
-- **Empty-graph bootstrap:** `build_graph_summary` handles empty graphs (nodes=[], edges=[]) — returns valid `GraphSummary` with `node_count=0` and a deterministic revision hash. `base_graph_revision` is injected from the empty graph state so the mutator's stale-plan check works for build-from-scratch.
+- **Empty-graph bootstrap:** `build_graph_summary` in `src/dan/agent_runtime/graph_summary.py` handles empty graphs (nodes=[], edges=[]) and `server/chat/graph_summary.py` now aliases that canonical implementation. It returns a valid `GraphSummary` with `node_count=0` and a deterministic revision hash. `base_graph_revision` is injected from the empty graph state so the mutator's stale-plan check works for build-from-scratch.
 - **Editor UX:** "Build with AI" entry point in TabBar creates a blank graph and opens the chat in build mode. After the LLM returns a mutation plan, the editor shows a diff preview (empty → new graph), and auto-switches to mutate mode on apply.
 
 ### Scoped Execution from Chat

@@ -25,4 +25,4 @@
 - Unknown legacy domain strings are not dropped during cleanup; they degrade to a safe slug (for example `Machine Learning` → `machine_learning`) so preference history survives even when no first-class template exists yet.
 
 ## Notes
-- Validation: `pytest -q tests/test_engine/test_domain_taxonomy.py tests/test_engine/test_user_profile.py tests/test_engine/test_preference_extractor.py tests/test_concierge/test_domain_learning.py tests/test_server/test_chat_manager.py`
+- Validation: `pytest -q tests/test_domain_taxonomy.py tests/test_concierge/test_domain_learning.py tests/test_concierge/test_domain_preferences.py`

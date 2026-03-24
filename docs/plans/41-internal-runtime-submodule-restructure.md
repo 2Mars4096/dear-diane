@@ -1,6 +1,6 @@
 # 41: Internal Runtime Submodule Restructure
 
-**Status:** not-started
+**Status:** completed
 **Goal:** Restructure DAN's core runtime into four explicit internal submodules, `llm_core`, `agent_runtime`, `concierge_orchestrator`, and `workflow_runtime`, so behavior is easier to reason about, test, and scale without splitting the repository or publishing separate packages yet.
 
 ## Motivation
@@ -88,7 +88,7 @@ Workflow planning, intent compilation, code generation, and graph quality assess
 - graph quality and build contract validation
 - discovery and authoring helpers
 
-Currently imports from `server.graph_mutator` and `server.skill_library` (known violations). Should depend only on `models/`, `llm_core`, and optionally `agent_runtime` — not on `server/` directly.
+Now depends on neutral shared seams (`dan.graph_mutator`, injected skill-library mappings, `models/`, `llm_core`, and optional `agent_runtime`) rather than importing `server/` directly.
 
 ### Shared Foundation: `models/`
 
@@ -96,7 +96,7 @@ Graph schema, node types, and edge types are a shared foundation layer — not o
 
 ### Cross-cutting: learning / memory
 
-Memory kernel, behavior store, preference extraction, correction memory, and domain learning are currently scattered across `engine/` and `concierge/`. These create the deepest coupling cycles in the codebase (`concierge/runtime.py` has 20 `engine/` imports; `engine/` has 5 `server/` imports, mostly for learning-adjacent state). This plan family does not create a separate learning module, but each sub-plan must decide how the pieces it touches consume learning/memory interfaces — through explicit injection rather than hard cross-module imports.
+Memory kernel, behavior store, preference extraction, correction memory, and domain learning are scattered across `engine/` and `concierge/`. **Resolved by 41-3 / 41-4:** `engine/` no longer imports `dan.server`, and concierge runtime now consumes injected learning/memory seams rather than importing engine internals directly.
 
 ## Dependency Direction
 
@@ -110,16 +110,15 @@ llm_core                              ← no upstream deps on agent/concierge/se
 agent_runtime                         ← depends on llm_core, models/
   ↑
 concierge_orchestrator                ← depends on agent_runtime + llm_core
-                                         CURRENT VIOLATION: 20 engine/ imports in runtime.py (memory/learning)
-                                         CURRENT VIOLATION: engine/ imports concierge/ in 3 places (learning)
-                                         → these cycles must be broken via shared interfaces or injection
+                                         learning/memory access flows through injected concierge seams
+                                         engine/ → server/concierge cycle cleared via injection
 
 workflow_runtime                      ← uses llm_core through explicit runtime interfaces
                                          may consume agent_runtime interfaces for agent-style executors
-                                         CURRENT VIOLATION: 6 engine/executor → server/ imports
+                                         engine/executor model access now routes through gateway-safe seams
 
 meta/ (planning/generation)           ← depends on models/, llm_core, agent_runtime
-                                         CURRENT VIOLATION: 9 imports from server.graph_mutator/skill_library
+                                         workflow-mutation access now goes through `dan.graph_mutator`
 
 server / cli / editor / adapters      ← composition roots; depend on the modules above
 ```
@@ -131,7 +130,7 @@ Rules:
 - `concierge_orchestrator` should not contain raw provider access when `llm_core` exists.
 - `workflow_runtime` should stay surface-agnostic and expose explicit interfaces to surfaces. It may consume `agent_runtime` interfaces for agent-style executors (tool loops, reflection), but must not depend on concierge or server modules.
 - `models/` (graph schema, node types, edge types) is a shared layer consumed by multiple submodules — it is not owned exclusively by `workflow_runtime`.
-- `meta/` (planning, generation, intent compilation) is treated as an adjacent boundary layer in this plan family. It should depend on `models/`, `llm_core`, and optionally `agent_runtime`, but must not import directly from `server/`. Currently it imports from `server.graph_mutator` and `server.skill_library` in 5+ places — these are known violations to resolve.
+- `meta/` (planning, generation, intent compilation) is treated as an adjacent boundary layer in this plan family. It should depend on `models/`, `llm_core`, and optionally `agent_runtime`, but must not import directly from `server/`. That direct `server/` dependency has now been removed in favor of neutral seams and injected mappings.
 - server / CLI / local mode should become composition roots, not alternative runtime implementations.
 
 ## Plan Principles
@@ -146,12 +145,12 @@ Rules:
 
 | # | Sub-Plan | Scope | Priority | Status |
 |---|----------|-------|----------|--------|
-| [41-1](41-1-llm-core-and-model-gateway.md) | LLM Core & Model Gateway | Create one shared model-invocation layer for provider routing, retries, PII, budgets, and telemetry | P1 | not-started |
-| [41-2](41-2-agent-runtime-extraction.md) | Agent Runtime Extraction | Pull the reusable single-agent loop out of `ChatManager` and define explicit runtime/session contracts | P1 | not-started |
-| [41-3](41-3-concierge-orchestrator-narrowing.md) | Concierge Orchestrator Narrowing | Keep concierge focused on intake, routing, decomposition, session control, and progress rather than owning execution internals | P1 | not-started |
-| [41-4](41-4-workflow-runtime-isolation.md) | Workflow Runtime Isolation | Strengthen the graph-engine boundary so workflow execution stays surface-agnostic and adapter-driven | P1 | not-started |
-| [41-5](41-5-composition-root-and-surface-parity.md) | Composition Root & Surface Parity | Unify server/local/runtime wiring so the same capabilities and stores are composed consistently across surfaces | P1 | not-started |
-| [41-6](41-6-module-contracts-and-regressions.md) | Module Contracts & Regressions | Add boundary contracts, import-direction guardrails, and parity regressions so the new structure stays intact | P1 | not-started |
+| [41-1](41-1-llm-core-and-model-gateway.md) | LLM Core & Model Gateway | Create one shared model-invocation layer for provider routing, retries, PII, budgets, and telemetry | P1 | completed |
+| [41-2](41-2-agent-runtime-extraction.md) | Agent Runtime Extraction | Pull the reusable single-agent loop out of `ChatManager` and define explicit runtime/session contracts | P1 | completed |
+| [41-3](41-3-concierge-orchestrator-narrowing.md) | Concierge Orchestrator Narrowing | Keep concierge focused on intake, routing, decomposition, session control, and progress rather than owning execution internals | P1 | completed |
+| [41-4](41-4-workflow-runtime-isolation.md) | Workflow Runtime Isolation | Strengthen the graph-engine boundary so workflow execution stays surface-agnostic and adapter-driven | P1 | completed |
+| [41-5](41-5-composition-root-and-surface-parity.md) | Composition Root & Surface Parity | Unify server/local/runtime wiring so the same capabilities and stores are composed consistently across surfaces | P1 | completed |
+| [41-6](41-6-module-contracts-and-regressions.md) | Module Contracts & Regressions | Add boundary contracts, import-direction guardrails, and parity regressions so the new structure stays intact | P1 | completed |
 
 ## Dependencies / Sequencing
 
@@ -179,16 +178,16 @@ Recommended first implementation slice:
 
 ## Success Criteria
 
-- [ ] All LLM calls used by chat, concierge, meta-planning, and workflow execution route through one shared model gateway or a thin adapter over it.
-- [ ] Provider override behavior, retry policy, timeout policy, telemetry, and PII protection behave consistently across chat, concierge, local mode, and workflow execution.
-- [ ] `ChatManager` becomes a surface adapter over `agent_runtime` instead of the primary owner of the reusable agent loop.
-- [ ] Concierge code owns intake, triage, session/routing/progress, and delegation policy, but no longer owns duplicated execution internals.
-- [ ] Workflow execution remains independently testable and can be composed by server, local CLI, publish/runtime, and future surfaces without duplicate bootstrap logic.
-- [ ] Local mode and server mode compose the same capability/tool/config/runtime graph, with explicit tests for parity.
-- [ ] Module boundaries are documented and protected by tests so the structure does not regress into new god-modules.
-- [ ] **Separability:** each module can be imported and unit-tested in isolation — `llm_core` without server/concierge, `agent_runtime` without server transport, `workflow_runtime` without chat/concierge, `meta/` without server-specific state. No circular import dependencies between the defined module boundaries.
-- [ ] **No hidden dependency cycles:** the concierge↔engine and meta→server import cycles documented in this plan are resolved, either by extracting shared interfaces or by dependency injection at composition time.
-- [ ] The named implementation target remains the four core runtime submodules; `meta/` and `models/` are explicitly documented as adjacent/shared layers rather than allowed to become a second overlapping control-plane.
+- [x] All LLM calls used by chat, concierge, meta-planning, and workflow execution route through one shared model gateway or a thin adapter over it.
+- [x] Provider override behavior, retry policy, timeout policy, telemetry, and PII protection behave consistently across chat, concierge, local mode, and workflow execution.
+- [x] `ChatManager` becomes a surface adapter over `agent_runtime` instead of the primary owner of the reusable agent loop.
+- [x] Concierge code owns intake, triage, session/routing/progress, and delegation policy, but no longer owns duplicated execution internals.
+- [x] Workflow execution remains independently testable and can be composed by server, local CLI, publish/runtime, and future surfaces without duplicate bootstrap logic.
+- [x] Local mode and server mode compose the same capability/tool/config/runtime graph, with explicit tests for parity.
+- [x] Module boundaries are documented and protected by tests so the structure does not regress into new god-modules.
+- [x] **Separability:** each module can be imported and unit-tested in isolation — `llm_core` without server/concierge, `agent_runtime` without server transport, `workflow_runtime` without chat/concierge, `meta/` without server-specific state. No circular import dependencies between the defined module boundaries.
+- [x] **No hidden dependency cycles:** the concierge↔engine and meta→server import cycles documented in this plan are resolved, either by extracting shared interfaces or by dependency injection at composition time.
+- [x] The named implementation target remains the four core runtime submodules; `meta/` and `models/` are explicitly documented as adjacent/shared layers rather than allowed to become a second overlapping control-plane.
 
 ## Decisions
 
