@@ -23,7 +23,7 @@ from dan.server.chat.events import (
     GraphSummary,
     NodeSummary,
 )
-from dan.server.chat.graph_summary import (
+from dan.agent_runtime.graph_summary import (
     build_graph_summary,
     compute_graph_revision,
     serialize_for_prompt,
@@ -39,7 +39,7 @@ from dan.server.chat.mutation_parser import (
     _normalize_generated_mutation_ops,
     normalize_mutation_ops_for_chat,
 )
-from dan.server.chat.prompts import (
+from dan.chat_prompts import (
     BUILD_FROM_INTENT_PROMPT,
     EMPTY_GRAPH_SUMMARY_PLACEHOLDER,
     MUTATION_TOOL_SCHEMA,
@@ -47,7 +47,7 @@ from dan.server.chat.prompts import (
     generate_capability_reference,
     invalidate_capability_cache,
 )
-from dan.server.chat.tokens import (
+from dan.agent_runtime.tokens import (
     MODEL_CONTEXT_WINDOWS,
     compact_history,
     context_pressure_hint,

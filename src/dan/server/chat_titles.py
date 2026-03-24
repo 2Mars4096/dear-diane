@@ -10,6 +10,7 @@ from typing import Any
 from dan.providers.registry import ProviderRegistry
 from dan.providers.tier_defaults import resolve_tier_map
 
+from .llm_gateway import default_llm_model, provider_names, resolve_llm_provider
 from .chat_store import ChatStore, ChatThread
 
 logger = logging.getLogger(__name__)
@@ -189,20 +190,39 @@ class ThreadTitleGenerator:
         providers: ProviderRegistry | None,
         *,
         chat_model: str = "",
+        chat_manager: Any | None = None,
     ) -> None:
         self._providers = providers
         self._chat_model = (chat_model or "").strip()
+        self._chat_manager = chat_manager
 
     def resolve_model(self) -> str:
+        if self._chat_manager is not None:
+            names = provider_names(self._chat_manager)
+            runtime_model = default_llm_model(self._chat_manager)
+            if set(names) == {"default"} and self._chat_model:
+                return self._chat_model
+            try:
+                tier_map = resolve_tier_map(names)
+                micro_model = str(tier_map.get("micro", "") or "").strip()
+                if micro_model:
+                    return micro_model
+            except Exception:
+                logger.debug(
+                    "Falling back to runtime chat model for title generation",
+                    exc_info=True,
+                )
+            return self._chat_model or runtime_model or "gpt-4o-mini"
+
         if self._providers is None:
             return self._chat_model or "gpt-4o-mini"
 
-        provider_names = self._providers.provider_names()
-        if set(provider_names) == {"default"} and self._chat_model:
+        names = self._providers.provider_names()
+        if set(names) == {"default"} and self._chat_model:
             return self._chat_model
 
         try:
-            tier_map = resolve_tier_map(provider_names)
+            tier_map = resolve_tier_map(names)
             micro_model = str(tier_map.get("micro", "") or "").strip()
             if micro_model:
                 return micro_model
@@ -213,12 +233,15 @@ class ThreadTitleGenerator:
 
     async def generate_title(self, user_message: str) -> str | None:
         clean_user_message = " ".join(user_message.split()).strip()
-        if not clean_user_message or self._providers is None:
+        if not clean_user_message or (self._providers is None and self._chat_manager is None):
             return None
 
         model = self.resolve_model()
         try:
-            provider = self._providers.resolve(model)
+            if self._chat_manager is not None:
+                provider = resolve_llm_provider(self._chat_manager, model=model)
+            else:
+                provider = self._providers.resolve(model)
             result = await provider.complete(
                 messages=[
                     {"role": "system", "content": _TITLE_SYSTEM_PROMPT},
@@ -243,6 +266,7 @@ async def autogenerate_thread_title(
     *,
     providers: ProviderRegistry | None,
     chat_model: str = "",
+    chat_manager: Any | None = None,
     mark_started: bool = True,
 ) -> bool:
     thread = store.get_thread(workflow_id, thread_id)
@@ -274,7 +298,11 @@ async def autogenerate_thread_title(
         meta["title_generation_started"] = True
         store.set_thread_meta(workflow_id, thread_id, meta)
 
-    generator = ThreadTitleGenerator(providers, chat_model=chat_model)
+    generator = ThreadTitleGenerator(
+        providers,
+        chat_model=chat_model,
+        chat_manager=chat_manager,
+    )
     title = await generator.generate_title(first_user)
     if not title:
         meta = store.get_thread_meta(workflow_id, thread_id)
