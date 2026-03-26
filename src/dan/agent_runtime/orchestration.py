@@ -22,8 +22,17 @@ _MIXED_DEPENDENT_PREFIXES = frozenset({
     "summarize", "synthesize", "combine", "review", "finalize",
     "draft", "write", "prepare", "present", "compile",
 })
+_MIXED_STRICT_SERIAL_PREFIXES = frozenset({
+    "combine", "finalize", "present", "compile",
+})
 _MIXED_DEPENDENCY_RE = re.compile(
     r"\b(?:based on|using|from the|from previous|from findings|review the|summarize|synthesize|combine|finalize)\b",
+    re.IGNORECASE,
+)
+_MIXED_STRICT_SERIAL_RE = re.compile(
+    r"\b(?:then|after that|afterwards|using that|using the summary|using the combined|"
+    r"based on that|based on the summary|final answer|final response|overall answer|"
+    r"overall summary|combined findings)\b",
     re.IGNORECASE,
 )
 _WORKFLOW_TASK_RE = re.compile(
@@ -91,23 +100,65 @@ def mixed_subtask_depends_on_prior(task_desc: str) -> bool:
     return bool(_MIXED_DEPENDENCY_RE.search(lower))
 
 
+def _mixed_dependency_stage_key(task_desc: str) -> str | None:
+    """Return a grouping key for dependent mixed subtasks, or None for strict serial."""
+    lower = str(task_desc or "").strip().lower()
+    if not lower:
+        return None
+    first_word = lower.split()[0]
+    if first_word in _MIXED_STRICT_SERIAL_PREFIXES:
+        return None
+    if _MIXED_STRICT_SERIAL_RE.search(lower):
+        return None
+    return first_word
+
+
 def build_mixed_execution_groups(subtasks: Sequence[str]) -> list[list[str]]:
     """Group independent subtasks so mixed execution can parallelize only safe slices."""
     groups: list[list[str]] = []
-    current_parallel_group: list[str] = []
+    current_group: list[str] = []
+    current_group_kind: str | None = None
+    current_group_stage_key: str | None = None
+
     for index, task_desc in enumerate(subtasks):
         task_text = str(task_desc or "").strip()
         if not task_text:
             continue
-        if index > 0 and mixed_subtask_depends_on_prior(task_text):
-            if current_parallel_group:
-                groups.append(current_parallel_group)
-                current_parallel_group = []
-            groups.append([task_text])
+
+        depends_on_prior = index > 0 and mixed_subtask_depends_on_prior(task_text)
+        if not depends_on_prior:
+            if current_group_kind != "independent":
+                if current_group:
+                    groups.append(current_group)
+                current_group = [task_text]
+                current_group_kind = "independent"
+                current_group_stage_key = None
+            else:
+                current_group.append(task_text)
             continue
-        current_parallel_group.append(task_text)
-    if current_parallel_group:
-        groups.append(current_parallel_group)
+
+        stage_key = _mixed_dependency_stage_key(task_text)
+        if stage_key is None:
+            if current_group:
+                groups.append(current_group)
+            groups.append([task_text])
+            current_group = []
+            current_group_kind = None
+            current_group_stage_key = None
+            continue
+
+        if current_group_kind == "dependent" and current_group_stage_key == stage_key:
+            current_group.append(task_text)
+            continue
+
+        if current_group:
+            groups.append(current_group)
+        current_group = [task_text]
+        current_group_kind = "dependent"
+        current_group_stage_key = stage_key
+
+    if current_group:
+        groups.append(current_group)
     return groups
 
 
@@ -127,6 +178,9 @@ def plan_child_session(
     parent_action_hints: Sequence[str] | None = None,
     parent_message_session_id: str | None = None,
     parent_message_thread_id: str | None = None,
+    parent_handoff_context: Mapping[str, object] | None = None,
+    child_session_id: str | None = None,
+    child_thread_id: str | None = None,
 ) -> ChildSessionPlan:
     """Compute the child-session envelope using only primitive inputs."""
     child_tier = estimate_child_tier(task_desc)
@@ -156,18 +210,44 @@ def plan_child_session(
     parent_thread_id = str(
         parent_message_session_id or parent_message_thread_id or ""
     ).strip() or None
-    handoff = {
+    handoff_context = copy.deepcopy(parent_handoff_context or {})
+    return_channel = {
+        "kind": "session_result_summary",
         "parent_session_id": parent_session_id,
         "root_session_id": root_session_id,
+        "child_session_id": child_session_id,
+        "target": "parent_synthesis",
+    }
+    constraints = {
+        "allow_mutation_tool": allow_mutation_tool,
+        "read_only_parent_context": True,
+        "copy_on_write_metadata": True,
+    }
+    handoff = {
+        "packet_version": 1,
+        "kind": "tiered_child_session",
+        "parent_session_id": parent_session_id,
+        "root_session_id": root_session_id,
+        "child_session_id": child_session_id,
         "parent_task": parent_task,
         "child_task": task_desc,
         "route_target": filtered_route_target,
         "action_hints": list(filtered_action_hints),
         "parent_thread_id": parent_thread_id,
+        "child_thread_id": child_thread_id,
+        "goal": {
+            "parent_task": parent_task,
+            "delegated_task": task_desc,
+            "route_target": filtered_route_target,
+            "action_hints": list(filtered_action_hints),
+        },
+        "context": handoff_context,
+        "constraints": constraints,
+        "return_channel": return_channel,
     }
     task_context = {
         "parent_task": parent_task,
-        "parent_context": copy.deepcopy(parent_task_context or {}),
+        "parent_context": copy.deepcopy(handoff_context),
         "handoff": handoff,
     }
     metadata_patch: dict[str, object] = {
@@ -175,8 +255,13 @@ def plan_child_session(
         "tiered_root_session_id": root_session_id,
         "tiered_child_task": task_desc,
         "tiered_handoff": handoff,
+        "tiered_handoff_packet": handoff,
         "parent_thread_id": parent_thread_id,
     }
+    if child_session_id:
+        metadata_patch["tiered_child_session_id"] = child_session_id
+    if child_thread_id:
+        metadata_patch["tiered_child_thread_id"] = child_thread_id
     if has_parent_route:
         metadata_patch["route_target"] = filtered_route_target
         metadata_patch["allow_mutation_tool"] = allow_mutation_tool

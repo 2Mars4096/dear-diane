@@ -6,6 +6,7 @@ import logging
 import re
 import time
 import uuid
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, AsyncIterator, Protocol
 
 if TYPE_CHECKING:
@@ -115,6 +116,31 @@ _STAGE_PROMPT_OVERLAYS: dict[str, str] = {
         "Act as a lightweight retrieval/synthesis surface. Reuse relevant prior work without over-committing to mutation."
     ),
 }
+_CHILD_METADATA_KEYS = frozenset({
+    "workflow_id",
+    "mode",
+    "requested_mode",
+    "client_graph_revision",
+    "debug_context",
+    "mentions",
+    "selected_path",
+    "attachment_prompt_context",
+    "surface_context",
+    "scenario_id",
+    "scenario_confidence",
+    "memory_context",
+    "domain_expertise",
+    "autonomy_recent_turns",
+    "autonomy_task_snapshot",
+    "autonomy_repo_snapshot",
+    "auto_read_content",
+    "autonomy_preference",
+    "autonomy_resolution",
+    "cancel_event",
+})
+_CHILD_HANDOFF_RECENT_TURN_LIMIT = 4
+_CHILD_HANDOFF_FILE_LIMIT = 6
+_CHILD_HANDOFF_SNIPPET_LIMIT = 3
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +370,233 @@ def _cancel_requested(session: Any) -> bool:
     return bool(event is not None and event.is_set())
 
 
+def _trim_text(value: Any, *, limit: int) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return text[:limit]
+
+
+def _string_list(values: Any, *, limit: int | None = None) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    cleaned = [str(item or "").strip() for item in values if str(item or "").strip()]
+    if limit is not None:
+        return cleaned[:limit]
+    return cleaned
+
+
+def _append_unique_string(target: list[str], value: Any, *, limit: int) -> None:
+    text = str(value or "").strip()
+    if not text or text in target:
+        return
+    target.append(text)
+    if len(target) > limit:
+        del target[limit:]
+
+
+def _build_child_metadata_seed(parent_metadata: dict[str, Any]) -> dict[str, Any]:
+    child_metadata: dict[str, Any] = {}
+    for key in _CHILD_METADATA_KEYS:
+        if key not in parent_metadata:
+            continue
+        value = parent_metadata[key]
+        if key == "cancel_event":
+            child_metadata[key] = value
+            continue
+        try:
+            child_metadata[key] = copy.deepcopy(value)
+        except Exception:
+            logger.debug("Failed to copy child metadata key %s", key, exc_info=True)
+    return child_metadata
+
+
+def _extract_child_file_refs(parent_metadata: dict[str, Any], context: Any) -> list[str]:
+    file_refs: list[str] = []
+    surface_context = parent_metadata.get("surface_context")
+    if isinstance(surface_context, dict):
+        mentioned_files = surface_context.get("mentioned_files")
+        if isinstance(mentioned_files, list):
+            for item in mentioned_files:
+                if isinstance(item, dict):
+                    _append_unique_string(file_refs, item.get("path"), limit=_CHILD_HANDOFF_FILE_LIMIT)
+                else:
+                    _append_unique_string(file_refs, item, limit=_CHILD_HANDOFF_FILE_LIMIT)
+        import_neighbors = surface_context.get("import_neighbors")
+        if isinstance(import_neighbors, list):
+            for item in import_neighbors:
+                _append_unique_string(file_refs, item, limit=_CHILD_HANDOFF_FILE_LIMIT)
+    auto_read_content = parent_metadata.get("auto_read_content")
+    if isinstance(auto_read_content, dict):
+        for path in auto_read_content:
+            _append_unique_string(file_refs, path, limit=_CHILD_HANDOFF_FILE_LIMIT)
+    task_obj = getattr(context, "task", None) if context is not None else None
+    artifacts = getattr(task_obj, "artifacts", None)
+    if isinstance(artifacts, dict):
+        for item in artifacts.values():
+            _append_unique_string(file_refs, item, limit=_CHILD_HANDOFF_FILE_LIMIT)
+    _append_unique_string(
+        file_refs,
+        parent_metadata.get("selected_path"),
+        limit=_CHILD_HANDOFF_FILE_LIMIT,
+    )
+    return file_refs[:_CHILD_HANDOFF_FILE_LIMIT]
+
+
+def _build_child_handoff_context(session: Any, parent_metadata: dict[str, Any]) -> dict[str, Any]:
+    handoff_context: dict[str, Any] = {}
+    recent_turns = _string_list(
+        parent_metadata.get("autonomy_recent_turns"),
+        limit=_CHILD_HANDOFF_RECENT_TURN_LIMIT,
+    )
+    if recent_turns:
+        handoff_context["recent_turns"] = recent_turns
+    for target_key, source_key, limit in (
+        ("task_snapshot", "autonomy_task_snapshot", 2000),
+        ("repo_snapshot", "autonomy_repo_snapshot", 2000),
+        ("memory_context", "memory_context", 4000),
+        ("domain_expertise", "domain_expertise", 4000),
+    ):
+        trimmed = _trim_text(parent_metadata.get(source_key), limit=limit)
+        if trimmed:
+            handoff_context[target_key] = trimmed
+
+    file_refs = _extract_child_file_refs(parent_metadata, getattr(session, "context", None))
+    if file_refs:
+        handoff_context["file_refs"] = file_refs
+
+    auto_read_content = parent_metadata.get("auto_read_content")
+    if isinstance(auto_read_content, dict):
+        snippets: dict[str, str] = {}
+        for path, content in list(auto_read_content.items())[:_CHILD_HANDOFF_SNIPPET_LIMIT]:
+            path_text = str(path or "").strip()
+            content_text = _trim_text(content, limit=2000)
+            if path_text and content_text:
+                snippets[path_text] = content_text
+        if snippets:
+            handoff_context["file_snippets"] = snippets
+
+    return handoff_context
+
+
+def _copy_context_for_child(parent_context: Any) -> Any:
+    if parent_context is None:
+        return None
+
+    copied_context: Any | None = None
+    if hasattr(parent_context, "model_copy"):
+        try:
+            copied_context = parent_context.model_copy(deep=True)
+        except Exception:
+            logger.debug("model_copy(deep=True) failed for child context", exc_info=True)
+    if copied_context is None:
+        try:
+            copied_context = copy.deepcopy(parent_context)
+        except Exception:
+            logger.debug("deepcopy failed for child context; building fallback snapshot", exc_info=True)
+            copied_context = SimpleNamespace(
+                project=copy.deepcopy(getattr(parent_context, "project", None)),
+                task=copy.deepcopy(getattr(parent_context, "task", None)),
+                domain=getattr(parent_context, "domain", None),
+                confidence=getattr(parent_context, "confidence", None),
+                is_new_project=False,
+                is_new_task=False,
+            )
+
+    task_obj = getattr(copied_context, "task", None)
+    if task_obj is not None and hasattr(task_obj, "turns"):
+        try:
+            task_obj.turns = []
+        except Exception:
+            logger.debug("Failed to clear child task turns", exc_info=True)
+    project_obj = getattr(copied_context, "project", None)
+    if project_obj is not None and hasattr(project_obj, "pending_action"):
+        try:
+            project_obj.pending_action = None
+        except Exception:
+            logger.debug("Failed to clear child pending action", exc_info=True)
+    return copied_context
+
+
+def _render_handoff_prompt_block(handoff: Any) -> str:
+    if not isinstance(handoff, dict):
+        return ""
+
+    lines: list[str] = []
+    goal = handoff.get("goal")
+    if isinstance(goal, dict):
+        parent_task = _trim_text(goal.get("parent_task"), limit=400)
+        delegated_task = _trim_text(goal.get("delegated_task"), limit=400)
+        route_target = _trim_text(goal.get("route_target"), limit=120)
+        action_hints = _string_list(goal.get("action_hints"))
+        if parent_task:
+            lines.append(f"Parent task: {parent_task}")
+        if delegated_task:
+            lines.append(f"Delegated task: {delegated_task}")
+        if route_target:
+            lines.append(f"Route target: {route_target}")
+        if action_hints:
+            lines.append("Action hints: " + ", ".join(action_hints[:6]))
+
+    context = handoff.get("context")
+    if isinstance(context, dict):
+        recent_turns = _string_list(context.get("recent_turns"), limit=_CHILD_HANDOFF_RECENT_TURN_LIMIT)
+        if recent_turns:
+            lines.append("Recent task turns:")
+            lines.extend(recent_turns)
+        task_snapshot = _trim_text(context.get("task_snapshot"), limit=2000)
+        if task_snapshot:
+            lines.append(f"Task snapshot:\n{task_snapshot}")
+        repo_snapshot = _trim_text(context.get("repo_snapshot"), limit=2000)
+        if repo_snapshot:
+            lines.append(f"Repo snapshot:\n{repo_snapshot}")
+        memory_context = _trim_text(context.get("memory_context"), limit=4000)
+        if memory_context:
+            lines.append(f"Relevant memory:\n{memory_context}")
+        domain_expertise = _trim_text(context.get("domain_expertise"), limit=4000)
+        if domain_expertise:
+            lines.append(f"Relevant domain expertise:\n{domain_expertise}")
+        file_refs = _string_list(context.get("file_refs"), limit=_CHILD_HANDOFF_FILE_LIMIT)
+        if file_refs:
+            lines.append("Related files: " + ", ".join(file_refs))
+        file_snippets = context.get("file_snippets")
+        if isinstance(file_snippets, dict) and file_snippets:
+            snippets: list[str] = []
+            for path, content in list(file_snippets.items())[:_CHILD_HANDOFF_SNIPPET_LIMIT]:
+                text = _trim_text(content, limit=2000)
+                if text:
+                    snippets.append(f"[{path}]\n{text}")
+            if snippets:
+                lines.append("Relevant file content:\n" + "\n\n".join(snippets))
+
+    constraints = handoff.get("constraints")
+    if isinstance(constraints, dict):
+        constraint_bits: list[str] = []
+        if constraints.get("read_only_parent_context") is True:
+            constraint_bits.append("parent context is read-only")
+        if constraints.get("copy_on_write_metadata") is True:
+            constraint_bits.append("child metadata is isolated")
+        if constraints.get("allow_mutation_tool") is not None:
+            constraint_bits.append(
+                "allow_mutation_tool="
+                + ("true" if constraints.get("allow_mutation_tool") else "false")
+            )
+        if constraint_bits:
+            lines.append("Constraints: " + ", ".join(constraint_bits))
+
+    return_channel = handoff.get("return_channel")
+    if isinstance(return_channel, dict):
+        return_kind = _trim_text(return_channel.get("kind"), limit=120)
+        parent_session_id = _trim_text(return_channel.get("parent_session_id"), limit=120)
+        if return_kind or parent_session_id:
+            pieces = [piece for piece in [return_kind, parent_session_id] if piece]
+            lines.append("Return channel: " + " -> ".join(pieces))
+
+    if not lines:
+        return ""
+    return "Child handoff:\n" + "\n".join(lines)
+
+
 def _mark_session_cancelled(
     manager: Any,
     session: Any,
@@ -399,6 +652,7 @@ def _build_prompt(session: Any) -> str:
         parts.append(f"Domain: {ctx.domain}")
 
     task_context = getattr(session, "task_context", None)
+    handoff_prompt = ""
     if isinstance(task_context, dict):
         previous_result = str(task_context.get("previous_result", "") or "").strip()
         if previous_result:
@@ -409,10 +663,13 @@ def _build_prompt(session: Any) -> str:
         remediation_reason = str(task_context.get("remediation_reason", "") or "").strip()
         if remediation_reason:
             parts.append(f"Remediation reason: {remediation_reason}")
+        handoff_prompt = _render_handoff_prompt_block(task_context.get("handoff"))
+        if handoff_prompt:
+            parts.append(handoff_prompt)
 
     msg = getattr(session, "msg", None)
     metadata = getattr(msg, "metadata", None) if msg is not None else None
-    if isinstance(metadata, dict):
+    if isinstance(metadata, dict) and not handoff_prompt:
         recent_turns = metadata.get("autonomy_recent_turns")
         if isinstance(recent_turns, list):
             cleaned_turns = [str(item or "").strip() for item in recent_turns if str(item or "").strip()]
@@ -1125,7 +1382,7 @@ class MultiStepExecutor:
             interrupted = execution_resolution.interrupted
             interrupted_emitted = execution_resolution.interrupted_emitted
 
-            if child_execution == "parallel" and not children and not interrupted and not _cancel_requested(session):
+            if not children and not interrupted and not _cancel_requested(session):
                 async for event in self._execute_directly(session, manager, start):
                     yield event
                 return
@@ -1291,6 +1548,14 @@ class MultiStepExecutor:
             if isinstance(raw_parent_metadata, dict):
                 parent_metadata = raw_parent_metadata
 
+        child_tier = self._estimate_child_tier(task_desc)
+        child = manager.create_child(
+            parent_id=session.id,
+            task=task_desc,
+            tier=child_tier,
+            task_context={},
+        )
+        child_lane_id = f"tiered-child-{child.id}"
         child_plan = _plan_child_session_impl(
             task_desc=task_desc,
             parent_session_id=session.id,
@@ -1302,6 +1567,9 @@ class MultiStepExecutor:
             parent_action_hints=getattr(parent_route, "action_hints", None) or [],
             parent_message_session_id=getattr(parent_msg, "session_id", None),
             parent_message_thread_id=parent_metadata.get("thread_id"),
+            parent_handoff_context=_build_child_handoff_context(session, parent_metadata),
+            child_session_id=child.id,
+            child_thread_id=child_lane_id,
         )
         child_route = parent_route
         if parent_route is not None:
@@ -1319,25 +1587,18 @@ class MultiStepExecutor:
                 except Exception:
                     child_route = parent_route
 
-        child = manager.create_child(
-            parent_id=session.id,
-            task=task_desc,
-            tier=child_plan.child_tier,
-            task_context=child_plan.task_context,
-        )
+        child.tier = child_plan.child_tier
+        child.task_context = child_plan.task_context
 
         if parent_msg is not None:
-            child_metadata = copy.deepcopy(parent_msg.metadata)
-            if not isinstance(child_metadata, dict):
-                child_metadata = {}
-            child_lane_id = f"tiered-child-{child.id}"
+            child_metadata = _build_child_metadata_seed(parent_metadata)
             child_metadata = {
                 **child_metadata,
                 **child_plan.metadata_patch,
-                "tiered_child_session_id": child.id,
                 "thread_id": child_lane_id,
             }
             child.msg = parent_msg.model_copy(
+                deep=True,
                 update={
                     "text": task_desc,
                     "session_id": child_lane_id,
@@ -1345,12 +1606,15 @@ class MultiStepExecutor:
                 }
             )
         else:
-            child.msg = SurfaceMessage(surface="", external_id="", text=task_desc)
+            child.msg = SurfaceMessage(
+                surface="",
+                external_id="",
+                text=task_desc,
+                session_id=child_lane_id,
+                metadata=dict(child_plan.metadata_patch),
+            )
 
-        try:
-            child.context = copy.deepcopy(session.context)
-        except Exception:
-            child.context = session.context
+        child.context = _copy_context_for_child(session.context)
 
         try:
             from .triage import TriageResult
