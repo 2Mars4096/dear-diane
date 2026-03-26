@@ -45,6 +45,10 @@ class DanClient:
         self._timeout = timeout
         self._http: httpx.AsyncClient | None = None
 
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
     async def _get_http(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:
             headers: dict[str, str] = {}

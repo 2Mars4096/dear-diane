@@ -57,7 +57,7 @@ class DanClientOrLocal:
             raise RuntimeError("Call detect_mode() first")
         return self._is_server_mode
 
-    async def detect_mode(self) -> str:
+    async def detect_mode(self, *, strict_server: bool = False) -> str:
         """Detect server availability. Returns 'server' or 'local'."""
         if self._force_local:
             self._is_server_mode = False
@@ -65,11 +65,21 @@ class DanClientOrLocal:
         if self._client is not None:
             try:
                 available = await self._client.ping()
-                self._is_server_mode = available
-                return "server" if available else "local"
-            except Exception:
+            except Exception as exc:
                 self._is_server_mode = False
+                if strict_server:
+                    raise RuntimeError(
+                        f"dan-serve health check failed at {self._client.base_url}: {exc}"
+                    ) from exc
                 return "local"
+            self._is_server_mode = available
+            if available:
+                return "server"
+            if strict_server:
+                raise RuntimeError(
+                    f"dan-serve not reachable at {self._client.base_url}"
+                )
+            return "local"
         self._is_server_mode = False
         return "local"
 
@@ -128,11 +138,6 @@ class DanClientOrLocal:
         graph = load_graph(Path(workflow_path))
         workflow_name = Path(workflow_path).stem
 
-        cfg = self._engine_config
-        if cfg is None:
-            from dan.engine.executor import EngineConfig
-            cfg = EngineConfig()
-
         async def event_cb(event: Any) -> None:
             d = dict(event.to_dict() if hasattr(event, "to_dict") else event)
             d["run_id"] = run_id
@@ -141,13 +146,7 @@ class DanClientOrLocal:
             except asyncio.QueueFull:
                 pass
 
-        from dan.engine.scheduler import Engine
-
-        engine = Engine(
-            config=cfg,
-            event_callback=event_cb,
-            human_renderer=self._human_renderer,
-        )
+        engine = self._make_engine(event_callback=event_cb)
 
         async def run_task() -> None:
             try:
@@ -182,6 +181,32 @@ class DanClientOrLocal:
             run_id=run_id,
             workflow_name=workflow_name,
             status="pending",
+        )
+
+    def _make_engine(self, *, event_callback: Any | None = None) -> Any:
+        """Build the local execution engine through one explicit adapter seam."""
+        from dan.engine.executor import EngineConfig, ExecutorRegistry
+        from dan.executors.tool import ToolExecutor, ToolRegistry
+        from dan.engine.scheduler import Engine
+
+        cfg = self._engine_config
+        if cfg is None:
+            cfg = EngineConfig()
+
+        tool_registry = self._tool_registry
+        if tool_registry is None:
+            tool_registry = ToolRegistry()
+        if hasattr(tool_registry, "register_builtin_tools"):
+            tool_registry.register_builtin_tools()
+
+        executor_registry = ExecutorRegistry()
+        executor_registry.register("tool_operator", ToolExecutor(tool_registry))
+
+        return Engine(
+            config=cfg,
+            executor_registry=executor_registry,
+            event_callback=event_callback,
+            human_renderer=self._human_renderer,
         )
 
     # ── Event streaming ─────────────────────────────────────────────

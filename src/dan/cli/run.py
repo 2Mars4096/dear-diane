@@ -18,6 +18,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 logger = logging.getLogger("dan.cli")
@@ -209,12 +210,24 @@ def load_graph_from_python(path: Path) -> Any:
         _die(str(e))
 
 
-def load_workflow(source: str, source_type: str) -> Any:
+def load_workflow(
+    source: str,
+    source_type: str,
+    *,
+    workspace: str | Path | None = None,
+) -> Any:
     """Load a Graph object from the given source."""
-    from dan.utils.workflow_loader import load_graph, WorkflowLoadError
+    from dan.utils.workflow_loader import (
+        WorkflowLoadError,
+        load_graph,
+        validate_workflow_path,
+    )
     if source_type in ("json", "markdown", "python"):
         try:
-            return load_graph(Path(source))
+            path = Path(source)
+            if workspace is not None:
+                path = validate_workflow_path(path, Path(workspace))
+            return load_graph(path)
         except WorkflowLoadError as e:
             _die(str(e))
     _die(f"Cannot load workflow for source type: {source_type}")
@@ -717,6 +730,8 @@ async def _run_server_mode(
     display: Any,
     interactive: bool,
     human_timeout: int,
+    args: argparse.Namespace,
+    server_url: str | None,
     auto_approve: bool = False,
 ) -> int:
     """Run workflow via DanClientOrLocal in server mode."""
@@ -816,6 +831,30 @@ async def _run_server_mode(
     if hasattr(display, "stop"):
         display.stop()
 
+    snapshot: dict[str, Any] = {}
+    try:
+        snapshot = await client.get_run_status(run_id)
+    except Exception:
+        snapshot = {}
+
+    result = SimpleNamespace(
+        run_id=run_id,
+        success=bool(snapshot.get("success")) if snapshot else exit_code == 0,
+        outputs=snapshot.get("outputs", {}) if snapshot else {},
+        errors=snapshot.get("errors", {}) if snapshot else {},
+        node_statuses=snapshot.get("node_statuses", {}) if snapshot else {},
+        metadata={
+            "execution_mode": "server",
+            "server_requested": True,
+            "server_url": server_url or getattr(client, "base_url", ""),
+            "server_run_status": str(snapshot.get("status", "")) if snapshot else "",
+            "partial": bool(snapshot.get("partial", False)) if snapshot else False,
+            "resumable": bool(snapshot.get("resumable", False)) if snapshot else False,
+            "progress": dict(snapshot.get("progress", {})) if snapshot else {},
+        },
+    )
+    display.print_summary(result)
+    _handle_output(result, args)
     return exit_code
 
 
@@ -852,11 +891,19 @@ async def run_workflow(args: argparse.Namespace) -> int:
     force_local = getattr(args, "local", False)
     server_url = getattr(args, "server", None)
 
+    strict_server = server_url is not None
+
     if not force_local:
         from dan.client.local import DanClientOrLocal
 
         client = DanClientOrLocal(server_url=server_url)
-        mode = await client.detect_mode()
+        try:
+            mode = await client.detect_mode(strict_server=strict_server)
+        except RuntimeError as exc:
+            if not args.quiet:
+                print(str(exc), file=sys.stderr)
+            await client.close()
+            return 2
         if mode == "server":
             if not args.quiet:
                 print(
@@ -872,6 +919,8 @@ async def run_workflow(args: argparse.Namespace) -> int:
                     display=display,
                     interactive=is_interactive,
                     human_timeout=args.human_timeout,
+                    args=args,
+                    server_url=server_url,
                     auto_approve=args.auto_approve,
                 )
             finally:
@@ -897,7 +946,7 @@ async def run_workflow(args: argparse.Namespace) -> int:
         )
 
     # -- Workflow file path --------------------------------------------------
-    graph = load_workflow(args.source, source_type)
+    graph = load_workflow(args.source, source_type, workspace=cfg["workspace"])
     return await _run_graph(
         graph=graph,
         cfg=cfg,
@@ -906,6 +955,9 @@ async def run_workflow(args: argparse.Namespace) -> int:
         interactive=is_interactive,
         human_timeout=args.human_timeout,
         args=args,
+        execution_mode="local",
+        server_requested=False,
+        server_url=server_url,
     )
 
 
@@ -918,6 +970,9 @@ async def _run_graph(
     interactive: bool,
     human_timeout: int,
     args: argparse.Namespace,
+    execution_mode: str,
+    server_requested: bool,
+    server_url: str | None,
 ) -> int:
     """Execute a loaded Graph and return exit code."""
     from dan.engine import AutoRenderer
@@ -954,6 +1009,17 @@ async def _run_graph(
         return 130
     finally:
         display.stop()
+
+    if not isinstance(getattr(result, "metadata", None), dict):
+        result.metadata = {}
+    result.metadata.update(
+        {
+            "execution_mode": execution_mode,
+            "server_requested": bool(server_requested),
+        }
+    )
+    if server_url:
+        result.metadata["server_url"] = server_url
 
     display.print_summary(result)
     _handle_output(result, args)
@@ -1037,13 +1103,21 @@ async def _run_nl_goal(
 # ---------------------------------------------------------------------------
 
 def _handle_output(result: Any, args: argparse.Namespace) -> None:
+    metadata = getattr(result, "metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
     output_data = {
         "run_id": result.run_id,
         "success": result.success,
         "outputs": result.outputs,
         "errors": result.errors,
         "node_statuses": result.node_statuses,
+        "metadata": metadata,
+        "execution_mode": str(metadata.get("execution_mode", "")),
+        "server_requested": bool(metadata.get("server_requested", False)),
     }
+    if metadata.get("server_url"):
+        output_data["server_url"] = str(metadata["server_url"])
 
     if args.output:
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
