@@ -12,7 +12,7 @@ import {
   type AdapterInfo,
 } from "../lib/api";
 
-export type MessagingProviderId = "telegram" | "whatsapp";
+export type MessagingProviderId = "telegram" | "whatsapp" | "wechat";
 export type MessagingConnectionState =
   | "disconnected"
   | "starting"
@@ -29,14 +29,38 @@ type PendingAction =
   | "refresh"
   | "reset"
   | null;
-type DraftField = "botToken" | "allowedChatIdsText" | "allowedJidsText";
+type DraftField =
+  | "botToken"
+  | "allowedChatIdsText"
+  | "allowedJidsText"
+  | "wechatAppId"
+  | "wechatAppSecret"
+  | "wechatToken"
+  | "wechatEncodingAesKey"
+  | "wechatWebhookUrl"
+  | "wechatCallbackPath"
+  | "wechatAccountName"
+  | "wechatAppName"
+  | "wechatWelcomeMessage"
+  | "wechatSupportEncryptedCallbacks"
+  | "wechatPassiveReplyBudgetSecondsText"
+  | "wechatPassiveReplyFallbackText"
+  | "wechatApiBaseUrl"
+  | "wechatAccessTokenRefreshMarginSecondsText"
+  | "wechatServerUrl";
 type MessagingStateUpdater = (
   state: MessagingState,
 ) => MessagingState | Partial<MessagingState>;
 
-const PROVIDER_IDS = ["telegram", "whatsapp"] as const;
+const PROVIDER_IDS = ["telegram", "whatsapp", "wechat"] as const;
 const POLL_INTERVAL_MS = 10_000;
 const STALE_ERROR_RECOVERY_DELAY_MS = 1_500;
+const DEFAULT_WECHAT_CALLBACK_PATH = "callback";
+const DEFAULT_WECHAT_WELCOME_MESSAGE =
+  "Welcome! Send a message to start a workflow.";
+const DEFAULT_WECHAT_PASSIVE_REPLY_BUDGET_SECONDS_TEXT = "4";
+const DEFAULT_WECHAT_PASSIVE_REPLY_FALLBACK_TEXT = "Working on it...";
+const DEFAULT_WECHAT_ACCESS_TOKEN_REFRESH_MARGIN_SECONDS_TEXT = "300";
 
 const CONNECTION_STATE_PRIORITY: Record<MessagingConnectionState, number> = {
   error: 5,
@@ -79,6 +103,21 @@ export interface MessagingProviderState {
   botToken: string;
   allowedChatIdsText: string;
   allowedJidsText: string;
+  wechatAppId: string;
+  wechatAppSecret: string;
+  wechatToken: string;
+  wechatEncodingAesKey: string;
+  wechatWebhookUrl: string;
+  wechatCallbackPath: string;
+  wechatAccountName: string;
+  wechatAppName: string;
+  wechatWelcomeMessage: string;
+  wechatSupportEncryptedCallbacks: boolean;
+  wechatPassiveReplyBudgetSecondsText: string;
+  wechatPassiveReplyFallbackText: string;
+  wechatApiBaseUrl: string;
+  wechatAccessTokenRefreshMarginSecondsText: string;
+  wechatServerUrl: string;
 }
 
 export interface MessagingSummary {
@@ -106,7 +145,7 @@ interface MessagingState {
   setDraftField: (
     providerId: MessagingProviderId,
     field: DraftField,
-    value: string,
+    value: string | boolean,
   ) => void;
   clearProviderError: (providerId: MessagingProviderId) => void;
 }
@@ -137,6 +176,17 @@ export function mergePersistedMessagingProviders(
         typeof persisted?.whatsapp?.autoStart === "boolean"
           ? persisted.whatsapp.autoStart
           : current.whatsapp.autoStart,
+    },
+    wechat: {
+      ...current.wechat,
+      enabled:
+        typeof persisted?.wechat?.enabled === "boolean"
+          ? persisted.wechat.enabled
+          : current.wechat.enabled,
+      autoStart:
+        typeof persisted?.wechat?.autoStart === "boolean"
+          ? persisted.wechat.autoStart
+          : current.wechat.autoStart,
     },
   };
 }
@@ -173,6 +223,23 @@ function createProviderState(): MessagingProviderState {
     botToken: "",
     allowedChatIdsText: "",
     allowedJidsText: "",
+    wechatAppId: "",
+    wechatAppSecret: "",
+    wechatToken: "",
+    wechatEncodingAesKey: "",
+    wechatWebhookUrl: "",
+    wechatCallbackPath: DEFAULT_WECHAT_CALLBACK_PATH,
+    wechatAccountName: "",
+    wechatAppName: "",
+    wechatWelcomeMessage: DEFAULT_WECHAT_WELCOME_MESSAGE,
+    wechatSupportEncryptedCallbacks: false,
+    wechatPassiveReplyBudgetSecondsText:
+      DEFAULT_WECHAT_PASSIVE_REPLY_BUDGET_SECONDS_TEXT,
+    wechatPassiveReplyFallbackText: DEFAULT_WECHAT_PASSIVE_REPLY_FALLBACK_TEXT,
+    wechatApiBaseUrl: "",
+    wechatAccessTokenRefreshMarginSecondsText:
+      DEFAULT_WECHAT_ACCESS_TOKEN_REFRESH_MARGIN_SECONDS_TEXT,
+    wechatServerUrl: "",
   };
 }
 
@@ -200,6 +267,13 @@ function parseIntegerList(value: string): number[] {
     .filter((part) => Number.isFinite(part));
 }
 
+function parseOptionalNumber(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function formatErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) {
     return error.message.trim();
@@ -221,7 +295,9 @@ function isMissingEndpointError(error: unknown): boolean {
 }
 
 function getProviderAdapterType(providerId: MessagingProviderId): string {
-  return providerId === "whatsapp" ? "whatsapp-web" : "telegram";
+  if (providerId === "whatsapp") return "whatsapp-web";
+  if (providerId === "wechat") return "wechat";
+  return "telegram";
 }
 
 export function normalizeMessagingProvider(
@@ -231,6 +307,7 @@ export function normalizeMessagingProvider(
   if (!normalized) return null;
   if (normalized.includes("telegram")) return "telegram";
   if (normalized.includes("whatsapp")) return "whatsapp";
+  if (normalized.includes("wechat")) return "wechat";
   return null;
 }
 
@@ -387,7 +464,12 @@ export function buildMessagingSummary(
 
   const tooltip = PROVIDER_IDS.map((providerId) => {
     const provider = providers[providerId];
-    const name = providerId === "telegram" ? "Telegram" : "WhatsApp";
+    const name =
+      providerId === "telegram"
+        ? "Telegram"
+        : providerId === "whatsapp"
+          ? "WhatsApp"
+          : "WeChat";
     return `${name}: ${provider.connectionState}`;
   }).join(" · ");
 
@@ -439,9 +521,13 @@ export function getSessionLabel(
     return `${provider.sessionCount} session${provider.sessionCount === 1 ? "" : "s"}`;
   }
   if (provider.running && provider.sessionCount === 0) {
-    return providerId === "telegram"
-      ? "Listening (no messages yet)"
-      : "Linked (idle)";
+    if (providerId === "telegram") {
+      return "Listening (no messages yet)";
+    }
+    if (providerId === "whatsapp") {
+      return "Linked (idle)";
+    }
+    return "Ready (idle)";
   }
   return "0 sessions";
 }
@@ -486,6 +572,18 @@ function friendlyMessagingError(
     }
   }
 
+  if (providerId === "wechat") {
+    if (normalized.includes("cryptography")) {
+      return "WeChat support is not installed. Run `pip install 'dan[wechat]'` in the backend environment.";
+    }
+    if (
+      normalized.includes("wechat token") ||
+      normalized.includes("token required")
+    ) {
+      return "Enter a WeChat callback token before connecting. App ID and app secret are recommended for async follow-up sends.";
+    }
+  }
+
   if (isMissingEndpointError(error)) {
     return "This backend endpoint is not available yet.";
   }
@@ -493,7 +591,7 @@ function friendlyMessagingError(
   return message.replace(/^\d+:\s*/, "").trim();
 }
 
-function buildProviderConfigPayload(
+export function buildProviderConfigPayload(
   providerId: MessagingProviderId,
   provider: MessagingProviderState,
   options?: { includeSecret?: boolean },
@@ -507,11 +605,49 @@ function buildProviderConfigPayload(
     if (options?.includeSecret && provider.botToken.trim()) {
       config.bot_token = provider.botToken.trim();
     }
+    config.auto_start = provider.autoStart;
     return config;
   }
 
-  const allowedJids = parseLineList(provider.allowedJidsText);
-  return allowedJids.length > 0 ? { allowed_jids: allowedJids } : {};
+  if (providerId === "whatsapp") {
+    const allowedJids = parseLineList(provider.allowedJidsText);
+    return {
+      ...(allowedJids.length > 0 ? { allowed_jids: allowedJids } : {}),
+      auto_start: provider.autoStart,
+    };
+  }
+
+  const config: Record<string, unknown> = {
+    auto_start: provider.autoStart,
+    callback_path: provider.wechatCallbackPath.trim() || DEFAULT_WECHAT_CALLBACK_PATH,
+    welcome_message: provider.wechatWelcomeMessage,
+    support_encrypted_callbacks: provider.wechatSupportEncryptedCallbacks,
+    passive_reply_budget_seconds:
+      parseOptionalNumber(provider.wechatPassiveReplyBudgetSecondsText) ?? 4,
+    passive_reply_fallback_text:
+      provider.wechatPassiveReplyFallbackText.trim() ||
+      DEFAULT_WECHAT_PASSIVE_REPLY_FALLBACK_TEXT,
+    app_id: provider.wechatAppId.trim(),
+    webhook_url: provider.wechatWebhookUrl.trim(),
+    account_name: provider.wechatAccountName.trim(),
+    app_name: provider.wechatAppName.trim(),
+    api_base_url: provider.wechatApiBaseUrl.trim(),
+    access_token_refresh_margin_seconds:
+      parseOptionalNumber(provider.wechatAccessTokenRefreshMarginSecondsText) ??
+      300,
+    server_url: provider.wechatServerUrl.trim(),
+  };
+
+  if (options?.includeSecret && provider.wechatAppSecret.trim()) {
+    config.app_secret = provider.wechatAppSecret.trim();
+  }
+  if (options?.includeSecret && provider.wechatToken.trim()) {
+    config.token = provider.wechatToken.trim();
+  }
+  if (options?.includeSecret && provider.wechatEncodingAesKey.trim()) {
+    config.encoding_aes_key = provider.wechatEncodingAesKey.trim();
+  }
+  return config;
 }
 
 function mergeConfigSummaryIntoProvider(
@@ -534,6 +670,45 @@ function mergeConfigSummaryIntoProvider(
     next.allowedJidsText = Array.isArray(summary.allowed_jids)
       ? summary.allowed_jids.join("\n")
       : "";
+  }
+
+  if (providerId === "wechat") {
+    next.wechatAppId =
+      typeof summary.app_id === "string" ? summary.app_id : "";
+    next.wechatWebhookUrl =
+      typeof summary.webhook_url === "string" ? summary.webhook_url : "";
+    next.wechatCallbackPath =
+      typeof summary.callback_path === "string" && summary.callback_path.trim()
+        ? summary.callback_path
+        : DEFAULT_WECHAT_CALLBACK_PATH;
+    next.wechatAccountName =
+      typeof summary.account_name === "string" ? summary.account_name : "";
+    next.wechatAppName =
+      typeof summary.app_name === "string" ? summary.app_name : "";
+    next.wechatWelcomeMessage =
+      typeof summary.welcome_message === "string"
+        ? summary.welcome_message
+        : DEFAULT_WECHAT_WELCOME_MESSAGE;
+    next.wechatSupportEncryptedCallbacks = Boolean(
+      summary.support_encrypted_callbacks,
+    );
+    next.wechatPassiveReplyBudgetSecondsText =
+      typeof summary.passive_reply_budget_seconds === "number"
+        ? String(summary.passive_reply_budget_seconds)
+        : DEFAULT_WECHAT_PASSIVE_REPLY_BUDGET_SECONDS_TEXT;
+    next.wechatPassiveReplyFallbackText =
+      typeof summary.passive_reply_fallback_text === "string" &&
+      summary.passive_reply_fallback_text.trim()
+        ? summary.passive_reply_fallback_text
+        : DEFAULT_WECHAT_PASSIVE_REPLY_FALLBACK_TEXT;
+    next.wechatApiBaseUrl =
+      typeof summary.api_base_url === "string" ? summary.api_base_url : "";
+    next.wechatAccessTokenRefreshMarginSecondsText =
+      typeof summary.access_token_refresh_margin_seconds === "number"
+        ? String(summary.access_token_refresh_margin_seconds)
+        : DEFAULT_WECHAT_ACCESS_TOKEN_REFRESH_MARGIN_SECONDS_TEXT;
+    next.wechatServerUrl =
+      typeof summary.server_url === "string" ? summary.server_url : "";
   }
 
   if (typeof summary.paired === "boolean") {
@@ -696,6 +871,7 @@ function attachProviderEvents(
 const initialProviders: Record<MessagingProviderId, MessagingProviderState> = {
   telegram: createProviderState(),
   whatsapp: createProviderState(),
+  wechat: createProviderState(),
 };
 
 export const useMessagingStore = create<MessagingState>()(
@@ -772,6 +948,7 @@ export const useMessagingStore = create<MessagingState>()(
           const summaries = {
             telegram: summarizeMessagingStatus("telegram", statuses),
             whatsapp: summarizeMessagingStatus("whatsapp", statuses),
+            wechat: summarizeMessagingStatus("wechat", statuses),
           } satisfies Record<
             MessagingProviderId,
             ReturnType<typeof summarizeMessagingStatus>
@@ -923,13 +1100,7 @@ export const useMessagingStore = create<MessagingState>()(
             const savePayload = buildProviderConfigPayload(providerId, current, {
               includeSecret: true,
             });
-            const hasSavePayload =
-              providerId === "telegram"
-                ? Boolean(
-                    current.botToken.trim() ||
-                      parseIntegerList(current.allowedChatIdsText).length,
-                  )
-                : Boolean(parseLineList(current.allowedJidsText).length);
+            const hasSavePayload = Object.keys(savePayload).length > 0;
 
             if (hasSavePayload) {
               try {
@@ -979,6 +1150,13 @@ export const useMessagingStore = create<MessagingState>()(
             !latest.configSummary?.configured
           ) {
             throw new Error("Telegram bot token required.");
+          }
+          if (
+            providerId === "wechat" &&
+            !latest.wechatToken.trim() &&
+            !latest.configSummary?.configured
+          ) {
+            throw new Error("WeChat token required.");
           }
 
           const startConfig = buildProviderConfigPayload(providerId, latest, {
@@ -1105,7 +1283,7 @@ export const useMessagingStore = create<MessagingState>()(
       },
 
       resetProvider: async (providerId) => {
-        if (providerId !== "whatsapp") {
+        if (providerId !== "whatsapp" && providerId !== "wechat") {
           return;
         }
 
@@ -1137,12 +1315,14 @@ export const useMessagingStore = create<MessagingState>()(
                   adapterIds: [],
                   running: false,
                   connectionState: "disconnected",
-                  paired: false,
+                  paired: providerId === "whatsapp" ? false : null,
                   qrData: null,
                   qrSvgDataUri: null,
                   lastError: null,
                   statusNote:
-                    "Pairing reset. Connect again to generate a fresh QR code.",
+                    providerId === "whatsapp"
+                      ? "Pairing reset. Connect again to generate a fresh QR code."
+                      : "WeChat config reset. Save credentials again before reconnecting.",
                 },
               },
             };
@@ -1218,6 +1398,10 @@ export const useMessagingStore = create<MessagingState>()(
           whatsapp: {
             enabled: state.providers.whatsapp.enabled,
             autoStart: state.providers.whatsapp.autoStart,
+          },
+          wechat: {
+            enabled: state.providers.wechat.enabled,
+            autoStart: state.providers.wechat.autoStart,
           },
         },
       }),

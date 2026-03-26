@@ -4595,8 +4595,8 @@ function EmptyState({ onSelect, mode, isEmptyGraph, fullScreen }: { onSelect: (t
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="text-sm font-medium text-gray-100">
-                  Connect Telegram or WhatsApp while you set up the desktop
-                  shell
+                  Connect Telegram, WhatsApp, or WeChat while you set up the
+                  desktop shell
                 </p>
                 <p className="mt-1 text-xs text-gray-400">
                   This step is optional and only appears once. You can always
@@ -4626,6 +4626,13 @@ function EmptyState({ onSelect, mode, isEmptyGraph, fullScreen }: { onSelect: (t
                 className="rounded-lg bg-white/10 px-3 py-2 text-xs font-medium text-gray-100 transition-colors hover:bg-white/15"
               >
                 Connect WhatsApp
+              </button>
+              <button
+                type="button"
+                onClick={() => openMessagingSetup("wechat")}
+                className="rounded-lg bg-white/10 px-3 py-2 text-xs font-medium text-gray-100 transition-colors hover:bg-white/15"
+              >
+                Connect WeChat
               </button>
               <button
                 type="button"

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildProviderConfigPayload,
   buildMessagingSummary,
   getSessionLabel,
   hasConfiguredMessagingProviders,
@@ -36,6 +37,21 @@ function makeProvider(
     botToken: "",
     allowedChatIdsText: "",
     allowedJidsText: "",
+    wechatAppId: "",
+    wechatAppSecret: "",
+    wechatToken: "",
+    wechatEncodingAesKey: "",
+    wechatWebhookUrl: "",
+    wechatCallbackPath: "callback",
+    wechatAccountName: "",
+    wechatAppName: "",
+    wechatWelcomeMessage: "Welcome! Send a message to start a workflow.",
+    wechatSupportEncryptedCallbacks: false,
+    wechatPassiveReplyBudgetSecondsText: "4",
+    wechatPassiveReplyFallbackText: "Working on it...",
+    wechatApiBaseUrl: "",
+    wechatAccessTokenRefreshMarginSecondsText: "300",
+    wechatServerUrl: "",
     ...extra,
   };
 }
@@ -45,6 +61,7 @@ describe("useMessagingStore helpers", () => {
     expect(normalizeMessagingProvider("telegram")).toBe("telegram");
     expect(normalizeMessagingProvider("WhatsAppWeb")).toBe("whatsapp");
     expect(normalizeMessagingProvider("whatsapp-web")).toBe("whatsapp");
+    expect(normalizeMessagingProvider("wechat")).toBe("wechat");
     expect(normalizeMessagingProvider("email")).toBeNull();
   });
 
@@ -84,6 +101,7 @@ describe("useMessagingStore helpers", () => {
         connectionState: "error",
         lastError: "missing backend route",
       }),
+      wechat: makeProvider(),
     });
 
     expect(summary.activeCount).toBe(1);
@@ -101,6 +119,7 @@ describe("useMessagingStore helpers", () => {
         lastError: "temporary polling failure",
       }),
       whatsapp: makeProvider(),
+      wechat: makeProvider(),
     });
 
     expect(summary.activeCount).toBe(1);
@@ -119,6 +138,7 @@ describe("useMessagingStore helpers", () => {
           connectionState: "error",
           lastError: "temporary event-stream failure",
         }),
+        wechat: makeProvider(),
       }),
     ).toBe(true);
   });
@@ -134,6 +154,7 @@ describe("useMessagingStore helpers", () => {
         whatsapp: makeProvider({
           connectionState: "error",
         }),
+        wechat: makeProvider(),
       }),
     ).toBe(false);
   });
@@ -143,6 +164,7 @@ describe("useMessagingStore helpers", () => {
       hasConfiguredMessagingProviders({
         telegram: makeProvider(),
         whatsapp: makeProvider(),
+        wechat: makeProvider(),
       }),
     ).toBe(false);
 
@@ -152,6 +174,7 @@ describe("useMessagingStore helpers", () => {
           configSummary: { configured: true },
         }),
         whatsapp: makeProvider(),
+        wechat: makeProvider(),
       }),
     ).toBe(true);
 
@@ -159,6 +182,7 @@ describe("useMessagingStore helpers", () => {
       hasConfiguredMessagingProviders({
         telegram: makeProvider({ enabled: true }),
         whatsapp: makeProvider(),
+        wechat: makeProvider(),
       }),
     ).toBe(false);
   });
@@ -191,6 +215,60 @@ describe("useMessagingStore helpers", () => {
     ).toBe("2 sessions");
   });
 
+  it("getSessionLabel returns context-sensitive copy for wechat", () => {
+    expect(
+      getSessionLabel("wechat", makeProvider({ running: true, sessionCount: 0 })),
+    ).toBe("Ready (idle)");
+
+    expect(
+      getSessionLabel("wechat", makeProvider({ running: true, sessionCount: 2 })),
+    ).toBe("2 sessions");
+  });
+
+  it("builds wechat config payloads that can clear saved optional fields", () => {
+    const payload = buildProviderConfigPayload(
+      "wechat",
+      makeProvider({
+        autoStart: true,
+        wechatAppId: " ",
+        wechatAppSecret: "",
+        wechatToken: "",
+        wechatEncodingAesKey: "",
+        wechatWebhookUrl: " ",
+        wechatCallbackPath: "",
+        wechatAccountName: " ",
+        wechatAppName: " ",
+        wechatWelcomeMessage: "",
+        wechatSupportEncryptedCallbacks: true,
+        wechatPassiveReplyBudgetSecondsText: "",
+        wechatPassiveReplyFallbackText: "",
+        wechatApiBaseUrl: " ",
+        wechatAccessTokenRefreshMarginSecondsText: "",
+        wechatServerUrl: " ",
+      }),
+      { includeSecret: true },
+    );
+
+    expect(payload).toMatchObject({
+      auto_start: true,
+      app_id: "",
+      webhook_url: "",
+      callback_path: "callback",
+      account_name: "",
+      app_name: "",
+      welcome_message: "",
+      support_encrypted_callbacks: true,
+      passive_reply_budget_seconds: 4,
+      passive_reply_fallback_text: "Working on it...",
+      api_base_url: "",
+      access_token_refresh_margin_seconds: 300,
+      server_url: "",
+    });
+    expect(payload).not.toHaveProperty("app_secret");
+    expect(payload).not.toHaveProperty("token");
+    expect(payload).not.toHaveProperty("encoding_aes_key");
+  });
+
   it("restores only persisted enablement flags from storage", () => {
     const merged = mergePersistedMessagingProviders(
       {
@@ -204,10 +282,16 @@ describe("useMessagingStore helpers", () => {
           autoStart: false,
           allowedJidsText: "stale@s.whatsapp.net",
         },
+        wechat: {
+          enabled: true,
+          autoStart: true,
+          wechatCallbackPath: "stale",
+        },
       },
       {
         telegram: makeProvider(),
         whatsapp: makeProvider(),
+        wechat: makeProvider(),
       },
     );
 
@@ -216,5 +300,8 @@ describe("useMessagingStore helpers", () => {
     expect(merged.telegram.allowedChatIdsText).toBe("");
     expect(merged.whatsapp.enabled).toBe(true);
     expect(merged.whatsapp.allowedJidsText).toBe("");
+    expect(merged.wechat.enabled).toBe(true);
+    expect(merged.wechat.autoStart).toBe(true);
+    expect(merged.wechat.wechatCallbackPath).toBe("callback");
   });
 });

@@ -369,6 +369,12 @@ export default function EditorToolbar() {
       icon: "💬",
       provider: messagingProviders.whatsapp,
     },
+    {
+      providerId: "wechat" as const,
+      label: "WeChat",
+      icon: "WX",
+      provider: messagingProviders.wechat,
+    },
   ].filter(
     ({ provider }) =>
       provider.running ||

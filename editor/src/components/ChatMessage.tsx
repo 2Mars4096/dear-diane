@@ -551,6 +551,39 @@ function RunRefBlock({
   );
 }
 
+type TracePromotionPhase = "idle" | "saving" | "saved" | "blocked" | "error";
+
+function _tracePromotionMessage(payload: Record<string, unknown>): string {
+  const promotion = payload.promotion;
+  if (promotion && typeof promotion === "object") {
+    const reason = (promotion as Record<string, unknown>).reason;
+    if (typeof reason === "string" && reason.trim()) {
+      return reason.trim();
+    }
+  }
+  const detail = payload.detail;
+  if (typeof detail === "string" && detail.trim()) {
+    return detail.trim();
+  }
+  const reason = payload.reason;
+  if (typeof reason === "string" && reason.trim()) {
+    return reason.trim();
+  }
+  const compiled = payload.compiled;
+  if (compiled && typeof compiled === "object") {
+    const issues = (compiled as Record<string, unknown>).run_readiness_issues;
+    if (Array.isArray(issues)) {
+      const firstIssue = issues.find(
+        (item) => typeof item === "string" && item.trim(),
+      );
+      if (typeof firstIssue === "string" && firstIssue.trim()) {
+        return firstIssue.trim();
+      }
+    }
+  }
+  return "Distilled workflow could not be promoted.";
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -668,6 +701,12 @@ export default function ChatMessageBubble({
 }: ChatMessageProps) {
   const isUser = message.role === "user";
   const store = useGraphStore();
+  const [tracePromotionPhase, setTracePromotionPhase] =
+    useState<TracePromotionPhase>("idle");
+  const [tracePromotionMessage, setTracePromotionMessage] = useState("");
+  const [tracePromotionWorkflowId, setTracePromotionWorkflowId] = useState<
+    string | null
+  >(null);
 
   const html = useMemo(
     () => renderMarkdown(message.content),
@@ -763,6 +802,88 @@ export default function ChatMessageBubble({
     message.role === "assistant" &&
     Boolean(onExploreFromHere) &&
     !disableHistoryActions;
+  const showTracePromotionAction =
+    message.role === "assistant" &&
+    !isStreaming &&
+    (message.toolCalls?.length ?? 0) > 1;
+
+  useEffect(() => {
+    setTracePromotionPhase("idle");
+    setTracePromotionMessage("");
+    setTracePromotionWorkflowId(null);
+  }, [message.id]);
+
+  const handlePromoteTraceDraft = useCallback(async () => {
+    if (tracePromotionPhase === "saving") {
+      return;
+    }
+    setTracePromotionPhase("saving");
+    setTracePromotionMessage("");
+    setTracePromotionWorkflowId(null);
+    try {
+      const response = await fetch("/api/experiences/trace-draft/promote", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ turn_id: message.id }),
+      });
+      const payload =
+        ((await response.json().catch(() => ({}))) as Record<string, unknown>) ??
+        {};
+      if (!response.ok) {
+        throw new Error(_tracePromotionMessage(payload));
+      }
+
+      const status = typeof payload.status === "string" ? payload.status : "";
+      if (status === "promoted_workflow") {
+        const workflowId =
+          typeof payload.workflow_id === "string" && payload.workflow_id.trim()
+            ? payload.workflow_id.trim()
+            : "";
+        const detail = workflowId
+          ? `Saved as "${workflowId}".`
+          : "Saved distilled workflow.";
+        setTracePromotionPhase("saved");
+        setTracePromotionMessage(detail);
+        setTracePromotionWorkflowId(workflowId || null);
+        store.addToast({
+          type: "success",
+          message: workflowId
+            ? `Saved distilled workflow "${workflowId}"`
+            : "Saved distilled workflow",
+          action: workflowId
+            ? {
+                label: "Open",
+                onClick: () => {
+                  void store.openTab(workflowId);
+                },
+              }
+            : undefined,
+        });
+        return;
+      }
+
+      const detail = _tracePromotionMessage(payload);
+      setTracePromotionPhase("blocked");
+      setTracePromotionMessage(detail);
+      store.addToast({
+        type: "warning",
+        message: detail,
+      });
+    } catch (error) {
+      const detail =
+        error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : "Failed to save distilled workflow.";
+      setTracePromotionPhase("error");
+      setTracePromotionMessage(detail);
+      store.addToast({
+        type: "error",
+        message: detail,
+      });
+    }
+  }, [message.id, store, tracePromotionPhase]);
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-3`}>
@@ -818,6 +939,54 @@ export default function ChatMessageBubble({
             mutationStatus={message.mutationStatus}
             onPreviewMutation={onPreviewMutation ? () => onPreviewMutation(message) : undefined}
           />
+        )}
+
+        {showTracePromotionAction && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            {tracePromotionPhase !== "saved" && (
+              <button
+                type="button"
+                onClick={() => {
+                  void handlePromoteTraceDraft();
+                }}
+                disabled={tracePromotionPhase === "saving"}
+                className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700 transition-colors hover:bg-emerald-100 disabled:cursor-wait disabled:opacity-70 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300 dark:hover:bg-emerald-500/20"
+              >
+                {tracePromotionPhase === "saving" ? (
+                  <Loader2 size={11} className="animate-spin" />
+                ) : (
+                  <GitBranch size={11} />
+                )}
+                {tracePromotionPhase === "saving"
+                  ? "Saving distilled workflow..."
+                  : "Save distilled workflow"}
+              </button>
+            )}
+            {tracePromotionMessage && (
+              <span
+                className={`text-[11px] ${
+                  tracePromotionPhase === "error"
+                    ? "text-red-600 dark:text-red-300"
+                    : tracePromotionPhase === "saved"
+                      ? "text-emerald-700 dark:text-emerald-300"
+                      : "text-amber-700 dark:text-amber-300"
+                }`}
+              >
+                {tracePromotionMessage}
+              </span>
+            )}
+            {tracePromotionPhase === "saved" && tracePromotionWorkflowId && (
+              <button
+                type="button"
+                onClick={() => {
+                  void store.openTab(tracePromotionWorkflowId);
+                }}
+                className="text-[11px] font-medium text-emerald-700 underline underline-offset-2 transition-colors hover:text-emerald-800 dark:text-emerald-300 dark:hover:text-emerald-200"
+              >
+                Open workflow
+              </button>
+            )}
+          </div>
         )}
 
         {onReviewMultiFileEdits && message.reviewableFileEdits && (() => {

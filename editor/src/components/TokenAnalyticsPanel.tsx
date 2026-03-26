@@ -1,4 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  fetchTelemetryAnalytics,
+  type TelemetryAnalyticsResponse,
+} from "../lib/api";
 import { useGraphStore } from "../store/useGraphStore";
 import type { WasteFinding, OptimizationMutation } from "../types/graph";
 
@@ -92,6 +96,8 @@ const STATUS_COLORS: Record<string, string> = {
   expired: "bg-gray-100 text-gray-500",
 };
 
+const TELEMETRY_WINDOW_HOURS = 24;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -100,6 +106,25 @@ function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1000).toFixed(1)}k`;
   return n.toLocaleString();
+}
+
+function formatCurrency(value: number): string {
+  return value >= 0.01 ? `$${value.toFixed(2)}` : `$${value.toFixed(4)}`;
+}
+
+function formatTelemetryHour(value: string): string {
+  if (!value) return "unknown";
+  if (value.length >= 13) {
+    return `${value.slice(11, 13)}:00 UTC`;
+  }
+  return value;
+}
+
+async function requestEditorTelemetrySummary() {
+  return fetchTelemetryAnalytics({
+    surface: "editor",
+    hours: TELEMETRY_WINDOW_HOURS,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -382,6 +407,100 @@ function RulesDashboard({
   );
 }
 
+function TelemetrySummaryStrip({
+  summary,
+  loading,
+  error,
+  onRefresh,
+}: {
+  summary: TelemetryAnalyticsResponse | null;
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => Promise<void>;
+}) {
+  const totals = summary?.totals;
+  const modelRows = summary?.models.slice(0, 2) ?? [];
+  const modeRows = summary?.modes.slice(0, 2) ?? [];
+  const recentHours = summary?.activity_by_hour.slice(-3) ?? [];
+
+  return (
+    <div className="px-3 py-2 border-b border-slate-200 bg-slate-50/80 shrink-0">
+      <div className="flex items-center gap-2 text-[11px] flex-wrap">
+        <ShieldIcon className="text-slate-500" />
+        <span className="text-slate-700 font-medium">
+          Last {summary?.window_hours ?? TELEMETRY_WINDOW_HOURS}h telemetry
+        </span>
+        {loading ? (
+          <span className="inline-flex items-center gap-1 text-slate-500">
+            <LoaderIcon className="text-slate-400" />
+            Loading...
+          </span>
+        ) : totals && totals.events > 0 ? (
+          <>
+            <span className="text-gray-400">|</span>
+            <span className="text-slate-600">
+              {totals.chat_turns} turns
+            </span>
+            <span className="text-gray-400">|</span>
+            <span className="text-slate-600">
+              {totals.gateway_calls} gateway calls
+            </span>
+            <span className="text-gray-400">|</span>
+            <span className="text-slate-600">
+              {formatTokens(totals.total_tokens)} tokens
+            </span>
+            <span className="text-gray-400">|</span>
+            <span className="text-emerald-600">
+              {formatCurrency(totals.total_cost)}
+            </span>
+          </>
+        ) : (
+          <span className="text-slate-500">No recent editor telemetry.</span>
+        )}
+        <button
+          onClick={() => { void onRefresh(); }}
+          className="ml-auto text-[10px] text-indigo-500 hover:text-indigo-700"
+        >
+          Refresh
+        </button>
+      </div>
+      {summary && summary.totals.events > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-1.5 text-[10px]">
+          {modelRows.map((row) => (
+            <span
+              key={`model-${row.group_key.model_used ?? "unknown"}`}
+              className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-slate-600"
+            >
+              {row.group_key.model_used ?? "unknown"}: {row.count} calls
+            </span>
+          ))}
+          {modeRows.map((row) => (
+            <span
+              key={`mode-${row.group_key.chat_mode ?? "unknown"}`}
+              className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-slate-600"
+            >
+              {row.group_key.chat_mode ?? "unknown"}: {row.count} turns
+            </span>
+          ))}
+          {recentHours.map((row) => (
+            <span
+              key={`hour-${row.group_key.hour ?? "unknown"}`}
+              className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-slate-500"
+            >
+              {formatTelemetryHour(row.group_key.hour ?? "")}: {row.count}
+            </span>
+          ))}
+        </div>
+      )}
+      {error && (
+        <div className="mt-1 text-[10px] text-red-600">
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main panel
 // ---------------------------------------------------------------------------
@@ -400,6 +519,9 @@ export default function TokenAnalyticsPanel() {
   const [activeSection, setActiveSection] = useState<"findings" | "rules">("findings");
   const [rulesApplyingId, setRulesApplyingId] = useState<string | null>(null);
   const [rulesDisabledIds, setRulesDisabledIds] = useState<Set<string>>(new Set());
+  const [telemetrySummary, setTelemetrySummary] = useState<TelemetryAnalyticsResponse | null>(null);
+  const [telemetryLoading, setTelemetryLoading] = useState(false);
+  const [telemetryError, setTelemetryError] = useState<string | null>(null);
 
   const nodeNameMap = useMemo(() => {
     const map: Record<string, string> = {};
@@ -437,6 +559,28 @@ export default function TokenAnalyticsPanel() {
   const totalWaste = wasteFindings.reduce((a, f) => a + f.estimated_saveable_tokens, 0);
   const totalTokens = Object.values(nodeUsage).reduce((a, u) => a + u.total_tokens, 0);
   const totalCost = Object.values(nodeCosts).reduce((a, c) => a + c, 0);
+
+  const refreshTelemetrySummary = async () => {
+    setTelemetryLoading(true);
+    setTelemetryError(null);
+    try {
+      const next = await requestEditorTelemetrySummary();
+      setTelemetrySummary(next);
+    } catch (error) {
+      setTelemetryError(error instanceof Error ? error.message : "Failed to load telemetry");
+    } finally {
+      setTelemetryLoading(false);
+    }
+  };
+
+  const handleRefresh = async () => {
+    await Promise.all([fetchTokenAnalytics(), refreshTelemetrySummary()]);
+  };
+
+  useEffect(() => {
+    if (!runId) return;
+    void refreshTelemetrySummary();
+  }, [runId]);
 
   // Build optimization rules from findings + mutations
   const optimizationRules = useMemo(() => {
@@ -501,6 +645,12 @@ export default function TokenAnalyticsPanel() {
   if (wasteFindings.length === 0) {
     return (
       <div className="flex flex-col h-full">
+        <TelemetrySummaryStrip
+          summary={telemetrySummary}
+          loading={telemetryLoading}
+          error={telemetryError}
+          onRefresh={handleRefresh}
+        />
         <div className="px-3 py-2 border-b border-gray-200 bg-gray-50 shrink-0">
           <div className="flex items-center gap-2 text-[11px]">
             <CheckIcon className="text-green-500" />
@@ -520,7 +670,7 @@ export default function TokenAnalyticsPanel() {
         </div>
         <div className="px-3 py-1.5 border-t border-gray-100 bg-gray-50 text-[10px] text-gray-400 text-right">
           <button
-            onClick={fetchTokenAnalytics}
+            onClick={() => { void handleRefresh(); }}
             className="text-indigo-500 hover:text-indigo-700"
           >
             Re-analyze
@@ -532,6 +682,12 @@ export default function TokenAnalyticsPanel() {
 
   return (
     <div className="flex flex-col h-full">
+      <TelemetrySummaryStrip
+        summary={telemetrySummary}
+        loading={telemetryLoading}
+        error={telemetryError}
+        onRefresh={handleRefresh}
+      />
       {/* Summary bar */}
       <div className="px-3 py-2 border-b border-gray-200 bg-amber-50/50 shrink-0">
         <div className="flex items-center gap-2 text-[11px] flex-wrap">
@@ -645,7 +801,7 @@ export default function TokenAnalyticsPanel() {
             : `${optimizationRules.length} rule${optimizationRules.length !== 1 ? "s" : ""}`}
         </span>
         <button
-          onClick={fetchTokenAnalytics}
+          onClick={() => { void handleRefresh(); }}
           className="text-indigo-500 hover:text-indigo-700"
         >
           Re-analyze

@@ -413,6 +413,7 @@ export default function GlobalSettingsPanel({
   >({
     telegram: initialMessagingProvider === "telegram",
     whatsapp: initialMessagingProvider === "whatsapp",
+    wechat: initialMessagingProvider === "wechat",
   });
   const [pdfRootsText, setPdfRootsText] = useState(() =>
     settings.researchPdfRoots.join("\n"),
@@ -667,6 +668,9 @@ export default function GlobalSettingsPanel({
       description: string,
     ) => {
       const provider = messagingProviders[providerId];
+      const isTelegram = providerId === "telegram";
+      const isWhatsApp = providerId === "whatsapp";
+      const isWeChat = providerId === "wechat";
       const isRunning =
         provider.running || provider.connectionState === "connected";
       const hasReconnectContext =
@@ -674,7 +678,7 @@ export default function GlobalSettingsPanel({
           provider.running ||
             provider.configSummary?.configured ||
             provider.adapterId ||
-            (providerId === "whatsapp" &&
+            (isWhatsApp &&
               (provider.paired || provider.configSummary?.paired)),
         );
       const actionMode = isRunning
@@ -687,23 +691,29 @@ export default function GlobalSettingsPanel({
           ? "Stop"
           : actionMode === "reconnect"
             ? "Reconnect"
-            : providerId === "whatsapp"
+            : isWhatsApp
               ? "Pair"
               : "Connect";
       const connectDisabled =
         Boolean(provider.pendingAction) ||
         (!isRunning &&
-          providerId === "telegram" &&
-          !provider.botToken.trim() &&
-          !provider.configSummary?.configured);
-      const backendNote =
-        providerId === "telegram"
-          ? provider.configEndpointAvailable === false
-            ? "This backend does not expose masked config persistence yet, so bot tokens stay in memory for the current desktop session only."
-            : "Masked Telegram config is persisted on the backend, so reconnecting usually does not require re-entering the bot token."
-          : provider.eventsEndpointAvailable === false
+          ((isTelegram &&
+            !provider.botToken.trim() &&
+            !provider.configSummary?.configured) ||
+            (isWeChat &&
+              !provider.wechatToken.trim() &&
+              !provider.configSummary?.configured)));
+      const backendNote = isTelegram
+        ? provider.configEndpointAvailable === false
+          ? "This backend does not expose masked config persistence yet, so bot tokens stay in memory for the current desktop session only."
+          : "Masked Telegram config is persisted on the backend, so reconnecting usually does not require re-entering the bot token."
+        : isWhatsApp
+          ? provider.eventsEndpointAvailable === false
             ? "This backend does not expose live adapter events yet, so in-app QR pairing remains blocked for now."
-            : "WhatsApp Web pairing is driven by live adapter events. If a linked-device session already exists, reconnect usually resumes without showing a fresh QR.";
+            : "WhatsApp Web pairing is driven by live adapter events. If a linked-device session already exists, reconnect usually resumes without showing a fresh QR."
+          : provider.configEndpointAvailable === false
+            ? "This backend does not expose the WeChat adapter config routes yet, so credentials stay in memory for the current desktop session only."
+            : "WeChat settings are persisted on the backend. `webhook_url` is reference-only, while `server_url` externalizes the relay path when set.";
       const dependencyInstalled =
         provider.configSummary?.dependency_installed === true
           ? true
@@ -714,17 +724,21 @@ export default function GlobalSettingsPanel({
         typeof provider.configSummary?.install_hint === "string" &&
         provider.configSummary.install_hint.trim()
           ? provider.configSummary.install_hint.trim()
-          : providerId === "telegram"
+          : isTelegram
             ? "pip install 'dan[messaging]'"
-            : "pip install 'dan[whatsapp-web]'";
+            : isWhatsApp
+              ? "pip install 'dan[whatsapp-web]'"
+              : "pip install 'dan[wechat]'";
       const dependencyCopy =
         dependencyInstalled === true
           ? "Installed in the backend environment."
           : dependencyInstalled === false
             ? `Not installed yet. Run \`${installHint}\` in the backend environment.`
-            : providerId === "telegram"
+            : isTelegram
               ? `Requires \`python-telegram-bot\`. Install with \`${installHint}\`.`
-              : `Requires \`neonize\`. Install with \`${installHint}\`.`;
+              : isWhatsApp
+                ? `Requires \`neonize\`. Install with \`${installHint}\`.`
+                : `Requires \`cryptography\`. Install with \`${installHint}\`.`;
       const dependencyCardClass =
         dependencyInstalled === false
           ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300"
@@ -736,9 +750,61 @@ export default function GlobalSettingsPanel({
         provider.configSummary.bot_username.trim()
           ? provider.configSummary.bot_username.trim()
           : null;
+      const maskedWeChatToken =
+        typeof provider.configSummary?.masked_token === "string" &&
+        provider.configSummary.masked_token.trim()
+          ? provider.configSummary.masked_token.trim()
+          : null;
+      const wechatAppId =
+        typeof provider.configSummary?.app_id === "string" &&
+        provider.configSummary.app_id.trim()
+          ? provider.configSummary.app_id.trim()
+          : provider.wechatAppId.trim()
+            ? provider.wechatAppId.trim()
+            : null;
       const advancedOpen = messagingAdvancedOpen[providerId];
       const isHighlighted =
         activeSection === "messaging" && initialMessagingProvider === providerId;
+      const configurationText = isTelegram
+        ? provider.configSummary?.masked_token
+          ? String(provider.configSummary.masked_token)
+          : provider.configSummary?.configured
+            ? "Configured on backend"
+            : provider.botToken.trim()
+              ? "Ready from this session"
+              : "Not configured"
+        : isWhatsApp
+          ? provider.paired || provider.configSummary?.paired
+            ? "Paired"
+            : provider.running
+              ? "Connected"
+              : "Not paired"
+          : maskedWeChatToken
+            ? maskedWeChatToken
+            : wechatAppId
+              ? `App ${wechatAppId}`
+              : provider.configSummary?.configured
+                ? "Configured on backend"
+                : provider.wechatToken.trim()
+                  ? "Ready from this session"
+                  : "Not configured";
+      const detailText = isTelegram
+        ? getSessionLabel(providerId, provider)
+        : isWhatsApp
+          ? provider.paired === true
+            ? getSessionLabel(providerId, provider)
+            : provider.connectionState === "pairing"
+              ? "Waiting for QR / link"
+              : provider.running
+                ? getSessionLabel(providerId, provider)
+                : "Pairing state unavailable"
+          : provider.running
+            ? getSessionLabel(providerId, provider)
+            : provider.configSummary?.account_name ||
+              provider.wechatAccountName.trim() ||
+              provider.configSummary?.app_name ||
+              provider.wechatAppName.trim() ||
+              "Official Account";
 
       return (
         <div
@@ -780,7 +846,11 @@ export default function GlobalSettingsPanel({
               className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
               title={
                 connectDisabled
-                  ? "Enter a Telegram bot token first."
+                  ? isTelegram
+                    ? "Enter a Telegram bot token first."
+                    : isWeChat
+                      ? "Enter a WeChat callback token first."
+                      : undefined
                   : undefined
               }
             >
@@ -797,19 +867,7 @@ export default function GlobalSettingsPanel({
                 Configuration
               </p>
               <p className="mt-1 text-sm font-medium text-gray-900 dark:text-gray-100">
-                {providerId === "telegram"
-                  ? provider.configSummary?.masked_token
-                    ? String(provider.configSummary.masked_token)
-                    : provider.configSummary?.configured
-                      ? "Configured on backend"
-                      : provider.botToken.trim()
-                        ? "Ready from this session"
-                        : "Not configured"
-                  : provider.paired || provider.configSummary?.paired
-                    ? "Paired"
-                    : provider.running
-                      ? "Connected"
-                      : "Not paired"}
+                {configurationText}
               </p>
             </div>
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950">
@@ -817,15 +875,7 @@ export default function GlobalSettingsPanel({
                 Detail
               </p>
               <p className="mt-1 text-sm font-medium text-gray-900 dark:text-gray-100">
-                {providerId === "telegram"
-                  ? getSessionLabel(providerId, provider)
-                  : provider.paired === true
-                    ? getSessionLabel(providerId, provider)
-                    : provider.connectionState === "pairing"
-                      ? "Waiting for QR / link"
-                      : provider.running
-                        ? getSessionLabel(providerId, provider)
-                        : "Pairing state unavailable"}
+                {detailText}
               </p>
             </div>
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950">
@@ -884,6 +934,76 @@ export default function GlobalSettingsPanel({
                 <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-blue-700 dark:border-blue-900/40 dark:bg-blue-900/20 dark:text-blue-300">
                   Verified as `@{botUsername}`. After connecting, send `/start`
                   to the bot to confirm the link.
+                </div>
+              )}
+            </div>
+          )}
+
+          {providerId === "wechat" && (
+            <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950">
+              <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                Official Account credentials
+              </p>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Token is required for callback verification. App ID and app
+                secret are strongly recommended so delayed replies can fall back
+                to customer-service sends.
+              </p>
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                    App ID
+                  </p>
+                  <TextInput
+                    value={provider.wechatAppId}
+                    placeholder="wx1234567890"
+                    onChange={(value) =>
+                      setMessagingDraftField(providerId, "wechatAppId", value)
+                    }
+                  />
+                </div>
+                <div>
+                  <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                    Callback token
+                  </p>
+                  <TextInput
+                    type="password"
+                    value={provider.wechatToken}
+                    placeholder="wechat-token-value"
+                    onChange={(value) =>
+                      setMessagingDraftField(providerId, "wechatToken", value)
+                    }
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                    App secret
+                  </p>
+                  <TextInput
+                    type="password"
+                    value={provider.wechatAppSecret}
+                    placeholder="wechat-secret-value"
+                    onChange={(value) =>
+                      setMessagingDraftField(providerId, "wechatAppSecret", value)
+                    }
+                  />
+                </div>
+              </div>
+              {(provider.configSummary?.masked_app_secret ||
+                provider.configSummary?.masked_encoding_aes_key ||
+                provider.configSummary?.masked_token) && (
+                <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700 dark:border-blue-900/40 dark:bg-blue-900/20 dark:text-blue-300">
+                  Saved backend secrets:
+                  {provider.configSummary?.masked_token
+                    ? ` token ${String(provider.configSummary.masked_token)}`
+                    : ""}
+                  {provider.configSummary?.masked_app_secret
+                    ? `, app secret ${String(provider.configSummary.masked_app_secret)}`
+                    : ""}
+                  {provider.configSummary?.masked_encoding_aes_key
+                    ? `, AES key ${String(provider.configSummary.masked_encoding_aes_key)}`
+                    : ""}
+                  .
                 </div>
               )}
             </div>
@@ -962,39 +1082,270 @@ export default function GlobalSettingsPanel({
 
           {advancedOpen && (
             <>
-              <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950">
-                <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                  {providerId === "telegram" ? "Allowed chat IDs" : "Allowed JIDs"}
-                </p>
-                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  {providerId === "telegram"
-                    ? "Optional. Leave empty to let the bot answer any chat it can see."
-                    : "Optional allowlist. Leave empty to allow any linked WhatsApp JID."}
-                </p>
-                <div className="mt-3">
-                  <TextArea
-                    value={
-                      providerId === "telegram"
-                        ? provider.allowedChatIdsText
-                        : provider.allowedJidsText
-                    }
-                    placeholder={
-                      providerId === "telegram"
-                        ? "123456789\n987654321"
-                        : "15551234567@s.whatsapp.net"
-                    }
-                    onChange={(value) =>
-                      setMessagingDraftField(
-                        providerId,
+              {(providerId === "telegram" || providerId === "whatsapp") && (
+                <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950">
+                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                    {providerId === "telegram" ? "Allowed chat IDs" : "Allowed JIDs"}
+                  </p>
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {providerId === "telegram"
+                      ? "Optional. Leave empty to let the bot answer any chat it can see."
+                      : "Optional allowlist. Leave empty to allow any linked WhatsApp JID."}
+                  </p>
+                  <div className="mt-3">
+                    <TextArea
+                      value={
                         providerId === "telegram"
-                          ? "allowedChatIdsText"
-                          : "allowedJidsText",
-                        value,
-                      )
-                    }
-                  />
+                          ? provider.allowedChatIdsText
+                          : provider.allowedJidsText
+                      }
+                      placeholder={
+                        providerId === "telegram"
+                          ? "123456789\n987654321"
+                          : "15551234567@s.whatsapp.net"
+                      }
+                      onChange={(value) =>
+                        setMessagingDraftField(
+                          providerId,
+                          providerId === "telegram"
+                            ? "allowedChatIdsText"
+                            : "allowedJidsText",
+                          value,
+                        )
+                      }
+                    />
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {providerId === "wechat" && (
+                <>
+                  <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950">
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      Callback and identity
+                    </p>
+                    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div>
+                        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                          Callback path
+                        </p>
+                        <TextInput
+                          value={provider.wechatCallbackPath}
+                          placeholder="callback"
+                          onChange={(value) =>
+                            setMessagingDraftField(
+                              providerId,
+                              "wechatCallbackPath",
+                              value,
+                            )
+                          }
+                        />
+                      </div>
+                      <div>
+                        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                          Public webhook URL
+                        </p>
+                        <TextInput
+                          value={provider.wechatWebhookUrl}
+                          placeholder="https://dan.example.com/api/adapters/wechat/callback"
+                          onChange={(value) =>
+                            setMessagingDraftField(
+                              providerId,
+                              "wechatWebhookUrl",
+                              value,
+                            )
+                          }
+                        />
+                      </div>
+                      <div>
+                        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                          Account name
+                        </p>
+                        <TextInput
+                          value={provider.wechatAccountName}
+                          placeholder="Claw Bot"
+                          onChange={(value) =>
+                            setMessagingDraftField(
+                              providerId,
+                              "wechatAccountName",
+                              value,
+                            )
+                          }
+                        />
+                      </div>
+                      <div>
+                        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                          App name
+                        </p>
+                        <TextInput
+                          value={provider.wechatAppName}
+                          placeholder="OpenClaw WeChat"
+                          onChange={(value) =>
+                            setMessagingDraftField(
+                              providerId,
+                              "wechatAppName",
+                              value,
+                            )
+                          }
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950">
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      Reply behavior
+                    </p>
+                    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div className="sm:col-span-2">
+                        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                          Welcome message
+                        </p>
+                        <TextArea
+                          value={provider.wechatWelcomeMessage}
+                          placeholder="Welcome! Send a message to start a workflow."
+                          onChange={(value) =>
+                            setMessagingDraftField(
+                              providerId,
+                              "wechatWelcomeMessage",
+                              value,
+                            )
+                          }
+                        />
+                      </div>
+                      <div>
+                        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                          Passive reply budget (seconds)
+                        </p>
+                        <TextInput
+                          value={provider.wechatPassiveReplyBudgetSecondsText}
+                          placeholder="4"
+                          onChange={(value) =>
+                            setMessagingDraftField(
+                              providerId,
+                              "wechatPassiveReplyBudgetSecondsText",
+                              value,
+                            )
+                          }
+                        />
+                      </div>
+                      <div>
+                        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                          Fallback reply
+                        </p>
+                        <TextInput
+                          value={provider.wechatPassiveReplyFallbackText}
+                          placeholder="Working on it..."
+                          onChange={(value) =>
+                            setMessagingDraftField(
+                              providerId,
+                              "wechatPassiveReplyFallbackText",
+                              value,
+                            )
+                          }
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950">
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      Relay and API tuning
+                    </p>
+                    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div className="sm:col-span-2">
+                        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                          Relay server URL
+                        </p>
+                        <TextInput
+                          value={provider.wechatServerUrl}
+                          placeholder="https://dan.example.com"
+                          onChange={(value) =>
+                            setMessagingDraftField(
+                              providerId,
+                              "wechatServerUrl",
+                              value,
+                            )
+                          }
+                        />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                          WeChat API base URL
+                        </p>
+                        <TextInput
+                          value={provider.wechatApiBaseUrl}
+                          placeholder="https://api.weixin.qq.com"
+                          onChange={(value) =>
+                            setMessagingDraftField(
+                              providerId,
+                              "wechatApiBaseUrl",
+                              value,
+                            )
+                          }
+                        />
+                      </div>
+                      <div>
+                        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                          Token refresh margin (seconds)
+                        </p>
+                        <TextInput
+                          value={provider.wechatAccessTokenRefreshMarginSecondsText}
+                          placeholder="300"
+                          onChange={(value) =>
+                            setMessagingDraftField(
+                              providerId,
+                              "wechatAccessTokenRefreshMarginSecondsText",
+                              value,
+                            )
+                          }
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                          AES-encrypted callbacks
+                        </p>
+                        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                          Enable encrypted handshake and callback envelopes when
+                          the Official Account is configured for AES mode.
+                        </p>
+                      </div>
+                      <Toggle
+                        checked={provider.wechatSupportEncryptedCallbacks}
+                        onChange={(value) =>
+                          setMessagingDraftField(
+                            providerId,
+                            "wechatSupportEncryptedCallbacks",
+                            value,
+                          )
+                        }
+                      />
+                    </div>
+                    <div className="mt-3">
+                      <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                        Encoding AES key
+                      </p>
+                      <TextInput
+                        type="password"
+                        value={provider.wechatEncodingAesKey}
+                        placeholder="43-char-encoding-aes-key"
+                        onChange={(value) =>
+                          setMessagingDraftField(
+                            providerId,
+                            "wechatEncodingAesKey",
+                            value,
+                          )
+                        }
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
 
               <div
                 className={`mt-4 rounded-lg border px-3 py-2 text-xs ${dependencyCardClass}`}
@@ -1012,12 +1363,15 @@ export default function GlobalSettingsPanel({
                 <p className="mt-1">{backendNote}</p>
               </div>
 
-              {providerId === "whatsapp" && (
+              {(providerId === "whatsapp" || providerId === "wechat") && (
                 <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-3 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
-                  <p className="font-medium">Reset pairing</p>
+                  <p className="font-medium">
+                    {providerId === "whatsapp" ? "Reset pairing" : "Reset saved config"}
+                  </p>
                   <p className="mt-1">
-                    Stop WhatsApp Web and delete the saved linked-device session
-                    so the next connect generates a fresh QR code.
+                    {providerId === "whatsapp"
+                      ? "Stop WhatsApp Web and delete the saved linked-device session so the next connect generates a fresh QR code."
+                      : "Clear the saved WeChat adapter config and stop any active WeChat adapter so you can re-enter a clean deployment setup."}
                   </p>
                   <button
                     type="button"
@@ -1028,7 +1382,7 @@ export default function GlobalSettingsPanel({
                     }}
                     className="mt-3 rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    Reset pairing
+                    {providerId === "whatsapp" ? "Reset pairing" : "Reset config"}
                   </button>
                 </div>
               )}
@@ -1069,7 +1423,7 @@ export default function GlobalSettingsPanel({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <SectionTitle
             title="Messaging"
-            subtitle="Global remote-control surfaces for the whole desktop app. Save Telegram bot access once, pair WhatsApp Web in-app, and reconnect either provider without leaving the desktop shell."
+            subtitle="Global remote-control surfaces for the whole desktop app. Save Telegram bot access, pair WhatsApp Web in-app, or wire a WeChat Official Account without leaving the desktop shell."
           />
           <button
             type="button"
@@ -1091,6 +1445,9 @@ export default function GlobalSettingsPanel({
           Telegram tokens are masked before they come back to the UI. WhatsApp
           Web now uses the same desktop control plane, including saved
           allowlists, richer connection state, and live QR pairing events.
+          WeChat settings save through the same adapter config API, including
+          callback path, passive reply tuning, and optional external relay
+          server routing.
         </div>
 
         {messagingRefreshError && (
@@ -1109,6 +1466,11 @@ export default function GlobalSettingsPanel({
             "whatsapp",
             "WhatsApp Web",
             "Link your personal WhatsApp by scanning a QR code. No Business API needed.",
+          )}
+          {renderProviderCard(
+            "wechat",
+            "WeChat Official Account",
+            "Configure a public Official Account callback surface with passive replies and optional async follow-up delivery.",
           )}
         </div>
       </div>

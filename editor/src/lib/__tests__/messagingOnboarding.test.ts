@@ -31,6 +31,21 @@ function makeProvider(
     botToken: "",
     allowedChatIdsText: "",
     allowedJidsText: "",
+    wechatAppId: "",
+    wechatAppSecret: "",
+    wechatToken: "",
+    wechatEncodingAesKey: "",
+    wechatWebhookUrl: "",
+    wechatCallbackPath: "callback",
+    wechatAccountName: "",
+    wechatAppName: "",
+    wechatWelcomeMessage: "Welcome! Send a message to start a workflow.",
+    wechatSupportEncryptedCallbacks: false,
+    wechatPassiveReplyBudgetSecondsText: "4",
+    wechatPassiveReplyFallbackText: "Working on it...",
+    wechatApiBaseUrl: "",
+    wechatAccessTokenRefreshMarginSecondsText: "300",
+    wechatServerUrl: "",
     ...extra,
   };
 }
@@ -44,6 +59,10 @@ describe("messagingOnboarding helpers", () => {
       section: "messaging",
       messagingProvider: "telegram",
     });
+    expect(buildMessagingSettingsEventDetail("wechat")).toEqual({
+      section: "messaging",
+      messagingProvider: "wechat",
+    });
   });
 
   it("offers onboarding only when messaging is unconfigured", () => {
@@ -55,6 +74,7 @@ describe("messagingOnboarding helpers", () => {
         providers: {
           telegram: makeProvider(),
           whatsapp: makeProvider(),
+          wechat: makeProvider(),
         },
       }),
     ).toBe(false);
@@ -67,6 +87,7 @@ describe("messagingOnboarding helpers", () => {
         providers: {
           telegram: makeProvider({ configSummary: { configured: false } }),
           whatsapp: makeProvider(),
+          wechat: makeProvider(),
         },
       }),
     ).toBe(false);
@@ -79,6 +100,7 @@ describe("messagingOnboarding helpers", () => {
         providers: {
           telegram: makeProvider({ configSummary: { configured: false } }),
           whatsapp: makeProvider({ configEndpointAvailable: false }),
+          wechat: makeProvider({ configEndpointAvailable: false }),
         },
       }),
     ).toBe(true);
@@ -92,6 +114,7 @@ describe("messagingOnboarding helpers", () => {
         providers: {
           telegram: makeProvider({ configSummary: { configured: false } }),
           whatsapp: makeProvider(),
+          wechat: makeProvider(),
         },
       }),
     ).toBe(false);

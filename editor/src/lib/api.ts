@@ -499,6 +499,55 @@ export const fetchOptimizationReport = (runId: string) =>
 export const fetchOptimizationMutations = (runId: string) =>
   request<OptimizationMutationsResponse>(`/runs/${runId}/optimization-mutations`);
 
+// -- Telemetry Analytics ----------------------------------------------------
+
+export interface TelemetryAggregateRow {
+  group_key: Record<string, string>;
+  count: number;
+  total_tokens: number;
+  total_cost: number;
+  total_duration_ms: number;
+  avg_duration_ms: number;
+  min_duration_ms: number;
+  max_duration_ms: number;
+  success_rate: number;
+}
+
+export interface TelemetryAnalyticsResponse {
+  filters: {
+    surface?: string | null;
+    session_id?: string | null;
+    since?: string | null;
+    until?: string | null;
+  };
+  totals: {
+    events: number;
+    chat_turns: number;
+    fast_commands: number;
+    gateway_calls: number;
+    total_tokens: number;
+    total_cost: number;
+  };
+  event_types: TelemetryAggregateRow[];
+  activity_by_hour: TelemetryAggregateRow[];
+  models: TelemetryAggregateRow[];
+  modes: TelemetryAggregateRow[];
+  window_hours: number;
+}
+
+export const fetchTelemetryAnalytics = (
+  filters: { hours?: number; surface?: string; session_id?: string } = {},
+) => {
+  const params = new URLSearchParams();
+  if (filters.hours != null) params.set("hours", String(filters.hours));
+  if (filters.surface) params.set("surface", filters.surface);
+  if (filters.session_id) params.set("session_id", filters.session_id);
+  const qs = params.toString();
+  return request<TelemetryAnalyticsResponse>(
+    `/gateway/analytics/telemetry${qs ? `?${qs}` : ""}`,
+  );
+};
+
 // -- Graph Export ------------------------------------------------------------
 
 export const exportGraphMarkdown = (graphId: string) =>
@@ -769,11 +818,26 @@ export interface AdapterConfigSummary {
   type?: string;
   configured?: boolean;
   masked_token?: string | null;
+  masked_app_secret?: string | null;
+  masked_encoding_aes_key?: string | null;
   bot_username?: string | null;
   allowed_chat_ids?: number[];
   allowed_chat_count?: number;
   allowed_jids?: string[];
   allowed_jid_count?: number;
+  app_id?: string | null;
+  webhook_url?: string | null;
+  callback_path?: string | null;
+  account_name?: string | null;
+  app_name?: string | null;
+  welcome_message?: string | null;
+  support_encrypted_callbacks?: boolean | null;
+  passive_reply_budget_seconds?: number | null;
+  passive_reply_fallback_text?: string | null;
+  api_base_url?: string | null;
+  access_token_refresh_margin_seconds?: number | null;
+  server_url?: string | null;
+  auto_start?: boolean | null;
   paired?: boolean | null;
   dependency_module?: string | null;
   dependency_package?: string | null;
