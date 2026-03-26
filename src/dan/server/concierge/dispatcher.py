@@ -9,7 +9,12 @@ import time
 import uuid
 from typing import Any, AsyncIterator
 
-from dan.chat_events import ChatCompleteEvent, ChatQueuedEvent, ChatStreamEvent
+from dan.chat_events import (
+    ChatCompleteEvent,
+    ChatQueuedEvent,
+    ChatStreamEvent,
+    ChatToolCallStartEvent,
+)
 
 from .command_registry import get_default_registry
 from .identity import format_prefix
@@ -171,8 +176,14 @@ class ConcurrentDispatcher:
         event_queue: asyncio.Queue[ChatStreamEvent | None] = asyncio.Queue()
 
         async def _run() -> None:
+            run_slot_held = track_resources
             try:
-                await self._execute_and_forward(msg, event_queue)
+                run_slot_held = await self._execute_and_forward(
+                    msg,
+                    event_queue,
+                    project_id=project_id,
+                    run_slot_held=run_slot_held,
+                )
             except Exception:
                 logger.exception("Dispatcher task crashed for project %s", project_id)
             finally:
@@ -183,7 +194,7 @@ class ConcurrentDispatcher:
                 logger.exception("Drain failed for project %s", project_id)
             finally:
                 self._active_tasks.pop(project_id, None)
-                if track_resources:
+                if run_slot_held:
                     await self._release_run_slot()
             try:
                 await self._drain_global_overflow()
@@ -305,11 +316,30 @@ class ConcurrentDispatcher:
         self,
         msg: SurfaceMessage,
         target: asyncio.Queue[ChatStreamEvent | None],
-    ) -> None:
-        """Run ``concierge.process()`` and forward events to a queue."""
+        *,
+        project_id: str,
+        run_slot_held: bool,
+    ) -> bool:
+        """Run ``concierge.process()`` and forward events to a queue.
+
+        Run slots are advisory capacity for the turn's foreground model-driven
+        phase, not the entire lifetime of a tool-heavy chat. Once a turn emits
+        a tool-start event, the LLM call has already completed and the
+        dispatcher can admit another project while this task waits on tools.
+        """
         try:
             async for event in self._concierge.process(msg):
                 await target.put(event)
+                if run_slot_held and isinstance(event, ChatToolCallStartEvent):
+                    await self._release_run_slot()
+                    run_slot_held = False
+                    try:
+                        await self._drain_global_overflow()
+                    except Exception:
+                        logger.exception(
+                            "Overflow drain failed while project %s waited on tools",
+                            project_id,
+                        )
         except Exception as exc:
             logger.exception("Concierge.process() failed")
             error_kind = type(exc).__name__
@@ -320,6 +350,7 @@ class ConcurrentDispatcher:
                 context_window=0,
                 graph_revision="",
             ))
+        return run_slot_held
 
     # ------------------------------------------------------------------
     # Queue draining
@@ -334,9 +365,17 @@ class ConcurrentDispatcher:
         while not q.empty():
             queued_msg, channel_id = await q.get()
             bus = self._get_or_create_bus(channel_id)
+            run_slot_held = False
             try:
-                async for event in self._concierge.process(queued_msg):
-                    await bus.put(event)
+                if self._resource_tracker is not None:
+                    await self._wait_acquire_run_slot()
+                    run_slot_held = True
+                run_slot_held = await self._execute_and_forward(
+                    queued_msg,
+                    bus,
+                    project_id=project_id,
+                    run_slot_held=run_slot_held,
+                )
             except Exception as exc:
                 logger.exception("Failed processing queued message for project %s", project_id)
                 error_kind = type(exc).__name__
@@ -347,7 +386,10 @@ class ConcurrentDispatcher:
                     context_window=0,
                     graph_revision="",
                 ))
-            await bus.put(None)
+            finally:
+                if run_slot_held:
+                    await self._release_run_slot()
+                await bus.put(None)
 
         self._project_queues.pop(project_id, None)
 
@@ -387,18 +429,32 @@ class ConcurrentDispatcher:
                     break
 
             task = asyncio.create_task(
-                self._process_overflow_message(project_id, queued_msg, bus),
+                self._process_overflow_message(
+                    project_id,
+                    queued_msg,
+                    bus,
+                    run_slot_held=self._resource_tracker is not None,
+                ),
             )
             self._active_tasks[project_id] = task
             self._track_task(task)
 
     async def _process_overflow_message(
-        self, project_id: str, msg: SurfaceMessage, bus: asyncio.Queue[ChatStreamEvent | None],
+        self,
+        project_id: str,
+        msg: SurfaceMessage,
+        bus: asyncio.Queue[ChatStreamEvent | None],
+        *,
+        run_slot_held: bool,
     ) -> None:
         """Process a single overflow-queued message, then drain any same-project follow-ups."""
         try:
-            async for event in self._concierge.process(msg):
-                await bus.put(event)
+            run_slot_held = await self._execute_and_forward(
+                msg,
+                bus,
+                project_id=project_id,
+                run_slot_held=run_slot_held,
+            )
         except Exception as exc:
             logger.exception("Failed processing overflow message for project %s", project_id)
             error_kind = type(exc).__name__
@@ -417,8 +473,8 @@ class ConcurrentDispatcher:
             logger.exception("Drain failed after overflow for project %s", project_id)
         finally:
             self._active_tasks.pop(project_id, None)
-            if self._resource_tracker is not None:
-                await self._release_capacity_slot()
+            if run_slot_held:
+                await self._release_run_slot()
         try:
             await self._drain_global_overflow()
         except Exception:
@@ -429,6 +485,12 @@ class ConcurrentDispatcher:
         if self._resource_tracker is None:
             return True
         return await self._resource_tracker.try_acquire("run")
+
+    async def _wait_acquire_run_slot(self) -> bool:
+        """Wait for a project/run slot before continuing a queued same-project turn."""
+        if self._resource_tracker is None:
+            return True
+        return await self._resource_tracker.wait_acquire("run")
 
     async def _release_run_slot(self) -> None:
         """Release the run slot held by `_try_acquire_run_slot()`."""
