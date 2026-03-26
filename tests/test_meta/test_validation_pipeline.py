@@ -93,6 +93,23 @@ def _build_empty_graph_dict() -> dict:
     return graph.model_dump(mode="json")
 
 
+def _build_empty_code_graph_dict() -> dict:
+    """Graph with a code node that has no runnable code body."""
+    wf = workflow("empty_code")
+    wf.code("compute", code="   ")
+    return wf.build().model_dump(mode="json")
+
+
+def _build_placeholder_code_graph_dict() -> dict:
+    """Graph with placeholder status-payload code instead of runnable logic."""
+    wf = workflow("placeholder_code")
+    wf.code(
+        "compute",
+        code='result = {"status": "placeholder", "task": "compute metrics"}',
+    )
+    return wf.build().model_dump(mode="json")
+
+
 # ---------------------------------------------------------------------------
 # Test: Valid graph → success=True, graph=Graph
 # ---------------------------------------------------------------------------
@@ -238,6 +255,16 @@ class TestEmptyGraph:
         assert result.success is True
         assert result.graph is not None
         assert result.run_ready is False
+        assert result.run_readiness_failure_mode == "not_run_ready"
+
+    def test_empty_graph_reports_run_readiness_issues(self):
+        result = validate_codegen_output(_build_empty_graph_dict())
+        assert result.contract_report is not None
+        assert result.contract_report.run_readiness_issues
+        assert any(
+            "not run-ready" in issue.lower()
+            for issue in result.contract_report.run_readiness_issues
+        )
 
     def test_empty_graph_has_no_nodes(self):
         result = validate_codegen_output(_build_empty_graph_dict())
@@ -248,3 +275,21 @@ class TestEmptyGraph:
         result = validate_codegen_output(_build_empty_graph_dict())
         assert len(result.errors) == 0
         assert len(result.warnings) == 0
+
+
+class TestRunReadinessFailureModes:
+    def test_empty_code_is_classified_as_unresolved_code(self):
+        result = validate_codegen_output(_build_empty_code_graph_dict())
+
+        assert result.success is True
+        assert result.run_ready is False
+        assert result.run_readiness_failure_mode == "unresolved_code"
+        assert any("empty code" in issue.lower() for issue in result.contract_report.run_readiness_issues)
+
+    def test_placeholder_code_is_classified_as_non_runnable_code(self):
+        result = validate_codegen_output(_build_placeholder_code_graph_dict())
+
+        assert result.success is True
+        assert result.run_ready is False
+        assert result.run_readiness_failure_mode == "non_runnable_code"
+        assert any("placeholder" in issue.lower() for issue in result.contract_report.run_readiness_issues)

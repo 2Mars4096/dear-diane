@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import copy
 import re
 from dataclasses import dataclass, field
@@ -22,6 +23,11 @@ IssueCategory = Literal[
     "run_readiness",
 ]
 IssueSeverity = Literal["repairable", "fatal"]
+FailureBucket = Literal[
+    "mechanical_auto_fix",
+    "semantic_reprompt_or_diagnosis",
+    "hard_fail",
+]
 
 _WARNING_KEYWORDS = ("warning", "deprecated", "untyped")
 _PLACEHOLDER_CODE_RE = re.compile(
@@ -53,6 +59,146 @@ class WorkflowBuildContractReport:
     run_readiness_issues: list[str] = field(default_factory=list)
 
 
+def workflow_build_status(
+    report: Any,
+) -> Literal["invalid", "validated", "run_ready"] | None:
+    if report is None:
+        return None
+    if bool(getattr(report, "validated", False)):
+        if bool(getattr(report, "run_ready", False)):
+            return "run_ready"
+        return "validated"
+    return "invalid"
+
+
+def workflow_failure_bucket(report: Any) -> FailureBucket | None:
+    if report is None:
+        return None
+    if bool(getattr(report, "validated", False)) and bool(getattr(report, "run_ready", False)):
+        return None
+
+    errors = list(getattr(report, "errors", []) or [])
+    if any(str(getattr(issue, "severity", "") or "").strip().lower() == "fatal" for issue in errors):
+        return "hard_fail"
+
+    categories = {
+        str(getattr(issue, "category", "") or "").strip()
+        for issue in errors
+    }
+    mechanical_categories = {
+        "workflow_identity",
+        "workflow_metadata",
+        "node_identity",
+        "port_endpoint",
+        "schema",
+        "taxonomy",
+        "subgraph",
+        "entry_exit",
+    }
+    if categories and categories.issubset(mechanical_categories):
+        return "mechanical_auto_fix"
+    if list(getattr(report, "run_readiness_issues", []) or []) or "run_readiness" in categories:
+        return "semantic_reprompt_or_diagnosis"
+    if errors:
+        return "mechanical_auto_fix"
+    return "hard_fail"
+
+
+def workflow_handoff_reason(report: Any) -> str | None:
+    bucket = workflow_failure_bucket(report)
+    if bucket is None:
+        return None
+
+    errors = list(getattr(report, "errors", []) or [])
+    categories = {
+        str(getattr(issue, "category", "") or "").strip()
+        for issue in errors
+    }
+    messages = [
+        str(getattr(issue, "message", "") or "").strip().lower()
+        for issue in errors
+    ]
+
+    if bucket == "hard_fail":
+        if "schema" in categories:
+            return "fatal_schema_error"
+        if any("duplicate node id" in message for message in messages):
+            return "duplicate_node_id"
+        return "fatal_contract_error"
+    if bucket == "mechanical_auto_fix":
+        return "repairable_contract_error"
+    if list(getattr(report, "run_readiness_issues", []) or []):
+        return "run_readiness_gap"
+    return "needs_diagnosis"
+
+
+def workflow_build_summary(report: Any) -> str | None:
+    status = workflow_build_status(report)
+    if status is None:
+        return None
+
+    parts: list[str] = []
+    if status == "run_ready":
+        parts.append("Validated and run-ready.")
+    elif status == "validated":
+        parts.append("Validated, but not run-ready.")
+    else:
+        parts.append("Build contract validation failed.")
+
+    auto_fix_count = len(list(getattr(report, "auto_fixes_applied", []) or []))
+    if auto_fix_count:
+        issue_word = "issue" if auto_fix_count == 1 else "issues"
+        parts.append(f"Auto-fixed {auto_fix_count} mechanical {issue_word}.")
+
+    if status != "run_ready":
+        primary_issue = ""
+        for issue in list(getattr(report, "errors", []) or []):
+            message = str(getattr(issue, "message", "") or "").strip()
+            if message:
+                primary_issue = message
+                break
+        if not primary_issue:
+            for issue in list(getattr(report, "run_readiness_issues", []) or []):
+                message = str(issue or "").strip()
+                if message:
+                    primary_issue = message
+                    break
+        if primary_issue:
+            parts.append(f"Next issue: {primary_issue}")
+
+    return " ".join(parts)
+
+
+def workflow_build_provenance(
+    report: Any,
+    *,
+    auto_fix_limit: int = 5,
+) -> dict[str, Any]:
+    if report is None:
+        return {
+            "build_status": None,
+            "auto_fix_count": 0,
+            "auto_fixes": [],
+            "failure_bucket": None,
+            "handoff_reason": None,
+            "build_summary": None,
+        }
+
+    auto_fixes = [
+        str(item).strip()
+        for item in (getattr(report, "auto_fixes_applied", []) or [])
+        if str(item).strip()
+    ]
+    return {
+        "build_status": workflow_build_status(report),
+        "auto_fix_count": len(auto_fixes),
+        "auto_fixes": auto_fixes[:auto_fix_limit],
+        "failure_bucket": workflow_failure_bucket(report),
+        "handoff_reason": workflow_handoff_reason(report),
+        "build_summary": workflow_build_summary(report),
+    }
+
+
 def normalize_workflow_id(raw: str | None) -> str:
     text = str(raw or "").strip().lower()
     if not text:
@@ -69,6 +215,298 @@ def _node_dicts(candidate: dict[str, Any]) -> list[dict[str, Any]]:
 def _edge_dicts(candidate: dict[str, Any]) -> list[dict[str, Any]]:
     edges = candidate.get("edges")
     return edges if isinstance(edges, list) else []
+
+
+def _port_names(node: dict[str, Any], key: str) -> list[str]:
+    ports = node.get(key)
+    if not isinstance(ports, list):
+        return []
+    return [
+        str(port.get("name") or "").strip()
+        for port in ports
+        if isinstance(port, dict) and str(port.get("name") or "").strip()
+    ]
+
+
+def _port_name_set(node: dict[str, Any], key: str) -> set[str]:
+    return set(_port_names(node, key))
+
+
+def _generate_deduped_node_id(base_id: str, used_ids: set[str]) -> str:
+    counter = 2
+    candidate = f"{base_id}-{counter}"
+    while candidate in used_ids:
+        counter += 1
+        candidate = f"{base_id}-{counter}"
+    used_ids.add(candidate)
+    return candidate
+
+
+def _resolve_point_reference_candidates(
+    node_indexes: list[int],
+    *,
+    expected_count: int,
+    degree_counts: dict[int, int],
+    reference_counts: dict[int, int],
+) -> list[int] | None:
+    candidates = [index for index in node_indexes if degree_counts[index] == 0]
+    if len(candidates) == expected_count:
+        return candidates
+    referenced_candidates = [
+        index for index in candidates if reference_counts[index] > 0
+    ]
+    if len(referenced_candidates) == expected_count:
+        return referenced_candidates
+    return None
+
+
+def _repair_duplicate_node_id_group(
+    candidate: dict[str, Any],
+    *,
+    node_id: str,
+    node_indexes: list[int],
+    auto_fixes: list[str],
+) -> bool:
+    nodes = _node_dicts(candidate)
+    edges = _edge_dicts(candidate)
+    input_ports = {
+        index: _port_name_set(nodes[index], "input_ports") for index in node_indexes
+    }
+    output_ports = {
+        index: _port_name_set(nodes[index], "output_ports") for index in node_indexes
+    }
+    incoming_counts = {index: 0 for index in node_indexes}
+    outgoing_counts = {index: 0 for index in node_indexes}
+    reference_counts = {index: 0 for index in node_indexes}
+    edge_source_assignments: dict[int, int] = {}
+    edge_target_assignments: dict[int, int] = {}
+
+    for edge_index, edge in enumerate(edges):
+        source_id = str(edge.get("source_node_id") or "")
+        if source_id == node_id:
+            source_port = str(edge.get("source_port") or "").strip()
+            if not source_port:
+                return False
+            candidates = [
+                index
+                for index in node_indexes
+                if source_port in output_ports.get(index, set())
+            ]
+            if len(candidates) != 1:
+                return False
+            edge_source_assignments[edge_index] = candidates[0]
+            outgoing_counts[candidates[0]] += 1
+            reference_counts[candidates[0]] += 1
+
+        target_id = str(edge.get("target_node_id") or "")
+        if target_id == node_id:
+            target_port = str(edge.get("target_port") or "").strip()
+            if not target_port:
+                return False
+            candidates = [
+                index
+                for index in node_indexes
+                if target_port in input_ports.get(index, set())
+            ]
+            if len(candidates) != 1:
+                return False
+            edge_target_assignments[edge_index] = candidates[0]
+            incoming_counts[candidates[0]] += 1
+            reference_counts[candidates[0]] += 1
+
+    hyperedges = candidate.get("hyperedges")
+    if isinstance(hyperedges, list):
+        for hyperedge in hyperedges:
+            if not isinstance(hyperedge, dict):
+                continue
+            attach_to = hyperedge.get("attach_to")
+            if isinstance(attach_to, list) and any(
+                str(item or "") == node_id for item in attach_to
+            ):
+                return False
+            attach_to_subgraph = hyperedge.get("attach_to_subgraph")
+            if isinstance(attach_to_subgraph, list) and any(
+                str(item or "") == node_id for item in attach_to_subgraph
+            ):
+                return False
+
+    entry_points = candidate.get("entry_points")
+    entry_assignments: dict[int, int] = {}
+    if isinstance(entry_points, list):
+        entry_positions = [
+            position
+            for position, value in enumerate(entry_points)
+            if str(value or "") == node_id
+        ]
+        if entry_positions:
+            entry_candidates = _resolve_point_reference_candidates(
+                node_indexes,
+                expected_count=len(entry_positions),
+                degree_counts=incoming_counts,
+                reference_counts=reference_counts,
+            )
+            if not entry_candidates:
+                return False
+            for position, index in zip(entry_positions, entry_candidates):
+                entry_assignments[position] = index
+                reference_counts[index] += 1
+
+    exit_points = candidate.get("exit_points")
+    exit_assignments: dict[int, int] = {}
+    if isinstance(exit_points, list):
+        exit_positions = [
+            position
+            for position, value in enumerate(exit_points)
+            if str(value or "") == node_id
+        ]
+        if exit_positions:
+            exit_candidates = _resolve_point_reference_candidates(
+                node_indexes,
+                expected_count=len(exit_positions),
+                degree_counts=outgoing_counts,
+                reference_counts=reference_counts,
+            )
+            if not exit_candidates:
+                return False
+            for position, index in zip(exit_positions, exit_candidates):
+                exit_assignments[position] = index
+                reference_counts[index] += 1
+
+    primary_index = max(node_indexes, key=lambda index: (reference_counts[index], -index))
+    used_ids = {
+        str(node.get("id") or "")
+        for node in nodes
+        if str(node.get("id") or "").strip()
+    }
+    resolved_ids = {primary_index: node_id}
+    for index in node_indexes:
+        if index == primary_index:
+            continue
+        resolved_ids[index] = _generate_deduped_node_id(node_id, used_ids)
+
+    for index in node_indexes:
+        nodes[index]["id"] = resolved_ids[index]
+
+    for edge_index, index in edge_source_assignments.items():
+        edges[edge_index]["source_node_id"] = resolved_ids[index]
+    for edge_index, index in edge_target_assignments.items():
+        edges[edge_index]["target_node_id"] = resolved_ids[index]
+    if isinstance(entry_points, list):
+        for position, index in entry_assignments.items():
+            entry_points[position] = resolved_ids[index]
+    if isinstance(exit_points, list):
+        for position, index in exit_assignments.items():
+            exit_points[position] = resolved_ids[index]
+
+    renamed_ids = [resolved_ids[index] for index in node_indexes if index != primary_index]
+    auto_fixes.append(
+        f"Deduped colliding node id '{node_id}' via local reference rewrites: {renamed_ids}."
+    )
+    return True
+
+
+def _repair_colliding_node_ids(
+    candidate: dict[str, Any],
+    *,
+    auto_fixes: list[str],
+) -> None:
+    node_indexes_by_id: dict[str, list[int]] = {}
+    for index, node in enumerate(_node_dicts(candidate)):
+        node_id = str(node.get("id") or "")
+        if not node_id.strip():
+            continue
+        node_indexes_by_id.setdefault(node_id, []).append(index)
+
+    for node_id, node_indexes in node_indexes_by_id.items():
+        if len(node_indexes) < 2:
+            continue
+        _repair_duplicate_node_id_group(
+            candidate,
+            node_id=node_id,
+            node_indexes=node_indexes,
+            auto_fixes=auto_fixes,
+        )
+
+
+def _normalize_legacy_edge_fields(
+    candidate: dict[str, Any],
+    *,
+    auto_fixes: list[str],
+) -> None:
+    nodes = {
+        str(node.get("id") or "").strip(): node
+        for node in _node_dicts(candidate)
+        if str(node.get("id") or "").strip()
+    }
+    field_aliases = {
+        "source_node_id": ("source", "from", "sourceNodeId", "source_id"),
+        "target_node_id": ("target", "to", "targetNodeId", "target_id"),
+        "source_port": ("sourcePort", "from_port"),
+        "target_port": ("targetPort", "to_port"),
+        "edge_type": ("type",),
+    }
+
+    for index, edge in enumerate(_edge_dicts(candidate), start=1):
+        if not isinstance(edge, dict):
+            continue
+
+        for canonical, aliases in field_aliases.items():
+            current = str(edge.get(canonical) or "").strip()
+            if current:
+                normalized = current.lower() if canonical == "edge_type" else current
+                if edge.get(canonical) != normalized:
+                    edge[canonical] = normalized
+                continue
+            for alias in aliases:
+                value = str(edge.get(alias) or "").strip()
+                if not value:
+                    continue
+                edge[canonical] = value.lower() if canonical == "edge_type" else value
+                auto_fixes.append(
+                    f"Normalized legacy edge field '{alias}' to '{canonical}' on edge {index}."
+                )
+                break
+
+        if not str(edge.get("edge_type") or "").strip():
+            edge["edge_type"] = "data"
+            auto_fixes.append(f"Filled missing edge_type with 'data' on edge {index}.")
+
+        source_id = str(edge.get("source_node_id") or "").strip()
+        target_id = str(edge.get("target_node_id") or "").strip()
+        source_node = nodes.get(source_id)
+        target_node = nodes.get(target_id)
+
+        source_port = str(edge.get("source_port") or "").strip()
+        if not source_port and isinstance(source_node, dict):
+            output_ports = _port_names(source_node, "output_ports")
+            if len(output_ports) == 1:
+                edge["source_port"] = output_ports[0]
+                auto_fixes.append(
+                    f"Inferred missing source_port on edge {index} from node '{source_id}'."
+                )
+
+        target_port = str(edge.get("target_port") or "").strip()
+        if not target_port and isinstance(target_node, dict):
+            input_ports = _port_names(target_node, "input_ports")
+            if len(input_ports) == 1:
+                edge["target_port"] = input_ports[0]
+                auto_fixes.append(
+                    f"Inferred missing target_port on edge {index} from node '{target_id}'."
+                )
+
+        edge_id = str(edge.get("id") or "").strip()
+        if edge_id:
+            if edge.get("id") != edge_id:
+                edge["id"] = edge_id
+            continue
+
+        source_port = str(edge.get("source_port") or "").strip()
+        target_port = str(edge.get("target_port") or "").strip()
+        if source_id and target_id and source_port and target_port:
+            edge["id"] = f"{source_id}.{source_port}->{target_id}.{target_port}"
+        else:
+            edge["id"] = f"edge-{index}"
+        auto_fixes.append(f"Filled missing edge id on edge {index}.")
 
 
 def _normalize_graph_metadata_name(
@@ -164,6 +602,13 @@ def _normalize_single_port_aliases(
     *,
     auto_fixes: list[str],
 ) -> None:
+    node_ids = [
+        str(node.get("id") or "")
+        for node in _node_dicts(candidate)
+        if str(node.get("id") or "")
+    ]
+    if len(node_ids) != len(set(node_ids)):
+        return
     nodes = {
         str(node.get("id") or "").strip(): node
         for node in _node_dicts(candidate)
@@ -233,7 +678,10 @@ def _check_duplicate_node_ids(graph: Graph) -> list[WorkflowBuildIssue]:
     return [
         WorkflowBuildIssue(
             category="node_identity",
-            message=f"Duplicate node id '{node_id}' is not safe to auto-fix without changing references.",
+            message=(
+                f"Duplicate node id '{node_id}' is not safely auto-repairable "
+                "with local reference rewrites."
+            ),
             severity="fatal",
             artifact_id=node_id,
         )
@@ -289,6 +737,14 @@ def _check_run_readiness(graph: Graph) -> list[str]:
             issues.append(
                 f"Code node '{node.id}' contains placeholder status payload code instead of runnable logic."
             )
+            continue
+        try:
+            ast.parse(code, mode="exec")
+        except SyntaxError as exc:
+            line = f" at line {exc.lineno}" if exc.lineno is not None else ""
+            issues.append(
+                f"Code node '{node.id}' contains non-runnable Python ({exc.msg}{line})."
+            )
     if not graph.entry_points:
         issues.append("Workflow has no entry points, so it is not run-ready.")
     if not graph.exit_points:
@@ -299,6 +755,29 @@ def _check_run_readiness(graph: Graph) -> list[str]:
     if not any(exit_id in reachable for exit_id in graph.exit_points):
         issues.append("No exit point is reachable from the current entry points.")
     return issues
+
+
+def classify_run_readiness_issues(issues: list[str]) -> str | None:
+    normalized = [
+        str(issue).strip().lower()
+        for issue in issues
+        if str(issue).strip()
+    ]
+    if not normalized:
+        return None
+    if any(
+        marker in issue
+        for issue in normalized
+        for marker in ("empty code", "missing code", "unresolved code")
+    ):
+        return "unresolved_code"
+    if any(
+        marker in issue
+        for issue in normalized
+        for marker in ("placeholder", "non-runnable", "not runnable")
+    ):
+        return "non_runnable_code"
+    return "not_run_ready"
 
 
 def validate_workflow_build_contract(
@@ -324,7 +803,9 @@ def validate_workflow_build_contract(
             display_fallback=display_fallback,
             auto_fixes=auto_fixes,
         )
+        _normalize_legacy_edge_fields(candidate, auto_fixes=auto_fixes)
         _normalize_node_names(candidate, auto_fixes=auto_fixes)
+        _repair_colliding_node_ids(candidate, auto_fixes=auto_fixes)
         _normalize_entry_exit_points(candidate, auto_fixes=auto_fixes)
 
     try:
