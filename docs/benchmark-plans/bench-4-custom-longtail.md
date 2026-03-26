@@ -2,7 +2,7 @@
 
 **Parent:** [benchmark-plan](benchmark-plan.md)
 **Status:** not-started
-**Goal:** Demonstrate DAN's advantage on realistic multi-step domain workflows that no published benchmark covers — specifically testing while-loops, context projection, hyperedges, composable sub-graphs, and learning.
+**Goal:** Demonstrate DAN's advantage on realistic multi-step domain workflows that no published benchmark covers, but only after public benchmark evidence already exists. This suite is for DAN-specific proof, not the first source of credibility.
 
 ## Why This Benchmark
 
@@ -14,6 +14,33 @@ Published benchmarks test what existing systems were designed for. The custom su
 - Learning across repeated runs
 
 These are the "impossible workflow" scenarios that form the basis of the marketing challenge: "Build this workflow in your tool. We'll wait."
+
+## Position In Execution Order
+
+This suite should run **after**:
+
+- the Phase 33 benchmark gate is green
+- at least one public leaderboard-native benchmark has been published
+- at least one public reproducible technical benchmark or memory benchmark has been published
+
+The custom suite is valuable, but it should amplify public evidence rather than substitute for it.
+
+## First Execution Wave (MVP order)
+
+Do not start by building all five scenarios. The first wave should be a narrow, execution-first slice that proves DAN can handle long-running workflows honestly before the suite expands.
+
+Recommended order:
+
+1. **Scenario 2: Data Analysis Report** — best first proof because scoring is fully automated and it exercises code + validation.
+2. **Scenario 1: Research Paper Literature Review** — strongest product/demo narrative and already close to existing DAN strengths.
+3. **Scenario 4: Code Migration** — strongest architecture demo because it stresses loops, repair, and checkpoint/resume.
+
+Defer Scenario 3 (competitive intelligence) and Scenario 5 (fact-checking) to wave 2. They are still valuable, but they add more evaluation noise than the first three.
+
+Execution gate:
+
+- Only start this wave after Phase 33 closes the semantic honesty work for code-execution stages (`33-10` Section G) and the long-running benchmark-prep battery in `33-4` has produced at least one honest end-to-end run per workload class.
+- Prefer to start only after GAIA and AppWorld reporting paths are already exercised, so the custom suite is clearly additive rather than self-referential.
 
 ## The Five Scenarios
 
@@ -96,6 +123,10 @@ Every scenario also reports: total tokens, total cost, wall-clock time, failure 
 
 ## Tasks
 
+- [ ] 0. **Execution gate**
+  - [ ] 0-1. Confirm Phase 33 honest rerun is complete and 33-10 Section G is closed for code-heavy graphs
+  - [ ] 0-2. Reuse the frozen-input workload definitions from 33-4 instead of inventing a separate first-wave dataset here
+  - [ ] 0-3. Confirm at least one public benchmark score track and one public reproducible benchmark report already exist
 - [ ] 1. **Scenario design**
   - [ ] 1-1. Define concrete inputs for each scenario (specific topic, dataset, codebase, article)
   - [ ] 1-2. Prepare ground-truth or evaluation rubrics per scenario
@@ -172,8 +203,10 @@ Key impossible features for competitors:
 
 ## Notes
 
-- Start with Scenario 1 (lit review) as the simplest proof — DAN already has the paper_writing workflow built
+- Wave 1 order is Scenario 2 -> Scenario 1 -> Scenario 4. That gives one fully automated proof, one strong product demo, and one strong systems demo.
+- Reuse the Phase 33 long-running prompt pack and frozen inputs for the first wave. Do not fork evaluation assets too early.
 - Scenario 4 needs a prepared Python 2 codebase with tests — consider using an open-source project
 - Scenario 5 needs ground-truth verdicts — prepare from a known fact-checking dataset (e.g., FEVER)
 - LLM-as-judge evaluation should use a different model than the one being tested to avoid bias
 - The "Impossible Workflow Challenge" is a marketing deliverable — plan the packaging early
+- This suite should never be presented as the primary proof that DAN works. It is the DAN-specific extension layer after public benchmarks have already established external credibility.

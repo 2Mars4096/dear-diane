@@ -1,12 +1,36 @@
 # Bench 5: Analysis & Reporting Framework
 
 **Parent:** [benchmark-plan](benchmark-plan.md)
-**Status:** not-started
-**Goal:** Build the shared measurement infrastructure, ablation methodology, and reporting pipeline so all benchmarks produce consistent, comparable, publication-ready results.
+**Status:** planned
+**Goal:** Build the shared measurement infrastructure, ablation methodology, and reporting pipeline so all benchmarks produce consistent, comparable, publication-ready results, while reusing the existing `tests/eval` substrate instead of creating a disconnected second eval stack.
 
 ## Why This First
 
-The analysis framework must exist before running any benchmark. Without consistent measurement, each benchmark produces ad-hoc results that can't be compared or aggregated. Build once, use everywhere.
+The analysis framework must exist before running repeated public benchmarks. Without consistent measurement, each benchmark produces ad-hoc results that can't be compared or aggregated. Build once, use everywhere.
+
+## Implementation Substrate
+
+This plan should extend the existing Phase 33 evaluation harness rather than bypass it.
+
+Preferred implementation order:
+
+1. add benchmark-oriented schemas and report fields to `tests/eval`
+2. add benchmark adapters as thin wrappers over the same telemetry / JSONL / report path
+3. only create a standalone `benchmarks/` package if `tests/eval` becomes too awkward
+
+This avoids creating two different notions of "the truth" for metrics, failure modes, and report generation.
+
+## Minimum Slice For The Next Two Phases
+
+Do not try to build the full reporting stack before the first public runs. The minimum required slice for `bench-2` and `bench-6` is:
+
+1. **Benchmark profile schema** — benchmark name, split, approach, model/tier map, memory mode, learning mode, result channel, commit SHA, run date
+2. **Artifact bundle layout** — raw predictions, scored outputs, run config snapshot, and benchmark-specific metadata in one stable directory layout
+3. **Coverage accounting** — `covered`, `coverage_excluded`, `run_failed`, and `scoring_failed` counts so public results cannot quietly hide unsupported cases
+4. **Compare/report mode** — compare two benchmark refreshes by commit/profile and emit a short markdown score summary
+5. **Memory trace fields** — for `bench-6`, log memory writes, retrieval count, retrieval hit/miss signals, and memory namespace / snapshot identifiers
+
+Everything else can remain thinner until GAIA and the memory track have each produced one real artifact bundle.
 
 ## Components
 
@@ -50,8 +74,10 @@ class BenchmarkResult:
     # Metadata
     llm_model: str               # primary model used
     dan_version: str
+    git_commit: str
     timestamp: datetime
     config: dict                 # full run config for reproducibility
+    result_channel: str          # "leaderboard" | "offline_public" | "internal"
 ```
 
 ### 2. Ablation Controller
@@ -81,7 +107,7 @@ For each ablation config, map to actual DAN engine/config toggles:
 
 Store all results in a structured format for querying and visualization.
 
-- **Storage:** SQLite database at `benchmarks/results.db`
+- **Storage:** SQLite database at `tests/eval/results/benchmarks.db` unless a dedicated package becomes necessary later
 - **Tables:** `runs`, `per_node_metrics`, `ablation_runs`, `learning_curves`
 - **Export:** CSV/Parquet for analysis notebooks, JSON for reports
 
@@ -128,11 +154,19 @@ Automated report from results database:
 
 ## Tasks
 
+- [ ] 0. **Minimum public-run substrate**
+  - [ ] 0-1. Define a benchmark run-profile schema with reproducibility fields shared by GAIA and the memory track
+  - [ ] 0-2. Define the artifact-bundle directory contract used by every public benchmark refresh
+  - [ ] 0-3. Add coverage-accounting fields (`covered`, `coverage_excluded`, `run_failed`, `scoring_failed`) to result summaries
+  - [ ] 0-4. Add memory-trace summary fields needed by `bench-6`
+  - [ ] 0-5. Add a compare/report path that can diff two refreshes and emit a concise markdown scorecard
+
 - [ ] 1. **Data models**
   - [ ] 1-1. Define `BenchmarkResult` Pydantic model
   - [ ] 1-2. Define `AblationConfig` model
   - [ ] 1-3. Define per-node metrics schema
   - [ ] 1-4. Define learning curve data schema
+- [ ] 1-5. Record reproducibility fields: commit SHA, result channel, benchmark version, memory mode, behavior snapshot
 - [ ] 2. **Results database**
   - [ ] 2-1. SQLite schema design
   - [ ] 2-2. Insert/query API
@@ -159,9 +193,9 @@ Automated report from results database:
   - [ ] 6-2. Auto-fill from results database
   - [ ] 6-3. PDF export (optional, via pandoc or weasyprint)
 - [ ] 7. **Benchmark CLI**
-  - [ ] 7-1. `python -m benchmarks run <benchmark> [--ablation] [--runs N]`
-  - [ ] 7-2. `python -m benchmarks report [--format md|pdf|html]`
-  - [ ] 7-3. `python -m benchmarks compare <run1> <run2>`
+  - [ ] 7-1. Start as thin wrappers over `python -m tests.eval` with benchmark-specific fixtures/adapters
+  - [ ] 7-2. Only introduce `python -m benchmarks ...` if the wrapper approach becomes too limiting
+  - [ ] 7-3. Support compare mode across benchmark refreshes (`run_a` vs `run_b`) with commit-aware diffs
 
 ## Monolithic Agent Baseline Design
 
@@ -221,8 +255,10 @@ Key: no quality gates, no branching, no parallel execution. This is the n8n/Zapi
 
 ## Notes
 
-- Build this first — all other benchmarks depend on it
+- Build this first, but keep it thin — all other benchmarks depend on it, and duplicating the existing eval harness would slow the whole program down.
+- The first successful outcome for this plan is not "full dashboard parity." It is "GAIA and the memory track can each publish one reproducible artifact bundle without ad-hoc scripting."
 - Per-node metrics require engine instrumentation — verify existing token tracking is granular enough
 - The monolithic baseline must be fair: same model, same tools, same information. The only difference is architecture.
+- The simple-chain baseline is useful but secondary; public-facing claims should rely primarily on monolithic-agent and DAN ablation comparisons.
 - Consider making the visualization pipeline interactive (Plotly) for the marketing website
 - The benchmark CLI should support `--dry-run` for testing without API calls

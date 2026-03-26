@@ -7,16 +7,30 @@ How to run the workflow generation quality evaluation harness. Requires a runnin
 - Server running: `dan up` or `dan-serve`
 - Default base URL: `http://localhost:8000` (override with `--base-url`)
 - Live model access configured in `.env` / environment variables if you want real provider-backed results
+- Benchmark-grade runs should use the server path, not local fallback behavior
 
-## Commands
+## Benchmark-grade bootstrap
 
-### Workflow smoke battery (recommended first live check)
+Verify the backend from the same shell namespace you will use for evals:
 
 ```bash
 # Terminal 1
 PYTHONPATH=src python -m dan.server --no-reload
 
 # Terminal 2
+curl -f http://127.0.0.1:8000/health
+env | rg '^DAN_(OPENAI|ANTHROPIC|GOOGLE|LLM)'
+```
+
+`/health` should report the expected provider readiness. If the backend is missing required provider config, fix that first; do not treat fallback behavior as a valid benchmark run.
+
+The `PYTHONPATH=src` prefix is a repo-local bootstrap bridge for this checkout because the package is not installed into the active environment. It is not part of the workflow-loader contract; once DAN is installed normally, the prefix should disappear from benchmark runbooks.
+
+## Commands
+
+### Workflow smoke battery (recommended first live check)
+
+```bash
 PYTHONPATH=src python -m tests.eval --smoke-workflows --execute --lane build --delay 0.5
 ```
 

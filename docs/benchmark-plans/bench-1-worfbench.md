@@ -2,7 +2,7 @@
 
 **Parent:** [benchmark-plan](benchmark-plan.md)
 **Status:** not-started
-**Goal:** Prove DAN's meta-orchestrator generates higher-quality workflow DAGs than GPT-4 and other baselines on the WorFBench benchmark (ICLR 2025).
+**Goal:** Provide a public, reproducible technical proof that DAN's meta-orchestrator generates higher-quality workflow DAGs than GPT-4-style baselines on WorFBench, with publishable artifacts even if there is no canonical live leaderboard.
 
 ## Why This Benchmark
 
@@ -15,6 +15,34 @@ WorFBench directly tests the ability to generate executable workflows as directe
 - **4 categories:** open-grounded, problem-solving, embodied, function-call tasks
 - **Evaluation:** WorFEval — subsequence matching (sequence planning) + subgraph matching (graph planning)
 - **Key baseline:** GPT-4 shows ~15% gap between sequence and graph planning
+
+## Position In Execution Order
+
+WorFBench is **not** the first external benchmark to run. It should follow the first public score tracks and serve as a technical, paper-friendly proof of workflow-generation quality.
+
+Recommended gate:
+
+- Finish the Phase 33 honest rerun
+- Close 33-10 Section G for code-execution honesty
+- Run the long-running benchmark-prep battery from 33-4 so the live build/execute path has already been stressed on frozen local workloads
+- Have at least one public benchmark report path already exercised (GAIA or AppWorld) so publication mechanics are no longer the experiment
+
+Recommended first pass:
+
+- Start with a **small stratified subset** rather than the full 2,146-task test set: sample across all 4 WorFBench categories plus a spread of node counts and branching complexity.
+- Use that subset to validate the adapter, output conversion, and score sanity before paying the cost of the full run.
+
+## Publication Policy
+
+WorFBench should be treated as a **public reproducible technical benchmark**, not the primary live scorecard.
+
+For every published WorFBench run, keep:
+
+- git commit SHA
+- model / tier config
+- subset or full-set manifest
+- DAN-to-WorFBench conversion version
+- raw outputs plus aggregate scores
 
 ## What DAN's Architecture Should Prove
 
@@ -69,6 +97,9 @@ Use WorFEval directly:
 
 ## Tasks
 
+- [ ] 0. **Execution gate**
+  - [ ] 0-1. Confirm Phase 33 honest rerun is complete and the long-running benchmark-prep slice has produced stable runs
+  - [ ] 0-2. Define a first-pass stratified subset (for example ~100 tasks across categories and complexity buckets) before full-dataset evaluation
 - [ ] 1. **Dataset setup**
   - [ ] 1-1. Clone WorFBench repo, install dependencies
   - [ ] 1-2. Download test set from HuggingFace (`zjunlp/WorFBench_test`)
@@ -126,3 +157,5 @@ Use WorFEval directly:
 - WorFBench gold DAGs may use different granularity than DAN's node types — need a mapping layer
 - Some WorFBench tasks use tools DAN doesn't have — filter or skip those, report coverage
 - The 723 held-out generalization tasks are the most valuable for demonstrating DAN's advantage
+- WorFBench is strongest for technical credibility, paper figures, and workflow-generation analysis, but weaker than GAIA/AppWorld as a recurring public score track.
+- Because the converter flattens DAN graphs into WorFBench's evaluation format, report clearly which DAN-native semantics are preserved and which are collapsed for scoring.

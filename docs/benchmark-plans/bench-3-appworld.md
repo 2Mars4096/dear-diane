@@ -2,7 +2,7 @@
 
 **Parent:** [benchmark-plan](benchmark-plan.md)
 **Status:** not-started
-**Goal:** Demonstrate DAN handles complex multi-API control flow (branching, looping, error handling) that monolithic agents struggle with, using AppWorld's 750 tasks across 9 simulated apps.
+**Goal:** Establish DAN's second public score track on a benchmark that is much closer to DAN's workflow/control-flow story than GAIA, proving strength on complex multi-API control flow, branching, looping, and recovery.
 
 ## Why This Benchmark
 
@@ -14,6 +14,29 @@ AppWorld is the ACL 2024 Best Resource Paper. It provides 457 APIs across 9 simu
 - **Size:** 750 tasks (normal + challenge difficulty)
 - **Evaluation:** State-based + execution-based unit tests (allows multiple valid solutions, detects side effects)
 - **Key finding:** AppWorld recently added MCP server support — DAN's `mcp_bridge` could connect directly
+
+## Position In Execution Order
+
+AppWorld should be the **second public score track**, after GAIA.
+
+Why second instead of first:
+
+- larger integration surface
+- heavier environment setup
+- stronger fit for DAN's workflow/control-flow story once the public benchmark pipeline is already working
+
+Recommended gate:
+
+- Phase 33 honest rerun complete
+- GAIA reporting path exercised at least once end-to-end
+- [bench-5-analysis-framework](bench-5-analysis-framework.md) thin reporting/reproducibility layer in place
+
+Recommended rollout:
+
+1. small task subset across major control-flow types
+2. normal-difficulty slice
+3. challenge subset
+4. full public score refresh when the integration is stable
 
 ## What DAN's Architecture Should Prove
 
@@ -96,8 +119,31 @@ Initial state → DAN executes workflow → Final state
                                       Pass / Fail + side-effect check
 ```
 
+## Public Score And Refresh Policy
+
+AppWorld may not be as universally recognized as GAIA, but it is the better benchmark for DAN's control-flow claims.
+
+Every AppWorld refresh should publish:
+
+- git commit SHA
+- AppWorld version
+- DAN model/tier configuration
+- MCP vs wrapper integration mode
+- normal vs challenge task split
+- raw run artifacts and aggregate report
+
+Refresh cadence:
+
+1. after major runtime/planner/control-flow changes
+2. after MCP bridge changes that materially affect AppWorld integration
+3. not while the internal benchmark gate is red
+
 ## Tasks
 
+- [ ] 0. **Execution gate**
+  - [ ] 0-1. Freeze a benchmark profile: model, tier map, memory mode, learning mode, MCP mode
+  - [ ] 0-2. Confirm at least one public GAIA-style run/report has already gone end-to-end so AppWorld is not also debugging the publication pipeline
+  - [ ] 0-3. Define a first-pass subset across sequential, branching, looping, and error-handling tasks before broad runs
 - [ ] 1. **Environment setup**
   - [ ] 1-1. Install AppWorld (`pip install appworld && appworld install`)
   - [ ] 1-2. Verify simulated environment runs correctly
@@ -117,9 +163,10 @@ Initial state → DAN executes workflow → Final state
   - [ ] 4-2. Handle side-effect detection (did DAN modify state it shouldn't have?)
   - [ ] 4-3. Aggregate pass/fail by task difficulty and control flow type
 - [ ] 5. **Benchmark runs**
-  - [ ] 5-1. Run DAN on normal difficulty tasks
-  - [ ] 5-2. Run DAN on challenge difficulty tasks
-  - [ ] 5-3. Run monolithic agent baseline (same LLM, AppWorld tools, single conversation)
+  - [ ] 5-1. Run DAN on a stratified first-pass subset
+  - [ ] 5-2. Run DAN on normal difficulty tasks
+  - [ ] 5-3. Run DAN on challenge difficulty tasks
+  - [ ] 5-4. Run monolithic agent baseline (same LLM, AppWorld tools, single conversation)
 - [ ] 6. **Control flow analysis**
   - [ ] 6-1. Success rate by control flow type (seq / branch / loop / error)
   - [ ] 6-2. Token usage comparison (DAN vs. monolithic) per control flow type
@@ -164,3 +211,5 @@ Largest gap expected on tasks requiring:
 - State-based evaluation is more forgiving than exact-match — multiple valid paths count as success
 - AppWorld provides a Docker container for isolated execution — consider using for reproducibility
 - Challenge tasks often require error handling that monolithic agents miss entirely
+- AppWorld should become the flagship proof for DAN's control-flow story once GAIA has already established a public baseline.
+- Keep MCP-vs-wrapper comparisons as analysis. The public headline number should use one declared integration mode, not whichever happened to score higher in a given run.
