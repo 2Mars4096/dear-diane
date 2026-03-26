@@ -14,6 +14,43 @@ from dan.rag import DEFAULT_EMBEDDING_MODEL
 
 logger = logging.getLogger(__name__)
 
+_API_KEY_PLACEHOLDERS = frozenset({"your-api-key-here", "changeme", "replace-me"})
+_PROVIDER_KEY_ENV_VARS: dict[str, tuple[str, ...]] = {
+    "default": (
+        "DAN_LLM_API_KEY",
+        "LLM_API_KEY",
+        "DAN_OPENAI_API_KEY",
+        "OPENAI_API_KEY",
+    ),
+    "openai": ("DAN_OPENAI_API_KEY", "OPENAI_API_KEY"),
+    "anthropic": ("DAN_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
+    "google": ("DAN_GOOGLE_API_KEY", "GOOGLE_API_KEY"),
+}
+
+
+def env_key_status(env_names: tuple[str, ...]) -> tuple[str, str | None]:
+    """Return ``(status, source_env)`` for the first non-placeholder key."""
+    saw_placeholder = False
+    for env_name in env_names:
+        raw = str(os.environ.get(env_name, "") or "").strip()
+        if not raw:
+            continue
+        if raw.lower() in _API_KEY_PLACEHOLDERS:
+            saw_placeholder = True
+            continue
+        return "configured", env_name
+    return ("placeholder", None) if saw_placeholder else ("missing", None)
+
+
+def configured_provider_key(provider_name: str) -> str:
+    """Return the configured API key for a provider alias set."""
+    env_names = _PROVIDER_KEY_ENV_VARS.get(provider_name, ())
+    for env_name in env_names:
+        raw = str(os.environ.get(env_name, "") or "").strip()
+        if raw and raw.lower() not in _API_KEY_PLACEHOLDERS:
+            return raw
+    return ""
+
 
 def append_runtime_degradation(
     degradations: list[dict[str, str]],
@@ -90,15 +127,15 @@ def build_engine_config_from_env() -> EngineConfig:
     providers: dict[str, ProviderConfig] = {}
     embedding_providers: dict[str, ProviderConfig] = {}
 
-    openai_key = os.environ.get("DAN_OPENAI_API_KEY", "")
+    openai_key = configured_provider_key("openai")
     if openai_key:
         providers["openai"] = ProviderConfig(api_key=openai_key)
 
-    anthropic_key = os.environ.get("DAN_ANTHROPIC_API_KEY", "")
+    anthropic_key = configured_provider_key("anthropic")
     if anthropic_key:
         providers["anthropic"] = ProviderConfig(api_key=anthropic_key)
 
-    google_key = os.environ.get("DAN_GOOGLE_API_KEY", "")
+    google_key = configured_provider_key("google")
     if google_key:
         providers["google"] = ProviderConfig(api_key=google_key)
 
@@ -161,7 +198,7 @@ def build_engine_config_from_env() -> EngineConfig:
         ),
         llm_api_key=os.environ.get(
             "DAN_LLM_API_KEY",
-            os.environ.get("LLM_API_KEY", ""),
+            os.environ.get("LLM_API_KEY", openai_key),
         ),
         llm_default_model=os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6"),
         checkpoint_dir=os.environ.get("DAN_CHECKPOINT_DIR", "./checkpoints"),
@@ -192,3 +229,54 @@ def build_chat_provider_registry(config: EngineConfig) -> Any:
 
     return build_provider_registry(config)
 
+
+def provider_readiness_summary(config: EngineConfig) -> dict[str, Any]:
+    """Summarize provider/bootstrap readiness for health reporting."""
+    providers: list[dict[str, Any]] = []
+    issues: list[dict[str, str]] = []
+
+    for provider_name, env_names in _PROVIDER_KEY_ENV_VARS.items():
+        status, source_env = env_key_status(env_names)
+        providers.append(
+            {
+                "name": provider_name,
+                "status": status,
+                "configured_via": source_env,
+                "registered": provider_name == "default"
+                or provider_name in getattr(config, "providers", {}),
+            }
+        )
+
+    registry = build_provider_registry(config)
+    default_model = getattr(config, "llm_default_model", "")
+    resolved_provider = None
+    if default_model:
+        try:
+            resolved_provider = registry.resolve_name(default_model)
+        except KeyError as exc:
+            issues.append(
+                {
+                    "subsystem": "providers",
+                    "message": str(exc),
+                }
+            )
+
+    for model, provider_name in (getattr(config, "model_provider_map", {}) or {}).items():
+        if provider_name not in registry.provider_names():
+            issues.append(
+                {
+                    "subsystem": "providers",
+                    "message": (
+                        f"Model override '{model}' targets provider '{provider_name}', "
+                        "but that provider is not configured."
+                    ),
+                }
+            )
+
+    return {
+        "status": "degraded" if issues else "ok",
+        "default_model": default_model,
+        "default_model_provider": resolved_provider,
+        "providers": providers,
+        "issues": issues,
+    }
