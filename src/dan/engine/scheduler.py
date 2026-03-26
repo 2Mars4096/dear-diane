@@ -2547,6 +2547,10 @@ class Engine:
         Handles both legacy ControlEdge-based branching and newer gate
         branch-port routing where the inactive port has no data.
         """
+        node = graph.node_by_id(node_id)
+        allow_dead_inputs = bool(
+            getattr(node, "metadata", {}).get("allow_dead_inputs", False)
+        )
         for edge in graph.edges_to(node_id):
             if not isinstance(edge, ControlEdge):
                 continue
@@ -2561,20 +2565,35 @@ class Engine:
             if not isinstance(edge, DataEdge):
                 continue
             source_node = graph.node_by_id(edge.source_node_id)
-            if source_node is None or not _is_gate_node(source_node):
-                continue
-            # While-gate continue/loop edges need special handling:
-            # - Initial pass: body must wait until gate emits continue/loop.
-            # - Iteration pass: scheduler injects loop feedback into virtual
-            #   inputs (__input__<node_id>), so body should run even though
-            #   gate outputs were cleared for the next iteration.
-            gate_mode = getattr(source_node, "gate_mode", None)
-            if gate_mode == "while" and edge.source_port in ("continue", "loop"):
-                virtual_src = f"__input__{node_id}"
-                if state.port_data.has(virtual_src, edge.target_port):
-                    continue
+            if source_node is not None and _is_gate_node(source_node):
+                # While-gate continue/loop edges need special handling:
+                # - Initial pass: body must wait until gate emits continue/loop.
+                # - Iteration pass: scheduler injects loop feedback into virtual
+                #   inputs (__input__<node_id>), so body should run even though
+                #   gate outputs were cleared for the next iteration.
+                gate_mode = getattr(source_node, "gate_mode", None)
+                if gate_mode == "while" and edge.source_port in ("continue", "loop"):
+                    virtual_src = f"__input__{node_id}"
+                    if state.port_data.has(virtual_src, edge.target_port):
+                        continue
             if not state.port_data.has(edge.source_node_id, edge.source_port):
-                return True
+                if source_node is None or _is_gate_node(source_node):
+                    return True
+                target_port = next(
+                    (
+                        port
+                        for port in getattr(node, "input_ports", [])
+                        if port.name == edge.target_port
+                    ),
+                    None,
+                )
+                if target_port is not None and not target_port.required:
+                    continue
+                if allow_dead_inputs:
+                    continue
+                source_status = state.node_statuses.get(edge.source_node_id)
+                if source_status in (NodeStatus.FAILED, NodeStatus.SKIPPED):
+                    return True
 
         return False
 
