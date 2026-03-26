@@ -46,6 +46,10 @@ class ResourceTracker:
 
     All mutations are protected by an asyncio.Lock so concurrent
     ``try_acquire`` / ``release`` calls never race.
+
+    ``"run"`` slots are dispatcher admission slots for the foreground portion
+    of a live turn. ``"llm"`` slots reflect actual model-call time and can be
+    acquired independently by chat/triage paths around ``provider.complete()``.
     """
 
     def __init__(self, budget: ResourceBudget | None = None) -> None:
@@ -125,7 +129,7 @@ class ResourceTracker:
 
     @property
     def run_available(self) -> bool:
-        """``True`` if there is capacity for another live project/run slot."""
+        """``True`` if there is capacity for another foreground run slot."""
         return self._active_runs < self._budget.max_concurrent_runs
 
     def snapshot(self) -> dict[str, Any]:

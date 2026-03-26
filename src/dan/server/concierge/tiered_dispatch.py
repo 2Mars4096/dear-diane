@@ -51,6 +51,12 @@ _USER_TURN_METADATA_KEYS = frozenset({
     "scenario_confidence",
     "concierge_stage",
     "session_tier",
+    "skip_confirm",
+    "clarification_answer",
+    "selected_option",
+    "pending_route_step",
+    "attached_user_reply",
+    "replay_source",
 })
 
 
@@ -388,11 +394,22 @@ class TieredDispatcher:
 
         pending_resolution = self._resolve_pending(msg)
         if pending_resolution is not None:
+            original_msg = msg
             immediate_event, triage_context, pending_triage, replay_msg = pending_resolution
             if immediate_event is not None:
                 yield immediate_event
                 return
             msg = replay_msg
+            replay_metadata = getattr(msg, "metadata", None)
+            if isinstance(replay_metadata, dict):
+                original_reply = str(getattr(original_msg, "text", "") or "").strip()
+                if original_reply:
+                    replay_metadata.setdefault("attached_user_reply", original_reply)
+                if any(
+                    key in replay_metadata
+                    for key in ("skip_confirm", "clarification_answer", "selected_option")
+                ):
+                    replay_metadata.setdefault("replay_source", "pending_follow_up")
             triage = pending_triage
         else:
             triage, triage_context = await self._do_triage(msg)
