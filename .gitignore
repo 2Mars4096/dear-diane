@@ -64,6 +64,8 @@ examples/beamer_writer_md/
 # Runtime artifacts
 output/
 checkpoints/
+.agent-subsessions/
+.codex-subsessions/
 
 # Memory store (runtime-generated, not source-controlled)
 memory/
