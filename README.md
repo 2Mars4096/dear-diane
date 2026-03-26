@@ -131,10 +131,32 @@ The editor is a full-featured workflow builder inspired by LangFlow, Flowise, an
 
 ```bash
 dan-run workflow.json                     # run a JSON graph
-dan-run examples/paper_writing.py         # run a Python builder script
+dan-run examples/paper_writing.py --server http://127.0.0.1:8000
 dan-run "Summarize the latest AI papers"  # natural-language goal → MetaController plans + runs
 dan-run workflow.json --interactive        # prompt for HumanNode inputs
 ```
+
+For benchmark-grade or demo-grade workflow execution, prefer server mode and pass `--server` explicitly. `dan-run` now fails closed when an explicit server target is unreachable, instead of silently falling back to local mode. Use `--local` only for convenience/dev runs, not as the default evidence path for tool-heavy workflows.
+
+### Paper-Writing Smoke Path
+
+The canonical benchmark/demo acceptance path for the paper-writing workflow is the direct Python CLI, not a thin wrapper:
+
+```bash
+export DAN_PAPER_WRITING_MODEL_PROFILE=smoke
+export DAN_PAPER_WRITING_OUTPUT_DIR=output/paper-writing-smoke
+
+python examples/paper_writing.py \
+  "supply chain resilience" \
+  --no-human \
+  --output-dir "$DAN_PAPER_WRITING_OUTPUT_DIR"
+```
+
+Expected result:
+- on a fully configured machine, a submission-ready bundle under `output/paper-writing-smoke/`
+- on a partially configured machine, a structured degraded artifact bundle that still records dependency and prerequisite failures
+
+`examples/paper_writing.py` now also exports `build()`, so `dan-run examples/paper_writing.py --server ...` is a supported path once the backend is up.
 
 ### `dan-chat` — Conversational Workflow Authoring
 
@@ -143,7 +165,7 @@ Build, modify, and run workflows through an interactive REPL. Chat is the unifie
 ```bash
 dan-chat                                  # start with scratch workflow
 dan-chat --workflow-id my-workflow        # load an existing workflow
-dan-chat --local                          # force local mode (no server required)
+dan-chat --local                          # force local mode for in-process chat workflows
 dan-chat --confirm                        # require approval before mutations
 ```
 

@@ -1,7 +1,7 @@
 # 38-17: Trace-to-Workflow Distillation
 
 **Parent:** [38-review-hardening](38-review-hardening.md)
-**Status:** in_progress *(v1 backend slice implemented 2026-03-21)*
+**Status:** completed *(v3 chat-trigger slice implemented 2026-03-25; preview + promote backend path landed; distilled `code_execution` compile gap closed 2026-03-25)*
 **Goal:** Let DAN solve a task first, then distill the audited action trace into a reusable workflow draft that is generalized, contract-validated, and honest about whether it is only a draft or already run-ready.
 
 ## Problem
@@ -79,12 +79,16 @@ The first version should not try to infer every hidden semantic step. It should:
   - [x] 5-1. Add one endpoint that accepts an audited turn ID and returns the distilled draft.
   - [x] 5-2. Allow callers to request compile/validation in the same call.
   - [x] 5-3. Return enough provenance to explain what was abstracted and why the draft is or is not runnable yet.
+  - [x] 5-4. Add a promotion endpoint that persists run-ready distilled drafts as saved workflow artifacts.
+  - [x] 5-5. Expose one thin chat/editor trigger that can promote a qualifying assistant turn into a saved workflow.
 
 - [x] 6. Add focused regression coverage
   - [x] 6-1. Search/research plus write traces
   - [x] 6-2. Read/transform/write traces
   - [x] 6-3. Parameter extraction and placeholder preservation
   - [x] 6-4. API-level compile/validation success and no-draft cases
+  - [x] 6-5. Promotion success, blocked promotion, and explicit workflow-id conflict coverage
+  - [x] 6-6. Focused chat-surface trigger coverage for promoting distilled workflows from assistant turns.
 
 ## Primary Files
 
@@ -102,6 +106,7 @@ The first version should not try to infer every hidden semantic step. It should:
 - **Successful traces are the safest seed for harder workflow authoring.**
 - **Distillation must stay honest.** A generalized trace is not automatically a validated workflow.
 - **The build contract remains authoritative.** Distillation can draft; validation decides usability.
+- **Promotion is gated by run-readiness.** Distilled drafts only persist into the workflow library after compile + build-contract validation reports a run-ready graph.
 - **V1 stays small.** The first goal is reusable draft extraction, not full automatic promotion into a workflow library.
 
 ## Notes
@@ -113,4 +118,14 @@ The first version should not try to infer every hidden semantic step. It should:
   - audited chat turn -> normalized action trace -> generalized `WorkflowIntent`
   - optional compile + workflow-contract validation through `/api/experiences/trace-draft`
   - focused regression coverage for research/write, transform/write, and no-draft cases
+- Implemented in v2:
+  - `/api/experiences/trace-draft` now returns suggested promotion metadata for callers that want a stable name/id before saving
+  - `/api/experiences/trace-draft/promote` persists run-ready distilled graphs through the shared `GraphStore`
+  - promotion reuses the same compile/build-contract truth boundary and returns explicit blocked reasons when a draft is not save-eligible
+  - saved promoted graphs now carry distillation metadata such as a human-readable name, provenance description, and trace-promotion tags
+- Implemented in v3:
+  - assistant chat messages with qualifying tool traces now expose a thin `Save distilled workflow` trigger in the editor chat surface
+  - the trigger reuses the assistant message ID as the audited `turn_id`, so chat turns can promote directly without a separate audit-browser surface
+- 2026-03-25 follow-up:
+  - distilled `run_python` / `code_execution` stages now carry a bounded runnable code template plus ports, so nested-path traces compile through `IntentCompiler` and validate as `run_ready_draft` instead of failing with a missing-code stage error
 - A later follow-up can add replay scoring, promotion thresholds, and cross-trace clustering before workflows are auto-promoted.

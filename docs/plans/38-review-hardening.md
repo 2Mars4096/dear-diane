@@ -44,7 +44,7 @@ Review documents: `docs/reviews/2026-03-17-*.md` and `docs/reviews/2026-03-19-*.
 |---|----------|-------|----------|--------|
 | [38-15](38-15-lexical-triage-scenario-catalog.md) | Lexical Triage Scenario Catalog | replace ad-hoc regex/keyword routing with named lexical scenarios plus mandatory LLM fallback on ambiguity | P1 | planned |
 | [38-16](38-16-workflow-build-contract-and-repair.md) | Workflow Build Contract & Repair Hardening | unify build-boundary validation, run-readiness checks, and bounded mechanical repair before save/apply/run | P1 | planned |
-| [38-17](38-17-trace-to-workflow-distillation.md) | Trace-to-Workflow Distillation | let DAN execute a task first, then generalize the audited action trace into a reusable workflow draft that is compiled and contract-validated | P2 | in_progress |
+| [38-17](38-17-trace-to-workflow-distillation.md) | Trace-to-Workflow Distillation | let DAN execute a task first, then generalize the audited action trace into a reusable workflow draft that is compiled and contract-validated | P2 | ✅ |
 
 ## Dependencies / Sequencing
 

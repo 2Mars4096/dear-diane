@@ -2,7 +2,7 @@
 
 **Parent:** [33-generation-quality-eval](33-generation-quality-eval.md)
 **Status:** in-progress
-**Goal:** Fix the contract bugs and eval blind spots that make "passing" graphs fail at runtime. The pipeline produces correct topology; this plan makes the content inside each node correct too.
+**Goal:** Fix the contract bugs and eval blind spots that make "passing" graphs fail at runtime. The pipeline produces correct topology; this plan makes the content inside each node correct too. This is also the semantic-honesty gate before any long-running benchmark claims.
 
 ## Problem
 
@@ -85,12 +85,14 @@ Six focused patches, ordered by impact. Each is independently shippable. No new 
   - [x] 8-1. In `extract_workflow_intent()`, include the available tool IDs in the system prompt so the LLM can set correct `config.tool_id` values in `tool_call` stages instead of omitting them.
   - [x] 8-2. Update the few-shot examples in `INTENT_FEW_SHOT_EXAMPLES` to use a variety of tool IDs beyond just `web_search` and `file_read`. Add examples with `csv_read`, `pdf_read`, `python_eval`, `shell_command`.
 
-### G. Follow-up: real code or honest failure for code-execution stages (High)
+### G. Follow-up: real code or honest failure for code-execution stages (High, benchmark gate)
 
 - [ ] 9-1. Remove status-only placeholder Python as an acceptable fallback for `code_execution` stages. When stage code is missing, invoke DAN's code-writing capability to synthesize real Python from the stage description and available context, and mark the result with model-authored provenance.
 - [ ] 9-2. Add a bounded validation gate for synthesized code (syntax-valid, non-trivial execution contract, and explicit provenance). If synthesis cannot produce runnable code, fail the stage honestly with an unresolved-code warning or non-runnable marker instead of emitting fake success payload code.
 - [ ] 9-3. Fail semantic quality gates and eval pass/fail when a graph still contains unresolved or non-runnable code stages. Missing-code stages may not count as semantic passes.
 - [ ] 9-4. Add regressions proving missing-code stages either receive real generated code or fail honestly; no status-only placeholder-bearing graph may count as a pass in live reports or eval summaries.
+- [x] 9-5. Surface unresolved-code failures explicitly in eval artifacts and generation summaries (`unresolved_code` / `non_runnable_code`) so long-running benchmark-prep runs do not collapse into generic validation noise.
+- [ ] 9-6. Treat Section G as a hard prerequisite for the Phase 33 long-running battery and the first Bench 4 / Bench 1 proof runs. Until this closes, code-heavy workflows may be measured only as generation diagnostics, not as benchmark evidence.
 
 ## Key Files
 
@@ -118,6 +120,7 @@ Six focused patches, ordered by impact. Each is independently shippable. No new 
 - [x] LLM-as-judge scoring is available via `--judge` and produces actionable per-graph assessments
 - [ ] Re-run battery with expectation gate: expect pass rate to drop to ~30-35% (honest baseline), then climb as A/C/D/F fixes take effect
 - [ ] Missing-code stages either receive real generated code or fail honestly; status-only placeholder Python can never count as a semantic or runnable pass
+- [ ] Phase 33 long-running benchmark-prep workloads run only after Section G is closed
 
 ## Implementation Order
 
@@ -148,8 +151,10 @@ A and B are independent and can be done in parallel. C, D, and F are related and
 - The expectation-fit gate (B) will cause the reported pass rate to drop. This is correct behavior — the current rate is inflated by counting semantically wrong graphs as passes.
 - The LLM-as-judge (E) is explicitly advisory, not a gate. Using LLM judgment for pass/fail would introduce non-determinism into the eval. Keep it as a diagnostic signal.
 - The earlier descriptive-stub path from C.5 is no longer considered an acceptable end state for this plan. The follow-up requires either real generated Python or an honest unresolved-code failure that cannot count as a pass.
+- Section G is not optional cleanup. It is the gate that determines whether long-running code-heavy benchmark results are believable.
 - The tool inference map (C.4-1) should be kept small and conservative — only map unambiguous keywords. Ambiguous cases should stay as `web_search` with a quality warning rather than risk wrong tool assignment.
 - Final follow-up hardening extended review-condition normalization to negate whole threshold-based stop expressions (`and`/`or`, reversed threshold forms like `8 <= quality_score`) while preserving quoted literals and falling back safely on malformed expressions.
 - Final code-review patches fixed edge cases in composed compilation wiring (bypassing conditional gates), orphaned subgraphs in loop unwrapping, JSON extraction regex fragility, and parallelize macro truncation.
 - 2026-03-21 review follow-up: reopened by [product review](../reviews/2026-03-21-product-review.md) because the current placeholder-code path is still too permissive for a plan whose scope is semantic correctness. Section G makes executable honesty an explicit remaining tranche.
 - 2026-03-21 review decision: placeholder code is not a good fallback for DAN. DAN can write code; the preferred behavior is real code synthesis with provenance, and honest failure if runnable code cannot be produced.
+- 2026-03-25 benchmark-prep decision: Bench 4 long-running scenarios and any first-wave WorFBench claims should be treated as blocked on Section G. Otherwise the evaluation risks measuring topology success while quietly skipping executable truth.

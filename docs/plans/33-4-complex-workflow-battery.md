@@ -2,7 +2,7 @@
 
 **Parent:** [33-generation-quality-eval](33-generation-quality-eval.md)
 **Status:** in-progress
-**Goal:** Test workflow generation on complex, multi-pattern, real-world-scale prompts, multi-turn progressive refinement sequences, and durability smoke checks. These stress the limits of generation and reveal composition, wiring, and workflow-stability failure modes.
+**Goal:** Test workflow generation on complex, multi-pattern, real-world-scale prompts, multi-turn progressive refinement sequences, durability smoke checks, and a first-wave long-running benchmark-prep slice on frozen inputs. These stress the limits of generation and reveal composition, wiring, execution, and workflow-stability failure modes.
 
 **Prior run (2026-03-12):** T4: 3/6 (50%) pass, multi-turn: 8/10 turns (80%). Durability D1-D4 run on first valid graph.
 
@@ -39,6 +39,39 @@ These simulate what a real user would actually ask DAN to build — natural phra
 | prac-03 | Weekly meeting prep: read notes file, search for project updates, draft agenda, parse action items with code, write markdown | chain + tools + code | 4-8 |
 
 prac-01 has 2 follow-ups: add review loop, then fan out search across 3 regions. This tests progressive refinement on a practical workflow.
+
+## Long-Running Benchmark-Prep Workloads (first wave)
+
+These are not generic T4 prompts. They are the **bridge from Phase 33 into the benchmark suite**: longer-running, execution-first workloads with fixed inputs and clearer scoring. The objective is to prove DAN can build and run complex workflows honestly before external benchmarks or public claims.
+
+### LR1: Literature review on a frozen corpus
+
+- Input: a fixed local corpus of 20-30 PDFs or markdown papers
+- Flow: ingest/search -> parallel read/extract -> theme synthesis -> draft -> reviewer loop -> final report
+- Features stressed: fan-out, review loop, context projection, long wall-clock execution
+- Scoring: citation coverage + LLM judge + artifact completeness
+
+### LR2: Data analysis report on a fixed package
+
+- Input: one versioned CSV bundle plus expected summary statistics
+- Flow: load -> clean -> analyze -> chart -> write report -> validate claims against computed outputs
+- Features stressed: code execution, tool wiring, validation, honest failure on missing code
+- Scoring: fully automated; textual claims must match computed outputs
+
+### LR3: Code migration with tests and resume
+
+- Input: a prepared repo fixture with failing Python 2-era code and a deterministic test suite
+- Flow: scan -> classify -> parallel transform -> run tests -> fix/retest loop -> final migration report
+- Features stressed: long-running execution, code generation, checkpoint/resume, iterative repair
+- Scoring: test pass rate, recovery behavior, and whether resume works after interruption
+
+Wave 1 execution order:
+
+1. LR2 first — most automated and easiest to score honestly
+2. LR1 second — strongest product/story demo
+3. LR3 third — strongest systems/architecture demo
+
+LR4 competitive intelligence and LR5 fact-checking remain useful, but they are second-wave once the three workloads above are stable.
 
 ## Multi-Turn Progressive Refinement (3 sequences)
 
@@ -186,12 +219,27 @@ At least one follow-up should be compound, e.g. `"Add a review loop after the su
   - [ ] 13-2. Note any new `timeout_planning` vs `codegen_failed` vs `stream_error` patterns
 - [ ] 14. Run T4 in agent lane if agent routing has improved (`--lane both`)
   - [ ] 14-1. Compare agent vs build lane pass rates for T4
+- [ ] 15. Create a dedicated long-running prompt pack at `tests/eval/benchmark_long_running_prompts.json`
+  - [ ] 15-1. Add LR1, LR2, LR3 fixtures with frozen local input paths rather than open-ended live-world requests
+  - [ ] 15-2. Mark execution assertions, artifact assertions, and time budgets explicitly in the fixture metadata
+  - [ ] 15-3. Tag these fixtures separately from smoke/T1-T5 so they can be run as a benchmark-prep slice
+- [ ] 16. Run the long-running pack in `build` lane with execution enabled
+  - [ ] 16-1. Record build success, validation, execution success, wall-clock, token/cost, and final artifact checks
+  - [ ] 16-2. Capture where the run stopped when it fails: planning, generation, validation, execution, or resume
+  - [ ] 16-3. Keep generated graphs and artifacts for manual inspection and benchmark handoff
+- [ ] 17. Add interruption/resume checks to LR3 (and LR1 where practical)
+  - [ ] 17-1. Inject one interruption after the first meaningful execution phase
+  - [ ] 17-2. Resume and verify the run continues rather than restarting from zero
+- [ ] 18. Treat this long-running slice as the gate into Bench 4 / Bench 1
+  - [ ] 18-1. Do not promote any long-running benchmark results publicly until 33-10 Section G is closed
+  - [ ] 18-2. Once LR1/LR2/LR3 each have at least one honest end-to-end run, use them as the reference workload set for monolithic baseline comparisons
 
 ## Files
 
 | File | Action |
 |------|--------|
 | `tests/eval/prompts.json` | Extend — T4 prompts and multi-turn sequences |
+| `tests/eval/benchmark_long_running_prompts.json` | Create — frozen-input long-running benchmark-prep fixtures |
 | `tests/eval/durability_checks.py` | Create — repeat-run / reload / export-import helpers |
 
 ## Decisions
@@ -203,6 +251,7 @@ At least one follow-up should be compound, e.g. `"Add a review loop after the su
 - T4 workflows may take 30-60 seconds to generate (multiple LLM calls, retries). The harness should have generous timeouts.
 - Multi-turn testing requires maintaining conversation history across turns. The harness needs to pass both `history` and the latest `client_graph_revision` back to each subsequent API call.
 - Execution testing is informational, not pass/fail. A workflow that validates but fails to execute is still a generation success — it is a separate category of issue.
+- The new long-running benchmark-prep slice is different: for LR1/LR2/LR3, execution truth matters. Build-only success is useful for diagnosis, but it is not benchmark evidence.
 - Durability matters most on a smaller execution-friendly subset. Do not block the entire phase on making every complex workflow fully runnable.
 - **Smart defaults (32-3):** T4 graphs should have auto-wired retry policies and validation gates.
 - **Domain profiles (32-5):** t4-02 (paper), t4-03 (equity), t4-04 (data/ML) should each activate their respective domain profile.
@@ -211,3 +260,4 @@ At least one follow-up should be compound, e.g. `"Add a review loop after the su
 - **Tool_id inference (33-10 C):** All four T4 prompts mention tools (web_search, code_execution, csv_read, pdf_read). After the `_TOOL_KEYWORD_MAP` patch, tool nodes should have correct `tool_id` assignments. Check the stored graph JSON for tool node configs.
 - **Node count calibration (33-9 C):** Codegen prompt now includes node-count guidance calibrated from 42 eval graphs. T4 prompts should produce graphs in the 10-20 node range, not the 1-5 node range seen in some prior runs.
 - **Main bottleneck from prior runs:** 72% of failures were `timeout_planning` — LLM API reliability, not pipeline logic. If T4 still shows high timeout rates, the issue is infrastructure, not generation quality.
+- **Benchmark-prep handoff:** This file should produce the first serious long-running workload pack before Bench 4 custom scenarios are positioned as proof. Think of LR1/LR2/LR3 as the execution-focused dress rehearsal for the later benchmark suite.

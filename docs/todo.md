@@ -1,18 +1,18 @@
 # Todo
 
 ## Current Backlog
-- [ ] [41-internal-runtime-submodule-restructure](plans/41-internal-runtime-submodule-restructure.md) — restructure DAN into `llm_core`, `agent_runtime`, `concierge_orchestrator`, and `workflow_runtime`, with shared composition roots and parity guardrails before any future package split
-  - [ ] [41-1-llm-core-and-model-gateway](plans/41-1-llm-core-and-model-gateway.md)
-  - [ ] [41-2-agent-runtime-extraction](plans/41-2-agent-runtime-extraction.md) — graph-summary/token helpers moved; prompt/context/tool-loop extraction still in progress
-  - [ ] [41-3-concierge-orchestrator-narrowing](plans/41-3-concierge-orchestrator-narrowing.md)
-  - [ ] [41-4-workflow-runtime-isolation](plans/41-4-workflow-runtime-isolation.md)
-  - [ ] [41-5-composition-root-and-surface-parity](plans/41-5-composition-root-and-surface-parity.md)
+- [x] [41-internal-runtime-submodule-restructure](plans/41-internal-runtime-submodule-restructure.md) — internal runtime split landed across `llm_core`, `agent_runtime`, concierge narrowing, `workflow_runtime`, shared composition roots, and module-boundary guardrails
+  - [x] [41-1-llm-core-and-model-gateway](plans/41-1-llm-core-and-model-gateway.md)
+  - [x] [41-2-agent-runtime-extraction](plans/41-2-agent-runtime-extraction.md)
+  - [x] [41-3-concierge-orchestrator-narrowing](plans/41-3-concierge-orchestrator-narrowing.md)
+  - [x] [41-4-workflow-runtime-isolation](plans/41-4-workflow-runtime-isolation.md)
+  - [x] [41-5-composition-root-and-surface-parity](plans/41-5-composition-root-and-surface-parity.md)
   - [x] [41-6-module-contracts-and-regressions](plans/41-6-module-contracts-and-regressions.md)
-- [ ] [38-8 concierge scope follow-up](plans/38-8-concierge-triage-correctness.md) — sharpen tier-vs-stage semantics, add stage-specific prompt overlays, keep root concierge orchestration-focused, and make stage/tier/routing behavior observable
-- [ ] [38-15 lexical triage scenario catalog](plans/38-15-lexical-triage-scenario-catalog.md) — highest-priority triage follow-up; define every regex/keyword-matched scenario explicitly, add negative examples and provenance, narrow over-broad patterns, and require LLM fallback whenever lexical matches overlap or confidence is weak
-- [ ] [38-16 workflow build contract and repair hardening](plans/38-16-workflow-build-contract-and-repair.md) — add one explicit build-boundary validator, clear `proposed`/`validated`/`applied`/`run_ready` states, run-readiness distinction, and bounded mechanical repair before workflows are claimed saveable/applied/runnable
-- [ ] [38-17 trace-to-workflow distillation](plans/38-17-trace-to-workflow-distillation.md) — let DAN execute harder tasks first, then generalize successful audited action traces into reusable workflow drafts with parameterization, compile/validation, and honest draft-vs-run-ready status
-- [ ] Telemetry/analytics dashboard expansion — add user-facing reporting for total tokens and API calls by model and by mode/stage, grouped by day and hour, building on the unified telemetry store instead of per-run-only views
+- [x] [38-8 concierge scope follow-up](plans/38-8-concierge-triage-correctness.md) — stage-specific overlays, root-vs-child scope split, provenance threading, and telemetry analytics are landed
+- [x] [38-15 lexical triage scenario catalog](plans/38-15-lexical-triage-scenario-catalog.md) — explicit lexical scenario catalog, ambiguity escalation, provenance threading, and focused regression coverage are landed
+- [x] [38-16 workflow build contract and repair hardening](plans/38-16-workflow-build-contract-and-repair.md) — build-contract report, bounded repairs, run-readiness, status/provenance surfacing, colliding node-id dedupe, structured diagnosis handoff, and gateway regression coverage are landed
+- [x] [38-17 trace-to-workflow distillation](plans/38-17-trace-to-workflow-distillation.md) — trace-draft preview, promote/save backend path, chat-surface promotion trigger, and the 2026-03-25 `code_execution` compile fix are landed
+- [x] Telemetry/analytics dashboard expansion — gateway-call telemetry, `model_used` / `chat_mode` / hour rollups, `/api/gateway/analytics/telemetry`, and the editor-facing 24h telemetry strip are landed on top of the unified telemetry store
 - [x] ~~Uniform LLM call dispatcher~~ — subsumed by [41-1-llm-core-and-model-gateway](plans/41-1-llm-core-and-model-gateway.md) which centralizes the same concerns (provider routing, retries, timeouts, budgets, telemetry, PII) into the shared model gateway
 
 ## External Automation Tasks
@@ -476,14 +476,16 @@
   - [x] [35-5-app-startup-state](plans/35-5-app-startup-state.md) — E. Extract startup/lifespan into `server/startup.py` (1,076 lines) + typed `AppState` (120 lines)
 
 ## Benchmark Suite — Prove Long-Tail Advantage
-> Empirically prove DAN's typed-graph architecture outperforms monolithic agents on complex, multi-step tasks. Published academic benchmarks + custom long-tail scenarios. Analysis framework built first.
+> Empirically prove DAN's typed-graph architecture outperforms monolithic agents on complex, multi-step tasks. Public, refreshable benchmarks come first; DAN-specific long-tail scenarios come after the public score tracks exist.
+> Immediate next execution phases after 42/43: a minimal `bench-5` slice, then `bench-2` (GAIA), then `bench-6` (agent memory). AppWorld remains important, but should follow after the publication path has already been exercised once.
 
 - [ ] [benchmark-plan](benchmark-plans/benchmark-plan.md) — master spec: thesis, metrics, baselines, execution order
-  - [ ] [bench-5-analysis-framework](benchmark-plans/bench-5-analysis-framework.md) — metrics collector, ablation controller, results DB, visualization, report generator (build first)
-  - [ ] [bench-1-worfbench](benchmark-plans/bench-1-worfbench.md) — WorFBench (ICLR 2025): workflow DAG generation from NL
-  - [ ] [bench-2-gaia](benchmark-plans/bench-2-gaia.md) — GAIA Level 3 (ICLR 2024): 6+ step real-world tasks, public leaderboard
-  - [ ] [bench-3-appworld](benchmark-plans/bench-3-appworld.md) — AppWorld (ACL 2024): complex multi-API control flow, MCP bridge
+  - [ ] [bench-5-analysis-framework](benchmark-plans/bench-5-analysis-framework.md) — minimal benchmark/reporting slice first: reproducible profiles, artifact bundles, coverage accounting, compare mode, and memory trace fields on top of `tests/eval`
+  - [ ] [bench-2-gaia](benchmark-plans/bench-2-gaia.md) — first immediate public benchmark phase: GAIA Level 3 pilot, validation artifact, and leaderboard submission path
+  - [ ] [bench-3-appworld](benchmark-plans/bench-3-appworld.md) — AppWorld (ACL 2024): complex multi-API control flow, public score track, MCP bridge
+  - [ ] [bench-6-agent-memory](benchmark-plans/bench-6-agent-memory.md) — second immediate public benchmark phase: LongMemEval headline score, LoCoMo regression, and MemoryArena agentic-memory proof
   - [ ] [bench-4-custom-longtail](benchmark-plans/bench-4-custom-longtail.md) — custom 5-scenario suite: while-loops, hyperedges, fan-out, learning
+  - [ ] [bench-1-worfbench](benchmark-plans/bench-1-worfbench.md) — WorFBench (ICLR 2025): workflow DAG generation from NL
   - Tier 2 (future): Tau-bench, Jenova.ai, AgentBench → (not yet planned)
   - Tier 3 (future): SWE-bench Pro, MLAgentBench, OdysseyBench, AssistantBench → (not yet planned)
 
@@ -539,9 +541,47 @@
   - [x] [39-4-provider-coverage-and-health](plans/39-4-provider-coverage-and-health.md) — D. Serper (Google) provider, configurable cascade, health tracking, domain/location controls, multi-provider mode, web budgets
   - [x] [39-5-citation-verification](plans/39-5-citation-verification.md) — E. Numeric/date citation verification, native citation parsing, warning events, and `/cost` citation summary
 
+## Phase 29 — Benchmark Execution Trustworthiness
+> Make benchmark and demo execution honest before treating the resulting runs
+> as evidence. Tighten `--server` semantics, decide local parity vs explicit
+> de-scope, remove fragile workflow-loader assumptions, harden provider
+> readiness, and align docs/runbooks with the real execution contract.
+
+- [x] [42-benchmark-execution-trustworthiness](plans/42-benchmark-execution-trustworthiness.md) — benchmark-grade execution trust gate: strict server semantics, local-mode tool policy, loader robustness, provider/bootstrap hardening, and docs/runbook cleanup
+  - [x] [42-1-explicit-server-execution-contract](plans/42-1-explicit-server-execution-contract.md) — P0. Make explicit `--server` requests fail hard when the backend is unavailable; no silent benchmark fallback to local mode
+  - [x] [42-2-local-runtime-tool-parity](plans/42-2-local-runtime-tool-parity.md) — P0. Either register the built-in tool surface in local workflow execution or clearly de-scope local mode for tool-heavy benchmark runs
+  - [x] [42-3-workflow-loader-import-path-stability](plans/42-3-workflow-loader-import-path-stability.md) — P0. Make thin wrapper workflows load under `dan-run` without hidden `PYTHONPATH` requirements
+  - [x] [42-4-provider-bootstrap-and-resolution-hardening](plans/42-4-provider-bootstrap-and-resolution-hardening.md) — P0. Normalize provider env/bootstrap expectations, tighten prefix resolution, and expose backend readiness clearly
+  - [x] [42-5-benchmark-docs-and-runbook-cleanup](plans/42-5-benchmark-docs-and-runbook-cleanup.md) — P1. Update README and benchmark/debug runbooks to reflect the strict execution contract instead of convenience defaults
+
+## Phase 30 — Paper-Writing Workflow Benchmark Hardening
+> Harden the paper-writing workflow (`examples/paper_writing.py`) into one honest,
+> reproducible benchmark and smoke-test path. Make per-stage model choices explicit,
+> gate downstream stages on real prerequisites, emit structured degraded artifacts,
+> and lock down one boring acceptance path that can be rerun from a clean shell.
+
+- [x] [43-paper-review-benchmark-hardening](plans/43-paper-review-benchmark-hardening.md) — make the paper-writing workflow benchmarkable: configurable model profiles, failure propagation, degraded artifact contract, and a canonical smoke path
+  - [x] [43-1-provider-model-profile-decoupling](plans/43-1-provider-model-profile-decoupling.md) — P1. Make per-stage model choices in `examples/paper_writing.py` explicit via profile/config instead of implicit engine defaults
+  - [x] [43-2-upstream-prerequisite-gating](plans/43-2-upstream-prerequisite-gating.md) — P1. Stop downstream stages from running when upstream nodes fail (engine does not auto-skip on failure today)
+  - [x] [43-3-structured-degraded-output-contract](plans/43-3-structured-degraded-output-contract.md) — P1. Emit a structured failed/incomplete artifact instead of late crashes; build on existing `RunResult.partial` and `DEAD_EDGE_WARNING`
+  - [x] [43-4-paper-review-benchmark-smoke-fixture](plans/43-4-paper-review-benchmark-smoke-fixture.md) — P1. Define one reproducible acceptance path with documented env requirements and expected artifact behavior
+
 ## Backlog (unphased)
 
 - [ ] **Upgrade the editor Node runtime to >=20.19 for Vite 7 parity** — local `cd editor && npm run build` now passes again, but Vite warns that the current machine is on Node `20.17.0`.
+
+### Competitive positioning targets
+- [ ] **"We're stronger than DeerFlow overall."** — make this true with clear product wins, benchmark proof, and an end-to-end story that beats DeerFlow on more than architecture alone.
+- [ ] **"We're the best deep research system."** — make this true with stronger retrieval/report quality, citations/provenance, editing UX, and public benchmark results.
+- [ ] **"We're stronger than LangGraph."** — make this true by proving DAN's graph-native authoring/control/deployment model beats LangGraph-based stacks on real workflows, not just by having a different architecture.
+
+### Product-strengthening proposals
+- [ ] **Ship one flagship deep-research flow, not just a toolbox** — define one canonical `New Deep Research` path that handles clarification, angle planning, search/fetch, outline building, report drafting, citation verification, and export as the product's obvious default experience.
+- [ ] **Make control and provenance first-class in the UI** — expose claim-to-source links, workflow diffs between runs, step replay, node-level retry, provider/model swap, and a clear answer to "why did this result happen?" so DAN's control advantage is visible rather than implied.
+- [ ] **Distill successful traces into reusable workflows** — turn good chats/runs into parameterized workflow drafts or reusable templates so DAN compounds from usage instead of treating every successful task as a one-off.
+- [ ] **Exploit multi-surface deployment as a real platform edge** — make one workflow publish cleanly across API, MCP, editor, CLI, and messaging surfaces with minimal extra wiring and consistent lifecycle/provenance behavior.
+- [ ] **Focus the product story on high-trust research and reusable processes** — optimize for users who care about auditability, provenance, reviewability, and reusable workflows (academics, investors, diligence, policy) rather than trying to win as a generic "does everything" agent.
+- [ ] **Back every superiority claim with public evidence** — run and publish DeepResearch Bench, BrowseComp, GAIA/AppWorld, plus a DAN-specific workflow-control benchmark so positioning is supported by measurable results rather than architecture rhetoric.
 
 ### strengthen workflow to make it more powerful and easier to use
 - [ ] **Finish native light-theme migration for legacy shell panels** — current settings/light-mode patch adds a scoped compatibility bridge in `editor/src/index.css` plus top-level shell updates, but older dark-only panel internals should still be converted to explicit light/dark classes component-by-component.

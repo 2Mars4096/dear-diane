@@ -147,10 +147,23 @@ Every test produces a JSONL record with: prompt, lane, model, timing, observed e
 - [x] Intent extraction tool-aware — 19 tool_ids in extraction system prompt, few-shot with csv/email/code (33-10 F). *(2026-03-16: live path in chat_manager.py now also includes tool catalog, matching extract_workflow_intent())*
 - [ ] LLM-as-judge scoring validates semantic correctness beyond structural checks (33-10 E — implemented, pending eval run)
 - [ ] Cycle 3 re-run with all 33-10 patches produces honest baseline and informs remaining priorities
+- [ ] 33-10 Section G is closed — code-execution stages either get real generated code with provenance or fail honestly; placeholder status code may not count as pass
+- [ ] A dedicated long-running benchmark-prep battery exists and has at least one clean run on frozen inputs before any external benchmark claims are treated as representative
 - [x] Progress events use `progress_ack` detected_mode — no longer terminate client streams (2026-03-16)
 - [x] Structural mutation macros handle flat edge lists — multi-turn mutation path now functional on persisted graphs (2026-03-16)
 - [x] Quality gate default threshold=0 truly means "accept all" — fixed sentinel logic (2026-03-16)
 - [x] Eval harness multi-turn, durability, clarification, guard_events, and gitignore correctness fixes (2026-03-16)
+
+## Benchmark-Prep Extension
+
+Phase 33 is now the **benchmark-prep gate**, not only an internal test phase. Before Bench 4 custom scenarios, Bench 1 WorFBench, or GAIA numbers are presented as evidence of DAN capability, this phase should establish that the live NL -> workflow -> execution path is semantically honest and reproducible.
+
+Required order:
+
+1. Close the remaining semantic honesty work in `33-10` Section G so code-heavy graphs cannot pass with placeholder execution.
+2. Re-run the small + complex batteries with the honest baseline (`--judge` where useful, execution enabled on the execution-friendly subset, and flakiness measurement).
+3. Run the new long-running benchmark-prep battery from `33-4` on **frozen local inputs** (lit review corpus, fixed CSV/data-analysis package, prepared code-migration repo with tests).
+4. Only after those runs are stable should external benchmarks be used as proof points.
 
 ## Decisions
 

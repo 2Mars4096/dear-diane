@@ -1,7 +1,7 @@
 # 38-8: Concierge Triage & Dispatch Correctness
 
 **Parent:** [38-review-hardening](38-review-hardening.md)
-**Status:** completed *(original scope)*; follow-up tightening scope added 2026-03-21
+**Status:** completed, including the 2026-03-21 follow-up tightening scope *(synced 2026-03-25)*
 **Goal:** Fix correctness bugs and quality gaps in the concierge triage pipeline and tier executor dispatch identified in the 2026-03-19 concierge triage review.
 
 ## Context
@@ -97,37 +97,37 @@ Tracked workflow follow-ups:
 - [38-16: Workflow Build Contract & Repair Hardening](38-16-workflow-build-contract-and-repair.md)
 - [38-17: Trace-to-Workflow Distillation](38-17-trace-to-workflow-distillation.md)
 
-- [ ] 11. Replace ad-hoc regex/keyword routing with an explicit lexical scenario catalog plus mandatory LLM fallback
-  - [ ] 11-1. Inventory every current lexical/regex determinant in `triage.py` and group them into named scenarios rather than free-floating regexes.
-  - [ ] 11-2. For each scenario, document: trigger examples, negative examples, intended route/action hints, confidence level, and precedence relative to other scenarios.
-  - [ ] 11-3. Add explicit ambiguity classes that MUST bypass lexical routing and invoke LLM triage: overlapping workflow/file/run cues, anaphora without strong recent workflow activity, mixed edit/query language, retry/follow-up wording without a stable referent, and turns containing both operational and informational intents.
-  - [ ] 11-4. Remove broad “catch too much” patterns in favor of narrower scenario-specific patterns with tests for false positives.
-  - [ ] 11-5. Record routing provenance explicitly (`fast_lexical`, `embedding`, `llm`, `heuristic_fallback`) plus the matched scenario ID and confidence when lexical routing wins.
-  - [ ] 11-6. Add regression fixtures for the common failure cases: “try again”, “apply it”, “run it”, “check this file”, “status of the workflow”, and mixed workflow + web/file turns.
+- [x] 11. Replace ad-hoc regex/keyword routing with an explicit lexical scenario catalog plus mandatory LLM fallback
+  - [x] 11-1. Inventory every current lexical/regex determinant in `triage.py` and group them into named scenarios rather than free-floating regexes.
+  - [x] 11-2. For each scenario, document: trigger examples, negative examples, intended route/action hints, confidence level, and precedence relative to other scenarios.
+  - [x] 11-3. Add explicit ambiguity classes that MUST bypass lexical routing and invoke LLM triage: overlapping workflow/file/run cues, anaphora without strong recent workflow activity, mixed edit/query language, retry/follow-up wording without a stable referent, and turns containing both operational and informational intents.
+  - [x] 11-4. Remove broad “catch too much” patterns in favor of narrower scenario-specific patterns with tests for false positives.
+  - [x] 11-5. Record routing provenance explicitly (`fast_lexical`, `embedding`, `llm`, `heuristic_fallback`) plus the matched scenario ID and confidence when lexical routing wins.
+  - [x] 11-6. Add regression fixtures for the common failure cases: “try again”, “apply it”, “run it”, “check this file”, “status of the workflow”, and mixed workflow + web/file turns.
 
-- [ ] 12. Add stage-specific execution prompt overlays on top of the shared DAN base prompt
-  - [ ] 12-1. Keep one shared non-negotiable base prompt for safety/tool honesty, but add narrow stage overlays selected from `_determine_stage(session)`.
-  - [ ] 12-2. Introduce one explicit stage-overlay registry/module map instead of scattering small prompt conditionals across executor code.
-  - [ ] 12-3. `conversation` / single-shot ask path: broad generalist prompt, concise, minimal orchestration language, no heavy workflow assumptions.
-  - [ ] 12-4. `conversation_plan`: orchestration-first prompt that focuses on decomposition, scope control, explicit assumptions, and deciding whether work should stay conversational vs become a workflow.
-  - [ ] 12-5. `workflow_build`: practical contract-first prompt that emphasizes current workflow identity, canonical node kinds, exact port/schema compatibility, explicit "proposed vs applied" language, and validation before claiming success.
-  - [ ] 12-6. `direct_task` / `file_review`: execution-focused prompt that prefers concrete actions and summaries over meta-planning.
-  - [ ] 12-7. Define stage ownership explicitly: root `tier=2` sessions orchestrate, while child sessions or specialized stages perform detailed execution. Avoid stuffing worker detail into the root prompt.
-  - [ ] 12-8. Keep `workflow_build` narrow: it should supervise workflow authoring and validation, not become a generic catch-all for any turn that happens to mention a workflow.
+- [x] 12. Add stage-specific execution prompt overlays on top of the shared DAN base prompt. *(2026-03-25 sync: `_extract_chat_params()` now layers a stage overlay on top of the shared prompt, with `_determine_stage()` selecting from the centralized `_STAGE_PROMPT_OVERLAYS` registry; workflow-facing turns also pick up the shared workflow-generation contract module instead of bloating the overlay text itself.)*
+  - [x] 12-1. Keep one shared non-negotiable base prompt for safety/tool honesty, but add narrow stage overlays selected from `_determine_stage(session)`.
+  - [x] 12-2. Introduce one explicit stage-overlay registry/module map instead of scattering small prompt conditionals across executor code.
+  - [x] 12-3. `conversation` / single-shot ask path: broad generalist prompt, concise, minimal orchestration language, no heavy workflow assumptions.
+  - [x] 12-4. `conversation_plan`: orchestration-first prompt that focuses on decomposition, scope control, explicit assumptions, and deciding whether work should stay conversational vs become a workflow.
+  - [x] 12-5. `workflow_build`: practical contract-first prompt that emphasizes current workflow identity, canonical node kinds, exact port/schema compatibility, explicit "proposed vs applied" language, and validation before claiming success.
+  - [x] 12-6. `direct_task` / `file_review`: execution-focused prompt that prefers concrete actions and summaries over meta-planning.
+  - [x] 12-7. Define stage ownership explicitly: root `tier=2` sessions orchestrate, while child sessions or specialized stages perform detailed execution. Avoid stuffing worker detail into the root prompt.
+  - [x] 12-8. Keep `workflow_build` narrow: it should supervise workflow authoring and validation, not become a generic catch-all for any turn that happens to mention a workflow.
 
-- [ ] 13. Separate tier semantics from role semantics
-  - [ ] 13-1. Treat tier as complexity/budget, not as the sole source of prompt behavior.
-  - [ ] 13-2. Tier-2 root sessions should act as orchestrators by default; detailed/practical work should be pushed into child tasks or stage-specific execution prompts rather than bloating the root prompt.
-  - [ ] 13-3. Document the intended behavior matrix: `tier` decides depth and budget; `stage` decides prompt persona and operating style.
-  - [ ] 13-4. Add an explicit root-vs-child scope table so the system does not mix planner, concierge, worker, and build-validator responsibilities in one prompt surface.
-  - [ ] 13-5. Make the workflow-facing split explicit:
+- [x] 13. Separate tier semantics from role semantics. *(2026-03-25 final sync: stage now drives prompt overlay/persona while `tiering.py` maps stage to budget/model, and the root-vs-child scope split is now documented explicitly below.)*
+  - [x] 13-1. Treat tier as complexity/budget, not as the sole source of prompt behavior.
+  - [x] 13-2. Tier-2 root sessions should act as orchestrators by default; detailed/practical work should be pushed into child tasks or stage-specific execution prompts rather than bloating the root prompt.
+  - [x] 13-3. Document the intended behavior matrix: `tier` decides depth and budget; `stage` decides prompt persona and operating style.
+  - [x] 13-4. Add an explicit root-vs-child scope table so the system does not mix planner, concierge, worker, and build-validator responsibilities in one prompt surface.
+  - [x] 13-5. Make the workflow-facing split explicit:
     - root concierge decides route, scope, and whether the turn is build/query/run
     - `workflow_build` produces or mutates a candidate graph
     - the build contract validator determines validated vs run-ready
 
-- [ ] 14. Make stage/tier/route behavior observable
-  - [ ] 14-1. Persist `concierge_stage`, `session_tier`, selected prompt overlay/module, lexical scenario ID, and routing provenance in telemetry or another queryable store.
-  - [ ] 14-2. Extend analytics so stage/tier/routing quality can be reviewed over time instead of inferred from logs.
+- [x] 14. Make stage/tier/route behavior observable. *(2026-03-25 follow-up: turn-level telemetry now carries concierge stage/tier/prompt-overlay/routing provenance, `TelemetryStore.aggregate()` can group by those metadata keys, and `/analytics` now exposes a narrow reporting surface for over-time review.)*
+  - [x] 14-1. Persist `concierge_stage`, `session_tier`, selected prompt overlay/module, lexical scenario ID, and routing provenance in telemetry or another queryable store.
+  - [x] 14-2. Extend analytics so stage/tier/routing quality can be reviewed over time instead of inferred from logs.
 
 ### Follow-up decisions
 
@@ -136,6 +136,32 @@ Tracked workflow follow-ups:
 - **Tier 2 root should be more orchestration-heavy, not more implementation-heavy.** Practical/detail work belongs in child tasks or explicit build/file-review stages.
 - **Workflow build needs a stricter contract than general chat.** It should optimize for structural correctness, validation, and truthful status reporting, not broad conversational helpfulness.
 - **Tiered concierge scope should be narrow and role-based.** The root concierge should decide, route, and supervise; specialized build/file/direct-task paths should execute.
+
+### 2026-03-25 status sync
+
+- `src/dan/server/concierge/tier_executors.py` now centralizes the stage registry, stage resolution, overlay injection, and audit metadata threading.
+- `src/dan/server/concierge/tiering.py` now makes the stage-to-tier-to-model split explicit instead of deriving prompt behavior directly from tier.
+- `src/dan/server/concierge/tiered_dispatch.py`, `src/dan/server/concierge/runtime/__init__.py`, and `src/dan/server/concierge/session.py` now persist stage/tier/route/scenario provenance into user-turn metadata, turn telemetry, completion telemetry, session traces, and exported trees.
+- `src/dan/server/telemetry.py` now allows aggregate rollups by concierge metadata keys (`concierge_stage`, `session_tier`, `prompt_overlay`, `route_source`, `scenario_id`, `scenario_confidence`) instead of only top-level event columns.
+- `src/dan/server/concierge/command_registry.py` and `src/dan/server/concierge/runtime/__init__.py` now expose a narrow `/analytics` fast command for day-by-stage / tier / route review over recent `chat_turn` telemetry.
+- 2026-03-25 follow-up: unified telemetry now also records `gateway_call` events plus explicit `model_used`, `chat_mode`, and `hour` rollups, `src/dan/server/gateway/router.py` exposes `/api/gateway/analytics/telemetry`, and the editor token analytics panel now shows a compact 24-hour telemetry strip for recent model/mode/hour activity.
+- Focused regressions already cover stage resolution, overlay selection, provenance persistence, telemetry metadata, and workflow-build narrowing in `tests/test_concierge/test_tiered_dispatch.py`, `tests/test_concierge/test_tiering.py`, and `tests/test_concierge/test_session_manager.py`.
+
+### Root-vs-Child Scope Table
+
+| Surface / Role | Primary responsibility | Must decide | Must not own |
+| --- | --- | --- | --- |
+| Root concierge session | Orchestration, routing, scope control, approvals, progress, and cross-turn supervision | whether the turn is conversational vs delegated, build vs query vs run, when to spawn child work, and what evidence/status to report back | detailed worker implementation, low-level file review minutiae, or pretending validation/execution already happened |
+| Child direct-task / file-review session | Practical execution for a scoped subtask | concrete local actions, focused findings, and concise completion/error reporting for its assigned slice | global routing policy, multi-turn supervision, or rewriting the parent objective |
+| `workflow_build` stage | Author or mutate a candidate workflow under the workflow-generation/build contract | current workflow identity, exact mutation/build shape, proposed vs applied state, and whether the artifact validated | generic orchestration for unrelated tasks, broad worker behavior, or claiming run success without evidence |
+| Build-contract validator | Structural validation and run-readiness classification | validated vs repairable vs fatal, plus run-ready vs non-runnable distinctions | routing, decomposition, or speculative execution policy |
+
+This is the intended separation behind the current codebase:
+
+- Root sessions stay orchestration-heavy, matching the concierge narrowing decision in `41-3`.
+- Child sessions inherit scoped work envelopes and perform detailed execution instead of broad replanning.
+- `workflow_build` remains a specialized authoring surface layered on top of the shared workflow-generation contract, not a general prompt bucket for any workflow mention.
+- Validation remains a downstream truth boundary: the concierge or build surface may propose or apply, but only the contract validator determines validated vs run-ready status.
 
 ### Implementation split
 
