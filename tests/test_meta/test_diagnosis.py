@@ -12,6 +12,7 @@ from dan.meta.diagnosis import (
     CorrectionStrategy,
     CorrectionStrategySelector,
     DiagnosisLoop,
+    DiagnosisValidationFeedback,
     ErrorArtifact,
     ErrorClassifier,
     GenerationError,
@@ -843,6 +844,67 @@ class TestRePromptComposer:
         prompt = composer.compose(error, None, "", "create a pipeline")
         assert "create a pipeline" in prompt
         assert "Fix the error" in prompt
+
+    def test_includes_structured_contract_handoff(
+        self, composer: RePromptComposer
+    ) -> None:
+        error = GenerationError(
+            stage=GenerationStage.validation,
+            error_type=GenerationErrorType.build_error,
+            message="Workflow has no nodes, so it is not run-ready.",
+        )
+        prompt = composer.compose(
+            error,
+            None,
+            "",
+            "create a runnable workflow",
+            contract_report={
+                "failure_bucket": "semantic_reprompt_or_diagnosis",
+                "handoff_reason": (
+                    "The workflow passed structural validation but is not run-ready."
+                ),
+                "run_ready": False,
+                "build_summary": {
+                    "run_readiness_issue_count": 1,
+                },
+                "run_readiness_issues": [
+                    "Workflow has no nodes, so it is not run-ready.",
+                ],
+            },
+        )
+        assert "Build contract handoff" in prompt
+        assert '"failure_bucket": "semantic_reprompt_or_diagnosis"' in prompt
+        assert '"run_readiness_issues"' in prompt
+        assert "not run-ready" in prompt
+
+
+class TestDiagnosisValidationFeedback:
+    def test_validate_candidate_graph_accepts_structured_feedback(self) -> None:
+        error = GenerationError(
+            stage=GenerationStage.validation,
+            error_type=GenerationErrorType.reachability,
+            message="No exit point is reachable from the current entry points.",
+        )
+
+        feedback = DiagnosisLoop._validate_candidate_graph(
+            {"version": "dan_graph_v1"},
+            graph_validator=lambda _graph: DiagnosisValidationFeedback(
+                errors=[error],
+                contract_report={
+                    "failure_bucket": "semantic_reprompt_or_diagnosis",
+                    "handoff_reason": (
+                        "The workflow passed structural validation but is not run-ready."
+                    ),
+                },
+            ),
+        )
+
+        assert feedback.errors == [error]
+        assert feedback.contract_report is not None
+        assert (
+            feedback.contract_report["failure_bucket"]
+            == "semantic_reprompt_or_diagnosis"
+        )
 
 
 # ---------------------------------------------------------------------------

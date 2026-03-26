@@ -162,11 +162,13 @@ def resolve_default_llm_model(*, tier: str = "routine") -> str:
     if explicit:
         return explicit
 
+    normalized_tier = normalize_task_tier(tier) or str(tier).strip().lower() or "routine"
+
     try:
         from dan.providers.tier_defaults import resolve_tier_map
 
         tier_map = resolve_tier_map(_configured_llm_providers())
-        model = tier_map.get(tier) or tier_map.get("routine")
+        model = tier_map.get(normalized_tier) or tier_map.get("routine")
         if model:
             return model
     except Exception:
@@ -263,15 +265,23 @@ class DefaultsEnricher:
         for i, node in enumerate(llm_nodes):
             payload = self._node_payload(node)
             if i == len(llm_nodes) - 1:
-                legacy_tier = "premium"
+                inferred_legacy_tier = "premium"
             elif i == 0:
-                legacy_tier = "routine"
+                inferred_legacy_tier = "routine"
             else:
-                legacy_tier = "standard"
+                inferred_legacy_tier = "standard"
 
             task_tier = normalize_task_tier(payload.get("task_tier") or payload.get("model_tier"))
             if task_tier is None:
-                task_tier = normalize_task_tier(legacy_tier)
+                task_tier = normalize_task_tier(inferred_legacy_tier)
+
+            legacy_tier = payload.get("model_tier")
+            if legacy_tier is None:
+                legacy_tier = (
+                    legacy_model_tier_label(task_tier)
+                    if task_tier is not None
+                    else inferred_legacy_tier
+                )
 
             if not payload.get("model_tier"):
                 self._set_node_value(node, "model_tier", legacy_tier)

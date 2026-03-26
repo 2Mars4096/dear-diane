@@ -15,6 +15,7 @@ from dan.meta.generation_defaults import (
     clear_profile_cache,
     detect_suppressions,
     get_domain_profile,
+    resolve_default_llm_model,
 )
 
 
@@ -378,6 +379,28 @@ class TestDefaultsEnricher:
         assert reviewer["config"]["task_tier"] == "critical"
         assert reviewer["config"]["model_policy"] == {"strategy": "tier"}
 
+    def test_explicit_task_tier_drives_model_tier_metadata(self, monkeypatch):
+        monkeypatch.delenv("DAN_LLM_MODEL", raising=False)
+        monkeypatch.delenv("DAN_ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DAN_GOOGLE_API_KEY", raising=False)
+        monkeypatch.setenv("DAN_OPENAI_API_KEY", "test-key")
+
+        enricher = DefaultsEnricher(GenerationDefaults.from_profile(DefaultProfile.robust))
+        graph = self._make_graph([
+            {"id": "critical_first", "node_type": "llm_operator", "config": {"task_tier": "critical"}},
+            {"id": "second", "node_type": "llm_operator", "config": {}},
+            {"id": "third", "node_type": "llm_operator", "config": {}},
+            {"id": "fourth", "node_type": "llm_operator", "config": {}},
+        ])
+
+        result = enricher.enrich(graph)
+        first = result["nodes"][0]["config"]
+
+        assert first["task_tier"] == "critical"
+        assert first["model_tier"] == "premium"
+        assert first["model"] == "o3"
+        assert first["model_policy"] == {"strategy": "tier"}
+
     def test_has_content_workflow(self):
         nodes = [{"node_type": "llm_operator", "config": {"prompt_template": "Write a report about X"}}]
         assert DefaultsEnricher.has_content_workflow(nodes)
@@ -481,6 +504,16 @@ class TestValidationGateTopologies:
         validator = next((n for n in result["nodes"] if n["node_type"] == "validator"), None)
         assert validator is not None
         assert validator["config"]["name"] == "validate_before_d"
+
+
+def test_resolve_default_llm_model_normalizes_legacy_tier_aliases(monkeypatch):
+    monkeypatch.delenv("DAN_LLM_MODEL", raising=False)
+    monkeypatch.delenv("DAN_ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("DAN_GOOGLE_API_KEY", raising=False)
+    monkeypatch.setenv("DAN_OPENAI_API_KEY", "test-key")
+
+    assert resolve_default_llm_model(tier="standard") == "o3-mini"
+    assert resolve_default_llm_model(tier="premium") == "o3"
 
 
 class TestReviewOnContentTopologies:

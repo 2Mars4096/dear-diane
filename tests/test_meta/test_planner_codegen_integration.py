@@ -32,6 +32,7 @@ from dan.meta.planner import (
     ValidationResult,
     WorkflowPlanner,
     _LEGACY_GENERATE_FALLBACK,
+    validate_codegen_output,
 )
 from dan.meta.intent_compiler import DirectBuildError
 from dan.meta.intent_schema import StageIntent, StageType, WorkflowIntent
@@ -271,6 +272,50 @@ async def test_validation_failure_triggers_diagnosis():
     mock_diag.assert_awaited_once()
     call_kwargs = mock_diag.call_args
     assert call_kwargs[1]["errors"] == [recoverable_error] or call_kwargs[0][2] == [recoverable_error]
+
+
+@pytest.mark.asyncio
+async def test_run_readiness_gap_triggers_diagnosis_with_contract_report():
+    """Schema-valid but non-runnable graphs should hand off into diagnosis."""
+    planner = _make_planner()
+    plan = GenerateCodePlan(code=VALID_BUILDER_CODE, description="test")
+
+    sandbox_result = SandboxResult(exit_code=0)
+    empty_graph_dict = workflow("empty").build().model_dump(mode="json")
+    structured = {"graph": empty_graph_dict, "source_code": VALID_BUILDER_CODE}
+    validation = validate_codegen_output(empty_graph_dict)
+
+    assert validation.success is True
+    assert validation.run_ready is False
+
+    diag_result = DiagnosisResult(
+        success=False,
+        final_code=VALID_BUILDER_CODE,
+        final_errors=[],
+    )
+
+    with patch("dan.sandbox.runner.SandboxRunner.run", new_callable=AsyncMock) as mock_run:
+        mock_run.return_value = (sandbox_result, structured)
+        with patch(
+            "dan.meta.diagnosis.DiagnosisLoop.diagnose_and_repair",
+            new_callable=AsyncMock,
+        ) as mock_diag:
+            mock_diag.return_value = diag_result
+            with patch("dan.meta.planner._LEGACY_GENERATE_FALLBACK", False):
+                with pytest.raises(
+                    ValueError,
+                    match="diagnosis repair unsuccessful",
+                ):
+                    await planner.execute_plan(plan)
+
+    mock_diag.assert_awaited_once()
+    kwargs = mock_diag.await_args.kwargs
+    assert kwargs["contract_report"]["failure_bucket"] == "semantic_reprompt_or_diagnosis"
+    assert "not run-ready" in kwargs["contract_report"]["handoff_reason"].lower()
+    assert any(
+        error.message == "Workflow has no nodes, so it is not run-ready."
+        for error in kwargs["errors"]
+    )
 
 
 @pytest.mark.asyncio
@@ -547,6 +592,24 @@ async def test_execute_generate_requires_run_ready_graph() -> None:
     with pytest.raises(
         ValueError,
         match="Generated workflow failed execution-readiness validation",
+    ):
+        await planner.execute_plan(plan)
+
+
+@pytest.mark.asyncio
+async def test_execute_generate_surfaces_unresolved_code_failure_mode() -> None:
+    planner = _make_planner()
+    plan = GeneratePlan(
+        spec={
+            "nodes": [{"node_type": "code_operator", "name": "Compute"}],
+            "edges": [],
+        },
+        description="code workflow",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="unresolved_code",
     ):
         await planner.execute_plan(plan)
 

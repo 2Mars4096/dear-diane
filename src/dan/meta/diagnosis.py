@@ -9,6 +9,7 @@ validation into a uniform ``GenerationError`` model.  This handles
 from __future__ import annotations
 
 import difflib
+import json
 import logging
 import os
 import re
@@ -658,6 +659,39 @@ class AutoFixApplier:
 class RePromptComposer:
     """Compose focused error context for LLM re-prompt."""
 
+    @staticmethod
+    def _format_contract_report(contract_report: dict[str, Any] | None) -> str:
+        """Render a compact structured contract handoff section."""
+        if not isinstance(contract_report, dict):
+            return ""
+
+        allowed_keys = (
+            "workflow_id",
+            "normalized_workflow_id",
+            "display_name",
+            "validated",
+            "run_ready",
+            "failure_bucket",
+            "handoff_reason",
+            "build_summary",
+            "run_readiness_failure_mode",
+            "errors",
+            "warnings",
+            "auto_fixes_applied",
+            "run_readiness_issues",
+        )
+        payload = {
+            key: contract_report[key]
+            for key in allowed_keys
+            if key in contract_report and contract_report[key] not in (None, "", [], {})
+        }
+        if not payload:
+            return ""
+        return (
+            "\n### Build contract handoff\n```json\n"
+            f"{json.dumps(payload, indent=2, sort_keys=True)}\n```"
+        )
+
     def compose(
         self,
         error: GenerationError,
@@ -669,6 +703,7 @@ class RePromptComposer:
         learning_points: list[str] | None = None,
         attempt_number: int | None = None,
         max_attempts: int | None = None,
+        contract_report: dict[str, Any] | None = None,
     ) -> str:
         """Return a focused error message for the LLM.
 
@@ -716,6 +751,10 @@ class RePromptComposer:
             if prior_lines:
                 parts.append("\n### Prior attempts\n" + "\n".join(prior_lines))
 
+        contract_section = self._format_contract_report(contract_report)
+        if contract_section:
+            parts.append(contract_section)
+
         parts.append(f"\n### Goal\n{goal}")
         parts.append(
             "\nFix the error above and regenerate the code.  "
@@ -747,6 +786,12 @@ class DiagnosisResult:
     final_code: str = ""
     attempts: list[DiagnosisAttempt] = field(default_factory=list)
     final_errors: list[GenerationError] | None = None
+
+
+@dataclass
+class DiagnosisValidationFeedback:
+    errors: list[GenerationError] = field(default_factory=list)
+    contract_report: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -781,11 +826,13 @@ class DiagnosisLoop:
         sandbox_runner: Any = None,
         llm_complete: Any = None,
         graph_validator: Any = None,
+        contract_report: dict[str, Any] | None = None,
     ) -> DiagnosisResult:
         """Run bounded diagnosis.  Returns :class:`DiagnosisResult`."""
         attempts: list[DiagnosisAttempt] = []
         current_code = generated_code
         current_errors = errors
+        current_contract_report = contract_report
         learned_points: list[str] = []
 
         for attempt_num in range(1, self.max_attempts + 1):
@@ -797,10 +844,13 @@ class DiagnosisLoop:
 
             if not current_errors:
                 graph_dict = await self._try_build(current_code, sandbox_runner)
-                current_errors = self._validate_candidate_graph(
+                feedback = self._validate_candidate_graph(
                     graph_dict,
                     graph_validator,
                 )
+                current_errors = feedback.errors
+                if feedback.contract_report is not None:
+                    current_contract_report = feedback.contract_report
                 if not current_errors:
                     attempt.result = "fixed"
                     attempts.append(attempt)
@@ -847,15 +897,20 @@ class DiagnosisLoop:
                     attempt.corrections_applied.append("auto-fix applied")
                     current_code = fixed_code
                     new_errors = await self._revalidate(current_code, sandbox_runner)
+                    if new_errors:
+                        current_contract_report = None
                     candidate_graph = None
                     if not new_errors:
                         candidate_graph = await self._try_build(
                             current_code, sandbox_runner
                         )
-                        new_errors = self._validate_candidate_graph(
+                        feedback = self._validate_candidate_graph(
                             candidate_graph,
                             graph_validator,
                         )
+                        new_errors = feedback.errors
+                        if feedback.contract_report is not None:
+                            current_contract_report = feedback.contract_report
                     if not new_errors:
                         attempt.result = "fixed"
                         attempts.append(attempt)
@@ -890,6 +945,7 @@ class DiagnosisLoop:
                     learning_points=learned_points,
                     attempt_number=attempt_num,
                     max_attempts=self.max_attempts,
+                    contract_report=current_contract_report,
                 )
                 try:
                     system_prompt = (
@@ -911,15 +967,20 @@ class DiagnosisLoop:
                         new_errors = await self._revalidate(
                             current_code, sandbox_runner
                         )
+                        if new_errors:
+                            current_contract_report = None
                         candidate_graph = None
                         if not new_errors:
                             candidate_graph = await self._try_build(
                                 current_code, sandbox_runner
                             )
-                            new_errors = self._validate_candidate_graph(
+                            feedback = self._validate_candidate_graph(
                                 candidate_graph,
                                 graph_validator,
                             )
+                            new_errors = feedback.errors
+                            if feedback.contract_report is not None:
+                                current_contract_report = feedback.contract_report
                         if not new_errors:
                             attempt.result = "fixed"
                             attempts.append(attempt)
@@ -996,31 +1057,38 @@ class DiagnosisLoop:
     def _validate_candidate_graph(
         graph_dict: dict | None,
         graph_validator: Any = None,
-    ) -> list[GenerationError]:
+    ) -> DiagnosisValidationFeedback:
         """Run optional structural validation on a built graph candidate."""
         if graph_dict is None:
-            return [
-                GenerationError(
-                    stage=GenerationStage.build,
-                    error_type=GenerationErrorType.no_output,
-                    message="Code executed but no workflow graph was produced",
-                    recoverable=True,
-                )
-            ]
+            return DiagnosisValidationFeedback(
+                errors=[
+                    GenerationError(
+                        stage=GenerationStage.build,
+                        error_type=GenerationErrorType.no_output,
+                        message="Code executed but no workflow graph was produced",
+                        recoverable=True,
+                    )
+                ]
+            )
         if graph_validator is None:
-            return []
+            return DiagnosisValidationFeedback()
         try:
-            return list(graph_validator(graph_dict))
+            feedback = graph_validator(graph_dict)
+            if isinstance(feedback, DiagnosisValidationFeedback):
+                return feedback
+            return DiagnosisValidationFeedback(errors=list(feedback))
         except Exception as exc:
             logger.exception("Graph validator callback failed during diagnosis")
-            return [
-                GenerationError(
-                    stage=GenerationStage.validation,
-                    error_type=GenerationErrorType.unknown,
-                    message=f"Graph validator callback failed: {exc}",
-                    recoverable=False,
-                )
-            ]
+            return DiagnosisValidationFeedback(
+                errors=[
+                    GenerationError(
+                        stage=GenerationStage.validation,
+                        error_type=GenerationErrorType.unknown,
+                        message=f"Graph validator callback failed: {exc}",
+                        recoverable=False,
+                    )
+                ]
+            )
 
     def _apply_auto_fixes(
         self, code: str, errors: list[GenerationError]

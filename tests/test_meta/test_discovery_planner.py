@@ -408,7 +408,7 @@ class TestCompileGenerateSpec:
         spec = {"nodes": [{"node_type": "code_operator", "name": "Code"}]}
         result = WorkflowPlanner._compile_generate_spec(spec)
         node = result["nodes"][0]
-        assert node["code"] == "result = inputs"
+        assert node["code"] == ""
         assert node["language"] == "python"
 
     def test_gate_defaults(self):

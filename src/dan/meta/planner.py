@@ -24,6 +24,7 @@ from dan.meta.goal_contract import render_goal_contract_section
 from dan.meta.tool_catalog import render_tool_catalog_markdown
 from dan.meta.workflow_contract import (
     WorkflowBuildContractReport,
+    classify_run_readiness_issues,
     validate_workflow_build_contract,
 )
 from dan.workflow_generation_guidance import (
@@ -148,6 +149,7 @@ class ValidationResult:
     recoverable_errors: list[GenerationError] = dc_field(default_factory=list)
     fatal_errors: list[GenerationError] = dc_field(default_factory=list)
     run_ready: bool = True
+    run_readiness_failure_mode: str | None = None
     contract_report: WorkflowBuildContractReport | None = None
 
 
@@ -244,8 +246,20 @@ def validate_codegen_output(graph_dict: dict) -> ValidationResult:
         recoverable_errors=recoverable,
         fatal_errors=fatal,
         run_ready=contract_report.run_ready,
+        run_readiness_failure_mode=classify_run_readiness_issues(
+            contract_report.run_readiness_issues
+        ),
         contract_report=contract_report,
     )
+
+
+def _format_run_readiness_issues(
+    issues: list[str],
+    failure_mode: str | None = None,
+) -> list[str]:
+    if not failure_mode:
+        return list(issues)
+    return [f"[{failure_mode}] {issue}" for issue in issues]
 
 
 # ---------------------------------------------------------------------------
@@ -1145,10 +1159,18 @@ class WorkflowPlanner:
         if isinstance(plan, AdaptPlan):
             return self._execute_adapt(plan)
         if isinstance(plan, GenerateCodePlan) and getattr(plan, "intent", None) is not None:
+            from dan.meta.intent_compiler import DirectBuildError
+
             direct_build_mode = os.environ.get("DAN_DIRECT_BUILD", "on").lower()
             if direct_build_mode != "off":
                 try:
                     return await self.execute_plan_direct(plan, domain=domain, user_text=user_text)
+                except DirectBuildError as exc:
+                    message = str(exc)
+                    if "execution-readiness validation" in message:
+                        raise ExecutionReadinessError(message) from exc
+                    if direct_build_mode == "only":
+                        raise
                 except Exception as exc:
                     if direct_build_mode == "only":
                         raise
@@ -1295,7 +1317,12 @@ class WorkflowPlanner:
 
         readiness_details: list[str] = []
         if validation.contract_report is not None:
-            readiness_details.extend(validation.contract_report.run_readiness_issues[:5])
+            readiness_details.extend(
+                _format_run_readiness_issues(
+                    validation.contract_report.run_readiness_issues,
+                    validation.run_readiness_failure_mode,
+                )[:5]
+            )
         details = "; ".join(
             [*(error.message for error in validation.errors[:5]), *readiness_details]
         ) or "unknown validation failure"
@@ -1311,12 +1338,136 @@ class WorkflowPlanner:
         raise ExecutionReadinessError(f"{failure_message}: {details}")
 
     @staticmethod
-    def _diagnosis_validation_errors(graph_data: dict[str, Any]) -> list["GenerationError"]:
-        """Return generation-style errors for a repaired graph candidate."""
+    def _diagnosis_validation_errors(
+        graph_data: dict[str, Any],
+    ) -> "DiagnosisValidationFeedback":
+        """Return generation-style errors and contract context for diagnosis."""
+        from dan.meta.diagnosis import DiagnosisValidationFeedback
+
         validation = validate_codegen_output(graph_data)
         if validation.success and validation.run_ready:
-            return []
-        return list(validation.errors)
+            return DiagnosisValidationFeedback()
+        return DiagnosisValidationFeedback(
+            errors=WorkflowPlanner._diagnosis_handoff_errors(validation),
+            contract_report=WorkflowPlanner._diagnosis_contract_report(validation),
+        )
+
+    @staticmethod
+    def _diagnosis_contract_report(
+        validation: ValidationResult,
+    ) -> dict[str, Any] | None:
+        """Serialize validation state into structured diagnosis handoff input."""
+        report = validation.contract_report
+        if report is None:
+            return None
+
+        if validation.fatal_errors:
+            failure_bucket = "hard_fail"
+            handoff_reason = "The workflow build contract reported fatal failures."
+        elif validation.recoverable_errors and not validation.run_ready:
+            failure_bucket = "semantic_reprompt_or_diagnosis"
+            handoff_reason = (
+                "The workflow still has repairable contract failures and "
+                "run-readiness gaps after bounded mechanical repair."
+            )
+        elif validation.recoverable_errors:
+            failure_bucket = "semantic_reprompt_or_diagnosis"
+            handoff_reason = (
+                "The workflow still has repairable contract failures after "
+                "bounded mechanical repair."
+            )
+        elif not validation.run_ready:
+            failure_bucket = "semantic_reprompt_or_diagnosis"
+            handoff_reason = (
+                "The workflow passed structural validation but is not run-ready."
+            )
+        else:
+            failure_bucket = "mechanical_auto_fix"
+            handoff_reason = "The workflow build contract is satisfied."
+
+        return {
+            "workflow_id": report.workflow_id,
+            "normalized_workflow_id": report.normalized_workflow_id,
+            "display_name": report.display_name,
+            "validated": report.validated,
+            "run_ready": report.run_ready,
+            "failure_bucket": failure_bucket,
+            "handoff_reason": handoff_reason,
+            "build_summary": {
+                "error_count": len(report.errors),
+                "warning_count": len(report.warnings),
+                "auto_fix_count": len(report.auto_fixes_applied),
+                "run_readiness_issue_count": len(report.run_readiness_issues),
+            },
+            "run_readiness_failure_mode": validation.run_readiness_failure_mode,
+            "errors": [
+                {
+                    "category": issue.category,
+                    "message": issue.message,
+                    "severity": issue.severity,
+                    "artifact_id": issue.artifact_id,
+                }
+                for issue in report.errors
+            ],
+            "warnings": list(report.warnings),
+            "auto_fixes_applied": list(report.auto_fixes_applied),
+            "run_readiness_issues": list(report.run_readiness_issues),
+        }
+
+    @staticmethod
+    def _diagnosis_handoff_errors(
+        validation: ValidationResult,
+    ) -> list["GenerationError"]:
+        """Collect recoverable validation and run-readiness issues for diagnosis."""
+        from dan.meta.diagnosis import (
+            GenerationError,
+            GenerationErrorType,
+            GenerationStage,
+        )
+
+        errors = list(validation.recoverable_errors)
+        report = validation.contract_report
+        if report is not None and not validation.run_ready:
+            for issue in report.run_readiness_issues:
+                lower = issue.lower()
+                error_type = GenerationErrorType.build_error
+                if (
+                    "reachable" in lower
+                    or "entry point" in lower
+                    or "exit point" in lower
+                ):
+                    error_type = GenerationErrorType.reachability
+                elif "required input port" in lower:
+                    error_type = GenerationErrorType.missing_port
+                elif "port" in lower:
+                    error_type = GenerationErrorType.edge_endpoint
+                artifact_match = re.search(r"'([^']+)'", issue)
+                errors.append(
+                    GenerationError(
+                        stage=GenerationStage.validation,
+                        error_type=error_type,
+                        message=issue,
+                        artifact_id=artifact_match.group(1) if artifact_match else None,
+                        recoverable=True,
+                    )
+                )
+
+        deduped: list[GenerationError] = []
+        seen: set[tuple[Any, ...]] = set()
+        for error in errors:
+            key = (
+                error.stage,
+                error.error_type,
+                error.message,
+                error.source_line,
+                error.artifact_id,
+                error.recoverable,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(error)
+        return deduped
 
     async def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
         if self._llm_call is None:
@@ -1580,7 +1731,29 @@ class WorkflowPlanner:
         # Sandbox succeeded — run validation pipeline
         validation = validate_codegen_output(codegen.graph)
 
-        if validation.success:
+        if validation.run_readiness_failure_mode in {
+            "unresolved_code",
+            "non_runnable_code",
+        }:
+            readiness_details: list[str] = []
+            if validation.contract_report is not None:
+                readiness_details.extend(
+                    _format_run_readiness_issues(
+                        validation.contract_report.run_readiness_issues,
+                        validation.run_readiness_failure_mode,
+                    )[:5]
+                )
+            details = "; ".join(
+                [
+                    *(error.message for error in validation.errors[:5]),
+                    *readiness_details,
+                ]
+            ) or "unknown validation failure"
+            raise ExecutionReadinessError(
+                f"Generated code graph failed execution-readiness validation: {details}"
+            )
+
+        if validation.success and validation.run_ready:
             graph_data = (
                 validation.graph.model_dump(mode="json")
                 if validation.graph
@@ -1604,8 +1777,11 @@ class WorkflowPlanner:
                 "source_code": codegen.source_code,
             }
 
-        # Validation failed — try diagnosis if errors are recoverable
-        if validation.recoverable_errors and not validation.fatal_errors:
+        handoff_errors = self._diagnosis_handoff_errors(validation)
+
+        # Validation/run-readiness handoff — try bounded diagnosis when fatal
+        # contract failures are absent and the remaining gap is semantic.
+        if handoff_errors and not validation.fatal_errors:
             from dan.meta.diagnosis import (
                 DiagnosisLoop,
                 generation_repair_attempt_budget,
@@ -1617,9 +1793,10 @@ class WorkflowPlanner:
             diag_result = await diagnosis.diagnose_and_repair(
                 goal=plan.description,
                 generated_code=codegen.source_code,
-                errors=validation.recoverable_errors,
+                errors=handoff_errors,
                 llm_complete=self._llm_complete_for_repair,
                 graph_validator=self._diagnosis_validation_errors,
+                contract_report=self._diagnosis_contract_report(validation),
             )
             if diag_result.success and diag_result.final_graph:
                 graph_data = self._enrich_graph(
@@ -1647,13 +1824,13 @@ class WorkflowPlanner:
 
             diagnostics = CodegenDiagnostics(
                 attempts=max(1, len(diag_result.attempts)),
-                errors=list(validation.errors),
+                errors=handoff_errors,
                 final_code=codegen.source_code,
                 validation_result=validation,
                 diagnosis_result=diag_result,
             )
             exc = ValueError(
-                f"Codegen validation failed with {len(validation.errors)} error(s); "
+                f"Codegen validation handoff failed with {len(handoff_errors)} issue(s); "
                 f"diagnosis repair unsuccessful"
             )
             exc.diagnostics = diagnostics  # type: ignore[attr-defined]
@@ -1792,7 +1969,7 @@ class WorkflowPlanner:
                 })
             elif node_type == "code_operator":
                 base.update({
-                    "code": config.get("code", "result = inputs"),
+                    "code": config.get("code", ""),
                     "language": config.get("language", "python"),
                     "sandbox_config": config.get("sandbox_config", {}),
                 })
