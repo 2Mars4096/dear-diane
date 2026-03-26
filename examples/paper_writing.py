@@ -9,7 +9,12 @@ This example intentionally exercises complex graph features:
 
 Usage:
     python examples/paper_writing.py "supply chain resilience"
-    python examples/paper_writing.py --topic "platform operations" --max-review 5
+    python examples/paper_writing.py "platform operations" --max-review 5
+    python examples/paper_writing.py --model-profile role_split --model claude-sonnet-4-6
+
+Benchmark-smoke path:
+    DAN_PAPER_WRITING_MODEL_PROFILE=smoke python examples/paper_writing.py \
+        "supply chain resilience" --no-human --output-dir output/paper-writing-smoke
 """
 
 from __future__ import annotations
@@ -46,6 +51,28 @@ from dan.models.context import (
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+PAPER_WRITING_MODEL_ROLES: dict[str, str] = {
+    "idea_gen": "ideation",
+    "aspect_planner": "research",
+    "survey_aspect": "research",
+    "lit_synthesizer": "research",
+    "claim_evidence_gate": "reasoning",
+    "outline_planner": "planning",
+    "interviewer": "planning",
+    "interview_refiner": "planning",
+    "write_section": "draft",
+    "bibtex_builder": "draft",
+    "method_reviewer": "review",
+    "writing_reviewer": "review",
+    "venue_reviewer": "review",
+    "review_merger": "reasoning",
+    "revise_section": "draft",
+    "review_claim_gate": "reasoning",
+}
+PAPER_WRITING_MODEL_PROFILES = frozenset({"single_model", "role_split", "smoke"})
+PAPER_WRITING_WEB_SEARCH_DEFAULT_MODEL = "perplexity/sonar-pro-search"
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +218,193 @@ def _normalize_latex_content(content: str) -> str:
     return normalized
 
 
+def _normalize_string_list(values: Any) -> list[str]:
+    rows = values if isinstance(values, list) else []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        text = str(row).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
+
+
+def _resolve_paper_writing_profile_name(
+    model_profile: str | dict[str, str] | None,
+) -> str:
+    if isinstance(model_profile, dict):
+        return "custom"
+    return str(
+        model_profile
+        or os.getenv("DAN_PAPER_WRITING_MODEL_PROFILE")
+        or "single_model"
+    ).strip().lower()
+
+
+def _resolve_paper_writing_models(
+    *,
+    model_profile: str | dict[str, str] | None = None,
+    default_model: str | None = None,
+    node_model_overrides: dict[str, str] | None = None,
+) -> dict[str, str]:
+    resolved_default = str(
+        default_model
+        or os.getenv("DAN_PAPER_WRITING_MODEL")
+        or os.getenv("DAN_LLM_MODEL")
+        or "claude-sonnet-4-6"
+    ).strip()
+    if not resolved_default:
+        resolved_default = "claude-sonnet-4-6"
+
+    role_models = {
+        "default": resolved_default,
+        "ideation": resolved_default,
+        "research": resolved_default,
+        "reasoning": resolved_default,
+        "planning": resolved_default,
+        "draft": resolved_default,
+        "review": resolved_default,
+        "web_search": os.getenv(
+            "DAN_PAPER_WRITING_WEB_SEARCH_MODEL",
+            PAPER_WRITING_WEB_SEARCH_DEFAULT_MODEL,
+        ).strip()
+        or PAPER_WRITING_WEB_SEARCH_DEFAULT_MODEL,
+    }
+
+    if isinstance(model_profile, dict):
+        for key, value in model_profile.items():
+            text = str(value).strip()
+            if text:
+                role_models[str(key).strip()] = text
+    else:
+        profile_name = _resolve_paper_writing_profile_name(model_profile)
+        if profile_name not in PAPER_WRITING_MODEL_PROFILES:
+            raise ValueError(
+                "Unknown paper-writing model profile "
+                f"{profile_name!r}; expected one of "
+                f"{sorted(PAPER_WRITING_MODEL_PROFILES)}"
+            )
+        if profile_name == "role_split":
+            role_models.update(
+                {
+                    "ideation": os.getenv(
+                        "DAN_PAPER_WRITING_IDEATION_MODEL",
+                        resolved_default,
+                    ).strip()
+                    or resolved_default,
+                    "research": os.getenv(
+                        "DAN_PAPER_WRITING_RESEARCH_MODEL",
+                        resolved_default,
+                    ).strip()
+                    or resolved_default,
+                    "reasoning": os.getenv(
+                        "DAN_PAPER_WRITING_REASONING_MODEL",
+                        resolved_default,
+                    ).strip()
+                    or resolved_default,
+                    "planning": os.getenv(
+                        "DAN_PAPER_WRITING_PLANNING_MODEL",
+                        resolved_default,
+                    ).strip()
+                    or resolved_default,
+                    "draft": os.getenv(
+                        "DAN_PAPER_WRITING_DRAFT_MODEL",
+                        resolved_default,
+                    ).strip()
+                    or resolved_default,
+                    "review": os.getenv(
+                        "DAN_PAPER_WRITING_REVIEW_MODEL",
+                        resolved_default,
+                    ).strip()
+                    or resolved_default,
+                }
+            )
+        elif profile_name == "smoke":
+            smoke_model = os.getenv(
+                "DAN_PAPER_WRITING_SMOKE_MODEL",
+                resolved_default,
+            ).strip()
+            if not smoke_model:
+                smoke_model = resolved_default
+            for key in list(role_models):
+                role_models[key] = smoke_model
+
+    node_models = {
+        node_id: role_models.get(role, role_models["default"])
+        for node_id, role in PAPER_WRITING_MODEL_ROLES.items()
+    }
+    node_models["web_search"] = role_models["web_search"]
+    for node_id, model in (node_model_overrides or {}).items():
+        text = str(model).strip()
+        if text:
+            node_models[str(node_id).strip()] = text
+    return node_models
+
+
+def _build_compile_status(
+    *,
+    compile_success: bool,
+    compile_attempted: bool,
+    compile_blocked: bool,
+    pdf_path: str,
+    degraded_reasons: list[str] | None = None,
+) -> dict[str, Any]:
+    reasons = _normalize_string_list(degraded_reasons or [])
+    if compile_blocked and "missing_latex_dependencies" not in reasons:
+        reasons.append("missing_latex_dependencies")
+    if (
+        not compile_success
+        and not compile_blocked
+        and "latex_compile_failed" not in reasons
+    ):
+        reasons.append("latex_compile_failed")
+    artifact_stage = "compiled_pdf" if compile_success and pdf_path else "latex_source"
+    return {
+        "compile_success": bool(compile_success),
+        "compile_attempted": bool(compile_attempted),
+        "compile_blocked": bool(compile_blocked),
+        "artifact_stage": artifact_stage,
+        "degraded_reasons": reasons,
+    }
+
+
+def _build_submission_status(
+    *,
+    verdict: str,
+    evidence_gate_pass: bool,
+    compile_success: bool,
+    compile_attempted: bool,
+    compile_blocked: bool,
+    pdf_path: str,
+    degraded_reasons: list[str] | None = None,
+) -> dict[str, Any]:
+    compile_status = _build_compile_status(
+        compile_success=compile_success,
+        compile_attempted=compile_attempted,
+        compile_blocked=compile_blocked,
+        pdf_path=pdf_path,
+        degraded_reasons=degraded_reasons,
+    )
+    reasons = list(compile_status["degraded_reasons"])
+    verdict_text = str(verdict or "").strip() or "unknown"
+    if not evidence_gate_pass and "evidence_gate_failed" not in reasons:
+        reasons.append("evidence_gate_failed")
+    if verdict_text != "accept":
+        review_reason = f"review_not_accepted:{verdict_text}"
+        if review_reason not in reasons:
+            reasons.append(review_reason)
+    submission_ready = (
+        bool(compile_success) and bool(evidence_gate_pass) and verdict_text == "accept"
+    )
+    artifact_status = "ready" if submission_ready else "degraded"
+    compile_status["degraded_reasons"] = reasons
+    compile_status["artifact_status"] = artifact_status
+    compile_status["submission_ready"] = submission_ready
+    return compile_status
+
+
 async def _ensure_informs3_cls(output_dir: Path) -> tuple[bool, str]:
     target = output_dir / "informs3.cls"
     if target.exists():
@@ -265,7 +479,7 @@ async def check_latex_deps(template_dir: str = "output", **kwargs: Any) -> dict[
 
 async def search_web(
     query: str,
-    model: str = "perplexity/sonar-pro-search",
+    model: str = PAPER_WRITING_WEB_SEARCH_DEFAULT_MODEL,
     max_tokens: int = 900,
     **kwargs: Any,
 ) -> dict[str, Any]:
@@ -333,6 +547,7 @@ async def search_papers(
     num_results: int = 8,
     aspect: str = "",
     allow_web_fallback: bool = True,
+    web_search_model: str = PAPER_WRITING_WEB_SEARCH_DEFAULT_MODEL,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Search Semantic Scholar for real paper metadata."""
@@ -377,7 +592,7 @@ async def search_papers(
     fallback_answer = ""
     fallback_citations: list[Any] = []
     if (not papers) and allow_web_fallback:
-        web = await search_web(query)
+        web = await search_web(query, model=web_search_model)
         fallback_answer = str(web.get("answer", ""))
         raw_cites = web.get("citations", [])
         if isinstance(raw_cites, list):
@@ -481,6 +696,9 @@ async def compile_latex(
     bibtex: str = "",
     output_dir: str = "output",
     basename: str | None = None,
+    deps_ok: bool | None = None,
+    missing_commands: list[Any] | None = None,
+    dependency_message: str = "",
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Compile LaTeX with pdflatex/bibtex and return compile logs."""
@@ -491,13 +709,6 @@ async def compile_latex(
     tex_filename = f"{slug}.tex"
     tex_path = out_dir / tex_filename
     notes: list[str] = []
-
-    template_ok, template_note = await _ensure_informs3_cls(out_dir)
-    notes.append(template_note)
-    if not template_ok:
-        notes.append(
-            "Compile may fail if informs3.cls is unavailable in your TeX installation."
-        )
 
     normalized_content = _normalize_latex_content(content)
     tex_path.write_text(normalized_content, encoding="utf-8")
@@ -522,13 +733,48 @@ async def compile_latex(
         bib_path.write_text(effective_bibtex, encoding="utf-8")
         references_bib_path.write_text(effective_bibtex, encoding="utf-8")
 
-    if shutil.which("pdflatex") is None:
+    normalized_missing = _normalize_string_list(missing_commands)
+    if dependency_message:
+        notes.append(str(dependency_message))
+    if deps_ok is False or normalized_missing:
+        compile_status = _build_compile_status(
+            compile_success=False,
+            compile_attempted=False,
+            compile_blocked=True,
+            pdf_path="",
+            degraded_reasons=["missing_latex_dependencies"],
+        )
         return {
-            "compile_success": False,
+            **compile_status,
+            "pdf_path": "",
+            "compile_log": "\n".join(notes),
+            "tex_path": str(tex_path),
+            "bib_path": str(bib_path) if bib_path.exists() else "",
+            "autofilled_bib_keys": missing_keys,
+        }
+
+    template_ok, template_note = await _ensure_informs3_cls(out_dir)
+    notes.append(template_note)
+    if not template_ok:
+        notes.append(
+            "Compile may fail if informs3.cls is unavailable in your TeX installation."
+        )
+
+    if shutil.which("pdflatex") is None:
+        compile_status = _build_compile_status(
+            compile_success=False,
+            compile_attempted=False,
+            compile_blocked=True,
+            pdf_path="",
+            degraded_reasons=["missing_latex_dependencies"],
+        )
+        return {
+            **compile_status,
             "pdf_path": "",
             "compile_log": "\n".join(notes + ["pdflatex not found on PATH."]),
             "tex_path": str(tex_path),
             "bib_path": str(bib_path) if bib_path.exists() else "",
+            "autofilled_bib_keys": missing_keys,
         }
 
     log_parts: list[str] = []
@@ -572,8 +818,15 @@ async def compile_latex(
     if not pdf_path.exists():
         compile_success = False
 
+    compile_status = _build_compile_status(
+        compile_success=compile_success,
+        compile_attempted=True,
+        compile_blocked=False,
+        pdf_path=str(pdf_path) if pdf_path.exists() else "",
+        degraded_reasons=[],
+    )
     return {
-        "compile_success": compile_success,
+        **compile_status,
         "pdf_path": str(pdf_path) if pdf_path.exists() else "",
         "compile_log": ("\n".join(notes) + "\n\n" + "\n\n".join(log_parts))[-20000:],
         "tex_path": str(tex_path),
@@ -583,12 +836,21 @@ async def compile_latex(
 
 
 async def save_paper(
-    content: str,
-    title: str,
+    content: str = "",
+    title: str = "",
     bibtex: str = "",
     pdf_path: str = "",
     compile_log: str = "",
-    verdict: str = "",
+    verdict: str = "upstream_blocked",
+    compile_success: bool = False,
+    compile_attempted: bool = False,
+    compile_blocked: bool = False,
+    artifact_stage: str = "",
+    degraded_reasons: list[Any] | None = None,
+    evidence_gate_pass: bool = False,
+    dependency_message: str = "",
+    model_profile_name: str = "",
+    model_selection: dict[str, Any] | None = None,
     output_dir: str = "output",
     **kwargs: Any,
 ) -> dict[str, Any]:
@@ -596,6 +858,10 @@ async def save_paper(
     out_dir = Path(output_dir)
     out_dir.mkdir(exist_ok=True, parents=True)
     slug = _slugify(title)
+    normalized_reasons = _normalize_string_list(degraded_reasons)
+    if not str(content or "").strip() or not str(title or "").strip():
+        if "upstream_prerequisite_missing" not in normalized_reasons:
+            normalized_reasons.append("upstream_prerequisite_missing")
 
     tex_path = out_dir / f"{slug}.tex"
     bib_path = out_dir / f"{slug}.bib"
@@ -611,14 +877,36 @@ async def save_paper(
         if source.resolve() != final_pdf_path.resolve():
             shutil.copy2(source, final_pdf_path)
 
+    submission_status = _build_submission_status(
+        verdict=verdict,
+        evidence_gate_pass=bool(evidence_gate_pass),
+        compile_success=bool(compile_success),
+        compile_attempted=bool(compile_attempted),
+        compile_blocked=bool(compile_blocked),
+        pdf_path=str(final_pdf_path) if final_pdf_path.exists() else "",
+        degraded_reasons=normalized_reasons,
+    )
     summary_path = out_dir / f"{slug}.summary.json"
     summary_payload = {
+        "contract_version": 1,
         "title": title,
         "saved_at": datetime.now(timezone.utc).isoformat(),
         "verdict": verdict,
+        "artifact_status": submission_status["artifact_status"],
+        "artifact_stage": artifact_stage or submission_status["artifact_stage"],
+        "submission_ready": submission_status["submission_ready"],
+        "degraded_reasons": submission_status["degraded_reasons"],
+        "dependency_message": str(dependency_message or ""),
+        "model_profile": str(model_profile_name or ""),
+        "model_selection": dict(model_selection or {}),
+        "evidence_gate_pass": bool(evidence_gate_pass),
+        "compile_success": bool(compile_success),
+        "compile_attempted": bool(compile_attempted),
+        "compile_blocked": bool(compile_blocked),
         "tex_path": str(tex_path),
         "bib_path": str(bib_path),
         "pdf_path": str(final_pdf_path) if final_pdf_path.exists() else "",
+        "compile_log_path": str(log_path),
     }
     summary_path.write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
 
@@ -632,13 +920,17 @@ async def save_paper(
         "compile_log_path": str(log_path),
         "summary_path": str(summary_path),
         "verdict": verdict,
+        "artifact_status": submission_status["artifact_status"],
+        "artifact_stage": artifact_stage or submission_status["artifact_stage"],
+        "submission_ready": submission_status["submission_ready"],
+        "degraded_reasons": submission_status["degraded_reasons"],
     }
 
 
 async def package_submission(
-    title: str,
-    tex_path: str,
-    bib_path: str,
+    title: str = "",
+    tex_path: str = "",
+    bib_path: str = "",
     pdf_path: str = "",
     compile_log_path: str = "",
     summary_path: str = "",
@@ -649,13 +941,42 @@ async def package_submission(
     out_dir = Path(output_dir)
     out_dir.mkdir(exist_ok=True, parents=True)
     slug = _slugify(title)
-    bundle_path = out_dir / f"{slug}-submission.zip"
+    summary_payload: dict[str, Any] = {}
+    if summary_path:
+        summary_file = Path(summary_path)
+        if summary_file.exists():
+            try:
+                summary_payload = json.loads(summary_file.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                summary_payload = {}
+
+    submission_ready = bool(summary_payload.get("submission_ready"))
+    if not summary_payload and pdf_path and Path(pdf_path).exists():
+        submission_ready = True
+    bundle_kind = "submission" if submission_ready else "artifacts"
+    package_status = "ready" if submission_ready else "degraded"
+    bundle_path = out_dir / f"{slug}-{'submission' if submission_ready else 'artifacts'}.zip"
+    degraded_reasons = _normalize_string_list(summary_payload.get("degraded_reasons"))
+    if not submission_ready and not degraded_reasons:
+        degraded_reasons.append("submission_not_ready")
 
     manifest = {
         "title": title,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "bundle_kind": bundle_kind,
+        "package_status": package_status,
+        "submission_ready": submission_ready,
+        "artifact_status": str(summary_payload.get("artifact_status", package_status)),
+        "artifact_stage": str(
+            summary_payload.get(
+                "artifact_stage",
+                "compiled_pdf" if pdf_path and Path(pdf_path).exists() else "latex_source",
+            )
+        ),
+        "degraded_reasons": degraded_reasons,
         "files": [],
     }
+    manifest_path = out_dir / f"{slug}.manifest.json"
     files = [tex_path, bib_path, pdf_path, compile_log_path, summary_path]
     with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for fp in files:
@@ -666,7 +987,6 @@ async def package_submission(
                 continue
             zf.write(p, arcname=p.name)
             manifest["files"].append(p.name)
-        manifest_path = out_dir / f"{slug}.manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         zf.write(manifest_path, arcname=manifest_path.name)
 
@@ -674,6 +994,11 @@ async def package_submission(
         "bundle_path": str(bundle_path),
         "saved_path": str(bundle_path),
         "title": title,
+        "bundle_kind": bundle_kind,
+        "package_status": package_status,
+        "submission_ready": submission_ready,
+        "manifest_path": str(manifest_path),
+        "degraded_reasons": degraded_reasons,
     }
 
 
@@ -707,6 +1032,39 @@ else:
     query = str(item)
     num_results = 8
 result = {"aspect": aspect, "query": query, "num_results": num_results}
+"""
+
+PACKAGE_ASPECT_RESULT_CODE = """\
+paper_count_value = int(paper_count or 0)
+fallback = str(fallback_answer or "").strip()
+result = {
+    "aspect": str(aspect or ""),
+    "summary": str(summary or ""),
+    "key_findings": key_findings if isinstance(key_findings, list) else [],
+    "paper_count": paper_count_value,
+    "grounded": bool(paper_count_value > 0 or fallback),
+    "fallback_answer": fallback,
+    "error": str(error or ""),
+}
+"""
+
+REQUIRE_GROUNDED_LITERATURE_CODE = """\
+rows = search_results if isinstance(search_results, list) else []
+grounded = []
+for row in rows:
+    if not isinstance(row, dict):
+        continue
+    if bool(row.get("grounded")):
+        grounded.append(row)
+        continue
+    papers = row.get("papers") if isinstance(row.get("papers"), list) else []
+    paper_count = int(row.get("paper_count", 0) or 0)
+    fallback = str(row.get("fallback_answer", "")).strip()
+    if papers or paper_count > 0 or fallback:
+        grounded.append(row)
+if not grounded:
+    raise Exception("Grounded literature search produced no usable results")
+result = {"search_results": grounded}
 """
 
 INIT_INTERVIEW_STATE_CODE = """\
@@ -864,6 +1222,27 @@ for row in results or []:
         "latex": str(row.get("latex", "")),
     }
 result = {"sections_map": sections_map}
+"""
+
+REQUIRE_DRAFTING_READY_CODE = """\
+review = str(literature_review or "").strip()
+papers = verified_papers if isinstance(verified_papers, list) else []
+unsupported = unsupported_claims if isinstance(unsupported_claims, list) else []
+gaps = identified_gaps if isinstance(identified_gaps, list) else []
+if not review:
+    raise Exception("Literature synthesis missing")
+if not bool(gate_pass):
+    raise Exception("Evidence gate rejected drafting inputs")
+if not papers:
+    raise Exception("No verified papers available for drafting")
+result = {
+    "literature_review": review,
+    "verified_papers": papers,
+    "gate_pass": bool(gate_pass),
+    "coverage_score": coverage_score,
+    "unsupported_claims": unsupported,
+    "identified_gaps": gaps,
+}
 """
 
 ASSEMBLE_LATEX_CODE = """\
@@ -1068,6 +1447,13 @@ result = {
     "compile_success": bool(compile_success),
     "compile_log": compile_log,
     "pdf_path": pdf_path,
+    "deps_ok": bool(deps_ok),
+    "missing_commands": missing_commands if isinstance(missing_commands, list) else [],
+    "dependency_message": dependency_message,
+    "compile_attempted": bool(compile_attempted),
+    "compile_blocked": bool(compile_blocked),
+    "artifact_stage": artifact_stage,
+    "degraded_reasons": degraded_reasons if isinstance(degraded_reasons, list) else [],
 }
 """
 
@@ -1085,6 +1471,13 @@ result = {
     "compile_success": compile_success,
     "compile_log": compile_log,
     "pdf_path": pdf_path,
+    "deps_ok": deps_ok,
+    "missing_commands": missing_commands,
+    "dependency_message": dependency_message,
+    "compile_attempted": compile_attempted,
+    "compile_blocked": compile_blocked,
+    "artifact_stage": artifact_stage,
+    "degraded_reasons": degraded_reasons,
 }
 """
 
@@ -1424,8 +1817,21 @@ REVISE_SECTION_PROMPT = (
 # ---------------------------------------------------------------------------
 
 
-def build_paper_workflow(max_review_iterations: int = 3) -> Any:
+def build_paper_workflow(
+    max_review_iterations: int = 3,
+    *,
+    model_profile: str | dict[str, str] | None = None,
+    default_model: str | None = None,
+    node_model_overrides: dict[str, str] | None = None,
+    output_dir: str = "output",
+) -> Any:
     """Build the grounded paper-writing workflow graph."""
+    profile_name = _resolve_paper_writing_profile_name(model_profile)
+    models = _resolve_paper_writing_models(
+        model_profile=model_profile,
+        default_model=default_model,
+        node_model_overrides=node_model_overrides,
+    )
     wf = workflow(
         "paper_writing",
         description=(
@@ -1439,6 +1845,7 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
     wf.tool(
         "check_latex_deps",
         tool_id="check_latex_deps",
+        tool_config={"template_dir": output_dir},
         input_ports=[],
         output_ports=[
             {"name": "deps_ok"},
@@ -1451,6 +1858,7 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
     # 1) Idea generation
     idea = wf.llm(
         "idea_gen",
+        model=models["idea_gen"],
         prompt=(
             "You are a research AI. Generate a compelling, feasible research idea about: {topic}\n\n"
             "Focus on novelty, managerial relevance, and testable contribution."
@@ -1461,6 +1869,7 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
     # 2) Grounded literature survey pipeline
     aspect_planner = wf.llm(
         "aspect_planner",
+        model=models["aspect_planner"],
         prompt=ASPECT_PLANNER_PROMPT,
         output_schema=ASPECT_PLAN_SCHEMA,
         input_ports=[{"name": "idea"}],
@@ -1491,6 +1900,7 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
         search = lit_body.tool(
             "search_papers",
             tool_id="search_papers",
+            tool_config={"web_search_model": models["web_search"]},
             input_ports=[{"name": "query"}, {"name": "num_results"}, {"name": "aspect"}],
             output_ports=[
                 {"name": "aspect"},
@@ -1509,6 +1919,7 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
 
         survey = lit_body.llm(
             "survey_aspect",
+            model=models["survey_aspect"],
             prompt=SURVEY_ASPECT_PROMPT,
             output_schema=SURVEY_ASPECT_SCHEMA,
             input_ports=[
@@ -1523,15 +1934,51 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
         lit_body.edge(search["papers"], survey["papers"])
         lit_body.edge(search["fallback_answer"], survey["fallback_answer"])
 
+        package_aspect = lit_body.code(
+            "package_aspect_result",
+            code=PACKAGE_ASPECT_RESULT_CODE,
+            input_ports=[
+                {"name": "aspect"},
+                {"name": "summary"},
+                {"name": "key_findings"},
+                {"name": "paper_count"},
+                {"name": "fallback_answer"},
+                {"name": "error"},
+            ],
+            output_ports=[
+                {"name": "aspect"},
+                {"name": "summary"},
+                {"name": "key_findings"},
+                {"name": "paper_count"},
+                {"name": "grounded"},
+                {"name": "fallback_answer"},
+                {"name": "error"},
+            ],
+        )
+        lit_body.edge(survey["aspect"], package_aspect["aspect"])
+        lit_body.edge(survey["summary"], package_aspect["summary"])
+        lit_body.edge(survey["key_findings"], package_aspect["key_findings"])
+        lit_body.edge(search["paper_count"], package_aspect["paper_count"])
+        lit_body.edge(search["fallback_answer"], package_aspect["fallback_answer"])
+        lit_body.edge(search["error"], package_aspect["error"])
+
     lit_ref = NodeRef("lit_search", "for_each", wf)
+    require_lit = wf.code(
+        "require_grounded_literature",
+        code=REQUIRE_GROUNDED_LITERATURE_CODE,
+        input_ports=[{"name": "search_results"}],
+        output_ports=[{"name": "search_results"}],
+    )
+    wf.edge(lit_ref["results"], require_lit["search_results"])
     lit_synth = wf.llm(
         "lit_synthesizer",
+        model=models["lit_synthesizer"],
         prompt=LIT_SYNTHESIZER_PROMPT,
         output_schema=LIT_SYNTHESIS_SCHEMA,
         input_ports=[{"name": "idea"}, {"name": "search_results"}],
     )
     wf.edge(idea["text"], lit_synth["idea"])
-    wf.edge(lit_ref["results"], lit_synth["search_results"])
+    wf.edge(require_lit["search_results"], lit_synth["search_results"])
 
     verify = wf.tool(
         "citation_verifier",
@@ -1547,6 +1994,7 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
 
     claim_gate = wf.llm(
         "claim_evidence_gate",
+        model=models["claim_evidence_gate"],
         prompt=CLAIM_GATE_PROMPT,
         output_schema=CLAIM_GATE_SCHEMA,
         input_ports=[
@@ -1559,8 +2007,36 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
     wf.edge(verify["verified_papers"], claim_gate["verified_papers"])
     wf.edge(lit_synth["identified_gaps"], claim_gate["identified_gaps"])
 
+    require_drafting = wf.code(
+        "require_drafting_inputs",
+        code=REQUIRE_DRAFTING_READY_CODE,
+        input_ports=[
+            {"name": "literature_review"},
+            {"name": "verified_papers"},
+            {"name": "gate_pass"},
+            {"name": "coverage_score"},
+            {"name": "unsupported_claims"},
+            {"name": "identified_gaps"},
+        ],
+        output_ports=[
+            {"name": "literature_review"},
+            {"name": "verified_papers"},
+            {"name": "gate_pass"},
+            {"name": "coverage_score"},
+            {"name": "unsupported_claims"},
+            {"name": "identified_gaps"},
+        ],
+    )
+    wf.edge(lit_synth["literature_review"], require_drafting["literature_review"])
+    wf.edge(verify["verified_papers"], require_drafting["verified_papers"])
+    wf.edge(claim_gate["gate_pass"], require_drafting["gate_pass"])
+    wf.edge(claim_gate["coverage_score"], require_drafting["coverage_score"])
+    wf.edge(claim_gate["unsupported_claims"], require_drafting["unsupported_claims"])
+    wf.edge(lit_synth["identified_gaps"], require_drafting["identified_gaps"])
+
     outline = wf.llm(
         "outline_planner",
+        model=models["outline_planner"],
         prompt=OUTLINE_PROMPT,
         output_schema=OUTLINE_SCHEMA,
         input_ports=[
@@ -1573,11 +2049,11 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
         ],
     )
     wf.edge(idea["text"], outline["idea"])
-    wf.edge(lit_synth["literature_review"], outline["literature_review"])
-    wf.edge(verify["verified_papers"], outline["verified_papers"])
-    wf.edge(claim_gate["gate_pass"], outline["gate_pass"])
-    wf.edge(claim_gate["coverage_score"], outline["coverage_score"])
-    wf.edge(claim_gate["unsupported_claims"], outline["unsupported_claims"])
+    wf.edge(require_drafting["literature_review"], outline["literature_review"])
+    wf.edge(require_drafting["verified_papers"], outline["verified_papers"])
+    wf.edge(require_drafting["gate_pass"], outline["gate_pass"])
+    wf.edge(require_drafting["coverage_score"], outline["coverage_score"])
+    wf.edge(require_drafting["unsupported_claims"], outline["unsupported_claims"])
 
     pack_outline = wf.code(
         "pack_outline",
@@ -1620,7 +2096,7 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
         ],
     )
     wf.edge(idea["text"], init_interview["idea"])
-    wf.edge(lit_synth["literature_review"], init_interview["literature_review"])
+    wf.edge(require_drafting["literature_review"], init_interview["literature_review"])
     wf.edge(pack_outline["outline"], init_interview["outline"])
 
     with wf.while_loop(
@@ -1677,6 +2153,7 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
 
         interviewer = interview_body.llm(
             "interviewer",
+            model=models["interviewer"],
             prompt=INTERVIEWER_PROMPT,
             output_schema=INTERVIEWER_SCHEMA,
             input_ports=[
@@ -1713,6 +2190,7 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
 
         refiner = interview_body.llm(
             "interview_refiner",
+            model=models["interview_refiner"],
             prompt=INTERVIEW_REFINER_PROMPT,
             output_schema=INTERVIEW_REFINER_SCHEMA,
             input_ports=[
@@ -1828,6 +2306,7 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
         )
         write_section = section_body.llm(
             "write_section",
+            model=models["write_section"],
             prompt=WRITE_SECTION_PROMPT,
             output_schema=SECTION_DRAFT_SCHEMA,
             input_ports=[
@@ -1863,12 +2342,13 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
 
     bib = wf.llm(
         "bibtex_builder",
+        model=models["bibtex_builder"],
         prompt=BIBTEX_PROMPT,
         output_schema=BIBTEX_SCHEMA,
         input_ports=[{"name": "sections_map"}, {"name": "verified_papers"}],
     )
     wf.edge(build_sections_map["sections_map"], bib["sections_map"])
-    wf.edge(verify["verified_papers"], bib["verified_papers"])
+    wf.edge(require_drafting["verified_papers"], bib["verified_papers"])
 
     assemble = wf.code(
         "assemble_latex",
@@ -1896,16 +2376,28 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
     wf.edge(build_sections_map["sections_map"], assemble["sections_map"])
     wf.edge(interview_ref["refined_outline"], assemble["outline"])
     wf.edge(bib["bibtex"], assemble["bibtex"])
-    wf.edge(claim_gate["gate_pass"], assemble["evidence_gate_pass"])
-    wf.edge(verify["verified_papers"], assemble["verified_papers"])
+    wf.edge(require_drafting["gate_pass"], assemble["evidence_gate_pass"])
+    wf.edge(require_drafting["verified_papers"], assemble["verified_papers"])
     wf.edge(outline["title"], assemble["title"])
 
     compile_initial = wf.tool(
         "compile_initial_latex",
         tool_id="compile_latex",
-        input_ports=[{"name": "content"}, {"name": "title"}, {"name": "bibtex"}],
+        tool_config={"output_dir": output_dir},
+        input_ports=[
+            {"name": "content"},
+            {"name": "title"},
+            {"name": "bibtex"},
+            {"name": "deps_ok"},
+            {"name": "missing_commands"},
+            {"name": "dependency_message"},
+        ],
         output_ports=[
             {"name": "compile_success"},
+            {"name": "compile_attempted"},
+            {"name": "compile_blocked"},
+            {"name": "artifact_stage"},
+            {"name": "degraded_reasons"},
             {"name": "pdf_path"},
             {"name": "compile_log"},
             {"name": "tex_path"},
@@ -1915,6 +2407,15 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
     wf.edge(assemble["draft_tex"], compile_initial["content"])
     wf.edge(assemble["title"], compile_initial["title"])
     wf.edge(assemble["bibtex"], compile_initial["bibtex"])
+    wf.edge(NodeRef("check_latex_deps", "tool_operator", wf)["deps_ok"], compile_initial["deps_ok"])
+    wf.edge(
+        NodeRef("check_latex_deps", "tool_operator", wf)["missing_commands"],
+        compile_initial["missing_commands"],
+    )
+    wf.edge(
+        NodeRef("check_latex_deps", "tool_operator", wf)["dependency_message"],
+        compile_initial["dependency_message"],
+    )
 
     # 5) Multi-role review and revise loop
     with wf.while_loop(
@@ -1936,6 +2437,13 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
             {"name": "compile_success"},
             {"name": "compile_log"},
             {"name": "pdf_path"},
+            {"name": "deps_ok"},
+            {"name": "missing_commands"},
+            {"name": "dependency_message"},
+            {"name": "compile_attempted"},
+            {"name": "compile_blocked"},
+            {"name": "artifact_stage"},
+            {"name": "degraded_reasons"},
         ],
         output_ports=[
             {"name": "draft_tex"},
@@ -1950,6 +2458,13 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
             {"name": "compile_success"},
             {"name": "compile_log"},
             {"name": "pdf_path"},
+            {"name": "deps_ok"},
+            {"name": "missing_commands"},
+            {"name": "dependency_message"},
+            {"name": "compile_attempted"},
+            {"name": "compile_blocked"},
+            {"name": "artifact_stage"},
+            {"name": "degraded_reasons"},
         ],
     ) as review_body:
         review_inputs = review_body.code(
@@ -1968,6 +2483,13 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
                 {"name": "compile_success"},
                 {"name": "compile_log"},
                 {"name": "pdf_path"},
+                {"name": "deps_ok"},
+                {"name": "missing_commands"},
+                {"name": "dependency_message"},
+                {"name": "compile_attempted"},
+                {"name": "compile_blocked"},
+                {"name": "artifact_stage"},
+                {"name": "degraded_reasons"},
             ],
             output_ports=[
                 {"name": "draft_tex"},
@@ -1982,11 +2504,19 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
                 {"name": "compile_success"},
                 {"name": "compile_log"},
                 {"name": "pdf_path"},
+                {"name": "deps_ok"},
+                {"name": "missing_commands"},
+                {"name": "dependency_message"},
+                {"name": "compile_attempted"},
+                {"name": "compile_blocked"},
+                {"name": "artifact_stage"},
+                {"name": "degraded_reasons"},
             ],
         )
 
         method_reviewer = review_body.llm(
             "method_reviewer",
+            model=models["method_reviewer"],
             prompt=REVIEWER_PROMPT_TEMPLATE.replace("{role_name}", "methodology"),
             output_schema=REVIEWER_SCHEMA,
             input_ports=[{"name": "draft_tex"}, {"name": "outline"}, {"name": "feedback"}],
@@ -1996,6 +2526,7 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
         review_body.edge(review_inputs["feedback"], method_reviewer["feedback"])
         writing_reviewer = review_body.llm(
             "writing_reviewer",
+            model=models["writing_reviewer"],
             prompt=REVIEWER_PROMPT_TEMPLATE.replace(
                 "{role_name}",
                 "writing and argument quality",
@@ -2008,6 +2539,7 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
         review_body.edge(review_inputs["feedback"], writing_reviewer["feedback"])
         venue_reviewer = review_body.llm(
             "venue_reviewer",
+            model=models["venue_reviewer"],
             prompt=REVIEWER_PROMPT_TEMPLATE.replace(
                 "{role_name}",
                 "venue fit and contribution positioning",
@@ -2021,6 +2553,7 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
 
         merger = review_body.llm(
             "review_merger",
+            model=models["review_merger"],
             prompt=REVIEW_MERGER_PROMPT,
             output_schema=REVIEW_MERGER_SCHEMA,
             input_ports=[
@@ -2089,6 +2622,7 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
             )
             revise_section = revise_body.llm(
                 "revise_section",
+                model=models["revise_section"],
                 prompt=REVISE_SECTION_PROMPT,
                 output_schema=REVISED_SECTION_SCHEMA,
                 input_ports=[
@@ -2150,9 +2684,21 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
         recompile = review_body.tool(
             "recompile_latex",
             tool_id="compile_latex",
-            input_ports=[{"name": "content"}, {"name": "title"}, {"name": "bibtex"}],
+            tool_config={"output_dir": output_dir},
+            input_ports=[
+                {"name": "content"},
+                {"name": "title"},
+                {"name": "bibtex"},
+                {"name": "deps_ok"},
+                {"name": "missing_commands"},
+                {"name": "dependency_message"},
+            ],
             output_ports=[
                 {"name": "compile_success"},
+                {"name": "compile_attempted"},
+                {"name": "compile_blocked"},
+                {"name": "artifact_stage"},
+                {"name": "degraded_reasons"},
                 {"name": "pdf_path"},
                 {"name": "compile_log"},
                 {"name": "tex_path"},
@@ -2162,9 +2708,13 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
         review_body.edge(reassemble["draft_tex"], recompile["content"])
         review_body.edge(reassemble["title"], recompile["title"])
         review_body.edge(reassemble["bibtex"], recompile["bibtex"])
+        review_body.edge(review_inputs["deps_ok"], recompile["deps_ok"])
+        review_body.edge(review_inputs["missing_commands"], recompile["missing_commands"])
+        review_body.edge(review_inputs["dependency_message"], recompile["dependency_message"])
 
         review_gate = review_body.llm(
             "review_claim_gate",
+            model=models["review_claim_gate"],
             prompt=CLAIM_GATE_PROMPT,
             output_schema=CLAIM_GATE_SCHEMA,
             input_ports=[
@@ -2195,6 +2745,13 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
                 {"name": "compile_success"},
                 {"name": "compile_log"},
                 {"name": "pdf_path"},
+                {"name": "deps_ok"},
+                {"name": "missing_commands"},
+                {"name": "dependency_message"},
+                {"name": "compile_attempted"},
+                {"name": "compile_blocked"},
+                {"name": "artifact_stage"},
+                {"name": "degraded_reasons"},
             ],
             output_ports=[
                 {"name": "draft_tex"},
@@ -2209,6 +2766,13 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
                 {"name": "compile_success"},
                 {"name": "compile_log"},
                 {"name": "pdf_path"},
+                {"name": "deps_ok"},
+                {"name": "missing_commands"},
+                {"name": "dependency_message"},
+                {"name": "compile_attempted"},
+                {"name": "compile_blocked"},
+                {"name": "artifact_stage"},
+                {"name": "degraded_reasons"},
             ],
         )
         review_body.edge(reassemble["draft_tex"], update_review["draft_tex"])
@@ -2225,6 +2789,13 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
         review_body.edge(recompile["compile_success"], update_review["compile_success"])
         review_body.edge(recompile["compile_log"], update_review["compile_log"])
         review_body.edge(recompile["pdf_path"], update_review["pdf_path"])
+        review_body.edge(review_inputs["deps_ok"], update_review["deps_ok"])
+        review_body.edge(review_inputs["missing_commands"], update_review["missing_commands"])
+        review_body.edge(review_inputs["dependency_message"], update_review["dependency_message"])
+        review_body.edge(recompile["compile_attempted"], update_review["compile_attempted"])
+        review_body.edge(recompile["compile_blocked"], update_review["compile_blocked"])
+        review_body.edge(recompile["artifact_stage"], update_review["artifact_stage"])
+        review_body.edge(recompile["degraded_reasons"], update_review["degraded_reasons"])
 
     review_ref = NodeRef("review_loop", "while_loop", wf)
     for port in [
@@ -2239,13 +2810,28 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
         "verified_papers",
     ]:
         wf.edge(assemble[port], review_ref[port])
-    for port in ["compile_success", "compile_log", "pdf_path"]:
+    for port in [
+        "compile_success",
+        "compile_attempted",
+        "compile_blocked",
+        "artifact_stage",
+        "degraded_reasons",
+        "compile_log",
+        "pdf_path",
+    ]:
         wf.edge(compile_initial[port], review_ref[port])
+    for port in ["deps_ok", "missing_commands", "dependency_message"]:
+        wf.edge(NodeRef("check_latex_deps", "tool_operator", wf)[port], review_ref[port])
 
     # 6) Persist and package outputs
     save = wf.tool(
         "save_paper",
         tool_id="save_paper",
+        tool_config={
+            "output_dir": output_dir,
+            "model_profile_name": profile_name,
+            "model_selection": models,
+        },
         input_ports=[
             {"name": "content"},
             {"name": "title"},
@@ -2253,6 +2839,13 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
             {"name": "pdf_path"},
             {"name": "compile_log"},
             {"name": "verdict"},
+            {"name": "compile_success"},
+            {"name": "compile_attempted"},
+            {"name": "compile_blocked"},
+            {"name": "artifact_stage"},
+            {"name": "degraded_reasons"},
+            {"name": "evidence_gate_pass"},
+            {"name": "dependency_message"},
         ],
         output_ports=[
             {"name": "saved_path"},
@@ -2263,6 +2856,10 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
             {"name": "compile_log_path"},
             {"name": "summary_path"},
             {"name": "verdict"},
+            {"name": "artifact_status"},
+            {"name": "artifact_stage"},
+            {"name": "submission_ready"},
+            {"name": "degraded_reasons"},
         ],
     )
     wf.edge(review_ref["draft_tex"], save["content"])
@@ -2271,10 +2868,21 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
     wf.edge(review_ref["pdf_path"], save["pdf_path"])
     wf.edge(review_ref["compile_log"], save["compile_log"])
     wf.edge(review_ref["verdict"], save["verdict"])
+    wf.edge(review_ref["compile_success"], save["compile_success"])
+    wf.edge(review_ref["compile_attempted"], save["compile_attempted"])
+    wf.edge(review_ref["compile_blocked"], save["compile_blocked"])
+    wf.edge(review_ref["artifact_stage"], save["artifact_stage"])
+    wf.edge(review_ref["degraded_reasons"], save["degraded_reasons"])
+    wf.edge(review_ref["evidence_gate_pass"], save["evidence_gate_pass"])
+    wf.edge(
+        NodeRef("check_latex_deps", "tool_operator", wf)["dependency_message"],
+        save["dependency_message"],
+    )
 
     pack = wf.tool(
         "package_submission",
         tool_id="package_submission",
+        tool_config={"output_dir": output_dir},
         input_ports=[
             {"name": "title"},
             {"name": "tex_path"},
@@ -2283,12 +2891,25 @@ def build_paper_workflow(max_review_iterations: int = 3) -> Any:
             {"name": "compile_log_path"},
             {"name": "summary_path"},
         ],
-        output_ports=[{"name": "bundle_path"}, {"name": "saved_path"}, {"name": "title"}],
+        output_ports=[
+            {"name": "bundle_path"},
+            {"name": "saved_path"},
+            {"name": "title"},
+            {"name": "bundle_kind"},
+            {"name": "package_status"},
+            {"name": "submission_ready"},
+            {"name": "manifest_path"},
+            {"name": "degraded_reasons"},
+        ],
     )
     for p in ["title", "tex_path", "bib_path", "pdf_path", "compile_log_path", "summary_path"]:
         wf.edge(save[p], pack[p])
 
-    return wf.build()
+    graph = wf.build()
+    for node in graph.nodes:
+        if node.id in {"save_paper", "package_submission"}:
+            node.metadata["allow_dead_inputs"] = True
+    return graph
 
 
 # ---------------------------------------------------------------------------
@@ -2301,12 +2922,16 @@ def create_engine(
     checkpoint_enabled: bool = False,
     event_callback: Any = None,
     human_input_callback: Any = None,
+    default_model: str | None = None,
 ) -> Engine:
     """Create an Engine with custom ToolRegistry wiring."""
     config = EngineConfig(
         llm_base_url=os.getenv("DAN_LLM_BASE_URL", "https://api.vectorengine.ai/v1"),
         llm_api_key=os.getenv("DAN_LLM_API_KEY", ""),
-        llm_default_model=os.getenv("DAN_LLM_MODEL", "claude-sonnet-4-6"),
+        llm_default_model=str(
+            default_model or os.getenv("DAN_LLM_MODEL", "claude-sonnet-4-6")
+        ).strip()
+        or "claude-sonnet-4-6",
         checkpoint_enabled=checkpoint_enabled,
     )
 
@@ -2376,8 +3001,36 @@ async def log_event(event: EngineEvent) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def main(topic: str, max_review: int = 3, no_human: bool = False) -> None:
-    graph = build_paper_workflow(max_review_iterations=max_review)
+def build() -> Any:
+    """`dan-run` entrypoint for the benchmark-smoke paper-writing workflow."""
+    profile = os.getenv("DAN_PAPER_WRITING_MODEL_PROFILE") or None
+    default_model = (
+        os.getenv("DAN_PAPER_WRITING_MODEL")
+        or os.getenv("DAN_LLM_MODEL")
+        or None
+    )
+    output_dir = os.getenv("DAN_PAPER_WRITING_OUTPUT_DIR", "output")
+    return build_paper_workflow(
+        model_profile=profile,
+        default_model=default_model,
+        output_dir=output_dir,
+    )
+
+
+async def main(
+    topic: str,
+    max_review: int = 3,
+    no_human: bool = False,
+    model_profile: str | None = None,
+    default_model: str | None = None,
+    output_dir: str = "output",
+) -> None:
+    graph = build_paper_workflow(
+        max_review_iterations=max_review,
+        model_profile=model_profile,
+        default_model=default_model,
+        output_dir=output_dir,
+    )
 
     graphs_dir = Path("graphs")
     graphs_dir.mkdir(exist_ok=True)
@@ -2388,12 +3041,20 @@ async def main(topic: str, max_review: int = 3, no_human: bool = False) -> None:
     engine = create_engine(
         event_callback=log_event,
         human_input_callback=None if no_human else cli_human_input,
+        default_model=default_model,
     )
     result = await engine.run(graph, inputs={"topic": topic})
 
     if result.success:
         print("\nRun outputs:")
-        for key in ("saved_path", "bundle_path", "title"):
+        for key in (
+            "saved_path",
+            "bundle_path",
+            "title",
+            "package_status",
+            "bundle_kind",
+            "submission_ready",
+        ):
             if key in result.outputs:
                 print(f"  - {key}: {result.outputs[key]}")
         print(f"Node statuses: {result.node_statuses}")
@@ -2410,6 +3071,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Grounded paper-writing workflow demo")
     parser.add_argument("topic", nargs="?", default="supply chain resilience under climate change")
     parser.add_argument("--max-review", type=int, default=3)
+    parser.add_argument(
+        "--model-profile",
+        choices=sorted(PAPER_WRITING_MODEL_PROFILES),
+        default=os.getenv("DAN_PAPER_WRITING_MODEL_PROFILE", "single_model"),
+        help="Explicit paper-writing model profile.",
+    )
+    parser.add_argument(
+        "--model",
+        default=os.getenv("DAN_PAPER_WRITING_MODEL", ""),
+        help="Default model for the selected paper-writing profile.",
+    )
+    parser.add_argument("--output-dir", default="output")
     parser.add_argument("--no-human", action="store_true", help="Skip interactive human callback")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
@@ -2419,4 +3092,13 @@ if __name__ == "__main__":
     else:
         logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    asyncio.run(main(args.topic, args.max_review, args.no_human))
+    asyncio.run(
+        main(
+            args.topic,
+            args.max_review,
+            args.no_human,
+            args.model_profile,
+            args.model or None,
+            args.output_dir,
+        )
+    )

@@ -111,7 +111,9 @@ class TestPaperWritingParity:
 
     def test_markdown_has_human_node(self, md_graph: Graph) -> None:
         nodes = _all_nodes(md_graph)
-        human_nodes = [n for n in nodes if n.node_type == "human_in_the_loop"]
+        human_nodes = [
+            n for n in nodes if n.node_type in {"human", "human_in_the_loop"}
+        ]
         assert len(human_nodes) >= 1
 
     def test_python_has_human_node(self, py_graph: Graph) -> None:
@@ -145,14 +147,14 @@ class TestPaperWritingParity:
         assert len(data_edges) >= 5
 
     def test_semantic_node_type_overlap(self, md_graph: Graph, py_graph: Graph) -> None:
-        """Both graphs have overlapping user-authored node types (llm, tool, code, human)."""
+        """Both graphs share the core authored operator families."""
         md_nodes = _all_nodes(md_graph)
         py_nodes = _all_nodes(py_graph)
         md_types = _user_authored_node_types(md_nodes)
         py_types = _user_authored_node_types(py_nodes)
         overlap = md_types & py_types
         assert "llm_operator" in overlap
-        assert "human_in_the_loop" in overlap
+        assert ("human" in md_types) or ("human_in_the_loop" in overlap)
         assert "for_each" in overlap or "gate" in md_types or "while_loop" in py_types
 
     def test_documents_known_gaps(self, md_graph: Graph) -> None:
