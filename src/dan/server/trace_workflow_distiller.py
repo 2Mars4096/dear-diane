@@ -9,6 +9,7 @@ The initial scope is intentionally narrow:
 
 from __future__ import annotations
 
+import copy
 import re
 from typing import Any
 
@@ -65,6 +66,23 @@ _SKIP_TOOLS = {
 }
 
 _ParamRef = tuple[str, str, str]
+_TRACE_PROMOTION_TAGS = ("distilled", "trace-promoted")
+_TRACE_ID_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "for",
+    "from",
+    "in",
+    "into",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "using",
+    "with",
+}
 
 
 def distill_workflow_trace_from_audit(record: Any) -> TraceWorkflowDraft | None:
@@ -112,6 +130,76 @@ def distill_workflow_trace_from_audit(record: Any) -> TraceWorkflowDraft | None:
         action_trace=actions,
         workflow_intent=intent,
     )
+
+
+def suggest_trace_workflow_name(draft: TraceWorkflowDraft) -> str:
+    """Return a human-readable name for a promoted trace workflow."""
+    goal = str(draft.generalized_goal or draft.workflow_intent.goal or "").strip()
+    if not goal:
+        suffix = str(draft.source_turn_id or "").strip()
+        return f"Distilled workflow {suffix}" if suffix else "Distilled workflow"
+    goal = re.sub(r"\s+", " ", goal)
+    return goal[:96]
+
+
+def suggest_trace_workflow_id(draft: TraceWorkflowDraft) -> str:
+    """Return a stable graph-store-safe id for a promoted trace workflow."""
+    text = str(draft.generalized_goal or draft.workflow_intent.goal or draft.summary or "").lower()
+    text = re.sub(r"\{[^{}]+\}", " ", text)
+    tokens = re.findall(r"[a-z0-9]+", text)
+    preferred = [token for token in tokens if token not in _TRACE_ID_STOPWORDS] or tokens
+    if not preferred:
+        return "distilled-workflow"
+
+    picked: list[str] = []
+    for token in preferred:
+        candidate = "-".join([*picked, token])
+        if len(f"distilled-{candidate}") > 64:
+            break
+        picked.append(token)
+        if len(picked) >= 6:
+            break
+    slug = "-".join(picked).strip("-")
+    return f"distilled-{slug or 'workflow'}"
+
+
+def prepare_trace_workflow_graph_for_promotion(
+    graph_dict: dict[str, Any],
+    draft: TraceWorkflowDraft,
+    *,
+    workflow_id: str,
+) -> dict[str, Any]:
+    """Attach trace-promotion metadata to a validated graph before persistence."""
+    candidate = copy.deepcopy(graph_dict if isinstance(graph_dict, dict) else {})
+    metadata = candidate.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        candidate["metadata"] = metadata
+
+    metadata["name"] = suggest_trace_workflow_name(draft)
+    if not str(metadata.get("description") or "").strip():
+        metadata["description"] = _promotion_description(draft, workflow_id=workflow_id)
+
+    existing_tags = metadata.get("tags")
+    tags = list(existing_tags) if isinstance(existing_tags, list) else []
+    for tag in _TRACE_PROMOTION_TAGS:
+        if tag not in tags:
+            tags.append(tag)
+    metadata["tags"] = tags
+    return candidate
+
+
+def _promotion_description(draft: TraceWorkflowDraft, *, workflow_id: str) -> str:
+    parts = [
+        f"Distilled from audited turn {draft.source_turn_id or 'unknown'} into workflow '{workflow_id}'.",
+    ]
+    if draft.source_workflow_id:
+        parts.append(f"Source workflow: {draft.source_workflow_id}.")
+    if draft.source_run_id:
+        parts.append(f"Source run: {draft.source_run_id}.")
+    if draft.summary:
+        parts.append(draft.summary)
+    return " ".join(parts)
 
 
 def _normalize_tool_call(
@@ -392,6 +480,13 @@ def _build_stage_sequence(
             if action.generalized_args:
                 config["generalized_args"] = action.generalized_args
         elif action.stage_type == StageType.code_execution:
+            config.update(
+                _build_code_execution_stage_config(
+                    action=action,
+                    output_name=output_name,
+                    include_chain_input=bool(prev_output),
+                )
+            )
             if action.generalized_args:
                 config["generalized_args"] = action.generalized_args
         stages.append(
@@ -407,6 +502,60 @@ def _build_stage_sequence(
         prev_output = output_name
 
     return stages
+
+
+def _build_code_execution_stage_config(
+    *,
+    action: TraceWorkflowAction,
+    output_name: str,
+    include_chain_input: bool,
+) -> dict[str, Any]:
+    input_ports: list[dict[str, Any]] = []
+    if include_chain_input:
+        input_ports.append({"name": "input", "required": False})
+    for ref in action.parameter_refs:
+        if ref == "input":
+            continue
+        input_ports.append({"name": ref, "required": False})
+    return {
+        "code": _distilled_code_execution_code(
+            action=action,
+            output_name=output_name,
+            include_chain_input=include_chain_input,
+        ),
+        "input_ports": input_ports,
+        "output_ports": [{"name": output_name}],
+    }
+
+
+def _distilled_code_execution_code(
+    *,
+    action: TraceWorkflowAction,
+    output_name: str,
+    include_chain_input: bool,
+) -> str:
+    lines = [
+        f"generalized_args = {repr(action.generalized_args)}",
+        "payload = {}",
+    ]
+    if include_chain_input:
+        lines.append("if input is not None:")
+        lines.append('    payload["input"] = input')
+    for ref in action.parameter_refs:
+        if ref == "input":
+            continue
+        lines.append(f'if {ref} is not None:')
+        lines.append(f'    payload["{ref}"] = {ref}')
+    lines.extend(
+        [
+            "if generalized_args:",
+            '    payload["generalized_args"] = generalized_args',
+            "if not payload:",
+            "    payload = dict(inputs)",
+            f'result = {{"{output_name}": payload}}',
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _preferred_stage_name(tool_name: str) -> str:

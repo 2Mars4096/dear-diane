@@ -291,7 +291,10 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
 @router.post("/api/graphs/{graph_id}/validate")
 async def validate_graph_endpoint(graph_id: str):
     from dan.models.graph import Graph
-    from dan.meta.workflow_contract import validate_workflow_build_contract
+    from dan.meta.workflow_contract import (
+        classify_run_readiness_issues,
+        validate_workflow_build_contract,
+    )
     from dan.validation.graph import validate_graph
 
     gs = get_graph_store()
@@ -306,6 +309,7 @@ async def validate_graph_endpoint(graph_id: str):
             "warnings": [],
             "run_ready": False,
             "run_readiness_issues": [f"Graph parse error: {exc}"],
+            "run_readiness_failure_mode": None,
         }
 
     raw_errors = validate_graph(graph)
@@ -343,6 +347,9 @@ async def validate_graph_endpoint(graph_id: str):
         "warnings": warnings,
         "run_ready": contract_report.run_ready,
         "run_readiness_issues": list(contract_report.run_readiness_issues),
+        "run_readiness_failure_mode": classify_run_readiness_issues(
+            contract_report.run_readiness_issues
+        ),
     }
 
 
