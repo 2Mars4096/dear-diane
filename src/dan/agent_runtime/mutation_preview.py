@@ -46,6 +46,7 @@ class PreparedMutationAutoApply:
     status: str
     graph_to_save: dict[str, Any] | None = None
     validation_errors: tuple[str, ...] = ()
+    contract_report: Any | None = None
 
 
 def _coerce_strict_edges(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -640,6 +641,7 @@ def prepare_mutation_auto_apply(
         return PreparedMutationAutoApply(
             status="ready_to_save",
             graph_to_save=contract_report.graph_dict or apply_result.new_graph,
+            contract_report=contract_report,
         )
 
     return PreparedMutationAutoApply(
@@ -650,6 +652,7 @@ def prepare_mutation_auto_apply(
                 default_message=blocked_default_message,
             )
         ),
+        contract_report=contract_report,
     )
 
 

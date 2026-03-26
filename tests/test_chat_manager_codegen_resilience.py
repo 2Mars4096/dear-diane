@@ -12,6 +12,7 @@ import dan.meta.graph_quality as graph_quality_module
 import dan.meta.planner as planner_module
 import dan.sandbox.runner as sandbox_runner_module
 import dan.server.chat_manager as chat_manager_module
+from dan.builder import workflow
 from dan.meta.planner import CodegenResult, ValidationResult
 from dan.providers import CompletionResult
 from dan.providers.registry import ProviderRegistry
@@ -250,6 +251,107 @@ def test_workflow_generation_acceptance_helper_reports_validation_failure() -> N
     assert result.accepted_graph is None
     assert result.errors
     assert result.errors[0].message == "missing required node"
+
+
+def test_workflow_generation_acceptance_helper_surfaces_run_readiness_failures() -> None:
+    helper = _load_workflow_acceptance_helper()
+    graph_dict = {"nodes": [{"id": "compute"}], "edges": []}
+    validation_result = SimpleNamespace(
+        success=True,
+        run_ready=False,
+        errors=[],
+        run_readiness_failure_mode="non_runnable_code",
+        contract_report=SimpleNamespace(
+            run_readiness_issues=[
+                "Code node 'compute' contains placeholder status payload code instead of runnable logic."
+            ]
+        ),
+        graph=None,
+    )
+    quality_report = SimpleNamespace(
+        overall_score=0,
+        concerns=[],
+    )
+
+    result = _call_workflow_acceptance_helper(
+        helper,
+        graph_dict=graph_dict,
+        validation_result=validation_result,
+        quality_report=quality_report,
+    )
+
+    assert result.accepted_graph is None
+    assert result.errors
+    assert (
+        result.errors[0].message
+        == "Code node 'compute' contains placeholder status payload code instead of runnable logic."
+    )
+
+
+@pytest.mark.asyncio
+async def test_placeholder_code_failure_mode_surfaces_in_runtime_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _make_manager([
+        CompletionResult(text="not json"),
+        CompletionResult(text="graph = {}"),
+    ])
+    monkeypatch.setattr(chat_manager_module.asyncio, "sleep", _fast_sleep)
+    monkeypatch.setattr(manager, "_emit_intent_extraction_telemetry", lambda **kwargs: None)
+
+    wf = workflow("placeholder_runtime")
+    wf.code(
+        "compute",
+        code='result = {"status": "placeholder", "task": "compute metrics"}',
+    )
+    placeholder_graph = wf.build().model_dump(mode="json")
+
+    async def fake_sandbox(code: str) -> tuple[dict | None, Any]:
+        return (
+            placeholder_graph,
+            CodegenResult(success=True, graph=placeholder_graph, source_code=code),
+        )
+
+    monkeypatch.setattr(manager, "_sandbox_exec_builder_code", fake_sandbox)
+
+    diagnosis_errors: list[Any] = []
+
+    class FakeDiagnosisLoop:
+        def __init__(self, max_attempts: int) -> None:
+            self.max_attempts = max_attempts
+
+        async def diagnose_and_repair(self, **kwargs: Any) -> Any:
+            diagnosis_errors.extend(kwargs["errors"])
+            return SimpleNamespace(success=False, final_graph=None)
+
+    monkeypatch.setattr(diagnosis_module, "DiagnosisLoop", FakeDiagnosisLoop)
+    monkeypatch.setattr(
+        diagnosis_module,
+        "generation_repair_attempt_budget",
+        lambda default=4: 1,
+    )
+
+    graph, events = await manager._generate_workflow_from_intent(
+        "Compute metrics from the uploaded data",
+        "wf-placeholder",
+        "ch-placeholder",
+    )
+
+    assert graph is None
+    validation_events = [event for event in events if event.type == "chat_validation_result"]
+    summary_events = [event for event in events if event.type == "chat_generation_summary"]
+    assert validation_events
+    assert summary_events
+    assert validation_events[-1].failure_mode == "non_runnable_code"
+    assert validation_events[-1].build_status == "validated"
+    assert validation_events[-1].failure_bucket == "semantic_reprompt_or_diagnosis"
+    assert validation_events[-1].handoff_reason == "run_readiness_gap"
+    assert "not run-ready" in str(validation_events[-1].build_summary).lower()
+    assert summary_events[-1].failure_mode == "non_runnable_code"
+    assert summary_events[-1].build_status == "validated"
+    assert summary_events[-1].failure_bucket == "semantic_reprompt_or_diagnosis"
+    assert diagnosis_errors
+    assert "placeholder" in diagnosis_errors[0].message.lower()
 
 
 @pytest.mark.asyncio

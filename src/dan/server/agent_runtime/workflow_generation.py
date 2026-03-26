@@ -11,8 +11,10 @@ import uuid
 from typing import Any, Awaitable, Callable
 
 from dan.providers import CompletionResult
+from dan.meta.workflow_contract import workflow_build_provenance
 from dan.server.agent_runtime.workflow_generation_acceptance import (
     accept_candidate_graph,
+    collect_validation_errors,
 )
 from dan.server.agent_runtime.workflow_generation_codegen import (
     request_builder_code,
@@ -100,6 +102,8 @@ class WorkflowGenerationRuntime:
         _result_node_count: int | None = None
         _path_taken = "none"
         _progress_emitted = False
+        _final_failure_mode: str | None = None
+        _last_build_provenance = workflow_build_provenance(None)
 
         def _emit_progress(phase: str) -> None:
             nonlocal _progress_emitted
@@ -134,17 +138,38 @@ class WorkflowGenerationRuntime:
                 node_count=_result_node_count,
                 complexity_tier=complexity_tier,
                 pre_generation_ms=_pre_generation_ms,
+                failure_mode=_final_failure_mode,
+                **_last_build_provenance,
             )
 
         def _validation_event(validation: Any) -> ChatValidationResultEvent:
-            errors = [e.message for e in validation.errors[:5]]
+            nonlocal _final_failure_mode, _last_build_provenance
+            errors = [e.message for e in collect_validation_errors(validation)[:5]]
             contract_report = getattr(validation, "contract_report", None)
             if contract_report is not None and not getattr(validation, "run_ready", True):
-                errors.extend(contract_report.run_readiness_issues[:5])
+                for issue in contract_report.run_readiness_issues[:5]:
+                    if issue not in errors:
+                        errors.append(issue)
+                _last_build_provenance = workflow_build_provenance(contract_report)
+            elif contract_report is not None:
+                _last_build_provenance = workflow_build_provenance(contract_report)
+            if bool(validation.success and getattr(validation, "run_ready", True)):
+                _final_failure_mode = None
+            else:
+                failure_mode = getattr(validation, "run_readiness_failure_mode", None)
+                if failure_mode:
+                    _final_failure_mode = failure_mode
+            provenance = (
+                _last_build_provenance
+                if contract_report is not None
+                else workflow_build_provenance(None)
+            )
             return ChatValidationResultEvent(
                 success=bool(validation.success and getattr(validation, "run_ready", True)),
                 error_count=len(errors),
                 errors=errors,
+                failure_mode=getattr(validation, "run_readiness_failure_mode", None),
+                **provenance,
             )
 
         def _fit_check(graph_dict: dict) -> None:
@@ -209,7 +234,7 @@ class WorkflowGenerationRuntime:
         def _diagnosis_graph_validator(graph_dict: dict) -> list[GenerationError]:
             validation = validate_codegen_output(graph_dict)
             if not (validation.success and validation.run_ready):
-                return list(validation.errors)
+                return list(collect_validation_errors(validation))
             quality_error = _quality_error_for_graph(
                 graph_dict,
                 warning_message="Graph quality %d below threshold %d, retrying diagnosis",

@@ -248,6 +248,10 @@ from dan.agent_runtime.mutation_preview import (
     prepare_mutation_auto_apply,
     workflow_contract_errors as _workflow_contract_errors,
 )
+from dan.meta.workflow_contract import (
+    classify_run_readiness_issues as _classify_run_readiness_issues,
+    workflow_build_provenance as _workflow_build_provenance,
+)
 from dan.agent_runtime.capability_calls import (
     annotate_capability_call_plan,
     build_pending_capability_calls,
@@ -1155,6 +1159,7 @@ class ChatManager:
                         edge_count=new_summary.edge_count,
                         node_preview_items=node_preview_items,
                         generation_summary_event=generation_summary_event,
+                        build_summary=getattr(generation_summary_event, "build_summary", None),
                     )
                     terminal_reply = build_persisted_workflow_reply(
                         workflow_id=workflow_id,
@@ -1212,12 +1217,24 @@ class ChatManager:
                         )
                         if prepared_save.validation_errors:
                             errors = list(prepared_save.validation_errors)
+                            provenance = _workflow_build_provenance(prepared_save.contract_report)
                             yield ChatValidationResultEvent(
                                 success=False,
                                 error_count=len(errors),
                                 errors=errors,
+                                failure_mode=_classify_run_readiness_issues(
+                                    list(getattr(prepared_save.contract_report, "run_readiness_issues", []) or [])
+                                ),
+                                **provenance,
                             )
                         elif prepared_save.graph_to_save is not None:
+                            provenance = _workflow_build_provenance(prepared_save.contract_report)
+                            yield ChatValidationResultEvent(
+                                success=True,
+                                error_count=0,
+                                errors=[],
+                                **provenance,
+                            )
                             graph_dict = self._graph_store.save_graph(
                                 workflow_id,
                                 prepared_save.graph_to_save,
@@ -1231,7 +1248,10 @@ class ChatManager:
                                 )
                             except Exception:
                                 pass
-                            macro_msg = build_structural_macro_message(dispatch)
+                            macro_msg = build_structural_macro_message(
+                                dispatch,
+                                build_summary=provenance.get("build_summary"),
+                            )
                             message_id = uuid.uuid4().hex[:12]
                             terminal_reply = build_persisted_workflow_reply(
                                 workflow_id=workflow_id,
@@ -2151,13 +2171,25 @@ class ChatManager:
                         )
                         if auto_apply_outcome.status in {"validation_error", "blocked"}:
                             errors = list(auto_apply_outcome.validation_errors)
+                            provenance = _workflow_build_provenance(auto_apply_outcome.contract_report)
                             yield ChatValidationResultEvent(
                                 success=False,
                                 error_count=len(errors),
                                 errors=errors,
+                                failure_mode=_classify_run_readiness_issues(
+                                    list(getattr(auto_apply_outcome.contract_report, "run_readiness_issues", []) or [])
+                                ),
+                                **provenance,
                             )
                             mutation_metrics.record_apply(False)
                         elif auto_apply_outcome.status == "ready_to_save":
+                            provenance = _workflow_build_provenance(auto_apply_outcome.contract_report)
+                            yield ChatValidationResultEvent(
+                                success=True,
+                                error_count=0,
+                                errors=[],
+                                **provenance,
+                            )
                             graph_dict = self._graph_store.save_graph(
                                 workflow_id,
                                 auto_apply_outcome.graph_to_save,

@@ -14,6 +14,42 @@ class WorkflowGenerationAcceptanceResult:
     errors: tuple[Any, ...] = ()
 
 
+def collect_validation_errors(validation: Any) -> list[Any]:
+    errors = list(getattr(validation, "errors", []) or [])
+    if errors:
+        return errors
+
+    if getattr(validation, "run_ready", True):
+        return []
+
+    issues = [
+        str(issue).strip()
+        for issue in (getattr(validation, "run_readiness_issues", None) or [])
+        if str(issue).strip()
+    ]
+    if not issues:
+        contract_report = getattr(validation, "contract_report", None)
+        issues = [
+            str(issue).strip()
+            for issue in (getattr(contract_report, "run_readiness_issues", None) or [])
+            if str(issue).strip()
+        ]
+    if not issues:
+        return []
+
+    from dan.meta.diagnosis import GenerationError, GenerationErrorType, GenerationStage
+
+    return [
+        GenerationError(
+            stage=GenerationStage.validation,
+            error_type=GenerationErrorType.build_error,
+            message=issue,
+            recoverable=True,
+        )
+        for issue in issues
+    ]
+
+
 def accept_candidate_graph(
     graph_dict: dict[str, Any],
     *,
@@ -52,7 +88,7 @@ def accept_candidate_graph(
             )
         errors = [quality_error]
     else:
-        errors = list(validation.errors)
+        errors = collect_validation_errors(validation)
 
     error_type = (
         getattr(getattr(errors[0], "error_type", None), "value", None)
@@ -70,6 +106,7 @@ def accept_candidate_graph(
 
 
 __all__ = [
+    "collect_validation_errors",
     "WorkflowGenerationAcceptanceResult",
     "accept_candidate_graph",
 ]

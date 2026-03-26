@@ -130,6 +130,13 @@ class ChatValidationResultEvent(BaseModel):
     success: bool
     error_count: int = 0
     errors: list[str] = Field(default_factory=list)
+    failure_mode: str | None = None
+    build_status: str | None = None
+    auto_fix_count: int = 0
+    auto_fixes: list[str] = Field(default_factory=list)
+    failure_bucket: str | None = None
+    handoff_reason: str | None = None
+    build_summary: str | None = None
 
 
 class ChatGraphCreatedEvent(BaseModel):
@@ -183,6 +190,13 @@ class ChatGenerationSummaryEvent(BaseModel):
     node_count: int | None = None
     complexity_tier: str | None = None
     pre_generation_ms: int | None = None
+    failure_mode: str | None = None
+    build_status: str | None = None
+    auto_fix_count: int = 0
+    auto_fixes: list[str] = Field(default_factory=list)
+    failure_bucket: str | None = None
+    handoff_reason: str | None = None
+    build_summary: str | None = None
 
 
 class ChatInjectedMessageEvent(BaseModel):

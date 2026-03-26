@@ -1503,6 +1503,10 @@ async def test_send_message_with_tools_auto_apply_blocks_non_run_ready_graph(
         "run-ready" in error.lower() or "no nodes" in error.lower()
         for error in validation_events[-1].errors
     )
+    assert validation_events[-1].build_status == "validated"
+    assert validation_events[-1].failure_bucket == "semantic_reprompt_or_diagnosis"
+    assert validation_events[-1].handoff_reason == "run_readiness_gap"
+    assert "not run-ready" in str(validation_events[-1].build_summary).lower()
 
     assert not saved_graphs, "graph_store.save_graph must not be called"
     assert len(provider.requests) == 1, "No follow-up LLM call when auto-apply is blocked"

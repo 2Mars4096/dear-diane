@@ -21,6 +21,7 @@ class PreparedWorkflowSave:
     status: str
     graph_to_save: dict[str, Any] | None = None
     validation_errors: tuple[str, ...] = ()
+    contract_report: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,7 @@ def prepare_validated_workflow_save(
         return PreparedWorkflowSave(
             status="ready_to_save",
             graph_to_save=getattr(contract_report, "graph_dict", None) or graph_dict,
+            contract_report=contract_report,
         )
 
     return PreparedWorkflowSave(
@@ -63,6 +65,7 @@ def prepare_validated_workflow_save(
                 default_message=blocked_default_message,
             )
         ),
+        contract_report=contract_report,
     )
 
 
@@ -74,6 +77,7 @@ def build_codegen_saved_message(
     edge_count: int,
     node_preview_items: list[str],
     generation_summary_event: ChatGenerationSummaryEvent | None = None,
+    build_summary: str | None = None,
 ) -> str:
     """Render the terminal success message for the codegen fast path."""
     path_suffix = ""
@@ -92,6 +96,15 @@ def build_codegen_saved_message(
             preview_text += f", +{extra_nodes} more"
         node_preview = f" Nodes: {preview_text}."
 
+    summary_text = str(
+        build_summary
+        or getattr(generation_summary_event, "build_summary", None)
+        or ""
+    ).strip()
+    status_text = "Validated and run-ready."
+    if summary_text and summary_text != "Validated and run-ready.":
+        status_text = summary_text
+
     return (
         f"Workflow saved to current id `{workflow_id}`"
         + (
@@ -101,13 +114,18 @@ def build_codegen_saved_message(
         )
         + f". Created with {node_count} nodes and {edge_count} edges."
         + node_preview
-        + " Validated and run-ready."
+        + f" {status_text}"
         + path_suffix
     )
 
 
-def build_structural_macro_message(dispatch: Any) -> str:
+def build_structural_macro_message(
+    dispatch: Any,
+    *,
+    build_summary: str | None = None,
+) -> str:
     """Render the terminal success message for a structural-macro fast path."""
+    summary_text = str(build_summary or "").strip() or "Validated and run-ready."
     results = getattr(dispatch, "results", None) or []
     if results:
         if len(results) == 1:
@@ -116,7 +134,7 @@ def build_structural_macro_message(dispatch: Any) -> str:
                 f"Applied `{dispatch.macro_names[0]}`: "
                 f"{result.edges_added} edges added, "
                 f"{len(result.nodes_added)} nodes added. "
-                "Validated and run-ready."
+                f"{summary_text}"
             )
 
         parts = []
@@ -126,7 +144,7 @@ def build_structural_macro_message(dispatch: Any) -> str:
             )
         return (
             f"Applied {len(results)} macros: {', '.join(parts)}. "
-            "Validated and run-ready."
+            f"{summary_text}"
         )
 
     result = getattr(dispatch, "result", None)
@@ -134,7 +152,7 @@ def build_structural_macro_message(dispatch: Any) -> str:
         f"Applied `{dispatch.macro_name}`: "
         f"{result.edges_added} edges added, "
         f"{len(result.nodes_added)} nodes added. "
-        "Validated and run-ready."
+        f"{summary_text}"
     )
 
 
