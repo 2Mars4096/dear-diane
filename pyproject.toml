@@ -74,6 +74,10 @@ messaging = [
     "python-telegram-bot>=21.0",
     "aiosmtplib>=3.0",
 ]
+wechat = [
+    "wechatpy",
+    "cryptography",
+]
 whatsapp-web = ["neonize>=0.3"]
 all = [
     "pypdf>=4.0",
@@ -89,6 +93,8 @@ all = [
     "mcp>=1.0",
     "python-telegram-bot>=21.0",
     "aiosmtplib>=3.0",
+    "wechatpy",
+    "cryptography",
 ]
 dev = [
     "pytest>=8.0",

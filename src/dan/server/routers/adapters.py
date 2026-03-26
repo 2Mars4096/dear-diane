@@ -13,13 +13,25 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import PlainTextResponse, Response, StreamingResponse
+import httpx
 from pydantic import BaseModel
 
+from dan.adapters.wechat_official_account_adapter import (
+    build_encrypted_callback_reply,
+    build_passive_text_reply,
+    decrypt_encrypted_callback_echostr,
+    decrypt_encrypted_callback_xml,
+    parse_incoming_xml,
+    validate_callback_encrypt_type,
+    verify_signature,
+)
 from dan.server.capabilities.config import _update_env_file
 from dan.server.routers.dependencies import (
+    get_concierge,
     get_graph_store,
     get_run_manager,
     get_block_registry,
@@ -49,6 +61,10 @@ _TELEGRAM_DESKTOP_BOT_KEY = "desktop-ui"
 _DEFAULT_WHATSAPP_WEB_DIR = Path.home() / ".dan" / "whatsapp-web"
 _DEFAULT_WHATSAPP_WEB_DB_PATH = _DEFAULT_WHATSAPP_WEB_DIR / "session.sqlite3"
 _DEFAULT_WHATSAPP_WEB_CONFIG_PATH = _DEFAULT_WHATSAPP_WEB_DIR / "config.json"
+_DEFAULT_WECHAT_OFFICIAL_ACCOUNT_DIR = Path.home() / ".dan" / "wechat-official-account"
+_DEFAULT_WECHAT_OFFICIAL_ACCOUNT_CONFIG_PATH = (
+    _DEFAULT_WECHAT_OFFICIAL_ACCOUNT_DIR / "config.json"
+)
 
 
 # ------------------------------------------------------------------
@@ -186,6 +202,47 @@ def _coerce_str_list(values: Any) -> list[str]:
         seen.add(text)
         result.append(text)
     return result
+
+
+def _coerce_optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off", ""}:
+        return False
+    return bool(value)
+
+
+def _coerce_optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_wechat_callback_path(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "callback"
+
+    if "://" in text:
+        parsed = urlparse(text)
+        text = parsed.path or ""
+
+    text = text.strip().strip("/")
+    prefix = "api/adapters/wechat/"
+    if text.startswith(prefix):
+        text = text[len(prefix):]
+
+    return text or "callback"
 
 
 def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
@@ -374,6 +431,158 @@ def _save_whatsapp_web_settings(
     if auto_start is not None:
         current["auto_start"] = auto_start
     _atomic_write_json(_DEFAULT_WHATSAPP_WEB_CONFIG_PATH, current)
+    return current
+
+
+def _load_wechat_official_account_settings() -> dict[str, Any]:
+    if not _DEFAULT_WECHAT_OFFICIAL_ACCOUNT_CONFIG_PATH.exists():
+        return {
+            "app_id": "",
+            "app_secret": "",
+            "token": "",
+            "encoding_aes_key": "",
+            "webhook_url": "",
+            "callback_path": "callback",
+            "account_name": "",
+            "app_name": "",
+            "welcome_message": "Welcome! Send a message to start a workflow.",
+            "support_encrypted_callbacks": False,
+            "passive_reply_budget_seconds": 4.0,
+            "passive_reply_fallback_text": "Working on it...",
+            "api_base_url": "",
+            "access_token_refresh_margin_seconds": 300.0,
+            "server_url": "",
+            "auto_start": False,
+        }
+    try:
+        raw = json.loads(_DEFAULT_WECHAT_OFFICIAL_ACCOUNT_CONFIG_PATH.read_text())
+    except Exception:
+        logger.exception("Failed to load WeChat Official Account config summary")
+        return {
+            "app_id": "",
+            "app_secret": "",
+            "token": "",
+            "encoding_aes_key": "",
+            "webhook_url": "",
+            "callback_path": "callback",
+            "account_name": "",
+            "app_name": "",
+            "welcome_message": "Welcome! Send a message to start a workflow.",
+            "support_encrypted_callbacks": False,
+            "passive_reply_budget_seconds": 4.0,
+            "passive_reply_fallback_text": "Working on it...",
+            "api_base_url": "",
+            "access_token_refresh_margin_seconds": 300.0,
+            "server_url": "",
+            "auto_start": False,
+        }
+    if not isinstance(raw, dict):
+        return {
+            "app_id": "",
+            "app_secret": "",
+            "token": "",
+            "encoding_aes_key": "",
+            "webhook_url": "",
+            "callback_path": "callback",
+            "account_name": "",
+            "app_name": "",
+            "welcome_message": "Welcome! Send a message to start a workflow.",
+            "support_encrypted_callbacks": False,
+            "passive_reply_budget_seconds": 4.0,
+            "passive_reply_fallback_text": "Working on it...",
+            "api_base_url": "",
+            "access_token_refresh_margin_seconds": 300.0,
+            "server_url": "",
+            "auto_start": False,
+        }
+    return {
+        "app_id": str(raw.get("app_id") or "").strip(),
+        "app_secret": str(raw.get("app_secret") or "").strip(),
+        "token": str(raw.get("token") or "").strip(),
+        "encoding_aes_key": str(raw.get("encoding_aes_key") or "").strip(),
+        "webhook_url": str(raw.get("webhook_url") or "").strip(),
+        "callback_path": _normalize_wechat_callback_path(raw.get("callback_path") or ""),
+        "account_name": str(raw.get("account_name") or "").strip(),
+        "app_name": str(raw.get("app_name") or "").strip(),
+        "welcome_message": (
+            str(raw.get("welcome_message") or "").strip()
+            if "welcome_message" in raw
+            else "Welcome! Send a message to start a workflow."
+        ),
+        "support_encrypted_callbacks": bool(raw.get("support_encrypted_callbacks", False)),
+        "passive_reply_budget_seconds": float(raw.get("passive_reply_budget_seconds") or 4.0),
+        "passive_reply_fallback_text": str(
+            raw.get("passive_reply_fallback_text") or "Working on it..."
+        ).strip()
+        or "Working on it...",
+        "api_base_url": str(raw.get("api_base_url") or "").strip(),
+        "access_token_refresh_margin_seconds": float(
+            raw.get("access_token_refresh_margin_seconds") or 300.0
+        ),
+        "server_url": str(raw.get("server_url") or "").strip(),
+        "auto_start": bool(raw.get("auto_start", False)),
+    }
+
+
+def _save_wechat_official_account_settings(
+    *,
+    app_id: str | None = None,
+    app_secret: str | None = None,
+    token: str | None = None,
+    encoding_aes_key: str | None = None,
+    webhook_url: str | None = None,
+    callback_path: str | None = None,
+    account_name: str | None = None,
+    app_name: str | None = None,
+    welcome_message: str | None = None,
+    support_encrypted_callbacks: bool | None = None,
+    passive_reply_budget_seconds: float | None = None,
+    passive_reply_fallback_text: str | None = None,
+    api_base_url: str | None = None,
+    access_token_refresh_margin_seconds: float | None = None,
+    server_url: str | None = None,
+    auto_start: bool | None = None,
+) -> dict[str, Any]:
+    current = _load_wechat_official_account_settings()
+    if app_id is not None:
+        current["app_id"] = str(app_id or "").strip()
+    if app_secret is not None:
+        current["app_secret"] = str(app_secret or "").strip()
+    if token is not None:
+        current["token"] = str(token or "").strip()
+    if encoding_aes_key is not None:
+        current["encoding_aes_key"] = str(encoding_aes_key or "").strip()
+    if webhook_url is not None:
+        current["webhook_url"] = str(webhook_url or "").strip()
+    if callback_path is not None:
+        current["callback_path"] = _normalize_wechat_callback_path(callback_path)
+    if account_name is not None:
+        current["account_name"] = str(account_name or "").strip()
+    if app_name is not None:
+        current["app_name"] = str(app_name or "").strip()
+    if welcome_message is not None:
+        current["welcome_message"] = str(welcome_message or "").strip()
+    if support_encrypted_callbacks is not None:
+        current["support_encrypted_callbacks"] = bool(support_encrypted_callbacks)
+    if passive_reply_budget_seconds is not None:
+        current["passive_reply_budget_seconds"] = max(float(passive_reply_budget_seconds), 0.1)
+    if passive_reply_fallback_text is not None:
+        current["passive_reply_fallback_text"] = (
+            str(passive_reply_fallback_text or "").strip() or "Working on it..."
+        )
+    if api_base_url is not None:
+        current["api_base_url"] = str(api_base_url or "").strip()
+    if access_token_refresh_margin_seconds is not None:
+        current["access_token_refresh_margin_seconds"] = max(
+            float(access_token_refresh_margin_seconds),
+            0.0,
+        )
+    if server_url is not None:
+        current["server_url"] = str(server_url or "").strip()
+    if auto_start is not None:
+        current["auto_start"] = auto_start
+    _DEFAULT_WECHAT_OFFICIAL_ACCOUNT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(_DEFAULT_WECHAT_OFFICIAL_ACCOUNT_CONFIG_PATH, current)
     return current
 
 
@@ -599,6 +808,16 @@ def _adapter_ids_for_surface(surface_type: str) -> list[str]:
     ]
 
 
+def _find_active_surface_adapter(surface_type: str) -> tuple[str, Any] | None:
+    normalized = str(surface_type or "").strip().lower()
+    for adapter_id, (adapter, task) in _active_adapters.items():
+        if _adapter_surface_types.get(adapter_id) != normalized:
+            continue
+        if _adapter_is_running(adapter, task):
+            return adapter_id, adapter
+    return None
+
+
 async def _build_telegram_config_summary() -> dict[str, Any]:
     state = _load_telegram_desktop_state()
     env_token = os.environ.get("DAN_TELEGRAM_BOT_TOKEN", "").strip()
@@ -652,6 +871,42 @@ async def _build_whatsapp_web_config_summary() -> dict[str, Any]:
     }
 
 
+async def _build_wechat_official_account_config_summary() -> dict[str, Any]:
+    settings = _load_wechat_official_account_settings()
+    live = await _find_active_surface_snapshot("wechat")
+    dependency = _build_dependency_summary(
+        module_name="cryptography",
+        package_name="cryptography",
+        install_hint="pip install 'dan[wechat]'",
+    )
+    configured = bool(
+        settings["app_id"] or settings["app_secret"] or settings["token"] or settings["encoding_aes_key"],
+    )
+    return {
+        "type": "wechat",
+        "configured": configured,
+        "app_id": settings["app_id"] or None,
+        "account_name": settings["account_name"] or None,
+        "app_name": settings["app_name"] or None,
+        "welcome_message": settings["welcome_message"],
+        "masked_app_secret": _mask_secret(settings["app_secret"]),
+        "masked_token": _mask_secret(settings["token"]),
+        "masked_encoding_aes_key": _mask_secret(settings["encoding_aes_key"]),
+        "webhook_url": settings["webhook_url"] or None,
+        "callback_path": settings["callback_path"],
+        "support_encrypted_callbacks": settings["support_encrypted_callbacks"],
+        "passive_reply_budget_seconds": settings["passive_reply_budget_seconds"],
+        "passive_reply_fallback_text": settings["passive_reply_fallback_text"],
+        "api_base_url": settings["api_base_url"] or None,
+        "access_token_refresh_margin_seconds": settings["access_token_refresh_margin_seconds"],
+        "server_url": settings["server_url"] or None,
+        "auto_start": settings.get("auto_start", False),
+        "connection_state": live.get("connection_state"),
+        "last_error": live.get("last_error"),
+        **dependency,
+    }
+
+
 def _prepare_telegram_start_config(config_data: dict[str, Any]) -> dict[str, Any]:
     state = _load_telegram_desktop_state()
     prepared = dict(config_data)
@@ -670,6 +925,579 @@ def _prepare_whatsapp_web_start_config(config_data: dict[str, Any]) -> dict[str,
     if "allowed_jids" not in prepared and settings["allowed_jids"]:
         prepared["allowed_jids"] = settings["allowed_jids"]
     return prepared
+
+
+def _prepare_wechat_official_account_start_config(config_data: dict[str, Any]) -> dict[str, Any]:
+    settings = _load_wechat_official_account_settings()
+    prepared = dict(config_data)
+    for key in (
+        "app_id",
+        "app_secret",
+        "token",
+        "encoding_aes_key",
+        "webhook_url",
+        "callback_path",
+        "account_name",
+        "app_name",
+        "welcome_message",
+        "support_encrypted_callbacks",
+        "passive_reply_budget_seconds",
+        "passive_reply_fallback_text",
+        "api_base_url",
+        "access_token_refresh_margin_seconds",
+        "server_url",
+    ):
+        current_value = prepared.get(key, ...)
+        if current_value is ... or current_value is None or current_value == "":
+            if settings[key] not in {"", None}:
+                prepared[key] = settings[key]
+    if "welcome_message" not in prepared:
+        prepared["welcome_message"] = settings["welcome_message"]
+    # Let the adapter model defaults stand when these tuning fields are blank.
+    if str(prepared.get("api_base_url", "") or "").strip() == "":
+        prepared.pop("api_base_url", None)
+    return prepared
+
+
+def _validate_wechat_callback_mode(adapter: Any, encrypt_type: str) -> str:
+    normalized = str(encrypt_type or "").strip().lower()
+    try:
+        validate_callback_encrypt_type(
+            encrypt_type,
+            encrypted_callbacks_enabled=bool(
+                getattr(getattr(adapter, "config", None), "support_encrypted_callbacks", False),
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if normalized == "aes":
+        config = getattr(adapter, "config", None)
+        if not str(getattr(config, "app_id", "") or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail="WeChat app_id is required for encrypted callbacks",
+            )
+        if not str(getattr(config, "encoding_aes_key", "") or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail="WeChat encoding_aes_key is required for encrypted callbacks",
+            )
+    return normalized
+
+
+def _validate_wechat_callback_path(adapter: Any, callback_path: str) -> None:
+    configured = _normalize_wechat_callback_path(
+        getattr(getattr(adapter, "config", None), "callback_path", "callback"),
+    )
+    requested = _normalize_wechat_callback_path(callback_path)
+    if configured != requested:
+        raise HTTPException(status_code=404, detail="No active WeChat callback at this path")
+
+
+def _wechat_surface_identity(
+    *,
+    adapter_id: str,
+    adapter: Any,
+    external_id: str,
+    account_id: str,
+) -> tuple[str, dict[str, Any]]:
+    surface_id = str(getattr(adapter.config, "app_id", "") or account_id or adapter_id)
+    surface_context = {
+        "identity": {
+            "platform": "wechat",
+            "channel": "official_account",
+            "app_id": str(getattr(adapter.config, "app_id", "") or ""),
+            "account_id": account_id,
+            "openid": external_id,
+        },
+        "adapter_instructions": (
+            "You are replying in a WeChat Official Account conversation. "
+            "Keep the response concise, messaging-friendly, and clear."
+        ),
+    }
+    return surface_id, surface_context
+
+
+def _wechat_relay_server_url(adapter: Any) -> str | None:
+    value = str(getattr(getattr(adapter, "config", None), "server_url", "") or "").strip()
+    return value.rstrip("/") or None
+
+
+def _build_wechat_chat_request_body(
+    *,
+    adapter_id: str,
+    adapter: Any,
+    external_id: str,
+    message_text: str,
+    account_id: str,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    surface_id, surface_context = _wechat_surface_identity(
+        adapter_id=adapter_id,
+        adapter=adapter,
+        external_id=external_id,
+        account_id=account_id,
+    )
+    return {
+        "workflow_id": "_scratch",
+        "message": message_text,
+        "history": [],
+        "thread_id": session_id or external_id,
+        "session_id": session_id or external_id,
+        "mode": "auto",
+        "surface": f"wechat:{surface_id}",
+        "surface_type": "wechat",
+        "surface_id": surface_id,
+        "surface_context": surface_context,
+    }
+
+
+async def _ensure_wechat_adapter_session(
+    *,
+    adapter_id: str,
+    adapter: Any,
+    external_id: str,
+) -> str | None:
+    external = str(external_id or "").strip()
+    if not external:
+        return None
+
+    session_id: str | None = None
+    store = _adapter_session_stores.get(adapter_id)
+    if store is not None:
+        session = await store.get_by_external(external)
+        if session is None:
+            session = await store.create(external)
+        else:
+            await store.update_state(session.session_id, session.state)
+        session_id = str(session.session_id or "").strip() or None
+
+    if not session_id:
+        session_id = external
+
+    if hasattr(adapter, "register_session"):
+        try:
+            adapter.register_session(session_id, external)
+        except Exception:
+            logger.debug(
+                "Failed to register WeChat adapter session %s for %s",
+                session_id,
+                external,
+                exc_info=True,
+            )
+    return session_id
+
+
+async def _start_wechat_chat_stream(
+    *,
+    adapter_id: str,
+    adapter: Any,
+    external_id: str,
+    message_text: str,
+    account_id: str,
+    session_id: str | None = None,
+    server_url: str | None = None,
+) -> str | None:
+    from dan.server.routers.chat import ChatMessageRequest, chat_message
+
+    body = _build_wechat_chat_request_body(
+        adapter_id=adapter_id,
+        adapter=adapter,
+        external_id=external_id,
+        message_text=message_text,
+        account_id=account_id,
+        session_id=session_id,
+    )
+    relay_server_url = str(server_url or "").strip().rstrip("/")
+    if relay_server_url:
+        try:
+            async with httpx.AsyncClient(base_url=relay_server_url, timeout=120.0) as client:
+                response = await client.post("/api/chat/message", json=body)
+        except Exception:
+            logger.warning(
+                "WeChat chat relay request failed for adapter %s via %s",
+                adapter_id,
+                relay_server_url,
+                exc_info=True,
+            )
+            return None
+        if response.status_code != 200:
+            logger.warning(
+                "WeChat chat relay request failed for adapter %s: status=%s body=%s",
+                adapter_id,
+                response.status_code,
+                response.text[:500],
+            )
+            return None
+        try:
+            payload = response.json()
+        except ValueError:
+            logger.warning(
+                "WeChat chat relay returned non-JSON payload for adapter %s",
+                adapter_id,
+            )
+            return None
+        return str(payload.get("stream_channel_id") or "").strip() or None
+
+    req = ChatMessageRequest.model_validate(body)
+    response = await chat_message(req, concierge=True)
+    return str(response.get("stream_channel_id") or "").strip() or None
+
+
+def _finalize_wechat_stream_reply(
+    *,
+    collected_tokens: list[str],
+    complete_content: str,
+    error_message: str,
+) -> str | None:
+    full_reply = "".join(collected_tokens).strip()
+    complete_content = str(complete_content or "").strip()
+    error_message = str(error_message or "").strip()
+
+    if complete_content:
+        if not full_reply:
+            full_reply = complete_content
+        elif complete_content not in full_reply:
+            full_reply = f"{full_reply}\n\n{complete_content}".strip()
+    elif error_message:
+        if full_reply:
+            full_reply = f"{full_reply}\n\n{error_message}".strip()
+        else:
+            full_reply = error_message
+    return full_reply or None
+
+
+async def _drain_wechat_local_chat_stream(channel_id: str) -> str | None:
+    from dan.server.chat_stream_buffer import should_preserve_chat_stream
+    from dan.server.routers.chat import (
+        _chat_produce_tasks,
+        _chat_streams,
+        _touch_chat_stream,
+    )
+
+    next_channel = channel_id
+    seen_channels: set[str] = set()
+    collected_tokens: list[str] = []
+    complete_content = ""
+    error_message = ""
+
+    while next_channel:
+        current_channel = next_channel
+        next_channel = ""
+        if current_channel in seen_channels:
+            logger.warning(
+                "Skipping repeated queued channel redirect for WeChat stream %s",
+                current_channel,
+            )
+            break
+        seen_channels.add(current_channel)
+
+        entry = _chat_streams.get(current_channel)
+        if entry is None:
+            logger.debug("WeChat chat stream %s is no longer available", current_channel)
+            break
+
+        queue, _ = entry
+        current_event: Any | None = None
+        queue.attach_consumer()
+        task = _chat_produce_tasks.get(current_channel)
+        queue.prime_reconnect_snapshot(producer_running=task is not None and not task.done())
+        try:
+            while True:
+                current_event = await queue.get()
+                if current_event is None:
+                    current_event = None
+                    break
+                _touch_chat_stream(current_channel)
+
+                if not isinstance(current_event, dict):
+                    current_event = None
+                    continue
+
+                evt_type = str(current_event.get("type") or "").strip()
+                if evt_type == "chat_queued":
+                    redirected = str(current_event.get("stream_channel_id") or "").strip()
+                    current_event = None
+                    if redirected and redirected not in seen_channels:
+                        next_channel = redirected
+                        break
+                    continue
+                if evt_type == "chat_token":
+                    collected_tokens.append(
+                        str(current_event.get("delta", current_event.get("token", "")) or "")
+                    )
+                    current_event = None
+                    continue
+                if evt_type == "chat_complete":
+                    if current_event.get("detected_mode") == "progress_ack":
+                        current_event = None
+                        continue
+                    complete_content = str(current_event.get("content") or "").strip()
+                    current_event = None
+                    return _finalize_wechat_stream_reply(
+                        collected_tokens=collected_tokens,
+                        complete_content=complete_content,
+                        error_message=error_message,
+                    )
+                if evt_type == "chat_multi_part":
+                    complete_content = "\n\n".join(
+                        str(part or "").strip()
+                        for part in (current_event.get("parts") or [])
+                        if str(part or "").strip()
+                    )
+                    current_event = None
+                    return _finalize_wechat_stream_reply(
+                        collected_tokens=collected_tokens,
+                        complete_content=complete_content,
+                        error_message=error_message,
+                    )
+                if evt_type == "chat_mutation":
+                    mutation_plan = current_event.get("mutation_plan") or {}
+                    complete_content = str(current_event.get("content") or "").strip()
+                    if not complete_content and isinstance(mutation_plan, dict):
+                        description = str(mutation_plan.get("description") or "").strip()
+                        if description:
+                            complete_content = description
+                    current_event = None
+                    return _finalize_wechat_stream_reply(
+                        collected_tokens=collected_tokens,
+                        complete_content=complete_content,
+                        error_message=error_message,
+                    )
+                if evt_type == "chat_interrupted":
+                    complete_content = str(current_event.get("content") or "").strip()
+                    if not complete_content:
+                        complete_content = "The request was interrupted."
+                    current_event = None
+                    return _finalize_wechat_stream_reply(
+                        collected_tokens=collected_tokens,
+                        complete_content=complete_content,
+                        error_message=error_message,
+                    )
+                if evt_type == "chat_error":
+                    error_message = str(current_event.get("error") or "").strip()
+                    current_event = None
+                    return _finalize_wechat_stream_reply(
+                        collected_tokens=collected_tokens,
+                        complete_content=complete_content,
+                        error_message=error_message,
+                    )
+
+                current_event = None
+        except Exception:
+            if current_event is not None:
+                queue.requeue_front(current_event)
+                current_event = None
+                _touch_chat_stream(current_channel)
+            raise
+        finally:
+            queue.detach_consumer()
+            task = _chat_produce_tasks.get(current_channel)
+            producer_running = task is not None and not task.done()
+            preserve_stream = should_preserve_chat_stream(
+                queue,
+                producer_running=producer_running,
+            )
+            if preserve_stream:
+                _chat_streams[current_channel] = (queue, time.monotonic())
+                if not producer_running:
+                    _chat_produce_tasks.pop(current_channel, None)
+            else:
+                _chat_streams.pop(current_channel, None)
+                task = _chat_produce_tasks.pop(current_channel, None)
+                if task is not None and not task.done():
+                    task.cancel()
+
+    return _finalize_wechat_stream_reply(
+        collected_tokens=collected_tokens,
+        complete_content=complete_content,
+        error_message=error_message,
+    )
+
+
+async def _iter_wechat_remote_chat_stream_events(
+    *,
+    channel_id: str,
+    server_url: str,
+):
+    import websockets
+
+    ws_url = server_url.rstrip("/").replace("http://", "ws://").replace(
+        "https://", "wss://",
+    )
+    next_channel = channel_id
+    seen_channels: set[str] = set()
+
+    while next_channel:
+        current_channel = next_channel
+        next_channel = ""
+        if current_channel in seen_channels:
+            logger.warning(
+                "Skipping repeated queued channel redirect for WeChat relay stream %s",
+                current_channel,
+            )
+            break
+        seen_channels.add(current_channel)
+        url = f"{ws_url}/api/chat/{current_channel}/events"
+
+        async with websockets.connect(url, ping_interval=None, ping_timeout=None) as ws:
+            if not hasattr(ws, "recv"):
+                async for ws_msg in ws:
+                    event = json.loads(ws_msg)
+                    if not isinstance(event, dict):
+                        continue
+                    if event.get("type") == "chat_queued":
+                        redirected = str(event.get("stream_channel_id") or "").strip()
+                        if redirected and redirected not in seen_channels:
+                            next_channel = redirected
+                            break
+                        continue
+                    if event.get("type") == "ping":
+                        continue
+                    yield event
+                continue
+
+            while True:
+                try:
+                    ws_msg = await ws.recv()
+                except Exception as exc:
+                    if exc.__class__.__name__.startswith("ConnectionClosed"):
+                        break
+                    raise
+                event = json.loads(ws_msg)
+                if not isinstance(event, dict):
+                    continue
+                if event.get("type") == "chat_queued":
+                    redirected = str(event.get("stream_channel_id") or "").strip()
+                    if redirected and redirected not in seen_channels:
+                        next_channel = redirected
+                        break
+                    continue
+                if event.get("type") == "ping":
+                    continue
+                yield event
+
+
+async def _drain_wechat_remote_chat_stream(
+    *,
+    channel_id: str,
+    server_url: str,
+) -> str | None:
+    collected_tokens: list[str] = []
+    complete_content = ""
+    error_message = ""
+
+    async for current_event in _iter_wechat_remote_chat_stream_events(
+        channel_id=channel_id,
+        server_url=server_url,
+    ):
+        evt_type = str(current_event.get("type") or "").strip()
+        if evt_type == "chat_token":
+            collected_tokens.append(
+                str(current_event.get("delta", current_event.get("token", "")) or "")
+            )
+            continue
+        if evt_type == "chat_complete":
+            if current_event.get("detected_mode") == "progress_ack":
+                continue
+            complete_content = str(current_event.get("content") or "").strip()
+            return _finalize_wechat_stream_reply(
+                collected_tokens=collected_tokens,
+                complete_content=complete_content,
+                error_message=error_message,
+            )
+        if evt_type == "chat_multi_part":
+            complete_content = "\n\n".join(
+                str(part or "").strip()
+                for part in (current_event.get("parts") or [])
+                if str(part or "").strip()
+            )
+            return _finalize_wechat_stream_reply(
+                collected_tokens=collected_tokens,
+                complete_content=complete_content,
+                error_message=error_message,
+            )
+        if evt_type == "chat_mutation":
+            mutation_plan = current_event.get("mutation_plan") or {}
+            complete_content = str(current_event.get("content") or "").strip()
+            if not complete_content and isinstance(mutation_plan, dict):
+                description = str(mutation_plan.get("description") or "").strip()
+                if description:
+                    complete_content = description
+            return _finalize_wechat_stream_reply(
+                collected_tokens=collected_tokens,
+                complete_content=complete_content,
+                error_message=error_message,
+            )
+        if evt_type == "chat_interrupted":
+            complete_content = str(current_event.get("content") or "").strip()
+            if not complete_content:
+                complete_content = "The request was interrupted."
+            return _finalize_wechat_stream_reply(
+                collected_tokens=collected_tokens,
+                complete_content=complete_content,
+                error_message=error_message,
+            )
+        if evt_type == "chat_error":
+            error_message = str(current_event.get("error") or "").strip()
+            return _finalize_wechat_stream_reply(
+                collected_tokens=collected_tokens,
+                complete_content=complete_content,
+                error_message=error_message,
+            )
+
+    return _finalize_wechat_stream_reply(
+        collected_tokens=collected_tokens,
+        complete_content=complete_content,
+        error_message=error_message,
+    )
+
+
+async def _drain_wechat_chat_stream(
+    channel_id: str,
+    *,
+    server_url: str | None = None,
+) -> str | None:
+    relay_server_url = str(server_url or "").strip().rstrip("/")
+    if relay_server_url:
+        return await _drain_wechat_remote_chat_stream(
+            channel_id=channel_id,
+            server_url=relay_server_url,
+        )
+    return await _drain_wechat_local_chat_stream(channel_id)
+
+
+async def _send_wechat_followup_text(adapter: Any, external_id: str, text: str) -> None:
+    from dan.server.concierge.actions import split_message_for_surface, strip_html_for_messaging
+
+    clean = strip_html_for_messaging(str(text or "").strip())
+    if not clean:
+        return
+    parts = split_message_for_surface(clean, "wechat")
+    for idx, part in enumerate(parts):
+        await _send_adapter_text(adapter, external_id, part)
+        if idx + 1 < len(parts):
+            await asyncio.sleep(0.1)
+
+
+async def _await_wechat_followup_delivery(
+    *,
+    adapter_id: str,
+    adapter: Any,
+    external_id: str,
+    result_task: asyncio.Task[str | None],
+) -> None:
+    try:
+        reply_text = await result_task
+        if reply_text:
+            await _send_wechat_followup_text(adapter, external_id, reply_text)
+    except Exception:
+        logger.debug(
+            "WeChat follow-up delivery failed for adapter %s",
+            adapter_id,
+            exc_info=True,
+        )
 
 
 def _run_adapter_message_handler(
@@ -920,6 +1748,16 @@ async def start_adapter(req: AdapterStartRequest):
         WhatsAppWebAdapter, WhatsAppWebAdapterConfig,
         MessagingAdapter, MessagingHumanRenderer, AdapterSessionStore,
     )
+    try:
+        from dan.adapters import (
+            WeChatOfficialAccountAdapter,
+            WeChatOfficialAccountAdapterConfig,
+        )
+    except ImportError:
+        from dan.adapters.wechat_official_account_adapter import (
+            WeChatOfficialAccountAdapter,
+            WeChatOfficialAccountAdapterConfig,
+        )
 
     adapter_type = req.type.lower()
 
@@ -941,6 +1779,8 @@ async def start_adapter(req: AdapterStartRequest):
         config_data = _prepare_telegram_start_config(config_data)
     elif adapter_type == "whatsapp-web":
         config_data = _prepare_whatsapp_web_start_config(config_data)
+    elif adapter_type == "wechat":
+        config_data = _prepare_wechat_official_account_start_config(config_data)
 
     adapter: MessagingAdapter
     if adapter_type == "email":
@@ -955,6 +1795,9 @@ async def start_adapter(req: AdapterStartRequest):
     elif adapter_type == "whatsapp-web":
         adapter_config = WhatsAppWebAdapterConfig(**config_data)
         adapter = WhatsAppWebAdapter(adapter_config)
+    elif adapter_type == "wechat":
+        adapter_config = WeChatOfficialAccountAdapterConfig(**config_data)
+        adapter = WeChatOfficialAccountAdapter(adapter_config)
     else:
         raise HTTPException(status_code=400, detail=f"Unknown adapter type: {req.type}")
 
@@ -1071,6 +1914,8 @@ async def get_adapter_config(adapter_type: str):
         return await _build_telegram_config_summary()
     if normalized == "whatsapp-web":
         return await _build_whatsapp_web_config_summary()
+    if normalized == "wechat":
+        return await _build_wechat_official_account_config_summary()
     raise HTTPException(status_code=404, detail=f"Adapter config '{adapter_type}' not found")
 
 
@@ -1139,12 +1984,122 @@ async def save_adapter_config(adapter_type: str, body: dict[str, Any]):
         summary["auto_start"] = settings.get("auto_start", False)
         return summary
 
+    if normalized == "wechat":
+        wechat_auto_start = body.get("auto_start")
+        settings = _save_wechat_official_account_settings(
+            app_id=(
+                str(body.get("app_id") or "").strip()
+                if "app_id" in body
+                else None
+            ),
+            app_secret=(
+                str(body.get("app_secret") or "").strip()
+                if "app_secret" in body
+                else None
+            ),
+            token=(
+                str(body.get("token") or "").strip()
+                if "token" in body
+                else None
+            ),
+            encoding_aes_key=(
+                str(body.get("encoding_aes_key") or "").strip()
+                if "encoding_aes_key" in body
+                else None
+            ),
+            webhook_url=(
+                str(body.get("webhook_url") or "").strip()
+                if "webhook_url" in body
+                else None
+            ),
+            callback_path=(
+                str(body.get("callback_path") or "").strip()
+                if "callback_path" in body
+                else None
+            ),
+            account_name=(
+                str(body.get("account_name") or "").strip()
+                if "account_name" in body
+                else None
+            ),
+            app_name=(
+                str(body.get("app_name") or "").strip()
+                if "app_name" in body
+                else None
+            ),
+            welcome_message=(
+                str(body.get("welcome_message") or "").strip()
+                if "welcome_message" in body
+                else None
+            ),
+            support_encrypted_callbacks=(
+                _coerce_optional_bool(body.get("support_encrypted_callbacks"))
+                if "support_encrypted_callbacks" in body
+                else None
+            ),
+            passive_reply_budget_seconds=(
+                _coerce_optional_float(body.get("passive_reply_budget_seconds"))
+                if "passive_reply_budget_seconds" in body
+                else None
+            ),
+            passive_reply_fallback_text=(
+                str(body.get("passive_reply_fallback_text") or "").strip()
+                if "passive_reply_fallback_text" in body
+                else None
+            ),
+            api_base_url=(
+                str(body.get("api_base_url") or "").strip()
+                if "api_base_url" in body
+                else None
+            ),
+            access_token_refresh_margin_seconds=(
+                _coerce_optional_float(body.get("access_token_refresh_margin_seconds"))
+                if "access_token_refresh_margin_seconds" in body
+                else None
+            ),
+            server_url=(
+                str(body.get("server_url") or "").strip()
+                if "server_url" in body
+                else None
+            ),
+            auto_start=bool(wechat_auto_start) if wechat_auto_start is not None else None,
+        )
+        summary = await _build_wechat_official_account_config_summary()
+        summary["app_id"] = settings["app_id"] or None
+        summary["masked_app_secret"] = _mask_secret(settings["app_secret"])
+        summary["masked_token"] = _mask_secret(settings["token"])
+        summary["masked_encoding_aes_key"] = _mask_secret(settings["encoding_aes_key"])
+        summary["webhook_url"] = settings["webhook_url"] or None
+        summary["callback_path"] = settings["callback_path"]
+        summary["account_name"] = settings["account_name"] or None
+        summary["app_name"] = settings["app_name"] or None
+        summary["welcome_message"] = settings["welcome_message"]
+        summary["support_encrypted_callbacks"] = settings["support_encrypted_callbacks"]
+        summary["passive_reply_budget_seconds"] = settings["passive_reply_budget_seconds"]
+        summary["passive_reply_fallback_text"] = settings["passive_reply_fallback_text"]
+        summary["api_base_url"] = settings["api_base_url"] or None
+        summary["access_token_refresh_margin_seconds"] = (
+            settings["access_token_refresh_margin_seconds"]
+        )
+        summary["server_url"] = settings["server_url"] or None
+        summary["auto_start"] = settings.get("auto_start", False)
+        return summary
+
     raise HTTPException(status_code=404, detail=f"Adapter config '{adapter_type}' not found")
 
 
 @router.post("/api/adapters/config/{adapter_type}/reset")
 async def reset_adapter_config(adapter_type: str):
     normalized = adapter_type.strip().lower()
+    if normalized == "wechat":
+        for adapter_id in list(_adapter_ids_for_surface("wechat")):
+            await _stop_active_adapter(adapter_id, missing_ok=True)
+        try:
+            _DEFAULT_WECHAT_OFFICIAL_ACCOUNT_CONFIG_PATH.unlink()
+        except FileNotFoundError:
+            pass
+        return await _build_wechat_official_account_config_summary()
+
     if normalized != "whatsapp-web":
         raise HTTPException(status_code=404, detail=f"Adapter config '{adapter_type}' not found")
 
@@ -1155,6 +2110,281 @@ async def reset_adapter_config(adapter_type: str):
     db_path = Path(settings["db_path"])
     _remove_sqlite_artifacts(db_path)
     return await _build_whatsapp_web_config_summary()
+
+
+async def _wechat_callback_verify_impl(
+    callback_path: str,
+    *,
+    signature: str = "",
+    timestamp: str = "",
+    nonce: str = "",
+    echostr: str = "",
+    encrypt_type: str = "",
+    msg_signature: str = "",
+):
+    entry = _find_active_surface_adapter("wechat")
+    if entry is None:
+        raise HTTPException(status_code=404, detail="No active WeChat adapter")
+
+    _adapter_id, adapter = entry
+    _validate_wechat_callback_path(adapter, callback_path)
+    encrypt_mode = _validate_wechat_callback_mode(adapter, encrypt_type)
+    token = str(getattr(getattr(adapter, "config", None), "token", "") or "")
+    if not verify_signature(token, signature, timestamp, nonce):
+        raise HTTPException(status_code=403, detail="Invalid WeChat signature")
+    if encrypt_mode == "aes":
+        try:
+            echostr = decrypt_encrypted_callback_echostr(
+                echostr,
+                token=token,
+                msg_signature=msg_signature,
+                timestamp=timestamp,
+                nonce=nonce,
+                encoding_aes_key=str(getattr(adapter.config, "encoding_aes_key", "") or ""),
+                app_id=str(getattr(adapter.config, "app_id", "") or ""),
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return PlainTextResponse(echostr)
+
+
+@router.get("/api/adapters/wechat/callback")
+async def wechat_callback_verify(
+    signature: str = "",
+    timestamp: str = "",
+    nonce: str = "",
+    echostr: str = "",
+    encrypt_type: str = "",
+    msg_signature: str = "",
+):
+    return await _wechat_callback_verify_impl(
+        "callback",
+        signature=signature,
+        timestamp=timestamp,
+        nonce=nonce,
+        echostr=echostr,
+        encrypt_type=encrypt_type,
+        msg_signature=msg_signature,
+    )
+
+
+@router.get("/api/adapters/wechat/{callback_path:path}")
+async def wechat_callback_verify_at_path(
+    callback_path: str,
+    signature: str = "",
+    timestamp: str = "",
+    nonce: str = "",
+    echostr: str = "",
+    encrypt_type: str = "",
+    msg_signature: str = "",
+):
+    return await _wechat_callback_verify_impl(
+        callback_path,
+        signature=signature,
+        timestamp=timestamp,
+        nonce=nonce,
+        echostr=echostr,
+        encrypt_type=encrypt_type,
+        msg_signature=msg_signature,
+    )
+
+
+async def _wechat_callback_message_impl(
+    callback_path: str,
+    *,
+    request: Request,
+    signature: str = "",
+    timestamp: str = "",
+    nonce: str = "",
+    encrypt_type: str = "",
+    msg_signature: str = "",
+):
+    entry = _find_active_surface_adapter("wechat")
+    if entry is None:
+        raise HTTPException(status_code=404, detail="No active WeChat adapter")
+
+    adapter_id, adapter = entry
+    _validate_wechat_callback_path(adapter, callback_path)
+    encrypt_mode = _validate_wechat_callback_mode(adapter, encrypt_type)
+    token = str(getattr(getattr(adapter, "config", None), "token", "") or "")
+    if not verify_signature(token, signature, timestamp, nonce):
+        raise HTTPException(status_code=403, detail="Invalid WeChat signature")
+
+    body = await request.body()
+    if not body:
+        return PlainTextResponse("")
+
+    normalized_body = body
+    try:
+        if encrypt_mode == "aes":
+            decrypted_body = decrypt_encrypted_callback_xml(
+                body,
+                token=token,
+                msg_signature=msg_signature,
+                timestamp=timestamp,
+                nonce=nonce,
+                encoding_aes_key=str(getattr(adapter.config, "encoding_aes_key", "") or ""),
+                app_id=str(getattr(adapter.config, "app_id", "") or ""),
+            )
+            normalized_body = decrypted_body.encode("utf-8")
+        parsed = parse_incoming_xml(normalized_body)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    external_id = str(parsed.get("from_user_name") or "").strip()
+    account_id = str(parsed.get("to_user_name") or "").strip()
+    msg_type = str(parsed.get("msg_type") or "").strip().lower()
+    event = str(parsed.get("event") or "").strip().lower()
+    message_text = str(parsed.get("text") or parsed.get("content") or "").strip()
+    relay_server_url = _wechat_relay_server_url(adapter)
+    session_id = (
+        await _ensure_wechat_adapter_session(
+            adapter_id=adapter_id,
+            adapter=adapter,
+            external_id=external_id,
+        )
+        if external_id
+        else None
+    )
+
+    pending_by_session = getattr(adapter, "_pending", {})
+    if session_id:
+        pending_future = pending_by_session.get(session_id)
+        if pending_future is not None and not pending_future.done():
+            adapter.handle_incoming_xml(normalized_body)
+            return PlainTextResponse("")
+
+    if msg_type == "event" and event == "unsubscribe":
+        return PlainTextResponse("")
+
+    reply_text: str | None = None
+    result_task: asyncio.Task[str | None] | None = None
+    if msg_type == "event" and event == "subscribe":
+        reply_text = str(
+            getattr(getattr(adapter, "config", None), "welcome_message", "") or "",
+        ).strip() or "Connected to DAN."
+    elif external_id and message_text:
+        chat_stream_id = await _start_wechat_chat_stream(
+            adapter_id=adapter_id,
+            adapter=adapter,
+            external_id=external_id,
+            message_text=message_text,
+            account_id=account_id,
+            session_id=session_id,
+            server_url=relay_server_url,
+        )
+        if chat_stream_id:
+            result_task = asyncio.create_task(
+                _drain_wechat_chat_stream(
+                    chat_stream_id,
+                    server_url=relay_server_url,
+                ),
+                name=f"wechat-chat-{external_id}",
+            )
+            timeout_seconds = float(
+                getattr(adapter.config, "passive_reply_budget_seconds", 4.0) or 4.0,
+            )
+            try:
+                reply_text = await asyncio.wait_for(
+                    asyncio.shield(result_task),
+                    timeout=max(timeout_seconds, 0.1),
+                )
+            except asyncio.TimeoutError:
+                logger.debug(
+                    "WeChat passive reply timed out for adapter %s after %.2fs",
+                    adapter_id,
+                    timeout_seconds,
+                )
+                asyncio.create_task(
+                    _await_wechat_followup_delivery(
+                        adapter_id=adapter_id,
+                        adapter=adapter,
+                        external_id=external_id,
+                        result_task=result_task,
+                    ),
+                    name=f"wechat-followup-{external_id}",
+                )
+            except Exception:
+                logger.debug(
+                    "WeChat chat stream collection failed for adapter %s",
+                    adapter_id,
+                    exc_info=True,
+                )
+
+    if not reply_text and msg_type in {"text", "event"}:
+        fallback_text = str(
+            getattr(
+                getattr(adapter, "config", None),
+                "passive_reply_fallback_text",
+                "Working on it...",
+            )
+            or "Working on it..."
+        ).strip()
+        reply_text = fallback_text or None
+
+    if not reply_text or not external_id:
+        return PlainTextResponse("")
+
+    reply_xml = build_passive_text_reply(external_id, account_id, reply_text)
+    if encrypt_mode == "aes":
+        try:
+            reply_xml = build_encrypted_callback_reply(
+                reply_xml,
+                token=token,
+                encoding_aes_key=str(getattr(adapter.config, "encoding_aes_key", "") or ""),
+                app_id=str(getattr(adapter.config, "app_id", "") or ""),
+                timestamp=timestamp,
+                nonce=nonce,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return Response(content=reply_xml, media_type="application/xml")
+
+
+@router.post("/api/adapters/wechat/callback")
+async def wechat_callback_message(
+    request: Request,
+    signature: str = "",
+    timestamp: str = "",
+    nonce: str = "",
+    encrypt_type: str = "",
+    msg_signature: str = "",
+):
+    return await _wechat_callback_message_impl(
+        "callback",
+        request=request,
+        signature=signature,
+        timestamp=timestamp,
+        nonce=nonce,
+        encrypt_type=encrypt_type,
+        msg_signature=msg_signature,
+    )
+
+
+@router.post("/api/adapters/wechat/{callback_path:path}")
+async def wechat_callback_message_at_path(
+    callback_path: str,
+    request: Request,
+    signature: str = "",
+    timestamp: str = "",
+    nonce: str = "",
+    encrypt_type: str = "",
+    msg_signature: str = "",
+):
+    return await _wechat_callback_message_impl(
+        callback_path,
+        request=request,
+        signature=signature,
+        timestamp=timestamp,
+        nonce=nonce,
+        encrypt_type=encrypt_type,
+        msg_signature=msg_signature,
+    )
 
 
 @router.post("/api/adapters/{adapter_id}/apply-commands")

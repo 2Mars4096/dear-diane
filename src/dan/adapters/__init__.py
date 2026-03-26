@@ -33,6 +33,10 @@ from dan.adapters.base import (
 from dan.adapters.gateway_mixin import GatewayAdapterMixin
 from dan.adapters.email_adapter import EmailAdapter, EmailAdapterConfig
 from dan.adapters.telegram_adapter import TelegramAdapter, TelegramAdapterConfig
+from dan.adapters.wechat_official_account_adapter import (
+    WeChatOfficialAccountAdapter,
+    WeChatOfficialAccountAdapterConfig,
+)
 from dan.adapters.whatsapp_adapter import WhatsAppAdapter, WhatsAppAdapterConfig
 from dan.adapters.whatsapp_web_adapter import WhatsAppWebAdapter, WhatsAppWebAdapterConfig
 
@@ -48,6 +52,8 @@ __all__ = [
     "SessionState",
     "TelegramAdapter",
     "TelegramAdapterConfig",
+    "WeChatOfficialAccountAdapter",
+    "WeChatOfficialAccountAdapterConfig",
     "WhatsAppAdapter",
     "WhatsAppAdapterConfig",
     "WhatsAppWebAdapter",

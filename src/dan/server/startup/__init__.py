@@ -9,6 +9,7 @@ globals live here.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -39,16 +40,10 @@ _PRIMARY_LLM_KEY_ENV_VARS = (
 
 def get_llm_api_key_status() -> str:
     """Return configured/missing/placeholder for any supported primary chat key."""
-    saw_placeholder = False
-    for env_name in _PRIMARY_LLM_KEY_ENV_VARS:
-        raw = str(os.environ.get(env_name, "") or "").strip()
-        if not raw:
-            continue
-        if raw.lower() in _API_KEY_PLACEHOLDERS:
-            saw_placeholder = True
-            continue
-        return "configured"
-    return "placeholder" if saw_placeholder else "missing"
+    from dan.server.runtime_config import env_key_status
+
+    status, _ = env_key_status(_PRIMARY_LLM_KEY_ENV_VARS)
+    return status
 
 
 def log_startup_configuration_warnings() -> None:
@@ -356,6 +351,16 @@ async def init_engine(state: AppState) -> None:
     engine_config = _get_engine_config()
     engine_config.block_registry = state.block_registry
     state.engine_config = engine_config
+
+    from dan.server.runtime_config import provider_readiness_summary
+
+    provider_summary = provider_readiness_summary(engine_config)
+    for issue in provider_summary["issues"]:
+        _record_startup_degradation(
+            state,
+            str(issue.get("subsystem") or "providers"),
+            str(issue.get("message") or "provider readiness issue"),
+        )
 
     from dan.providers.tier_tracker import TierSuccessTracker
 
@@ -1126,6 +1131,9 @@ _ADAPTERS_STATE_PATH = Path.home() / ".dan" / "adapters-state.json"
 _TELEGRAM_CONFIG_PATH = Path.home() / ".dan" / "telegram" / "config.json"
 _WHATSAPP_WEB_CONFIG_PATH = Path.home() / ".dan" / "whatsapp-web" / "config.json"
 _WHATSAPP_WEB_DB_PATH = Path.home() / ".dan" / "whatsapp-web" / "session.sqlite3"
+_WECHAT_OFFICIAL_ACCOUNT_CONFIG_PATH = (
+    Path.home() / ".dan" / "wechat-official-account" / "config.json"
+)
 
 
 async def init_adapters(app: FastAPI) -> None:
@@ -1165,6 +1173,72 @@ async def init_adapters(app: FastAPI) -> None:
                 adapters_to_start.append(("whatsapp-web", {"db_path": db_path}))
     except Exception:
         logger.warning("Failed to read WhatsApp Web config for autostart", exc_info=True)
+
+    try:
+        if _WECHAT_OFFICIAL_ACCOUNT_CONFIG_PATH.exists():
+            raw = json.loads(_WECHAT_OFFICIAL_ACCOUNT_CONFIG_PATH.read_text())
+            auto_start = bool(raw.get("auto_start", False))
+            should_start = auto_start or "wechat" in previously_running
+            app_id = str(raw.get("app_id", "")).strip()
+            app_secret = str(raw.get("app_secret", "")).strip()
+            token = str(raw.get("token", "")).strip()
+            encoding_aes_key = str(raw.get("encoding_aes_key", "")).strip()
+            webhook_url = str(raw.get("webhook_url", "")).strip()
+            callback_path = str(raw.get("callback_path", "")).strip()
+            account_name = str(raw.get("account_name", "")).strip()
+            app_name = str(raw.get("app_name", "")).strip()
+            has_welcome_message = "welcome_message" in raw
+            welcome_message = str(raw.get("welcome_message", "")).strip()
+            support_encrypted_callbacks = bool(raw.get("support_encrypted_callbacks", False))
+            passive_reply_budget_seconds = raw.get("passive_reply_budget_seconds")
+            passive_reply_fallback_text = str(
+                raw.get("passive_reply_fallback_text", "")
+            ).strip()
+            api_base_url = str(raw.get("api_base_url", "")).strip()
+            access_token_refresh_margin_seconds = raw.get(
+                "access_token_refresh_margin_seconds"
+            )
+            server_url = str(raw.get("server_url", "")).strip()
+            # Token is the minimum viable runtime credential for callback verification.
+            # Reference-only fields like webhook_url/server_url should not trigger autostart.
+            has_runtime_config = bool(token)
+            if should_start and has_runtime_config:
+                config: dict[str, Any] = {}
+                if app_id:
+                    config["app_id"] = app_id
+                if app_secret:
+                    config["app_secret"] = app_secret
+                if token:
+                    config["token"] = token
+                if encoding_aes_key:
+                    config["encoding_aes_key"] = encoding_aes_key
+                if webhook_url:
+                    config["webhook_url"] = webhook_url
+                if callback_path:
+                    config["callback_path"] = callback_path
+                if account_name:
+                    config["account_name"] = account_name
+                if app_name:
+                    config["app_name"] = app_name
+                if has_welcome_message:
+                    config["welcome_message"] = welcome_message
+                if support_encrypted_callbacks:
+                    config["support_encrypted_callbacks"] = True
+                if passive_reply_budget_seconds is not None:
+                    config["passive_reply_budget_seconds"] = passive_reply_budget_seconds
+                if passive_reply_fallback_text:
+                    config["passive_reply_fallback_text"] = passive_reply_fallback_text
+                if api_base_url:
+                    config["api_base_url"] = api_base_url
+                if access_token_refresh_margin_seconds is not None:
+                    config["access_token_refresh_margin_seconds"] = (
+                        access_token_refresh_margin_seconds
+                    )
+                if server_url:
+                    config["server_url"] = server_url
+                adapters_to_start.append(("wechat", config))
+    except Exception:
+        logger.warning("Failed to read WeChat config for autostart", exc_info=True)
 
     if not adapters_to_start:
         return
