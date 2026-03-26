@@ -9,6 +9,15 @@ from __future__ import annotations
 from typing import Any
 
 
+def build_default_tool_registry() -> Any:
+    """Create the built-in tool registry used by default tool executors."""
+    from dan.executors.tool import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register_builtin_tools()
+    return registry
+
+
 def register_default_executors(executor_registry: Any) -> None:
     """Register built-in executors for all standard node types."""
     from dan.executors.code import CodeExecutor
@@ -35,9 +44,10 @@ def register_default_executors(executor_registry: Any) -> None:
     from dan.executors.validator import ValidatorExecutor
 
     human_executor = HumanNodeExecutor()
+    tool_executor = ToolExecutor(build_default_tool_registry())
     defaults: list[tuple[str, Any]] = [
         ("llm_operator", LLMExecutor()),
-        ("tool_operator", ToolExecutor()),
+        ("tool_operator", tool_executor),
         ("code_operator", CodeExecutor()),
         ("rag_operator", RAGExecutor()),
         ("input", InputExecutor()),

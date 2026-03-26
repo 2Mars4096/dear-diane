@@ -19,6 +19,7 @@ _DEFAULT_PREFIX_PATTERNS: list[tuple[str, str]] = [
     ("claude-", "anthropic"),
     ("gemini-", "google"),
 ]
+_STRICT_PREFIX_PROVIDERS = {"anthropic", "google"}
 
 
 class ProviderRegistry:
@@ -57,12 +58,24 @@ class ProviderRegistry:
         """
         if model in self._model_overrides:
             provider_name = self._model_overrides[model]
-            if provider_name in self._providers:
-                return provider_name
+            if provider_name not in self._providers:
+                raise KeyError(
+                    f"Model '{model}' is pinned to provider '{provider_name}', "
+                    f"but that provider is not registered. Registered providers: {sorted(self._providers)}"
+                )
+            return provider_name
 
         for prefix, provider_name in self._prefix_patterns:
-            if model.startswith(prefix) and provider_name in self._providers:
+            if not model.startswith(prefix):
+                continue
+            if provider_name in self._providers:
                 return provider_name
+            if provider_name in _STRICT_PREFIX_PROVIDERS:
+                raise KeyError(
+                    f"Model '{model}' requires provider '{provider_name}', "
+                    f"but that provider is not registered. Registered providers: {sorted(self._providers)}"
+                )
+            break
 
         if "default" in self._providers:
             return "default"

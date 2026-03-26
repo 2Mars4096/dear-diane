@@ -9,6 +9,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,19 @@ logger = logging.getLogger(__name__)
 
 class WorkflowLoadError(Exception):
     """Raised when a workflow cannot be loaded."""
+
+
+@contextmanager
+def _temporary_sys_path(paths: list[Path]) -> Any:
+    originals = list(sys.path)
+    for path in reversed(paths):
+        path_str = str(path)
+        if path_str not in sys.path:
+            sys.path.insert(0, path_str)
+    try:
+        yield
+    finally:
+        sys.path[:] = originals
 
 
 def detect_source_type(path: Path) -> str:
@@ -76,11 +91,17 @@ def load_graph_from_markdown(path: Path) -> Any:
 def load_graph_from_python(path: Path) -> Any:
     """Load a Graph from a Python file exporting 'graph' or 'build()'."""
     try:
-        spec = importlib.util.spec_from_file_location("_dan_user_workflow", str(path))
+        module_name = f"_dan_user_workflow_{abs(hash(path.resolve()))}"
+        spec = importlib.util.spec_from_file_location(module_name, str(path))
         if spec is None or spec.loader is None:
             raise WorkflowLoadError(f"Cannot load Python module from: {path}")
         mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        import_roots = [path.resolve().parent]
+        cwd = Path.cwd().resolve()
+        if cwd not in import_roots:
+            import_roots.append(cwd)
+        with _temporary_sys_path(import_roots):
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
         if hasattr(mod, "graph"):
             return mod.graph
         if hasattr(mod, "build") and callable(mod.build):
