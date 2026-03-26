@@ -67,6 +67,7 @@ class ValidationResult(BaseModel):
     errors: list[str] = []
     run_ready: bool = True
     run_readiness_issues: list[str] = []
+    run_readiness_failure_mode: str | None = None
 
 
 class ExecutionResult(BaseModel):

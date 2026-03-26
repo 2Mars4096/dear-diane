@@ -60,6 +60,7 @@ async def test_run_single_preserves_workflow_contract_surface_context_on_clarifi
     fixture = PromptFixture(id="clarify", tier="T1", prompt="Build a workflow")
     runner = EvalRunner(
         db_path=tmp_path / "missing.db",
+        audit_dir=tmp_path / "audit",
         delay=0.0,
         workflow_contract="disabled",
     )
@@ -122,6 +123,7 @@ async def test_run_multi_turn_preserves_workflow_contract_surface_context_across
     )
     runner = EvalRunner(
         db_path=tmp_path / "missing.db",
+        audit_dir=tmp_path / "audit",
         delay=0.0,
         workflow_contract="enabled",
     )
@@ -183,7 +185,7 @@ async def test_run_multi_turn_preserves_workflow_contract_surface_context_across
 
 @pytest.mark.asyncio
 async def test_consume_stream_ignores_progress_complete_and_stops_on_final(tmp_path):
-    runner = EvalRunner(db_path=tmp_path / "missing.db")
+    runner = EvalRunner(db_path=tmp_path / "missing.db", audit_dir=tmp_path / "audit")
     runner._client = _FakeClient(
         [
             {
@@ -289,6 +291,62 @@ def test_determine_status_fails_when_execution_does_not_complete(
     )
     assert status == "failed"
     assert failure_mode == expected_failure_mode
+
+
+@pytest.mark.parametrize(
+    ("run_readiness_failure_mode", "issues", "expected_failure_mode"),
+    [
+        ("unresolved_code", ["Code node 'compute' has empty code, so it is not run-ready."], "unresolved_code"),
+        (
+            "non_runnable_code",
+            ["Code node 'compute' contains placeholder status payload code instead of runnable logic."],
+            "non_runnable_code",
+        ),
+    ],
+)
+def test_determine_status_uses_code_specific_run_readiness_failure_modes(
+    run_readiness_failure_mode: str,
+    issues: list[str],
+    expected_failure_mode: str,
+) -> None:
+    fixture = PromptFixture(id="code-fail", tier="T2", prompt="Compute metrics")
+    validation = ValidationResult(
+        passed=True,
+        run_ready=False,
+        run_readiness_issues=issues,
+        run_readiness_failure_mode=run_readiness_failure_mode,
+    )
+
+    status, failure_mode = _determine_status(
+        fixture,
+        graph_created=True,
+        validation=validation,
+        generation_path="codegen",
+        events=[],
+    )
+
+    assert status == "failed"
+    assert failure_mode == expected_failure_mode
+
+
+def test_determine_status_falls_back_to_generic_not_run_ready() -> None:
+    fixture = PromptFixture(id="not-ready", tier="T1", prompt="Build a workflow")
+    validation = ValidationResult(
+        passed=True,
+        run_ready=False,
+        run_readiness_issues=["Workflow has no entry points, so it is not run-ready."],
+    )
+
+    status, failure_mode = _determine_status(
+        fixture,
+        graph_created=True,
+        validation=validation,
+        generation_path="intent_compile",
+        events=[],
+    )
+
+    assert status == "failed"
+    assert failure_mode == "not_run_ready"
 
 
 def test_build_graph_summary_counts_nested_control_flow_nodes() -> None:

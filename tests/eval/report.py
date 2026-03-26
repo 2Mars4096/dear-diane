@@ -272,6 +272,8 @@ class ReportGenerator:
             if r.failure_mode in {
                 "validation_error",
                 "not_run_ready",
+                "unresolved_code",
+                "non_runnable_code",
                 "expectation_mismatch",
                 "codegen_failed",
             }

@@ -28,6 +28,7 @@ from tests.eval import (
 from tests.eval.client import DanClient
 from tests.eval.metrics import EvalLogger
 from tests.eval.telemetry_reader import TelemetryReader
+from dan.meta.workflow_contract import classify_run_readiness_issues
 from dan.server.audit import ChatAuditStore
 
 try:
@@ -723,6 +724,7 @@ class EvalRunner:
                     for issue in (resp.get("run_readiness_issues") or [])
                     if str(issue).strip()
                 ],
+                run_readiness_failure_mode=resp.get("run_readiness_failure_mode"),
             )
         except Exception:
             return ValidationResult(
@@ -730,6 +732,7 @@ class EvalRunner:
                 errors=["validation_request_failed"],
                 run_ready=False,
                 run_readiness_issues=["validation_request_failed"],
+                run_readiness_failure_mode="not_run_ready",
             )
 
     async def _try_execute(self, graph_id: str) -> ExecutionResult:
@@ -979,7 +982,14 @@ def _build_graph_summary(graph_data: dict) -> GraphSummary:
 def _summarize_event(event: dict) -> dict:
     """Extract key fields from a stream event for the record, keeping payloads short."""
     out: dict = {"type": event.get("type", "")}
-    for key in ("message_id", "content", "error", "graph_revision", "detected_mode"):
+    for key in (
+        "message_id",
+        "content",
+        "error",
+        "graph_revision",
+        "detected_mode",
+        "failure_mode",
+    ):
         val = event.get(key)
         if val:
             out[key] = str(val)[:300]
@@ -987,6 +997,7 @@ def _summarize_event(event: dict) -> dict:
         for key in (
             "path_taken", "fallback_chain", "wall_clock_ms",
             "complexity_tier", "node_count", "retries_used", "quality_score",
+            "failure_mode",
         ):
             val = event.get(key)
             if val is not None:
@@ -1130,7 +1141,7 @@ def _determine_status(
         return "failed", "validation_error"
 
     if validation and not validation.run_ready:
-        return "failed", "not_run_ready"
+        return "failed", _classify_run_readiness_failure(validation)
 
     if execution and execution.status != "completed":
         if execution.status == "timeout":
@@ -1196,6 +1207,16 @@ def _classify_no_graph(
             return "codegen_failed"
 
     return "no_graph_created"
+
+
+def _classify_run_readiness_failure(validation: ValidationResult | None) -> str:
+    if validation is None:
+        return "not_run_ready"
+    failure_mode = str(validation.run_readiness_failure_mode or "").strip()
+    if failure_mode:
+        return failure_mode
+    inferred = classify_run_readiness_issues(validation.run_readiness_issues)
+    return inferred or "not_run_ready"
 
 
 def _error_record(
