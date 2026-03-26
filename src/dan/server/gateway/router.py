@@ -70,6 +70,11 @@ def _require_bus() -> GlobalEventBus:
     return _event_bus
 
 
+def _telemetry_store() -> Any | None:
+    rm = _require_rm()
+    return getattr(rm, "_telemetry_store", None)
+
+
 # ── Dispatch ──────────────────────────────────────────────────────────
 
 
@@ -363,6 +368,55 @@ async def get_activity() -> ActivitySnapshot:
 async def get_surfaces() -> list[dict[str, Any]]:
     tracker = _require_tracker()
     return tracker.get_active_surfaces()
+
+
+@router.get("/analytics/telemetry")
+async def get_telemetry_analytics(
+    hours: int = 24,
+    surface: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    store = _telemetry_store()
+    normalized_hours = max(1, min(int(hours or 24), 24 * 14))
+    normalized_surface = str(surface or "").strip() or None
+    normalized_session = str(session_id or "").strip() or None
+
+    if store is None:
+        return {
+            "filters": {
+                "surface": normalized_surface,
+                "session_id": normalized_session,
+                "since": None,
+                "until": None,
+            },
+            "totals": {
+                "events": 0,
+                "chat_turns": 0,
+                "fast_commands": 0,
+                "gateway_calls": 0,
+                "total_tokens": 0,
+                "total_cost": 0.0,
+            },
+            "event_types": [],
+            "activity_by_hour": [],
+            "models": [],
+            "modes": [],
+            "window_hours": normalized_hours,
+        }
+
+    from dan.telemetry_api import TelemetryQuery, summarize_telemetry
+
+    summary = await summarize_telemetry(
+        store,
+        TelemetryQuery(
+            surface=normalized_surface,
+            session_id=normalized_session,
+            limit=max(5000, normalized_hours * 300),
+        ),
+        hours=normalized_hours,
+    )
+    summary["window_hours"] = normalized_hours
+    return summary
 
 
 @router.post("/surfaces/register")
