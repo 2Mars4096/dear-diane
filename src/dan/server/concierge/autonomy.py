@@ -34,7 +34,7 @@ _DIRECTIVE_KEYWORDS = (
     "run",
     "test",
 )
-_MESSAGING_SURFACES = {"telegram", "whatsapp", "whatsapp-web", "email"}
+_MESSAGING_SURFACES = {"telegram", "whatsapp", "whatsapp-web", "email", "wechat"}
 _QUESTION_PREFIX_RE = re.compile(
     r"^\s*(?:what|how|why|where|when|which|who|can you|could you|would you|is|are|do|does|did|should)\b",
     re.IGNORECASE,

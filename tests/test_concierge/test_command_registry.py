@@ -408,6 +408,7 @@ class TestRegressionCoreCommands:
     @pytest.mark.parametrize("cmd_name", [
         "/help",
         "/autonomy",
+        "/analytics",
     ])
     def test_core_command_registered(self, cmd_name: str):
         desc = self.reg.get(cmd_name)

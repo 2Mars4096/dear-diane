@@ -28,6 +28,10 @@ _WORKFLOW_APPLY_RE = re.compile(
     r"\b(?:apply (?:it|that|this)|go ahead and apply|use (?:it|that|this)|make it live)\b",
     re.IGNORECASE,
 )
+_FILE_ANCHORED_APPLY_RE = re.compile(
+    r"\bapply (?:it|that|this)\b.*\b(?:patch|file|document|readme|markdown)\b",
+    re.IGNORECASE,
+)
 _WORKFLOW_RETRY_RE = re.compile(
     r"\b(?:retry|try again|regenerate|redo|rebuild)\b",
     re.IGNORECASE,
@@ -212,6 +216,7 @@ DEFAULT_LEXICAL_SCENARIOS: tuple[LexicalScenario, ...] = (
         id="workflow_followup_apply",
         description="Apply the most recent workflow proposal or mutation.",
         positive_patterns=(_WORKFLOW_APPLY_RE,),
+        negative_patterns=(_FILE_ANCHORED_APPLY_RE,),
         required_context=("workflow_operation_subject_known",),
         intent="agent",
         target="workflow",

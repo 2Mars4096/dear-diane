@@ -32,7 +32,7 @@ class TestRegistryHealthCheck:
             assert cmd.surfaces, f"{cmd.name}: no surfaces defined"
 
     def test_surfaces_are_valid(self, registry: CommandRegistry):
-        valid = {"cli", "editor", "telegram", "whatsapp", "whatsapp-web", "email", "all"}
+        valid = {"cli", "editor", "telegram", "whatsapp", "whatsapp-web", "email", "wechat", "all"}
         for cmd in registry.list_all():
             for s in cmd.surfaces:
                 assert s in valid, f"{cmd.name}: unknown surface '{s}'"

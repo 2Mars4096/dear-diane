@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 _WHATSAPP_CHAR_LIMIT = 4096
 
-_MESSAGING_SURFACES = frozenset({"whatsapp", "whatsapp-web", "telegram", "email"})
+_MESSAGING_SURFACES = frozenset({"whatsapp", "whatsapp-web", "telegram", "email", "wechat"})
 
 # ---------------------------------------------------------------------------
 # HTML stripping for messaging surfaces

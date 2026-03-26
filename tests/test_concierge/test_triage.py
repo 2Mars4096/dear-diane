@@ -251,6 +251,71 @@ async def test_triage_uses_workflow_apply_lexical_scenario_with_recent_context()
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("text", "scenario_id", "target", "action_hints"),
+    [
+        ("run it", "workflow_run_followup", "run", ["workflow_run", "run_control"]),
+        ("status of the workflow", "workflow_query_status", "workflow", ["workflow_query"]),
+        ("what workflow is this", "workflow_query_identity", "workflow", ["workflow_query"]),
+    ],
+)
+async def test_triage_uses_workflow_followup_lexical_scenarios_with_recent_context(
+    text: str,
+    scenario_id: str,
+    target: str,
+    action_hints: list[str],
+):
+    context, _project, _task = _make_context(turns=_workflow_activity_turns())
+    llm_calls = 0
+
+    async def _should_not_run(_messages):
+        nonlocal llm_calls
+        llm_calls += 1
+        return "{}"
+
+    result = await triage(text, context, _should_not_run)
+
+    assert result.route_source == "fast_lexical"
+    assert result.scenario_id == scenario_id
+    assert result.route is not None
+    assert result.route.target == target
+    assert result.route.action_hints == action_hints
+    assert llm_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("text", "scenario_id", "target", "action_hints"),
+    [
+        ("search that online", "explicit_web_lookup", "web", ["search_web"]),
+        ("check this file", "explicit_file_read", "file", ["read_file"]),
+    ],
+)
+async def test_triage_uses_explicit_non_workflow_lexical_scenarios(
+    text: str,
+    scenario_id: str,
+    target: str,
+    action_hints: list[str],
+):
+    context, _project, _task = _make_context(turns=_workflow_activity_turns())
+    llm_calls = 0
+
+    async def _should_not_run(_messages):
+        nonlocal llm_calls
+        llm_calls += 1
+        return "{}"
+
+    result = await triage(text, context, _should_not_run)
+
+    assert result.route_source == "fast_lexical"
+    assert result.scenario_id == scenario_id
+    assert result.route is not None
+    assert result.route.target == target
+    assert result.route.action_hints == action_hints
+    assert llm_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_triage_escalates_ambiguous_workflow_and_file_followup_to_llm():
     context, _project, _task = _make_context(turns=_workflow_activity_turns())
     llm_calls = 0
@@ -289,6 +354,67 @@ async def test_triage_escalates_ambiguous_workflow_and_file_followup_to_llm():
     assert result.route is not None
     assert result.route.target == "workflow"
     assert result.route.action_hints == ["workflow_query"]
+
+
+@pytest.mark.asyncio
+async def test_triage_escalates_ambiguous_workflow_and_web_followup_to_llm():
+    context, _project, _task = _make_context(turns=_workflow_activity_turns())
+    llm_calls = 0
+
+    async def _complete(_messages):
+        nonlocal llm_calls
+        llm_calls += 1
+        return json.dumps(
+            {
+                "tier": 1,
+                "intent": "agent",
+                "route": {
+                    "mode": "agent",
+                    "target": "workflow",
+                    "action_hints": ["workflow_query"],
+                },
+                "confidence": 0.9,
+                "goal": "Clarify the current workflow status",
+                "deliverable": "Workflow status",
+                "entities": [],
+                "is_resume": False,
+                "resume_task_id": None,
+                "is_social": False,
+                "social_response": None,
+                "context_needs": [],
+                "subtasks": [],
+                "execution_order": "parallel",
+                "rationale": "Ambiguous lexical cues were resolved by the LLM",
+            }
+        )
+
+    result = await triage("search that online and check workflow status", context, _complete)
+
+    assert llm_calls == 1
+    assert result.route_source == "llm"
+    assert result.route is not None
+    assert result.route.target == "workflow"
+    assert result.route.action_hints == ["workflow_query"]
+
+
+@pytest.mark.asyncio
+async def test_triage_file_patch_request_does_not_hit_workflow_apply_scenario():
+    context, _project, _task = _make_context(turns=_workflow_activity_turns())
+    llm_calls = 0
+
+    async def _should_not_run(_messages):
+        nonlocal llm_calls
+        llm_calls += 1
+        return "{}"
+
+    result = await triage("apply this patch to the file", context, _should_not_run)
+
+    assert result.route_source == "fast_lexical"
+    assert result.scenario_id == "explicit_file_write"
+    assert result.route is not None
+    assert result.route.target == "file"
+    assert result.route.action_hints == ["write_file"]
+    assert llm_calls == 0
 
 
 @pytest.mark.asyncio

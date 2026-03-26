@@ -7,6 +7,8 @@ or speculative reuse search.
 
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +17,7 @@ import pytest
 from dan.engine.correction_memory import CorrectionStore
 from dan.engine.memory_kernel import MemoryKernel
 from dan.engine.user_profile import UserProfile
+from dan.llm_core.types import GatewayCall
 from dan.server.capability_registry import CapabilityResult
 from dan.server.chat_manager import ChatCompleteEvent
 from dan.server.concierge.command_registry import CommandDescriptor, CommandRegistry
@@ -23,7 +26,7 @@ from dan.server.concierge.models import ResolvedContext, SurfaceMessage, TaskTur
 from dan.server.concierge.project_store import ProjectStore
 from dan.server.concierge.runtime import Concierge
 from dan.server.concierge.scheduler import ScheduleHistoryStore, ScheduleStore
-from dan.server.telemetry import InMemoryTelemetryStore, TelemetryEvent
+from dan.server.telemetry import InMemoryTelemetryStore, TelemetryEvent, TelemetryQuery
 
 
 def _make_msg(
@@ -654,6 +657,142 @@ class TestCostCommand:
             "request-workflow",
             "lane-1",
         )
+
+
+class TestAnalyticsCommand:
+    @pytest.mark.asyncio
+    async def test_analytics_no_telemetry_store(self, tmp_path):
+        c = _build_concierge(tmp_path, telemetry_store=None)
+        events = await _collect(c, _make_msg("/analytics"))
+        assert len(events) == 1
+        assert "not enabled" in events[0].content.lower()
+
+    @pytest.mark.asyncio
+    async def test_analytics_groups_by_concierge_stage_and_tier(self, tmp_path):
+        store = InMemoryTelemetryStore()
+        now = datetime.now(timezone.utc)
+        await store.record(TelemetryEvent(
+            event_type="chat_turn",
+            timestamp=now - timedelta(days=1),
+            total_tokens=300,
+            estimated_cost=0.003,
+            duration_ms=800,
+            metadata={
+                "concierge_stage": "workflow_build",
+                "session_tier": 2,
+                "route_source": "fast_lexical",
+            },
+        ))
+        await store.record(TelemetryEvent(
+            event_type="chat_turn",
+            timestamp=now - timedelta(days=1),
+            total_tokens=120,
+            estimated_cost=0.001,
+            duration_ms=400,
+            metadata={
+                "concierge_stage": "conversation",
+                "session_tier": 1,
+                "route_source": "llm",
+            },
+        ))
+        c = _build_concierge(tmp_path, telemetry_store=store)
+        events = await _collect(
+            c,
+            _make_msg("/analytics --by concierge_stage,session_tier,route_source --days 30"),
+        )
+
+        assert len(events) == 1
+        content = events[0].content
+        assert "Telemetry Analytics" in content
+        assert "workflow_build" in content
+        assert "session_tier=2" in content
+        assert "route_source=fast_lexical" in content
+        assert "conversation" in content
+
+    @pytest.mark.asyncio
+    async def test_analytics_reports_session_modes_models_and_hours(self, tmp_path):
+        store = InMemoryTelemetryStore()
+        timestamp = datetime(2026, 3, 25, 10, 15, tzinfo=timezone.utc)
+        await store.record(TelemetryEvent(
+            event_type="chat_turn",
+            session_id="test-surface",
+            model="gpt-4.1",
+            model_used="gpt-4.1",
+            chat_mode="plan",
+            total_tokens=120,
+            estimated_cost=0.0012,
+            timestamp=timestamp,
+        ))
+        await store.record(TelemetryEvent(
+            event_type="gateway_call",
+            session_id="test-surface",
+            model="gpt-4.1",
+            model_used="gpt-4.1",
+            chat_mode="plan",
+            total_tokens=120,
+            estimated_cost=0.0012,
+            timestamp=timestamp,
+        ))
+
+        c = _build_concierge(tmp_path, telemetry_store=store)
+        events = await _collect(c, _make_msg("/analytics"))
+
+        assert len(events) == 1
+        content = events[0].content
+        assert "Session Analytics" in content
+        assert "gateway calls" in content
+        assert "`plan`" in content
+        assert "`gpt-4.1`" in content
+        assert "10:00 UTC" in content
+
+
+class TestGatewayTelemetry:
+    @pytest.mark.asyncio
+    async def test_process_records_gateway_call_telemetry_with_turn_context(self, tmp_path):
+        store = InMemoryTelemetryStore()
+        c = _build_concierge(tmp_path, telemetry_store=store)
+
+        async def _fake_dispatch(_msg: SurfaceMessage):
+            c._record_gateway_call_telemetry(GatewayCall(
+                model="gpt-4.1",
+                started_at=0.0,
+                elapsed_ms=25.0,
+                usage={
+                    "prompt_tokens": 80,
+                    "completion_tokens": 20,
+                    "total_tokens": 100,
+                },
+            ))
+            yield ChatCompleteEvent(
+                message_id="m1",
+                content="done",
+                token_usage={
+                    "prompt_tokens": 80,
+                    "completion_tokens": 20,
+                    "total_tokens": 100,
+                },
+                estimated_cost=0.001,
+                context_window=0,
+                graph_revision="",
+            )
+
+        c._tiered_dispatcher.dispatch = _fake_dispatch
+
+        msg = _make_msg("plan the rollout", external_id="session-1")
+        msg.metadata = {"mode": "plan"}
+        await _collect(c, msg)
+        await asyncio.sleep(0)
+
+        events = await store.query(TelemetryQuery(session_id="session-1", limit=10))
+        gateway_events = [event for event in events if event.event_type == "gateway_call"]
+        turn_events = [event for event in events if event.event_type == "chat_turn"]
+
+        assert len(gateway_events) == 1
+        assert gateway_events[0].chat_mode == "plan"
+        assert gateway_events[0].model_used == "gpt-4.1"
+        assert len(turn_events) == 1
+        assert turn_events[0].chat_mode == "plan"
+        assert turn_events[0].model_used == "gpt-4.1"
 
 
 # ---------------------------------------------------------------------------

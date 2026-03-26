@@ -440,9 +440,11 @@ class TieredDispatcher:
             if getattr(triage, "scenario_confidence", None) is not None:
                 msg_metadata["scenario_confidence"] = triage.scenario_confidence
             try:
-                from .tier_executors import _determine_stage
+                from .tier_executors import _determine_stage, _stage_prompt_overlay_id
 
-                msg_metadata["concierge_stage"] = _determine_stage(session)
+                stage = _determine_stage(session)
+                msg_metadata["concierge_stage"] = stage
+                msg_metadata["prompt_overlay"] = _stage_prompt_overlay_id(stage)
             except Exception:
                 logger.debug("Failed to resolve concierge stage for user-turn metadata", exc_info=True)
             msg_metadata["session_tier"] = int(session.tier)
@@ -574,6 +576,7 @@ class TieredDispatcher:
                     "children_count": len(session.children),
                     "error": session.result.error if session.result else None,
                     "concierge_stage": stage,
+                    "session_tier": session.tier if isinstance(session.tier, int) else session.tier.value,
                     "prompt_overlay": _stage_prompt_overlay_id(stage),
                     "route_source": str(getattr(session.triage, "route_source", "") or ""),
                     "scenario_id": getattr(session.triage, "scenario_id", None),
@@ -719,6 +722,7 @@ class TieredDispatcher:
                     "total_tokens": total_tokens,
                     "session_tree": trace_data,
                     "concierge_stage": stage,
+                    "session_tier": session.tier if isinstance(session.tier, int) else session.tier.value,
                     "prompt_overlay": _stage_prompt_overlay_id(stage),
                     "route_source": str(getattr(session.triage, "route_source", "") or ""),
                     "scenario_id": getattr(session.triage, "scenario_id", None),

@@ -2210,15 +2210,22 @@ async def test_telemetry_events_include_autonomy_resolution_metadata(
     ]
 
     telemetry_events = await telemetry_store.query()
+    turn_events = [event for event in telemetry_events if event.event_type == "chat_turn"]
     session_complete = [event for event in telemetry_events if event.event_type == "session_complete"]
     dispatch_complete = [event for event in telemetry_events if event.event_type == "tiered_dispatch_complete"]
 
+    assert turn_events
     assert session_complete
     assert dispatch_complete
+    assert turn_events[-1].metadata["concierge_stage"] == "conversation"
+    assert turn_events[-1].metadata["session_tier"] == 1
+    assert turn_events[-1].metadata["prompt_overlay"] == "concierge_stage:conversation"
     assert session_complete[-1].metadata["autonomy_resolution"]["effective_level"] == "aggressive"
     assert dispatch_complete[-1].metadata["autonomy_resolution"]["effective_level"] == "aggressive"
     assert session_complete[-1].metadata["concierge_stage"] == "conversation"
+    assert session_complete[-1].metadata["session_tier"] == 1
     assert dispatch_complete[-1].metadata["prompt_overlay"] == "concierge_stage:conversation"
+    assert dispatch_complete[-1].metadata["session_tier"] == 1
 
 
 # ---------------------------------------------------------------------------

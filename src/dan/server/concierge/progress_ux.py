@@ -512,6 +512,7 @@ _SURFACE_VERBOSITY: dict[str, VerbosityLevel] = {
     "whatsapp": "minimal",
     "whatsapp-web": "minimal",
     "email": "minimal",
+    "wechat": "minimal",
 }
 
 

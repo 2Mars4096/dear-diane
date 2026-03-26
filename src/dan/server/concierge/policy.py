@@ -53,7 +53,7 @@ DEFAULT_EXECUTION_POLICIES: dict[IntentCategory, ExecutionPolicy] = {
 
 _DESTRUCTIVE_KEYWORDS = ("delete", "remove", "cancel", "unpublish", "destroy")
 _MUTATION_INTENTS = {IntentCategory.PLAN}
-_MESSAGING_SURFACES = {"telegram", "whatsapp", "whatsapp-web", "email"}
+_MESSAGING_SURFACES = {"telegram", "whatsapp", "whatsapp-web", "email", "wechat"}
 _SIMPLE_MUTATION_KEYWORDS = ("add", "edit", "modify", "change", "update", "rename", "move", "remove")
 
 
@@ -129,5 +129,4 @@ def resolve_policy(
         action = ActionPolicy.CONFIRM
 
     return action, execution
-
 

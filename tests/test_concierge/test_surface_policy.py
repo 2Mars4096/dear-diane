@@ -30,3 +30,16 @@ def test_resolve_policy_treats_whatsapp_web_as_messaging_surface() -> None:
     )
 
     assert action == ActionPolicy.CONFIRM
+
+
+def test_resolve_policy_treats_wechat_as_messaging_surface() -> None:
+    action, _ = resolve_policy(
+        intent=IntentCategory.PLAN,
+        action_hints=None,
+        text="build a workflow",
+        context=None,
+        user_profile=None,
+        surface="wechat",
+    )
+
+    assert action == ActionPolicy.CONFIRM

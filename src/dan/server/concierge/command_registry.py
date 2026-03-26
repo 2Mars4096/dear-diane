@@ -45,7 +45,7 @@ _TELEGRAM_COMMAND_RE = re.compile(r"^[a-z0-9_]{1,32}$")
 
 CommandKind = Literal["binary", "repl", "chat", "adapter_local"]
 SurfaceName = Literal[
-    "cli", "editor", "telegram", "whatsapp", "whatsapp-web", "email", "all",
+    "cli", "editor", "telegram", "whatsapp", "whatsapp-web", "email", "wechat", "all",
 ]
 
 
@@ -280,7 +280,7 @@ class CommandRegistry:
                 warnings.append(f"{cmd.name}: empty help_text")
             if not cmd.surfaces:
                 warnings.append(f"{cmd.name}: no surfaces defined")
-            valid_surfaces = {"cli", "editor", "telegram", "whatsapp", "whatsapp-web", "email", "all"}
+            valid_surfaces = {"cli", "editor", "telegram", "whatsapp", "whatsapp-web", "email", "wechat", "all"}
             for s in cmd.surfaces:
                 if s not in valid_surfaces:
                     warnings.append(f"{cmd.name}: unknown surface '{s}'")
@@ -469,7 +469,7 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
     registry.register(CommandDescriptor(
         name="/find",
         kind="adapter_local",
-        surfaces=["whatsapp", "whatsapp-web", "telegram", "email"],
+        surfaces=["whatsapp", "whatsapp-web", "telegram", "email", "wechat"],
         args_schema="<query>",
         help_text="Find a file on your computer",
         group="file_navigation",
@@ -477,7 +477,7 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
     registry.register(CommandDescriptor(
         name="/send",
         kind="adapter_local",
-        surfaces=["whatsapp", "whatsapp-web", "telegram", "email"],
+        surfaces=["whatsapp", "whatsapp-web", "telegram", "email", "wechat"],
         args_schema="<path>",
         help_text="Send you a file",
         group="file_navigation",
@@ -686,6 +686,15 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         surfaces=["all"],
         help_text="Show session token usage and estimated cost per model",
         group="session",
+    ))
+    registry.register(CommandDescriptor(
+        name="/analytics",
+        kind="chat",
+        surfaces=["all"],
+        args_schema="[--by field[,field...]] [--event <type|all>] [--days <n>] [--limit <n>]",
+        help_text="Show aggregated telemetry rollups, including concierge stage/tier routing metadata",
+        group="session",
+        handler="dan.server.concierge.runtime.Concierge.handle_analytics_command",
     ))
     registry.register(CommandDescriptor(
         name="/retry",
