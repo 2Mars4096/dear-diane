@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from dan.server.chat.events import ChatStreamEvent
+
+_WORKFLOW_GEN_ALLOWED_MODES = frozenset(
+    m.strip()
+    for m in os.environ.get(
+        "DAN_WORKFLOW_GEN_FAST_PATH_MODES", "agent,build,mutate"
+    ).split(",")
+)
 
 
 @dataclass(frozen=True)
@@ -31,7 +39,7 @@ def should_use_workflow_generation_fast_path(
         is_empty_graph
         and codegen_enabled
         and allow_mutation_tool
-        and mode in {"agent", "build", "mutate"}
+        and mode in _WORKFLOW_GEN_ALLOWED_MODES
     )
 
 

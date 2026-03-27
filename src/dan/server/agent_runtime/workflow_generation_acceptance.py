@@ -63,6 +63,7 @@ def accept_candidate_graph(
     failure_method: str,
     failure_fix_needed: bool,
     pattern: str,
+    defer_success_recording: bool = False,
 ) -> WorkflowGenerationAcceptanceResult:
     """Validate, quality-check, and record one candidate workflow graph."""
 
@@ -78,11 +79,12 @@ def accept_candidate_graph(
         quality_error = quality_error_for_graph(graph_dict)
         if quality_error is None:
             fit_check(graph_dict)
-            record_gen_outcome(
-                success_method,
-                success=True,
-                pattern=pattern,
-            )
+            if not defer_success_recording:
+                record_gen_outcome(
+                    success_method,
+                    success=True,
+                    pattern=pattern,
+                )
             return WorkflowGenerationAcceptanceResult(
                 accepted_graph=validation.graph.model_dump(mode="json"),
             )

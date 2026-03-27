@@ -7,6 +7,7 @@ import ast
 import asyncio
 import logging
 import os
+import tempfile
 import time
 import uuid
 from typing import Any, Awaitable, Callable
@@ -55,6 +56,7 @@ class WorkflowGenerationRuntime:
         exec_deterministic_builder_code: Callable[[str], dict | None],
         sandbox_exec_builder_code: Callable[[str], Awaitable[tuple[dict | None, Any]]],
         extract_code_from_response: Callable[[str], str],
+        run_candidate_smoke: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     ) -> tuple[dict | None, list[ChatStreamEvent]]:
         """Generate a workflow graph and summary events for an empty graph."""
 
@@ -77,6 +79,13 @@ class WorkflowGenerationRuntime:
         _model = effective_model or default_model
         events: list[ChatStreamEvent] = []
         _max_gen_seconds = int(os.environ.get("DAN_MAX_GENERATION_SECONDS", "120") or "120")
+        try:
+            _intent_extraction_max_retries = max(
+                0,
+                int(os.environ.get("DAN_INTENT_EXTRACTION_MAX_RETRIES", "1") or "1"),
+            )
+        except (TypeError, ValueError):
+            _intent_extraction_max_retries = 1
         _gen_start = time.monotonic()
 
         def _deadline_exceeded() -> bool:
@@ -244,6 +253,25 @@ class WorkflowGenerationRuntime:
                     max_nodes,
                 )
 
+        def _should_retry_unparsed_intent_response(raw_text: str) -> bool:
+            text = str(raw_text or "").strip().lower()
+            if not text:
+                return True
+            return any(
+                marker in text
+                for marker in (
+                    "{",
+                    "[",
+                    "workflow",
+                    "stage",
+                    "stages",
+                    "goal",
+                    "intent",
+                    "global_input",
+                    "global_output",
+                )
+            )
+
         _quality_threshold_raw = os.environ.get("DAN_GRAPH_QUALITY_THRESHOLD")
         try:
             _quality_threshold_override = (
@@ -299,6 +327,512 @@ class WorkflowGenerationRuntime:
                 warning_message="Graph quality %d below threshold %d, retrying diagnosis",
             )
             return [quality_error] if quality_error is not None else []
+
+        def _structured_generation_mode() -> str:
+            mode = str(
+                os.environ.get("DAN_STRUCTURED_GENERATION", "disabled") or "disabled"
+            ).strip().lower()
+            if mode not in {"disabled", "canary", "enabled"}:
+                return "disabled"
+            return mode
+
+        def _structured_generation_max_dependencies() -> int:
+            raw = str(
+                os.environ.get("DAN_STRUCTURED_MAX_DEPENDENCIES_PER_NODE", "1") or "1"
+            ).strip()
+            try:
+                return max(1, int(raw))
+            except ValueError:
+                return 1
+
+        def _structured_execution_smoke_mode() -> str:
+            raw = str(
+                os.environ.get("DAN_STRUCTURED_EXECUTION_SMOKE", "auto") or "auto"
+            ).strip().lower()
+            if raw not in {"disabled", "auto", "required"}:
+                return "auto"
+            return raw
+
+        def _structured_execution_smoke_timeout() -> float:
+            raw = str(
+                os.environ.get("DAN_STRUCTURED_EXECUTION_SMOKE_TIMEOUT", "20") or "20"
+            ).strip()
+            try:
+                return max(1.0, float(raw))
+            except ValueError:
+                return 20.0
+
+        def _infer_schedule_intent(text: str) -> Any | None:
+            from dan.meta.workflow_spec import ScheduleIntent
+
+            lower = str(text or "").lower()
+            trigger: str | None = None
+            if any(token in lower for token in ("daily", "every day", "each day")):
+                trigger = "daily"
+            elif any(
+                token in lower
+                for token in (
+                    "weekly",
+                    "every monday",
+                    "every tuesday",
+                    "every wednesday",
+                    "every thursday",
+                    "every friday",
+                    "every saturday",
+                    "every sunday",
+                )
+            ):
+                trigger = "weekly"
+            elif any(token in lower for token in ("monthly", "every month", "each month")):
+                trigger = "monthly"
+            if trigger is None:
+                return None
+            delivery_target = None
+            if "email" in lower:
+                delivery_target = "email"
+            elif "slack" in lower:
+                delivery_target = "slack"
+            elif "notify" in lower:
+                delivery_target = "notification"
+            return ScheduleIntent(
+                trigger=trigger,
+                delivery_target=delivery_target,
+                notes=["Inferred from the original workflow-authoring prompt."],
+            )
+
+        def _structured_generation_eligibility(spec: Any) -> tuple[bool, str]:
+            max_dependencies = _structured_generation_max_dependencies()
+            dependency_heavy_nodes = [
+                node.node_id
+                for node in getattr(spec, "nodes", []) or []
+                if len(getattr(node, "dependencies", []) or []) > max_dependencies
+            ]
+            if dependency_heavy_nodes:
+                return (
+                    False,
+                    "Structured generation skipped because some nodes exceed the configured "
+                    f"dependency cap ({max_dependencies}): {', '.join(dependency_heavy_nodes[:5])}",
+                )
+            unsupported_types = {
+                node.node_id: node.node_type
+                for node in getattr(spec, "nodes", []) or []
+                if node.node_type
+                not in {
+                    "llm_operator",
+                    "tool_operator",
+                    "code_operator",
+                    "gate",
+                    "for_each",
+                    "rag_operator",
+                    "human",
+                }
+            }
+            if unsupported_types:
+                preview = ", ".join(
+                    f"{node_id}:{node_type}"
+                    for node_id, node_type in list(unsupported_types.items())[:5]
+                )
+                return (
+                    False,
+                    "Structured generation skipped because the candidate intent contains "
+                    f"unsupported runtime node types for the staged linker: {preview}",
+                )
+            return True, ""
+
+        def _structured_execution_smoke_inputs(
+            spec: Any,
+            candidate_graph: dict[str, Any],
+        ) -> tuple[dict[str, Any] | None, list[str], str | None]:
+            def _iter_graph_nodes(graph_dict: dict[str, Any]) -> list[dict[str, Any]]:
+                discovered: list[dict[str, Any]] = list(graph_dict.get("nodes", []) or [])
+                for sub_graph in dict(graph_dict.get("sub_graphs", {}) or {}).values():
+                    if isinstance(sub_graph, dict):
+                        discovered.extend(_iter_graph_nodes(sub_graph))
+                return discovered
+
+            nodes = _iter_graph_nodes(candidate_graph)
+            node_types = {
+                str(node.get("node_type") or "").strip()
+                for node in nodes
+                if str(node.get("node_type") or "").strip()
+            }
+            tool_ids = {
+                str(node.get("tool_id") or "").strip()
+                for node in nodes
+                    if str(node.get("node_type") or "").strip() == "tool_operator"
+                    and str(node.get("tool_id") or "").strip()
+            }
+            if "code_operator" in node_types:
+                return (
+                    None,
+                    [],
+                    "Structured execution smoke skipped because the candidate contains generated code operators.",
+                )
+            if node_types & {"llm_operator", "human", "rag_operator"}:
+                return (
+                    None,
+                    [],
+                    "Structured execution smoke skipped because the candidate requires model-backed or human execution.",
+                )
+            unsafe_tools = {
+                tool_id
+                for tool_id in tool_ids
+                if tool_id not in {"file_read", "csv_read"}
+            }
+            if unsafe_tools:
+                preview = ", ".join(sorted(list(unsafe_tools))[:5])
+                return (
+                    None,
+                    [],
+                    "Structured execution smoke skipped because the candidate uses external or side-effecting tools: "
+                    f"{preview}",
+                )
+
+            inputs: dict[str, Any] = {}
+            cleanup_paths: list[str] = []
+            for name in list(getattr(spec, "global_inputs", []) or []):
+                lowered = str(name or "").strip().lower()
+                if not lowered:
+                    continue
+                if any(token in lowered for token in ("folder", "directory", "_dir")):
+                    return (
+                        None,
+                        cleanup_paths,
+                        f"Structured execution smoke skipped because global input {name!r} needs a directory fixture.",
+                    )
+                if any(token in lowered for token in ("csv",)):
+                    fd, path = tempfile.mkstemp(
+                        prefix="dan-structured-smoke-",
+                        suffix=".csv",
+                    )
+                    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                        handle.write("name,value\nsample,1\n")
+                    inputs[name] = path
+                    cleanup_paths.append(path)
+                    continue
+                if any(token in lowered for token in ("path", "file")):
+                    fd, path = tempfile.mkstemp(
+                        prefix="dan-structured-smoke-",
+                        suffix=".txt",
+                    )
+                    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                        handle.write("sample fixture content\n")
+                    inputs[name] = path
+                    cleanup_paths.append(path)
+                    continue
+                if any(token in lowered for token in ("records", "rows", "items", "entries", "symbols", "watchlist")):
+                    inputs[name] = [{"value": "sample"}]
+                    continue
+                if any(token in lowered for token in ("count", "limit", "max", "top")):
+                    inputs[name] = 1
+                    continue
+                if any(token in lowered for token in ("enabled", "notify", "send")):
+                    inputs[name] = True
+                    continue
+                inputs[name] = f"sample value for {name}"
+            return inputs, cleanup_paths, None
+
+        def _cleanup_structured_smoke_paths(paths: list[str]) -> None:
+            for path in paths:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    logger.debug("Structured smoke cleanup skipped for %s", path, exc_info=True)
+
+        async def _attempt_structured_generation(
+            extracted_intent: WorkflowIntent,
+        ) -> tuple[dict[str, Any] | None, list[str], bool]:
+            from dan.meta.workflow_spec import workflow_spec_from_intent
+            from dan.server.agent_runtime.node_worker import build_node_worker_results
+            from dan.server.agent_runtime.section_assembly import assemble_sections
+            from dan.server.agent_runtime.workflow_boundary_linking import (
+                link_sections_into_candidate_graph,
+            )
+            from dan.server.agent_runtime.workflow_sectioning import partition_workflow_spec
+
+            candidate_workspace_id = f"cws-{uuid.uuid4().hex[:12]}"
+            spec = workflow_spec_from_intent(
+                extracted_intent,
+                workflow_id=workflow_id,
+                candidate_workspace_id=candidate_workspace_id,
+                schedule=_infer_schedule_intent(user_message),
+                notes=["Generated by the structured workflow runtime."],
+            )
+            eligible, ineligible_reason = _structured_generation_eligibility(spec)
+            if not eligible:
+                return None, [ineligible_reason], False
+
+            sections = partition_workflow_spec(spec)
+            events.append(
+                ChatNoticeEvent(
+                    content=(
+                        f"Structured generation planned {len(spec.nodes)} stages across "
+                        f"{len(sections)} sections."
+                    ),
+                    level="info",
+                )
+            )
+            node_worker_results = await _run_with_generation_budget(
+                build_node_worker_results(
+                    spec,
+                    sections,
+                ),
+                stage_label="structured node planning",
+            )
+            rejected_nodes = [result for result in node_worker_results if not result.accepted]
+            if rejected_nodes:
+                errors = [
+                    *(
+                        issue.message
+                        for result in rejected_nodes
+                        for issue in result.issues
+                    )
+                ] or ["Structured node planning rejected one or more nodes."]
+                record_gen_outcome(
+                    "structured_generation",
+                    success=False,
+                    error_type="node_contract",
+                    fix_needed=True,
+                    pattern=workflow_id,
+                )
+                events.append(
+                    ChatValidationResultEvent(
+                        success=False,
+                        error_count=len(errors),
+                        errors=errors[:5],
+                        failure_mode="structured_node_contract",
+                    )
+                )
+                return None, errors, True
+
+            node_plans = [
+                result.plan
+                for result in node_worker_results
+                if result.plan is not None
+            ]
+            section_artifacts = await _run_with_generation_budget(
+                asyncio.to_thread(assemble_sections, spec, sections, node_plans),
+                stage_label="structured section assembly",
+            )
+            rejected_sections = [
+                artifact
+                for artifact in section_artifacts
+                if artifact.acceptance == "rejected"
+            ]
+            if rejected_sections:
+                errors = [
+                    *(
+                        issue.message
+                        for artifact in rejected_sections
+                        for issue in artifact.validation_issues
+                    )
+                ] or ["Structured section assembly rejected one or more sections."]
+                record_gen_outcome(
+                    "structured_generation",
+                    success=False,
+                    error_type="section_validation",
+                    fix_needed=True,
+                    pattern=workflow_id,
+                )
+                events.append(
+                    ChatValidationResultEvent(
+                        success=False,
+                        error_count=len(errors),
+                        errors=errors[:5],
+                        failure_mode="structured_section_validation",
+                    )
+                )
+                return None, errors, True
+
+            link_result = link_sections_into_candidate_graph(
+                spec,
+                section_artifacts,
+                workflow_id=workflow_id,
+            )
+            if link_result.candidate_graph is None:
+                errors = [failure.message for failure in link_result.failures] or [
+                    "Structured boundary linking failed."
+                ]
+                failure_mode = (
+                    link_result.failures[0].kind
+                    if link_result.failures
+                    else "structured_boundary_linking"
+                )
+                record_gen_outcome(
+                    "structured_generation",
+                    success=False,
+                    error_type=failure_mode,
+                    fix_needed=True,
+                    pattern=workflow_id,
+                )
+                events.append(
+                    ChatValidationResultEvent(
+                        success=False,
+                        error_count=len(errors),
+                        errors=errors[:5],
+                        failure_mode=failure_mode,
+                    )
+                )
+                return None, errors, True
+
+            smoke_mode = _structured_execution_smoke_mode()
+            smoke_inputs, smoke_cleanup_paths, smoke_skip_reason = (
+                _structured_execution_smoke_inputs(spec, link_result.candidate_graph)
+            )
+            if smoke_mode != "disabled":
+                if run_candidate_smoke is None:
+                    _cleanup_structured_smoke_paths(smoke_cleanup_paths)
+                    if smoke_mode == "required":
+                        errors = [
+                            "Structured execution smoke is required but no smoke runner is configured."
+                        ]
+                        events.append(
+                            ChatValidationResultEvent(
+                                success=False,
+                                error_count=1,
+                                errors=errors,
+                                failure_mode="structured_execution_smoke",
+                            )
+                        )
+                        return None, errors, True
+                elif smoke_inputs is None:
+                    _cleanup_structured_smoke_paths(smoke_cleanup_paths)
+                    if smoke_mode == "required":
+                        errors = [
+                            smoke_skip_reason
+                            or "Structured execution smoke is required but no safe fixture set is available."
+                        ]
+                        events.append(
+                            ChatValidationResultEvent(
+                                success=False,
+                                error_count=1,
+                                errors=errors,
+                                failure_mode="structured_execution_smoke",
+                            )
+                        )
+                        return None, errors, True
+                    if smoke_skip_reason:
+                        events.append(
+                            ChatNoticeEvent(
+                                content=smoke_skip_reason,
+                                level="info",
+                            )
+                        )
+                else:
+                    try:
+                        smoke_result = await _run_with_generation_budget(
+                            run_candidate_smoke(
+                                link_result.candidate_graph,
+                                workflow_id=workflow_id,
+                                inputs=smoke_inputs,
+                                timeout_seconds=_structured_execution_smoke_timeout(),
+                            ),
+                            stage_label="structured execution smoke",
+                        )
+                    finally:
+                        _cleanup_structured_smoke_paths(smoke_cleanup_paths)
+                    smoke_skipped = bool(
+                        isinstance(smoke_result, dict)
+                        and smoke_result.get("skipped", False)
+                    )
+                    if smoke_skipped:
+                        skip_reason = str(
+                            (smoke_result or {}).get("reason") or ""
+                        ).strip()
+                        if smoke_mode == "required":
+                            errors = [
+                                skip_reason
+                                or "Structured execution smoke is required but was skipped."
+                            ]
+                            events.append(
+                                ChatValidationResultEvent(
+                                    success=False,
+                                    error_count=len(errors),
+                                    errors=errors,
+                                    failure_mode="structured_execution_smoke",
+                                )
+                            )
+                            return None, errors, True
+                        if skip_reason:
+                            events.append(
+                                ChatNoticeEvent(
+                                    content=skip_reason,
+                                    level="info",
+                                )
+                            )
+                        smoke_result = None
+                    smoke_success = bool(
+                        isinstance(smoke_result, dict)
+                        and smoke_result.get("success", False)
+                    )
+                    if smoke_result is None:
+                        smoke_success = True
+                    if not smoke_success:
+                        errors = [
+                            str(item).strip()
+                            for item in (
+                                (smoke_result or {}).get("errors", [])
+                                if isinstance(smoke_result, dict)
+                                else []
+                            )
+                            if str(item).strip()
+                        ] or ["Structured execution smoke failed."]
+                        record_gen_outcome(
+                            "structured_generation",
+                            success=False,
+                            error_type="structured_execution_smoke",
+                            fix_needed=True,
+                            pattern=workflow_id,
+                        )
+                        events.append(
+                            ChatValidationResultEvent(
+                                success=False,
+                                error_count=len(errors),
+                                errors=errors[:5],
+                                failure_mode="structured_execution_smoke",
+                            )
+                        )
+                        return None, errors, True
+                    run_id = ""
+                    if isinstance(smoke_result, dict):
+                        run_id = str(smoke_result.get("run_id") or "").strip()
+                    events.append(
+                        ChatNoticeEvent(
+                            content=(
+                                f"Structured execution smoke passed via run `{run_id}`."
+                                if run_id
+                                else "Structured execution smoke passed."
+                            ),
+                            level="info",
+                        )
+                    )
+
+            acceptance = accept_candidate_graph(
+                link_result.candidate_graph,
+                validate_graph=validate_codegen_output,
+                build_validation_event=_validation_event,
+                emit_event=events.append,
+                quality_error_for_graph=lambda candidate: _quality_error_for_graph(
+                    candidate,
+                    warning_message=(
+                        "Graph quality %d below threshold %d, falling back from structured generation"
+                    ),
+                ),
+                fit_check=_fit_check,
+                record_gen_outcome=record_gen_outcome,
+                success_method="structured_generation",
+                failure_method="structured_generation",
+                failure_fix_needed=True,
+                pattern=workflow_id,
+            )
+            if acceptance.accepted_graph is not None:
+                return acceptance.accepted_graph, [], True
+            errors = [
+                str(getattr(error, "message", error) or "").strip()
+                for error in acceptance.errors
+                if str(getattr(error, "message", error) or "").strip()
+            ] or ["Structured generation failed acceptance."]
+            return None, errors, True
 
         def _sandbox_failure_error(codegen_result: Any) -> GenerationError:
             err_msg = ""
@@ -448,7 +982,7 @@ class WorkflowGenerationRuntime:
             {"role": "system", "content": build_intent_extraction_system_prompt()},
             {"role": "user", "content": user_message},
         ]
-        for attempt in range(2):
+        for attempt in range(_intent_extraction_max_retries + 1):
             try:
                 intent_result = await provider.complete(
                     messages=intent_messages,
@@ -457,11 +991,12 @@ class WorkflowGenerationRuntime:
                     tools=[intent_tool],
                     tool_choice="auto",
                 )
+                tool_call_present = bool(intent_result.tool_calls)
                 if (
                     not (intent_result.text or "").strip()
-                    and not (intent_result.tool_calls or [])
+                    and not tool_call_present
                 ):
-                    if attempt == 0:
+                    if attempt < _intent_extraction_max_retries:
                         retries_used["intent_extraction"] += 1
                         logger.warning(
                             "Intent extraction empty response, retrying (attempt %d)",
@@ -472,12 +1007,25 @@ class WorkflowGenerationRuntime:
                 intent = parse_intent_from_result(intent_result)
                 logger.info(
                     "Intent extraction: tool_call_present=%s, parsed=%s",
-                    bool(intent_result.tool_calls),
+                    tool_call_present,
                     intent is not None,
                 )
+                if (
+                    intent is None
+                    and not tool_call_present
+                    and _should_retry_unparsed_intent_response(intent_result.text or "")
+                    and attempt < _intent_extraction_max_retries
+                ):
+                    retries_used["intent_extraction"] += 1
+                    logger.warning(
+                        "Intent extraction returned unparsed non-tool response, retrying (attempt %d)",
+                        attempt + 1,
+                    )
+                    await asyncio.sleep(2)
+                    continue
                 break
             except Exception as exc:
-                if attempt == 0 and _is_transient_llm_error(exc):
+                if attempt < _intent_extraction_max_retries and _is_transient_llm_error(exc):
                     retries_used["intent_extraction"] += 1
                     logger.warning(
                         "Intent extraction transient error (attempt %d): %s",
@@ -535,6 +1083,55 @@ class WorkflowGenerationRuntime:
                 stage_count=0,
                 patterns=None,
             )
+
+        structured_mode = _structured_generation_mode()
+        if intent is not None and structured_mode != "disabled":
+            _emit_progress("structured generation")
+            try:
+                structured_graph, structured_errors, structured_attempted = await _attempt_structured_generation(
+                    intent
+                )
+            except asyncio.TimeoutError:
+                return _timeout_result(
+                    stage_label="structured generation",
+                    outcome_method="structured_generation",
+                    path_taken="structured_generation",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Structured generation failed unexpectedly; falling back to existing path: %s",
+                    exc,
+                )
+                record_gen_outcome(
+                    "structured_generation",
+                    success=False,
+                    error_type="exception",
+                    pattern=workflow_id,
+                )
+                events.append(
+                    ChatNoticeEvent(
+                        content="Structured generation failed unexpectedly; falling back to the existing build path.",
+                        level="warning",
+                    )
+                )
+            else:
+                if structured_attempted:
+                    fallback_chain.append("structured_generation")
+                if structured_graph is not None:
+                    _path_taken = "structured_generation"
+                    events.append(_build_summary_event())
+                    return structured_graph, events
+                if structured_attempted and structured_errors:
+                    logger.info(
+                        "Structured generation validation failed; falling back to existing path: %s",
+                        structured_errors[0],
+                    )
+                    events.append(
+                        ChatNoticeEvent(
+                            content="Structured generation did not pass validation; falling back to the existing build path.",
+                            level="info",
+                        )
+                    )
 
         if intent is not None and coverage_fully_covered:
             fallback_chain.append("intent_compiler")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import pathlib
@@ -12,6 +13,86 @@ from dan.providers import CompletionResult
 
 logger = logging.getLogger(__name__)
 
+_JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
+_UNQUOTED_JSON_KEY_RE = re.compile(r'([{\[,]\s*)([A-Za-z_][A-Za-z0-9_-]*)(\s*:)', re.MULTILINE)
+_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+
+
+def _get_mapping_value(obj: Any, key: str) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
+def _iter_json_candidates(text: str) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    for block in _JSON_BLOCK_RE.findall(text):
+        candidate = block.strip()
+        if candidate and candidate not in seen:
+            candidates.append(candidate)
+            seen.add(candidate)
+
+    raw = text.strip()
+    search_start = 0
+    while True:
+        brace = raw.find("{", search_start)
+        if brace < 0:
+            break
+        depth = 0
+        for index, char in enumerate(raw[brace:], start=brace):
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = raw[brace : index + 1].strip()
+                    if candidate and candidate not in seen:
+                        candidates.append(candidate)
+                        seen.add(candidate)
+                    search_start = index + 1
+                    break
+        else:
+            break
+    return candidates
+
+
+def _repair_json_text(raw_text: str) -> str:
+    repaired = raw_text.strip()
+    fence_match = _JSON_BLOCK_RE.fullmatch(repaired)
+    if fence_match:
+        repaired = fence_match.group(1).strip()
+    repaired = _TRAILING_COMMA_RE.sub(r"\1", repaired)
+    repaired = _UNQUOTED_JSON_KEY_RE.sub(r'\1"\2"\3', repaired)
+    return repaired
+
+
+def _decode_json_like_payload(raw_payload: Any) -> dict[str, Any] | None:
+    if isinstance(raw_payload, dict):
+        return raw_payload
+    if not isinstance(raw_payload, str):
+        return None
+
+    candidates = [raw_payload.strip()]
+    repaired = _repair_json_text(raw_payload)
+    if repaired and repaired not in candidates:
+        candidates.append(repaired)
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            loaded = json.loads(candidate)
+        except json.JSONDecodeError:
+            try:
+                loaded = ast.literal_eval(candidate)
+            except (SyntaxError, ValueError):
+                continue
+        if isinstance(loaded, dict):
+            return loaded
+    return None
+
 
 def parse_intent_from_result(result: CompletionResult) -> Any:
     """Extract a ``WorkflowIntent`` from a provider ``CompletionResult``."""
@@ -20,42 +101,28 @@ def parse_intent_from_result(result: CompletionResult) -> Any:
 
     if result.tool_calls:
         for tc in result.tool_calls:
-            func = tc.get("function", {})
-            if func.get("name") == "emit_workflow_intent":
-                try:
-                    data = json.loads(func["arguments"])
-                    return WorkflowIntent.model_validate(data)
-                except (json.JSONDecodeError, KeyError, Exception):
-                    pass
+            func = _get_mapping_value(tc, "function")
+            if _get_mapping_value(func, "name") != "emit_workflow_intent":
+                continue
+            data = _decode_json_like_payload(_get_mapping_value(func, "arguments"))
+            if data is None:
+                continue
+            try:
+                return WorkflowIntent.model_validate(data)
+            except Exception:
+                continue
 
     text = result.text or ""
     if not text.strip():
         return None
 
-    json_block_re = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
-    match = json_block_re.search(text)
-    candidates: list[str] = []
-    if match:
-        candidates.append(match.group(1).strip())
-
-    raw = text.strip()
-    brace = raw.find("{")
-    if brace >= 0:
-        depth = 0
-        for i, char in enumerate(raw[brace:], start=brace):
-            if char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    candidates.append(raw[brace : i + 1])
-                    break
-
-    for raw_json in candidates:
+    for raw_json in _iter_json_candidates(text):
+        data = _decode_json_like_payload(raw_json)
+        if data is None:
+            continue
         try:
-            data = json.loads(raw_json)
             return WorkflowIntent.model_validate(data)
-        except (json.JSONDecodeError, Exception):
+        except Exception:
             continue
     return None
 
