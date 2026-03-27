@@ -1,6 +1,6 @@
 # 44: Structured Workflow Generation
 
-**Status:** in-progress
+**Status:** completed
 **Goal:** Replace empty-graph-first, monolithic workflow authoring with a staged, spec-driven, parallel candidate-graph pipeline that reduces latency and improves robustness on realistic workflow-authoring prompts.
 
 ## Motivation
@@ -42,11 +42,11 @@ Out of scope:
 
 | # | Sub-Plan | Scope | Priority | Status |
 |---|----------|-------|----------|--------|
-| [44-1](44-1-high-level-spec-and-sectioning.md) | High-Level Spec and Sectioning | Define the typed workflow spec contract, candidate-graph staging model, and deterministic weighted sectioning algorithm | P1 | not-started |
-| [44-2](44-2-node-worker-contracts-and-node-tests.md) | Node Worker Contracts and Node Tests | Turn node specs into typed executable node artifacts with minimal node-level validation | P1 | not-started |
-| [44-3](44-3-section-assembly-and-parallel-validation.md) | Section Assembly and Parallel Validation | Assemble validated node artifacts into sections, repair section-local issues, and keep candidate graphs staged | P1 | not-started |
-| [44-4](44-4-boundary-linking-and-whole-graph-repair.md) | Boundary Linking and Whole-Graph Repair | Link sections, repair section-boundary mismatches first, and gate persistence on whole-graph acceptance | P1 | not-started |
-| [44-5](44-5-routing-rollout-and-evals.md) | Routing, Rollout, and Evals | Route the new structured path safely, compare it against the current path, and define acceptance metrics | P1 | not-started |
+| [44-1](44-1-high-level-spec-and-sectioning.md) | High-Level Spec and Sectioning | Define the typed workflow spec contract, candidate-graph staging model, and deterministic weighted sectioning algorithm | P1 | completed |
+| [44-2](44-2-node-worker-contracts-and-node-tests.md) | Node Worker Contracts and Node Tests | Turn node specs into typed executable node artifacts with minimal node-level validation | P1 | completed |
+| [44-3](44-3-section-assembly-and-parallel-validation.md) | Section Assembly and Parallel Validation | Assemble validated node artifacts into sections, repair section-local issues, and keep candidate graphs staged | P1 | completed |
+| [44-4](44-4-boundary-linking-and-whole-graph-repair.md) | Boundary Linking and Whole-Graph Repair | Link sections, repair section-boundary mismatches first, and gate persistence on whole-graph acceptance | P1 | completed |
+| [44-5](44-5-routing-rollout-and-evals.md) | Routing, Rollout, and Evals | Route the new structured path safely, compare it against the current path, and define acceptance metrics | P1 | completed |
 
 ## Dependencies / Sequencing
 
@@ -93,6 +93,9 @@ Rationale:
 ## Notes
 
 - This plan is the architectural answer to the current "empty graph plus slow fallback" generation failure mode.
+- Landed runtime pipeline: `src/dan/meta/workflow_spec.py`, `src/dan/server/agent_runtime/workflow_sectioning.py`, `src/dan/server/agent_runtime/node_worker.py`, `src/dan/server/agent_runtime/section_assembly.py`, `src/dan/server/agent_runtime/workflow_boundary_linking.py`, and the structured branch in `src/dan/server/agent_runtime/workflow_generation.py`.
+- The live build lane now supports `DAN_STRUCTURED_GENERATION=disabled|canary|enabled`, bounded node/section concurrency, boundary-only join repair, detached candidate graphs, safe-subset execution smoke via `RunManager`, and schedule-sidecar preservation for recurring prompts.
+- Review follow-up hardening closed the remaining rollout gaps: generated-code candidates are excluded from auto smoke, optional smoke skips cleanly when no `RunManager` is wired, candidate smoke runs use detached graph IDs, grounded `llm_operator` stages preserve explicit `tool_id`s, and generic drafting prose no longer gets misclassified as external file I/O.
 - Concierge/triage instability remains a separate tracked problem and should not be conflated with graph-generation quality.
 - The equity-research workflow is the motivating benchmark, but the plan is intentionally general and should cover other realistic conversation-style workflow prompts as well.
 - The plans use the canonical runtime executor taxonomy (`llm_operator`, `tool_operator`, `code_operator`, `gate` per `GENERATE_SPEC_NODE_TYPES`), not shortened aliases. There is no `shell` executor — code execution uses `code_operator`.

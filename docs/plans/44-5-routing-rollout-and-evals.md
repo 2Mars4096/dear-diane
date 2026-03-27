@@ -1,7 +1,7 @@
 # 44-5: Routing, Rollout, and Evals
 
 **Parent:** [44-structured-workflow-generation](44-structured-workflow-generation.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Route structured workflow generation behind a safe rollout path, compare it against the current intent-compiler/codegen pipeline, and measure whether it improves latency, robustness, and semantic quality on realistic workflow-authoring prompts.
 
 ## Problem
@@ -17,35 +17,35 @@ Without that, we will not know whether the structured pipeline is actually bette
 
 ## Tasks
 
-- [ ] 1. Define routing rules for the structured-generation path
-  - [ ] 1-1. Add a feature flag via `DAN_STRUCTURED_GENERATION` (`disabled` / `canary` / `enabled`, default `disabled`) and route before the current path has already spent most of the generation budget; `CoverageChecker` in `intent_compiler.py` can be an advisory signal, but it should not be the only routing gate because it sits downstream of intent extraction
-  - [ ] 1-2. Define which prompt classes are eligible for structured generation first — eligibility criteria should be configurable, not a hardcoded list, and should cover continuation-style build turns plus schedule-bearing workflow prompts
-  - [ ] 1-3. Keep concierge and triage routing diagnostics separate from graph-generation diagnostics
-- [ ] 2. Add rollout guardrails and fallback behavior
-  - [ ] 2-1. Ensure the current path remains the default until the structured path proves stable
-  - [ ] 2-2. Add explicit fallback to the existing generation path when structured generation fails validation
-  - [ ] 2-3. Prevent partially built candidate graphs from being persisted before acceptance
-- [ ] 3. Build a comparison benchmark suite
-  - [ ] 3-1. Add realistic conversation-style workflow prompts, including the equity-research example
-  - [ ] 3-2. Include prompts of simple, medium, and moderately long workflow length
-  - [ ] 3-3. Compare structured generation vs intent-compiler/codegen on the same prompt set
-  - [ ] 3-4. Add end-to-end fixtures that continue past generation: save -> one-shot run -> scheduled dispatch -> result assertion for workflows whose prompts ask for recurring execution
-- [ ] 4. Define acceptance metrics
-  - [ ] 4-1. Measure end-to-end latency from user message to runnable workflow
-  - [ ] 4-2. Measure `graph_created`, `run_ready`, and validation success rates
-  - [ ] 4-3. Measure semantic quality, not just structural validity
-  - [ ] 4-4. Track concierge parsing and routing stability separately from graph-generation success
-  - [ ] 4-5. Measure one-shot run success, scheduled-dispatch success, and result-delivery success separately from generation success
-- [ ] 5. Add rollout and regression evals
-  - [ ] 5-1. Run the benchmark suite in both control and structured modes
-  - [ ] 5-2. Record latency distributions and failure modes by stage
-  - [ ] 5-3. Add regression coverage for known failure classes: empty graph, boundary mismatch, timeout fallback, and path variability
-  - [ ] 5-4. Add a canary rollout path for opt-in structured generation
-  - [ ] 5-5. Add a scheduled-dispatch smoke path that uses the existing `/schedule workflow` or scheduler-store path, triggers an immediate or overdue run, and asserts that a run starts and a result event or artifact is emitted
-- [ ] 6. Document operator guidance
-  - [ ] 6-1. Record when to enable structured generation
-  - [ ] 6-2. Record how to interpret benchmark results
-  - [ ] 6-3. Record rollback criteria when structured generation regresses
+- [x] 1. Define routing rules for the structured-generation path
+  - [x] 1-1. Add a feature flag via `DAN_STRUCTURED_GENERATION` (`disabled` / `canary` / `enabled`, default `disabled`) and route before the current path has already spent most of the generation budget; `CoverageChecker` in `intent_compiler.py` can be an advisory signal, but it should not be the only routing gate because it sits downstream of intent extraction
+  - [x] 1-2. Define which prompt classes are eligible for structured generation first — eligibility criteria should be configurable, not a hardcoded list, and should cover continuation-style build turns plus schedule-bearing workflow prompts
+  - [x] 1-3. Keep concierge and triage routing diagnostics separate from graph-generation diagnostics
+- [x] 2. Add rollout guardrails and fallback behavior
+  - [x] 2-1. Ensure the current path remains the default until the structured path proves stable
+  - [x] 2-2. Add explicit fallback to the existing generation path when structured generation fails validation
+  - [x] 2-3. Prevent partially built candidate graphs from being persisted before acceptance
+- [x] 3. Build a comparison benchmark suite
+  - [x] 3-1. Add realistic conversation-style workflow prompts, including the equity-research example
+  - [x] 3-2. Include prompts of simple, medium, and moderately long workflow length
+  - [x] 3-3. Compare structured generation vs intent-compiler/codegen on the same prompt set
+  - [x] 3-4. Add end-to-end fixtures that continue past generation: save -> one-shot run -> scheduled dispatch -> result assertion for workflows whose prompts ask for recurring execution
+- [x] 4. Define acceptance metrics
+  - [x] 4-1. Measure end-to-end latency from user message to runnable workflow
+  - [x] 4-2. Measure `graph_created`, `run_ready`, and validation success rates
+  - [x] 4-3. Measure semantic quality, not just structural validity
+  - [x] 4-4. Track concierge parsing and routing stability separately from graph-generation success
+  - [x] 4-5. Measure one-shot run success, scheduled-dispatch success, and result-delivery success separately from generation success
+- [x] 5. Add rollout and regression evals
+  - [x] 5-1. Run the benchmark suite in both control and structured modes
+  - [x] 5-2. Record latency distributions and failure modes by stage
+  - [x] 5-3. Add regression coverage for known failure classes: empty graph, boundary mismatch, timeout fallback, and path variability
+  - [x] 5-4. Add a canary rollout path for opt-in structured generation
+  - [x] 5-5. Add a scheduled-dispatch smoke path that uses the existing `/schedule workflow` or scheduler-store path, triggers an immediate or overdue run, and asserts that a run starts and a result event or artifact is emitted
+- [x] 6. Document operator guidance
+  - [x] 6-1. Record when to enable structured generation
+  - [x] 6-2. Record how to interpret benchmark results
+  - [x] 6-3. Record rollback criteria when structured generation regresses
 
 ## Likely Files
 
@@ -83,3 +83,4 @@ Existing (modify or extend):
 - The existing eval runner (`tests/eval/__main__.py`) already supports `--lane build`, `--workflow-contract enabled`, `--tag`, and `--run-tag` for comparison runs. The structured path should get its own lane or tag rather than a separate harness.
 - The existing `record_generation_outcome()` in `workflow_generation_stats.py` already records `success_method` (e.g. `intent_compiler`, `sandbox`, `automatic_recovery`). The structured path should register as a distinct `success_method` for comparison.
 - The repo already has a real scheduling surface: `src/dan/server/concierge/scheduler.py` stores workflow schedules, and `src/dan/server/startup.py` dispatches scheduled workflows through `RunManager.start_run()`. The rollout plan should reuse that path rather than inventing a second scheduling harness.
+- Landed routing/eval surface: `src/dan/server/agent_runtime/workflow_generation.py` now exposes `DAN_STRUCTURED_GENERATION=disabled|canary|enabled`, eligibility gating, and fallback-to-existing-path behavior; `tests/eval/report.py` and `tests/eval/runner.py` report `structured_generation` distinctly; `tests/eval/workflow_contract_comparison_prompts.json` carries realistic chatty/schedule-ready fixtures; and `tests/test_concierge/test_scheduler.py` now proves the existing scheduler path can start and complete a real workflow run.

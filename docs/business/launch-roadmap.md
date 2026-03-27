@@ -292,23 +292,36 @@ Parallel throughout: build-in-public content, community building
 
 ## Budget Estimate (Minimum Viable Launch)
 
-| Item | Cost | Recurring? |
-|------|------|-----------|
-| Wyoming LLC filing | $100 | One-time |
-| Registered agent | $100/yr | Annual |
-| Annual report | $60/yr | Annual |
-| EIN | $0 | One-time |
-| Provisional patent(s) (DIY, micro entity) | $65–195 | One-time |
-| Trademark (1 class) | $350 | One-time (+ maintenance later) |
-| Domain name | $10–50/yr | Annual |
-| Cloud hosting (initial) | $50–200/mo | Monthly |
-| Stripe fees | 2.9% + $0.30/txn | Per transaction |
-| Landing page (Framer/Carrd) | $0–20/mo | Monthly |
-| Documentation (Mintlify free tier) | $0 | — |
-| **Total first-year estimate** | **$1,000–3,000** | Mix |
+### Formation + IP (one-time, ~$685–855)
 
-If hiring a patent attorney: add $3,000–6,000 per application.
-If hiring a startup attorney for legal docs: add $1,500–3,000.
+| Item | Cost |
+|------|------|
+| Wyoming LLC filing | $100 |
+| Registered agent (first year) | $100 |
+| Annual report (first year) | $60 |
+| EIN | $0 |
+| Provisional patent(s) (DIY, micro entity, 1–3 filings) | $65–195 |
+| Trademark (1 class, intent-to-use) | $350 |
+| Domain name (first year) | $10–50 |
+| **Subtotal** | **$685–855** |
+
+### Ongoing infrastructure (monthly, once product is live)
+
+| Item | Cost |
+|------|------|
+| Cloud hosting | $50–200/mo |
+| Landing page (Framer/Carrd) | $0–20/mo |
+| Stripe fees | 2.9% + $0.30/txn |
+| Documentation (Mintlify free tier) | $0 |
+| Registered agent renewal | ~$8/mo ($100/yr) |
+| **Subtotal** | **$50–230/mo** |
+
+### Optional professional services
+
+| Item | Cost |
+|------|------|
+| Patent attorney (per application) | $3,000–6,000 |
+| Startup attorney (ToS, privacy, IP assignment) | $1,500–3,000 |
 
 ---
 

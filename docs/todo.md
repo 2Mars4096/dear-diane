@@ -2,17 +2,17 @@
 
 ## Current Backlog
 - [x] Server-backed DAN equity-workflow build stall triage — workflow-generation codegen/diagnosis now enforce the remaining generation budget, mutation-preview repair calls are separately capped, and clean `build`-mode replay again reaches terminal events instead of burning past the budget in silence
-- [ ] [12-13-workflow-authoring-triage-stability](plans/12-13-workflow-authoring-triage-stability.md) — stabilize concierge/triage routing for workflow-authoring turns: lexical/embedding coverage for build-intent phrases, thread-context-aware continuation routing, LLM triage JSON repair, intent extraction retry, and triage consistency evals (consolidates the two backlog items below)
+- [x] [12-13-workflow-authoring-triage-stability](plans/12-13-workflow-authoring-triage-stability.md) — concierge/triage routing for workflow-authoring turns is now stabilized end-to-end: lexical and embedding coverage, thread-context-aware continuation routing, JSON-mode + repair for LLM triage, stronger intent-extraction prompting/retry, route-source audit metadata, and repeated-trial stability regressions are landed.
   - ~~Stabilize concierge/triage performance for workflow-authoring turns~~ — subsumed by 12-13 tasks 1–3
   - ~~Stabilize intent extraction / intent-compiler variability for the equity workflow prompt~~ — subsumed by 12-13 task 4
 - [x] Tighten workflow build contract for semantic run-readiness — contract validation now rejects ungrounded `for_each` nodes and tool-less `llm_operator` prompts that claim to fetch/search/read/write/save externally, which prevents the clean equity graph shape from validating as `run_ready`
 - [x] Deepen graph-quality scoring beyond top-level topology/keywords — `compute_quality_report()` now recurses into subgraphs, adds a semantic-grounding dimension backed by the workflow contract, and caps overall scores when the graph is structurally valid but not semantically grounded
-- [ ] [44-structured-workflow-generation](plans/44-structured-workflow-generation.md) — replace empty-graph-first workflow authoring with a staged spec -> node worker -> section assembly -> boundary linking candidate-graph pipeline that targets lower latency and more robust medium-workflow generation
-  - [ ] [44-1-high-level-spec-and-sectioning](plans/44-1-high-level-spec-and-sectioning.md)
-  - [ ] [44-2-node-worker-contracts-and-node-tests](plans/44-2-node-worker-contracts-and-node-tests.md)
-  - [ ] [44-3-section-assembly-and-parallel-validation](plans/44-3-section-assembly-and-parallel-validation.md)
-  - [ ] [44-4-boundary-linking-and-whole-graph-repair](plans/44-4-boundary-linking-and-whole-graph-repair.md)
-  - [ ] [44-5-routing-rollout-and-evals](plans/44-5-routing-rollout-and-evals.md)
+- [x] [44-structured-workflow-generation](plans/44-structured-workflow-generation.md) — the staged spec -> node worker -> section assembly -> boundary linking candidate-graph pipeline is now live behind `DAN_STRUCTURED_GENERATION`, with node/section contracts, boundary repair, candidate-only persistence gating, bounded execution smoke, and scheduler-backed rollout regressions.
+  - [x] [44-1-high-level-spec-and-sectioning](plans/44-1-high-level-spec-and-sectioning.md) — typed spec contract, detached candidate workspace model, deterministic sectioner, runtime wiring, schedule-sidecar preservation, and no-empty-graph regression are landed
+  - [x] [44-2-node-worker-contracts-and-node-tests](plans/44-2-node-worker-contracts-and-node-tests.md)
+  - [x] [44-3-section-assembly-and-parallel-validation](plans/44-3-section-assembly-and-parallel-validation.md)
+  - [x] [44-4-boundary-linking-and-whole-graph-repair](plans/44-4-boundary-linking-and-whole-graph-repair.md)
+  - [x] [44-5-routing-rollout-and-evals](plans/44-5-routing-rollout-and-evals.md)
 - [ ] Auto-apply empty-graph mutation fallback after codegen timeout — the folder-digest live prompt can now recover to a dry-run-passed workflow build preview after timeout, but the build lane still leaves that repaired mutation as a proposed preview instead of auto-applying/persisting it, so eval records end with `graph_created=false` / `timeout_codegen`
 - [x] CLI launcher reuse hardening — `dan-up` / `dan-editor` now reuse healthy DAN servers already responding on the requested port even without `~/.dan/server.pid`, and `dan-down` now explains when port `8000` is owned by DAN Desktop or `dan-service`
 - [x] [41-internal-runtime-submodule-restructure](plans/41-internal-runtime-submodule-restructure.md) — internal runtime split landed across `llm_core`, `agent_runtime`, concierge narrowing, `workflow_runtime`, shared composition roots, and module-boundary guardrails

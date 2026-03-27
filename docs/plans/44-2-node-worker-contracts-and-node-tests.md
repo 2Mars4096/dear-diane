@@ -1,7 +1,7 @@
 # 44-2: Node Worker Contracts and Node Tests
 
 **Parent:** [44-structured-workflow-generation](44-structured-workflow-generation.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Define the per-node worker contract for structured workflow generation so node specs can be turned into typed, testable node plans and configs before section assembly or final graph linking.
 
 ## Problem
@@ -19,36 +19,36 @@ This subplan keeps the scope on node contracts and node-level validation only. F
 
 ## Tasks
 
-- [ ] 1. Define the node-spec input contract for worker consumption
-  - [ ] 1-1. Require typed fields for node id, purpose, runtime `node_type`, execution family, inputs, outputs, dependencies, and section id
-  - [ ] 1-2. Add support for worker hints such as test intent, failure risk, and expected side effects
-  - [ ] 1-3. Make the contract explicit enough that workers do not need to infer graph structure
-- [ ] 2. Define worker output shape for node plans and configs
-  - [ ] 2-1. Emit a typed node plan that includes executor-specific configuration
-  - [ ] 2-2. Emit typed input/output port declarations for later section assembly
-  - [ ] 2-3. Require the worker output to be serializable and deterministic for debugging
-- [ ] 3. Classify executor kind before node implementation
-  - [ ] 3-1. Support at least the existing `GENERATE_SPEC_NODE_TYPES` set: `llm_operator`, `tool_operator`, `code_operator`, `gate` (there is no `shell` executor — code execution uses `code_operator`)
-  - [ ] 3-2. Separate planner-visible runtime node type from execution family so workers do not confuse graph shape (`for_each`, `gate`) with how work is executed (`tool`, `llm`, `code`, `control_flow`)
-  - [ ] 3-3. Decide whether control-flow types (`for_each`, `while_loop`, `parallel_subagents`, `orchestrator`, `reduce`, `router`, etc.) are classified at the worker level or introduced later during section assembly
-  - [ ] 3-4. Allow richer specializations (e.g. `rag_operator`, `reflection`, `vote`) only when they map cleanly onto one of the supported kinds
-  - [ ] 3-5. Reject nodes whose runtime node type or execution family cannot be inferred or justified from the spec
-- [ ] 4. Add minimal but real node-level tests including semantic grounding checks
-  - [ ] 4-1. Require each worker to validate its own input/output contract before acceptance
-  - [ ] 4-2. Run a lightweight executor-specific smoke test or dry-run where applicable
-  - [ ] 4-3. Fail the node if the worker cannot prove that its declared outputs are reachable from its declared inputs
-  - [ ] 4-4. Verify semantic grounding per executor kind: `tool_operator` nodes must reference a tool that exists in the tool registry and bind its required arguments; `llm_operator` nodes with prompts claiming external actions must carry the tools to produce them; `code_operator` nodes must have non-empty executable code — reuse the existing rejection rules from `validate_workflow_build_contract()` (`_check_run_readiness`) but apply them at node-creation time
-  - [ ] 4-5. Verify data-source reachability: if a node declares it consumes data from an upstream node, the upstream node must declare a compatible output; if it consumes external data, the spec-level data source declaration (44-1 task 1-6) must exist
-  - [ ] 4-6. Emit a minimal runnable test contract per node or control-flow fragment so later section and whole-graph smoke tests know what success looks like beyond static validation
-- [ ] 5. Keep worker parallelism bounded and explicit
-  - [ ] 5-1. Read the worker pool cap from `DAN_STRUCTURED_WORKER_POOL_CAP` (default `8`) — reuse the same env var as 44-1 so the cap is consistent across the pipeline
-  - [ ] 5-2. Ensure node workers can run independently when their specs do not overlap
-  - [ ] 5-3. Record per-node timing so the later section planner can reason about cost and latency
-  - [ ] 5-4. Make the per-node worker timeout configurable via `DAN_STRUCTURED_NODE_WORKER_TIMEOUT` (default derived from `DAN_MAX_GENERATION_SECONDS` divided by expected node count) — not a hardcoded constant
-- [ ] 6. Add regression coverage for worker contract stability
-  - [ ] 6-1. Test executor classification for realistic workflow node specs
-  - [ ] 6-2. Test that invalid port typing or missing inputs fails before acceptance
-  - [ ] 6-3. Test that worker outputs remain stable enough for section assembly to consume
+- [x] 1. Define the node-spec input contract for worker consumption
+  - [x] 1-1. Require typed fields for node id, purpose, runtime `node_type`, execution family, inputs, outputs, dependencies, and section id
+  - [x] 1-2. Add support for worker hints such as test intent, failure risk, and expected side effects
+  - [x] 1-3. Make the contract explicit enough that workers do not need to infer graph structure
+- [x] 2. Define worker output shape for node plans and configs
+  - [x] 2-1. Emit a typed node plan that includes executor-specific configuration
+  - [x] 2-2. Emit typed input/output port declarations for later section assembly
+  - [x] 2-3. Require the worker output to be serializable and deterministic for debugging
+- [x] 3. Classify executor kind before node implementation
+  - [x] 3-1. Support at least the existing `GENERATE_SPEC_NODE_TYPES` set: `llm_operator`, `tool_operator`, `code_operator`, `gate` (there is no `shell` executor — code execution uses `code_operator`)
+  - [x] 3-2. Separate planner-visible runtime node type from execution family so workers do not confuse graph shape (`for_each`, `gate`) with how work is executed (`tool`, `llm`, `code`, `control_flow`)
+  - [x] 3-3. Decide whether control-flow types (`for_each`, `while_loop`, `parallel_subagents`, `orchestrator`, `reduce`, `router`, etc.) are classified at the worker level or introduced later during section assembly
+  - [x] 3-4. Allow richer specializations (e.g. `rag_operator`, `reflection`, `vote`) only when they map cleanly onto one of the supported kinds
+  - [x] 3-5. Reject nodes whose runtime node type or execution family cannot be inferred or justified from the spec
+- [x] 4. Add minimal but real node-level tests including semantic grounding checks
+  - [x] 4-1. Require each worker to validate its own input/output contract before acceptance
+  - [x] 4-2. Run a lightweight executor-specific smoke test or dry-run where applicable
+  - [x] 4-3. Fail the node if the worker cannot prove that its declared outputs are reachable from its declared inputs
+  - [x] 4-4. Verify semantic grounding per executor kind: `tool_operator` nodes must reference a tool that exists in the tool registry and bind its required arguments; `llm_operator` nodes with prompts claiming external actions must carry the tools to produce them; `code_operator` nodes must have non-empty executable code — reuse the existing rejection rules from `validate_workflow_build_contract()` (`_check_run_readiness`) but apply them at node-creation time
+  - [x] 4-5. Verify data-source reachability: if a node declares it consumes data from an upstream node, the upstream node must declare a compatible output; if it consumes external data, the spec-level data source declaration (44-1 task 1-6) must exist
+  - [x] 4-6. Emit a minimal runnable test contract per node or control-flow fragment so later section and whole-graph smoke tests know what success looks like beyond static validation
+- [x] 5. Keep worker parallelism bounded and explicit
+  - [x] 5-1. Read the worker pool cap from `DAN_STRUCTURED_WORKER_POOL_CAP` (default `8`) — reuse the same env var as 44-1 so the cap is consistent across the pipeline
+  - [x] 5-2. Ensure node workers can run independently when their specs do not overlap
+  - [x] 5-3. Record per-node timing so the later section planner can reason about cost and latency
+  - [x] 5-4. Make the per-node worker timeout configurable via `DAN_STRUCTURED_NODE_WORKER_TIMEOUT` (default derived from `DAN_MAX_GENERATION_SECONDS` divided by expected node count) — not a hardcoded constant
+- [x] 6. Add regression coverage for worker contract stability
+  - [x] 6-1. Test executor classification for realistic workflow node specs
+  - [x] 6-2. Test that invalid port typing or missing inputs fails before acceptance
+  - [x] 6-3. Test that worker outputs remain stable enough for section assembly to consume
 
 ## Likely Files
 
@@ -80,3 +80,5 @@ Existing (modify or extend):
 - The existing `StageIntent` already carries `name`, `description`, `stage_type`, `inputs`, `outputs`, `config`, `review`, `conditional`, `loop`, and `parallelism` — the node-spec contract should decide how much of this to reuse vs. extend.
 - Workers should produce output compatible with the builder DSL (`dan.builder.builder`) or the `Graph`/`Node` model (`dan.models.graph`) — one or the other, not an ad-hoc intermediate format that neither layer can consume.
 - Shell-like actions should be expressed explicitly as `tool_operator` + `shell_command` unless the worker truly needs custom executable code.
+- Landed in `src/dan/server/agent_runtime/node_worker.py` and `tests/test_meta/test_node_worker.py`: typed `NodePlan` / `NodePlanResult` contracts, executor-kind classification, grounding checks, dependency/global-input binding resolution, per-node runnable test contracts, bounded worker-pool concurrency, and env-configured timeout metadata.
+- Follow-up patch: when a node has explicit upstream dependencies, dependency bindings now take precedence over same-named workflow globals, and a single-upstream/single-output handoff is inferred deterministically even when the downstream input port name differs. This keeps common staged chains from being rejected before section assembly.

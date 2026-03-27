@@ -1,7 +1,7 @@
 # 44-4: Boundary Linking and Whole-Graph Repair
 
 **Parent:** [44-structured-workflow-generation](44-structured-workflow-generation.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Link validated sections into a full candidate workflow, repair section-boundary port and contract mismatches without redoing completed sections, and persist only after whole-graph acceptance passes.
 
 ## Problem
@@ -17,34 +17,34 @@ This subplan defines the final assembly layer:
 
 ## Tasks
 
-- [ ] 1. Define a boundary-failure report that distinguishes
-  - [ ] 1-1. section-internal node failures
-  - [ ] 1-2. section-end to section-start port mismatches
-  - [ ] 1-3. missing or renamed contract fields
-- [ ] 2. Build the graph linker that stitches validated sections into a candidate workflow
-  - [ ] 2-1. Preserve section artifact IDs and boundary metadata
-  - [ ] 2-2. Attach explicit expected-input and produced-output contracts at joins
-  - [ ] 2-3. Keep section-local artifacts reusable across repair attempts
-- [ ] 3. Implement a boundary-only repair loop
-  - [ ] 3-1. Patch port mappings, aliases, or adapter nodes at section joins
-  - [ ] 3-2. Re-run only the two adjacent sections involved in the mismatch
-  - [ ] 3-3. Avoid regenerating unrelated sections when boundary repair succeeds
-  - [ ] 3-4. Bound repair attempts via `DAN_STRUCTURED_BOUNDARY_REPAIR_MAX` (default `2`) — not hardcoded
-- [ ] 4. Add whole-graph acceptance checks after section-local validation
-  - [ ] 4-1. Verify end-to-end data flow across section joins
-  - [ ] 4-2. Run a full candidate graph test only after all sections pass locally
-  - [ ] 4-3. Report whole-graph failure separately from boundary repair failure
-  - [ ] 4-4. Run a bounded one-shot execution smoke on the accepted candidate via `RunManager.start_run()` or direct engine execution when required inputs can be satisfied from defaults, fixtures, or declared global inputs; assert the run reaches a terminal state and produces expected top-level artifacts or output ports
-- [ ] 5. Gate persistence on candidate acceptance
-  - [ ] 5-1. Do not persist incomplete or partially repaired graphs
-  - [ ] 5-2. Persist only the accepted candidate graph and its boundary metadata
-  - [ ] 5-3. Retain rejected candidate diagnostics for debugging and evals
-  - [ ] 5-4. If the prompt carried schedule intent, persist the accepted graph first and only then emit a schedule-ready sidecar for rollout/testing rather than trying to embed schedule state into the graph itself
-- [ ] 6. Add regressions for boundary repair efficiency
-  - [ ] 6-1. Repair a single join without rebuilding all sections
-  - [ ] 6-2. Fail whole-graph acceptance when a boundary contract is wrong
-  - [ ] 6-3. Prove persistence does not happen before acceptance
-  - [ ] 6-4. Prove execution smoke catches graphs that pass structural validation but still fail immediately at runtime
+- [x] 1. Define a boundary-failure report that distinguishes
+  - [x] 1-1. section-internal node failures
+  - [x] 1-2. section-end to section-start port mismatches
+  - [x] 1-3. missing or renamed contract fields
+- [x] 2. Build the graph linker that stitches validated sections into a candidate workflow
+  - [x] 2-1. Preserve section artifact IDs and boundary metadata
+  - [x] 2-2. Attach explicit expected-input and produced-output contracts at joins
+  - [x] 2-3. Keep section-local artifacts reusable across repair attempts
+- [x] 3. Implement a boundary-only repair loop
+  - [x] 3-1. Patch port mappings, aliases, or adapter nodes at section joins
+  - [x] 3-2. Re-run only the two adjacent sections involved in the mismatch
+  - [x] 3-3. Avoid regenerating unrelated sections when boundary repair succeeds
+  - [x] 3-4. Bound repair attempts via `DAN_STRUCTURED_BOUNDARY_REPAIR_MAX` (default `2`) — not hardcoded
+- [x] 4. Add whole-graph acceptance checks after section-local validation
+  - [x] 4-1. Verify end-to-end data flow across section joins
+  - [x] 4-2. Run a full candidate graph test only after all sections pass locally
+  - [x] 4-3. Report whole-graph failure separately from boundary repair failure
+  - [x] 4-4. Run a bounded one-shot execution smoke on the accepted candidate via `RunManager.start_run()` or direct engine execution when required inputs can be satisfied from defaults, fixtures, or declared global inputs; assert the run reaches a terminal state and produces expected top-level artifacts or output ports
+- [x] 5. Gate persistence on candidate acceptance
+  - [x] 5-1. Do not persist incomplete or partially repaired graphs
+  - [x] 5-2. Persist only the accepted candidate graph and its boundary metadata
+  - [x] 5-3. Retain rejected candidate diagnostics for debugging and evals
+  - [x] 5-4. If the prompt carried schedule intent, persist the accepted graph first and only then emit a schedule-ready sidecar for rollout/testing rather than trying to embed schedule state into the graph itself
+- [x] 6. Add regressions for boundary repair efficiency
+  - [x] 6-1. Repair a single join without rebuilding all sections
+  - [x] 6-2. Fail whole-graph acceptance when a boundary contract is wrong
+  - [x] 6-3. Prove persistence does not happen before acceptance
+  - [x] 6-4. Prove execution smoke catches graphs that pass structural validation but still fail immediately at runtime
 
 ## Likely Files
 
@@ -79,3 +79,4 @@ Existing (modify or extend):
 - The main metric is latency to an accepted graph, not just the number of successful intermediate validations.
 - If boundary mismatches dominate, the sectioning heuristic likely needs tuning in [44-1](44-1-high-level-spec-and-sectioning.md).
 - The existing `accept_candidate_graph()` validates, emits `ChatValidationResultEvent`, applies the quality gate, and records generation outcomes — whole-graph acceptance should flow through this same function.
+- Landed in `src/dan/server/agent_runtime/workflow_boundary_linking.py`, `src/dan/server/agent_runtime/workflow_generation.py`, and `src/dan/server/chat_manager.py`: diagnostics-only boundary reports, bounded alias repair at section joins, candidate-graph materialization with boundary metadata, safe-subset execution smoke through `RunManager`, and regressions for join repair plus no-persist-before-acceptance behavior.
