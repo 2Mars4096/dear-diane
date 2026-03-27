@@ -1293,7 +1293,7 @@ def _classify_no_graph(
     if fixture.tier.upper() == "T5" and _expects_no_graph(fixture):
         return "correct_refusal"
 
-    codegen_reached = generation_path in ("codegen", "intent_compiler")
+    codegen_reached = generation_path in ("codegen", "intent_compiler", "structured_generation")
     if codegen_reached and total_time_ms > _TIMEOUT_THRESHOLD_MS:
         return "timeout_codegen"
     if not codegen_reached and total_time_ms > _TIMEOUT_THRESHOLD_MS:

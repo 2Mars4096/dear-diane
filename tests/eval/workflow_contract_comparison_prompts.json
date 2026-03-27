@@ -158,6 +158,36 @@
         "node_types": ["tool"],
         "topology": ["tools"]
       }
+    },
+    {
+      "id": "contract-13-chatty-notes-weekly-digest",
+      "tier": "CONTRACT",
+      "lane": "build",
+      "prompt": "can you build me a workflow that reads a folder of notes, pulls out the action items, writes a markdown digest, and makes it easy to add a weekly email step later",
+      "tags": ["workflow_contract", "chatty_realistic", "folder", "summary", "schedule_ready"],
+      "expected": {
+        "min_nodes": 4,
+        "node_types": ["for_each", "tool"],
+        "topology": ["fan_out", "tools"]
+      },
+      "multi_turn_follow_ups": [
+        "Also wire in an email step that sends the digest every Monday."
+      ]
+    },
+    {
+      "id": "contract-14-chatty-topics-briefing",
+      "tier": "CONTRACT",
+      "lane": "build",
+      "prompt": "i need a workflow pipeline that takes a list of topics, searches the web for each one, drafts a short briefing, and leaves the output ready for a later approval step",
+      "tags": ["workflow_contract", "chatty_realistic", "for_each", "tool", "approval", "summary"],
+      "expected": {
+        "min_nodes": 4,
+        "node_types": ["for_each", "tool"],
+        "topology": ["fan_out", "tools"]
+      },
+      "multi_turn_follow_ups": [
+        "Now add the approval step after the brief is drafted without changing the search loop."
+      ]
     }
   ]
 }

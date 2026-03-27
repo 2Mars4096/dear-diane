@@ -822,20 +822,40 @@ class ReportGenerator:
 
     @staticmethod
     def _generation_path(recs: list[EvalRecord]) -> dict[str, Any]:
-        counts: dict[str, int] = {"intent_compiler": 0, "codegen": 0, "unknown": 0}
+        counts: dict[str, int] = {
+            "intent_compiler": 0,
+            "structured_generation": 0,
+            "codegen": 0,
+            "unknown": 0,
+        }
         by_tier: dict[str, dict[str, Any]] = {}
         for r in recs:
-            gp = r.generation_path if r.generation_path in ("intent_compiler", "codegen") else "unknown"
+            gp = (
+                r.generation_path
+                if r.generation_path in ("intent_compiler", "structured_generation", "codegen")
+                else "unknown"
+            )
             counts[gp] += 1
             tier_entry = by_tier.setdefault(
-                r.tier, {"intent_compiler": 0, "codegen": 0, "unknown": 0}
+                r.tier,
+                {
+                    "intent_compiler": 0,
+                    "structured_generation": 0,
+                    "codegen": 0,
+                    "unknown": 0,
+                },
             )
             tier_entry[gp] += 1
         # Add intent compiler activation rate per tier (33-6)
         for tier, tc in by_tier.items():
-            t_total = tc["intent_compiler"] + tc["codegen"] + tc["unknown"]
+            t_total = (
+                tc["intent_compiler"]
+                + tc["structured_generation"]
+                + tc["codegen"]
+                + tc["unknown"]
+            )
             tc["activation_rate"] = (
-                tc["intent_compiler"] / t_total if t_total else 0.0
+                (tc["intent_compiler"] + tc["structured_generation"]) / t_total if t_total else 0.0
             )
         return {**counts, "by_tier": by_tier}
 
@@ -1327,29 +1347,32 @@ def _print_rich(s: dict[str, Any]) -> None:
 
     # 5 — Generation path (intent compiler activation rate per tier, 33-6)
     gp = s["generation_path"]
-    gp_total = gp["intent_compiler"] + gp["codegen"] + gp["unknown"]
+    gp_total = gp["intent_compiler"] + gp["structured_generation"] + gp["codegen"] + gp["unknown"]
     if gp_total:
         console.rule("[bold]Generation Path / Intent Compiler Activation[/bold]")
         gp_tbl = Table(show_lines=True)
         gp_tbl.add_column("Tier")
         gp_tbl.add_column("Intent Compiler", justify="right")
+        gp_tbl.add_column("Structured", justify="right")
         gp_tbl.add_column("Codegen", justify="right")
         gp_tbl.add_column("Unknown", justify="right")
         gp_tbl.add_column("Activation %", justify="right")
         gp_tbl.add_row(
             "[bold]Overall[/bold]",
             f"{gp['intent_compiler']} ({_pct(gp['intent_compiler'] / gp_total)})",
+            f"{gp['structured_generation']} ({_pct(gp['structured_generation'] / gp_total)})",
             f"{gp['codegen']} ({_pct(gp['codegen'] / gp_total)})",
             f"{gp['unknown']} ({_pct(gp['unknown'] / gp_total)})",
-            _pct(gp["intent_compiler"] / gp_total),
+            _pct((gp["intent_compiler"] + gp["structured_generation"]) / gp_total),
         )
         for tier, tc in sorted(gp.get("by_tier", {}).items()):
-            t_total = tc["intent_compiler"] + tc["codegen"] + tc["unknown"]
+            t_total = tc["intent_compiler"] + tc["structured_generation"] + tc["codegen"] + tc["unknown"]
             if not t_total:
                 continue
             gp_tbl.add_row(
                 tier,
                 f"{tc['intent_compiler']} ({_pct(tc['intent_compiler'] / t_total)})",
+                f"{tc['structured_generation']} ({_pct(tc['structured_generation'] / t_total)})",
                 f"{tc['codegen']} ({_pct(tc['codegen'] / t_total)})",
                 f"{tc['unknown']} ({_pct(tc['unknown'] / t_total)})",
                 _pct(tc.get("activation_rate", 0.0)),
@@ -1966,18 +1989,31 @@ def _print_plain(s: dict[str, Any]) -> None:
     print()
 
     gp = s.get("generation_path", {})
-    gp_total = gp.get("intent_compiler", 0) + gp.get("codegen", 0) + gp.get("unknown", 0)
+    gp_total = (
+        gp.get("intent_compiler", 0)
+        + gp.get("structured_generation", 0)
+        + gp.get("codegen", 0)
+        + gp.get("unknown", 0)
+    )
     if gp_total:
         print("--- Generation Path / Intent Compiler Activation ---")
         print(
             f"  Overall: intent_compiler={gp.get('intent_compiler', 0)}, "
-            f"codegen={gp.get('codegen', 0)}, activation={_pct(gp.get('intent_compiler', 0) / gp_total)}"
+            f"structured_generation={gp.get('structured_generation', 0)}, "
+            f"codegen={gp.get('codegen', 0)}, "
+            f"activation={_pct((gp.get('intent_compiler', 0) + gp.get('structured_generation', 0)) / gp_total)}"
         )
         for tier, tc in sorted(gp.get("by_tier", {}).items()):
-            t_total = tc.get("intent_compiler", 0) + tc.get("codegen", 0) + tc.get("unknown", 0)
+            t_total = (
+                tc.get("intent_compiler", 0)
+                + tc.get("structured_generation", 0)
+                + tc.get("codegen", 0)
+                + tc.get("unknown", 0)
+            )
             if t_total:
                 print(
                     f"  {tier}: intent_compiler={tc.get('intent_compiler', 0)}, "
+                    f"structured_generation={tc.get('structured_generation', 0)}, "
                     f"codegen={tc.get('codegen', 0)}, activation={_pct(tc.get('activation_rate', 0.0))}"
                 )
         print()
