@@ -13,6 +13,10 @@ venv/
 env/
 ENV/
 
+# Team Leader
+.team-leader/
+.team-leader-portfolio/
+
 # Packaging and build artifacts
 build/
 dist/
