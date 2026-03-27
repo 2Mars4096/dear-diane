@@ -958,10 +958,10 @@ def _check_graph_run_readiness(
     return issues
 
 
-def _check_run_readiness(graph: Graph) -> list[str]:
+def _check_run_readiness(graph: Graph, *, graph_label: str = "Workflow") -> list[str]:
     return _check_graph_run_readiness(
         graph,
-        graph_label="Workflow",
+        graph_label=graph_label,
         require_entry_exit=True,
     )
 
@@ -994,6 +994,7 @@ def validate_workflow_build_contract(
     *,
     workflow_id: str | None = None,
     apply_repairs: bool = True,
+    graph_label: str = "Workflow",
 ) -> WorkflowBuildContractReport:
     candidate = copy.deepcopy(graph_dict if isinstance(graph_dict, dict) else {})
     auto_fixes: list[str] = []
@@ -1057,7 +1058,7 @@ def validate_workflow_build_contract(
             continue
         errors.append(_classify_validation_issue(message))
 
-    run_readiness_issues = _check_run_readiness(graph)
+    run_readiness_issues = _check_run_readiness(graph, graph_label=graph_label)
     display_name = str(graph.metadata.name or workflow_id or normalized_workflow_id or "").strip()
     report = WorkflowBuildContractReport(
         workflow_id=str(workflow_id or ""),
