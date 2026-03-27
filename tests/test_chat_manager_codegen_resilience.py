@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -16,6 +17,7 @@ from dan.builder import workflow
 from dan.meta.planner import CodegenResult, ValidationResult
 from dan.providers import CompletionResult
 from dan.providers.registry import ProviderRegistry
+from dan.server.agent_runtime.workflow_generation_codegen import request_builder_code
 from dan.server.agent_runtime.workflow_generation_helpers import (
     exec_deterministic_builder_code,
     extract_code_from_response,
@@ -51,17 +53,64 @@ async def _fast_sleep(_seconds: float) -> None:
 def _make_manager(responses: list[Any]) -> ChatManager:
     registry = ProviderRegistry()
     registry.register("default", SequenceProvider(responses))
-    return ChatManager(registry, graph_store=SimpleNamespace())
+    manager = ChatManager(registry, graph_store=SimpleNamespace())
+    manager._chat_model = "default"
+    return manager
 
 
 def _validation_success() -> ValidationResult:
     return ValidationResult(success=True, graph=SimpleNamespace())
 
 
+def _validation_success_for_graph(graph_dict: dict[str, Any]) -> Any:
+    return SimpleNamespace(
+        success=True,
+        run_ready=True,
+        errors=[],
+        graph=SimpleNamespace(model_dump=lambda mode="json": graph_dict),
+        contract_report=None,
+    )
+
+
 def _default_provider(manager: ChatManager) -> SequenceProvider:
     provider = manager._providers.get("default")
     assert isinstance(provider, SequenceProvider)
     return provider
+
+
+@pytest.mark.asyncio
+async def test_request_builder_code_respects_remaining_generation_budget() -> None:
+    class SlowProvider:
+        async def complete(self, *args: Any, **kwargs: Any) -> CompletionResult:
+            await asyncio.sleep(1.0)
+            return CompletionResult(text="graph = {}")
+
+    result = await request_builder_code(
+        provider=SlowProvider(),
+        model="default",
+        user_message="Build an equity research workflow",
+        intent_goal=None,
+        gen_stats_hint="",
+        detected_domain=None,
+        complexity_tier="complex",
+        min_nodes=4,
+        max_nodes=8,
+        extract_code_from_response=lambda text: text.strip(),
+        retries_used={
+            "intent_extraction": 0,
+            "codegen": 0,
+            "sandbox": 0,
+            "automatic_recovery": 0,
+        },
+        record_gen_outcome=lambda *args, **kwargs: None,
+        pattern="wf-timeout",
+        is_transient_llm_error=lambda exc: False,
+        get_timeout_seconds=lambda: 0.01,
+    )
+
+    assert result.builder_code == ""
+    assert result.terminal_failure == "generation_timeout"
+    assert "generation budget" in result.terminal_message.lower()
 
 
 def test_parse_intent_from_result_reads_tool_call_arguments() -> None:
@@ -492,6 +541,61 @@ async def test_terminal_empty_codegen_response_emits_failure_event_and_outcome(
 
 
 @pytest.mark.asyncio
+async def test_generation_timeout_during_diagnosis_surfaces_terminal_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _make_manager([
+        CompletionResult(text="not json"),
+        CompletionResult(text="graph = {}"),
+    ])
+    monkeypatch.setenv("DAN_MAX_GENERATION_SECONDS", "1")
+    monkeypatch.setattr(manager, "_emit_intent_extraction_telemetry", lambda **kwargs: None)
+
+    async def fake_sandbox(code: str) -> tuple[dict | None, Any]:
+        return (
+            None,
+            CodegenResult(
+                success=False,
+                source_code=code,
+                error_type="runtime_error",
+                error_message="NameError: missing symbol",
+            ),
+        )
+
+    monkeypatch.setattr(manager, "_sandbox_exec_builder_code", fake_sandbox)
+
+    class SlowDiagnosisLoop:
+        def __init__(self, max_attempts: int) -> None:
+            self.max_attempts = max_attempts
+
+        async def diagnose_and_repair(self, **kwargs: Any) -> Any:
+            await asyncio.sleep(2.0)
+            return SimpleNamespace(success=False, final_graph=None)
+
+    monkeypatch.setattr(diagnosis_module, "DiagnosisLoop", SlowDiagnosisLoop)
+    monkeypatch.setattr(
+        diagnosis_module,
+        "generation_repair_attempt_budget",
+        lambda default=4: 1,
+    )
+
+    graph, events = await manager._generate_workflow_from_intent(
+        "Build a chain",
+        "wf-diagnosis-timeout",
+        "ch-diagnosis-timeout",
+    )
+
+    assert graph is None
+    validation_events = [event for event in events if event.type == "chat_validation_result"]
+    summary_events = [event for event in events if event.type == "chat_generation_summary"]
+    assert validation_events
+    assert summary_events
+    assert validation_events[-1].failure_mode == "generation_timeout"
+    assert "diagnosis repair" in validation_events[-1].errors[-1].lower()
+    assert summary_events[-1].failure_mode == "generation_timeout"
+
+
+@pytest.mark.asyncio
 async def test_non_timeout_sandbox_failure_preserves_error_for_diagnosis(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -597,6 +701,186 @@ async def test_post_diagnosis_quality_threshold_blocks_low_quality_graph(
 
     assert graph is None
     assert any(event.type == "chat_graph_quality" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_generation_automatic_recovery_can_regenerate_after_diagnosis_exhaustion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _make_manager([
+        CompletionResult(text="not json"),
+        CompletionResult(text="graph = {}"),
+        CompletionResult(text="graph = {}"),
+    ])
+    provider = _default_provider(manager)
+    monkeypatch.setattr(chat_manager_module.asyncio, "sleep", _fast_sleep)
+    monkeypatch.setattr(manager, "_emit_intent_extraction_telemetry", lambda **kwargs: None)
+
+    recovered_graph = {"nodes": [{"id": "n1"}], "edges": [], "entry_points": ["n1"], "exit_points": ["n1"]}
+    sandbox_results = [
+        (
+            None,
+            CodegenResult(
+                success=False,
+                source_code="graph = {}",
+                error_type="runtime_error",
+                error_message="NameError: missing symbol",
+            ),
+        ),
+        (
+            recovered_graph,
+            CodegenResult(
+                success=True,
+                graph=recovered_graph,
+                source_code="graph = {}",
+            ),
+        ),
+    ]
+
+    async def fake_sandbox(code: str) -> tuple[dict | None, Any]:
+        return sandbox_results.pop(0)
+
+    monkeypatch.setattr(manager, "_sandbox_exec_builder_code", fake_sandbox)
+    monkeypatch.setattr(
+        planner_module,
+        "validate_codegen_output",
+        lambda graph_dict: _validation_success_for_graph(graph_dict),
+    )
+
+    class FakeDiagnosisLoop:
+        def __init__(self, max_attempts: int) -> None:
+            self.max_attempts = max_attempts
+
+        async def diagnose_and_repair(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(
+                success=False,
+                final_graph=None,
+                final_code="graph = {}",
+                attempts=[
+                    SimpleNamespace(
+                        attempt_number=1,
+                        strategy_used=SimpleNamespace(value="re_prompt"),
+                        result="failed",
+                        corrections_applied=["LLM re-prompt fix"],
+                        learning_points=["Return executable Python builder code that parses cleanly."],
+                    )
+                ],
+                final_errors=[
+                    diagnosis_module.GenerationError(
+                        stage=diagnosis_module.GenerationStage.sandbox,
+                        error_type=diagnosis_module.GenerationErrorType.runtime_error,
+                        message="NameError: missing symbol",
+                    )
+                ],
+            )
+
+    monkeypatch.setattr(diagnosis_module, "DiagnosisLoop", FakeDiagnosisLoop)
+
+    graph, events = await manager._generate_workflow_from_intent("Build a chain", "wf-auto-1", "ch-auto-1")
+
+    assert graph == recovered_graph
+    assert any(
+        event.type == "chat_notice"
+        and "Auto-repairing workflow generation" in event.content
+        for event in events
+    )
+    assert any(
+        event.type == "chat_code_generated" and event.source == "automatic_recovery"
+        for event in events
+    )
+    summary_events = [event for event in events if event.type == "chat_generation_summary"]
+    assert summary_events
+    assert summary_events[-1].path_taken == "automatic_recovery"
+    assert "automatic_recovery" in summary_events[-1].fallback_chain
+    assert summary_events[-1].automatic_recovery["scope"] == "generation"
+    assert summary_events[-1].automatic_recovery["status"] == "completed"
+    assert summary_events[-1].automatic_recovery["selected_action"] == "regenerate_builder_code"
+    assert summary_events[-1].automatic_recovery["last_outcome"] == "completed"
+    assert provider.requests
+    recovery_prompt = provider.requests[-1]["messages"][1]["content"]
+    assert "Automatic recovery handoff:" in recovery_prompt
+    assert "NameError: missing symbol" in recovery_prompt
+
+
+@pytest.mark.asyncio
+async def test_generation_automatic_recovery_exhaustion_is_reported_explicitly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _make_manager([
+        CompletionResult(text="not json"),
+        CompletionResult(text="graph = {}"),
+        CompletionResult(text="graph = {}"),
+    ])
+    provider = _default_provider(manager)
+    monkeypatch.setattr(chat_manager_module.asyncio, "sleep", _fast_sleep)
+    monkeypatch.setattr(manager, "_emit_intent_extraction_telemetry", lambda **kwargs: None)
+
+    async def fake_sandbox(code: str) -> tuple[dict | None, Any]:
+        return (
+            None,
+            CodegenResult(
+                success=False,
+                source_code=code,
+                error_type="runtime_error",
+                error_message="NameError: missing symbol",
+            ),
+        )
+
+    monkeypatch.setattr(manager, "_sandbox_exec_builder_code", fake_sandbox)
+
+    class FakeDiagnosisLoop:
+        def __init__(self, max_attempts: int) -> None:
+            self.max_attempts = max_attempts
+
+        async def diagnose_and_repair(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(
+                success=False,
+                final_graph=None,
+                final_code="graph = {}",
+                attempts=[
+                    SimpleNamespace(
+                        attempt_number=1,
+                        strategy_used=SimpleNamespace(value="re_prompt"),
+                        result="failed",
+                        corrections_applied=["LLM re-prompt fix"],
+                        learning_points=["Avoid repeating the same runtime error."],
+                    )
+                ],
+                final_errors=[
+                    diagnosis_module.GenerationError(
+                        stage=diagnosis_module.GenerationStage.sandbox,
+                        error_type=diagnosis_module.GenerationErrorType.runtime_error,
+                        message="NameError: missing symbol",
+                    )
+                ],
+            )
+
+    monkeypatch.setattr(diagnosis_module, "DiagnosisLoop", FakeDiagnosisLoop)
+
+    graph, events = await manager._generate_workflow_from_intent("Build a chain", "wf-auto-2", "ch-auto-2")
+
+    assert graph is None
+    validation_events = [event for event in events if event.type == "chat_validation_result"]
+    summary_events = [event for event in events if event.type == "chat_generation_summary"]
+    assert validation_events
+    assert summary_events
+    assert summary_events[-1].path_taken == "automatic_recovery"
+    assert "automatic_recovery" in summary_events[-1].fallback_chain
+    assert summary_events[-1].automatic_recovery["scope"] == "generation"
+    assert summary_events[-1].automatic_recovery["status"] == "exhausted"
+    assert summary_events[-1].automatic_recovery["last_outcome"] == "exhausted"
+    assert validation_events[-1].handoff_reason == "automatic_recovery_exhausted"
+    assert validation_events[-1].failure_bucket == "automatic_repair_exhausted"
+    assert validation_events[-1].build_status == "repair_exhausted"
+    assert validation_events[-1].errors[0] == "Automatic repair exhausted after diagnosis."
+    assert validation_events[-1].automatic_recovery["scope"] == "generation"
+    assert validation_events[-1].automatic_recovery["status"] == "exhausted"
+    assert validation_events[-1].automatic_recovery["handoff_reason"] == "automatic_recovery_exhausted"
+    assert validation_events[-1].automatic_recovery["escalation_needed"] is True
+    assert "Bounded automatic generation recovery is exhausted" in validation_events[-1].automatic_recovery["escalation_summary"]
+    assert "simplify_request" in validation_events[-1].automatic_recovery["recommended_actions"]
+    recovery_prompt = provider.requests[-1]["messages"][1]["content"]
+    assert "Automatic recovery handoff:" in recovery_prompt
 
 
 @pytest.mark.asyncio

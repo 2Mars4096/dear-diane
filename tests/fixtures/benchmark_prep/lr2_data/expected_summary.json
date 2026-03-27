@@ -1,0 +1,10 @@
+{
+  "total_revenue": 7800,
+  "total_units": 260,
+  "total_returns": 13,
+  "average_revenue_per_unit": 30.0,
+  "monthly_revenue": {
+    "2026-01": 3600,
+    "2026-02": 4200
+  }
+}

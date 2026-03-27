@@ -685,7 +685,17 @@ def test_build_child_session_drops_workflow_route_hints_for_non_workflow_subtask
             external_id="cli-user",
             text="Investigate and summarize",
             session_id="thread-42",
-            metadata={"mode": "agent", "workflow_id": "wf-123", "thread_id": "thread-42"},
+            metadata={
+                "mode": "agent",
+                "workflow_id": "wf-123",
+                "thread_id": "thread-42",
+                "memory_context": "Remember the prior patch failure.",
+                "request_history": [{"role": "user", "content": "full parent history"}],
+                "surface_context": {
+                    "workspace_root": str(tmp_path),
+                    "mentioned_files": [{"path": str(tmp_path / "src" / "feature.py")}],
+                },
+            },
         ),
         triage=TriageResult(
             tier=2,
@@ -716,7 +726,14 @@ def test_build_child_session_drops_workflow_route_hints_for_non_workflow_subtask
     assert child.msg.metadata["parent_thread_id"] == "thread-42"
     assert child.msg.metadata["tiered_child_session_id"] == child.id
     assert child.task_context["handoff"]["parent_thread_id"] == "thread-42"
-    child.task_context["parent_context"]["mutable"]["a"] = 2
+    assert child.msg.metadata["tiered_handoff"]["constraints"]["read_only_parent_context"] is True
+    assert child.msg.metadata["tiered_handoff"]["return_channel"]["parent_session_id"] == session.id
+    assert "request_history" not in child.msg.metadata
+    assert "mutable" not in child.task_context["parent_context"]
+    child.msg.metadata["surface_context"]["mentioned_files"][0]["path"] = "changed"
+    assert session.msg.metadata["surface_context"]["mentioned_files"][0]["path"] != "changed"
+    child.task_context["handoff"]["context"]["file_refs"].append("/tmp/extra.py")
+    assert "/tmp/extra.py" not in child.task_context["parent_context"].get("file_refs", [])
     assert session.task_context["mutable"]["a"] == 1
 
 
@@ -1067,7 +1084,8 @@ async def test_confirm_yes_replays_pending_action_instead_of_falling_back_to_got
         raise AssertionError("triage should not run for confirm replay")
 
     _install_dispatcher(concierge, triage_fn=triage_fn)
-    concierge.chat_manager._responses["Explain the pending task"] = "Confirmed execution."
+    attached_text = "Explain the pending task\n[User confirmation: yes]"
+    concierge.chat_manager._responses[attached_text] = "Confirmed execution."
 
     events = [
         event
@@ -1082,9 +1100,109 @@ async def test_confirm_yes_replays_pending_action_instead_of_falling_back_to_got
         if getattr(event, "type", "") == "chat_complete"
         and getattr(event, "detected_mode", None) != "progress_ack"
     ]
-    assert concierge.chat_manager.call_log == ["Explain the pending task"]
+    assert concierge.chat_manager.call_log == [attached_text]
     assert "Confirmed execution." in terminal_messages
     assert "Got it." not in terminal_messages
+    assert "Pending action attachment" in concierge.chat_manager.calls[-1]["extra_system_instructions"]
+
+    refreshed = concierge.project_store.get_project(project.project_id, "cli-user")
+    assert refreshed is not None
+    task = refreshed.tasks[-1]
+    user_turn = next(turn for turn in reversed(task.turns) if turn.role == "user")
+    assert user_turn.content == "yes"
+    assert user_turn.metadata["skip_confirm"] is True
+    assert user_turn.metadata["pending_route_step"] == "approval_confirmation"
+    assert user_turn.metadata["attached_user_reply"] == "yes"
+    assert user_turn.metadata["replay_source"] == "pending_attachment"
+    assert user_turn.metadata["pending_attachment_source"] == "pending_follow_up"
+    assert user_turn.metadata["pending_original_text"] == "Explain the pending task"
+    assert user_turn.metadata["pending_effective_text"] == attached_text
+
+
+@pytest.mark.asyncio
+async def test_clarify_resume_persists_attached_reply_metadata(tmp_path: Path) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    project = concierge.project_store.create_project("Pending Project", "cli-user")
+    concierge.project_store.add_task(project.project_id, "Pending task", "cli-user")
+    concierge.project_store.set_pending_action(
+        project.project_id,
+        PendingAction(
+            kind="clarify",
+            intent="ask",
+            original_text="Pick a file to continue",
+        ),
+        "cli-user",
+    )
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        raise AssertionError("triage should not run for clarification handling")
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    replay_text = "Pick a file to continue\n[User clarification: use README.md]"
+    concierge.chat_manager._responses[replay_text] = "Continuing with README."
+
+    async for _event in concierge.process(
+        SurfaceMessage(surface="cli", external_id="cli-user", text="use README.md")
+    ):
+        pass
+
+    assert concierge.chat_manager.call_log == [replay_text]
+    refreshed = concierge.project_store.get_project(project.project_id, "cli-user")
+    assert refreshed is not None
+    task = refreshed.tasks[-1]
+    user_turn = next(turn for turn in reversed(task.turns) if turn.role == "user")
+    assert user_turn.content == "use README.md"
+    assert user_turn.metadata["clarification_answer"] == "use README.md"
+    assert user_turn.metadata["pending_route_step"] == "clarification_answer"
+    assert user_turn.metadata["attached_user_reply"] == "use README.md"
+    assert user_turn.metadata["replay_source"] == "pending_attachment"
+    assert user_turn.metadata["pending_attachment_source"] == "pending_follow_up"
+    assert user_turn.metadata["pending_original_text"] == "Pick a file to continue"
+    assert user_turn.metadata["pending_effective_text"] == replay_text
+
+
+@pytest.mark.asyncio
+async def test_clarify_choice_attaches_selected_option_without_stale_user_turn(tmp_path: Path) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    project = concierge.project_store.create_project("Pending Project", "cli-user")
+    concierge.project_store.add_task(project.project_id, "Pending task", "cli-user")
+    concierge.project_store.set_pending_action(
+        project.project_id,
+        PendingAction(
+            kind="clarify",
+            intent="ask",
+            original_text="Pick a file to continue",
+            options=["/tmp/a.md", "/tmp/b.md"],
+        ),
+        "cli-user",
+    )
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        raise AssertionError("triage should not run for clarification handling")
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    attached_text = "Pick a file to continue\n[User selected option: /tmp/b.md]"
+    concierge.chat_manager._responses[attached_text] = "Continuing with /tmp/b.md."
+
+    async for _event in concierge.process(
+        SurfaceMessage(surface="cli", external_id="cli-user", text="2")
+    ):
+        pass
+
+    assert concierge.chat_manager.call_log == [attached_text]
+    refreshed = concierge.project_store.get_project(project.project_id, "cli-user")
+    assert refreshed is not None
+    task = refreshed.tasks[-1]
+    user_turn = next(turn for turn in reversed(task.turns) if turn.role == "user")
+    assert user_turn.content == "2"
+    assert user_turn.metadata["selected_option"] == 1
+    assert user_turn.metadata["selected_path"] == "/tmp/b.md"
+    assert user_turn.metadata["pending_route_step"] == "clarification_choice"
+    assert user_turn.metadata["pending_original_text"] == "Pick a file to continue"
+    assert user_turn.metadata["pending_effective_text"] == attached_text
+    assert user_turn.metadata["pending_attachment_source"] == "pending_follow_up"
 
 
 @pytest.mark.asyncio
@@ -1125,6 +1243,71 @@ async def test_clarify_unmatched_reply_requests_explicit_number(tmp_path: Path) 
     refreshed = concierge.project_store.get_project(project.project_id, "cli-user")
     assert refreshed is not None
     assert refreshed.pending_action is not None
+
+
+@pytest.mark.asyncio
+async def test_superseding_pending_confirm_retriages_against_resolved_project(tmp_path: Path) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    project = concierge.project_store.create_project("Pending Project", "cli-user")
+    concierge.project_store.add_task(project.project_id, "Pending task", "cli-user")
+    concierge.project_store.set_pending_action(
+        project.project_id,
+        PendingAction(
+            kind="confirm",
+            intent="ask",
+            original_text="Explain the pending task",
+        ),
+        "cli-user",
+    )
+    other_project = concierge.project_store.create_project("Other Project", "cli-user")
+    concierge.project_store.add_task(other_project.project_id, "Other task", "cli-user")
+
+    triage_calls: list[tuple[str, str]] = []
+
+    async def triage_fn(
+        text: str,
+        context: Any,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> TriageResult:
+        triage_calls.append((text, context.project.project_id))
+        return TriageResult(
+            tier=1,
+            intent="agent",
+            goal=text,
+            deliverable=text,
+        )
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    attached_text = (
+        "actually fix the tests instead\n"
+        "[Supersedes pending confirm: Explain the pending task]"
+    )
+    concierge.chat_manager._responses[attached_text] = "Switching to the test fix."
+
+    async for _event in concierge.process(
+        SurfaceMessage(
+            surface="cli",
+            external_id="cli-user",
+            text="actually fix the tests instead",
+        )
+    ):
+        pass
+
+    assert triage_calls == [(attached_text, project.project_id)]
+    assert concierge.chat_manager.call_log == [attached_text]
+
+    refreshed = concierge.project_store.get_project(project.project_id, "cli-user")
+    assert refreshed is not None
+    assert refreshed.pending_action is None
+    task = refreshed.tasks[-1]
+    user_turn = next(turn for turn in reversed(task.turns) if turn.role == "user")
+    assert user_turn.content == "actually fix the tests instead"
+    assert user_turn.metadata["pending_route_step"] == "superseding_instruction"
+    assert user_turn.metadata["pending_requires_triage"] is True
+    assert user_turn.metadata["pending_original_text"] == "Explain the pending task"
+    assert user_turn.metadata["pending_effective_text"] == attached_text
 
 
 @pytest.mark.asyncio
@@ -1202,6 +1385,79 @@ async def test_mixed_execution_runs_independent_group_in_parallel(tmp_path: Path
     previous_result = summary_child.task_context.get("previous_result", "")
     assert "Search complete." in previous_result
     assert "Repo complete." in previous_result
+
+
+@pytest.mark.asyncio
+async def test_mixed_execution_runs_dependent_stage_in_parallel_after_independent_group(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=2,
+            intent="agent",
+            goal="Run mixed plan",
+            deliverable="Run mixed plan",
+            subtasks=[
+                "search docs",
+                "inspect repo",
+                "summarize docs findings",
+                "summarize repo findings",
+                "compile final answer",
+            ],
+            execution_order="mixed",
+        )
+
+    def _delayed_stream(content: str, delay: float) -> Callable[[], AsyncIterator[Any]]:
+        async def _stream() -> AsyncIterator[Any]:
+            await asyncio.sleep(delay)
+            yield ChatCompleteEvent(
+                message_id=f"complete-{content[:8]}",
+                content=content,
+                graph_revision="",
+            )
+
+        return _stream
+
+    dispatcher = _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses["search docs"] = _delayed_stream("Search complete.", 0.15)
+    concierge.chat_manager._responses["inspect repo"] = _delayed_stream("Repo complete.", 0.15)
+    concierge.chat_manager._responses["summarize docs findings"] = _delayed_stream("Docs summary complete.", 0.15)
+    concierge.chat_manager._responses["summarize repo findings"] = _delayed_stream("Repo summary complete.", 0.15)
+    concierge.chat_manager._responses["compile final answer"] = _complete_stream("Final answer complete.")
+
+    start = time.monotonic()
+    async for _event in concierge.process(
+        SurfaceMessage(surface="cli", external_id="cli-user", text="Run mixed plan")
+    ):
+        pass
+    elapsed = time.monotonic() - start
+
+    root = dispatcher._session_manager.get_root("cli-user")
+    assert root is not None
+    assert root.child_execution == "mixed"
+    assert elapsed < 0.42, f"expected dependent-stage fan-out, got {elapsed:.3f}s"
+
+    assert set(concierge.chat_manager.call_log[:2]) == {"search docs", "inspect repo"}
+    assert set(concierge.chat_manager.call_log[2:4]) == {
+        "summarize docs findings",
+        "summarize repo findings",
+    }
+    assert concierge.chat_manager.call_log[-1] == "compile final answer"
+
+    docs_summary_child = dispatcher._session_manager.get(root.children[2])
+    repo_summary_child = dispatcher._session_manager.get(root.children[3])
+    final_child = dispatcher._session_manager.get(root.children[4])
+    assert docs_summary_child is not None
+    assert repo_summary_child is not None
+    assert final_child is not None
+    assert "Search complete." in docs_summary_child.task_context.get("previous_result", "")
+    assert "Repo complete." in docs_summary_child.task_context.get("previous_result", "")
+    assert "Search complete." in repo_summary_child.task_context.get("previous_result", "")
+    assert "Repo complete." in repo_summary_child.task_context.get("previous_result", "")
+    assert "Docs summary complete." in final_child.task_context.get("previous_result", "")
+    assert "Repo summary complete." in final_child.task_context.get("previous_result", "")
 
 
 @pytest.mark.asyncio

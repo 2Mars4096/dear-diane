@@ -28,7 +28,6 @@ from tests.eval import (
 from tests.eval.client import DanClient
 from tests.eval.metrics import EvalLogger
 from tests.eval.telemetry_reader import TelemetryReader
-from dan.meta.workflow_contract import classify_run_readiness_issues
 from dan.server.audit import ChatAuditStore
 
 try:
@@ -63,6 +62,15 @@ _ROUTING_BLOCKED_SIGNALS = (
     "would you like",
     "clarif",
     "meta session started",
+)
+
+_SMALL_BATTERY_TIERS = frozenset({"T1", "T2", "T2R", "T3", "T5"})
+
+AVAILABLE_BATTERIES = (
+    "small",
+    "complex",
+    "execution-friendly",
+    "benchmark-prep",
 )
 
 
@@ -724,7 +732,6 @@ class EvalRunner:
                     for issue in (resp.get("run_readiness_issues") or [])
                     if str(issue).strip()
                 ],
-                run_readiness_failure_mode=resp.get("run_readiness_failure_mode"),
             )
         except Exception:
             return ValidationResult(
@@ -732,7 +739,6 @@ class EvalRunner:
                 errors=["validation_request_failed"],
                 run_ready=False,
                 run_readiness_issues=["validation_request_failed"],
-                run_readiness_failure_mode="not_run_ready",
             )
 
     async def _try_execute(self, graph_id: str) -> ExecutionResult:
@@ -982,14 +988,7 @@ def _build_graph_summary(graph_data: dict) -> GraphSummary:
 def _summarize_event(event: dict) -> dict:
     """Extract key fields from a stream event for the record, keeping payloads short."""
     out: dict = {"type": event.get("type", "")}
-    for key in (
-        "message_id",
-        "content",
-        "error",
-        "graph_revision",
-        "detected_mode",
-        "failure_mode",
-    ):
+    for key in ("message_id", "content", "error", "graph_revision", "detected_mode"):
         val = event.get(key)
         if val:
             out[key] = str(val)[:300]
@@ -997,7 +996,6 @@ def _summarize_event(event: dict) -> dict:
         for key in (
             "path_taken", "fallback_chain", "wall_clock_ms",
             "complexity_tier", "node_count", "retries_used", "quality_score",
-            "failure_mode",
         ):
             val = event.get(key)
             if val is not None:
@@ -1026,6 +1024,108 @@ def _derive_lanes(fixture: PromptFixture) -> list[str]:
     if lane == "both":
         return ["agent", "build"]
     return [lane]
+
+
+def _fixture_tags(fixture: PromptFixture) -> set[str]:
+    return {
+        str(tag).strip().lower()
+        for tag in (fixture.tags or [])
+        if str(tag).strip()
+    }
+
+
+def _normalize_battery_name(name: str) -> str:
+    normalized = str(name or "").strip().lower().replace("_", "-")
+    alias_map = {
+        "executionfriendly": "execution-friendly",
+        "benchmarkprep": "benchmark-prep",
+    }
+    normalized = alias_map.get(normalized, normalized)
+    if normalized not in AVAILABLE_BATTERIES:
+        raise ValueError(f"Unsupported battery: {name}")
+    return normalized
+
+
+def _fixture_matches_battery(fixture: PromptFixture, battery: str) -> bool:
+    normalized = _normalize_battery_name(battery)
+    tags = _fixture_tags(fixture)
+    if normalized == "small":
+        return fixture.tier.upper() in _SMALL_BATTERY_TIERS
+    if normalized == "complex":
+        return fixture.tier.upper() == "T4" or bool(fixture.multi_turn_follow_ups)
+    if normalized == "execution-friendly":
+        return "execution_friendly" in tags
+    if normalized == "benchmark-prep":
+        return "benchmark_prep" in tags
+    raise ValueError(f"Unsupported battery: {battery}")
+
+
+def _order_prompt_fixtures(
+    fixtures: list[PromptFixture],
+    *,
+    prefer_lr2: bool = False,
+) -> list[PromptFixture]:
+    if not prefer_lr2:
+        return fixtures
+    indexed = list(enumerate(fixtures))
+    indexed.sort(
+        key=lambda pair: (
+            0 if "lr2_first" in _fixture_tags(pair[1]) else 1,
+            pair[0],
+        ),
+    )
+    return [fixture for _, fixture in indexed]
+
+
+def _load_prompt_fixtures(path: Path | None = None) -> list[PromptFixture]:
+    p = path or PROMPTS_FILE
+    with open(p) as f:
+        data = json.load(f)
+
+    fixtures: list[PromptFixture] = []
+    for item in data.get("prompts", []):
+        fixtures.append(PromptFixture(
+            id=item["id"],
+            tier=item["tier"],
+            lane=item.get("lane", "both"),
+            prompt=item["prompt"],
+            tags=item.get("tags", []),
+            expected=item.get("expected") or {},
+            multi_turn_follow_ups=item.get("multi_turn_follow_ups", []),
+            pilot=item.get("pilot", False),
+            edge_case=item.get("edge_case", False),
+            expected_behavior=item.get("expected_behavior"),
+        ))
+    return fixtures
+
+
+def describe_prompt_batteries(path: Path | None = None) -> dict[str, dict[str, object]]:
+    fixtures = _load_prompt_fixtures(path)
+    described: dict[str, dict[str, object]] = {}
+    for battery in AVAILABLE_BATTERIES:
+        selected = [fixture for fixture in fixtures if _fixture_matches_battery(fixture, battery)]
+        ordered = _order_prompt_fixtures(
+            selected,
+            prefer_lr2=(battery == "benchmark-prep"),
+        )
+        entry: dict[str, object] = {
+            "count": len(ordered),
+            "ids": [fixture.id for fixture in ordered],
+        }
+        if battery == "benchmark-prep":
+            lr2_ids = [
+                fixture.id
+                for fixture in ordered
+                if "lr2_first" in _fixture_tags(fixture)
+            ]
+            entry["lr2_first_ids"] = lr2_ids
+            entry["remaining_ids"] = [
+                fixture.id
+                for fixture in ordered
+                if fixture.id not in lr2_ids
+            ]
+        described[battery] = entry
+    return described
 
 
 def _workflow_contract_variants(setting: str | None) -> list[str]:
@@ -1141,7 +1241,7 @@ def _determine_status(
         return "failed", "validation_error"
 
     if validation and not validation.run_ready:
-        return "failed", _classify_run_readiness_failure(validation)
+        return "failed", "not_run_ready"
 
     if execution and execution.status != "completed":
         if execution.status == "timeout":
@@ -1209,16 +1309,6 @@ def _classify_no_graph(
     return "no_graph_created"
 
 
-def _classify_run_readiness_failure(validation: ValidationResult | None) -> str:
-    if validation is None:
-        return "not_run_ready"
-    failure_mode = str(validation.run_readiness_failure_mode or "").strip()
-    if failure_mode:
-        return failure_mode
-    inferred = classify_run_readiness_issues(validation.run_readiness_issues)
-    return inferred or "not_run_ready"
-
-
 def _error_record(
     fixture: PromptFixture,
     lane: str,
@@ -1255,26 +1345,11 @@ def load_prompts(
     pilot_only: bool = False,
     complex_only: bool = False,
     tags: list[str] | None = None,
+    batteries: list[str] | None = None,
+    prefer_lr2: bool = False,
 ) -> list[PromptFixture]:
     """Load and optionally filter prompt fixtures from JSON file."""
-    p = path or PROMPTS_FILE
-    with open(p) as f:
-        data = json.load(f)
-
-    fixtures: list[PromptFixture] = []
-    for item in data.get("prompts", []):
-        fixtures.append(PromptFixture(
-            id=item["id"],
-            tier=item["tier"],
-            lane=item.get("lane", "both"),
-            prompt=item["prompt"],
-            tags=item.get("tags", []),
-            expected=item.get("expected") or {},
-            multi_turn_follow_ups=item.get("multi_turn_follow_ups", []),
-            pilot=item.get("pilot", False),
-            edge_case=item.get("edge_case", False),
-            expected_behavior=item.get("expected_behavior"),
-        ))
+    fixtures = _load_prompt_fixtures(path)
 
     if tier:
         if isinstance(tier, str):
@@ -1288,5 +1363,12 @@ def load_prompts(
     if tags:
         required = {t.lower() for t in tags}
         fixtures = [f for f in fixtures if required & {t.lower() for t in f.tags}]
+    if batteries:
+        selected = {_normalize_battery_name(name) for name in batteries}
+        fixtures = [
+            f for f in fixtures
+            if any(_fixture_matches_battery(f, battery) for battery in selected)
+        ]
+    fixtures = _order_prompt_fixtures(fixtures, prefer_lr2=prefer_lr2)
 
     return fixtures

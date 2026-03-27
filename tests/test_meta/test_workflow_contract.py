@@ -183,6 +183,48 @@ def test_workflow_contract_rejects_placeholder_code_nodes_as_not_run_ready() -> 
     assert any("placeholder" in issue.lower() for issue in report.run_readiness_issues)
 
 
+def test_workflow_contract_rejects_foreach_without_iterable_source() -> None:
+    wf = workflow("ungrounded_foreach")
+    with wf.for_each("process_items") as body:
+        body.llm("worker", prompt="Process each item")
+    graph_dict = wf.build().model_dump(mode="json")
+
+    report = validate_workflow_build_contract(
+        graph_dict,
+        workflow_id="ungrounded-foreach",
+        apply_repairs=True,
+    )
+
+    assert report.validated is True
+    assert report.run_ready is False
+    assert any(
+        "for-each node 'process_items' has no iterable input source" in issue.lower()
+        for issue in report.run_readiness_issues
+    )
+
+
+def test_workflow_contract_rejects_toolless_llm_external_action_prompts() -> None:
+    wf = workflow("toolless_external_action")
+    wf.llm(
+        "save_report",
+        prompt="Save the final report to dated file paths for archival and access",
+    )
+    graph_dict = wf.build().model_dump(mode="json")
+
+    report = validate_workflow_build_contract(
+        graph_dict,
+        workflow_id="toolless-external-action",
+        apply_repairs=True,
+    )
+
+    assert report.validated is True
+    assert report.run_ready is False
+    assert any(
+        "llm node 'save_report' has no tools" in issue.lower()
+        for issue in report.run_readiness_issues
+    )
+
+
 def test_workflow_contract_dedupes_obvious_colliding_node_ids() -> None:
     graph_dict = _build_colliding_node_id_graph_dict()
 

@@ -176,6 +176,58 @@ async def test_direct_build_revalidates_after_enrichment():
             await planner.execute_plan_direct(plan)
 
 
+def test_enrich_graph_binds_explicit_file_paths_into_tool_config() -> None:
+    planner = _make_planner()
+    graph_data = {
+        "version": "dan_graph_v1",
+        "metadata": {"name": "sales_metrics_analysis"},
+        "nodes": [
+            {
+                "id": "read_csv",
+                "name": "read_csv",
+                "node_type": "tool_operator",
+                "tool_id": "csv_read",
+                "tool_config": {},
+                "input_ports": [{"name": "path", "required": True}],
+                "output_ports": [{"name": "rows"}],
+            },
+            {
+                "id": "read_expected",
+                "name": "read_expected",
+                "node_type": "tool_operator",
+                "tool_id": "file_read",
+                "tool_config": {},
+                "input_ports": [{"name": "path", "required": True}],
+                "output_ports": [{"name": "content"}],
+            },
+        ],
+        "edges": [],
+        "entry_points": ["read_csv", "read_expected"],
+        "exit_points": ["read_expected"],
+    }
+
+    enriched = planner._enrich_graph(
+        graph_data,
+        domain=None,
+        user_text=(
+            "Build a workflow over tests/fixtures/benchmark_prep/lr2_data/. "
+            "Read tests/fixtures/benchmark_prep/lr2_data/sales_metrics.csv and "
+            "compare against tests/fixtures/benchmark_prep/lr2_data/expected_summary.json."
+        ),
+    )
+
+    read_csv = next(node for node in enriched["nodes"] if node["id"] == "read_csv")
+    read_expected = next(
+        node for node in enriched["nodes"] if node["id"] == "read_expected"
+    )
+    assert read_csv["tool_config"]["path"] == (
+        "tests/fixtures/benchmark_prep/lr2_data/sales_metrics.csv"
+    )
+    assert read_expected["tool_config"]["path"] == (
+        "tests/fixtures/benchmark_prep/lr2_data/expected_summary.json"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2. Syntax error → diagnosis invoked → LLM fix works → Graph returned
 # ---------------------------------------------------------------------------

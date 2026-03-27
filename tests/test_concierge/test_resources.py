@@ -10,7 +10,12 @@ from unittest import mock
 
 import pytest
 
-from dan.server.chat_manager import ChatCompleteEvent, ChatQueuedEvent
+from dan.server.chat_manager import (
+    ChatCompleteEvent,
+    ChatQueuedEvent,
+    ChatToolCallResultEvent,
+    ChatToolCallStartEvent,
+)
 from dan.server.concierge.models import ResolvedContext
 from dan.server.concierge.dispatcher import ConcurrentDispatcher
 from dan.server.concierge.models import Project, SurfaceMessage, Task
@@ -70,6 +75,61 @@ class _FakeConcierge:
         yield ChatCompleteEvent(
             message_id="m1",
             content=f"Reply to: {msg.text}",
+            token_usage={},
+            context_window=0,
+            graph_revision="",
+        )
+
+
+class _ToolHeavyConcierge(_FakeConcierge):
+    """Concierge stub that enters a tool-wait phase before completing."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._started: dict[str, asyncio.Event] = {}
+        self._allow_tool_start: dict[str, asyncio.Event] = {}
+        self._tool_started: dict[str, asyncio.Event] = {}
+        self._finish: dict[str, asyncio.Event] = {}
+
+    def _event(self, store: dict[str, asyncio.Event], text: str) -> asyncio.Event:
+        return store.setdefault(text, asyncio.Event())
+
+    async def wait_started(self, text: str) -> None:
+        await self._event(self._started, text).wait()
+
+    async def wait_tool_started(self, text: str) -> None:
+        await self._event(self._tool_started, text).wait()
+
+    def allow_tool_start(self, text: str) -> None:
+        self._event(self._allow_tool_start, text).set()
+
+    def finish_tools(self, text: str) -> None:
+        self._event(self._finish, text).set()
+
+    async def process(self, msg: SurfaceMessage) -> AsyncIterator[Any]:
+        text = msg.text
+        self.process_calls.append(text)
+        self._event(self._started, text).set()
+
+        await self._event(self._allow_tool_start, text).wait()
+        yield ChatToolCallStartEvent(
+            tool_call_id=f"tool-{text}",
+            tool_name="mock_tool",
+            args_preview=text,
+        )
+        self._event(self._tool_started, text).set()
+
+        await self._event(self._finish, text).wait()
+        yield ChatToolCallResultEvent(
+            tool_call_id=f"tool-{text}",
+            tool_name="mock_tool",
+            status="ok",
+            output_preview=f"done-{text}",
+            duration_ms=1,
+        )
+        yield ChatCompleteEvent(
+            message_id=f"m-{text}",
+            content=f"Reply to: {text}",
             token_usage={},
             context_window=0,
             graph_revision="",
@@ -527,6 +587,38 @@ class TestDispatcherResourceConcurrency:
         )
 
         assert not overflow_seen, "Dispatcher should gate on run slots, not reserve llm for the full turn"
+
+    @pytest.mark.asyncio
+    async def test_run_slot_released_while_turn_waits_on_tools(self):
+        """Tool wait should stop consuming the dispatcher's foreground run slot."""
+        tracker = ResourceTracker(ResourceBudget(max_concurrent_runs=1))
+        concierge = _ToolHeavyConcierge()
+        ctx = _make_context("proj-a", "A")
+        concierge.set_context("A", ctx)
+
+        dispatcher = ConcurrentDispatcher(concierge, resource_tracker=tracker)
+
+        async def _dispatch() -> None:
+            async for _ in dispatcher.dispatch(_make_msg("A: task")):
+                pass
+
+        dispatch_task = asyncio.create_task(_dispatch())
+        await concierge.wait_started("A: task")
+        assert tracker.snapshot()["active_runs"] == 1
+
+        concierge.allow_tool_start("A: task")
+        await concierge.wait_tool_started("A: task")
+
+        for _ in range(20):
+            if tracker.snapshot()["active_runs"] == 0:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("run slot should be released while the turn is waiting on tools")
+
+        concierge.finish_tools("A: task")
+        await dispatch_task
+        await dispatcher.close()
 
     @pytest.mark.asyncio
     async def test_resource_released_after_completion(self):

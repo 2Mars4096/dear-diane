@@ -6,11 +6,12 @@ per-tier, per-lane, generation-path, and failure-mode breakdowns.
 
 from __future__ import annotations
 
+from collections import Counter
 import json
 from pathlib import Path
 from typing import Any
 
-from tests.eval import EvalRecord, TokenInfo
+from tests.eval import EvalRecord, PROMPTS_FILE, TokenInfo
 from tests.eval.metrics import EvalLogger
 
 try:
@@ -22,24 +23,39 @@ except ImportError:
     _HAS_RICH = False
 
 
+_SMALL_BATTERY_TIERS = frozenset({"T1", "T2", "T2R", "T3", "T5"})
+
+
 class ReportGenerator:
     def __init__(
         self,
         records: list[EvalRecord],
         graphs_dir: Path | None = None,
         runs: int = 1,
+        prompts_path: Path | None = None,
     ):
         self._records = records
         self._graphs_dir = graphs_dir
         self._runs = runs
+        self._prompts_path = prompts_path or PROMPTS_FILE
+        self._prompt_catalog = _load_prompt_catalog(self._prompts_path)
 
     @classmethod
     def from_jsonl(
-        cls, path: Path, graphs_dir: Path | None = None, runs: int = 1,
+        cls,
+        path: Path,
+        graphs_dir: Path | None = None,
+        runs: int = 1,
+        prompts_path: Path | None = None,
     ) -> ReportGenerator:
         records = EvalLogger.load_records(path)
         gd = graphs_dir or path.parent / f"{path.stem}_graphs"
-        return cls(records, graphs_dir=gd if gd.exists() else None, runs=runs)
+        return cls(
+            records,
+            graphs_dir=gd if gd.exists() else None,
+            runs=runs,
+            prompts_path=prompts_path,
+        )
 
     # ------------------------------------------------------------------
     # Summary
@@ -75,6 +91,9 @@ class ReportGenerator:
             "total_time_ms": total_time_ms,
             "by_tier": self._by_tier(recs),
             "by_lane": self._by_lane(recs),
+            "named_subsets": self._named_subsets(recs),
+            "execution_friendly_subset": self._execution_friendly_subset(recs),
+            "benchmark_prep": self._benchmark_prep(recs),
             "lane_comparison": self._lane_comparison(recs),
             "generation_path": self._generation_path(recs),
             "failure_modes": self._failure_modes(recs),
@@ -103,6 +122,165 @@ class ReportGenerator:
         if self._runs > 1:
             result["flakiness"] = self._flakiness(recs, self._runs)
         return result
+
+    def _record_catalog_entry(self, record: EvalRecord) -> dict[str, Any] | None:
+        return self._prompt_catalog.get(_base_record_id(record.id))
+
+    def _record_tags(self, record: EvalRecord) -> set[str]:
+        entry = self._record_catalog_entry(record)
+        if not entry:
+            return set()
+        return set(entry.get("tags", []))
+
+    def _record_matches_subset(self, record: EvalRecord, subset: str) -> bool:
+        entry = self._record_catalog_entry(record)
+        return _prompt_catalog_entry_matches_subset(entry, subset)
+
+    def _sorted_prompt_ids(
+        self,
+        records: list[EvalRecord],
+        *,
+        prefer_lr2: bool = False,
+    ) -> list[str]:
+        prompt_ids = {_base_record_id(record.id) for record in records}
+        return _ordered_prompt_ids(
+            self._prompt_catalog,
+            prompt_ids,
+            prefer_lr2=prefer_lr2,
+        )
+
+    @staticmethod
+    def _by_contract_variant(recs: list[EvalRecord]) -> dict[str, Any]:
+        by_variant: dict[str, dict[str, Any]] = {}
+        for record in recs:
+            variant = record.workflow_contract_variant or "unspecified"
+            bucket = by_variant.setdefault(
+                variant,
+                {"total": 0, "passed": 0, "failed": 0, "error": 0},
+            )
+            bucket["total"] += 1
+            if record.status == "passed":
+                bucket["passed"] += 1
+            elif record.status == "failed":
+                bucket["failed"] += 1
+            else:
+                bucket["error"] += 1
+        for bucket in by_variant.values():
+            total = bucket["total"]
+            bucket["pass_rate"] = bucket["passed"] / total if total else 0.0
+        return by_variant
+
+    def _summarize_subset(
+        self,
+        recs: list[EvalRecord],
+        *,
+        prefer_lr2: bool = False,
+    ) -> dict[str, Any]:
+        total = len(recs)
+        passed = sum(1 for record in recs if record.status == "passed")
+        failed = sum(1 for record in recs if record.status == "failed")
+        error = total - passed - failed
+        return {
+            "total": total,
+            "unique_prompts": len({_base_record_id(record.id) for record in recs}),
+            "prompt_ids": self._sorted_prompt_ids(recs, prefer_lr2=prefer_lr2),
+            "passed": passed,
+            "failed": failed,
+            "error": error,
+            "pass_rate": passed / total if total else 0.0,
+            "by_contract_variant": self._by_contract_variant(recs),
+        }
+
+    def _named_subsets(self, recs: list[EvalRecord]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for subset in (
+            "small",
+            "complex",
+            "execution-friendly",
+            "benchmark-prep",
+            "lr2-first",
+        ):
+            subset_records = [
+                record for record in recs
+                if self._record_matches_subset(record, subset)
+            ]
+            if subset_records:
+                result[subset] = self._summarize_subset(
+                    subset_records,
+                    prefer_lr2=(subset == "benchmark-prep"),
+                )
+        return result
+
+    def _execution_friendly_subset(self, recs: list[EvalRecord]) -> dict[str, Any]:
+        subset_records = [
+            record for record in recs
+            if self._record_matches_subset(record, "execution-friendly")
+        ]
+        if not subset_records:
+            return {}
+
+        validated = [record for record in subset_records if record.validation is not None]
+        run_ready = [
+            record
+            for record in validated
+            if record.validation is not None and bool(record.validation.run_ready)
+        ]
+        execution_attempted = [
+            record for record in subset_records if record.execution is not None
+        ]
+        execution_completed = [
+            record
+            for record in execution_attempted
+            if record.execution is not None and record.execution.status == "completed"
+        ]
+        return {
+            **self._summarize_subset(subset_records, prefer_lr2=True),
+            "validated": len(validated),
+            "run_ready": len(run_ready),
+            "run_ready_rate": len(run_ready) / len(validated) if validated else 0.0,
+            "execution_attempted": len(execution_attempted),
+            "execution_completed": len(execution_completed),
+            "execution_completion_rate": (
+                len(execution_completed) / len(execution_attempted)
+                if execution_attempted else 0.0
+            ),
+        }
+
+    def _benchmark_prep(self, recs: list[EvalRecord]) -> dict[str, Any]:
+        catalog_order = _ordered_prompt_ids(
+            self._prompt_catalog,
+            {
+                prompt_id
+                for prompt_id, entry in self._prompt_catalog.items()
+                if _prompt_catalog_entry_matches_subset(entry, "benchmark-prep")
+            },
+            prefer_lr2=True,
+        )
+        if not catalog_order:
+            return {}
+
+        subset_records = [
+            record for record in recs
+            if self._record_matches_subset(record, "benchmark-prep")
+        ]
+        observed_prompt_ids = self._sorted_prompt_ids(
+            subset_records,
+            prefer_lr2=True,
+        )
+        lr2_prompt_ids = [
+            prompt_id for prompt_id in catalog_order
+            if "lr2_first" in set(self._prompt_catalog.get(prompt_id, {}).get("tags", []))
+        ]
+        return {
+            **self._summarize_subset(subset_records, prefer_lr2=True),
+            "catalog_prompt_order": catalog_order,
+            "catalog_lr2_first_prompt_ids": lr2_prompt_ids,
+            "catalog_remaining_prompt_ids": [
+                prompt_id for prompt_id in catalog_order
+                if prompt_id not in lr2_prompt_ids
+            ],
+            "observed_prompt_ids": observed_prompt_ids,
+        }
 
     # ------------------------------------------------------------------
     # Per-tier breakdown
@@ -272,8 +450,6 @@ class ReportGenerator:
             if r.failure_mode in {
                 "validation_error",
                 "not_run_ready",
-                "unresolved_code",
-                "non_runnable_code",
                 "expectation_mismatch",
                 "codegen_failed",
             }
@@ -759,39 +935,60 @@ class ReportGenerator:
     @staticmethod
     def _flakiness(recs: list[EvalRecord], runs: int) -> dict[str, Any]:
         """Compute per-prompt pass/fail/flaky across runs."""
-        by_key: dict[tuple[str, str], list[EvalRecord]] = {}
+        by_key: dict[tuple[str, str, str], list[EvalRecord]] = {}
         for r in recs:
-            key = (r.id, r.lane)
+            key = (r.id, r.lane, r.workflow_contract_variant or "unspecified")
             by_key.setdefault(key, []).append(r)
         stable_pass = 0
         stable_fail = 0
+        stable_error = 0
         flaky = 0
         flaky_prompts: list[dict[str, Any]] = []
-        for (pid, lane), group in sorted(by_key.items()):
+        by_contract_variant: dict[str, dict[str, int]] = {}
+        for (pid, lane, variant), group in sorted(by_key.items()):
             if len(group) < runs:
                 continue
-            passed = sum(1 for r in group if r.status == "passed")
-            failed = len(group) - passed
-            if passed == runs:
+            status_counts = Counter((r.status or "unknown") for r in group)
+            variant_bucket = by_contract_variant.setdefault(
+                variant,
+                {
+                    "stable_pass": 0,
+                    "stable_fail": 0,
+                    "stable_error": 0,
+                    "flaky": 0,
+                },
+            )
+            if status_counts == Counter({"passed": runs}):
                 stable_pass += 1
-            elif failed == runs:
+                variant_bucket["stable_pass"] += 1
+            elif len(status_counts) == 1 and "error" in status_counts:
+                stable_error += 1
+                variant_bucket["stable_error"] += 1
+            elif len(status_counts) == 1:
                 stable_fail += 1
+                variant_bucket["stable_fail"] += 1
             else:
                 flaky += 1
+                variant_bucket["flaky"] += 1
                 flaky_prompts.append({
                     "id": pid,
                     "lane": lane,
-                    "passed": passed,
-                    "failed": failed,
+                    "workflow_contract_variant": variant,
+                    "statuses": dict(sorted(status_counts.items())),
                     "runs": len(group),
                 })
-        total = stable_pass + stable_fail + flaky
+        total = stable_pass + stable_fail + stable_error + flaky
+        for bucket in by_contract_variant.values():
+            variant_total = sum(bucket.values())
+            bucket["flaky_rate"] = bucket["flaky"] / variant_total if variant_total else 0.0
         return {
             "runs": runs,
             "stable_pass": stable_pass,
             "stable_fail": stable_fail,
+            "stable_error": stable_error,
             "flaky": flaky,
             "flaky_rate": flaky / total if total else 0.0,
+            "by_contract_variant": by_contract_variant,
             "flaky_prompts": flaky_prompts,
         }
 
@@ -810,18 +1007,35 @@ class ReportGenerator:
             console.print(
                 f"  Stable pass: {data['stable_pass']}  |  "
                 f"Stable fail: {data['stable_fail']}  |  "
+                f"Stable error: {data['stable_error']}  |  "
                 f"Flaky: [yellow]{data['flaky']}[/yellow]  |  "
                 f"Flakiness rate: {data['flaky_rate'] * 100:.1f}%"
             )
+            if data.get("by_contract_variant"):
+                contract_bits = ", ".join(
+                    f"{variant}={stats['flaky']} flaky ({stats['flaky_rate'] * 100:.1f}%)"
+                    for variant, stats in sorted(data["by_contract_variant"].items())
+                )
+                console.print(f"  By contract: {contract_bits}")
             if data["flaky_prompts"]:
                 tbl = Table(title="Flaky Prompts")
                 tbl.add_column("ID")
                 tbl.add_column("Lane")
-                tbl.add_column("Passed", justify="right")
-                tbl.add_column("Failed", justify="right")
+                tbl.add_column("Variant")
+                tbl.add_column("Statuses")
                 tbl.add_column("Runs", justify="right")
                 for p in data["flaky_prompts"][:20]:
-                    tbl.add_row(p["id"], p["lane"], str(p["passed"]), str(p["failed"]), str(p["runs"]))
+                    statuses = ", ".join(
+                        f"{status}={count}"
+                        for status, count in sorted((p.get("statuses") or {}).items())
+                    )
+                    tbl.add_row(
+                        p["id"],
+                        p["lane"],
+                        p["workflow_contract_variant"],
+                        statuses,
+                        str(p["runs"]),
+                    )
                 console.print(tbl)
             console.print()
         else:
@@ -829,11 +1043,28 @@ class ReportGenerator:
             print(
                 f"Stable pass: {data['stable_pass']}, "
                 f"Stable fail: {data['stable_fail']}, "
+                f"Stable error: {data['stable_error']}, "
                 f"Flaky: {data['flaky']}, "
                 f"Rate: {data['flaky_rate'] * 100:.1f}%"
             )
+            if data.get("by_contract_variant"):
+                for variant, stats in sorted(data["by_contract_variant"].items()):
+                    print(
+                        f"  {variant}: stable_pass={stats['stable_pass']} "
+                        f"stable_fail={stats['stable_fail']} "
+                        f"stable_error={stats['stable_error']} "
+                        f"flaky={stats['flaky']} "
+                        f"rate={stats['flaky_rate'] * 100:.1f}%"
+                    )
             for p in data["flaky_prompts"][:10]:
-                print(f"  {p['id']}/{p['lane']}: passed={p['passed']} failed={p['failed']}")
+                statuses = ", ".join(
+                    f"{status}={count}"
+                    for status, count in sorted((p.get("statuses") or {}).items())
+                )
+                print(
+                    f"  {p['id']}/{p['lane']}/{p['workflow_contract_variant']}: "
+                    f"{statuses}"
+                )
 
     # ------------------------------------------------------------------
     # Output
@@ -854,6 +1085,73 @@ class ReportGenerator:
 # ======================================================================
 # Rich output
 # ======================================================================
+
+
+def _load_prompt_catalog(path: Path) -> dict[str, dict[str, Any]]:
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return {}
+
+    catalog: dict[str, dict[str, Any]] = {}
+    for item in data.get("prompts", []):
+        prompt_id = str(item.get("id") or "").strip()
+        if not prompt_id:
+            continue
+        catalog[prompt_id] = {
+            "tier": str(item.get("tier") or ""),
+            "tags": [
+                str(tag).strip().lower()
+                for tag in (item.get("tags") or [])
+                if str(tag).strip()
+            ],
+            "multi_turn": bool(item.get("multi_turn_follow_ups")),
+        }
+    return catalog
+
+
+def _prompt_catalog_entry_matches_subset(
+    entry: dict[str, Any] | None,
+    subset: str,
+) -> bool:
+    if not entry:
+        return False
+
+    normalized = str(subset or "").strip().lower().replace("_", "-")
+    tags = set(entry.get("tags", []))
+    tier = str(entry.get("tier") or "").upper()
+    if normalized == "small":
+        return tier in _SMALL_BATTERY_TIERS
+    if normalized == "complex":
+        return tier == "T4" or bool(entry.get("multi_turn"))
+    if normalized == "execution-friendly":
+        return "execution_friendly" in tags
+    if normalized == "benchmark-prep":
+        return "benchmark_prep" in tags
+    if normalized == "lr2-first":
+        return "lr2_first" in tags
+    return False
+
+
+def _ordered_prompt_ids(
+    catalog: dict[str, dict[str, Any]],
+    prompt_ids: set[str],
+    *,
+    prefer_lr2: bool = False,
+) -> list[str]:
+    ordered = [prompt_id for prompt_id in catalog if prompt_id in prompt_ids]
+    if prefer_lr2:
+        positions = {prompt_id: idx for idx, prompt_id in enumerate(ordered)}
+        ordered.sort(
+            key=lambda prompt_id: (
+                0 if "lr2_first" in set(catalog.get(prompt_id, {}).get("tags", [])) else 1,
+                positions[prompt_id],
+            ),
+        )
+    for prompt_id in sorted(prompt_ids):
+        if prompt_id not in ordered:
+            ordered.append(prompt_id)
+    return ordered
 
 
 def _pct(val: float) -> str:
@@ -952,6 +1250,60 @@ def _print_rich(s: dict[str, Any]) -> None:
         )
     console.print(lane_tbl)
     console.print()
+
+    named_subsets = s.get("named_subsets", {})
+    if named_subsets:
+        console.rule("[bold]Named Subsets[/bold]")
+        subset_tbl = Table(show_lines=True)
+        subset_tbl.add_column("Subset")
+        subset_tbl.add_column("Records", justify="right")
+        subset_tbl.add_column("Prompts", justify="right")
+        subset_tbl.add_column("Passed", justify="right")
+        subset_tbl.add_column("Failed", justify="right")
+        subset_tbl.add_column("Error", justify="right")
+        subset_tbl.add_column("Rate", justify="right")
+        for subset, stats in sorted(named_subsets.items()):
+            subset_tbl.add_row(
+                subset,
+                str(stats["total"]),
+                str(stats["unique_prompts"]),
+                str(stats["passed"]),
+                str(stats["failed"]),
+                str(stats["error"]),
+                _pct(stats["pass_rate"]),
+            )
+        console.print(subset_tbl)
+        console.print()
+
+    efs = s.get("execution_friendly_subset", {})
+    if efs.get("total", 0) > 0:
+        console.rule("[bold]Execution-Friendly Subset[/bold]")
+        console.print(
+            f"  Records: {efs['total']}  |  "
+            f"Prompts: {efs['unique_prompts']}  |  "
+            f"Run-ready: {efs['run_ready']}/{efs['validated']} "
+            f"({_pct(efs['run_ready_rate'])})  |  "
+            f"Execution completed: {efs['execution_completed']}/{efs['execution_attempted']} "
+            f"({_pct(efs['execution_completion_rate'])})"
+        )
+        console.print()
+
+    bp = s.get("benchmark_prep", {})
+    if bp.get("catalog_prompt_order"):
+        console.rule("[bold]Frozen-Input Benchmark Prep[/bold]")
+        console.print(
+            f"  Catalog prompts: {len(bp['catalog_prompt_order'])}  |  "
+            f"Observed in this report: {bp.get('unique_prompts', 0)}"
+        )
+        if bp.get("catalog_lr2_first_prompt_ids"):
+            console.print(
+                "  LR2-first: " + ", ".join(bp["catalog_lr2_first_prompt_ids"]),
+            )
+        if bp.get("catalog_remaining_prompt_ids"):
+            console.print(
+                "  Then: " + ", ".join(bp["catalog_remaining_prompt_ids"]),
+            )
+        console.print()
 
     # 4 — Lane comparison
     lc = s["lane_comparison"]
@@ -1357,6 +1709,42 @@ def _print_plain(s: dict[str, Any]) -> None:
             f"{ls['failed']} failed, {_pct(ls['pass_rate'])}"
         )
     print()
+
+    named_subsets = s.get("named_subsets", {})
+    if named_subsets:
+        print("--- Named Subsets ---")
+        for subset, stats in sorted(named_subsets.items()):
+            print(
+                f"  {subset}: {stats['total']} records, {stats['unique_prompts']} prompts, "
+                f"{stats['passed']} passed, {stats['failed']} failed, "
+                f"{stats['error']} error, {_pct(stats['pass_rate'])}"
+            )
+        print()
+
+    efs = s.get("execution_friendly_subset", {})
+    if efs.get("total", 0) > 0:
+        print("--- Execution-Friendly Subset ---")
+        print(
+            f"  Records: {efs['total']}  Prompts: {efs['unique_prompts']}  "
+            f"Run-ready: {efs['run_ready']}/{efs['validated']} "
+            f"({_pct(efs['run_ready_rate'])})  "
+            f"Execution completed: {efs['execution_completed']}/{efs['execution_attempted']} "
+            f"({_pct(efs['execution_completion_rate'])})"
+        )
+        print()
+
+    bp = s.get("benchmark_prep", {})
+    if bp.get("catalog_prompt_order"):
+        print("--- Frozen-Input Benchmark Prep ---")
+        print(
+            f"  Catalog prompts: {len(bp['catalog_prompt_order'])}  "
+            f"Observed in this report: {bp.get('unique_prompts', 0)}"
+        )
+        if bp.get("catalog_lr2_first_prompt_ids"):
+            print("  LR2-first: " + ", ".join(bp["catalog_lr2_first_prompt_ids"]))
+        if bp.get("catalog_remaining_prompt_ids"):
+            print("  Then: " + ", ".join(bp["catalog_remaining_prompt_ids"]))
+        print()
 
     lc = s["lane_comparison"]
     if lc["agent_only_failures"]:

@@ -50,6 +50,14 @@ class TestSystemPrompt:
         assert "assign outputs through `result = ...`" in prompt
         assert "registered tool ids" in prompt
 
+    def test_instructs_explicit_local_paths_to_use_tool_config(
+        self,
+        builder: CodegenPromptBuilder,
+    ) -> None:
+        prompt = builder.build_system_prompt()
+        assert "concrete local file or directory path" in prompt
+        assert 'tool_config`` (for example ``{"path": "tests/data.csv"}' in prompt
+
     def test_omits_workflow_generation_contract_when_override_disabled(
         self,
         builder: CodegenPromptBuilder,

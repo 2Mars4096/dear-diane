@@ -185,7 +185,7 @@
       "tier": "T1",
       "lane": "both",
       "prompt": "Build a 3-step chain: research, analyze, summarize",
-      "tags": ["pure_llm"],
+      "tags": ["pure_llm", "execution_friendly", "benchmark_prep", "lr2_first"],
       "expected": {
         "pattern": "chain",
         "node_types": ["llm"],
@@ -203,7 +203,7 @@
       "tier": "T1",
       "lane": "both",
       "prompt": "Create a 5-step pipeline: gather data, clean it, analyze, visualize, report",
-      "tags": ["pure_llm"],
+      "tags": ["pure_llm", "execution_friendly", "benchmark_prep", "lr2_first"],
       "expected": {
         "pattern": "chain",
         "node_types": ["llm"],
@@ -221,7 +221,7 @@
       "tier": "T1",
       "lane": "both",
       "prompt": "Build a review loop: writer drafts, reviewer verifies citations, loop until citations_verified is true",
-      "tags": ["pure_llm"],
+      "tags": ["pure_llm", "execution_friendly", "benchmark_prep", "lr2_first"],
       "expected": {
         "pattern": "review_loop",
         "node_types": ["llm", "gate"],
@@ -239,7 +239,7 @@
       "tier": "T1",
       "lane": "both",
       "prompt": "Create a fan-out workflow that processes 5 items in parallel then merges results",
-      "tags": ["pure_llm", "fan_out"],
+      "tags": ["pure_llm", "fan_out", "execution_friendly", "benchmark_prep", "lr2_first"],
       "expected": {
         "pattern": "fan_out",
         "node_types": ["llm", "for_each"],
@@ -293,7 +293,7 @@
       "tier": "T1",
       "lane": "both",
       "prompt": "Build a workflow with a single LLM node that summarizes text",
-      "tags": ["pure_llm"],
+      "tags": ["pure_llm", "execution_friendly", "benchmark_prep", "lr2_first"],
       "expected": {
         "pattern": "chain",
         "node_types": ["llm"],
@@ -329,7 +329,7 @@
       "tier": "T1",
       "lane": "both",
       "prompt": "Build a workflow that checks whether a document is relevant; if yes summarize it, otherwise write a brief rejection note",
-      "tags": ["conditional"],
+      "tags": ["conditional", "execution_friendly", "benchmark_prep", "lr2_first"],
       "expected": {
         "pattern": "conditional",
         "node_types": ["llm", "gate"],
@@ -365,7 +365,7 @@
       "tier": "T2",
       "lane": "both",
       "prompt": "Create a translation pipeline: take a document, split it into sections, translate each section in parallel, reassemble",
-      "tags": ["pure_llm", "fan_out"],
+      "tags": ["pure_llm", "fan_out", "execution_friendly", "benchmark_prep", "lr2_first"],
       "expected": {
         "pattern": "fan_out",
         "node_types": ["llm", "for_each"],
@@ -419,7 +419,7 @@
       "tier": "T2",
       "lane": "both",
       "prompt": "Build a content pipeline: generate blog post outline, write each section, review and edit, produce final markdown",
-      "tags": ["pure_llm"],
+      "tags": ["pure_llm", "execution_friendly", "benchmark_prep", "lr2_first"],
       "expected": {
         "pattern": "chain",
         "node_types": ["llm", "gate"],
@@ -437,7 +437,7 @@
       "tier": "T2",
       "lane": "both",
       "prompt": "Create a comparison workflow: take two documents, summarize each, then produce a comparison analysis",
-      "tags": ["pure_llm", "fan_out"],
+      "tags": ["pure_llm", "fan_out", "execution_friendly", "benchmark_prep", "lr2_first"],
       "expected": {
         "pattern": "fan_out",
         "node_types": ["llm", "for_each"],
@@ -743,7 +743,7 @@
       "tier": "T3",
       "lane": "both",
       "prompt": "Build a simple 3-step chain: research, analyze, summarize",
-      "tags": ["multi_turn"],
+      "tags": ["multi_turn", "execution_friendly", "benchmark_prep"],
       "expected": {
         "pattern": "chain",
         "node_types": ["llm", "tool", "gate", "for_each"],
@@ -786,7 +786,7 @@
       "tier": "T3",
       "lane": "both",
       "prompt": "Build a document processing pipeline: read document, extract key points, write summary",
-      "tags": ["multi_turn", "fan_out"],
+      "tags": ["multi_turn", "fan_out", "execution_friendly", "benchmark_prep"],
       "expected": {
         "pattern": "fan_out",
         "node_types": ["llm", "tool", "for_each"],

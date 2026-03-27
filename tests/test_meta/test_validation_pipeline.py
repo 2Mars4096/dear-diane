@@ -110,6 +110,36 @@ def _build_placeholder_code_graph_dict() -> dict:
     return wf.build().model_dump(mode="json")
 
 
+def _build_missing_tool_arg_graph_dict() -> dict:
+    """Entry-point tool graph with no bound required path argument."""
+    wf = workflow("missing_tool_arg")
+    wf.tool(
+        "read_csv",
+        tool_id="csv_read",
+        input_ports=[{"name": "path", "required": True}],
+        output_ports=[{"name": "rows"}],
+    )
+    return wf.build().model_dump(mode="json")
+
+
+def _build_ungrounded_foreach_graph_dict() -> dict:
+    """For-each graph with no iterable source wired in."""
+    wf = workflow("ungrounded_foreach")
+    with wf.for_each("process_items") as body:
+        body.llm("worker", prompt="Process each item")
+    return wf.build().model_dump(mode="json")
+
+
+def _build_toolless_external_action_graph_dict() -> dict:
+    """Plain LLM node whose prompt claims an external save side effect."""
+    wf = workflow("toolless_external_action")
+    wf.llm(
+        "save_report",
+        prompt="Save the final report to dated file paths for archival and access",
+    )
+    return wf.build().model_dump(mode="json")
+
+
 # ---------------------------------------------------------------------------
 # Test: Valid graph → success=True, graph=Graph
 # ---------------------------------------------------------------------------
@@ -293,3 +323,36 @@ class TestRunReadinessFailureModes:
         assert result.run_ready is False
         assert result.run_readiness_failure_mode == "non_runnable_code"
         assert any("placeholder" in issue.lower() for issue in result.contract_report.run_readiness_issues)
+
+    def test_missing_required_tool_argument_is_not_run_ready(self):
+        result = validate_codegen_output(_build_missing_tool_arg_graph_dict())
+
+        assert result.success is True
+        assert result.run_ready is False
+        assert result.run_readiness_failure_mode == "not_run_ready"
+        assert any(
+            "missing required argument 'path'" in issue.lower()
+            for issue in result.contract_report.run_readiness_issues
+        )
+
+    def test_ungrounded_foreach_is_not_run_ready(self):
+        result = validate_codegen_output(_build_ungrounded_foreach_graph_dict())
+
+        assert result.success is True
+        assert result.run_ready is False
+        assert result.run_readiness_failure_mode == "not_run_ready"
+        assert any(
+            "for-each node 'process_items' has no iterable input source" in issue.lower()
+            for issue in result.contract_report.run_readiness_issues
+        )
+
+    def test_toolless_llm_external_action_is_not_run_ready(self):
+        result = validate_codegen_output(_build_toolless_external_action_graph_dict())
+
+        assert result.success is True
+        assert result.run_ready is False
+        assert result.run_readiness_failure_mode == "not_run_ready"
+        assert any(
+            "llm node 'save_report' has no tools" in issue.lower()
+            for issue in result.contract_report.run_readiness_issues
+        )

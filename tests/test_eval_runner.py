@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from argparse import Namespace
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tests.eval import ExecutionResult, PromptFixture, ValidationResult
+from tests.eval import EvalRecord, ExecutionResult, PromptFixture, ValidationResult
+from tests.eval import __main__ as eval_main
 from tests.eval.metrics import EvalLogger
 from tests.eval.runner import (
     EvalRunner,
@@ -416,3 +419,64 @@ def test_check_expectations_allows_single_node_chain_fixture() -> None:
     )
 
     assert _check_expectations(fixture, summary) == []
+
+
+@pytest.mark.asyncio
+async def test_eval_run_passes_custom_prompts_path_to_report_generator(
+    tmp_path: Path,
+) -> None:
+    args = Namespace(
+        base_url="http://localhost:8000",
+        battery=None,
+        small_battery=False,
+        complex=False,
+        execution_friendly=False,
+        benchmark_prep=False,
+        smoke_workflows=False,
+        pilot=False,
+        tier=None,
+        tag=None,
+        prompt=None,
+        run_tag=None,
+        db_path=None,
+        execute=False,
+        keep_graphs=False,
+        delay=0.0,
+        execution_path="auto",
+        judge=False,
+        workflow_contract="enabled",
+        runs=1,
+        durability=False,
+        no_save=True,
+    )
+    prompts = [PromptFixture(id="lr2-01", tier="LR2", lane="build", prompt="Build it")]
+    record = EvalRecord(
+        id="lr2-01",
+        tier="LR2",
+        lane="build",
+        prompt="Build it",
+        status="passed",
+    )
+    prompts_path = tmp_path / "custom_prompts.json"
+    prompts_path.write_text(
+        '{"prompts":[{"id":"lr2-01","tier":"LR2","tags":["benchmark_prep","lr2_first"]}]}',
+        encoding="utf-8",
+    )
+
+    fake_logger = MagicMock()
+    fake_logger.output_path = tmp_path / "out.jsonl"
+    fake_runner = MagicMock()
+    fake_runner.run_battery = AsyncMock(return_value=[record])
+    fake_runner.cleanup = AsyncMock()
+    fake_report = MagicMock()
+
+    with patch.object(eval_main, "EvalLogger", return_value=fake_logger), patch.object(
+        eval_main, "EvalRunner", return_value=fake_runner
+    ), patch.object(eval_main, "ReportGenerator", return_value=fake_report) as mock_report:
+        await eval_main._run(args, prompts, lanes=None, prompts_path=prompts_path)
+
+    mock_report.assert_called_once_with(
+        [record],
+        runs=1,
+        prompts_path=prompts_path,
+    )

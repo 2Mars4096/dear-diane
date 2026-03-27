@@ -18,9 +18,12 @@ def test_resolve_pending_reply_confirm_contract_is_explicit() -> None:
 
     assert resolution.action == "resume"
     assert resolution.pending_kind == "confirm"
-    assert resolution.replay_text == "Explain the pending task"
+    assert resolution.replay_text == "Explain the pending task\n[User confirmation: yes]"
     assert resolution.metadata["skip_confirm"] is True
     assert resolution.metadata["pending_route_step"] == "approval_confirmation"
+    assert resolution.metadata["pending_user_turn_content"] == "yes"
+    assert resolution.metadata["pending_original_text"] == "Explain the pending task"
+    assert resolution.metadata["pending_effective_text"] == resolution.replay_text
 
 
 def test_resolve_pending_reply_clarify_choice_contract_is_explicit() -> None:
@@ -35,11 +38,34 @@ def test_resolve_pending_reply_clarify_choice_contract_is_explicit() -> None:
 
     assert resolution.action == "resume"
     assert resolution.pending_kind == "clarify"
-    assert resolution.replay_text == "Pick a file to continue"
+    assert resolution.replay_text == "Pick a file to continue\n[User selected option: /tmp/b.md]"
     assert resolution.resolved_value == "/tmp/b.md"
     assert resolution.metadata["selected_option"] == 1
     assert resolution.metadata["selected_path"] == "/tmp/b.md"
     assert resolution.metadata["pending_route_step"] == "clarification_choice"
+    assert resolution.metadata["pending_user_turn_content"] == "2"
+    assert resolution.metadata["pending_original_text"] == "Pick a file to continue"
+
+
+def test_resolve_pending_reply_confirm_superseding_instruction_requires_retriage() -> None:
+    pending = PendingAction(
+        kind="confirm",
+        intent="ask",
+        original_text="Explain the pending task",
+    )
+
+    resolution = resolve_pending_reply(pending, "actually fix the tests instead")
+
+    assert resolution.action == "resume"
+    assert resolution.pending_kind == "confirm"
+    assert resolution.requires_triage is True
+    assert resolution.replay_text == (
+        "actually fix the tests instead\n"
+        "[Supersedes pending confirm: Explain the pending task]"
+    )
+    assert resolution.metadata["pending_route_step"] == "superseding_instruction"
+    assert resolution.metadata["pending_requires_triage"] is True
+    assert resolution.metadata["pending_resolved_value"] == "actually fix the tests instead"
 
 
 def test_resolve_pending_reply_clarify_retry_contract_is_explicit() -> None:

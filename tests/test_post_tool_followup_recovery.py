@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from types import SimpleNamespace
@@ -1595,11 +1596,14 @@ async def test_send_message_with_tools_repairs_invalid_mutation_plan_internally(
                         "function": {
                             "name": "plan_graph_mutations",
                             "arguments": json.dumps({
-                                "description": "Add an input node",
+                                "description": "Add a broken edge",
                                 "operations": [
                                     {
-                                        "node_type": "input",
-                                        "name": "Workflow Input",
+                                        "op": "add_edge",
+                                        "source": "missing_node",
+                                        "source_port": "output",
+                                        "target": "n1",
+                                        "target_port": "input",
                                     }
                                 ],
                             }),
@@ -1678,3 +1682,95 @@ async def test_send_message_with_tools_repairs_invalid_mutation_plan_internally(
     else:
         repaired_ops = mutation_events[0].mutation_plan["operations"]
         assert repaired_ops[0]["op"] == "add_node"
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_bounds_mutation_repair_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _SlowRepairProvider(_SequenceProvider):
+        async def complete(self, *args: Any, **kwargs: Any) -> CompletionResult:
+            if args:
+                normalized = dict(kwargs)
+                if len(args) >= 1:
+                    normalized.setdefault("messages", args[0])
+                if len(args) >= 2:
+                    normalized.setdefault("model", args[1])
+                kwargs = normalized
+            self.requests.append(kwargs)
+            if not self._responses:
+                raise AssertionError("No more provider responses configured")
+            response = self._responses.pop(0)
+            if isinstance(response, tuple) and response[0] == "sleep":
+                await asyncio.sleep(float(response[1]))
+                response = response[2]
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+    provider = _SlowRepairProvider(
+        [
+            CompletionResult(
+                text="Here is the workflow preview.",
+                tool_calls=[
+                    {
+                        "id": "call_bad_mut",
+                        "type": "function",
+                        "function": {
+                            "name": "plan_graph_mutations",
+                            "arguments": json.dumps({
+                                "description": "Add a broken edge",
+                                "operations": [
+                                    {
+                                        "op": "add_edge",
+                                        "source": "missing_node",
+                                        "source_port": "output",
+                                        "target": "n1",
+                                        "target_port": "input",
+                                    }
+                                ],
+                            }),
+                        },
+                    },
+                ],
+                usage={"prompt_tokens": 10, "completion_tokens": 5},
+            ),
+            (
+                "sleep",
+                0.05,
+                CompletionResult(
+                    text="Repairing the preview.",
+                    tool_calls=[],
+                    usage={"prompt_tokens": 12, "completion_tokens": 6},
+                ),
+            ),
+        ]
+    )
+
+    mgr = _make_manager(provider, tool_call_log=[])
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+    monkeypatch.setattr(
+        chat_manager_module,
+        "_MUTATION_REPAIR_LLM_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    started = time.monotonic()
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Build the workflow.",
+            history=[],
+            allow_mutation_tool=True,
+        )
+    )
+    elapsed = time.monotonic() - started
+
+    mutation_events = [e for e in events if isinstance(e, ChatMutationEvent)]
+    validation_events = [e for e in events if isinstance(e, ChatValidationResultEvent)]
+    assert len(mutation_events) == 1
+    assert mutation_events[0].dry_run_result["success"] is False
+    assert any(isinstance(e, ChatToolCallResultEvent) for e in events)
+    assert len(provider.requests) == 2
+    assert not validation_events
+    assert elapsed < 0.5

@@ -335,6 +335,84 @@ class _FakeConcierge:
         )
 
 
+class _ToolHeavyConcierge(_FakeConcierge):
+    """Concierge stub that transitions from model work into tool wait."""
+
+    def __init__(self) -> None:
+        super().__init__(process_delay=0.0)
+        self.started_order: list[str] = []
+        self.completed_order: list[str] = []
+        self._started: dict[str, asyncio.Event] = {}
+        self._allow_tool_start: dict[str, asyncio.Event] = {}
+        self._tool_started: dict[str, asyncio.Event] = {}
+        self._finish: dict[str, asyncio.Event] = {}
+
+    def _event(self, store: dict[str, asyncio.Event], text: str) -> asyncio.Event:
+        return store.setdefault(text, asyncio.Event())
+
+    async def wait_started(self, text: str) -> None:
+        await self._event(self._started, text).wait()
+
+    async def wait_tool_started(self, text: str) -> None:
+        await self._event(self._tool_started, text).wait()
+
+    def allow_tool_start(self, text: str) -> None:
+        self._event(self._allow_tool_start, text).set()
+
+    def finish_tools(self, text: str) -> None:
+        self._event(self._finish, text).set()
+
+    async def process(self, msg: Any) -> AsyncIterator:
+        from dan.server.chat_manager import (
+            ChatCompleteEvent,
+            ChatToolCallResultEvent,
+            ChatToolCallStartEvent,
+        )
+
+        text = msg.text if hasattr(msg, "text") else str(msg)
+        self._calls.append(text)
+        self.started_order.append(text)
+        self._event(self._started, text).set()
+
+        await self._event(self._allow_tool_start, text).wait()
+        yield ChatToolCallStartEvent(
+            tool_call_id=f"tool-{text}",
+            tool_name="mock_tool",
+            args_preview=text,
+        )
+        self._event(self._tool_started, text).set()
+
+        await self._event(self._finish, text).wait()
+        yield ChatToolCallResultEvent(
+            tool_call_id=f"tool-{text}",
+            tool_name="mock_tool",
+            status="ok",
+            output_preview=f"done-{text}",
+            duration_ms=1,
+        )
+        self.completed_order.append(text)
+        yield ChatCompleteEvent(
+            message_id=uuid.uuid4().hex[:12],
+            content=f"done-{text}",
+            token_usage={},
+            context_window=0,
+            graph_revision="",
+        )
+
+
+async def _drain_bus(dispatcher: Any, channel_id: str) -> list[Any]:
+    bus = dispatcher.get_response_bus(channel_id)
+    assert bus is not None
+    events: list[Any] = []
+    while True:
+        item = await asyncio.wait_for(bus.get(), timeout=1.0)
+        if item is None:
+            break
+        events.append(item)
+    dispatcher.cleanup_response_bus(channel_id)
+    return events
+
+
 def _make_msg(text: str, project_id: str = "") -> Any:
     from dan.server.concierge.models import SurfaceMessage
 
@@ -408,6 +486,76 @@ async def test_independent_projects_start_concurrently():
         f"Expected all projects concurrent, got {elapsed:.3f}s"
     )
 
+    await dispatcher.close()
+
+
+# ---------------------------------------------------------------------------
+# 12-4: Tool-heavy fairness follow-up
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_tool_heavy_chats_release_run_capacity_between_model_calls():
+    """A queued tool-heavy project should start once another project enters tool wait."""
+    from dan.server.chat_manager import ChatQueuedEvent, ChatToolCallStartEvent
+    from dan.server.concierge.dispatcher import ConcurrentDispatcher
+
+    concierge = _ToolHeavyConcierge()
+    tracker = ResourceTracker(ResourceBudget(max_concurrent_runs=1))
+    dispatcher = ConcurrentDispatcher(
+        concierge,
+        max_concurrent_projects=1,
+        resource_tracker=tracker,
+    )
+
+    msg_a = _make_msg("msg-a", project_id="proj-a")
+    msg_b = _make_msg("msg-b", project_id="proj-b")
+
+    concierge.context_resolver.resolve = MagicMock(
+        side_effect=lambda msg: _make_context(msg.metadata["project_id"])
+    )
+
+    direct_a: list[Any] = []
+    direct_b: list[Any] = []
+
+    async def _consume_direct(msg: Any, sink: list[Any]) -> None:
+        async for event in dispatcher.dispatch(msg):
+            sink.append(event)
+
+    task_a = asyncio.create_task(_consume_direct(msg_a, direct_a))
+    await concierge.wait_started("msg-a")
+
+    task_b = asyncio.create_task(_consume_direct(msg_b, direct_b))
+    for _ in range(20):
+        if direct_b:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("second tool-heavy chat should queue while the first holds the run slot")
+
+    assert isinstance(direct_b[0], ChatQueuedEvent)
+
+    concierge.allow_tool_start("msg-a")
+    await concierge.wait_tool_started("msg-a")
+    await concierge.wait_started("msg-b")
+
+    assert "msg-a" in concierge.started_order
+    assert "msg-b" in concierge.started_order
+    assert concierge.completed_order == []
+
+    concierge.allow_tool_start("msg-b")
+    await concierge.wait_tool_started("msg-b")
+    assert "msg-b" not in concierge.completed_order
+
+    concierge.finish_tools("msg-b")
+    bus_events_b = await _drain_bus(dispatcher, direct_b[0].stream_channel_id)
+
+    concierge.finish_tools("msg-a")
+    await task_a
+    await task_b
+
+    assert any(isinstance(event, ChatToolCallStartEvent) for event in direct_a)
+    assert any(isinstance(event, ChatToolCallStartEvent) for event in bus_events_b)
+    assert concierge.completed_order == ["msg-b", "msg-a"]
     await dispatcher.close()
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from dan.server.concierge.models import PendingAction, Project, SurfaceMessage, Task, TaskTurn
@@ -78,6 +79,68 @@ def test_project_store_append_turn_replays_from_journal(tmp_path: Path):
     assert loaded.tasks[0].turns[0].content == "done"
 
 
+def test_project_store_hot_updates_replay_without_full_load(tmp_path: Path, monkeypatch):
+    store = ProjectStore(base_dir=tmp_path)
+    project = store.create_project("lit-review", "cli-user")
+    first_task = store.add_task(project.project_id, "outline", "cli-user")
+    store.add_task(project.project_id, "intro", "cli-user")
+
+    def fail_full_load(*args, **kwargs):
+        raise AssertionError("hot writes should not use _load_project_from_path")
+
+    monkeypatch.setattr(store, "_load_project_from_path", fail_full_load)
+
+    store.append_turn(
+        project.project_id,
+        first_task.task_id,
+        TaskTurn(role="assistant", content="done"),
+        "cli-user",
+    )
+    store.update_task_status(project.project_id, first_task.task_id, "blocked", "cli-user")
+    store.update_task_progress(
+        project.project_id,
+        first_task.task_id,
+        "cli-user",
+        completed_steps=["write tests"],
+        pending_steps=["update docs"],
+        current_blocker="Waiting on CI",
+        artifacts={"notes": "/tmp/notes.md"},
+        goal_id="goal-1",
+        progress_updated_at=123.0,
+    )
+    store.update_project_summary(project.project_id, "Analyze late payment seasonality", "cli-user")
+    store.update_project_status(project.project_id, "paused", "cli-user")
+    store.set_pending_action(
+        project.project_id,
+        PendingAction(kind="confirm", intent="publish_share", original_text="share it"),
+        "cli-user",
+    )
+
+    loaded = ProjectStore(base_dir=tmp_path).get_project(project.project_id, "cli-user")
+    assert loaded is not None
+    assert loaded.summary == "Analyze late payment seasonality"
+    assert loaded.status == "paused"
+    assert loaded.current_task_id == first_task.task_id
+    assert loaded.pending_action is not None
+    assert loaded.pending_action.intent == "publish_share"
+
+    stored_task = next(task for task in loaded.tasks if task.task_id == first_task.task_id)
+    assert stored_task.turns[0].content == "done"
+    assert stored_task.status == "blocked"
+    assert stored_task.completed_steps == ["write tests"]
+    assert stored_task.pending_steps == ["update docs"]
+    assert stored_task.current_blocker == "Waiting on CI"
+    assert stored_task.artifacts == {"notes": "/tmp/notes.md"}
+    assert stored_task.goal_id == "goal-1"
+    assert stored_task.progress_updated_at == 123.0
+
+    store.clear_pending_action(project.project_id, "cli-user")
+
+    cleared = ProjectStore(base_dir=tmp_path).get_project(project.project_id, "cli-user")
+    assert cleared is not None
+    assert cleared.pending_action is None
+
+
 def test_project_store_update_task_progress_replays_from_journal(tmp_path: Path):
     store = ProjectStore(base_dir=tmp_path)
     project = store.create_project("lit-review", "cli-user")
@@ -131,6 +194,43 @@ def test_project_store_link_workflow_and_run_ids(tmp_path: Path):
     assert loaded is not None
     assert loaded.linked_workflow_ids == ["wf-a"]
     assert loaded.linked_run_ids == ["run-1"]
+
+
+def test_project_store_hot_link_dedupes_without_full_load(tmp_path: Path, monkeypatch):
+    store = ProjectStore(base_dir=tmp_path)
+    project = store.create_project("lit-review", "cli-user")
+
+    def fail_full_load(*args, **kwargs):
+        raise AssertionError("link writes should not use _load_project_from_path")
+
+    monkeypatch.setattr(store, "_load_project_from_path", fail_full_load)
+
+    store.link_workflow(project.project_id, "wf-a", "cli-user")
+    store.link_workflow(project.project_id, "wf-a", "cli-user")
+    store.link_run(project.project_id, "run-1", "cli-user")
+    store.link_run(project.project_id, "run-1", "cli-user")
+    store.link_meta_session(project.project_id, "meta-1", "cli-user")
+    store.link_meta_session(project.project_id, "meta-1", "cli-user")
+
+    journal_path = tmp_path / "cli-user" / f"{project.project_id}.journal.jsonl"
+    raw_entries = [
+        line
+        for line in journal_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    entries = [json.loads(line) for line in raw_entries]
+    assert len(raw_entries) == 3
+    assert [entry["fields"] for entry in entries] == [
+        {"linked_workflow_ids": ["wf-a"], "updated_at": entries[0]["fields"]["updated_at"]},
+        {"linked_run_ids": ["run-1"], "updated_at": entries[1]["fields"]["updated_at"]},
+        {"linked_meta_session_ids": ["meta-1"], "updated_at": entries[2]["fields"]["updated_at"]},
+    ]
+
+    loaded = ProjectStore(base_dir=tmp_path).get_project(project.project_id, "cli-user")
+    assert loaded is not None
+    assert loaded.linked_workflow_ids == ["wf-a"]
+    assert loaded.linked_run_ids == ["run-1"]
+    assert loaded.linked_meta_session_ids == ["meta-1"]
 
 
 def test_project_store_list_pending_projects(tmp_path: Path):

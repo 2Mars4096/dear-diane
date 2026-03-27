@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import Counter
 
 from tests.eval import EvalRecord, ValidationResult
 from tests.eval.client import DanClient
@@ -28,6 +29,7 @@ async def check_repeat_run(
         "runs_completed": 0,
         "durations": [],
         "token_counts": [],
+        "terminal_states": [],
         "stable": False,
     }
 
@@ -52,6 +54,7 @@ async def check_repeat_run(
 
             duration_ms = (time.monotonic() - t0) * 1000
             result["durations"].append(duration_ms)
+            result["terminal_states"].append(state or "unknown")
             result["token_counts"].append(run_info.get("total_tokens", 0))
             if state == "completed":
                 result["runs_completed"] += 1
@@ -62,6 +65,7 @@ async def check_repeat_run(
         result["runs_attempted"] > 0
         and result["runs_completed"] == result["runs_attempted"]
     )
+    result["state_counts"] = dict(Counter(result["terminal_states"]))
     return result
 
 
