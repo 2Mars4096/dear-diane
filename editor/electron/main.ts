@@ -14,6 +14,8 @@ import { commandExists } from "./commandExists";
 import { LspManager } from "./lspManager";
 import { DebugManager } from "./debugManager";
 import { ExtensionHost } from "./extensionHost";
+import { runCommand, type CommandResult } from "./runCommand";
+import { waitForBackendHealth } from "./backendHealth";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -25,12 +27,14 @@ const isDev = !app.isPackaged;
 const VITE_DEV_URL = "http://localhost:5173";
 const BACKEND_PORT = 8000;
 const PROD_SERVER_PORT = 45173;
+const BACKEND_PROXY_TIMEOUT_MS = 10000;
 
 // --- Production backend + proxy server ---
 
 let backendProcess: ChildProcess | null = null;
 let prodServer: http.Server | null = null;
 let prodServerPort = 0;
+let backendReady = false;
 
 function getPersistentGraphsDir(): string {
   return path.join(app.getPath("userData"), "graphs");
@@ -136,86 +140,116 @@ function isPortInUse(port: number): Promise<boolean> {
 
 let backendOwnedByUs = false;
 
-function startBackend(): Promise<void> {
-  return new Promise(async (resolve, reject) => {
-    const alreadyRunning = await isPortInUse(BACKEND_PORT);
-    if (alreadyRunning) {
-      console.log(`Backend already running on port ${BACKEND_PORT}, reusing.`);
-      backendOwnedByUs = false;
-      resolve();
-      return;
+async function startBackend(): Promise<void> {
+  const alreadyRunning = await isPortInUse(BACKEND_PORT);
+  if (alreadyRunning) {
+    const healthy = await waitForBackendHealth({
+      port: BACKEND_PORT,
+      totalTimeoutMs: 5000,
+      probeIntervalMs: 250,
+      requestTimeoutMs: 1000,
+    });
+    if (!healthy) {
+      throw new Error(
+        `Port ${BACKEND_PORT} is already in use, but no healthy DAN backend responded at /api/health.`,
+      );
     }
+    console.log(`Backend already running on port ${BACKEND_PORT}, reusing.`);
+    backendOwnedByUs = false;
+    backendReady = true;
+    return;
+  }
 
-    const danServe = process.env.DAN_SERVE_CMD;
-    const graphsDir = process.env.DAN_GRAPHS_DIR || getPersistentGraphsDir();
-    fs.mkdirSync(graphsDir, { recursive: true });
-    const env = {
-      ...process.env,
-      DAN_GRAPHS_DIR: graphsDir,
-    };
-    let proc: ChildProcess;
+  const danServe = process.env.DAN_SERVE_CMD;
+  const graphsDir = process.env.DAN_GRAPHS_DIR || getPersistentGraphsDir();
+  fs.mkdirSync(graphsDir, { recursive: true });
+  const env = {
+    ...process.env,
+    DAN_GRAPHS_DIR: graphsDir,
+  };
+  const danServeParts = danServe?.split(/\s+/).filter(Boolean) ?? [];
 
-    if (danServe) {
-      const parts = danServe.split(/\s+/);
-      proc = spawn(parts[0], [...parts.slice(1), "--no-reload"], {
+  const proc = danServe
+    ? spawn(danServeParts[0], [...danServeParts.slice(1), "--no-reload"], {
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+      })
+    : spawn(findPython(), ["-m", "dan.server", "--no-reload"], {
         env,
         stdio: ["ignore", "pipe", "pipe"],
       });
-    } else {
-      const python = findPython();
-      proc = spawn(python, ["-m", "dan.server", "--no-reload"], {
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    }
 
-    backendProcess = proc;
-    backendOwnedByUs = true;
-    let started = false;
+  backendProcess = proc;
+  backendOwnedByUs = true;
+  backendReady = false;
 
-    console.log(`Using DAN_GRAPHS_DIR=${graphsDir}`);
+  console.log(`Using DAN_GRAPHS_DIR=${graphsDir}`);
+  sendBackendStatus();
 
-    proc.stdout?.on("data", (d: Buffer) => {
-      const text = d.toString();
-      console.log("[backend]", text.trimEnd());
-      mainWindow?.webContents.send("backend:log", { text, stream: "stdout" });
-      if (!started && text.includes("Uvicorn running")) {
-        started = true;
-        resolve();
-        sendBackendStatus();
-      }
-    });
+  proc.stdout?.on("data", (d: Buffer) => {
+    const text = d.toString();
+    console.log("[backend]", text.trimEnd());
+    mainWindow?.webContents.send("backend:log", { text, stream: "stdout" });
+  });
 
-    proc.stderr?.on("data", (d: Buffer) => {
-      const text = d.toString();
-      console.error("[backend]", text.trimEnd());
-      mainWindow?.webContents.send("backend:log", { text, stream: "stderr" });
-      if (!started && text.includes("Uvicorn running")) {
-        started = true;
-        resolve();
-        sendBackendStatus();
-      }
-    });
+  proc.stderr?.on("data", (d: Buffer) => {
+    const text = d.toString();
+    console.error("[backend]", text.trimEnd());
+    mainWindow?.webContents.send("backend:log", { text, stream: "stderr" });
+  });
 
-    proc.on("error", (err) => {
+  const startupFailure = new Promise<Error>((resolve) => {
+    proc.once("error", (err) => {
       console.error("Failed to start backend:", err.message);
-      if (!started) reject(err);
-      sendBackendStatus();
+      resolve(err);
     });
+    proc.once("exit", (code) => {
+      resolve(new Error(`Backend exited before becoming healthy (code ${code})`));
+    });
+  });
 
-    proc.on("exit", (code) => {
-      console.log("Backend exited with code", code);
+  const healthReady = waitForBackendHealth({
+    port: BACKEND_PORT,
+    totalTimeoutMs: 30000,
+    probeIntervalMs: 250,
+    requestTimeoutMs: 1000,
+  }).then((healthy) =>
+    healthy
+      ? null
+      : new Error(
+          `Timed out waiting for DAN backend health on http://127.0.0.1:${BACKEND_PORT}/api/health.`,
+        ),
+  );
+
+  const startupResult = await Promise.race([startupFailure, healthReady]);
+  if (startupResult instanceof Error) {
+    backendReady = false;
+    if (backendProcess === proc) {
       backendProcess = null;
-      if (!started) reject(new Error(`Backend exited with code ${code}`));
-      sendBackendStatus();
-    });
+    }
+    if (!proc.killed) {
+      try { proc.kill(); } catch {}
+    }
+    sendBackendStatus();
+    throw startupResult;
+  }
 
-    setTimeout(() => {
-      if (!started) {
-        started = true;
-        resolve();
-      }
-    }, 8000);
+  backendReady = true;
+  sendBackendStatus();
+
+  proc.on("error", (err) => {
+    console.error("Backend runtime error:", err.message);
+    backendReady = false;
+    sendBackendStatus();
+  });
+
+  proc.on("exit", (code) => {
+    console.log("Backend exited with code", code);
+    if (backendProcess === proc) {
+      backendProcess = null;
+    }
+    backendReady = false;
+    sendBackendStatus();
   });
 }
 
@@ -251,9 +285,20 @@ function startProductionServer(distDir: string): Promise<number> {
             proxyRes.pipe(res);
           },
         );
-        proxyReq.on("error", () => {
-          res.writeHead(502);
-          res.end("Backend unavailable");
+        proxyReq.setTimeout(BACKEND_PROXY_TIMEOUT_MS, () => {
+          proxyReq.destroy(new Error("Backend request timed out"));
+        });
+        req.on("aborted", () => {
+          proxyReq.destroy();
+        });
+        proxyReq.on("error", (err) => {
+          if (res.headersSent) {
+            res.destroy();
+            return;
+          }
+          const timedOut = err.message.includes("timed out");
+          res.writeHead(timedOut ? 504 : 502);
+          res.end(timedOut ? "Backend request timed out" : "Backend unavailable");
         });
         req.pipe(proxyReq);
         return;
@@ -652,16 +697,8 @@ ipcMain.handle("search:replaceInFile", async (_event, filePath: string, replacem
 
 // --- IPC Handlers: git ---
 
-function runGit(args: string[], cwd: string): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  return new Promise((resolve) => {
-    const proc = spawn("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
-    proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
-    const timer = setTimeout(() => { proc.kill(); resolve({ stdout, stderr, code: -1 }); }, 15000);
-    proc.on("close", (code) => { clearTimeout(timer); resolve({ stdout, stderr, code }); });
-  });
+function runGit(args: string[], cwd: string): Promise<CommandResult> {
+  return runCommand("git", args, { cwd, timeoutMs: 15000 });
 }
 
 ipcMain.handle("git:status", async (_event, cwd: string) => runGit(["status", "--porcelain=v1", "-uall"], cwd));
@@ -763,18 +800,10 @@ ipcMain.handle("git:rebaseStart", async (_event, cwd: string, entries: Array<{ h
   const editorScript = path.join(tmpDir, `dan-rebase-editor-${Date.now()}.sh`);
   await fs.promises.writeFile(editorScript, `#!/bin/sh\ncp "${todoPath}" "$1"\n`, { mode: 0o755 });
 
-  const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve) => {
-    const proc = spawn("git", ["rebase", "-i", base], {
-      cwd,
-      env: { ...process.env, GIT_SEQUENCE_EDITOR: editorScript },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
-    proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
-    const timer = setTimeout(() => { proc.kill(); resolve({ stdout, stderr, code: -1 }); }, 60000);
-    proc.on("close", (code) => { clearTimeout(timer); resolve({ stdout, stderr, code }); });
+  const result = await runCommand("git", ["rebase", "-i", base], {
+    cwd,
+    env: { ...process.env, GIT_SEQUENCE_EDITOR: editorScript },
+    timeoutMs: 60000,
   });
 
   try { await fs.promises.unlink(todoPath); } catch {}
@@ -1397,8 +1426,9 @@ extensionHost.on("error", (err) => {
 // --- IPC Handlers: Backend process management ---
 
 function getBackendStatus(): string {
-  if (!backendProcess) return backendOwnedByUs ? "stopped" : "unknown";
-  return "running";
+  if (backendReady) return "running";
+  if (backendProcess) return "starting";
+  return backendOwnedByUs ? "stopped" : "unknown";
 }
 
 function sendBackendStatus() {
@@ -1417,6 +1447,7 @@ ipcMain.handle("backend:restart", async () => {
     backendProcess.kill();
     backendProcess = null;
   }
+  backendReady = false;
   try {
     await startBackend();
     sendBackendStatus();
@@ -1431,8 +1462,9 @@ ipcMain.handle("backend:stop", async () => {
   if (backendProcess && backendOwnedByUs) {
     backendProcess.kill();
     backendProcess = null;
-    sendBackendStatus();
   }
+  backendReady = false;
+  sendBackendStatus();
   return { status: "stopped" };
 });
 
@@ -1744,23 +1776,11 @@ ipcMain.handle("mcp:toggleEnabled", async (_event, serverId: string) => {
 
 // --- IPC Handlers: GitHub (gh CLI) ---
 
-function runGh(args: string[], cwd: string): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  return new Promise((resolve) => {
-    const proc = spawn("gh", args, {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, NO_COLOR: "1" },
-    });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
-    proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
-    const timer = setTimeout(() => { proc.kill(); resolve({ stdout, stderr, code: -1 }); }, 30000);
-    proc.on("close", (code) => { clearTimeout(timer); resolve({ stdout, stderr, code }); });
-    proc.on("error", (err) => {
-      clearTimeout(timer);
-      resolve({ stdout, stderr: stderr + "\n" + String(err), code: -1 });
-    });
+function runGh(args: string[], cwd: string): Promise<CommandResult> {
+  return runCommand("gh", args, {
+    cwd,
+    env: { ...process.env, NO_COLOR: "1" },
+    timeoutMs: 30000,
   });
 }
 

@@ -9,6 +9,7 @@ import type {
 } from "../types/graph";
 
 const BASE = "/api";
+const DEFAULT_REQUEST_TIMEOUT_MS = 10000;
 
 function resolveApiWebSocketBase(): string {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
@@ -25,16 +26,56 @@ export function buildApiWebSocketUrl(path: string): string {
   return `${resolveApiWebSocketBase()}${normalizedPath}`;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...init?.headers },
-    ...init,
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`${res.status}: ${body}`);
+type RequestOptions = RequestInit & { timeoutMs?: number };
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+async function request<T>(path: string, init?: RequestOptions): Promise<T> {
+  const timeoutMs = init?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const upstreamSignal = init?.signal;
+  const controller = new AbortController();
+  const relayAbort = () => {
+    controller.abort();
+  };
+
+  if (upstreamSignal) {
+    if (upstreamSignal.aborted) {
+      relayAbort();
+    } else {
+      upstreamSignal.addEventListener("abort", relayAbort, { once: true });
+    }
   }
-  return res.json();
+
+  const timer =
+    timeoutMs > 0
+      ? setTimeout(() => {
+          controller.abort();
+        }, timeoutMs)
+      : null;
+
+  try {
+    const { timeoutMs: _timeoutMs, ...requestInit } = init ?? {};
+    const res = await fetch(`${BASE}${path}`, {
+      headers: { "Content-Type": "application/json", ...requestInit.headers },
+      ...requestInit,
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`${res.status}: ${body}`);
+    }
+    return res.json();
+  } catch (error) {
+    if (isAbortError(error) && !upstreamSignal?.aborted && timeoutMs > 0) {
+      throw new Error(`Request timed out after ${timeoutMs}ms: ${path}`);
+    }
+    throw error instanceof Error ? error : new Error(String(error));
+  } finally {
+    if (timer) clearTimeout(timer);
+    upstreamSignal?.removeEventListener("abort", relayAbort);
+  }
 }
 
 export function isApiStatusError(error: unknown, status: number): boolean {

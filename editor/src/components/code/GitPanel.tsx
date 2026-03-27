@@ -30,7 +30,7 @@ import {
   X,
 } from "lucide-react";
 import { useCodeStore } from "../../store/useCodeStore";
-import { isElectron, nativeGit, nativeFs } from "../../lib/electronBridge";
+import { isElectron, nativeGit, nativeFs, type GitResult } from "../../lib/electronBridge";
 import { generateCommitMessage } from "../../lib/aiCodeActions";
 import GitGraph from "./GitGraph";
 import GitHubPanel from "./GitHubPanel";
@@ -156,6 +156,24 @@ function parseAheadBehind(output: string): { ahead: number; behind: number } {
     return { ahead: parseInt(parts[0], 10) || 0, behind: parseInt(parts[1], 10) || 0 };
   }
   return { ahead: 0, behind: 0 };
+}
+
+function isGitUnavailable(result: GitResult): boolean {
+  const stderr = result.stderr.toLowerCase();
+  return (
+    result.code === 127
+    || stderr.includes("spawn git enoent")
+    || stderr.includes("git is not installed")
+    || stderr.includes("git is not available")
+  );
+}
+
+function getGitUnavailableMessage(result: GitResult): string {
+  const firstLine = result.stderr
+    .split("\n")
+    .map((line) => line.trim())
+    .find(Boolean);
+  return firstLine || "Git is not installed or not available to the desktop app. Install Git and restart DAN.";
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────
@@ -607,6 +625,7 @@ export default function GitPanel() {
   const [commitMsg, setCommitMsg] = useState("");
   const [committing, setCommitting] = useState(false);
   const [isRepo, setIsRepo] = useState(true);
+  const [gitUnavailable, setGitUnavailable] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [pushing, setPushing] = useState(false);
@@ -706,6 +725,22 @@ export default function GitPanel() {
         nativeGit.branch(cwd),
         nativeGit.log(cwd, 20),
       ]);
+
+      const unavailableRes = [statusRes, branchRes, logRes].find(isGitUnavailable);
+      if (unavailableRes) {
+        setGitUnavailable(getGitUnavailableMessage(unavailableRes));
+        setIsRepo(false);
+        setFiles([]);
+        setBranch("");
+        setCommits([]);
+        setAhead(0);
+        setBehind(0);
+        setConflictedFiles([]);
+        setRebaseInProgress(false);
+        return;
+      }
+
+      setGitUnavailable(null);
 
       if (statusRes.code !== 0 && statusRes.stderr.includes("not a git repository")) {
         setIsRepo(false);
@@ -1094,6 +1129,16 @@ export default function GitPanel() {
       <div className="flex h-full w-full flex-col items-center justify-center gap-3 bg-gray-900 px-4 text-center">
         <FolderGit2 size={32} className="text-gray-600" />
         <p className="text-sm text-gray-400">Open a folder to view source control</p>
+      </div>
+    );
+  }
+
+  if (gitUnavailable) {
+    return (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-3 bg-gray-900 px-4 text-center">
+        <FolderGit2 size={32} className="text-gray-600" />
+        <p className="text-sm text-gray-400">Git is unavailable</p>
+        <p className="max-w-[260px] text-xs text-gray-500">{gitUnavailable}</p>
       </div>
     );
   }

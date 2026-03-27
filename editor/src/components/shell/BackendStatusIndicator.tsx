@@ -22,7 +22,7 @@ export default function BackendStatusIndicator() {
     try {
       const res = await fetch("/api/health", { signal: AbortSignal.timeout(4000) });
       if (res.ok) {
-        setStatus((prev) => (prev === "starting" ? "starting" : "running"));
+        setStatus("running");
       } else {
         setStatus("stopped");
       }
