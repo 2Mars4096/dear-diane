@@ -55,6 +55,7 @@ from dan.engine.runtime_repair import (
     record_repair_attempt,
     repair_summary_for_node,
     runtime_self_healing_enabled,
+    select_automatic_recovery_candidate,
 )
 from dan.engine.memory import MemoryEntry, MemoryScope, MemoryWriteRequest
 from dan.engine.memory_store import FileSystemMemoryStore, MemoryStore, NullMemoryStore
@@ -2378,7 +2379,10 @@ class Engine:
                 category=category,
                 failure_signature=signature,
                 error_message=error_message,
-                metadata=result.metadata or {},
+                metadata={
+                    **(result.metadata or {}),
+                    "checkpoint_rerun_available": bool(self.checkpoint_store is not None),
+                },
                 error_record=error_record,
             )
             plan = plan_runtime_repair(state, node, failure_context)
@@ -2419,6 +2423,7 @@ class Engine:
                 user_visible_message=plan.summary.get("user_visible_message", ""),
                 post_run_repair_level=plan.summary.get("post_run_repair_level", ""),
                 overlay=plan.overlay,
+                automatic_recovery=plan.summary.get("automatic_recovery", {}) or {},
                 diagnostic_record=error_record,
             )
             record_repair_attempt(state, node_id, attempt)
@@ -3498,6 +3503,7 @@ class Engine:
             "repair_lineage": dict(state.run_state.get("repair_lineage", {})),
             "pending_overlays": dict(state.run_state.get("pending_overlays", {})),
             "dynamic_topology": dict(state.run_state.get("dynamic_topology", {})),
+            "automatic_recovery": select_automatic_recovery_candidate(graph, state),
         })
 
         return RunResult(

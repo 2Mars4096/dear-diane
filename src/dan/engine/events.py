@@ -122,6 +122,8 @@ class EventType(str, Enum):
     EXPERIENCE_INDEXED = "experience_indexed"
     # -- 13-2: Checkpoint portal events ----------------------------------------
     RERUN_STARTED = "rerun_started"
+    AUTOMATIC_RECOVERY_STARTED = "automatic_recovery_started"
+    AUTOMATIC_RECOVERY_COMPLETED = "automatic_recovery_completed"
     # -- 19-4: Meta-orchestrator events ----------------------------------------
     META_SESSION_STARTED = "meta_session_started"
     META_PLAN_CREATED = "meta_plan_created"

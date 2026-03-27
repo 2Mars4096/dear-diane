@@ -26,6 +26,7 @@ class RuntimeRepairKind(str, Enum):
     PROMPT_FIX = "prompt_fix"
     PARAMETER_FIX = "parameter_fix"
     CODE_FIX = "code_fix"
+    RERUN_FROM_CHECKPOINT = "rerun_from_checkpoint"
     ADVISORY = "advisory"
     NONE = "none"
 
@@ -55,6 +56,7 @@ class RuntimeRepairAttempt(BaseModel):
     user_visible_message: str = ""
     post_run_repair_level: str = ""
     overlay: RuntimeOverlay | None = None
+    automatic_recovery: dict[str, Any] = Field(default_factory=dict)
     diagnostic_record: dict[str, Any] = Field(default_factory=dict)
     created_at: float = Field(default_factory=time.time)
 
@@ -91,6 +93,7 @@ _REPAIR_LIMITS = {
     RuntimeRepairKind.PROMPT_FIX.value: 1,
     RuntimeRepairKind.PARAMETER_FIX.value: 1,
     RuntimeRepairKind.CODE_FIX.value: 1,
+    RuntimeRepairKind.RERUN_FROM_CHECKPOINT.value: 1,
 }
 
 _SAFE_OVERLAY_FIELDS = frozenset({
@@ -104,6 +107,14 @@ _SAFE_OVERLAY_FIELDS = frozenset({
     "tool_config",
     "sandbox_config",
     "code",
+})
+
+_CHECKPOINT_RERUN_CATEGORIES = frozenset({
+    RuntimeFailureCategory.TIMEOUT,
+    RuntimeFailureCategory.LLM_FAILURE,
+    RuntimeFailureCategory.SCHEMA_MISMATCH,
+    RuntimeFailureCategory.TOOL_FAILURE,
+    RuntimeFailureCategory.UNKNOWN,
 })
 
 
@@ -189,6 +200,8 @@ def advisory_repair_level(kind: RuntimeRepairKind, category: RuntimeFailureCateg
         repair_level = "prompt_fix"
     elif kind == RuntimeRepairKind.RETRY:
         repair_level = "retry"
+    elif kind == RuntimeRepairKind.RERUN_FROM_CHECKPOINT:
+        repair_level = "retry"
     elif kind == RuntimeRepairKind.CODE_FIX:
         repair_level = "parameter_fix"
     else:
@@ -267,6 +280,8 @@ def record_repair_attempt(state: Any, node_id: str, attempt: RuntimeRepairAttemp
         "failure_signature": attempt.failure_signature,
         "post_run_repair_level": attempt.post_run_repair_level,
     }
+    if attempt.automatic_recovery:
+        lineage["last_summary"]["automatic_recovery"] = dict(attempt.automatic_recovery)
     if attempt.kind != RuntimeRepairKind.NONE:
         remaining = lineage["remaining_budgets"].get(attempt.kind.value)
         if remaining is not None:
@@ -328,6 +343,53 @@ def _repair_overlay_from_metadata(
         based_on_failure_signature=signature,
         provenance={"metadata_overlay": True},
     )
+
+
+def _checkpoint_rerun_candidate(
+    state: Any,
+    failure_context: RuntimeFailureContext,
+) -> dict[str, Any]:
+    lineage = get_repair_lineage(state, failure_context.node_id)
+    prior_attempts = [
+        {
+            "kind": str(item.get("kind") or ""),
+            "outcome": str(item.get("outcome") or ""),
+            "cause": str(item.get("cause") or ""),
+            "next_step": str(item.get("next_step") or ""),
+        }
+        for item in (lineage.get("attempts") or [])
+        if isinstance(item, dict)
+    ]
+    rerun_budget_before = int(
+        lineage.get("remaining_budgets", {}).get(
+            RuntimeRepairKind.RERUN_FROM_CHECKPOINT.value,
+            0,
+        )
+        or 0
+    )
+    recovery_budget_remaining = max(0, rerun_budget_before - 1)
+    last_summary = lineage.get("last_summary", {}) if isinstance(lineage, dict) else {}
+    return {
+        "scope": "run",
+        "status": "ready",
+        "workflow_id": failure_context.workflow_id,
+        "run_id": failure_context.run_id,
+        "node_id": failure_context.node_id,
+        "selected_action": RuntimeRepairKind.RERUN_FROM_CHECKPOINT.value,
+        "scope_type": "downstream_of",
+        "target_node_id": failure_context.node_id,
+        "category": failure_context.category.value,
+        "failure_signature": failure_context.failure_signature,
+        "failure_summary": failure_context.error_message or failure_context.category.value,
+        "attempted_fixes": prior_attempts,
+        "available_actions": [RuntimeRepairKind.RERUN_FROM_CHECKPOINT.value],
+        "attempt_index": 1,
+        "max_attempts": 1,
+        "recovery_budget_remaining": recovery_budget_remaining,
+        "last_action": str(last_summary.get("repair_attempted") or ""),
+        "last_outcome": str(lineage.get("last_outcome") or ""),
+        "selected_by": "deterministic_allowlist",
+    }
 
 
 def plan_runtime_repair(
@@ -520,6 +582,38 @@ def plan_runtime_repair(
             },
         )
 
+    if (
+        bool(failure_context.metadata.get("checkpoint_rerun_available", False))
+        and category in _CHECKPOINT_RERUN_CATEGORIES
+        and _remaining_budget(state, node_id, RuntimeRepairKind.RERUN_FROM_CHECKPOINT) > 0
+        and not _already_failed_signature(
+            state,
+            node_id,
+            RuntimeRepairKind.RERUN_FROM_CHECKPOINT,
+            signature,
+        )
+    ):
+        automatic_recovery = _checkpoint_rerun_candidate(state, failure_context)
+        return RuntimeRepairPlan(
+            kind=RuntimeRepairKind.RERUN_FROM_CHECKPOINT,
+            category=category,
+            retry_current_node=False,
+            summary={
+                "cause": category.value,
+                "repair_attempted": RuntimeRepairKind.RERUN_FROM_CHECKPOINT.value,
+                "next_step": "Schedule one bounded rerun from the latest checkpoint at this node boundary.",
+                "user_visible_message": (
+                    "Node-local runtime repair is exhausted. Preparing one bounded checkpoint rerun."
+                ),
+                "post_run_repair_level": advisory_repair_level(
+                    RuntimeRepairKind.RERUN_FROM_CHECKPOINT,
+                    category,
+                    "Schedule one bounded rerun from the latest checkpoint at this node boundary.",
+                ),
+                "automatic_recovery": automatic_recovery,
+            },
+        )
+
     return RuntimeRepairPlan(
         kind=RuntimeRepairKind.ADVISORY,
         category=category,
@@ -536,3 +630,47 @@ def plan_runtime_repair(
             ),
         },
     )
+
+
+def select_automatic_recovery_candidate(graph: Any, state: Any) -> dict[str, Any]:
+    """Choose the smallest safe post-run recovery action, if any."""
+
+    from dan.engine.checkpoint import compute_downstream_nodes
+
+    best: dict[str, Any] | None = None
+    best_key: tuple[int, str] | None = None
+
+    for node in getattr(graph, "nodes", []):
+        node_meta = state.node_metadata.get(getattr(node, "id", ""))
+        if not isinstance(node_meta, dict):
+            continue
+        summary = node_meta.get("runtime_repair_summary")
+        if not isinstance(summary, dict):
+            continue
+        recovery = summary.get("automatic_recovery")
+        if not isinstance(recovery, dict) or recovery.get("status") != "ready":
+            continue
+
+        target_node_id = str(recovery.get("target_node_id") or getattr(node, "id", ""))
+        scope_type = str(recovery.get("scope_type") or "downstream_of")
+        if scope_type == "single_node":
+            scope_node_ids = {target_node_id}
+        else:
+            scope_node_ids = compute_downstream_nodes(
+                target_node_id,
+                graph,
+                include_target=True,
+            )
+        candidate = {
+            **recovery,
+            "target_node_id": target_node_id,
+            "scope_type": scope_type,
+            "scope_node_ids": sorted(scope_node_ids),
+            "scope_size": len(scope_node_ids),
+        }
+        candidate_key = (candidate["scope_size"], target_node_id)
+        if best is None or candidate_key < best_key:
+            best = candidate
+            best_key = candidate_key
+
+    return best or {}
