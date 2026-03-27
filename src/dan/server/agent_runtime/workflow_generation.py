@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import ast
 import asyncio
 import logging
@@ -25,6 +26,7 @@ from dan.server.chat.events import (
     ChatGenerationSummaryEvent,
     ChatGraphQualityEvent,
     ChatIntentExtractedEvent,
+    ChatNoticeEvent,
     ChatStreamEvent,
     ChatValidationResultEvent,
 )
@@ -80,6 +82,9 @@ class WorkflowGenerationRuntime:
         def _deadline_exceeded() -> bool:
             return (time.monotonic() - _gen_start) > _max_gen_seconds
 
+        def _remaining_seconds() -> float:
+            return max(0.0, _max_gen_seconds - (time.monotonic() - _gen_start))
+
         def _elapsed_ms() -> int:
             return int((time.monotonic() - _gen_start) * 1000)
 
@@ -97,6 +102,7 @@ class WorkflowGenerationRuntime:
             "intent_extraction": 0,
             "codegen": 0,
             "sandbox": 0,
+            "automatic_recovery": 0,
         }
         _last_quality_score: int | None = None
         _result_node_count: int | None = None
@@ -104,6 +110,7 @@ class WorkflowGenerationRuntime:
         _progress_emitted = False
         _final_failure_mode: str | None = None
         _last_build_provenance = workflow_build_provenance(None)
+        _automatic_recovery: dict[str, Any] = {}
 
         def _emit_progress(phase: str) -> None:
             nonlocal _progress_emitted
@@ -139,8 +146,60 @@ class WorkflowGenerationRuntime:
                 complexity_tier=complexity_tier,
                 pre_generation_ms=_pre_generation_ms,
                 failure_mode=_final_failure_mode,
+                automatic_recovery=copy.deepcopy(_automatic_recovery),
                 **_last_build_provenance,
             )
+
+        async def _run_with_generation_budget(
+            awaitable: Awaitable[Any],
+            *,
+            stage_label: str,
+        ) -> Any:
+            remaining = _remaining_seconds()
+            if remaining <= 0:
+                raise asyncio.TimeoutError(
+                    f"Generation budget exhausted before {stage_label}"
+                )
+            return await asyncio.wait_for(awaitable, timeout=remaining)
+
+        def _timeout_result(
+            *,
+            stage_label: str,
+            outcome_method: str,
+            path_taken: str,
+        ) -> tuple[dict | None, list[ChatStreamEvent]]:
+            nonlocal _path_taken, _final_failure_mode
+            elapsed = _elapsed_s()
+            logger.warning(
+                "Generation timed out during %s (%.1fs / %ds budget)",
+                stage_label,
+                elapsed,
+                _max_gen_seconds,
+            )
+            record_gen_outcome(
+                outcome_method,
+                success=False,
+                error_type="generation_timeout",
+                pattern=workflow_id,
+            )
+            _path_taken = path_taken
+            _final_failure_mode = "generation_timeout"
+            events.append(
+                ChatValidationResultEvent(
+                    success=False,
+                    error_count=1,
+                    errors=[
+                        (
+                            f"Generation timed out during {stage_label} after "
+                            f"{elapsed:.0f}s (budget: {_max_gen_seconds}s)"
+                        )
+                    ],
+                    failure_mode="generation_timeout",
+                    **workflow_build_provenance(None),
+                )
+            )
+            events.append(_build_summary_event())
+            return None, events
 
         def _validation_event(validation: Any) -> ChatValidationResultEvent:
             nonlocal _final_failure_mode, _last_build_provenance
@@ -267,6 +326,109 @@ class WorkflowGenerationRuntime:
                 source_line=getattr(codegen_result, "error_line", None),
                 recoverable=True,
             )
+
+        def _diagnosis_attempt_summary(diag_result: Any) -> str:
+            attempts = list(getattr(diag_result, "attempts", []) or [])
+            if not attempts:
+                return "Diagnosis exhausted without a successful repair attempt."
+            lines: list[str] = []
+            for attempt in attempts[:4]:
+                strategy = getattr(getattr(attempt, "strategy_used", None), "value", None)
+                strategy = strategy or str(getattr(attempt, "strategy_used", "") or "unknown")
+                result = str(getattr(attempt, "result", "") or "failed")
+                corrections = ", ".join(
+                    str(item).strip()
+                    for item in (getattr(attempt, "corrections_applied", None) or [])
+                    if str(item).strip()
+                )
+                learning = "; ".join(
+                    str(item).strip()
+                    for item in (getattr(attempt, "learning_points", None) or [])
+                    if str(item).strip()
+                )
+                line = f"- attempt {getattr(attempt, 'attempt_number', '?')}: strategy={strategy}, result={result}"
+                if corrections:
+                    line += f", corrections={corrections}"
+                if learning:
+                    line += f", learnings={learning}"
+                lines.append(line)
+            return "\n".join(lines)
+
+        def _diagnosis_attempt_payload(diag_result: Any) -> list[dict[str, Any]]:
+            payload: list[dict[str, Any]] = []
+            for attempt in list(getattr(diag_result, "attempts", []) or []):
+                strategy = getattr(attempt, "strategy_used", None)
+                if hasattr(strategy, "value"):
+                    strategy = getattr(strategy, "value")
+                payload.append(
+                    {
+                        "kind": str(strategy or "unknown"),
+                        "outcome": str(getattr(attempt, "result", "") or "failed"),
+                        "cause": "diagnosis_repair",
+                        "corrections_applied": [
+                            str(item).strip()
+                            for item in (getattr(attempt, "corrections_applied", None) or [])
+                            if str(item).strip()
+                        ],
+                        "learning_points": [
+                            str(item).strip()
+                            for item in (getattr(attempt, "learning_points", None) or [])
+                            if str(item).strip()
+                        ],
+                    }
+                )
+            return payload
+
+        def _automatic_recovery_failure_lines(
+            *,
+            codegen_errors: list[Any],
+            diag_result: Any,
+        ) -> list[str]:
+            return [
+                str(getattr(err, "message", err) or "").strip()
+                for err in (
+                    list(getattr(diag_result, "final_errors", []) or [])
+                    or codegen_errors
+                )
+                if str(getattr(err, "message", err) or "").strip()
+            ]
+
+        def _build_automatic_recovery_context(
+            *,
+            codegen_errors: list[Any],
+            diag_result: Any,
+            prior_code: str,
+        ) -> str:
+            failure_lines = _automatic_recovery_failure_lines(
+                codegen_errors=codegen_errors,
+                diag_result=diag_result,
+            )
+            recovery_summary = [
+                "Automatic recovery handoff:",
+                "- Previous generation exhausted codegen, sandbox validation, and bounded diagnosis.",
+            ]
+            if failure_lines:
+                recovery_summary.append("- Primary failures:")
+                recovery_summary.extend(f"  - {line}" for line in failure_lines[:5])
+            diagnosis_summary = _diagnosis_attempt_summary(diag_result)
+            if diagnosis_summary:
+                recovery_summary.append("- Diagnosis attempts:")
+                recovery_summary.extend(diagnosis_summary.splitlines())
+            build_summary = str(_last_build_provenance.get("build_summary") or "").strip()
+            if build_summary:
+                recovery_summary.append(f"- Build/readiness summary: {build_summary}")
+            failure_bucket = str(_last_build_provenance.get("failure_bucket") or "").strip()
+            if failure_bucket:
+                recovery_summary.append(f"- Failure bucket: {failure_bucket}")
+            if prior_code.strip():
+                recovery_summary.append("- Previous builder code (repair the smallest necessary part, do not restart from scratch unless required):")
+                recovery_summary.append("```python")
+                recovery_summary.append(prior_code[:6000])
+                recovery_summary.append("```")
+            recovery_summary.append(
+                "- Return executable Python builder code only. Fix the smallest issue set needed to produce a runnable workflow."
+            )
+            return "\n".join(recovery_summary)
 
         detected_domain: str | None = None
         try:
@@ -490,30 +652,11 @@ class WorkflowGenerationRuntime:
                 )
 
         if _deadline_exceeded():
-            elapsed = time.monotonic() - _gen_start
-            logger.warning(
-                "Generation deadline exceeded before codegen (%.1fs / %ds budget)",
-                elapsed,
-                _max_gen_seconds,
+            return _timeout_result(
+                stage_label="code generation",
+                outcome_method="codegen",
+                path_taken="none",
             )
-            record_gen_outcome(
-                "codegen",
-                success=False,
-                error_type="generation_timeout",
-                pattern=workflow_id,
-            )
-            _path_taken = "none"
-            events.append(
-                ChatValidationResultEvent(
-                    success=False,
-                    error_count=1,
-                    errors=[
-                        f"Generation timed out after {elapsed:.0f}s (budget: {_max_gen_seconds}s)"
-                    ],
-                )
-            )
-            events.append(_build_summary_event())
-            return None, events
 
         fallback_chain.append("codegen")
         _emit_progress("codegen in progress")
@@ -534,12 +677,20 @@ class WorkflowGenerationRuntime:
             record_gen_outcome=record_gen_outcome,
             pattern=workflow_id,
             is_transient_llm_error=_is_transient_llm_error,
+            get_timeout_seconds=_remaining_seconds,
             log=logger,
         )
         builder_code = codegen_request.builder_code
         codegen_retries = codegen_request.codegen_retries
         terminal_codegen_failure = codegen_request.terminal_failure
         terminal_codegen_message = codegen_request.terminal_message
+
+        if terminal_codegen_failure == "generation_timeout":
+            return _timeout_result(
+                stage_label="code generation",
+                outcome_method="codegen",
+                path_taken="codegen",
+            )
 
         if not builder_code and terminal_codegen_failure in {"no_output", "llm_error"}:
             _path_taken = "codegen"
@@ -616,7 +767,17 @@ class WorkflowGenerationRuntime:
 
             if syntax_error is None:
                 _emit_progress("sandbox validation")
-                graph_dict, sandbox_codegen = await sandbox_exec_builder_code(builder_code)
+                try:
+                    graph_dict, sandbox_codegen = await _run_with_generation_budget(
+                        sandbox_exec_builder_code(builder_code),
+                        stage_label="sandbox validation",
+                    )
+                except asyncio.TimeoutError:
+                    return _timeout_result(
+                        stage_label="sandbox validation",
+                        outcome_method="codegen",
+                        path_taken="codegen",
+                    )
                 if graph_dict is not None:
                     acceptance = accept_candidate_graph(
                         graph_dict,
@@ -689,9 +850,17 @@ class WorkflowGenerationRuntime:
                                 "Sandbox process startup timeout, retrying sandbox once"
                             )
                             await asyncio.sleep(2.0)
-                            graph_dict, sandbox_codegen = await sandbox_exec_builder_code(
-                                builder_code
-                            )
+                            try:
+                                graph_dict, sandbox_codegen = await _run_with_generation_budget(
+                                    sandbox_exec_builder_code(builder_code),
+                                    stage_label="sandbox validation retry",
+                                )
+                            except asyncio.TimeoutError:
+                                return _timeout_result(
+                                    stage_label="sandbox validation retry",
+                                    outcome_method="codegen",
+                                    path_taken="codegen",
+                                )
                             if graph_dict is not None:
                                 acceptance = accept_candidate_graph(
                                     graph_dict,
@@ -749,30 +918,11 @@ class WorkflowGenerationRuntime:
                         )
 
         if _deadline_exceeded():
-            elapsed = time.monotonic() - _gen_start
-            logger.warning(
-                "Generation deadline exceeded before diagnosis (%.1fs / %ds budget)",
-                elapsed,
-                _max_gen_seconds,
+            return _timeout_result(
+                stage_label="diagnosis repair",
+                outcome_method="diagnosis",
+                path_taken="codegen",
             )
-            record_gen_outcome(
-                "diagnosis",
-                success=False,
-                error_type="generation_timeout",
-                pattern=workflow_id,
-            )
-            _path_taken = "codegen"
-            events.append(
-                ChatValidationResultEvent(
-                    success=False,
-                    error_count=1,
-                    errors=[
-                        f"Generation timed out after {elapsed:.0f}s (budget: {_max_gen_seconds}s)"
-                    ],
-                )
-            )
-            events.append(_build_summary_event())
-            return None, events
 
         if builder_code and codegen_errors:
             fallback_chain.append("diagnosis")
@@ -803,23 +953,36 @@ class WorkflowGenerationRuntime:
                 ]
 
                 async def _llm_complete(sys_prompt: str, user_prompt: str) -> str:
-                    r = await provider.complete(
-                        messages=[
-                            {"role": "system", "content": sys_prompt},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        model=_model,
-                        temperature=0.3,
+                    r = await _run_with_generation_budget(
+                        provider.complete(
+                            messages=[
+                                {"role": "system", "content": sys_prompt},
+                                {"role": "user", "content": user_prompt},
+                            ],
+                            model=_model,
+                            temperature=0.3,
+                        ),
+                        stage_label="diagnosis repair",
                     )
                     return r.text or ""
 
-                diag_result = await diagnosis.diagnose_and_repair(
-                    goal=user_message,
-                    generated_code=builder_code,
-                    errors=gen_errors,
-                    llm_complete=_llm_complete,
-                    graph_validator=_diagnosis_graph_validator,
-                )
+                try:
+                    diag_result = await _run_with_generation_budget(
+                        diagnosis.diagnose_and_repair(
+                            goal=user_message,
+                            generated_code=builder_code,
+                            errors=gen_errors,
+                            llm_complete=_llm_complete,
+                            graph_validator=_diagnosis_graph_validator,
+                        ),
+                        stage_label="diagnosis repair",
+                    )
+                except asyncio.TimeoutError:
+                    return _timeout_result(
+                        stage_label="diagnosis repair",
+                        outcome_method="diagnosis",
+                        path_taken="diagnosis",
+                    )
                 if diag_result.success and diag_result.final_graph:
                     acceptance = accept_candidate_graph(
                         diag_result.final_graph,
@@ -862,6 +1025,290 @@ class WorkflowGenerationRuntime:
                     _path_taken = "diagnosis_repair"
                     events.append(_build_summary_event())
                     return None, events
+                if not diag_result.success and not _deadline_exceeded():
+                    fallback_chain.append("automatic_recovery")
+                    retries_used["automatic_recovery"] += 1
+                    failure_lines = _automatic_recovery_failure_lines(
+                        codegen_errors=codegen_errors,
+                        diag_result=diag_result,
+                    )
+                    _automatic_recovery = {
+                        "scope": "generation",
+                        "workflow_id": workflow_id,
+                        "run_id": "",
+                        "node_id": "",
+                        "status": "in_progress",
+                        "category": str(
+                            _last_build_provenance.get("failure_bucket")
+                            or _final_failure_mode
+                            or "generation_failure"
+                        ),
+                        "selected_action": "regenerate_builder_code",
+                        "available_actions": ["regenerate_builder_code"],
+                        "message": "Automatic generation recovery in progress.",
+                        "failure_summary": "; ".join(failure_lines[:3])
+                        or "Workflow generation exhausted diagnosis repair.",
+                        "attempted_fixes": _diagnosis_attempt_payload(diag_result),
+                        "attempt_index": retries_used["automatic_recovery"],
+                        "max_attempts": 1,
+                        "recovery_budget_remaining": max(
+                            0,
+                            1 - retries_used["automatic_recovery"],
+                        ),
+                        "last_action": "regenerate_builder_code",
+                        "last_outcome": "scheduled",
+                        "build_status": _last_build_provenance.get("build_status"),
+                        "failure_bucket": _last_build_provenance.get("failure_bucket"),
+                    }
+                    events.append(
+                        ChatNoticeEvent(
+                            content="Auto-repairing workflow generation with improved failure context.",
+                            level="info",
+                        )
+                    )
+                    recovery_context = _build_automatic_recovery_context(
+                        codegen_errors=codegen_errors,
+                        diag_result=diag_result,
+                        prior_code=diag_result.final_code or builder_code,
+                    )
+                    recovery_hint = get_generation_stats_hint()
+                    if recovery_context:
+                        recovery_hint = (
+                            f"{recovery_hint}\n\n{recovery_context}"
+                            if recovery_hint
+                            else recovery_context
+                        )
+                    recovery_request = await request_builder_code(
+                        provider=provider,
+                        model=_model,
+                        user_message=user_message,
+                        intent_goal=intent.goal if intent else None,
+                        gen_stats_hint=recovery_hint,
+                        detected_domain=detected_domain,
+                        complexity_tier=complexity_tier,
+                        min_nodes=min_nodes,
+                        max_nodes=max_nodes,
+                        extract_code_from_response=extract_code_from_response,
+                        retries_used=retries_used,
+                        record_gen_outcome=record_gen_outcome,
+                        pattern=workflow_id,
+                        is_transient_llm_error=_is_transient_llm_error,
+                        get_timeout_seconds=_remaining_seconds,
+                        log=logger,
+                    )
+                    recovery_code = recovery_request.builder_code
+                    recovery_retries = recovery_request.codegen_retries
+                    recovery_terminal_failure = recovery_request.terminal_failure
+                    recovery_terminal_message = recovery_request.terminal_message
+                    recovery_errors: list[Any] = []
+
+                    if recovery_terminal_failure == "generation_timeout":
+                        return _timeout_result(
+                            stage_label="automatic recovery code generation",
+                            outcome_method="automatic_recovery",
+                            path_taken="automatic_recovery",
+                        )
+
+                    if recovery_code:
+                        recovery_metadata = {
+                            "recovery_reason": "diagnosis_exhausted",
+                            "recovery_attempt": retries_used["automatic_recovery"],
+                        }
+                        if recovery_retries:
+                            recovery_metadata["codegen_retries"] = recovery_retries
+                        events.append(
+                            ChatCodeGeneratedEvent(
+                                code_snippet=recovery_code[:500],
+                                source="automatic_recovery",
+                                metadata=recovery_metadata,
+                            )
+                        )
+                        syntax_error: SyntaxError | None = None
+                        try:
+                            ast.parse(recovery_code)
+                        except SyntaxError as se:
+                            syntax_error = se
+                            recovery_errors = [
+                                GenerationError(
+                                    stage=GenerationStage.sandbox,
+                                    error_type=GenerationErrorType.syntax_error,
+                                    message=f"Syntax error: {se.msg}",
+                                    source_line=se.lineno,
+                                    recoverable=True,
+                                ),
+                            ]
+                            events.append(
+                                ChatValidationResultEvent(
+                                    success=False,
+                                    error_count=1,
+                                    errors=[f"Syntax error: {se.msg}"],
+                                )
+                            )
+                            record_gen_outcome(
+                                "automatic_recovery",
+                                success=False,
+                                error_type="syntax_error",
+                                pattern=workflow_id,
+                            )
+
+                        if syntax_error is None:
+                            _emit_progress("automatic recovery sandbox validation")
+                            try:
+                                graph_dict, sandbox_codegen = await _run_with_generation_budget(
+                                    sandbox_exec_builder_code(recovery_code),
+                                    stage_label="automatic recovery sandbox validation",
+                                )
+                            except asyncio.TimeoutError:
+                                return _timeout_result(
+                                    stage_label="automatic recovery sandbox validation",
+                                    outcome_method="automatic_recovery",
+                                    path_taken="automatic_recovery",
+                                )
+                            if graph_dict is not None:
+                                acceptance = accept_candidate_graph(
+                                    graph_dict,
+                                    validate_graph=validate_codegen_output,
+                                    build_validation_event=_validation_event,
+                                    emit_event=events.append,
+                                    quality_error_for_graph=lambda candidate: _quality_error_for_graph(
+                                        candidate,
+                                        warning_message=(
+                                            "Graph quality %d below threshold %d, rejecting automatic recovery graph"
+                                        ),
+                                    ),
+                                    fit_check=_fit_check,
+                                    record_gen_outcome=record_gen_outcome,
+                                    success_method="automatic_recovery",
+                                    failure_method="automatic_recovery",
+                                    failure_fix_needed=True,
+                                    pattern=workflow_id,
+                                )
+                                if acceptance.accepted_graph is not None:
+                                    _automatic_recovery = {
+                                        **_automatic_recovery,
+                                        "status": "completed",
+                                        "message": "Automatic generation recovery completed.",
+                                        "attempted_fixes": [
+                                            *list(_automatic_recovery.get("attempted_fixes") or []),
+                                            {
+                                                "kind": "regenerate_builder_code",
+                                                "outcome": "completed",
+                                                "cause": "diagnosis_exhausted",
+                                                "next_step": "Accepted regenerated workflow.",
+                                            },
+                                        ],
+                                        "last_outcome": "completed",
+                                    }
+                                    _path_taken = "automatic_recovery"
+                                    events.append(_build_summary_event())
+                                    return acceptance.accepted_graph, events
+                                recovery_errors = list(acceptance.errors)
+                            else:
+                                sandbox_error = _sandbox_failure_error(sandbox_codegen)
+                                retries_used["sandbox"] += 1
+                                recovery_errors = [sandbox_error]
+                                record_gen_outcome(
+                                    "automatic_recovery",
+                                    success=False,
+                                    error_type=sandbox_error.error_type.value,
+                                    pattern=workflow_id,
+                                )
+                                events.append(
+                                    ChatValidationResultEvent(
+                                        success=False,
+                                        error_count=1,
+                                        errors=[sandbox_error.message],
+                                    )
+                                )
+                    elif recovery_terminal_failure in {"no_output", "llm_error"}:
+                        if recovery_terminal_failure == "no_output":
+                            recovery_errors = [
+                                GenerationError(
+                                    stage=GenerationStage.sandbox,
+                                    error_type=GenerationErrorType.no_output,
+                                    message=(
+                                        "Automatic recovery returned empty builder code after retries"
+                                    ),
+                                    recoverable=True,
+                                )
+                            ]
+                            record_gen_outcome(
+                                "automatic_recovery",
+                                success=False,
+                                error_type="no_output",
+                                pattern=workflow_id,
+                            )
+                        else:
+                            recovery_errors = [
+                                GenerationError(
+                                    stage=GenerationStage.sandbox,
+                                    error_type=GenerationErrorType.runtime_error,
+                                    message=(
+                                        recovery_terminal_message
+                                        or "Automatic recovery LLM call failed"
+                                    ),
+                                    recoverable=True,
+                                )
+                            ]
+                            record_gen_outcome(
+                                "automatic_recovery",
+                                success=False,
+                                error_type="llm_error",
+                                pattern=workflow_id,
+                            )
+
+                    if recovery_errors:
+                        _automatic_recovery = {
+                            **_automatic_recovery,
+                            "status": "exhausted",
+                            "message": "Automatic generation recovery exhausted.",
+                            "attempted_fixes": [
+                                *list(_automatic_recovery.get("attempted_fixes") or []),
+                                {
+                                    "kind": "regenerate_builder_code",
+                                    "outcome": "exhausted",
+                                    "cause": "diagnosis_exhausted",
+                                    "next_step": (
+                                        "Surface validation failure after bounded automatic recovery."
+                                    ),
+                                },
+                            ],
+                            "last_outcome": "exhausted",
+                            "handoff_reason": "automatic_recovery_exhausted",
+                            "build_status": "repair_exhausted",
+                            "failure_bucket": "automatic_repair_exhausted",
+                            "escalation_needed": True,
+                            "escalation_summary": (
+                                "Bounded automatic generation recovery is exhausted. Retry with a narrower request or manually adjust the workflow intent."
+                            ),
+                            "recommended_actions": [
+                                "simplify_request",
+                                "retry_generation_with_narrower_scope",
+                                "edit_workflow_prompt_or_graph",
+                            ],
+                        }
+                        _path_taken = "automatic_recovery"
+                        events.append(
+                            ChatValidationResultEvent(
+                                success=False,
+                                error_count=min(5, len(recovery_errors)),
+                                errors=[
+                                    "Automatic repair exhausted after diagnosis."
+                                ] + [
+                                    str(getattr(err, "message", err) or "").strip()
+                                    for err in recovery_errors[:4]
+                                    if str(getattr(err, "message", err) or "").strip()
+                                ],
+                                build_status="repair_exhausted",
+                                failure_bucket="automatic_repair_exhausted",
+                                handoff_reason="automatic_recovery_exhausted",
+                                build_summary=(
+                                    "Attempted bounded diagnosis repair and one automatic regeneration "
+                                    "with improved failure context."
+                                ),
+                                automatic_recovery=copy.deepcopy(_automatic_recovery),
+                            )
+                        )
                 record_gen_outcome(
                     "diagnosis",
                     success=False,

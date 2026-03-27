@@ -36,6 +36,7 @@ async def request_builder_code(
     record_gen_outcome: Callable[..., None],
     pattern: str,
     is_transient_llm_error: Callable[[Exception], bool],
+    get_timeout_seconds: Callable[[], float | None] | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     log: logging.Logger | None = None,
 ) -> WorkflowCodegenRequestResult:
@@ -72,9 +73,25 @@ async def request_builder_code(
     last_codegen_error_type: str | None = None
     consecutive_same_error = 0
 
+    def _current_timeout_seconds() -> float | None:
+        if get_timeout_seconds is None:
+            return None
+        timeout_seconds = get_timeout_seconds()
+        if timeout_seconds is None:
+            return None
+        return max(0.0, float(timeout_seconds))
+
     for cg_attempt in range(max_codegen_retries + 1):
+        timeout_seconds = _current_timeout_seconds()
+        if timeout_seconds is not None and timeout_seconds <= 0:
+            terminal_codegen_failure = "generation_timeout"
+            terminal_codegen_message = (
+                "Generation budget exhausted before code generation could complete"
+            )
+            active_log.warning("Codegen skipped: %s", terminal_codegen_message)
+            break
         try:
-            codegen_result = await provider.complete(
+            codegen_call = provider.complete(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -82,6 +99,13 @@ async def request_builder_code(
                 model=model,
                 temperature=0.3,
             )
+            if timeout_seconds is None:
+                codegen_result = await codegen_call
+            else:
+                codegen_result = await asyncio.wait_for(
+                    codegen_call,
+                    timeout=timeout_seconds,
+                )
             raw_text = codegen_result.text or ""
             if not raw_text.strip():
                 current_error = "empty_response"
@@ -108,7 +132,11 @@ async def request_builder_code(
                         cg_attempt + 1,
                         backoff[cg_attempt],
                     )
-                    await sleep(backoff[cg_attempt])
+                    sleep_seconds = backoff[cg_attempt]
+                    timeout_seconds = _current_timeout_seconds()
+                    if timeout_seconds is not None:
+                        sleep_seconds = min(sleep_seconds, timeout_seconds)
+                    await sleep(max(0.0, sleep_seconds))
                     continue
                 terminal_codegen_failure = "no_output"
                 terminal_codegen_message = (
@@ -139,7 +167,11 @@ async def request_builder_code(
                         "Codegen produced empty/whitespace code, retrying (attempt %d)",
                         cg_attempt + 1,
                     )
-                    await sleep(backoff[cg_attempt])
+                    sleep_seconds = backoff[cg_attempt]
+                    timeout_seconds = _current_timeout_seconds()
+                    if timeout_seconds is not None:
+                        sleep_seconds = min(sleep_seconds, timeout_seconds)
+                    await sleep(max(0.0, sleep_seconds))
                     continue
                 terminal_codegen_failure = "no_output"
                 terminal_codegen_message = (
@@ -147,6 +179,13 @@ async def request_builder_code(
                 )
             last_codegen_error_type = None
             consecutive_same_error = 0
+            break
+        except asyncio.TimeoutError:
+            terminal_codegen_failure = "generation_timeout"
+            terminal_codegen_message = (
+                "Codegen exceeded the remaining generation budget"
+            )
+            active_log.warning("Codegen timed out within the remaining generation budget")
             break
         except Exception as exc:
             current_error = type(exc).__name__
@@ -179,7 +218,11 @@ async def request_builder_code(
                     cg_attempt + 1,
                     exc,
                 )
-                await sleep(backoff[cg_attempt])
+                sleep_seconds = backoff[cg_attempt]
+                timeout_seconds = _current_timeout_seconds()
+                if timeout_seconds is not None:
+                    sleep_seconds = min(sleep_seconds, timeout_seconds)
+                await sleep(max(0.0, sleep_seconds))
                 continue
             active_log.debug("Codegen LLM call failed: %s", exc)
             record_gen_outcome(
