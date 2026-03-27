@@ -35,6 +35,7 @@ class GraphQualityReport(BaseModel):
     pattern_presence: QualityCheck | None = None
     tool_coverage: QualityCheck | None = None
     topology: QualityCheck | None = None
+    semantic_grounding: QualityCheck | None = None
     complexity_tier: str | None = None
     expected_node_range_min: int | None = None
     expected_node_range_max: int | None = None
@@ -160,6 +161,59 @@ def _get_nodes_edges(graph_dict: dict) -> tuple[list[dict], list[dict]]:
     if not isinstance(edges, list):
         edges = []
     return nodes, edges
+
+
+def _subgraph_dicts(graph_dict: dict) -> list[tuple[str, dict]]:
+    """Return nested subgraph dicts from a graph dict."""
+    sub_graphs = graph_dict.get("sub_graphs", {})
+    if not isinstance(sub_graphs, dict):
+        return []
+    return [
+        (str(key), value)
+        for key, value in sub_graphs.items()
+        if isinstance(value, dict)
+    ]
+
+
+def _iter_graph_dicts(
+    graph_dict: dict,
+    *,
+    graph_label: str = "Workflow",
+) -> list[tuple[str, dict]]:
+    """Return the root graph dict and all nested subgraph dicts."""
+    collected: list[tuple[str, dict]] = [(graph_label, graph_dict)]
+    for subgraph_key, subgraph in _subgraph_dicts(graph_dict):
+        collected.extend(
+            _iter_graph_dicts(
+                subgraph,
+                graph_label=f"{graph_label}.{subgraph_key}",
+            )
+        )
+    return collected
+
+
+def _recursive_node_count(graph_dict: dict) -> int:
+    """Count nodes across the workflow graph and all nested subgraphs."""
+    return sum(len(_get_nodes_edges(candidate)[0]) for _, candidate in _iter_graph_dicts(graph_dict))
+
+
+def _recursive_node_types_and_edge_types(graph_dict: dict) -> tuple[set[str], set[str]]:
+    """Collect node and edge types from the workflow graph and all nested subgraphs."""
+    node_types: set[str] = set()
+    edge_types: set[str] = set()
+    for _, candidate in _iter_graph_dicts(graph_dict):
+        nodes, edges = _get_nodes_edges(candidate)
+        node_types.update(
+            str(n.get("node_type", "")).strip()
+            for n in nodes
+            if isinstance(n, dict) and str(n.get("node_type", "")).strip()
+        )
+        edge_types.update(
+            str(e.get("edge_type", e.get("type", ""))).strip()
+            for e in edges
+            if isinstance(e, dict) and str(e.get("edge_type", e.get("type", ""))).strip()
+        )
+    return node_types, edge_types
 
 
 def _edge_source_target(edge: dict) -> tuple[str, str]:
@@ -383,8 +437,7 @@ def check_node_count(
     tiers (T5, T2R, pilot) that aren't in the node-range table, falls back
     to _TIER_MIN_NODES.
     """
-    nodes, _ = _get_nodes_edges(graph_dict)
-    count = len(nodes)
+    count = _recursive_node_count(graph_dict)
 
     if tier and tier.upper().strip() in _NODE_RANGE_BY_TIER:
         min_nodes, _ = expected_node_range(prompt_text, tier)
@@ -396,7 +449,7 @@ def check_node_count(
     if count >= min_nodes:
         return QualityCheck(
             score=100,
-            explanation=f"Node count {count} meets minimum {min_nodes}",
+            explanation=f"Recursive node count {count} meets minimum {min_nodes}",
             concerns=[],
         )
     if count == 0:
@@ -409,7 +462,7 @@ def check_node_count(
     score = max(0, min(100, int(100 * count / min_nodes)))
     return QualityCheck(
         score=score,
-        explanation=f"Node count {count} below minimum {min_nodes} for prompt complexity",
+        explanation=f"Recursive node count {count} below minimum {min_nodes} for prompt complexity",
         concerns=[f"Only {count} node(s), expected >={min_nodes}"],
     )
 
@@ -420,10 +473,8 @@ def check_pattern_presence(graph_dict: dict, prompt_text: str) -> QualityCheck:
     Keywords: "review loop"->gate/loop, "in parallel"->ForEach/fan-out,
     "RAG"->RAG node, "code"->Code node.
     """
-    nodes, edges = _get_nodes_edges(graph_dict)
     prompt_lower = (prompt_text or "").lower()
-    node_types = {n.get("node_type", "") for n in nodes if isinstance(n, dict)}
-    edge_types = {e.get("edge_type", e.get("type", "")) for e in edges if isinstance(e, dict)}
+    node_types, edge_types = _recursive_node_types_and_edge_types(graph_dict)
 
     present: list[str] = []
     missing: list[str] = []
@@ -435,8 +486,15 @@ def check_pattern_presence(graph_dict: dict, prompt_text: str) -> QualityCheck:
         for pattern_name, expected_node_or_edge_types in expectations:
             if pattern_name == "loop_edge":
                 has_control = "control" in edge_types
-                if has_control:
-                    present.append(f"{keyword}->control edges")
+                has_loop_primitive = any(
+                    node_type in node_types
+                    for node_type in ("while_loop", "goal_loop")
+                )
+                if has_control or has_loop_primitive:
+                    present.append(
+                        f"{keyword}->"
+                        + ("control edges" if has_control else "loop primitive")
+                    )
                 else:
                     missing.append(f"{keyword}->control/loop edges")
                     concerns.append(f"Prompt mentions '{keyword}' but no control edges for loop")
@@ -481,9 +539,8 @@ def check_pattern_presence(graph_dict: dict, prompt_text: str) -> QualityCheck:
 
 def check_tool_coverage(graph_dict: dict, prompt_text: str) -> QualityCheck:
     """Check that tool-heavy prompts produce tool/code nodes."""
-    nodes, _ = _get_nodes_edges(graph_dict)
     prompt_lower = (prompt_text or "").lower()
-    node_types = {n.get("node_type", "") for n in nodes if isinstance(n, dict)}
+    node_types, _ = _recursive_node_types_and_edge_types(graph_dict)
 
     tool_node_types = {"tool_operator", "code_operator", "rag_operator"}
     has_tool = any(t in node_types for t in tool_node_types)
@@ -512,6 +569,63 @@ def check_tool_coverage(graph_dict: dict, prompt_text: str) -> QualityCheck:
     )
 
 
+def check_semantic_grounding(graph_dict: dict) -> QualityCheck:
+    """Check that the graph is semantically grounded and run-ready under the workflow contract."""
+    try:
+        from dan.meta.workflow_contract import validate_workflow_build_contract
+
+        contract_report = validate_workflow_build_contract(graph_dict, apply_repairs=True)
+    except Exception as exc:
+        return QualityCheck(
+            score=0,
+            explanation="Workflow contract check failed during quality scoring",
+            concerns=[f"Workflow contract check failed: {exc}"],
+        )
+
+    if contract_report.validated and contract_report.run_ready:
+        return QualityCheck(
+            score=100,
+            explanation="Workflow contract marked the graph validated and run-ready",
+            concerns=[],
+        )
+
+    run_readiness_issues = [
+        str(issue).strip()
+        for issue in contract_report.run_readiness_issues
+        if str(issue).strip()
+    ]
+    build_errors = [
+        str(getattr(issue, "message", "") or "").strip()
+        for issue in contract_report.errors
+        if str(getattr(issue, "message", "") or "").strip()
+    ]
+
+    if run_readiness_issues:
+        score = max(0, 40 - (len(run_readiness_issues) * 20))
+        return QualityCheck(
+            score=score,
+            explanation=(
+                "Workflow contract found semantic run-readiness issues"
+                f" ({len(run_readiness_issues)})"
+            ),
+            concerns=run_readiness_issues[:5],
+        )
+
+    if build_errors:
+        score = max(0, 30 - (len(build_errors) * 10))
+        return QualityCheck(
+            score=score,
+            explanation=f"Workflow contract found build-validation issues ({len(build_errors)})",
+            concerns=build_errors[:5],
+        )
+
+    return QualityCheck(
+        score=20,
+        explanation="Workflow contract did not mark the graph run-ready",
+        concerns=["Workflow contract did not mark the graph run-ready"],
+    )
+
+
 def check_topology(graph_dict: dict) -> QualityCheck:
     """Check connectivity, penalize isolated nodes, single-node for multi-step, missing entry/terminal."""
     nodes, edges = _get_nodes_edges(graph_dict)
@@ -525,6 +639,12 @@ def check_topology(graph_dict: dict) -> QualityCheck:
         return QualityCheck(score=0, explanation="Empty graph", concerns=["No nodes"])
 
     if count == 1:
+        if _subgraph_dicts(graph_dict):
+            return QualityCheck(
+                score=85,
+                explanation="Single top-level orchestration node with nested subgraph — acceptable",
+                concerns=[],
+            )
         return QualityCheck(
             score=40,
             explanation="Single-node graph — likely underspecified",
@@ -593,15 +713,25 @@ def compute_quality_report(
     pattern_check = check_pattern_presence(graph_dict, prompt_text)
     tool_check = check_tool_coverage(graph_dict, prompt_text)
     topo_check = check_topology(graph_dict)
+    semantic_check = check_semantic_grounding(graph_dict)
 
     all_concerns: list[str] = []
     all_concerns.extend(node_check.concerns)
     all_concerns.extend(pattern_check.concerns)
     all_concerns.extend(tool_check.concerns)
     all_concerns.extend(topo_check.concerns)
+    all_concerns.extend(semantic_check.concerns)
 
-    scores = [node_check.score, pattern_check.score, tool_check.score, topo_check.score]
+    scores = [
+        node_check.score,
+        pattern_check.score,
+        tool_check.score,
+        topo_check.score,
+        semantic_check.score,
+    ]
     overall = int(sum(scores) / len(scores)) if scores else 0
+    if semantic_check.score < 100:
+        overall = min(overall, semantic_check.score)
 
     complexity = estimate_prompt_complexity(prompt_text)
     nr_min, nr_max = expected_node_range(prompt_text, tier)
@@ -613,6 +743,7 @@ def compute_quality_report(
         pattern_presence=pattern_check,
         tool_coverage=tool_check,
         topology=topo_check,
+        semantic_grounding=semantic_check,
         complexity_tier=complexity,
         expected_node_range_min=nr_min,
         expected_node_range_max=nr_max,
