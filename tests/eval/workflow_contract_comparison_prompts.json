@@ -122,6 +122,42 @@
       "multi_turn_follow_ups": [
         "Repair the workflow if it invented a made-up CSV tool or wrong port names. Use the real registered tool and keep it runnable."
       ]
+    },
+    {
+      "id": "contract-10-chatty-watchlist-brief",
+      "tier": "CONTRACT",
+      "lane": "build",
+      "prompt": "can you set up a runnable workflow that takes a small watchlist csv, reads it, goes symbol by symbol, fetches the latest headlines for each one, writes one short markdown note per symbol, and then gives me one combined brief at the end",
+      "tags": ["workflow_contract", "chatty_realistic", "csv", "for_each", "tool", "summary"],
+      "expected": {
+        "min_nodes": 5,
+        "node_types": ["for_each", "tool"],
+        "topology": ["fan_out", "tools"]
+      }
+    },
+    {
+      "id": "contract-11-chatty-folder-digest",
+      "tier": "CONTRACT",
+      "lane": "build",
+      "prompt": "i have a folder of markdown notes, can you make a runnable workflow that reads every file in that folder, pulls out a two-line summary for each note, and writes a single index markdown file with links and summaries",
+      "tags": ["workflow_contract", "chatty_realistic", "folder", "for_each", "tool", "summary"],
+      "expected": {
+        "min_nodes": 4,
+        "node_types": ["for_each", "tool"],
+        "topology": ["fan_out", "tools"]
+      }
+    },
+    {
+      "id": "contract-12-chatty-earnings-note",
+      "tier": "CONTRACT",
+      "lane": "build",
+      "prompt": "please build a runnable workflow that checks the web for the next earnings date for NVDA and AMD, writes a tiny markdown report, and leaves it ready for me to put on a daily schedule later",
+      "tags": ["workflow_contract", "chatty_realistic", "tool", "summary", "schedule_ready"],
+      "expected": {
+        "min_nodes": 3,
+        "node_types": ["tool"],
+        "topology": ["tools"]
+      }
     }
   ]
 }

@@ -149,6 +149,10 @@ async def test_direct_pipeline_expands_multistep_prompt_and_applies_model_tierin
         "critical",
     ]
     assert all(node["model_policy"] == {"strategy": "tier"} for node in llm_nodes)
+    tool_nodes = [node for node in graph["nodes"] if node["node_type"] == "tool_operator"]
+    assert len(tool_nodes) == 1
+    assert tool_nodes[0]["tool_id"] == "web_search"
+    assert tool_nodes[0].get("tool_config", {}).get("query")
 
 
 @pytest.mark.asyncio
