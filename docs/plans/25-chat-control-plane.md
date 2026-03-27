@@ -50,6 +50,7 @@ Same behavior across all chat surfaces. No new product features — just wiring 
 | [25-9](25-9-workflow-memory-and-reuse.md) | Workflow Memory & Reuse | Make saved workflows and experience a semantic knowledge base for planning: retrieve similar workflows, choose reuse vs. adapt vs. build, and learn from task corrections. | ~3 days | 25-8 |
 | [25-10](25-10-execution-selector.md) | Execution Selector | Map `SolverDecision` outputs into concrete execution backends: direct actions, workflow reuse/adaptation/build, run/status/publish operations, and meta-orchestrator delegation. Preserve deterministic prechecks and shared backends. | ~3 days | 25-8, 25-9 |
 | [25-11](25-11-fallback-and-completion-policy.md) | Fallback & Completion Policy | Encode the "never just stop" runtime contract: alternate-path fallback, useful-subset delivery, build-capability fallback, human-action scaffolding, and terminal outcomes that always move the user toward done. | ~2 days | 25-8, 25-10 |
+| [25-14](25-14-automatic-repair-and-rerun.md) | Automatic Repair & Rerun | Add a bounded LLM recovery controller above existing generation diagnosis and runtime self-healing so failures can trigger safe automatic fix selection, mutation/overlay/rerun, and continued execution before any user-visible escalation. | ~2 days | 25-4, 25-10, 25-11 |
 
 ## Dependencies / Sequencing
 
@@ -64,7 +65,8 @@ Same behavior across all chat surfaces. No new product features — just wiring 
   ├→ 25-8 (Solver Runtime) ← solver-first brain above the concierge foundation
   ├→ 25-9 (Workflow Memory & Reuse) ← semantic reuse flywheel for solver planning
   ├→ 25-10 (Execution Selector) ← turns solver decisions into concrete execution
-  └→ 25-11 (Fallback & Completion Policy) ← "never just stop" runtime contract
+  ├→ 25-11 (Fallback & Completion Policy) ← "never just stop" runtime contract
+  └→ 25-14 (Automatic Repair & Rerun) ← automatic LLM recovery on exhausted generation/runtime failures
 ```
 
 **Recommended sequence:**
@@ -75,6 +77,7 @@ Same behavior across all chat surfaces. No new product features — just wiring 
 5. **25-7** after 25-6 — add shared policy, queue, progress, and promotion infrastructure.
 6. **25-8** after 25-6/25-7 — replace classifier-first top-level routing with the solver-first `Understand -> Plan -> Act -> Reflect` loop.
 7. **25-9, 25-10, 25-11** after 25-8 — make workflow memory first-class in planning, route solver decisions into concrete execution, and enforce productive fallback/completion behavior.
+8. **25-14** after 25-4/25-10/25-11 — add the automatic recovery layer that turns bounded failures into safe fix-and-rerun attempts before falling back to user intervention.
 
 ## Architecture: Capability Tool Registry + Solver Runtime
 
@@ -123,7 +126,7 @@ Within the capability layer, the LLM can still use function calling to invoke to
 - **No new public chat API surface.** Capabilities and concierge both stay behind the existing `/api/chat/message` flow. The server-side implementations call existing internal APIs (RunManager, ExperienceStore, etc.) directly — no HTTP hop.
 - **Progressive rollout.** 25-1 through 25-5 can operate as the capability foundation; 25-6 and 25-7 then change the routing behavior above them. During rollout, disabling concierge should fall back to the old ChatManager-first path for compatibility.
 - **Auto-approve stays client-driven.** The server should keep returning `ChatMutationEvent` proposals so clients can preserve local undo/history invariants; CLI/editor can auto-apply by default, while messaging surfaces stay confirm-first.
-- **Never just stop.** The final runtime contract should always attempt alternate paths, useful subsets, capability-building, or human-action scaffolding before asking for help. The user should always get a result or the smallest possible unblock, not a generic limitation statement.
+- **Never just stop.** The final runtime contract should first attempt bounded automatic LLM repair/retry/rerun using existing safe primitives, then alternate paths/useful subsets/capability-building, and only then fall back to human-action scaffolding. The user should always get forward motion or the smallest possible unblock, not a generic limitation statement.
 
 ## Success Criteria
 

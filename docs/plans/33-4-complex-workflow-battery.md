@@ -219,14 +219,15 @@ At least one follow-up should be compound, e.g. `"Add a review loop after the su
   - [ ] 13-2. Note any new `timeout_planning` vs `codegen_failed` vs `stream_error` patterns
 - [ ] 14. Run T4 in agent lane if agent routing has improved (`--lane both`)
   - [ ] 14-1. Compare agent vs build lane pass rates for T4
-- [ ] 15. Create a dedicated long-running prompt pack at `tests/eval/benchmark_long_running_prompts.json`
-  - [ ] 15-1. Add LR1, LR2, LR3 fixtures with frozen local input paths rather than open-ended live-world requests
-  - [ ] 15-2. Mark execution assertions, artifact assertions, and time budgets explicitly in the fixture metadata
-  - [ ] 15-3. Tag these fixtures separately from smoke/T1-T5 so they can be run as a benchmark-prep slice
+- [x] 15. Create a dedicated long-running prompt pack at `tests/eval/benchmark_long_running_prompts.json`
+  - [x] 15-1. Add LR1, LR2, LR3 fixtures with frozen local input paths rather than open-ended live-world requests
+  - [x] 15-2. Mark execution assertions, artifact assertions, and time budgets explicitly in the fixture metadata
+  - [x] 15-3. Tag these fixtures separately from smoke/T1-T5 so they can be run as a benchmark-prep slice
 - [ ] 16. Run the long-running pack in `build` lane with execution enabled
-  - [ ] 16-1. Record build success, validation, execution success, wall-clock, token/cost, and final artifact checks
-  - [ ] 16-2. Capture where the run stopped when it fails: planning, generation, validation, execution, or resume
-  - [ ] 16-3. Keep generated graphs and artifacts for manual inspection and benchmark handoff
+  - [x] 16-1. First dedicated LR2 execution probe completed on 2026-03-26 via `python -m tests.eval --prompts-file tests/eval/benchmark_long_running_prompts.json --benchmark-prep --tier LR2 --lane build --execute --keep-graphs --delay 0 --runs 1 --run-tag phase33_lr2_dedicated`
+  - [x] 16-2. Captured both the initial failure mode and the fixed rerun path: the 2026-03-26 probe stopped in execution on missing `path` args, and the 2026-03-27 isolated rerun (`phase33_lr2_dedicated_rerun_8010_r2`) passed cleanly
+  - [x] 16-3. Kept generated graphs and artifacts for manual inspection and benchmark handoff (`graphs/eval-lr2-01-build-enabled-3f732a74.json`, `graphs/eval-lr2-01-build-enabled-583f948a.json`, `graphs/eval-lr2-01-build-enabled-16df44e3.json`, plus the saved report JSONs)
+  - [x] 16-4. Captured the first clean LR2 build+execute rerun on an isolated backend port (`tests/eval/results/2026-03-27_004702_phase33_lr2_dedicated_rerun_8010_r2.report.json`)
 - [ ] 17. Add interruption/resume checks to LR3 (and LR1 where practical)
   - [ ] 17-1. Inject one interruption after the first meaningful execution phase
   - [ ] 17-2. Resume and verify the run continues rather than restarting from zero
@@ -261,3 +262,4 @@ At least one follow-up should be compound, e.g. `"Add a review loop after the su
 - **Node count calibration (33-9 C):** Codegen prompt now includes node-count guidance calibrated from 42 eval graphs. T4 prompts should produce graphs in the 10-20 node range, not the 1-5 node range seen in some prior runs.
 - **Main bottleneck from prior runs:** 72% of failures were `timeout_planning` — LLM API reliability, not pipeline logic. If T4 still shows high timeout rates, the issue is infrastructure, not generation quality.
 - **Benchmark-prep handoff:** This file should produce the first serious long-running workload pack before Bench 4 custom scenarios are positioned as proof. Think of LR1/LR2/LR3 as the execution-focused dress rehearsal for the later benchmark suite.
+- **2026-03-26 / 2026-03-27 dedicated pack update:** `tests/eval/benchmark_long_running_prompts.json` and the matching frozen local fixtures under `tests/fixtures/benchmark_prep/` now exist. The first LR2 build+execute probe generated graph `eval-lr2-01-build-enabled-641e8ac5` and failed immediately at runtime because the generated `csv_read` / `file_read` nodes omitted required `path` arguments. Follow-up fixes landed in `planner.py`, `workflow_contract.py`, `executors/code.py`, `executors/llm.py`, and `tests/eval/__main__.py`, and an isolated rerun on `127.0.0.1:8010` then passed cleanly (`tests/eval/results/2026-03-27_004702_phase33_lr2_dedicated_rerun_8010_r2.report.json`). Task 16 stays open because LR1/LR3 and interruption/resume checks are still pending, but the original LR2 correctness blocker is cleared.

@@ -319,9 +319,10 @@ dan-up --port 9000    # custom port
 | `--port PORT` | Server port | `8000` |
 
 **Behavior:**
-1. Checks `~/.dan/server.pid` — if server is already running and healthy, skips to step 3.
-2. Starts `dan-serve` in the background, writes PID file, polls `/health` until ready.
-3. Drops into `dan-chat` connected to the running server.
+1. Checks `~/.dan/server.pid` — if that server is already running and healthy, skips to step 3.
+2. If no valid PID file exists, probes the requested port directly and reuses any already-healthy DAN server on that port (for example one started by DAN Desktop or another launcher).
+3. Otherwise starts `dan-serve` in the background, writes PID file, polls `/health` until ready.
+4. Drops into `dan-chat` connected to the running server.
 
 **Logs:**
 - `dan-up` writes the background server process to `~/.dan/logs/server.log`.
@@ -338,6 +339,7 @@ dan-down    # sends SIGTERM, falls back to SIGKILL after timeout
 ```
 
 Reads `~/.dan/server.pid` to find the process.
+If no PID file exists but port `8000` is still healthy, `dan-down` reports that the server is probably owned by DAN Desktop or `dan-service` and leaves it alone.
 
 ---
 

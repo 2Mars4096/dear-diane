@@ -784,7 +784,7 @@ async def on_event(event: EngineEvent) -> None:
 engine = Engine(config=config, event_callback=on_event)
 ```
 
-**Event types:** `run_started`, `run_completed`, `run_failed`, `node_started`, `node_completed`, `node_failed`, `node_skipped`, `node_output`, `log`, `llm_thinking`, `tool_call_started`, `tool_call_result`, `code_output`, `intermediate_text`, `token_budget_advisory`, `context_deferred`, `input_summarized`, `jit_schema_loaded`, `payload_pruned`, `context_tool_called`, `cache_hit`, `cache_miss`, `cache_invalidated`, `semantic_cache_hit`, `state_externalized`, `loop_compaction_applied`, `budget_advisory`, `token_breakdown_recorded`, `waste_detected`, `optimization_report_ready`, `optimization_applied`, `model_selected`, `tier_escalation`.
+**Event types:** `run_started`, `run_completed`, `run_failed`, `automatic_recovery_started`, `automatic_recovery_completed`, `node_started`, `node_completed`, `node_failed`, `node_skipped`, `node_output`, `log`, `llm_thinking`, `tool_call_started`, `tool_call_result`, `code_output`, `intermediate_text`, `token_budget_advisory`, `context_deferred`, `input_summarized`, `jit_schema_loaded`, `payload_pruned`, `context_tool_called`, `cache_hit`, `cache_miss`, `cache_invalidated`, `semantic_cache_hit`, `state_externalized`, `loop_compaction_applied`, `budget_advisory`, `token_breakdown_recorded`, `waste_detected`, `optimization_report_ready`, `optimization_applied`, `model_selected`, `tier_escalation`.
 
 ---
 
@@ -1448,6 +1448,12 @@ Current policy highlights:
 | `tier_params` | `dict[str, dict] \| None` | `None` | Per-tier LLM call parameter overrides (e.g. `{"critical": {"extended_thinking": true}}`) |
 | `optimization_rule_approval_mode` | `str` | `"always_approve"` | `"always_approve"` (human gate) or `"auto_accept"` (activate by default) for evolving optimization rules |
 | `embedding_providers` | `dict[str, ProviderConfig]` | `{}` | Named embedding providers for `RAGOperator` (e.g., `default`, `openai`, `local`) |
+
+When `runtime_self_healing_enabled=True` and checkpointing is available, failed runs may also surface `RunResult.metadata["automatic_recovery"]` with one bounded post-run recovery candidate (currently a checkpoint rerun) that `RunManager` can continue automatically. This is runtime metadata, not a new node type.
+
+Workflow generation chat events may also carry `automatic_recovery` on `chat_generation_summary` and terminal `chat_validation_result` events when bounded post-diagnosis auto-repair runs. The shared envelope uses the same vocabulary across generation/runtime: `scope`, `workflow_id`, `run_id`, `node_id`, `failure_summary`, `attempted_fixes`, `available_actions`, `attempt_index`, `max_attempts`, `recovery_budget_remaining`, `last_action`, and `last_outcome`. Exhausted recovery payloads may also include `escalation_needed`, `escalation_summary`, and `recommended_actions`.
+
+When runtime automatic recovery is active, parent run streams may emit `run_failed` followed by `automatic_recovery_started` and later `automatic_recovery_completed`. Treat the initial `run_failed` as provisional until the bounded recovery sequence finishes. Parent run streams may also include mirrored child rerun node/tool events carrying `data.automatic_recovery=true` plus `recovery_run_id` / `recovery_parent_run_id`, so clients can show the recovery rerun's actual progress without switching streams.
 | `embedding_model_provider_map` | `dict[str, str]` | `{}` | Exact embedding model → provider override map |
 | `default_embedding_model` | `str` | `"text-embedding-3-small"` | Default embedding model when a `RAGOperator` omits `embedding_model` |
 
@@ -1962,7 +1968,7 @@ graph = compiler.build_graph_composed(intent, ["research_review"])
 The DAN engine emits a rich stream of events during execution. Every event is strictly associated with its source node (`node_id`) unless it is a workflow-level lifecycle event.
 
 ### Event Types
-There are 14 typed events: `run_started`, `run_completed`, `run_failed`, `node_started`, `node_completed`, `node_failed`, `node_skipped`, `node_output`, `log`, `llm_thinking`, `tool_call_started`, `tool_call_result`, `code_output`, `intermediate_text`.
+Core execution streams include `run_started`, `run_completed`, `run_failed`, `automatic_recovery_started`, `automatic_recovery_completed`, `node_started`, `node_completed`, `node_failed`, `node_skipped`, `node_output`, `log`, `llm_thinking`, `tool_call_started`, `tool_call_result`, `code_output`, and `intermediate_text`.
 
 ### Per-Node Tracking
 - **Automatic Tagging:** The `Engine` automatically tags every event emitted via `ExecutionContext.emit_event()` with the currently executing `node_id`.

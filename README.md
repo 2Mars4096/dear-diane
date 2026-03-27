@@ -218,6 +218,8 @@ dan-up --port 9000                        # use custom port
 dan-down                                  # stop background server
 ```
 
+`dan-up` also reuses an already-healthy DAN server on the requested port even if it was started by DAN Desktop or another launcher. `dan-down` only stops the PID-managed background server started through the manual CLI path.
+
 Inside the REPL:
 - **Chat naturally** — describe what you want and the LLM proposes and auto-applies mutations
 - **24 capability tools** — experience search, run lifecycle, publish/share/export, graph listing — the LLM picks the right tool based on your intent

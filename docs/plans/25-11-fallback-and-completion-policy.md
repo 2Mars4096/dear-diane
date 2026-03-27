@@ -61,3 +61,4 @@
 - The final runtime should always move the task forward, even under tool or access limitations.
 - Fallback success paths should be recorded so future planning can prefer them.
 - 2026-03-10 note: `28-5` later removed the unused `FALLBACK_LADDER`, `suggest_fallback_strategy()`, and `format_terminal_message()` helpers from `policy.py`. The live runtime still keeps fallback behavior in `solver.py`/`executor.py` plus the active `validate_terminal_content()` guardrail.
+- 2026-03-26 follow-up direction: prefer bounded automatic LLM repair/retry/rerun before surfacing human-action scaffolding. Human action remains the last rung when automatic recovery exhausts or becomes unsafe. [25-14](25-14-automatic-repair-and-rerun.md) owns that concrete recovery controller.

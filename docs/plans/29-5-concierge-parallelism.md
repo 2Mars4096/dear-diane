@@ -1,8 +1,8 @@
 # 29-5: Concierge Parallelism
 
 **Parent:** [29-concierge-memory-evolvement](29-concierge-memory-evolvement.md)
-**Status:** in-progress
-**Goal:** Apply one universal rule throughout the concierge stack: **if sub-tasks are independent, fan them out; if they depend on prior results, serialize them.** This applies to concierge preparation, tool execution, diagnosis, memory extraction, build session steps, and information gathering. Also: replace hard project caps with resource-based concurrency, add priority queuing, and ensure independent work starts immediately. The original rollout is complete; the remaining follow-up in this same plan is to tighten concierge throughput where the current implementation is still too coarse.
+**Status:** completed
+**Goal:** Apply one universal rule throughout the concierge stack: **if sub-tasks are independent, fan them out; if they depend on prior results, serialize them.** This applies to concierge preparation, tool execution, diagnosis, memory extraction, build session steps, and information gathering. Also: replace hard project caps with resource-based concurrency, add priority queuing, and ensure independent work starts immediately. The original rollout and the later throughput/persistence follow-up are now complete.
 
 ## Context
 
@@ -109,16 +109,16 @@ This applies at every level: message dispatch, turn preparation, tool execution,
 All 22 tests in `tests/test_concierge/test_parallelism_integration.py`.
 
 ### 12. Post-rollout efficiency follow-up
-- [ ] 12-1. Refine `ConcurrentDispatcher` capacity accounting so advisory `"llm"` slots are not held for the full lifetime of a live concierge task when the turn is mostly waiting on tools or queue plumbing.
-- [ ] 12-2. Preserve the existing same-project serialization and backpressure rules while separating project/run concurrency from actual model-call concurrency, so unrelated tool-heavy chats do not starve each other between `provider.complete()` calls.
-- [ ] 12-3. Replace the current `child_execution="mixed"` serial fallback in `tier_executors.py` with real hybrid scheduling: preserve dependency order where required, but still fan out independent child groups.
-- [ ] 12-4. Add focused regressions or benchmarks covering (a) two simultaneous tool-heavy chats that should share LLM capacity fairly and (b) a mixed dependency tree that proves hybrid execution beats full serialization without breaking cancellation or event ordering.
-- [ ] 12-5. Give child and subagent sessions unique internal thread/session identities by default, with copy-on-write metadata, instead of inheriting parent thread identity or mutating shared thread-meta state.
-- [ ] 12-6. Replace implicit full-parent-context inheritance with an explicit child handoff packet: delegated goal slice, file refs, memory slice, constraints, and a summarized return channel. Parent context is read-only input, not shared mutable state.
-- [ ] 12-7. Extend same-project dispatch beyond narrow bypass commands so corrections, stop/status requests, clarifications, and superseding instructions can attach to or preempt stale queued work without breaking audit history.
-- [ ] 12-8. Add queue-collapsing and supersede rules for obsolete queued turns in the same project when a newer instruction makes earlier queued work irrelevant.
-- [ ] 12-9. Move chat and project persistence off the hot response path via ordered journal writes plus periodic snapshot and compaction, so tool-heavy turns do not wait on full JSON rewrites.
-- [ ] 12-10. Add focused regressions and benchmarks for child metadata isolation, hybrid child-tree scheduling, same-project supersede ordering, and fair sharing between simultaneous tool-heavy chats.
+- [x] 12-1. Refine `ConcurrentDispatcher` capacity accounting so advisory `"llm"` slots are not held for the full lifetime of a live concierge task when the turn is mostly waiting on tools or queue plumbing.
+- [x] 12-2. Preserve the existing same-project serialization and backpressure rules while separating project/run concurrency from actual model-call concurrency, so unrelated tool-heavy chats do not starve each other between `provider.complete()` calls.
+- [x] 12-3. Replace the current `child_execution="mixed"` serial fallback in `tier_executors.py` with real hybrid scheduling: preserve dependency order where required, but still fan out independent child groups.
+- [x] 12-4. Add focused regressions or benchmarks covering (a) two simultaneous tool-heavy chats that should share LLM capacity fairly and (b) a mixed dependency tree that proves hybrid execution beats full serialization without breaking cancellation or event ordering.
+- [x] 12-5. Give child and subagent sessions unique internal thread/session identities by default, with copy-on-write metadata, instead of inheriting parent thread identity or mutating shared thread-meta state.
+- [x] 12-6. Replace implicit full-parent-context inheritance with an explicit child handoff packet: delegated goal slice, file refs, memory slice, constraints, and a summarized return channel. Parent context is read-only input, not shared mutable state.
+- [x] 12-7. Extend same-project dispatch beyond narrow bypass commands so corrections, stop/status requests, clarifications, and superseding instructions can attach to or preempt stale queued work without breaking audit history.
+- [x] 12-8. Add queue-collapsing and supersede rules for obsolete queued turns in the same project when a newer instruction makes earlier queued work irrelevant.
+- [x] 12-9. Move chat and project persistence off the hot response path via ordered journal writes plus periodic snapshot and compaction, so tool-heavy turns do not wait on full JSON rewrites.
+- [x] 12-10. Add focused regressions and benchmarks for child metadata isolation, hybrid child-tree scheduling, same-project supersede ordering, and fair sharing between simultaneous tool-heavy chats.
 
 ## Decisions
 
@@ -139,6 +139,7 @@ All 22 tests in `tests/test_concierge/test_parallelism_integration.py`.
 - 2026-03-20 follow-up decision: keep the remaining concierge-throughput work inside this existing `29-5` plan instead of creating a nested `29-5-*` follow-up plan. The unresolved items are implementation refinements, not a separate architecture track.
 - 2026-03-21 review follow-up: expanded section 12 after [product review](../reviews/2026-03-21-product-review.md) to absorb the remaining premium-subagent gaps: child-session isolation, same-project supersede and preemption, and chat/project snapshot write amplification. Run-event persistence is tracked in 37-5; memory-index persistence stays in 29-1.
 - 2026-03-21 review decision: child sessions should have their own IDs by default. Parent threads should receive explicit handoff inputs and summarized child outputs, not share thread identity or mutable thread metadata with children.
+- 2026-03-26 follow-up closeout: dispatcher advisory run slots now release once a turn enters tool wait, queued same-project follow-ups can preempt/redirect stale work, `child_execution="mixed"` now keeps real hybrid scheduling, pending confirm/clarify replies now attach the effective prompt context in metadata while preserving the live user reply in audit history, and chat/project hot-path persistence now avoids the full replay path for common writes. This completes the `29-5` follow-up block.
 
 ## Notes
 
@@ -148,4 +149,4 @@ All 22 tests in `tests/test_concierge/test_parallelism_integration.py`.
 - The `fan_out` utility is deliberately simple — just `asyncio.gather` with error handling and timeout. No task framework, no scheduler. The complexity is in identifying which operations are independent at each call site, not in the parallelism mechanism.
 - Tasks 3-6 (tool/diagnosis/memory/build parallelism) are integration points with 29-3, 29-4, and 29-6. Those plans define the operations; this plan ensures they run concurrently where possible. The sub-task items in 3-6 should be implemented when the corresponding plan is being built.
 - Focused diagnosis tests now live in `tests/test_concierge/test_build_session_diagnosis.py` and cover combined aggregation plus partial-source failure fallback.
-- Remaining gap after the original rollout: concierge already has the right parallel primitives, but dispatcher-level LLM capacity is still tracked too coarsely and `mixed` child execution still collapses to serial. The follow-up is about making the existing architecture more efficient, not about broadening scope.
+- The `29-5` follow-up is complete. Future persistence work, if reopened, would be about stronger atomicity or cross-process coordination rather than the original hot-path replay cost.
