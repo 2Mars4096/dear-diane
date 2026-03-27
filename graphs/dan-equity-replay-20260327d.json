@@ -1,0 +1,18 @@
+{
+  "version": "dan_graph_v1",
+  "metadata": {
+    "name": "dan-equity-replay-20260327d",
+    "description": "",
+    "created_at": "2026-03-27T01:32:46Z",
+    "updated_at": "2026-03-27T01:32:46Z",
+    "tags": []
+  },
+  "nodes": [],
+  "edges": [],
+  "sub_graphs": {},
+  "entry_points": [],
+  "exit_points": [],
+  "shared_context": [],
+  "artifact_refs": [],
+  "hyperedges": []
+}

@@ -1,0 +1,18 @@
+{
+  "version": "dan_graph_v1",
+  "metadata": {
+    "name": "dan-equity-build-clean-20260327a",
+    "description": "",
+    "created_at": "2026-03-27T01:35:32Z",
+    "updated_at": "2026-03-27T01:35:32Z",
+    "tags": []
+  },
+  "nodes": [],
+  "edges": [],
+  "sub_graphs": {},
+  "entry_points": [],
+  "exit_points": [],
+  "shared_context": [],
+  "artifact_refs": [],
+  "hyperedges": []
+}
