@@ -49,16 +49,19 @@ Supported stage types (use ONLY these):
 Rules:
 - Decompose the goal into sequential stages. Each stage needs a name, description, \
 and stage_type from the list above.
-- CRITICAL: Each distinct step, action, or verb phrase the user mentions MUST become \
-its own separate stage. NEVER collapse multiple steps into one stage. If the user says \
-"research, analyze, and summarize", that is 3 separate stages, not 1. If the user says \
-"search the web, read results, and write a briefing", that is 3 stages.
-- A simple count: if the prompt mentions N distinct actions, emit at least N stages.
+- CRITICAL: Each distinct user action must become its own stage. Do not collapse \
+multiple verbs into one stage.
+- Emit at least as many stages as the prompt clearly implies.
 - Only use the listed stage types. Do not invent new ones.
 - For tool-related actions (search, read file, write file, email, fetch URL), use \
 stage_type=tool_call with the appropriate tool_id from the available list.
 - For code/compute actions (calculate, analyze data, run Python, generate chart), use \
 stage_type=code_execution.
+- Only include config.code for code_execution when you can state concrete runnable \
+Python from the user's request. If the code is not concretely derivable, leave \
+config.code empty instead of inventing fake logic.
+- Never use placeholder payload code or fabricated completion markers such as \
+{{"status": "placeholder"}} or {{"statistics": "computed"}} to stand in for real execution.
 - For parallel processing (process each, for each, in parallel), use stage_type=fan_out.
 - For review/quality loops (review, iterate, improve until), use stage_type=review_loop \
 with reviewer_prompt, condition, and max_iterations.
@@ -71,16 +74,6 @@ and max_iterations.
 deliverables).
 - If the goal is ambiguous or underspecified, ask a clarification question instead \
 of guessing. Never fabricate details the user did not mention.
-
-Common workflow patterns (use these as guidance):
-- Linear chain: sequential transform stages
-- Review loop: draft → review → revise cycle → use stage_type=review_loop
-- Tool chain: sequential tool and LLM calls
-- Research + review: research stages followed by quality review
-- Comparison: process items in parallel then compare
-- Document pipeline: read → process → write
-- Code analysis: file operations + code execution + analysis
-- Iterative improvement: repeated refinement toward a goal
 
 IMPORTANT stage_type selection rules (do NOT default everything to transform):
 - "search", "web search", "fetch URL", "read file", "write file", "email", "send" \
@@ -244,7 +237,6 @@ INTENT_FEW_SHOT_EXAMPLES: list[dict] = [
                     "name": "analyze",
                     "stage_type": "code_execution",
                     "description": "Run statistical analysis and generate chart",
-                    "config": {"code": "import json; result = {'statistics': 'computed', 'chart_path': 'chart.png'}"},
                 },
                 {
                     "name": "write_report",
@@ -273,7 +265,8 @@ def build_intent_extraction_system_prompt() -> str:
         + render_tool_id_list()
         + ". "
         + "Do NOT invent tool_ids not in this list. If no tool matches, use "
-        + "code_execution with inline Python instead."
+        + "code_execution with inline Python only when you can provide real runnable "
+        + "logic; otherwise leave config.code empty rather than inventing placeholder code."
     )
     if workflow_generation_contract_enabled():
         prompt = (

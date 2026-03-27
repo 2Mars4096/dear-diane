@@ -30,9 +30,34 @@ FailureBucket = Literal[
 ]
 
 _WARNING_KEYWORDS = ("warning", "deprecated", "untyped")
-_PLACEHOLDER_CODE_RE = re.compile(
-    r"result\s*=\s*\{[^{}]{0,500}[\"']status[\"']\s*:\s*[\"']placeholder[\"']",
-    re.IGNORECASE | re.DOTALL,
+_PLACEHOLDER_STATUS_VALUE = "placeholder"
+_FOREACH_ITERABLE_PORTS = frozenset({"items", "input", "data"})
+_LLM_EXTERNAL_ACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"\b(?:web search|search the web|browse the web|search online)\b", re.IGNORECASE),
+        "web search or browsing",
+    ),
+    (
+        re.compile(
+            r"\b(?:fetch|download|pull|retrieve|scrape)\b.*\b(?:api|apis|url|website|web|news|data)\b",
+            re.IGNORECASE,
+        ),
+        "external data retrieval",
+    ),
+    (
+        re.compile(
+            r"\b(?:read|load|open|parse)\b.*\b(?:file|files|csv|pdf|spreadsheet|folder|directory|path)\b",
+            re.IGNORECASE,
+        ),
+        "file or document access",
+    ),
+    (
+        re.compile(
+            r"\b(?:write|save|store|archive|persist|export|append)\b.*\b(?:file|files|path|paths|folder|directory|csv|json|markdown|disk|archive)\b",
+            re.IGNORECASE,
+        ),
+        "file persistence",
+    ),
 )
 
 
@@ -721,40 +746,224 @@ def _reachable_nodes(graph: Graph) -> set[str]:
     return visited
 
 
-def _check_run_readiness(graph: Graph) -> list[str]:
+def _contains_placeholder_status_payload(parsed: ast.AST) -> bool:
+    for node in ast.walk(parsed):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values, strict=False):
+            if not isinstance(key, ast.Constant):
+                continue
+            if str(key.value).strip().lower() != "status":
+                continue
+            if (
+                isinstance(value, ast.Constant)
+                and isinstance(value.value, str)
+                and value.value.strip().lower() == _PLACEHOLDER_STATUS_VALUE
+            ):
+                return True
+    return False
+
+
+def describe_code_readiness_issue(
+    code: str | None,
+    *,
+    artifact_label: str,
+) -> str | None:
+    snippet = str(code or "")
+    if not snippet.strip():
+        return f"{artifact_label} has empty code, so it is not run-ready."
+    try:
+        parsed = ast.parse(snippet, mode="exec")
+    except SyntaxError as exc:
+        line = f" at line {exc.lineno}" if exc.lineno is not None else ""
+        return (
+            f"{artifact_label} contains non-runnable Python "
+            f"({exc.msg}{line})."
+        )
+    if _contains_placeholder_status_payload(parsed):
+        return (
+            f"{artifact_label} contains placeholder status payload code "
+            "instead of runnable logic."
+        )
+    return None
+
+
+def _connected_input_ports(graph: Graph) -> dict[str, set[str]]:
+    connected: dict[str, set[str]] = {node.id: set() for node in graph.nodes}
+    for edge in graph.edges:
+        if edge.target_node_id in connected:
+            connected[edge.target_node_id].add(edge.target_port)
+    return connected
+
+
+def _input_port_names(node: Any) -> set[str]:
+    return {
+        str(getattr(port, "name", "") or "").strip()
+        for port in list(getattr(node, "input_ports", []) or [])
+        if str(getattr(port, "name", "") or "").strip()
+    }
+
+
+def _describe_foreach_readiness_issue(
+    node: Any,
+    *,
+    graph: Graph,
+    connected_inputs: dict[str, set[str]],
+    graph_label: str,
+) -> str | None:
+    if getattr(node, "node_type", "") != "for_each":
+        return None
+    declared_inputs = _input_port_names(node)
+    connected = connected_inputs.get(node.id, set())
+    if connected & _FOREACH_ITERABLE_PORTS:
+        return None
+    if getattr(node, "external_input_schema", None):
+        return None
+    if (declared_inputs & _FOREACH_ITERABLE_PORTS) and node.id in graph.entry_points:
+        return None
+    if declared_inputs & _FOREACH_ITERABLE_PORTS:
+        return (
+            f"{graph_label} for-each node '{node.id}' declares iterable input "
+            "ports but none are connected, so it is not run-ready."
+        )
+    return (
+        f"{graph_label} for-each node '{node.id}' has no iterable input source. "
+        "Connect an incoming 'items'/'input'/'data' edge or declare one of those "
+        "entry input ports."
+    )
+
+
+def _describe_llm_external_action_issue(
+    node: Any,
+    *,
+    graph_label: str,
+) -> str | None:
+    if getattr(node, "node_type", "") != "llm_operator":
+        return None
+    if list(getattr(node, "tools", []) or []):
+        return None
+    text = " ".join(
+        str(part).strip()
+        for part in (
+            getattr(node, "name", ""),
+            getattr(node, "description", ""),
+            getattr(node, "prompt_template", ""),
+            getattr(node, "system_prompt", ""),
+        )
+        if str(part).strip()
+    )
+    if not text:
+        return None
+    for pattern, capability in _LLM_EXTERNAL_ACTION_PATTERNS:
+        if pattern.search(text):
+            return (
+                f"{graph_label} LLM node '{node.id}' has no tools, but its prompt "
+                f"implies {capability}. Use a tool node, a tool-enabled LLM node, "
+                "or a code node instead."
+            )
+    return None
+
+
+def _required_tool_args(tool_id: str) -> set[str]:
+    try:
+        from dan.tools import get_all_tools
+
+        entry = get_all_tools().get(tool_id)
+    except Exception:
+        return set()
+    if not entry:
+        return set()
+    metadata = entry[1]
+    parameters = metadata.get("parameters")
+    if not isinstance(parameters, dict):
+        return set()
+    required = parameters.get("required")
+    if not isinstance(required, list):
+        return set()
+    return {
+        str(item).strip()
+        for item in required
+        if str(item).strip()
+    }
+
+
+def _check_graph_run_readiness(
+    graph: Graph,
+    *,
+    graph_label: str,
+    require_entry_exit: bool,
+) -> list[str]:
     issues: list[str] = []
     if not graph.nodes:
-        issues.append("Workflow has no nodes, so it is not run-ready.")
+        issues.append(f"{graph_label} has no nodes, so it is not run-ready.")
         return issues
+    connected_inputs = _connected_input_ports(graph)
     for node in graph.nodes:
         if getattr(node, "node_type", "") != "code_operator":
-            continue
-        code = str(getattr(node, "code", "") or "")
-        if not code.strip():
-            issues.append(f"Code node '{node.id}' has empty code, so it is not run-ready.")
-            continue
-        if _PLACEHOLDER_CODE_RE.search(code):
-            issues.append(
-                f"Code node '{node.id}' contains placeholder status payload code instead of runnable logic."
+            if getattr(node, "node_type", "") == "tool_operator":
+                required_args = _required_tool_args(getattr(node, "tool_id", ""))
+                tool_config = getattr(node, "tool_config", {}) or {}
+                available_args = {
+                    key
+                    for key, value in dict(tool_config).items()
+                    if value not in (None, "", [], {})
+                }
+                available_args.update(connected_inputs.get(node.id, set()))
+                missing_args = sorted(required_args - available_args)
+                for arg_name in missing_args:
+                    issues.append(
+                        f"{graph_label} tool node '{node.id}' ({node.tool_id}) is missing required argument "
+                        f"'{arg_name}'; provide it via tool_config or an incoming edge."
+                    )
+            foreach_issue = _describe_foreach_readiness_issue(
+                node,
+                graph=graph,
+                connected_inputs=connected_inputs,
+                graph_label=graph_label,
             )
-            continue
-        try:
-            ast.parse(code, mode="exec")
-        except SyntaxError as exc:
-            line = f" at line {exc.lineno}" if exc.lineno is not None else ""
-            issues.append(
-                f"Code node '{node.id}' contains non-runnable Python ({exc.msg}{line})."
+            if foreach_issue:
+                issues.append(foreach_issue)
+            llm_issue = _describe_llm_external_action_issue(
+                node,
+                graph_label=graph_label,
             )
-    if not graph.entry_points:
-        issues.append("Workflow has no entry points, so it is not run-ready.")
-    if not graph.exit_points:
-        issues.append("Workflow has no exit points, so it is not run-ready.")
-    if issues:
-        return issues
-    reachable = _reachable_nodes(graph)
-    if not any(exit_id in reachable for exit_id in graph.exit_points):
-        issues.append("No exit point is reachable from the current entry points.")
+            if llm_issue:
+                issues.append(llm_issue)
+            continue
+        issue = describe_code_readiness_issue(
+            getattr(node, "code", ""),
+            artifact_label=f"{graph_label} code node '{node.id}'",
+        )
+        if issue:
+            issues.append(issue)
+    if require_entry_exit:
+        if not graph.entry_points:
+            issues.append(f"{graph_label} has no entry points, so it is not run-ready.")
+        if not graph.exit_points:
+            issues.append(f"{graph_label} has no exit points, so it is not run-ready.")
+        if not issues:
+            reachable = _reachable_nodes(graph)
+            if not any(exit_id in reachable for exit_id in graph.exit_points):
+                issues.append(
+                    f"No exit point in {graph_label.lower()} is reachable from the current entry points."
+                )
+    for subgraph_key, subgraph in graph.sub_graphs.items():
+        issues.extend(
+            _check_graph_run_readiness(
+                subgraph,
+                graph_label=f"Subgraph '{subgraph_key}'",
+                require_entry_exit=False,
+            )
+        )
     return issues
+
+
+def _check_run_readiness(graph: Graph) -> list[str]:
+    return _check_graph_run_readiness(
+        graph,
+        graph_label="Workflow",
+        require_entry_exit=True,
+    )
 
 
 def classify_run_readiness_issues(issues: list[str]) -> str | None:

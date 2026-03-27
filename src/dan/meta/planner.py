@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import PurePosixPath
 import re
 import uuid
 from dataclasses import dataclass, field as dc_field
@@ -25,7 +26,9 @@ from dan.meta.tool_catalog import render_tool_catalog_markdown
 from dan.meta.workflow_contract import (
     WorkflowBuildContractReport,
     classify_run_readiness_issues,
+    describe_code_readiness_issue,
     validate_workflow_build_contract,
+    workflow_build_provenance,
 )
 from dan.workflow_generation_guidance import (
     render_workflow_generation_contract,
@@ -174,6 +177,155 @@ class ExecutionReadinessError(ValueError):
 
 _LEGACY_GENERATE_FALLBACK = True
 
+_EXPLICIT_PATH_RE = re.compile(
+    r"""(?:(?<=^)|(?<=[\s"'`(]))(?P<path>(?:~|/|\.{1,2})?[\w./-]+(?:/|(?:\.[A-Za-z0-9]{1,8})))(?=$|[\s"'`,;:.)])"""
+)
+_TEXT_LIKE_SUFFIXES = {
+    ".json",
+    ".md",
+    ".markdown",
+    ".txt",
+    ".py",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".csv",
+    ".tsv",
+}
+_PATH_SUFFIXES_BY_TOOL: dict[str, set[str]] = {
+    "csv_read": {".csv", ".tsv"},
+    "spreadsheet_read": {".xlsx", ".xls", ".xlsm"},
+    "pdf_read": {".pdf"},
+    "file_read": _TEXT_LIKE_SUFFIXES,
+}
+_DIRECTORY_PATH_TOOLS = {"list_directory"}
+_PATH_CONFIG_KEY_BY_TOOL: dict[str, str] = {
+    "csv_read": "path",
+    "file_read": "path",
+    "file_write": "path",
+    "list_directory": "path",
+    "pdf_read": "path",
+    "spreadsheet_read": "path",
+}
+
+
+def _extract_explicit_paths_from_text(text: str | None) -> list[str]:
+    if not text:
+        return []
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for match in _EXPLICIT_PATH_RE.finditer(text):
+        raw = str(match.group("path") or "").strip()
+        if not raw:
+            continue
+        path = raw.rstrip(".,;:")
+        if "/" not in path and "." not in PurePosixPath(path).name:
+            continue
+        if path not in seen:
+            seen.add(path)
+            ordered.append(path)
+    return ordered
+
+
+def _hint_tokens(*parts: str) -> set[str]:
+    tokens: set[str] = set()
+    for part in parts:
+        for token in re.split(r"[^a-z0-9]+", str(part or "").lower()):
+            if len(token) >= 3:
+                tokens.add(token)
+    return tokens
+
+
+def _candidate_paths_for_tool(tool_id: str, paths: list[str]) -> list[str]:
+    if tool_id in _DIRECTORY_PATH_TOOLS:
+        return [path for path in paths if path.endswith("/")]
+
+    suffixes = _PATH_SUFFIXES_BY_TOOL.get(tool_id)
+    candidates: list[str] = []
+    for path in paths:
+        if path.endswith("/"):
+            continue
+        suffix = PurePosixPath(path).suffix.lower()
+        if suffixes is None or suffix in suffixes:
+            candidates.append(path)
+    return candidates
+
+
+def _score_path_candidate(node: dict[str, Any], tool_id: str, path: str) -> int:
+    basename = PurePosixPath(path.rstrip("/")).name
+    stem = PurePosixPath(basename).stem.lower()
+    suffix = PurePosixPath(basename).suffix.lower()
+    hint_tokens = _hint_tokens(
+        str(node.get("id") or ""),
+        str(node.get("name") or ""),
+        str(node.get("description") or ""),
+    )
+    path_tokens = _hint_tokens(stem)
+
+    score = 0
+    if stem and stem in " ".join(sorted(hint_tokens)):
+        score += 4
+    overlap = hint_tokens & path_tokens
+    score += 3 * len(overlap)
+    preferred_suffixes = _PATH_SUFFIXES_BY_TOOL.get(tool_id)
+    if preferred_suffixes and suffix in preferred_suffixes:
+        score += 2
+    if tool_id == "file_read" and suffix in {".json", ".md", ".txt", ".py"}:
+        score += 1
+    return score
+
+
+def _bind_explicit_tool_paths(
+    graph_data: dict[str, Any],
+    *,
+    user_text: str | None,
+) -> dict[str, Any]:
+    paths = _extract_explicit_paths_from_text(user_text)
+    if not paths:
+        return graph_data
+
+    nodes = graph_data.get("nodes")
+    if not isinstance(nodes, list):
+        return graph_data
+
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("node_type") != "tool_operator":
+            continue
+        tool_id = str(node.get("tool_id") or "").strip()
+        config_key = _PATH_CONFIG_KEY_BY_TOOL.get(tool_id)
+        if not config_key:
+            continue
+
+        tool_config = node.get("tool_config")
+        if not isinstance(tool_config, dict):
+            tool_config = {}
+            node["tool_config"] = tool_config
+        if str(tool_config.get(config_key) or "").strip():
+            continue
+
+        candidates = _candidate_paths_for_tool(tool_id, paths)
+        if not candidates:
+            continue
+        if len(candidates) == 1:
+            tool_config[config_key] = candidates[0]
+            continue
+
+        scored = [
+            (_score_path_candidate(node, tool_id, candidate), candidate)
+            for candidate in candidates
+        ]
+        scored.sort(key=lambda item: item[0], reverse=True)
+        best_score, best_candidate = scored[0]
+        if best_score <= 0:
+            continue
+        if len(scored) > 1 and scored[1][0] == best_score:
+            continue
+        tool_config[config_key] = best_candidate
+
+    return graph_data
+
 
 def _parse_codegen_result(
     result: Any,
@@ -260,6 +412,67 @@ def _format_run_readiness_issues(
     if not failure_mode:
         return list(issues)
     return [f"[{failure_mode}] {issue}" for issue in issues]
+
+
+def _intent_has_code_execution_stage(intent: Any | None) -> bool:
+    if intent is None:
+        return False
+    for stage in list(getattr(intent, "stages", []) or []):
+        stage_type = getattr(stage, "stage_type", None)
+        stage_type_value = getattr(stage_type, "value", stage_type)
+        if str(stage_type_value or "").strip() == "code_execution":
+            return True
+    return False
+
+
+def _intent_code_execution_issues(intent: Any | None) -> list[str]:
+    if intent is None:
+        return []
+    issues: list[str] = []
+    for stage in list(getattr(intent, "stages", []) or []):
+        stage_type = getattr(stage, "stage_type", None)
+        stage_type_value = getattr(stage_type, "value", stage_type)
+        if str(stage_type_value or "").strip() != "code_execution":
+            continue
+        config = getattr(stage, "config", {}) or {}
+        code = config.get("code") if isinstance(config, dict) else ""
+        stage_name = str(getattr(stage, "name", "") or "code_stage")
+        issue = describe_code_readiness_issue(
+            code,
+            artifact_label=f"Code stage '{stage_name}'",
+        )
+        if issue:
+            issues.append(issue)
+    return issues
+
+
+def _honest_codegen_failure_message(
+    plan: "GenerateCodePlan",
+    exc: BaseException,
+) -> str | None:
+    if not _intent_has_code_execution_stage(getattr(plan, "intent", None)):
+        return None
+
+    stage_issues = _intent_code_execution_issues(getattr(plan, "intent", None))
+    if stage_issues:
+        details = "; ".join(stage_issues[:5])
+        return (
+            "Code-heavy workflow could not be downgraded to a simplified fallback "
+            f"because the required code stages remain unresolved or non-runnable: {details}"
+        )
+
+    stage_names = [
+        str(getattr(stage, "name", "") or "code_stage")
+        for stage in list(getattr(getattr(plan, "intent", None), "stages", []) or [])
+        if str(getattr(getattr(stage, "stage_type", None), "value", getattr(stage, "stage_type", None)) or "").strip()
+        == "code_execution"
+    ]
+    rendered_names = ", ".join(stage_names[:5]) or "code_execution"
+    return (
+        "Code-heavy workflow generation failed and cannot fall back to a "
+        f"simplified non-code graph. Required code stage(s): {rendered_names}. "
+        f"Upstream failure: {exc}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -666,7 +879,9 @@ for common patterns. Use low-level ``wf.llm()`` + ``>>`` only for non-linear top
 4. Wire edges explicitly with ``wf.edge()`` for non-trivial data flow.
 5. Use ``NodeRef`` to reference outputs of ``for_each``, ``while_loop``, and other composite nodes.
 6. Prompt templates use ``{variable}`` placeholders matching input port names.
-7. Output ONLY Python code. No markdown fences, no explanation.
+7. For ``wf.code()`` nodes, write real runnable Python that derives outputs from inputs. Do not use placeholder status payloads such as ``{"status": "placeholder"}`` or fabricated markers like ``"computed"`` in place of real logic.
+8. When the goal includes a concrete local file or directory path, pass that literal path via ``tool_config`` (for example ``{"path": "tests/data.csv"}``) instead of leaving required tool arguments unwired.
+9. Output ONLY Python code. No markdown fences, no explanation.
 
 ## Default-wiring guidance
 
@@ -1181,6 +1396,13 @@ class WorkflowPlanner:
             except ExecutionReadinessError:
                 raise
             except (ValueError, RuntimeError) as exc:
+                honest_failure = _honest_codegen_failure_message(plan, exc)
+                if honest_failure is not None:
+                    readiness_exc = ExecutionReadinessError(honest_failure)
+                    diagnostics = getattr(exc, "diagnostics", None)
+                    if diagnostics is not None:
+                        readiness_exc.diagnostics = diagnostics  # type: ignore[attr-defined]
+                    raise readiness_exc from exc
                 if _LEGACY_GENERATE_FALLBACK:
                     logger.warning(
                         "GENERATE_CODE failed (%s); falling back to legacy GENERATE",
@@ -1297,6 +1519,7 @@ class WorkflowPlanner:
             graph_data = enricher.enrich(graph_data)
         except Exception:
             logger.warning("DefaultsEnricher failed", exc_info=True)
+        graph_data = _bind_explicit_tool_paths(graph_data, user_text=user_text)
         return graph_data
 
     @staticmethod
@@ -1361,28 +1584,24 @@ class WorkflowPlanner:
         if report is None:
             return None
 
+        provenance = workflow_build_provenance(report)
         if validation.fatal_errors:
-            failure_bucket = "hard_fail"
             handoff_reason = "The workflow build contract reported fatal failures."
         elif validation.recoverable_errors and not validation.run_ready:
-            failure_bucket = "semantic_reprompt_or_diagnosis"
             handoff_reason = (
                 "The workflow still has repairable contract failures and "
                 "run-readiness gaps after bounded mechanical repair."
             )
         elif validation.recoverable_errors:
-            failure_bucket = "semantic_reprompt_or_diagnosis"
             handoff_reason = (
                 "The workflow still has repairable contract failures after "
                 "bounded mechanical repair."
             )
         elif not validation.run_ready:
-            failure_bucket = "semantic_reprompt_or_diagnosis"
             handoff_reason = (
                 "The workflow passed structural validation but is not run-ready."
             )
         else:
-            failure_bucket = "mechanical_auto_fix"
             handoff_reason = "The workflow build contract is satisfied."
 
         return {
@@ -1391,8 +1610,10 @@ class WorkflowPlanner:
             "display_name": report.display_name,
             "validated": report.validated,
             "run_ready": report.run_ready,
-            "failure_bucket": failure_bucket,
+            "build_status": provenance.get("build_status"),
+            "failure_bucket": provenance.get("failure_bucket"),
             "handoff_reason": handoff_reason,
+            "build_provenance": provenance,
             "build_summary": {
                 "error_count": len(report.errors),
                 "warning_count": len(report.warnings),

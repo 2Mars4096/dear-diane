@@ -397,7 +397,7 @@ class MissingCodeStageError(DirectBuildError):
 
     def __init__(self, stage_name: str, description: str = "") -> None:
         detail = (
-            f"Code stage '{stage_name}' has no runnable code. "
+            f"Code stage '{stage_name}' has no runnable code and remains unresolved. "
             "Deterministic intent compilation must fall back to real workflow code generation."
         )
         if description:
