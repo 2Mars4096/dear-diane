@@ -12,6 +12,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from dan.engine.executor import EngineConfig
+from dan.models.graph import Graph, GraphMetadata
+from dan.models.nodes import CodeOperator
+from dan.models.ports import OutputPort
 from dan.server.concierge.scheduler import (
     DeliveryTarget,
     ScheduleEntry,
@@ -34,6 +38,7 @@ from dan.server.concierge.scheduler import (
     parse_trigger,
     resolve_scheduler_authority,
 )
+from dan.server.run_manager import RunManager
 
 
 # =========================================================================
@@ -512,6 +517,68 @@ class TestTaskScheduler:
         assert latest.status == "running"
         assert latest.completed_at is None
         assert "Started workflow" in latest.result_summary
+
+    @pytest.mark.asyncio
+    async def test_fire_starts_real_workflow_run_via_existing_scheduler_path(
+        self,
+        store,
+        history,
+    ):
+        now = datetime.now(timezone.utc)
+        entry = ScheduleEntry(
+            name="run-workflow",
+            trigger="every 30m",
+            action="run workflow wf-scheduled",
+            workflow_id="wf-scheduled",
+            next_run=now - timedelta(seconds=5),
+        )
+        store.add(entry)
+
+        graph = Graph(
+            metadata=GraphMetadata(name="scheduled-smoke"),
+            nodes=[
+                CodeOperator(
+                    id="emit",
+                    name="emit",
+                    code="result = {'report': 'ok'}",
+                    output_ports=[OutputPort(name="report"), OutputPort(name="result")],
+                )
+            ],
+            edges=[],
+            entry_points=["emit"],
+            exit_points=["emit"],
+        )
+        run_manager = RunManager(engine_config=EngineConfig(checkpoint_enabled=False))
+        started: dict[str, object] = {}
+
+        async def dispatch(action, trigger_context, delivery_target, *, entry=None):
+            assert action == "run workflow wf-scheduled"
+            assert entry is not None
+            assert entry.workflow_id == "wf-scheduled"
+            record = await run_manager.start_run(
+                graph,
+                graph_id=entry.workflow_id,
+                inputs=entry.workflow_inputs or None,
+            )
+            started["record"] = record
+            return f"Started workflow `{entry.workflow_id}` as run `{record.run_id}`."
+
+        scheduler = TaskScheduler(store, dispatch, poll_interval=0.05, history_store=history)
+        await scheduler._fire(entry)
+
+        record = started["record"]
+        assert isinstance(record, object)
+        await asyncio.wait_for(run_manager._tasks[record.run_id], timeout=5.0)
+
+        assert record.status.value == "completed"
+        assert record.result is not None
+        assert record.result.success is True
+        assert record.result.outputs.get("report") == "ok"
+
+        records = history.get_history(entry.id)
+        assert records
+        assert records[-1].status == "running"
+        assert "Started workflow `wf-scheduled`" in records[-1].result_summary
 
     @pytest.mark.asyncio
     async def test_does_not_refire_while_schedule_is_inflight(self, store):

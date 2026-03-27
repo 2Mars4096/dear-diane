@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from enum import Enum
 from typing import Any
@@ -7,33 +8,51 @@ from typing import Any
 from pydantic import BaseModel
 
 _VALID_PREFERENCES = {"auto", "careful", "balanced", "aggressive"}
-_RISKY_KEYWORDS = (
-    "delete",
-    "remove",
-    "destroy",
-    "unpublish",
-    "cancel",
-    "drop",
-    "wipe",
-    "send",
-    "email",
-    "message",
-    "post",
-    "publish",
+
+
+def _load_keywords(env_var: str, defaults: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.environ.get(env_var)
+    if raw:
+        return tuple(k.strip() for k in raw.split(",") if k.strip())
+    return defaults
+
+
+_RISKY_KEYWORDS = _load_keywords(
+    "DAN_AUTONOMY_RISKY_KEYWORDS",
+    (
+        "delete",
+        "remove",
+        "destroy",
+        "unpublish",
+        "cancel",
+        "drop",
+        "wipe",
+        "send",
+        "email",
+        "message",
+        "post",
+        "publish",
+    ),
 )
-_DIRECTIVE_KEYWORDS = (
-    "implement",
-    "fix",
-    "patch",
-    "update",
-    "edit",
-    "add",
-    "create",
-    "refactor",
-    "wire",
-    "run",
-    "test",
+_DIRECTIVE_KEYWORDS = _load_keywords(
+    "DAN_AUTONOMY_DIRECTIVE_KEYWORDS",
+    (
+        "implement",
+        "fix",
+        "patch",
+        "update",
+        "edit",
+        "add",
+        "create",
+        "refactor",
+        "wire",
+        "run",
+        "test",
+    ),
 )
+_AUTONOMY_TOOL_TURNS_CAREFUL = int(os.environ.get("DAN_AUTONOMY_MAX_TOOL_TURNS_CAREFUL", "12"))
+_AUTONOMY_TOOL_TURNS_BALANCED = int(os.environ.get("DAN_AUTONOMY_MAX_TOOL_TURNS_BALANCED", "24"))
+_AUTONOMY_TOOL_TURNS_AGGRESSIVE = int(os.environ.get("DAN_AUTONOMY_MAX_TOOL_TURNS_AGGRESSIVE", "36"))
 _MESSAGING_SURFACES = {"telegram", "whatsapp", "whatsapp-web", "email", "wechat"}
 _QUESTION_PREFIX_RE = re.compile(
     r"^\s*(?:what|how|why|where|when|which|who|can you|could you|would you|is|are|do|does|did|should)\b",
@@ -85,9 +104,9 @@ def normalize_legacy_autonomy_level(value: str | None) -> str:
 def autonomy_max_tool_turns(level: str | None) -> int:
     normalized = normalize_autonomy_preference(level, default=AutonomyPreference.BALANCED.value)
     return {
-        AutonomyPreference.CAREFUL.value: 12,
-        AutonomyPreference.BALANCED.value: 24,
-        AutonomyPreference.AGGRESSIVE.value: 36,
+        AutonomyPreference.CAREFUL.value: _AUTONOMY_TOOL_TURNS_CAREFUL,
+        AutonomyPreference.BALANCED.value: _AUTONOMY_TOOL_TURNS_BALANCED,
+        AutonomyPreference.AGGRESSIVE.value: _AUTONOMY_TOOL_TURNS_AGGRESSIVE,
     }[normalized]
 
 

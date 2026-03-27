@@ -75,6 +75,7 @@ INTENT_DEFINITIONS: tuple[IntentDefinition, ...] = (
         choose_when=(
             "The user wants to add, remove, edit, wire, or redesign workflow structure.",
             "The user is asking for a broader automation plan or longer-horizon orchestration design.",
+            "The user is speaking conversationally about building, extending, or revising a workflow, such as 'build me a workflow', 'set up a pipeline', or 'make it weekly'.",
         ),
         avoid_when=(
             "The user wants the task executed directly right now instead of planning or restructuring the system.",
@@ -87,6 +88,14 @@ INTENT_DEFINITIONS: tuple[IntentDefinition, ...] = (
             IntentExample(
                 user="Set up an always-on research automation system that scouts papers and emails me weekly.",
                 reason="This is a broader automation design / planning request.",
+            ),
+            IntentExample(
+                user="Can you build me a workflow that reads a folder of notes and writes a weekly digest?",
+                reason="Conversational workflow-building language still maps to planning a workflow structure.",
+            ),
+            IntentExample(
+                user="Also wire in an email step so it sends the digest every Monday.",
+                reason="This is a continuation of workflow authoring, not direct execution.",
             ),
         ),
     ),

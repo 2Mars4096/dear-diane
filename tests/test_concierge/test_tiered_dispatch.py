@@ -40,6 +40,8 @@ from dan.server.concierge.tier_executors import (
     _determine_stage,
     _extract_chat_params,
     _find_synthesis_gap_reason,
+    _should_keep_mutation_tool_for_followup,
+    _should_promote_ask_mode_for_workflow_followup,
 )
 from dan.server.concierge.tiering import ConciergeTierResolver
 from dan.server.concierge.tiered_dispatch import ContextGatherer, TieredDispatcher
@@ -1655,6 +1657,22 @@ def test_determine_stage_run_target_ask_intent_is_conversation() -> None:
     route = _FakeRoute(target="run")
     session = _FakeSession(triage=_FakeTriage(intent="ask", route=route))
     assert _determine_stage(session) == "conversation"
+
+
+def test_workflow_followup_promotes_ask_mode_and_keeps_mutation_tool() -> None:
+    history = [
+        {"role": "user", "content": "build a workflow for quarterly reports"},
+        {"role": "assistant", "content": "I created a workflow with 3 nodes."},
+    ]
+
+    assert _should_promote_ask_mode_for_workflow_followup(
+        "also make it weekly and send email updates",
+        history,
+    )
+    assert _should_keep_mutation_tool_for_followup(
+        "also make it weekly and send email updates",
+        history,
+    )
 
 
 # ---------------------------------------------------------------------------

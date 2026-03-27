@@ -5,6 +5,7 @@ import importlib
 
 import pytest
 
+from dan.server.concierge.intent_catalog import build_classifier_prompt
 from dan.server.concierge.models import Project, ResolvedContext, Task, TaskTurn
 from dan.server.concierge.project_store import ProjectStore
 from dan.server.concierge.triage import _build_triage_messages, fast_classify_text, triage
@@ -316,6 +317,175 @@ async def test_triage_uses_explicit_non_workflow_lexical_scenarios(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Build me a workflow that monitors earnings reports and generates a weekly briefing",
+        "Design a pipeline that automates weekly briefings from earnings reports",
+    ],
+)
+async def test_triage_routes_explicit_workflow_authoring_phrases_to_workflow_build(
+    text: str,
+):
+    context, _project, _task = _make_context()
+    llm_calls = 0
+
+    async def _should_not_run(_messages):
+        nonlocal llm_calls
+        llm_calls += 1
+        return "{}"
+
+    result = await triage(text, context, _should_not_run)
+
+    assert result.route_source == "fast_lexical"
+    assert result.scenario_id == "workflow_authoring_request"
+    assert result.route is not None
+    assert result.route.target == "workflow"
+    assert result.route.action_hints == ["workflow_edit"]
+    assert llm_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_triage_routes_workflow_followup_authoring_phrases_to_workflow_build():
+    context, _project, _task = _make_context(turns=_workflow_activity_turns())
+    llm_calls = 0
+
+    async def _should_not_run(_messages):
+        nonlocal llm_calls
+        llm_calls += 1
+        return "{}"
+
+    result = await triage("also make it weekly and send email updates", context, _should_not_run)
+
+    assert result.route_source == "fast_lexical"
+    assert result.scenario_id == "workflow_authoring_followup"
+    assert result.route is not None
+    assert result.route.target == "workflow"
+    assert result.route.action_hints == ["workflow_edit"]
+    assert llm_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_triage_routes_workflow_authoring_prompts_stably_across_repeated_trials():
+    context, _project, _task = _make_context(turns=_workflow_activity_turns())
+
+    async def _should_not_run(_messages):
+        return "{}"
+
+    signatures = []
+    for _ in range(10):
+        result = await triage(
+            "also make it weekly and send email updates",
+            context,
+            _should_not_run,
+        )
+        signatures.append(
+            (
+                result.route_source,
+                result.scenario_id,
+                result.intent,
+                result.route.target if result.route is not None else None,
+                tuple(result.route.action_hints if result.route is not None else []),
+            )
+        )
+
+    assert len(set(signatures)) == 1
+    assert signatures[0] == (
+        "fast_lexical",
+        "workflow_authoring_followup",
+        "agent",
+        "workflow",
+        ("workflow_edit",),
+    )
+
+
+@pytest.mark.asyncio
+async def test_triage_fallback_prefers_workflow_build_for_continuation_turns_when_llm_fails(monkeypatch):
+    context, _project, _task = _make_context(turns=_workflow_activity_turns())
+
+    monkeypatch.setattr(
+        triage_module,
+        "evaluate_lexical_scenarios",
+        lambda _text, _context: type("LexicalStub", (), {"status": "no_match", "scenario": None})(),
+    )
+
+    async def _bad_complete(_messages):
+        return "definitely not valid json"
+
+    result = await triage("also make it weekly and send email updates", context, _bad_complete)
+
+    assert result.route_source == "heuristic_fallback"
+    assert result.intent == "agent"
+    assert result.tier == 2
+    assert result.route is not None
+    assert result.route.target == "workflow"
+    assert result.route.action_hints == ["workflow_edit"]
+
+
+def test_triage_repairs_trailing_comma_json_response():
+    raw = (
+        '{"tier": 2, "intent": "agent", "route": {'
+        '"mode": "agent", "target": "workflow", "action_hints": ["workflow_edit"],},'
+        '"confidence": 0.91, "goal": "Build a workflow", "deliverable": "Workflow",'
+        '"entities": [], "is_resume": false, "resume_task_id": null,'
+        '"is_social": false, "social_response": null, "context_needs": [],'
+        '"subtasks": [], "execution_order": "parallel", "rationale": "ok"}'
+    )
+
+    result = triage_module._parse_triage_response(raw)
+
+    assert result is not None
+    assert result.route is not None
+    assert result.route.target == "workflow"
+    assert result.route.action_hints == ["workflow_edit"]
+
+
+@pytest.mark.asyncio
+async def test_triage_requests_json_object_response_format_when_supported(monkeypatch):
+    context, _project, _task = _make_context()
+    monkeypatch.setattr(triage_module, "_TRIAGE_RESPONSE_FORMAT", "json_object")
+    captured: dict[str, object] = {}
+
+    async def _complete(_messages, **kwargs):
+        captured.update(kwargs)
+        return (
+            '{"tier": 1, "intent": "ask", "route": null, "confidence": 0.8, '
+            '"goal": "What is 2 plus 2?", "deliverable": "What is 2 plus 2?", '
+            '"entities": [], "is_resume": false, "resume_task_id": null, '
+            '"is_social": false, "social_response": null, "context_needs": [], '
+            '"subtasks": [], "execution_order": "parallel", "rationale": "ok"}'
+        )
+
+    result = await triage("What is 2 plus 2?", context, _complete)
+
+    assert captured["response_format"] == {"type": "json_object"}
+    assert result.route_source == "llm"
+
+
+@pytest.mark.asyncio
+async def test_triage_json_object_mode_falls_back_to_legacy_llm_signature(monkeypatch):
+    context, _project, _task = _make_context()
+    monkeypatch.setattr(triage_module, "_TRIAGE_RESPONSE_FORMAT", "json_object")
+    calls = 0
+
+    async def _legacy(_messages):
+        nonlocal calls
+        calls += 1
+        return (
+            '{"tier": 1, "intent": "ask", "route": null, "confidence": 0.8, '
+            '"goal": "What is 2 plus 2?", "deliverable": "What is 2 plus 2?", '
+            '"entities": [], "is_resume": false, "resume_task_id": null, '
+            '"is_social": false, "social_response": null, "context_needs": [], '
+            '"subtasks": [], "execution_order": "parallel", "rationale": "ok"}'
+        )
+
+    result = await triage("What is 2 plus 2?", context, _legacy)
+
+    assert calls == 1
+    assert result.route_source == "llm"
+
+
+@pytest.mark.asyncio
 async def test_triage_escalates_ambiguous_workflow_and_file_followup_to_llm():
     context, _project, _task = _make_context(turns=_workflow_activity_turns())
     llm_calls = 0
@@ -555,6 +725,47 @@ def test_build_triage_messages_includes_six_recent_turns_with_wider_truncation()
     assert "turn 0" not in prior_messages[0]["content"]
     assert "turn 2" in prior_messages[0]["content"]
     assert len(prior_messages[0]["content"]) == 400
+
+
+def test_build_classifier_prompt_includes_conversational_workflow_authoring_examples():
+    prompt = build_classifier_prompt().lower()
+
+    assert "can you build me a workflow" in prompt
+    assert "set up a pipeline" in prompt
+    assert "workflow authoring" in prompt or "workflow" in prompt
+
+
+@pytest.mark.asyncio
+async def test_triage_embedding_plan_prompt_routes_to_workflow_edit(monkeypatch):
+    context, _project, _task = _make_context(task_label="General task")
+
+    async def _embed_texts(texts, *, model, api_key, base_url):
+        return [[1.0, 0.0] for _ in texts]
+
+    async def _prototype_vectors(model, api_key, base_url):
+        return {
+            "intent:plan": [[1.0, 0.0]],
+            "target:workflow": [[1.0, 0.0]],
+            "hint:workflow_edit": [[1.0, 0.0]],
+        }
+
+    monkeypatch.setattr(triage_module, "_TRIAGE_EMBEDDING_ENABLED", True)
+    monkeypatch.setattr(triage_module, "_embedding_api_settings", lambda: ("test-key", "https://example.invalid", "test-model"))
+    monkeypatch.setattr(triage_module, "_embed_texts", _embed_texts)
+    monkeypatch.setattr(triage_module, "_prototype_vectors", _prototype_vectors)
+
+    result = await triage_module._embedding_triage_result(
+        "can you build me a workflow that reads notes and writes a weekly digest?",
+        context,
+    )
+
+    assert result is not None
+    assert result.intent == "plan"
+    assert result.tier == 2
+    assert result.route is not None
+    assert result.route.target == "workflow"
+    assert "workflow_edit" in result.route.action_hints
+    assert result.route_source == "embedding"
 
 
 @pytest.mark.asyncio
@@ -815,3 +1026,36 @@ def test_fallback_no_workflow_edit_for_generic_build_without_linked_workflow():
         context,
     )
     assert "workflow_edit" not in hints
+
+
+@pytest.mark.asyncio
+async def test_workflow_authoring_triage_is_stable_across_repeated_runs() -> None:
+    context, _project, _task = _make_context(turns=_workflow_activity_turns())
+    prompts = [
+        "build me a workflow that reads notes and emails a weekly digest",
+        "also make it weekly and add an approval step",
+        "apply it",
+    ]
+
+    async def _should_not_run(_messages):
+        raise AssertionError(
+            "Workflow-authoring stability prompts should route before the LLM triage layer."
+        )
+
+    observed: dict[str, set[tuple[object, ...]]] = {prompt: set() for prompt in prompts}
+    for _ in range(10):
+        for prompt in prompts:
+            result = await triage(prompt, context, _should_not_run)
+            observed[prompt].add(
+                (
+                    result.tier,
+                    result.intent,
+                    getattr(result.route, "mode", None).value if result.route is not None else None,
+                    getattr(result.route, "target", None) if result.route is not None else None,
+                    tuple(getattr(result.route, "action_hints", []) or []),
+                    result.route_source,
+                    result.scenario_id,
+                )
+            )
+
+    assert all(len(routes) == 1 for routes in observed.values())

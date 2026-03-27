@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Literal
@@ -56,6 +57,28 @@ _WORKFLOW_ACTIVITY_LABEL_RE = re.compile(
     r"\b(?:workflow|graph|build|node)\b",
     re.IGNORECASE,
 )
+_WORKFLOW_AUTHORING_RE = re.compile(
+    r"\b(?:build|create|design|automate|orchestrate|compose|construct|generate|set\s+up|setup)\b"
+    r"(?:\W+\w+){0,4}\W+\b(?:workflow|pipeline|graph)\b|\b(?:workflow|pipeline|graph)\b"
+    r"(?:\W+\w+){0,4}\W+\b(?:build|create|design|automate|orchestrate|compose|construct|generate|set\s+up|setup)\b",
+    re.IGNORECASE,
+)
+_WORKFLOW_CONTINUATION_RE = re.compile(
+    r"\b(?:also|then|next|now|keep|continue|make(?:\s+it)?|turn(?:\s+it)?|add(?:\s+another)?|"
+    r"adjust(?:\s+it)?|change(?:\s+it)?|update(?:\s+it)?|tweak(?:\s+it)?|refine(?:\s+it)?|"
+    r"extend(?:\s+it)?|connect(?:\s+it)?|wire(?:\s+it)?|route(?:\s+it)?|schedule(?:\s+it)?|"
+    r"send(?:\s+it)?|email(?:\s+it)?|notify(?:\s+it)?|monitor(?:\s+it)?|review\s+step)\b",
+    re.IGNORECASE,
+)
+_WORKFLOW_CONTINUATION_SIGNAL_RE = re.compile(
+    r"\b(?:also|then|next|now|keep|continue|make(?:\s+it)?|turn(?:\s+it)?|schedule(?:\s+it)?|"
+    r"send(?:\s+email)?(?:\s+it)?|email(?:\s+updates?)?|notify(?:\s+it)?|monitor(?:\s+it)?|"
+    r"review\s+step)\b",
+    re.IGNORECASE,
+)
+_WORKFLOW_ACTIVITY_LOOKBACK = int(
+    os.environ.get("DAN_TRIAGE_WORKFLOW_ACTIVITY_LOOKBACK", "4") or "4"
+)
 
 
 @dataclass(frozen=True)
@@ -84,7 +107,11 @@ class LexicalRouteResult:
     missing_context: tuple[str, ...] = ()
 
 
-def _recent_workflow_activity(context: ResolvedContext, lookback: int = 4) -> bool:
+def _recent_workflow_activity(
+    _text: str,
+    context: ResolvedContext,
+    lookback: int = _WORKFLOW_ACTIVITY_LOOKBACK,
+) -> bool:
     for turn in context.task.turns[-lookback:]:
         if turn.intent and turn.intent in _WORKFLOW_ACTIVITY_INTENTS:
             return True
@@ -128,7 +155,7 @@ def _linked_workflow_reference(_text: str, context: ResolvedContext) -> bool:
 def _workflow_operation_subject_known(text: str, context: ResolvedContext) -> bool:
     if _explicit_workflow_reference(text):
         return True
-    if _recent_workflow_activity(context):
+    if _recent_workflow_activity(text, context):
         return True
     return _linked_workflow_reference(text, context) and _recent_workflow_reference(context)
 
@@ -195,6 +222,39 @@ DEFAULT_LEXICAL_SCENARIOS: tuple[LexicalScenario, ...] = (
         tier=2,
         examples=("update this file", "rewrite ./README.md"),
         anti_examples=("update the workflow", "retry the workflow"),
+    ),
+    LexicalScenario(
+        id="workflow_authoring_request",
+        description="Explicit workflow or pipeline authoring request with build/create/design phrasing.",
+        positive_patterns=(
+            _WORKFLOW_AUTHORING_RE,
+            re.compile(r"\bbuild\s+me\s+a\s+(?:workflow|pipeline|graph)\b", re.IGNORECASE),
+        ),
+        intent="agent",
+        target="workflow",
+        action_hints=("workflow_edit",),
+        confidence=0.97,
+        tier=2,
+        examples=("build me a workflow that monitors earnings reports", "design a pipeline for weekly briefings"),
+        anti_examples=("build me a file parser", "design a document template"),
+    ),
+    LexicalScenario(
+        id="workflow_authoring_followup",
+        description="Workflow continuation or refinement in an active workflow-build context.",
+        positive_patterns=(
+            _WORKFLOW_CONTINUATION_SIGNAL_RE,
+        ),
+        negative_patterns=(
+            re.compile(r"(?:~?/|\.{1,2}/|[A-Za-z]:\\)", re.IGNORECASE),
+        ),
+        required_context=("recent_workflow_activity",),
+        intent="agent",
+        target="workflow",
+        action_hints=("workflow_edit",),
+        confidence=0.95,
+        tier=2,
+        examples=("also make it weekly", "add a review step"),
+        anti_examples=("also update the file", "add a new note to the document"),
     ),
     LexicalScenario(
         id="explicit_web_lookup",

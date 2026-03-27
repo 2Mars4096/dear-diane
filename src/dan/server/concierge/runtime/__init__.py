@@ -406,7 +406,7 @@ class Concierge:
             pass
         return configured_model or "gpt-4o-mini"
 
-    async def _triage_llm_complete(self, messages: list[dict[str, str]]) -> str:
+    async def _triage_llm_complete(self, messages: list[dict[str, str]], **request_kwargs: Any) -> str:
         model = self._resolve_triage_model()
         tracker = getattr(self, "_resource_tracker", None)
         if tracker is not None:
@@ -419,6 +419,7 @@ class Concierge:
                 temperature=0.0,
                 max_tokens=256,
                 pii_session_key=self._current_surface_id,
+                **request_kwargs,
             )
         finally:
             if tracker is not None:

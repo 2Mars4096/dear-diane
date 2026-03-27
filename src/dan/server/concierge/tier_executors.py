@@ -70,6 +70,19 @@ _WORKFLOW_FOLLOWUP_RE = re.compile(
     r"\b(?:build|rebuild|delete|remove|retry|again|fix|update|test|run|work(?:ing)?|apply|approve|confirm)\b",
     re.IGNORECASE,
 )
+_WORKFLOW_AUTHORING_RE = re.compile(
+    r"\b(?:build|create|design|automate|orchestrate|compose|construct|generate|set\s+up|setup)\b"
+    r"(?:\W+\w+){0,4}\W+\b(?:workflow|pipeline|graph)\b|\b(?:workflow|pipeline|graph)\b"
+    r"(?:\W+\w+){0,4}\W+\b(?:build|create|design|automate|orchestrate|compose|construct|generate|set\s+up|setup)\b",
+    re.IGNORECASE,
+)
+_WORKFLOW_CONTINUATION_RE = re.compile(
+    r"\b(?:also|then|next|now|keep|continue|make(?:\s+it)?|turn(?:\s+it)?|add(?:\s+another)?|"
+    r"adjust(?:\s+it)?|change(?:\s+it)?|update(?:\s+it)?|tweak(?:\s+it)?|refine(?:\s+it)?|"
+    r"extend(?:\s+it)?|connect(?:\s+it)?|wire(?:\s+it)?|route(?:\s+it)?|schedule(?:\s+it)?|"
+    r"send(?:\s+it)?|email(?:\s+it)?|notify(?:\s+it)?|monitor(?:\s+it)?|review\s+step)\b",
+    re.IGNORECASE,
+)
 _WORKFLOW_APPROVAL_RE = re.compile(
     r"\b(?:apply|approve|confirm)\b",
     re.IGNORECASE,
@@ -223,6 +236,10 @@ def _should_keep_mutation_tool_for_followup(
         return True
     if _WORKFLOW_APPROVAL_RE.search(text):
         return True
+    if _WORKFLOW_AUTHORING_RE.search(text):
+        return True
+    if _WORKFLOW_CONTINUATION_RE.search(text) and _ANAPHORA_RE.search(text):
+        return True
     return bool(_WORKFLOW_FOLLOWUP_RE.search(text) and _ANAPHORA_RE.search(text))
 
 
@@ -236,10 +253,15 @@ def _should_promote_ask_mode_for_workflow_followup(
     if _WORKFLOW_APPROVAL_RE.search(text):
         return True
     if not _WORKFLOW_FOLLOWUP_RE.search(text):
-        return False
+        return bool(
+            _WORKFLOW_AUTHORING_RE.search(text)
+            or (_WORKFLOW_CONTINUATION_RE.search(text) and _ANAPHORA_RE.search(text))
+        )
     return bool(
         _WORKFLOW_ACTIVITY_RE.search(text)
         or _ANAPHORA_RE.search(text)
+        or _WORKFLOW_AUTHORING_RE.search(text)
+        or (_WORKFLOW_CONTINUATION_RE.search(text) and _ANAPHORA_RE.search(text))
     )
 
 

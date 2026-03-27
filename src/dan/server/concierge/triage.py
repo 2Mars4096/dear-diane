@@ -56,6 +56,19 @@ _WORKFLOW_EDIT_RE = re.compile(
     r"\b(?:add|remove|delete|rename|connect|disconnect|move|update|change|modify|edit|fix|patch|rewire|build|rebuild|retry|regenerate|redo|try\s+again)\b",
     re.IGNORECASE,
 )
+_WORKFLOW_AUTHORING_RE = re.compile(
+    r"\b(?:build|create|design|automate|orchestrate|compose|construct|generate|set\s+up|setup)\b"
+    r"(?:\W+\w+){0,4}\W+\b(?:workflow|pipeline|graph)\b|\b(?:workflow|pipeline|graph)\b"
+    r"(?:\W+\w+){0,4}\W+\b(?:build|create|design|automate|orchestrate|compose|construct|generate|set\s+up|setup)\b",
+    re.IGNORECASE,
+)
+_WORKFLOW_CONTINUATION_RE = re.compile(
+    r"\b(?:also|then|next|now|keep|continue|make(?:\s+it)?|turn(?:\s+it)?|add(?:\s+another)?|"
+    r"adjust(?:\s+it)?|change(?:\s+it)?|update(?:\s+it)?|tweak(?:\s+it)?|refine(?:\s+it)?|"
+    r"extend(?:\s+it)?|connect(?:\s+it)?|wire(?:\s+it)?|route(?:\s+it)?|schedule(?:\s+it)?|"
+    r"send(?:\s+it)?|email(?:\s+it)?|notify(?:\s+it)?|monitor(?:\s+it)?|review\s+step)\b",
+    re.IGNORECASE,
+)
 _WORKFLOW_BUILD_VERB_RE = re.compile(
     r"\b(?:rebuild|retry|regenerate|redo|try\s+again)\b",
     re.IGNORECASE,
@@ -84,6 +97,15 @@ _TRIAGE_EMBEDDING_MIN_CONFIDENCE = float(
 _TRIAGE_EMBEDDING_HINT_THRESHOLD = float(
     os.environ.get("DAN_TRIAGE_EMBEDDING_HINT_THRESHOLD", "0.30")
 )
+_DAN_TRIAGE_ENTITY_MATCH_MIN_SCORE = float(
+    os.environ.get("DAN_TRIAGE_ENTITY_MATCH_MIN_SCORE", "0.72")
+)
+_DAN_TRIAGE_WORKFLOW_ACTIVITY_LOOKBACK = int(
+    os.environ.get("DAN_TRIAGE_WORKFLOW_ACTIVITY_LOOKBACK", "4")
+)
+_TRIAGE_RESPONSE_FORMAT = str(
+    os.environ.get("DAN_TRIAGE_RESPONSE_FORMAT", "json_object") or "json_object"
+).strip().lower()
 _EMBEDDING_PROTOTYPE_CACHE: dict[tuple[str, str], dict[str, list[list[float]]]] = {}
 
 _EMBEDDING_INTENT_PROTOTYPES: dict[str, tuple[str, ...]] = {
@@ -107,6 +129,9 @@ _EMBEDDING_INTENT_PROTOTYPES: dict[str, tuple[str, ...]] = {
         "design workflow structure",
         "add node and connect edge",
         "plan automation architecture",
+        "build me a workflow that sends weekly digests",
+        "can you set up a pipeline that reads notes and emails updates",
+        "also wire in an email step",
         "设计工作流结构",
         "规划自动化流程",
         "planificar flujo de trabajo",
@@ -132,6 +157,7 @@ _EMBEDDING_TARGET_PROTOTYPES: dict[str, tuple[str, ...]] = {
     "workflow": (
         "edit workflow graph nodes and edges",
         "change automation topology",
+        "build or revise a workflow pipeline",
         "编辑工作流 节点 边",
     ),
     "general": (
@@ -164,6 +190,7 @@ _EMBEDDING_HINT_PROTOTYPES: dict[str, tuple[str, ...]] = {
     "workflow_edit": (
         "edit workflow graph",
         "add remove node edge",
+        "build workflow and wire steps together",
         "编辑工作流 节点 边",
     ),
 }
@@ -608,6 +635,27 @@ def _build_triage_messages(
     return messages
 
 
+def _triage_completion_kwargs() -> dict[str, Any]:
+    if _TRIAGE_RESPONSE_FORMAT in {"", "disabled", "off", "none"}:
+        return {}
+    if _TRIAGE_RESPONSE_FORMAT == "json_object":
+        return {"response_format": {"type": "json_object"}}
+    return {}
+
+
+async def _call_triage_llm(
+    llm_complete: LLMCompleteFunc,
+    messages: list[dict[str, str]],
+) -> Any:
+    request_kwargs = _triage_completion_kwargs()
+    if not request_kwargs:
+        return await llm_complete(messages)
+    try:
+        return await llm_complete(messages, **request_kwargs)
+    except TypeError:
+        return await llm_complete(messages)
+
+
 # ---------------------------------------------------------------------------
 # Response parsing
 # ---------------------------------------------------------------------------
@@ -809,7 +857,7 @@ def _resolve_entity_id(
         if score > best_score:
             best_score = score
             best_id = candidate_id
-    return best_id if best_score >= 0.72 else None
+    return best_id if best_score >= _DAN_TRIAGE_ENTITY_MATCH_MIN_SCORE else None
 
 
 def _resolve_entities(
@@ -983,7 +1031,10 @@ _WORKFLOW_ACTIVITY_LABEL_RE = re.compile(
 )
 
 
-def _has_recent_workflow_activity(context: ResolvedContext, lookback: int = 4) -> bool:
+def _has_recent_workflow_activity(
+    context: ResolvedContext,
+    lookback: int = _DAN_TRIAGE_WORKFLOW_ACTIVITY_LOOKBACK,
+) -> bool:
     """Check whether recent task turns indicate workflow build/edit activity.
 
     Without this guard, generic retry language like "try again" would route
@@ -1013,6 +1064,9 @@ def _infer_fallback_action_hints(text: str, context: ResolvedContext) -> list[st
     lower = text.lower()
     context_text = _context_text(context)
     has_anaphora = bool(_ANAPHORA_RE.search(text))
+    recent_workflow_activity = _has_recent_workflow_activity(context)
+    workflow_authoring_like = bool(_WORKFLOW_AUTHORING_RE.search(text))
+    workflow_continuation_like = bool(_WORKFLOW_CONTINUATION_RE.search(text))
     file_context_like = (
         bool(_PATH_HINT_RE.search(text))
         or any(marker in lower for marker in _FILE_CONTEXT_MARKERS)
@@ -1024,11 +1078,27 @@ def _infer_fallback_action_hints(text: str, context: ResolvedContext) -> list[st
     if not workflow_context_like:
         has_linked_wf = bool(getattr(context.project, "linked_workflow_ids", None))
         if has_linked_wf and _WORKFLOW_BUILD_VERB_RE.search(text):
-            if _has_recent_workflow_activity(context):
+            if recent_workflow_activity:
                 workflow_context_like = True
 
     hints: list[str] = []
-    if workflow_context_like and _WORKFLOW_EDIT_RE.search(text):
+    if workflow_authoring_like:
+        hints.append("workflow_edit")
+        return hints
+    if workflow_context_like and (
+        _WORKFLOW_EDIT_RE.search(text)
+        or workflow_authoring_like
+        or workflow_continuation_like
+    ):
+        hints.append("workflow_edit")
+        return hints
+
+    if (
+        recent_workflow_activity
+        and (workflow_authoring_like or workflow_continuation_like)
+        and not file_context_like
+        and not _WEB_INTENT_RE.search(text)
+    ):
         hints.append("workflow_edit")
         return hints
 
@@ -1072,6 +1142,14 @@ def _fallback_triage_result(text: str, context: ResolvedContext) -> TriageResult
         )
 
     action_hints = _infer_fallback_action_hints(text, context)
+    if not action_hints and (
+        _WORKFLOW_AUTHORING_RE.search(text)
+        or (
+            _has_recent_workflow_activity(context)
+            and _WORKFLOW_CONTINUATION_RE.search(text)
+        )
+    ):
+        action_hints = ["workflow_edit"]
     route: RouteDecision | None = None
     intent = "ask"
     tier = 1
@@ -1122,7 +1200,13 @@ def _parse_triage_response(raw_text: str) -> TriageResult | None:
     try:
         obj = _json.loads(json_str)
     except (ValueError, TypeError):
-        return None
+        repaired = _repair_json_candidate(json_str)
+        if repaired == json_str:
+            return None
+        try:
+            obj = _json.loads(repaired)
+        except (ValueError, TypeError):
+            return None
     if not isinstance(obj, dict):
         return None
 
@@ -1174,6 +1258,12 @@ def _parse_triage_response(raw_text: str) -> TriageResult | None:
     )
 
 
+def _repair_json_candidate(raw_json: str) -> str:
+    candidate = raw_json.strip()
+    candidate = re.sub(r",(\s*[}\]])", r"\1", candidate)
+    return candidate
+
+
 # ---------------------------------------------------------------------------
 # Main triage entry point
 # ---------------------------------------------------------------------------
@@ -1223,7 +1313,7 @@ async def triage(
 
     messages = _build_triage_messages(text, context, concierge_state)
     try:
-        result = await llm_complete(messages)
+        result = await _call_triage_llm(llm_complete, messages)
         raw = result if isinstance(result, str) else getattr(result, "text", str(result))
         if raw and raw.strip():
             parsed = _parse_triage_response(raw)
