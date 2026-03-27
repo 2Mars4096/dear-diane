@@ -453,10 +453,12 @@ class TUIDisplay:
         et = event.event_type
         nid = event.node_id or ""
         data = event.data
+        recovery_prefix = "Auto-repair: " if data.get("automatic_recovery") else ""
+        display_name = f"{recovery_prefix}{data.get('name', nid)}" if et == EventType.NODE_STARTED else ""
 
         if et == EventType.NODE_STARTED:
             self._nodes[nid] = {
-                "name": data.get("name", nid),
+                "name": display_name or data.get("name", nid),
                 "type": data.get("node_type", ""),
                 "status": "running",
                 "start": time.time(),
@@ -502,6 +504,22 @@ class TUIDisplay:
             text = data.get("text", "")
             if text:
                 self._last_text = text[:200]
+        elif et == EventType.AUTOMATIC_RECOVERY_STARTED:
+            action = data.get("selected_action") or "automatic recovery"
+            self._last_text = f"Auto-repair started: {action}"
+        elif et == EventType.AUTOMATIC_RECOVERY_COMPLETED:
+            status = str(data.get("status") or data.get("last_outcome") or "completed")
+            if status == "completed":
+                self._last_text = "Auto-repair completed."
+            elif status == "exhausted":
+                escalation = str(data.get("escalation_summary") or "").strip()
+                self._last_text = (
+                    f"Auto-repair exhausted. {escalation}"
+                    if escalation
+                    else "Auto-repair exhausted."
+                )
+            else:
+                self._last_text = f"Auto-repair {status}."
 
         if self._verbose:
             self._console.print(
@@ -518,6 +536,8 @@ class TUIDisplay:
         elapsed = time.time() - self._start_time
         table = Table(
             title=f"DAN Run  [{self._completed_count}/{self._total_count}]  {elapsed:.0f}s",
+            caption=self._last_text or None,
+            caption_style="dim",
             show_lines=False,
         )
         table.add_column("Node", style="bold")
@@ -586,13 +606,22 @@ class PlainDisplay:
 
         et = event.event_type
         nid = event.node_id or ""
+        recovery_prefix = "auto-repair " if event.data.get("automatic_recovery") else ""
         if et == EventType.NODE_COMPLETED:
             self._completed += 1
-            print(f"  [{self._completed}/{self._total}] {nid} completed", file=sys.stderr)
+            print(f"  [{self._completed}/{self._total}] {recovery_prefix}{nid} completed", file=sys.stderr)
         elif et == EventType.NODE_FAILED:
             self._completed += 1
             err = event.data.get("error", "unknown")
-            print(f"  [{self._completed}/{self._total}] {nid} FAILED: {err}", file=sys.stderr)
+            print(f"  [{self._completed}/{self._total}] {recovery_prefix}{nid} FAILED: {err}", file=sys.stderr)
+        elif et == EventType.AUTOMATIC_RECOVERY_STARTED:
+            action = event.data.get("selected_action") or "automatic recovery"
+            print(f"  auto-repair started: {action}", file=sys.stderr)
+        elif et == EventType.AUTOMATIC_RECOVERY_COMPLETED:
+            status = str(event.data.get("status") or event.data.get("last_outcome") or "completed")
+            escalation = str(event.data.get("escalation_summary") or "").strip()
+            suffix = f": {escalation}" if escalation else ""
+            print(f"  auto-repair {status}{suffix}", file=sys.stderr)
         elif self._verbose:
             print(f"  {et.value} node={nid}", file=sys.stderr)
 

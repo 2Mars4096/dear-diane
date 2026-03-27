@@ -7,6 +7,7 @@ import sys
 import time
 from pathlib import Path
 
+from dan.cli.up import check_health
 from dan.cli.process_utils import is_process_alive
 
 DAN_DIR = Path.home() / ".dan"
@@ -15,6 +16,13 @@ PID_FILE = DAN_DIR / "server.pid"
 
 def main() -> None:
     if not PID_FILE.exists():
+        if check_health(8000):
+            print(
+                "No DAN server PID file found. "
+                "A healthy DAN server is still responding on port 8000; "
+                "it may be owned by DAN Desktop or dan-service."
+            )
+            return
         print("No DAN server PID file found.")
         return
 

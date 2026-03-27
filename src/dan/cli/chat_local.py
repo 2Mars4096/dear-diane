@@ -9,6 +9,8 @@ import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+from dan.agent_runtime.graph_summary import compute_graph_revision
+
 logger = logging.getLogger(__name__)
 
 DAN_DIR = Path.home() / ".dan"
@@ -291,7 +293,6 @@ class LocalChatRuntime:
         await self._ensure_init()
         s = self._services
         from dan.server.graph_mutator import GraphMutator, MutationPlan
-        from dan.server.chat_manager import compute_graph_revision
 
         graph_dict = s.graph_store.get_graph(graph_id)
         if graph_dict is None:
@@ -415,14 +416,23 @@ class LocalChatRuntime:
                 event_queue = rm.subscribe(record.run_id)
                 try:
                     while True:
-                        event = await event_queue.get()
+                        try:
+                            event = await asyncio.wait_for(event_queue.get(), timeout=1.0)
+                        except asyncio.TimeoutError:
+                            if rm.run_is_settled_for_stream(record.run_id):
+                                break
+                            continue
                         block = map_run_event_to_chat_block(
                             event, scope=scope, target=target_desc,
                         )
                         if block is not None:
                             self._enqueue_stream_item(queue, {"type": "chat_run_event", "run_event": block})
                         ev_type = event.get("event_type", "")
-                        if ev_type in ("run_completed", "run_failed", "run_cancelled"):
+                        if ev_type in (
+                            "run_completed",
+                            "run_cancelled",
+                            "automatic_recovery_completed",
+                        ):
                             break
                 finally:
                     rm.unsubscribe(record.run_id, event_queue)

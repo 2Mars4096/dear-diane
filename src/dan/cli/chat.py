@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import hashlib
 import json
 import logging
 import os
@@ -20,18 +19,16 @@ from typing import Any, AsyncIterator
 
 import httpx
 
+from dan.agent_runtime.graph_summary import (
+    compute_graph_revision as _compute_canonical_graph_revision,
+)
 from dan.cli.adapter import _is_progress_ack_event
 from dan.server.startup import get_llm_api_key_status
 
 
-def _compute_graph_revision(graph_dict: dict) -> str:
-    """Approximate graph revision hash (fallback when server doesn't return one).
-
-    The server normalizes through Pydantic before hashing, so this raw-dict
-    hash may differ.  Prefer the ``graph_revision`` field from apply responses.
-    """
-    canonical = json.dumps(graph_dict, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+def _compute_graph_revision(graph_dict: dict[str, Any]) -> str:
+    """Return the canonical graph revision used by the runtime."""
+    return _compute_canonical_graph_revision(graph_dict)
 
 logger = logging.getLogger("dan.cli.chat")
 
@@ -1502,7 +1499,11 @@ async def _run_repl(
                         elif summary:
                             _print(summary)
 
-                        if run_event_type in ("run_completed", "run_failed", "run_cancelled"):
+                        if run_event_type in (
+                            "run_completed",
+                            "run_cancelled",
+                            "automatic_recovery_completed",
+                        ):
                             break
 
         except Exception as e:

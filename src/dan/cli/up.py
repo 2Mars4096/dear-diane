@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import IO
+from typing import Any, IO
 
 from dan.cli.process_utils import is_process_alive
 
@@ -73,14 +73,44 @@ def release_start_lock(handle: IO[str] | None) -> None:
         pass
 
 
-def check_health(port: int, timeout: float = 2.0) -> bool:
-    """Check if the server health endpoint responds."""
+def get_health_payload(port: int, timeout: float = 2.0) -> dict[str, Any] | None:
+    """Return the health payload if the server responds with ``status=ok``."""
     try:
         import httpx
         resp = httpx.get(f"http://127.0.0.1:{port}/health", timeout=timeout)
-        return resp.status_code == 200
+        if resp.status_code != 200:
+            return None
+        payload = resp.json()
+        if not isinstance(payload, dict) or payload.get("status") != "ok":
+            return None
+        return payload
     except Exception:
-        return False
+        return None
+
+
+def check_health(port: int, timeout: float = 2.0) -> bool:
+    """Check if the server health endpoint responds."""
+    return get_health_payload(port, timeout=timeout) is not None
+
+
+def find_running_server(port: int) -> tuple[int | None, int, bool] | None:
+    """Find a healthy DAN server to reuse.
+
+    Returns ``(pid, port, managed_by_pid_file)`` when one is available.
+    """
+    pid, existing_port = read_pid_file()
+    if pid:
+        resolved_port = existing_port or port
+        if is_process_alive(pid) and check_health(resolved_port):
+            return pid, resolved_port, True
+        remove_pid_file()
+
+    payload = get_health_payload(port)
+    if payload is None:
+        return None
+
+    healthy_pid = payload.get("pid")
+    return (healthy_pid if isinstance(healthy_pid, int) else None), port, False
 
 
 def start_server(port: int = 8000) -> int:
@@ -140,15 +170,20 @@ def main() -> None:
 
     server_url: str | None = None
     try:
-        pid, existing_port = read_pid_file()
-        if pid and is_process_alive(pid) and check_health(existing_port or port):
-            resolved_port = existing_port or port
-            print(f"DAN server already running (PID {pid}, port {resolved_port})")
+        running_server = find_running_server(port)
+        if running_server is not None:
+            running_pid, resolved_port, managed = running_server
+            if managed and running_pid is not None:
+                print(f"DAN server already running (PID {running_pid}, port {resolved_port})")
+            elif running_pid is not None:
+                print(
+                    f"DAN server already running on port {resolved_port} "
+                    f"(PID {running_pid}, reusing existing server)"
+                )
+            else:
+                print(f"DAN server already running on port {resolved_port} (reusing existing server)")
             server_url = f"http://127.0.0.1:{resolved_port}"
         else:
-            if pid:
-                remove_pid_file()
-
             print(f"Starting DAN server on port {port}...")
             new_pid = start_server(port)
             write_pid_file(new_pid, port)

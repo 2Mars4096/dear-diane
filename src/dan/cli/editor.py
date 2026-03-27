@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from dan.cli.up import (
-    check_health,
+    find_running_server,
     is_process_alive,
     read_pid_file,
     remove_pid_file,
@@ -58,16 +58,21 @@ def main() -> None:
         )
         sys.exit(1)
 
-    pid, existing_port = read_pid_file()
-    server_proc: subprocess.Popen | None = None
     we_started_server = False
 
-    if pid and is_process_alive(pid) and check_health(existing_port or port):
-        resolved_port = existing_port or port
-        print(f"DAN server already running (PID {pid}, port {resolved_port})")
+    running_server = find_running_server(port)
+    if running_server is not None:
+        running_pid, resolved_port, managed = running_server
+        if managed and running_pid is not None:
+            print(f"DAN server already running (PID {running_pid}, port {resolved_port})")
+        elif running_pid is not None:
+            print(
+                f"DAN server already running on port {resolved_port} "
+                f"(PID {running_pid}, reusing existing server)"
+            )
+        else:
+            print(f"DAN server already running on port {resolved_port} (reusing existing server)")
     else:
-        if pid:
-            remove_pid_file()
         print(f"Starting DAN server on port {port}...")
         new_pid = start_server(port)
         write_pid_file(new_pid, port)

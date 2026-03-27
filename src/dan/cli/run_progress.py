@@ -65,18 +65,21 @@ class RunProgressTracker:
         if node_id and node_name:
             self._node_names[node_id] = node_name
 
+        recovery_prefix = "Auto-repair rerun: " if data.get("automatic_recovery") else ""
+        display_name = f"{recovery_prefix}{node_name}" if recovery_prefix else node_name
+
         if ev_type == "node_started":
             self._node_status[node_id] = "started"
             self._node_start[node_id] = time.monotonic()
             icon = self._icons["started"]
-            return f"  {icon} {node_name}"
+            return f"  {icon} {display_name}"
 
         elif ev_type == "node_completed":
             self._node_status[node_id] = "completed"
             elapsed = time.monotonic() - self._node_start.get(node_id, self._run_start)
             self._node_elapsed[node_id] = elapsed
             icon = self._icons["completed"]
-            return f"  {icon} {node_name} ({_format_duration(elapsed)})"
+            return f"  {icon} {display_name} ({_format_duration(elapsed)})"
 
         elif ev_type == "node_failed":
             self._node_status[node_id] = "failed"
@@ -90,12 +93,12 @@ class RunProgressTracker:
                     error = first.get("message") if isinstance(first, dict) else str(first)
             icon = self._icons["failed"]
             suffix = f": {error}" if error else ""
-            return f"  {icon} {node_name} ({_format_duration(elapsed)}){suffix}"
+            return f"  {icon} {display_name} ({_format_duration(elapsed)}){suffix}"
 
         elif ev_type == "node_skipped":
             self._node_status[node_id] = "skipped"
             icon = self._icons["skipped"]
-            return f"  {icon} {node_name} (skipped)"
+            return f"  {icon} {display_name} (skipped)"
 
         elif ev_type == "run_completed":
             self._run_status = "completed"
@@ -105,6 +108,24 @@ class RunProgressTracker:
             self._run_status = "failed"
             self._run_error = event.get("error", "")
             return None
+
+        elif ev_type == "automatic_recovery_started":
+            action = str(data.get("selected_action") or "automatic recovery")
+            icon = self._icons["started"]
+            return f"  {icon} Auto-repair started ({action})"
+
+        elif ev_type == "automatic_recovery_completed":
+            status = str(data.get("status") or data.get("last_outcome") or "completed")
+            if status == "completed":
+                icon = self._icons["completed"]
+                return f"  {icon} Auto-repair completed"
+            if status == "exhausted":
+                icon = self._icons["failed"]
+                escalation = str(data.get("escalation_summary") or "").strip()
+                suffix = f". {escalation}" if escalation else ""
+                return f"  {icon} Auto-repair exhausted{suffix}"
+            icon = self._icons["skipped"]
+            return f"  {icon} Auto-repair {status}"
 
         return None
 

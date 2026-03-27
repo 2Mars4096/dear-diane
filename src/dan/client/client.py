@@ -170,6 +170,7 @@ class DanClient:
             try:
                 async with websockets.connect(url) as ws:
                     received_any = False
+                    pending_failed_terminal = False
                     async for msg in ws:
                         received_any = True
                         data = json.loads(msg)
@@ -205,20 +206,35 @@ class DanClient:
                                         continue
                                     emitted_pending_ids.add(req_id)
                                 yield evt
+                                if evt_type == "automatic_recovery_started":
+                                    pending_failed_terminal = False
+                                    continue
+                                if evt_type == "run_failed":
+                                    pending_failed_terminal = True
+                                    continue
                                 if evt_type in (
                                     "run_completed",
-                                    "run_failed",
                                     "run_cancelled",
+                                    "automatic_recovery_completed",
                                 ):
                                     return
                             continue
                         yield data
-                        if data.get("event_type") in (
+                        event_type = data.get("event_type")
+                        if event_type == "automatic_recovery_started":
+                            pending_failed_terminal = False
+                            continue
+                        if event_type == "run_failed":
+                            pending_failed_terminal = True
+                            continue
+                        if event_type in (
                             "run_completed",
-                            "run_failed",
                             "run_cancelled",
+                            "automatic_recovery_completed",
                         ):
                             return
+                    if pending_failed_terminal:
+                        return
                 retries += 1
                 if retries >= _MAX_RECONNECT_RETRIES:
                     raise RunLostError(run_id)
