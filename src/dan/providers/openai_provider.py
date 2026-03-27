@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import httpx
 from typing import Any, AsyncIterator
 
 from openai import (
@@ -27,13 +28,15 @@ class OpenAIProvider:
     supports_tool_calls = True
     supports_required_tool_choice = True
     assistant_replay_mode = "raw"
+    _CONNECT_TIMEOUT_CAP_SECONDS = 10.0
 
     def __init__(self, config: ProviderConfig) -> None:
         self._timeout_seconds = resolve_provider_timeout(config)
+        self._request_timeout = self._build_request_timeout(self._timeout_seconds)
         self._client = AsyncOpenAI(
             api_key=config.api_key,
             base_url=config.base_url,
-            timeout=self._timeout_seconds,
+            timeout=self._request_timeout,
         )
 
     @classmethod
@@ -42,10 +45,24 @@ class OpenAIProvider:
         instance = object.__new__(cls)
         instance._client = client
         timeout = getattr(client, "timeout", None)
+        instance._request_timeout = timeout
         instance._timeout_seconds = (
             float(timeout) if isinstance(timeout, (int, float)) else None
         )
         return instance
+
+    @classmethod
+    def _build_request_timeout(
+        cls,
+        timeout_seconds: float | None,
+    ) -> float | httpx.Timeout | None:
+        """Keep total request timeout while bounding slow connect/DNS phases."""
+        if timeout_seconds is None:
+            return None
+        connect_timeout = min(timeout_seconds, cls._CONNECT_TIMEOUT_CAP_SECONDS)
+        if connect_timeout >= timeout_seconds:
+            return timeout_seconds
+        return httpx.Timeout(timeout_seconds, connect=connect_timeout)
 
     @classmethod
     def get_model_behavior(cls, model: str) -> ModelBehaviorProfile:
@@ -208,8 +225,8 @@ class OpenAIProvider:
             call_kwargs["temperature"] = effective_temperature
         if max_tokens is not None:
             call_kwargs["max_tokens"] = max_tokens
-        if self._timeout_seconds is not None:
-            call_kwargs.setdefault("timeout", self._timeout_seconds)
+        if self._request_timeout is not None:
+            call_kwargs.setdefault("timeout", self._request_timeout)
         call_kwargs = self._apply_compatibility_defaults(model, call_kwargs)
         call_kwargs = self._move_provider_fields_to_extra_body(call_kwargs)
 
@@ -285,8 +302,8 @@ class OpenAIProvider:
             call_kwargs["temperature"] = effective_temperature
         if max_tokens is not None:
             call_kwargs["max_tokens"] = max_tokens
-        if self._timeout_seconds is not None:
-            call_kwargs.setdefault("timeout", self._timeout_seconds)
+        if self._request_timeout is not None:
+            call_kwargs.setdefault("timeout", self._request_timeout)
         call_kwargs = self._apply_compatibility_defaults(model, call_kwargs)
         call_kwargs = self._move_provider_fields_to_extra_body(call_kwargs)
 

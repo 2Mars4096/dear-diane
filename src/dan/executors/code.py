@@ -85,6 +85,27 @@ def _default_for_schema(json_schema: dict | None) -> Any:
     return None
 
 
+def _materialize_outputs(node: CodeOperator, result_value: Any) -> dict[str, Any]:
+    """Expand ``result`` into runtime outputs with narrow single-port compatibility.
+
+    Historically, generated code often returned a bare ``result`` value even when the
+    node declared one non-``result`` output port. Preserve the existing ``result`` key
+    behavior and, when there is exactly one declared output port, mirror the value onto
+    that port if it is otherwise missing.
+    """
+    if isinstance(result_value, dict):
+        outputs = dict(result_value)
+        outputs["result"] = result_value
+    else:
+        outputs = {"result": result_value}
+
+    if len(node.output_ports) == 1:
+        output_name = node.output_ports[0].name
+        if output_name != "result" and output_name not in outputs:
+            outputs[output_name] = result_value
+    return outputs
+
+
 class CodeExecutor:
     """Executes CodeOperator nodes via inline exec or subprocess sandbox.
 
@@ -160,12 +181,7 @@ class CodeExecutor:
             )
 
         if "result" in namespace:
-            result_value = namespace["result"]
-            if isinstance(result_value, dict):
-                outputs = dict(result_value)
-                outputs["result"] = result_value
-            else:
-                outputs = {"result": result_value}
+            outputs = _materialize_outputs(node, namespace["result"])
         else:
             outputs = {}
 
@@ -229,11 +245,7 @@ class CodeExecutor:
             return self._fail_result(node, f"Subprocess execution failed: {error_msg}")
 
         if structured_output is not None:
-            if isinstance(structured_output, dict):
-                outputs = dict(structured_output)
-                outputs["result"] = structured_output
-            else:
-                outputs = {"result": structured_output}
+            outputs = _materialize_outputs(node, structured_output)
         else:
             outputs = {}
 

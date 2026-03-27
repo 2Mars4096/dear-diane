@@ -38,6 +38,16 @@ logger = logging.getLogger(__name__)
 _LLM_DEFAULT_RETRY = RetryPolicy(max_retries=3)
 
 
+def _materialize_plain_text_outputs(node: LLMOperator, raw_text: str) -> dict[str, Any]:
+    """Expose plain-text completions on ``text`` plus a single declared custom port."""
+    outputs: dict[str, Any] = {"text": raw_text}
+    if len(node.output_ports) == 1:
+        output_name = node.output_ports[0].name
+        if output_name not in outputs:
+            outputs[output_name] = raw_text
+    return outputs
+
+
 def _render_template(template: str, variables: dict[str, Any]) -> str:
     """Render a prompt template with DAN's runtime placeholder rules."""
     return render_runtime_template(template, variables)
@@ -588,7 +598,7 @@ class LLMExecutor:
                     raw_text, True, cumulative_usage, started_at,
                 )
                 return NodeResult(
-                    outputs={"text": raw_text},
+                    outputs=_materialize_plain_text_outputs(node, raw_text),
                     status=NodeStatus.COMPLETED,
                     metadata=meta,
                 )
@@ -757,7 +767,7 @@ class LLMExecutor:
                                 raw_text, True, cumulative_usage, started_at,
                             )
                             return NodeResult(
-                                outputs={"text": raw_text},
+                                outputs=_materialize_plain_text_outputs(node, raw_text),
                                 status=NodeStatus.COMPLETED,
                                 metadata={
                                     "model": model,
