@@ -8,6 +8,8 @@ lacking required features. Produces a 0-100 score and concerns list.
 from __future__ import annotations
 
 import re
+import json
+import os
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -45,35 +47,94 @@ class GraphQualityReport(BaseModel):
 # Tier minimums (eval harness)
 # ---------------------------------------------------------------------------
 
-_TIER_MIN_NODES: dict[str, int] = {
-    "T1": 2,
-    "T2": 3,
-    "T3": 4,
-    "T4": 6,
-    "T5": 8,
-    "T2R": 3,
-    "pilot": 2,
-}
+
+def _load_tier_min_nodes() -> dict[str, int]:
+    _DEFAULT = {
+        "T1": 2,
+        "T2": 3,
+        "T3": 4,
+        "T4": 6,
+        "T5": 8,
+        "T2R": 3,
+        "pilot": 2,
+    }
+    raw = os.environ.get("DAN_QUALITY_TIER_MIN_NODES")
+    if raw:
+        try:
+            return {k: int(v) for k, v in json.loads(raw).items()}
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+    return _DEFAULT
+
+
+_TIER_MIN_NODES: dict[str, int] = _load_tier_min_nodes()
 
 
 # ---------------------------------------------------------------------------
 # Node ranges and quality thresholds by complexity tier
 # ---------------------------------------------------------------------------
 
-_NODE_RANGE_BY_TIER: dict[str, tuple[int, int]] = {
-    # Calibrated from 42 eval-tier graphs on 2026-03-12
-    "T1": (2, 5),
-    "T2": (3, 8),
-    "T3": (4, 10),
-    "T4": (6, 15),
-}
 
-_TIER_QUALITY_THRESHOLD: dict[str, int] = {
-    "T1": 30,
-    "T2": 40,
-    "T3": 50,
-    "T4": 60,
-}
+def _load_node_range_by_tier() -> dict[str, tuple[int, int]]:
+    _DEFAULT = {"T1": [2, 5], "T2": [3, 8], "T3": [4, 10], "T4": [6, 15]}
+    raw = os.environ.get("DAN_QUALITY_NODE_RANGES")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            return {k: tuple(v) for k, v in parsed.items()}
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+    return {k: tuple(v) for k, v in _DEFAULT.items()}
+
+
+_NODE_RANGE_BY_TIER: dict[str, tuple[int, int]] = _load_node_range_by_tier()
+
+
+def _load_tier_quality_threshold() -> dict[str, int]:
+    _DEFAULT = {"T1": 30, "T2": 40, "T3": 50, "T4": 60}
+    raw = os.environ.get("DAN_QUALITY_TIER_THRESHOLDS")
+    if raw:
+        try:
+            return {k: int(v) for k, v in json.loads(raw).items()}
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+    return _DEFAULT
+
+
+_TIER_QUALITY_THRESHOLD: dict[str, int] = _load_tier_quality_threshold()
+
+
+def _load_expected_node_range_fallback() -> tuple[int, int]:
+    _DEFAULT = (2, 4)
+    raw = os.environ.get("DAN_QUALITY_EXPECTED_NODE_RANGE_FALLBACK")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, (list, tuple)) and len(parsed) == 2:
+                return int(parsed[0]), int(parsed[1])
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+    return _DEFAULT
+
+
+_EXPECTED_NODE_RANGE_FALLBACK: tuple[int, int] = _load_expected_node_range_fallback()
+
+
+def _load_tier_quality_threshold_fallback() -> int:
+    raw = os.environ.get("DAN_QUALITY_TIER_QUALITY_THRESHOLD_FALLBACK")
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    return 40
+
+
+_TIER_QUALITY_THRESHOLD_FALLBACK: int = _load_tier_quality_threshold_fallback()
+
+
+_SIMPLE_GRAPH_MIN_NODES = int(os.environ.get("DAN_QUALITY_SIMPLE_GRAPH_MIN_NODES", "2"))
+_SIMPLE_GRAPH_MAX_NODES = int(os.environ.get("DAN_QUALITY_SIMPLE_GRAPH_MAX_NODES", "6"))
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +419,7 @@ def expected_node_range(prompt_text: str, tier: str | None = None) -> tuple[int,
     """
     if tier is None:
         tier = estimate_prompt_complexity(prompt_text)
-    return _NODE_RANGE_BY_TIER.get(tier.upper().strip(), (2, 4))
+    return _NODE_RANGE_BY_TIER.get(tier.upper().strip(), _EXPECTED_NODE_RANGE_FALLBACK)
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +436,7 @@ def tier_quality_threshold(tier: str | None, prompt_text: str) -> int:
     """
     if tier is None:
         tier = estimate_prompt_complexity(prompt_text)
-    return _TIER_QUALITY_THRESHOLD.get(tier.upper().strip(), 40)
+    return _TIER_QUALITY_THRESHOLD.get(tier.upper().strip(), _TIER_QUALITY_THRESHOLD_FALLBACK)
 
 
 # ---------------------------------------------------------------------------
@@ -407,7 +468,7 @@ def is_acceptable_simple_graph(graph_dict: dict, prompt_text: str) -> bool:
     nodes, edges = _get_nodes_edges(graph_dict)
     count = len(nodes)
 
-    if count < 2 or count > 6:
+    if count < _SIMPLE_GRAPH_MIN_NODES or count > _SIMPLE_GRAPH_MAX_NODES:
         return False
 
     if pattern == "chain":

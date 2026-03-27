@@ -62,6 +62,9 @@ Python from the user's request. If the code is not concretely derivable, leave \
 config.code empty instead of inventing fake logic.
 - Never use placeholder payload code or fabricated completion markers such as \
 {{"status": "placeholder"}} or {{"statistics": "computed"}} to stand in for real execution.
+- For conversational workflow-authoring requests and follow-up edits ("build me a workflow", \
+"also make it weekly", "now add an approval step"), you must still call the \
+emit_workflow_intent tool instead of replying with prose.
 - For parallel processing (process each, for each, in parallel), use stage_type=fan_out.
 - For review/quality loops (review, iterate, improve until), use stage_type=review_loop \
 with reviewer_prompt, condition, and max_iterations.
@@ -252,6 +255,33 @@ INTENT_FEW_SHOT_EXAMPLES: list[dict] = [
             ],
             "global_inputs": ["data_path", "recipient_email"],
             "global_outputs": ["report"],
+        },
+    },
+    {
+        "user": "Can you build me a workflow that reads a folder of notes, writes a digest, and then emails it weekly?",
+        "intent": {
+            "goal": "Workflow that reads notes, drafts a digest, and emails it weekly",
+            "stages": [
+                {
+                    "name": "read_notes",
+                    "stage_type": "tool_call",
+                    "description": "Read the notes from a folder",
+                    "config": {"tool_id": "file_read"},
+                },
+                {
+                    "name": "draft_digest",
+                    "stage_type": "transform",
+                    "description": "Write a digest from the notes",
+                },
+                {
+                    "name": "send_digest",
+                    "stage_type": "tool_call",
+                    "description": "Email the digest on a recurring cadence",
+                    "config": {"tool_id": "send_email"},
+                },
+            ],
+            "global_inputs": ["notes_path", "recipient_email"],
+            "global_outputs": ["digest"],
         },
     },
 ]
