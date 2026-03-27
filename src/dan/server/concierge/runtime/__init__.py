@@ -8,11 +8,9 @@ import json
 import logging
 import os
 import re
-import shlex
 import time
 import uuid
 from contextvars import ContextVar
-from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
@@ -223,7 +221,6 @@ class Concierge:
         self.bot_name = bot_name
         self.auto_summarize_turn_threshold: int = 10
         self._bg_memory_tasks: set[asyncio.Task[None]] = set()
-        self._bg_telemetry_tasks: set[asyncio.Task[Any]] = set()
         self._interaction_counter: int = 0
         self._default_autonomy_preference = normalize_legacy_autonomy_level(
             autonomy_level or os.environ.get("DAN_CONCIERGE_AUTONOMY", "auto"),
@@ -238,9 +235,6 @@ class Concierge:
         )
         self._concierge_state_var: ContextVar[ConciergeState | None] = ContextVar(
             "concierge_state", default=None,
-        )
-        self._telemetry_context_var: ContextVar[dict[str, Any] | None] = ContextVar(
-            "concierge_telemetry_context", default=None,
         )
         self._domain_warning_context_var: ContextVar[tuple[str, ...]] = ContextVar(
             "concierge_domain_warnings", default=(),
@@ -455,7 +449,7 @@ class Concierge:
                     if task is None and project is not None:
                         task = self.project_store.get_current_task_any_surface(project_id)
                 if project is not None and task is not None:
-                    resolved = ResolvedContext(
+                    return ResolvedContext(
                         project=project,
                         task=task,
                         is_new_project=False,
@@ -463,8 +457,33 @@ class Concierge:
                         confidence=1.0,
                         domain=project.domain,
                     )
-                    self._remember_context_for_telemetry(msg, resolved)
-                    return resolved
+
+        metadata = msg.metadata if isinstance(getattr(msg, "metadata", None), dict) else {}
+        resolved_project_id = str(metadata.get("resolved_project_id") or "").strip()
+        resolved_task_id = str(metadata.get("resolved_task_id") or "").strip()
+        if resolved_project_id:
+            project = self.project_store.get_project(resolved_project_id, msg.external_id)
+            if project is None:
+                project = self.project_store.get_project_any_surface(resolved_project_id)
+            task = None
+            if resolved_task_id and project is not None:
+                for candidate in project.tasks:
+                    if candidate.task_id == resolved_task_id:
+                        task = candidate
+                        break
+            if task is None:
+                task = self.project_store.get_current_task(resolved_project_id, msg.external_id)
+                if task is None and project is not None:
+                    task = self.project_store.get_current_task_any_surface(resolved_project_id)
+            if project is not None and task is not None:
+                return ResolvedContext(
+                    project=project,
+                    task=task,
+                    is_new_project=False,
+                    is_new_task=False,
+                    confidence=1.0,
+                    domain=project.domain,
+                )
 
         active = self.project_store.list_active(msg.external_id)
         if active:
@@ -473,7 +492,7 @@ class Concierge:
             if task is None:
                 label = msg.text.strip()[:60].replace("\n", " ") or "task"
                 task = self.project_store.add_task(project.project_id, label, msg.external_id)
-            resolved = ResolvedContext(
+            return ResolvedContext(
                 project=project,
                 task=task,
                 is_new_project=False,
@@ -481,211 +500,22 @@ class Concierge:
                 confidence=0.8,
                 domain=project.domain,
             )
-            self._remember_context_for_telemetry(msg, resolved)
-            return resolved
 
         label = msg.text.strip()[:60].replace("\n", " ") or "project"
         project = self.project_store.create_project(label, msg.external_id)
         task = self.project_store.add_task(project.project_id, label, msg.external_id)
         project = self.project_store.get_project(project.project_id, msg.external_id) or project
-        resolved = ResolvedContext(
+        return ResolvedContext(
             project=project,
             task=task,
             is_new_project=True,
             is_new_task=True,
             confidence=0.0,
         )
-        self._remember_context_for_telemetry(msg, resolved)
-        return resolved
 
     # ------------------------------------------------------------------
     # Telemetry
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _telemetry_session_id(msg: SurfaceMessage) -> str | None:
-        session_id = str(
-            getattr(msg, "session_id", "") or msg.external_id or "",
-        ).strip()
-        return session_id or None
-
-    def _remember_context_for_telemetry(
-        self,
-        msg: SurfaceMessage,
-        context: ResolvedContext | None,
-    ) -> None:
-        self._last_context = context
-        telemetry_context = self._telemetry_context_var.get()
-        if context is None or not isinstance(telemetry_context, dict):
-            return
-        telemetry_context["surface"] = msg.surface
-        telemetry_context["session_id"] = self._telemetry_session_id(msg)
-        telemetry_context["project_id"] = getattr(
-            getattr(context, "project", None), "project_id", None,
-        )
-        telemetry_context["task_id"] = getattr(
-            getattr(context, "task", None), "task_id", None,
-        )
-
-    @staticmethod
-    def _resolve_turn_chat_mode(msg: SurfaceMessage) -> str:
-        metadata = (
-            msg.metadata
-            if isinstance(getattr(msg, "metadata", None), dict)
-            else {}
-        )
-        raw_mode = str(
-            metadata.get("requested_mode")
-            or metadata.get("mode")
-            or "auto",
-        ).strip()
-        if not raw_mode:
-            return "auto"
-        try:
-            from dan.server.chat import normalize_chat_mode
-
-            return normalize_chat_mode(raw_mode)
-        except Exception:
-            return raw_mode
-
-    @staticmethod
-    def _normalize_gateway_usage(raw_usage: Any) -> dict[str, int]:
-        usage = raw_usage if isinstance(raw_usage, dict) else {}
-        prompt_tokens = int(
-            usage.get("prompt_tokens", usage.get("prompt", 0)) or 0,
-        )
-        completion_tokens = int(
-            usage.get("completion_tokens", usage.get("completion", 0)) or 0,
-        )
-        total_tokens = int(
-            usage.get("total_tokens", usage.get("total", 0))
-            or (prompt_tokens + completion_tokens),
-        )
-        return {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens,
-        }
-
-    @staticmethod
-    def _resolve_gateway_model_used(call: Any, gateway: Any = None) -> str | None:
-        requested_model = str(getattr(call, "model", "") or "").strip() or None
-        if not bool(getattr(call, "fallback_used", False)):
-            return requested_model
-        fallback_model = str(
-            getattr(getattr(gateway, "_config", None), "fallback_model", "") or "",
-        ).strip()
-        return fallback_model or requested_model
-
-    @staticmethod
-    def _estimate_gateway_cost(model_used: str | None, usage: dict[str, int]) -> float:
-        if not model_used:
-            return 0.0
-        try:
-            from dan.providers.costs import estimate_cost
-
-            return float(estimate_cost(
-                model_used,
-                usage.get("prompt_tokens", 0),
-                usage.get("completion_tokens", 0),
-            ) or 0.0)
-        except Exception:
-            return 0.0
-
-    @staticmethod
-    def _format_analytics_hour(hour_key: str) -> str:
-        text = str(hour_key or "").strip()
-        if not text:
-            return "unknown"
-        if len(text) >= 13:
-            return f"{text[:13].replace('T', ' ')}:00 UTC"
-        return text
-
-    def _queue_telemetry_record(self, event: Any) -> None:
-        store = getattr(self, "_telemetry_store", None)
-        if store is None:
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        task = loop.create_task(store.record(event))
-        self._bg_telemetry_tasks.add(task)
-        task.add_done_callback(self._bg_telemetry_tasks.discard)
-
-    def _record_gateway_call_telemetry(self, call: Any, gateway: Any = None) -> None:
-        store = getattr(self, "_telemetry_store", None)
-        if store is None:
-            return
-        try:
-            from dan.telemetry_api import TelemetryEvent
-
-            telemetry_context = self._telemetry_context_var.get() or {}
-            usage = self._normalize_gateway_usage(getattr(call, "usage", {}))
-            model_used = self._resolve_gateway_model_used(call, gateway)
-            requested_model = str(getattr(call, "model", "") or "").strip() or None
-            if isinstance(telemetry_context, dict):
-                if model_used:
-                    telemetry_context["model_used"] = model_used
-                    models_used = telemetry_context.setdefault("models_used", [])
-                    if isinstance(models_used, list) and model_used not in models_used:
-                        models_used.append(model_used)
-                if requested_model:
-                    telemetry_context["requested_model"] = requested_model
-
-            metadata: dict[str, Any] = {
-                "fallback_used": bool(getattr(call, "fallback_used", False)),
-                "pii_applied": bool(getattr(call, "pii_applied", False)),
-            }
-            error_text = str(getattr(call, "error", "") or "").strip()
-            if error_text:
-                metadata["error"] = error_text
-            if requested_model and requested_model != model_used:
-                metadata["requested_model"] = requested_model
-
-            event = TelemetryEvent(
-                event_type="gateway_call",
-                parent_event_id=telemetry_context.get("turn_event_id")
-                or getattr(self, "_current_turn_event_id", None),
-                project_id=telemetry_context.get("project_id"),
-                task_id=telemetry_context.get("task_id"),
-                surface=telemetry_context.get("surface"),
-                session_id=telemetry_context.get("session_id"),
-                model=model_used or requested_model,
-                model_used=model_used or requested_model,
-                chat_mode=telemetry_context.get("chat_mode"),
-                prompt_tokens=usage["prompt_tokens"],
-                completion_tokens=usage["completion_tokens"],
-                total_tokens=usage["total_tokens"],
-                estimated_cost=self._estimate_gateway_cost(model_used, usage),
-                duration_ms=float(getattr(call, "elapsed_ms", 0.0) or 0.0),
-                success=not bool(error_text),
-                retry_count=int(getattr(call, "retries", 0) or 0),
-                metadata=metadata,
-            )
-            self._queue_telemetry_record(event)
-        except Exception:
-            logger.debug("Gateway telemetry emit failed", exc_info=True)
-
-    def _install_gateway_telemetry_bridge(self) -> None:
-        gateway = getattr(self.chat_manager, "model_gateway", None)
-        if gateway is None:
-            return
-        if getattr(gateway, "_dan_concierge_telemetry_owner", None) is not None:
-            return
-
-        prior_callback = getattr(gateway, "_telemetry_callback", None)
-
-        def _callback(call: Any) -> None:
-            if callable(prior_callback):
-                try:
-                    prior_callback(call)
-                except Exception:
-                    logger.debug("Chained gateway telemetry callback failed", exc_info=True)
-            self._record_gateway_call_telemetry(call, gateway=gateway)
-
-        gateway._telemetry_callback = _callback
-        gateway._dan_concierge_telemetry_owner = self
 
     async def _emit_telemetry_event(self, event_type: str, **kwargs) -> None:
         store = getattr(self, "_telemetry_store", None)
@@ -693,22 +523,7 @@ class Concierge:
             return
         try:
             from dan.telemetry_api import TelemetryEvent
-
-            telemetry_context = self._telemetry_context_var.get() or {}
-            kwargs.setdefault("surface", telemetry_context.get("surface"))
-            kwargs.setdefault("session_id", telemetry_context.get("session_id"))
-            kwargs.setdefault("project_id", telemetry_context.get("project_id"))
-            kwargs.setdefault("task_id", telemetry_context.get("task_id"))
-            kwargs.setdefault("chat_mode", telemetry_context.get("chat_mode"))
-            model_used = (
-                kwargs.get("model_used")
-                or telemetry_context.get("model_used")
-                or kwargs.get("model")
-            )
-            if model_used:
-                kwargs.setdefault("model_used", model_used)
-                kwargs.setdefault("model", model_used)
-            parent = telemetry_context.get("turn_event_id") or getattr(self, "_current_turn_event_id", None)
+            parent = getattr(self, "_current_turn_event_id", None)
             ev = TelemetryEvent(event_type=event_type, parent_event_id=parent, **kwargs)
             await store.record(ev)
         except Exception:
@@ -734,47 +549,27 @@ class Concierge:
 
             duration_ms = (time.monotonic() - start_time) * 1000
             _ctx = self._last_context
-            telemetry_context = self._telemetry_context_var.get() or {}
             if model is None:
-                model = (
-                    telemetry_context.get("model_used")
-                    or getattr(self, "_telem_model", None)
-                )
+                model = getattr(self, "_telem_model", None)
             if intent is None:
                 intent = getattr(self, "_telem_intent", None)
-            telemetry_metadata: dict[str, Any] = {}
+            autonomy_metadata = {}
             msg_metadata = getattr(msg, "metadata", {}) or {}
             if isinstance(msg_metadata, dict):
                 autonomy_resolution = msg_metadata.get("autonomy_resolution")
                 if isinstance(autonomy_resolution, dict) and autonomy_resolution:
-                    telemetry_metadata["autonomy_resolution"] = autonomy_resolution
-                for key in (
-                    "concierge_stage",
-                    "session_tier",
-                    "prompt_overlay",
-                    "route_source",
-                    "scenario_id",
-                    "scenario_confidence",
-                ):
-                    value = msg_metadata.get(key)
-                    if value is not None:
-                        telemetry_metadata[key] = value
-            requested_model = str(telemetry_context.get("requested_model") or "").strip()
-            if requested_model and requested_model != model:
-                telemetry_metadata["requested_model"] = requested_model
-            models_used = telemetry_context.get("models_used")
-            if isinstance(models_used, list) and len(models_used) > 1:
-                telemetry_metadata["models_used"] = models_used
+                    autonomy_metadata["autonomy_resolution"] = autonomy_resolution
+                for key in ("concierge_stage", "session_tier", "prompt_overlay"):
+                    if key in msg_metadata:
+                        autonomy_metadata[key] = msg_metadata[key]
             ev = TelemetryEvent(
                 id=turn_event_id,
                 event_type="fast_command" if is_fast_command else "chat_turn",
                 project_id=getattr(getattr(_ctx, "project", None), "project_id", None),
                 task_id=getattr(getattr(_ctx, "task", None), "task_id", None),
                 surface=msg.surface,
-                session_id=self._telemetry_session_id(msg),
+                session_id=msg.external_id,
                 model=model,
-                model_used=model,
-                chat_mode=telemetry_context.get("chat_mode"),
                 intent=intent,
                 prompt_tokens=tokens.get("prompt_tokens", 0),
                 completion_tokens=tokens.get("completion_tokens", 0),
@@ -782,7 +577,7 @@ class Concierge:
                 estimated_cost=cost,
                 duration_ms=duration_ms,
                 success=success,
-                metadata=telemetry_metadata,
+                metadata=autonomy_metadata,
             )
             await self._telemetry_store.record(ev)
         except Exception:
@@ -826,9 +621,6 @@ class Concierge:
 
         if descriptor.name == "/build":
             msg.metadata["requested_mode"] = "build"
-            telemetry_context = self._telemetry_context_var.get()
-            if isinstance(telemetry_context, dict):
-                telemetry_context["chat_mode"] = self._resolve_turn_chat_mode(msg)
             stripped_text = re.sub(
                 r"^/(build|workflow)\b", "", msg.text, count=1, flags=re.IGNORECASE,
             ).strip()
@@ -853,21 +645,19 @@ class Concierge:
                 )
             from dan.telemetry_api import TelemetryQuery as TQ
 
-            telemetry_session_id = str(self._telemetry_session_id(msg) or "").strip()
+            telemetry_session_id = str(
+                getattr(msg, "session_id", "") or msg.external_id or "",
+            ).strip()
             events = await self._telemetry_store.query(
                 TQ(session_id=telemetry_session_id),
             )
-            session_events = [
-                event for event in events
-                if event.event_type in {"chat_turn", "fast_command"}
-            ]
-            if not session_events:
+            if not events:
                 return self._complete_event(
                     content="No token usage recorded for this session yet.",
                 )
             per_model: dict[str, dict[str, float]] = {}
-            for ev in session_events:
-                m = ev.model_used or ev.model or "unknown"
+            for ev in events:
+                m = ev.model or "unknown"
                 s = per_model.setdefault(m, {
                     "prompt": 0, "completion": 0, "total": 0,
                     "cost": 0.0, "calls": 0,
@@ -968,7 +758,12 @@ class Concierge:
             replay_metadata.pop("autonomy_resolution", None)
             replay_metadata.pop("turn_autonomy_preference", None)
             replay_metadata["retried_via_command"] = True
-            msg.text = last_user_turn.content
+            retry_text = str(
+                replay_metadata.get("pending_effective_text")
+                or last_user_turn.content
+                or "",
+            ).strip()
+            msg.text = retry_text or last_user_turn.content
             msg.metadata = replay_metadata
             return None
 
@@ -1120,191 +915,6 @@ class Concierge:
         )
         return self._complete_event(content=result.message)
 
-    async def handle_analytics_command(self, msg: SurfaceMessage) -> ChatCompleteEvent:
-        if self._telemetry_store is None:
-            return self._complete_event(
-                content="Telemetry is not enabled — no analytics data available.",
-            )
-
-        from dan.telemetry_api import TelemetryQuery as TQ, groupable_columns, summarize_telemetry
-
-        usage = (
-            "Usage: `/analytics [--by field[,field...]] [--event <type|all>] "
-            "[--days <n>] [--limit <n>]`"
-        )
-        args_str = re.sub(r"^/analytics\b", "", msg.text, count=1, flags=re.IGNORECASE).strip()
-
-        if not args_str:
-            telemetry_session_id = str(self._telemetry_session_id(msg) or "").strip()
-            summary = await summarize_telemetry(
-                self._telemetry_store,
-                TQ(session_id=telemetry_session_id, limit=2000),
-            )
-            totals = summary.get("totals", {}) if isinstance(summary, dict) else {}
-            if int(totals.get("events", 0) or 0) <= 0:
-                return self._complete_event(
-                    content="No telemetry recorded for this session yet.",
-                )
-
-            lines = ["**Session Analytics**\n"]
-            lines.append(
-                f"  {int(totals.get('events', 0))} events — "
-                f"{int(totals.get('chat_turns', 0))} chat turns, "
-                f"{int(totals.get('fast_commands', 0))} fast commands, "
-                f"{int(totals.get('gateway_calls', 0))} gateway calls"
-            )
-            lines.append(
-                f"  {int(totals.get('total_tokens', 0)):,} tokens — "
-                f"${float(totals.get('total_cost', 0.0) or 0.0):.4f}"
-            )
-
-            mode_rows = list(summary.get("modes", []) or [])[:3]
-            if mode_rows:
-                lines.append("\n**Modes**")
-                for row in mode_rows:
-                    group_key = row.get("group_key", {}) if isinstance(row, dict) else {}
-                    mode_name = str(group_key.get("chat_mode") or "unknown")
-                    lines.append(
-                        f"  `{mode_name}`: {int(row.get('count', 0))} turns — "
-                        f"{int(row.get('total_tokens', 0)):,} tokens"
-                    )
-
-            model_rows = list(summary.get("models", []) or [])[:3]
-            if model_rows:
-                lines.append("\n**Models**")
-                for row in model_rows:
-                    group_key = row.get("group_key", {}) if isinstance(row, dict) else {}
-                    model_name = str(group_key.get("model_used") or "unknown")
-                    lines.append(
-                        f"  `{model_name}`: {int(row.get('count', 0))} calls — "
-                        f"{int(row.get('total_tokens', 0)):,} tokens — "
-                        f"${float(row.get('total_cost', 0.0) or 0.0):.4f}"
-                    )
-
-            hour_rows = sorted(
-                list(summary.get("activity_by_hour", []) or []),
-                key=lambda row: (
-                    row.get("group_key", {}).get("hour", "")
-                    if isinstance(row, dict)
-                    else ""
-                ),
-            )
-            if hour_rows:
-                lines.append("\n**Recent Hours (UTC)**")
-                for row in hour_rows[-4:]:
-                    group_key = row.get("group_key", {}) if isinstance(row, dict) else {}
-                    hour_key = str(group_key.get("hour") or "")
-                    lines.append(
-                        f"  {self._format_analytics_hour(hour_key)}: "
-                        f"{int(row.get('count', 0))} events"
-                    )
-
-            return self._complete_event(content="\n".join(lines))
-
-        try:
-            tokens = shlex.split(args_str) if args_str else []
-        except ValueError as exc:
-            return self._complete_event(content=f"{usage}\nError: {exc}")
-
-        by_fields = ["day", "concierge_stage"]
-        event_type: str | None = "chat_turn"
-        days = 7
-        row_limit = 12
-        valid_group_fields = groupable_columns()
-
-        i = 0
-        while i < len(tokens):
-            token = tokens[i]
-            if token == "--by":
-                i += 1
-                if i >= len(tokens):
-                    return self._complete_event(content=f"{usage}\nError: missing value for `--by`.")
-                requested = [
-                    field.strip()
-                    for field in tokens[i].split(",")
-                    if field.strip()
-                ]
-                unknown = [field for field in requested if field not in valid_group_fields]
-                if unknown:
-                    valid_rendered = ", ".join(sorted(valid_group_fields))
-                    return self._complete_event(
-                        content=(
-                            f"{usage}\nError: unknown `--by` field(s): {', '.join(unknown)}.\n"
-                            f"Valid fields: {valid_rendered}"
-                        ),
-                    )
-                by_fields = requested or by_fields
-            elif token == "--event":
-                i += 1
-                if i >= len(tokens):
-                    return self._complete_event(content=f"{usage}\nError: missing value for `--event`.")
-                raw_event = str(tokens[i] or "").strip().lower()
-                event_type = None if raw_event in {"all", "*"} else raw_event
-            elif token == "--days":
-                i += 1
-                if i >= len(tokens):
-                    return self._complete_event(content=f"{usage}\nError: missing value for `--days`.")
-                try:
-                    days = max(1, int(tokens[i]))
-                except ValueError:
-                    return self._complete_event(
-                        content=f"{usage}\nError: `--days` must be a positive integer.",
-                    )
-            elif token == "--limit":
-                i += 1
-                if i >= len(tokens):
-                    return self._complete_event(content=f"{usage}\nError: missing value for `--limit`.")
-                try:
-                    row_limit = max(1, min(50, int(tokens[i])))
-                except ValueError:
-                    return self._complete_event(
-                        content=f"{usage}\nError: `--limit` must be a positive integer.",
-                    )
-            else:
-                return self._complete_event(content=f"{usage}\nError: unexpected argument `{token}`.")
-            i += 1
-
-        filters = TQ(
-            event_type=event_type,
-            since=datetime.now(timezone.utc) - timedelta(days=days),
-            limit=1_000_000,
-        )
-        rows = await self._telemetry_store.aggregate(filters=filters, group_by=by_fields)
-        if not rows:
-            return self._complete_event(
-                content="No telemetry matched that analytics query yet.",
-            )
-
-        lines = [
-            "**Telemetry Analytics**",
-            (
-                f"Window: last {days} day(s) | "
-                f"event: {event_type or 'all'} | "
-                f"grouped by: {', '.join(by_fields)}"
-            ),
-            "",
-        ]
-        for row in rows[:row_limit]:
-            key_rendered = ", ".join(
-                f"{key}={value or '(none)'}"
-                for key, value in row.group_key.items()
-            )
-            lines.append(
-                (
-                    f"- {key_rendered}: {row.count} event(s), "
-                    f"{row.total_tokens:,} tokens, ${row.total_cost:.4f}, "
-                    f"success {row.success_rate:.0%}, avg {row.avg_duration_ms:.0f} ms"
-                ),
-            )
-
-        remaining = len(rows) - row_limit
-        if remaining > 0:
-            lines.append("")
-            lines.append(
-                f"Showing top {row_limit} of {len(rows)} row(s). Increase `--limit` to inspect more.",
-            )
-        return self._complete_event(content="\n".join(lines))
-
     async def _try_fast_command(
         self, msg: SurfaceMessage,
     ) -> ChatCompleteEvent | None:
@@ -1382,7 +992,7 @@ class Concierge:
     @staticmethod
     def _is_messaging_surface(msg: SurfaceMessage) -> bool:
         surface = str(getattr(msg, "surface", "") or "").split(":", 1)[0]
-        return surface in {"telegram", "whatsapp", "whatsapp-web", "email", "wechat"}
+        return surface in {"telegram", "whatsapp", "whatsapp-web", "email"}
 
     @staticmethod
     def _format_elapsed_seconds(elapsed_seconds: float) -> str:
@@ -1552,7 +1162,6 @@ class Concierge:
 
         turn_event_id = generate_event_id()
         self._current_turn_event_id = turn_event_id
-        self._last_context = None
         _telem_start = time.monotonic()
         _telem_tokens: dict[str, int] = {}
         _telem_cost = 0.0
@@ -1560,13 +1169,6 @@ class Concierge:
         self._telem_model = None
         self._telem_intent = None
         _telem_success = True
-        telemetry_ctx_token = self._telemetry_context_var.set({
-            "turn_event_id": turn_event_id,
-            "surface": msg.surface,
-            "session_id": self._telemetry_session_id(msg),
-            "chat_mode": self._resolve_turn_chat_mode(msg),
-            "models_used": [],
-        })
 
         if self._REASSURANCE_INITIAL_DELAY <= 0 or self._is_messaging_surface(msg):
             try:
@@ -1598,11 +1200,6 @@ class Concierge:
                     is_fast_command=self._telem_is_fast_command,
                     success=_telem_success,
                 )
-                if self._bg_telemetry_tasks:
-                    await asyncio.gather(
-                        *list(self._bg_telemetry_tasks), return_exceptions=True,
-                    )
-                self._telemetry_context_var.reset(telemetry_ctx_token)
             return
 
         _sentinel = object()
@@ -1698,11 +1295,6 @@ class Concierge:
                 is_fast_command=self._telem_is_fast_command,
                 success=_telem_success,
             )
-            if self._bg_telemetry_tasks:
-                await asyncio.gather(
-                    *list(self._bg_telemetry_tasks), return_exceptions=True,
-                )
-            self._telemetry_context_var.reset(telemetry_ctx_token)
             if not drain_task.done():
                 drain_task.cancel()
                 try:
@@ -1711,7 +1303,6 @@ class Concierge:
                     pass
 
     async def _process_inner(self, msg: SurfaceMessage) -> AsyncIterator[ChatStreamEvent]:
-        self._install_gateway_telemetry_bridge()
         self._current_surface_id = msg.external_id
         state_scope_id = self._concierge_state_scope_key(msg.surface, msg.external_id)
         lock = self._volatile_concierge_state_locks.setdefault(state_scope_id, asyncio.Lock())
@@ -2913,13 +2504,15 @@ class Concierge:
 
         if resolution.action == "resume":
             self.project_store.clear_pending_action(project.project_id, msg.external_id)
+            replay_metadata = {
+                **pending.metadata,
+                **msg.metadata,
+                **resolution.metadata,
+            }
             replay_msg = msg.model_copy(
                 update={
-                    "text": resolution.replay_text,
-                    "metadata": self._with_resolved_context_metadata(
-                        {**pending.metadata, **msg.metadata, **resolution.metadata},
-                        context,
-                    ),
+                    "text": resolution.replay_text or msg.text,
+                    "metadata": self._with_resolved_context_metadata(replay_metadata, context),
                 }
             )
             return None, context, triage, replay_msg

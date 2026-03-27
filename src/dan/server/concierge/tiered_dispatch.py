@@ -57,6 +57,15 @@ _USER_TURN_METADATA_KEYS = frozenset({
     "pending_route_step",
     "attached_user_reply",
     "replay_source",
+    "pending_attachment_source",
+    "pending_action_kind",
+    "pending_original_text",
+    "pending_intent",
+    "pending_created_at",
+    "pending_resolved_value",
+    "pending_requires_triage",
+    "pending_user_turn_content",
+    "pending_effective_text",
 })
 
 
@@ -69,6 +78,17 @@ def _sanitize_user_turn_metadata(msg: SurfaceMessage | None) -> dict[str, Any]:
         for key in _USER_TURN_METADATA_KEYS
         if key in metadata
     }
+
+
+def _user_turn_content(msg: SurfaceMessage | None) -> str:
+    if msg is None:
+        return ""
+    metadata = getattr(msg, "metadata", None)
+    if isinstance(metadata, dict):
+        attached = metadata.get("pending_user_turn_content")
+        if isinstance(attached, str) and attached.strip():
+            return attached
+    return str(getattr(msg, "text", "") or "")
 
 
 def _normalize_context_file_path(raw_path: Any, *, workspace_root: str = "") -> str | None:
@@ -405,12 +425,20 @@ class TieredDispatcher:
                 original_reply = str(getattr(original_msg, "text", "") or "").strip()
                 if original_reply:
                     replay_metadata.setdefault("attached_user_reply", original_reply)
+                    replay_metadata.setdefault("pending_user_turn_content", original_reply)
+                effective_text = str(getattr(msg, "text", "") or "").strip()
+                if effective_text:
+                    replay_metadata.setdefault("pending_effective_text", effective_text)
                 if any(
                     key in replay_metadata
-                    for key in ("skip_confirm", "clarification_answer", "selected_option")
+                    for key in ("skip_confirm", "clarification_answer", "selected_option", "pending_route_step")
                 ):
-                    replay_metadata.setdefault("replay_source", "pending_follow_up")
-            triage = pending_triage
+                    replay_metadata.setdefault("replay_source", "pending_attachment")
+                    replay_metadata.setdefault("pending_attachment_source", "pending_follow_up")
+            if isinstance(replay_metadata, dict) and replay_metadata.get("pending_requires_triage"):
+                triage, triage_context = await self._do_triage(msg)
+            else:
+                triage = pending_triage
         else:
             triage, triage_context = await self._do_triage(msg)
 
@@ -649,12 +677,13 @@ class TieredDispatcher:
                 record_feedback = getattr(self._concierge, "_maybe_record_turn_feedback", None)
                 if callable(record_feedback) and session.msg is not None:
                     record_feedback(context, session.msg)
+                user_turn_content = _user_turn_content(session.msg)
                 self._concierge.project_store.append_turn(
                     context.project.project_id,
                     context.task.task_id,
                     TaskTurn(
                         role="user",
-                        content=session.msg.text if session.msg else "",
+                        content=user_turn_content,
                         intent=intent_str,
                         metadata=_sanitize_user_turn_metadata(session.msg),
                     ),
@@ -666,7 +695,7 @@ class TieredDispatcher:
                         context,
                         session.msg,
                         role="user_turn",
-                        content=session.msg.text,
+                        content=user_turn_content,
                         metadata=_sanitize_user_turn_metadata(session.msg),
                     )
                 if result.content:

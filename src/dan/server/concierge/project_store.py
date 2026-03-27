@@ -28,7 +28,12 @@ def _normalize_search_text(text: str) -> str:
 
 class ProjectStore:
     def __init__(self, base_dir: str | Path | None = None) -> None:
-        self.base_dir = Path(base_dir or (Path.home() / ".dan" / "projects"))
+        default_base_dir = os.environ.get("DAN_PROJECT_STORE_DIR")
+        self.base_dir = Path(
+            base_dir
+            or default_base_dir
+            or (Path.home() / ".dan" / "projects")
+        )
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._journal_compact_every = max(
             0,
@@ -46,6 +51,80 @@ class ProjectStore:
 
     def _journal_path(self, project_id: str, surface_id: str) -> Path:
         return self._projects_dir(surface_id) / f"{_safe_segment(project_id)}.journal.jsonl"
+
+    def _resolve_project_snapshot_path(self, project_id: str, surface_id: str) -> Path | None:
+        path = self._project_path(project_id, surface_id)
+        if path.exists():
+            return path
+        safe_id = _safe_segment(project_id)
+        for candidate in sorted(self.base_dir.glob(f"*/{safe_id}.json")):
+            return candidate
+        return None
+
+    def _load_project_snapshot_payload(
+        self,
+        project_id: str,
+        surface_id: str,
+    ) -> tuple[Path, dict[str, Any]] | None:
+        path = self._resolve_project_snapshot_path(project_id, surface_id)
+        if path is None:
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.warning("Failed to load project snapshot from %s", path, exc_info=True)
+            return None
+        if not isinstance(payload, dict):
+            logger.warning("Project snapshot at %s is not a JSON object", path)
+            return None
+        tasks = payload.get("tasks")
+        if not isinstance(tasks, list):
+            logger.warning("Project snapshot at %s has invalid tasks payload", path)
+            return None
+        return path, payload
+
+    @staticmethod
+    def _snapshot_has_task(payload: dict[str, Any], task_id: str) -> bool:
+        for task in payload.get("tasks", []):
+            if isinstance(task, dict) and str(task.get("task_id") or "").strip() == task_id:
+                return True
+        return False
+
+    def _resolve_project_fields(
+        self,
+        project_id: str,
+        surface_id: str,
+        *field_names: str,
+    ) -> tuple[Path, dict[str, Any]] | None:
+        snapshot = self._load_project_snapshot_payload(project_id, surface_id)
+        if snapshot is None:
+            return None
+        path, payload = snapshot
+        resolved = {field_name: payload.get(field_name) for field_name in field_names}
+        journal_path = path.with_suffix(".journal.jsonl")
+        if not journal_path.exists():
+            return path, resolved
+        try:
+            with journal_path.open("r", encoding="utf-8") as handle:
+                line_count = 0
+                for raw in handle:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    line_count += 1
+                    entry = json.loads(raw)
+                    if entry.get("op") != "update_project":
+                        continue
+                    fields = entry.get("fields")
+                    if not isinstance(fields, dict):
+                        continue
+                    for field_name in field_names:
+                        if field_name in fields:
+                            resolved[field_name] = fields[field_name]
+                self._journal_counts[journal_path] = line_count
+        except Exception:
+            logger.warning("Failed to inspect project journal %s", journal_path, exc_info=True)
+        return path, resolved
 
     @staticmethod
     def _parse_datetime(value: Any) -> datetime:
@@ -252,30 +331,29 @@ class ProjectStore:
         return max(project.tasks, key=lambda task: task.updated_at)
 
     def append_turn(self, project_id: str, task_id: str, turn: TaskTurn, surface_id: str) -> None:
-        project = self.get_project(project_id, surface_id)
-        if project is None:
+        snapshot = self._load_project_snapshot_payload(project_id, surface_id)
+        if snapshot is None:
             raise KeyError(f"Project '{project_id}' not found")
-        for task in project.tasks:
-            if task.task_id == task_id:
-                task_updated_at = _utc_now()
-                project_updated_at = _utc_now()
-                self._append_journal_entry(
-                    project_id,
-                    surface_id,
-                    {
-                        "op": "append_turn",
-                        "task_id": task_id,
-                        "turn": turn.model_dump(mode="json"),
-                        "task_updated_at": task_updated_at.isoformat(),
-                        "project_updated_at": project_updated_at.isoformat(),
-                    },
-                )
-                return
-        raise KeyError(f"Task '{task_id}' not found")
+        _path, payload = snapshot
+        if not self._snapshot_has_task(payload, task_id):
+            raise KeyError(f"Task '{task_id}' not found")
+        task_updated_at = _utc_now()
+        project_updated_at = _utc_now()
+        self._append_journal_entry(
+            project_id,
+            surface_id,
+            {
+                "op": "append_turn",
+                "task_id": task_id,
+                "turn": turn.model_dump(mode="json"),
+                "task_updated_at": task_updated_at.isoformat(),
+                "project_updated_at": project_updated_at.isoformat(),
+            },
+        )
 
     def update_project_status(self, project_id: str, status: str, surface_id: str) -> None:
-        project = self.get_project(project_id, surface_id)
-        if project is None:
+        snapshot = self._load_project_snapshot_payload(project_id, surface_id)
+        if snapshot is None:
             raise KeyError(f"Project '{project_id}' not found")
         self._append_journal_entry(
             project_id,
@@ -290,32 +368,31 @@ class ProjectStore:
         )
 
     def update_task_status(self, project_id: str, task_id: str, status: str, surface_id: str) -> None:
-        project = self.get_project(project_id, surface_id)
-        if project is None:
+        snapshot = self._load_project_snapshot_payload(project_id, surface_id)
+        if snapshot is None:
             raise KeyError(f"Project '{project_id}' not found")
-        for task in project.tasks:
-            if task.task_id == task_id:
-                task_updated_at = _utc_now()
-                project_updated_at = _utc_now()
-                self._append_journal_entry(
-                    project_id,
-                    surface_id,
-                    {
-                        "op": "update_task",
-                        "task_id": task_id,
-                        "fields": {
-                            "status": status,
-                            "updated_at": task_updated_at.isoformat(),
-                        },
-                        "project_updated_at": project_updated_at.isoformat(),
-                    },
-                )
-                return
-        raise KeyError(f"Task '{task_id}' not found")
+        _path, payload = snapshot
+        if not self._snapshot_has_task(payload, task_id):
+            raise KeyError(f"Task '{task_id}' not found")
+        task_updated_at = _utc_now()
+        project_updated_at = _utc_now()
+        self._append_journal_entry(
+            project_id,
+            surface_id,
+            {
+                "op": "update_task",
+                "task_id": task_id,
+                "fields": {
+                    "status": status,
+                    "updated_at": task_updated_at.isoformat(),
+                },
+                "project_updated_at": project_updated_at.isoformat(),
+            },
+        )
 
     def update_project_summary(self, project_id: str, summary: str, surface_id: str) -> None:
-        project = self.get_project(project_id, surface_id)
-        if project is None:
+        snapshot = self._load_project_snapshot_payload(project_id, surface_id)
+        if snapshot is None:
             raise KeyError(f"Project '{project_id}' not found")
         self._append_journal_entry(
             project_id,
@@ -337,8 +414,8 @@ class ProjectStore:
         return [project for project in self.list_projects(surface_id) if project.pending_action is not None]
 
     def set_pending_action(self, project_id: str, pending_action: PendingAction, surface_id: str) -> None:
-        project = self.get_project(project_id, surface_id)
-        if project is None:
+        snapshot = self._load_project_snapshot_payload(project_id, surface_id)
+        if snapshot is None:
             raise KeyError(f"Project '{project_id}' not found")
         self._append_journal_entry(
             project_id,
@@ -353,8 +430,8 @@ class ProjectStore:
         )
 
     def clear_pending_action(self, project_id: str, surface_id: str) -> None:
-        project = self.get_project(project_id, surface_id)
-        if project is None:
+        snapshot = self._load_project_snapshot_payload(project_id, surface_id)
+        if snapshot is None:
             raise KeyError(f"Project '{project_id}' not found")
         self._append_journal_entry(
             project_id,
@@ -369,51 +446,63 @@ class ProjectStore:
         )
 
     def link_workflow(self, project_id: str, workflow_id: str, surface_id: str) -> None:
-        project = self.get_project(project_id, surface_id)
-        if project is None:
+        resolved = self._resolve_project_fields(project_id, surface_id, "linked_workflow_ids")
+        if resolved is None:
             raise KeyError(f"Project '{project_id}' not found")
-        if workflow_id not in project.linked_workflow_ids:
+        _path, fields = resolved
+        linked_workflow_ids = fields.get("linked_workflow_ids")
+        if not isinstance(linked_workflow_ids, list):
+            linked_workflow_ids = []
+        if workflow_id not in linked_workflow_ids:
             self._append_journal_entry(
                 project_id,
                 surface_id,
                 {
                     "op": "update_project",
                     "fields": {
-                        "linked_workflow_ids": [*project.linked_workflow_ids, workflow_id],
+                        "linked_workflow_ids": [*linked_workflow_ids, workflow_id],
                         "updated_at": _utc_now().isoformat(),
                     },
                 },
             )
 
     def link_run(self, project_id: str, run_id: str, surface_id: str) -> None:
-        project = self.get_project(project_id, surface_id)
-        if project is None:
+        resolved = self._resolve_project_fields(project_id, surface_id, "linked_run_ids")
+        if resolved is None:
             raise KeyError(f"Project '{project_id}' not found")
-        if run_id not in project.linked_run_ids:
+        _path, fields = resolved
+        linked_run_ids = fields.get("linked_run_ids")
+        if not isinstance(linked_run_ids, list):
+            linked_run_ids = []
+        if run_id not in linked_run_ids:
             self._append_journal_entry(
                 project_id,
                 surface_id,
                 {
                     "op": "update_project",
                     "fields": {
-                        "linked_run_ids": [*project.linked_run_ids, run_id],
+                        "linked_run_ids": [*linked_run_ids, run_id],
                         "updated_at": _utc_now().isoformat(),
                     },
                 },
             )
 
     def link_meta_session(self, project_id: str, session_id: str, surface_id: str) -> None:
-        project = self.get_project(project_id, surface_id)
-        if project is None:
+        resolved = self._resolve_project_fields(project_id, surface_id, "linked_meta_session_ids")
+        if resolved is None:
             raise KeyError(f"Project '{project_id}' not found")
-        if session_id not in project.linked_meta_session_ids:
+        _path, fields = resolved
+        linked_meta_session_ids = fields.get("linked_meta_session_ids")
+        if not isinstance(linked_meta_session_ids, list):
+            linked_meta_session_ids = []
+        if session_id not in linked_meta_session_ids:
             self._append_journal_entry(
                 project_id,
                 surface_id,
                 {
                     "op": "update_project",
                     "fields": {
-                        "linked_meta_session_ids": [*project.linked_meta_session_ids, session_id],
+                        "linked_meta_session_ids": [*linked_meta_session_ids, session_id],
                         "updated_at": _utc_now().isoformat(),
                     },
                 },
@@ -433,44 +522,42 @@ class ProjectStore:
         progress_updated_at: float | None = None,
         clear_blocker: bool = False,
     ) -> None:
-        project = self.get_project(project_id, surface_id)
-        if project is None:
+        snapshot = self._load_project_snapshot_payload(project_id, surface_id)
+        if snapshot is None:
             raise KeyError(f"Project '{project_id}' not found")
-        for task in project.tasks:
-            if task.task_id != task_id:
-                continue
-            task_updated_at = _utc_now()
-            project_updated_at = _utc_now()
-            fields: dict[str, Any] = {
-                "updated_at": task_updated_at.isoformat(),
-                "last_activity": task_updated_at.isoformat(),
-            }
-            if completed_steps is not None:
-                fields["completed_steps"] = list(completed_steps)
-            if pending_steps is not None:
-                fields["pending_steps"] = list(pending_steps)
-            if artifacts is not None:
-                fields["artifacts"] = dict(artifacts)
-            if goal_id is not None:
-                fields["goal_id"] = goal_id
-            if progress_updated_at is not None:
-                fields["progress_updated_at"] = progress_updated_at
-            if clear_blocker:
-                fields["current_blocker"] = None
-            elif current_blocker is not None:
-                fields["current_blocker"] = current_blocker
-            self._append_journal_entry(
-                project_id,
-                surface_id,
-                {
-                    "op": "update_task",
-                    "task_id": task_id,
-                    "fields": fields,
-                    "project_updated_at": project_updated_at.isoformat(),
-                },
-            )
-            return
-        raise KeyError(f"Task '{task_id}' not found")
+        _path, payload = snapshot
+        if not self._snapshot_has_task(payload, task_id):
+            raise KeyError(f"Task '{task_id}' not found")
+        task_updated_at = _utc_now()
+        project_updated_at = _utc_now()
+        fields: dict[str, Any] = {
+            "updated_at": task_updated_at.isoformat(),
+            "last_activity": task_updated_at.isoformat(),
+        }
+        if completed_steps is not None:
+            fields["completed_steps"] = list(completed_steps)
+        if pending_steps is not None:
+            fields["pending_steps"] = list(pending_steps)
+        if artifacts is not None:
+            fields["artifacts"] = dict(artifacts)
+        if goal_id is not None:
+            fields["goal_id"] = goal_id
+        if progress_updated_at is not None:
+            fields["progress_updated_at"] = progress_updated_at
+        if clear_blocker:
+            fields["current_blocker"] = None
+        elif current_blocker is not None:
+            fields["current_blocker"] = current_blocker
+        self._append_journal_entry(
+            project_id,
+            surface_id,
+            {
+                "op": "update_task",
+                "task_id": task_id,
+                "fields": fields,
+                "project_updated_at": project_updated_at.isoformat(),
+            },
+        )
 
     def search_projects(self, query: str, surface_id: str, limit: int = 10) -> list[Project]:
         query_norm = _normalize_search_text(query)
