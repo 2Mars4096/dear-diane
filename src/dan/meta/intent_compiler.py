@@ -89,6 +89,85 @@ def _infer_tool_id(name: str, description: str) -> str | None:
     return "llm_operator"
 
 
+def _required_tool_args(tool_id: str) -> set[str]:
+    """Return required parameter names for a registered tool."""
+    try:
+        from dan.tools import get_all_tools
+
+        entry = get_all_tools().get(tool_id)
+    except Exception:
+        return set()
+    if not entry:
+        return set()
+    metadata = entry[1]
+    parameters = metadata.get("parameters")
+    if not isinstance(parameters, dict):
+        return set()
+    required = parameters.get("required")
+    if not isinstance(required, list):
+        return set()
+    return {
+        str(item).strip()
+        for item in required
+        if str(item).strip()
+    }
+
+
+def _tool_builder_kwargs(stage: StageIntent, tool_id: str) -> dict[str, Any]:
+    """Derive builder kwargs so inferred tool stages are at least minimally grounded."""
+    kwargs: dict[str, Any] = {}
+
+    tool_config_raw = stage.config.get("tool_config")
+    tool_config = (
+        dict(tool_config_raw)
+        if isinstance(tool_config_raw, dict)
+        else {}
+    )
+
+    input_ports_raw = stage.config.get("input_ports")
+    if isinstance(input_ports_raw, list):
+        kwargs["input_ports"] = input_ports_raw
+
+    output_ports_raw = stage.config.get("output_ports")
+    if isinstance(output_ports_raw, list):
+        kwargs["output_ports"] = output_ports_raw
+
+    required_args = _required_tool_args(tool_id)
+    if required_args:
+        if tool_id == "web_search" and "query" in required_args:
+            query_text = str(tool_config.get("query") or stage.description or stage.name).strip()
+            if query_text:
+                tool_config.setdefault("query", query_text)
+
+        if len(required_args) == 1:
+            arg_name = next(iter(required_args))
+            if arg_name not in tool_config:
+                fallback_text = str(
+                    stage.config.get(arg_name)
+                    or stage.description
+                    or stage.name
+                ).strip()
+                if fallback_text and arg_name in {"query", "path", "url", "command", "text"}:
+                    tool_config[arg_name] = fallback_text
+
+        if "input_ports" not in kwargs:
+            missing_args = [
+                arg_name
+                for arg_name in sorted(required_args)
+                if tool_config.get(arg_name) in (None, "", [], {})
+            ]
+            if missing_args:
+                kwargs["input_ports"] = [
+                    {"name": arg_name, "required": True}
+                    for arg_name in missing_args
+                ]
+
+    if tool_config:
+        kwargs["tool_config"] = tool_config
+
+    return kwargs
+
+
 def _mask_string_literals(text: str) -> tuple[str, list[str]]:
     """Replace string literals with placeholders so normalization ignores them."""
     placeholders: list[str] = []
@@ -563,7 +642,10 @@ class IntentCompiler:
             prompt = _escape(stage.description or f"Process: {stage.name}")
             lines = [f'{var} = wf.llm("{stage.name}", prompt="{prompt}")']
             return var, var, lines
-        lines = [f'{var} = wf.tool("{stage.name}", tool_id="{_escape(tool_id)}")']
+        args = [f'tool_id="{_escape(tool_id)}"']
+        for key, value in _tool_builder_kwargs(stage, tool_id).items():
+            args.append(f"{key}={repr(value)}")
+        lines = [f'{var} = wf.tool("{stage.name}", {", ".join(args)})']
         return var, var, lines
 
     def _compile_code_execution(
@@ -803,7 +885,7 @@ class IntentCompiler:
             prompt = stage.description or f"Process: {stage.name}"
             ref = wf.llm(stage.name, prompt=prompt)
             return ref, ref
-        ref = wf.tool(stage.name, tool_id=tool_id)
+        ref = wf.tool(stage.name, tool_id=tool_id, **_tool_builder_kwargs(stage, tool_id))
         return ref, ref
 
     def _build_code_execution(
