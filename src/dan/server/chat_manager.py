@@ -290,6 +290,13 @@ try:
     _MUTATION_AUTO_RETRY_MAX = max(0, int(os.environ.get("DAN_MUTATION_AUTO_RETRY_MAX", "2")))
 except ValueError:
     _MUTATION_AUTO_RETRY_MAX = 2
+try:
+    _MUTATION_REPAIR_LLM_TIMEOUT_SECONDS = max(
+        1.0,
+        float(os.environ.get("DAN_MUTATION_REPAIR_LLM_TIMEOUT", "45")),
+    )
+except ValueError:
+    _MUTATION_REPAIR_LLM_TIMEOUT_SECONDS = 45.0
 _MAX_CONTEXT_RATIO = float(os.environ.get("DAN_CHAT_MAX_CONTEXT_RATIO", "0.8"))
 _LLM_CALL_TIMEOUT_SECONDS = float(os.environ.get("DAN_LLM_CALL_TIMEOUT", "120"))
 _WORKFLOW_GENERATION_PROGRESS_TIMEOUT_SECONDS = float(
@@ -1422,6 +1429,7 @@ class ChatManager:
                 request_kwargs: dict[str, Any],
                 interrupted_content: str | Callable[[], str] | None = None,
                 emit_progress_ack: bool = False,
+                timeout_seconds: float | None = None,
             ) -> AsyncIterator[ChatStreamEvent | CompletionResult]:
                 async def _run_complete_request() -> CompletionResult:
                     tracker = getattr(self, "_resource_tracker", None)
@@ -1448,7 +1456,11 @@ class ChatManager:
                 async for step in iter_guarded_completion(
                     run=_run_complete_request,
                     cancel_event=cancel_event,
-                    timeout_seconds=_LLM_CALL_TIMEOUT_SECONDS,
+                    timeout_seconds=(
+                        timeout_seconds
+                        if timeout_seconds is not None
+                        else _LLM_CALL_TIMEOUT_SECONDS
+                    ),
                     poll_interval_seconds=8.0,
                     interrupted_content=interrupted_content,
                     log=logger,
@@ -1978,6 +1990,10 @@ class ChatManager:
                                         if combined_text_parts
                                         else "",
                                         emit_progress_ack=True,
+                                        timeout_seconds=min(
+                                            _LLM_CALL_TIMEOUT_SECONDS,
+                                            _MUTATION_REPAIR_LLM_TIMEOUT_SECONDS,
+                                        ),
                                     ),
                                 )
                                 async for step in retry_relay:
@@ -2070,6 +2086,10 @@ class ChatManager:
                                         if combined_text_parts
                                         else "",
                                         emit_progress_ack=True,
+                                        timeout_seconds=min(
+                                            _LLM_CALL_TIMEOUT_SECONDS,
+                                            _MUTATION_REPAIR_LLM_TIMEOUT_SECONDS,
+                                        ),
                                     ),
                                 )
                                 async for step in replan_relay:

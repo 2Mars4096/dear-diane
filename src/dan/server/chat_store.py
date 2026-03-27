@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -72,6 +73,14 @@ class ChatThread(BaseModel):
     )
 
 
+@dataclass
+class _CachedThreadState:
+    thread: ChatThread
+    journal_count: int
+    snapshot_signature: tuple[int, int] | None
+    journal_signature: tuple[int, int] | None
+
+
 class ChatStore:
     """CRUD operations for chat threads on disk.
 
@@ -86,6 +95,7 @@ class ChatStore:
             int(os.environ.get("DAN_CHAT_STORE_COMPACT_EVERY", "100")),
         )
         self._journal_counts: dict[Path, int] = {}
+        self._thread_cache: dict[Path, _CachedThreadState] = {}
 
     def _chats_dir(self, workflow_id: str) -> Path:
         d = self.base_dir / "chats" / workflow_id
@@ -98,6 +108,83 @@ class ChatStore:
     def _journal_path(self, workflow_id: str, thread_id: str) -> Path:
         return self._chats_dir(workflow_id) / f"{thread_id}.journal.jsonl"
 
+    @staticmethod
+    def _path_signature(path: Path) -> tuple[int, int] | None:
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
+
+    @staticmethod
+    def _clone_thread(thread: ChatThread) -> ChatThread:
+        return thread.model_copy(deep=True)
+
+    def _store_cached_thread_state(
+        self, thread: ChatThread, journal_count: int
+    ) -> _CachedThreadState:
+        path = self._thread_path(thread.workflow_id, thread.id)
+        journal_path = self._journal_path(thread.workflow_id, thread.id)
+        state = _CachedThreadState(
+            thread=self._clone_thread(thread),
+            journal_count=journal_count,
+            snapshot_signature=self._path_signature(path),
+            journal_signature=self._path_signature(journal_path),
+        )
+        self._thread_cache[path] = state
+        self._journal_counts[journal_path] = journal_count
+        return state
+
+    def _get_cached_thread_state(
+        self, workflow_id: str, thread_id: str
+    ) -> _CachedThreadState | None:
+        path = self._thread_path(workflow_id, thread_id)
+        state = self._thread_cache.get(path)
+        if state is None:
+            return None
+        journal_path = self._journal_path(workflow_id, thread_id)
+        if (
+            state.snapshot_signature != self._path_signature(path)
+            or state.journal_signature != self._path_signature(journal_path)
+        ):
+            self._thread_cache.pop(path, None)
+            return None
+        self._journal_counts[journal_path] = state.journal_count
+        return state
+
+    def _get_or_load_thread_state(
+        self, workflow_id: str, thread_id: str
+    ) -> _CachedThreadState | None:
+        state = self._get_cached_thread_state(workflow_id, thread_id)
+        if state is not None:
+            return state
+        path = self._thread_path(workflow_id, thread_id)
+        if not path.exists():
+            return None
+        thread, journal_count = self._read_thread_from_path(path)
+        if thread is None:
+            return None
+        return self._store_cached_thread_state(thread, journal_count)
+
+    def _load_snapshot_from_path(self, path: Path) -> ChatThread | None:
+        try:
+            return ChatThread.model_validate_json(
+                path.read_text(encoding="utf-8")
+            )
+        except (ValueError, OSError):
+            return None
+
+    def _finalize_cached_thread_mutation(
+        self, state: _CachedThreadState, journal_count: int
+    ) -> None:
+        if (
+            self._journal_compact_every > 0
+            and journal_count >= self._journal_compact_every
+        ):
+            self._write_snapshot(state.thread)
+            return
+        self._store_cached_thread_state(state.thread, journal_count)
+
     def _write_snapshot(self, thread: ChatThread) -> None:
         path = self._thread_path(thread.workflow_id, thread.id)
         path.write_text(
@@ -106,14 +193,14 @@ class ChatStore:
         journal_path = self._journal_path(thread.workflow_id, thread.id)
         if journal_path.exists():
             journal_path.unlink()
-        self._journal_counts[journal_path] = 0
+        self._store_cached_thread_state(thread, 0)
 
     def _append_journal_entry(
         self,
         workflow_id: str,
         thread_id: str,
         entry: dict[str, Any],
-    ) -> None:
+    ) -> int:
         journal_path = self._journal_path(workflow_id, thread_id)
         with journal_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry) + "\n")
@@ -127,7 +214,7 @@ class ChatStore:
         else:
             current += 1
         self._journal_counts[journal_path] = current
-        self._maybe_compact_thread(workflow_id, thread_id, current)
+        return current
 
     def _maybe_compact_thread(
         self,
@@ -142,6 +229,10 @@ class ChatStore:
                 self._journal_path(workflow_id, thread_id), 0,
             )
         if journal_count < self._journal_compact_every:
+            return
+        state = self._get_cached_thread_state(workflow_id, thread_id)
+        if state is not None:
+            self._write_snapshot(state.thread)
             return
         thread = self.get_thread(workflow_id, thread_id)
         if thread is not None:
@@ -184,18 +275,17 @@ class ChatStore:
                     setattr(thread, key, value)
             return
 
-    def _load_thread_from_path(self, path: Path) -> ChatThread | None:
-        try:
-            thread = ChatThread.model_validate_json(
-                path.read_text(encoding="utf-8")
-            )
-        except (ValueError, OSError):
-            return None
+    def _read_thread_from_path(
+        self, path: Path
+    ) -> tuple[ChatThread | None, int]:
+        thread = self._load_snapshot_from_path(path)
+        if thread is None:
+            return None, 0
         journal_path = path.with_suffix(".journal.jsonl")
+        line_count = 0
         if journal_path.exists():
             try:
                 with journal_path.open("r", encoding="utf-8") as handle:
-                    line_count = 0
                     for raw in handle:
                         raw = raw.strip()
                         if not raw:
@@ -205,6 +295,26 @@ class ChatStore:
                     self._journal_counts[journal_path] = line_count
             except (ValueError, OSError):
                 logger.debug("Failed to replay chat journal %s", journal_path, exc_info=True)
+        return thread, line_count
+
+    def _load_thread_from_path(self, path: Path) -> ChatThread | None:
+        try:
+            relative = path.relative_to(self.base_dir / "chats")
+            workflow_id = relative.parts[0]
+            thread_id = path.stem
+        except (ValueError, IndexError):
+            workflow_id = ""
+            thread_id = ""
+        if workflow_id and thread_id:
+            state = self._get_cached_thread_state(workflow_id, thread_id)
+            if state is not None:
+                return self._clone_thread(state.thread)
+        thread, journal_count = self._read_thread_from_path(path)
+        if thread is None:
+            return None
+        if workflow_id and thread_id:
+            state = self._store_cached_thread_state(thread, journal_count)
+            return self._clone_thread(state.thread)
         return thread
 
     def get_thread(
@@ -228,11 +338,11 @@ class ChatStore:
     def append_message(
         self, workflow_id: str, thread_id: str, message: ChatMessage
     ) -> ChatThread | None:
-        thread = self.get_thread(workflow_id, thread_id)
-        if thread is None:
+        state = self._get_or_load_thread_state(workflow_id, thread_id)
+        if state is None:
             return None
         updated_at = datetime.now(timezone.utc)
-        self._append_journal_entry(
+        journal_count = self._append_journal_entry(
             workflow_id,
             thread_id,
             {
@@ -241,18 +351,20 @@ class ChatStore:
                 "updated_at": updated_at.isoformat(),
             },
         )
-        thread.messages.append(message)
-        thread.updated_at = updated_at
-        return thread
+        state.thread.messages.append(message.model_copy(deep=True))
+        state.thread.updated_at = updated_at
+        self._finalize_cached_thread_mutation(state, journal_count)
+        return self._clone_thread(state.thread)
 
     def update_thread_title(
         self, workflow_id: str, thread_id: str, title: str
     ) -> bool:
-        thread = self.get_thread(workflow_id, thread_id)
-        if thread is None:
+        path = self._thread_path(workflow_id, thread_id)
+        if not path.exists() or self._load_snapshot_from_path(path) is None:
             return False
+        state = self._get_cached_thread_state(workflow_id, thread_id)
         updated_at = datetime.now(timezone.utc)
-        self._append_journal_entry(
+        journal_count = self._append_journal_entry(
             workflow_id,
             thread_id,
             {
@@ -263,6 +375,12 @@ class ChatStore:
                 },
             },
         )
+        if state is not None:
+            state.thread.title = title
+            state.thread.updated_at = updated_at
+            self._finalize_cached_thread_mutation(state, journal_count)
+            return True
+        self._maybe_compact_thread(workflow_id, thread_id, journal_count)
         return True
 
     def delete_thread(self, workflow_id: str, thread_id: str) -> bool:
@@ -272,6 +390,8 @@ class ChatStore:
             journal = self._journal_path(workflow_id, thread_id)
             if journal.exists():
                 journal.unlink()
+            self._journal_counts.pop(journal, None)
+            self._thread_cache.pop(path, None)
             meta = self._meta_path(workflow_id, thread_id)
             if meta.exists():
                 meta.unlink()
@@ -288,6 +408,12 @@ class ChatStore:
             count += 1
         for p in chats_dir.glob("*.journal.jsonl"):
             p.unlink()
+        for p in list(self._thread_cache):
+            if p.parent == chats_dir:
+                self._thread_cache.pop(p, None)
+        for p in list(self._journal_counts):
+            if p.parent == chats_dir:
+                self._journal_counts.pop(p, None)
         if not any(chats_dir.iterdir()):
             chats_dir.rmdir()
         return count
@@ -452,8 +578,8 @@ class ChatStore:
     def set_mode(
         self, workflow_id: str, thread_id: str, mode: str
     ) -> bool:
-        thread = self.get_thread(workflow_id, thread_id)
-        if thread is None:
+        path = self._thread_path(workflow_id, thread_id)
+        if not path.exists() or self._load_snapshot_from_path(path) is None:
             return False
         meta = self.get_thread_meta(workflow_id, thread_id)
         meta["mode"] = self._normalize_mode(mode)
@@ -463,8 +589,8 @@ class ChatStore:
     def set_pinned(
         self, workflow_id: str, thread_id: str, pinned: bool
     ) -> bool:
-        thread = self.get_thread(workflow_id, thread_id)
-        if thread is None:
+        path = self._thread_path(workflow_id, thread_id)
+        if not path.exists() or self._load_snapshot_from_path(path) is None:
             return False
         meta = self.get_thread_meta(workflow_id, thread_id)
         meta["pinned"] = pinned

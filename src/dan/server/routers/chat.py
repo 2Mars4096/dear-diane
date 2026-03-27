@@ -575,18 +575,16 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                                 try:
                                     evt = await asyncio.wait_for(rq.get(), timeout=30.0)
                                 except asyncio.TimeoutError:
-                                    rec = _run_manager.get_run(run_id)
-                                    if rec is None or rec.status in (
-                                        RunStatus.COMPLETED,
-                                        RunStatus.FAILED,
-                                        RunStatus.CANCELLED,
-                                    ):
+                                    if _run_manager.run_is_settled_for_stream(run_id):
                                         break
                                     continue
                                 etype = evt.get("event_type", "")
                                 if etype == "_catchup":
                                     snap = evt.get("snapshot", {})
-                                    if snap.get("status") in ("completed", "failed", "cancelled"):
+                                    if (
+                                        snap.get("status") in ("completed", "failed", "cancelled")
+                                        and _run_manager.run_is_settled_for_stream(run_id)
+                                    ):
                                         for buf in evt.get("buffered_events", []):
                                             blk = map_run_event_to_chat_block(buf, "full", None)
                                             if blk is not None:
@@ -604,7 +602,11 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                                         run_queue,
                                         {"type": "chat_run_event", "run_event": blk},
                                     )
-                                if etype in ("run_completed", "run_failed", "run_cancelled"):
+                                if etype in (
+                                    "run_completed",
+                                    "run_cancelled",
+                                    "automatic_recovery_completed",
+                                ):
                                     break
                         except Exception:
                             logger.debug("Run event pipe error for %s", run_id, exc_info=True)
@@ -687,11 +689,16 @@ async def _handle_run_command(
                 try:
                     event = await asyncio.wait_for(run_queue.get(), timeout=300)
                 except asyncio.TimeoutError:
-                    break
+                    if rm.run_is_settled_for_stream(record.run_id):
+                        break
+                    continue
                 event_type = event.get("event_type", "")
                 if event_type == "_catchup":
                     snapshot = event.get("snapshot", {})
-                    if snapshot.get("status") in ("completed", "failed"):
+                    if (
+                        snapshot.get("status") in ("completed", "failed", "cancelled")
+                        and rm.run_is_settled_for_stream(record.run_id)
+                    ):
                         for buf_evt in event.get("buffered_events", []):
                             blk = map_run_event_to_chat_block(buf_evt, scope, run_target)
                             if blk is not None:
@@ -709,7 +716,11 @@ async def _handle_run_command(
                         queue,
                         {"type": "chat_run_event", "run_event": chat_block},
                     )
-                if event_type in ("run_completed", "run_failed", "run_cancelled"):
+                if event_type in (
+                    "run_completed",
+                    "run_cancelled",
+                    "automatic_recovery_completed",
+                ):
                     break
         except Exception:
             logger.debug("Run event pipe error for %s", record.run_id, exc_info=True)

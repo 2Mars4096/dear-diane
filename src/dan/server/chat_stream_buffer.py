@@ -11,7 +11,7 @@ _TERMINAL_CHAT_EVENT_TYPES = frozenset(
     {"chat_complete", "chat_mutation", "chat_error", "chat_interrupted"}
 )
 _TERMINAL_RUN_EVENT_TYPES = frozenset(
-    {"run_completed", "run_failed", "run_cancelled"}
+    {"run_completed", "run_failed", "run_cancelled", "automatic_recovery_completed"}
 )
 
 
