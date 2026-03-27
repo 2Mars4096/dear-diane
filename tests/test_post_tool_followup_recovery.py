@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from dan.agent_runtime.mutation_preview import _normalize_generated_mutation_ops
 import dan.server.chat_manager as chat_manager_module
 from dan.providers import CompletionResult
 from dan.providers.registry import ProviderRegistry
@@ -265,6 +266,30 @@ def test_preferred_workflow_edit_tool_uses_apply_for_preview_confirmation() -> N
         allow_plan_graph_mutations=True,
         allow_apply_last_mutation=True,
     ) == "apply_last_mutation"
+
+
+def test_normalize_generated_mutation_ops_aliases_set_body_graph() -> None:
+    normalized = _normalize_generated_mutation_ops(
+        [
+            {
+                "op": "set_body_graph",
+                "node_id": "loop_1",
+                "operations": [
+                    {
+                        "op": "add_node",
+                        "type": "llm_operator",
+                        "name": "Summarize",
+                    }
+                ],
+                "entry_ids": ["summarize"],
+                "exit_ids": ["summarize"],
+            }
+        ]
+    )
+
+    assert normalized[0]["op"] == "replace_body_graph"
+    assert normalized[0]["operations"][0]["op"] == "add_node"
+    assert normalized[0]["operations"][0]["node_type"] == "llm_operator"
 
 
 @pytest.mark.asyncio

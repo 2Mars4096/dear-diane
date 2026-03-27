@@ -76,6 +76,10 @@ def _normalize_generated_mutation_ops(
             kind = "add_node"
             op_norm["op"] = kind
 
+        if kind == "set_body_graph":
+            kind = "replace_body_graph"
+            op_norm["op"] = kind
+
         if kind == "replace_body_graph":
             inner = op_norm.get("operations")
             if isinstance(inner, list):
