@@ -552,8 +552,29 @@ async def run_events_ws(websocket: WebSocket, run_id: str):
     queue = rm.subscribe(run_id)
     try:
         while True:
-            event = await queue.get()
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                if rm.run_is_settled_for_stream(run_id):
+                    break
+                continue
             await websocket.send_json(event)
+            event_type = event.get("event_type", "")
+            if event_type == "_catchup":
+                snapshot = event.get("snapshot", {})
+                if (
+                    isinstance(snapshot, dict)
+                    and snapshot.get("status") in ("completed", "failed", "cancelled")
+                    and rm.run_is_settled_for_stream(run_id)
+                ):
+                    break
+                continue
+            if event_type in (
+                "run_completed",
+                "run_cancelled",
+                "automatic_recovery_completed",
+            ):
+                break
     except WebSocketDisconnect:
         pass
     except Exception:

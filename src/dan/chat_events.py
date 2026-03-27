@@ -137,6 +137,7 @@ class ChatValidationResultEvent(BaseModel):
     failure_bucket: str | None = None
     handoff_reason: str | None = None
     build_summary: str | None = None
+    automatic_recovery: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatGraphCreatedEvent(BaseModel):
@@ -197,6 +198,7 @@ class ChatGenerationSummaryEvent(BaseModel):
     failure_bucket: str | None = None
     handoff_reason: str | None = None
     build_summary: str | None = None
+    automatic_recovery: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatInjectedMessageEvent(BaseModel):

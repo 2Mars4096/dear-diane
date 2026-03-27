@@ -305,6 +305,7 @@ _CHAT_EVENT_TYPES = frozenset({
     "node_started", "node_completed", "node_failed",
     "node_output", "tool_call_started", "tool_call_result",
     "human_input_needed",
+    "automatic_recovery_started", "automatic_recovery_completed",
 })
 
 
@@ -333,6 +334,7 @@ def map_run_event_to_chat_block(
     run_id = event_dict.get("run_id", "")
     node_id = event_dict.get("node_id")
     data: dict[str, Any] = event_dict.get("data") or {}
+    recovery_prefix = "Auto-repair rerun: " if data.get("automatic_recovery") else ""
 
     if event_type == "run_started":
         scope_label = f" ({scope})" if scope != "full" else ""
@@ -344,26 +346,42 @@ def map_run_event_to_chat_block(
         error = event_dict.get("error") or data.get("error", "unknown error")
         summary = f"Run failed: {error}"
     elif event_type == "node_started":
-        summary = f"Node '{node_id}' started"
+        summary = f"{recovery_prefix}Node '{node_id}' started"
     elif event_type == "node_completed":
-        summary = f"Node '{node_id}' completed"
+        summary = f"{recovery_prefix}Node '{node_id}' completed"
     elif event_type == "node_failed":
         error = event_dict.get("error") or data.get("error", "unknown error")
-        summary = f"Node '{node_id}' failed: {error}"
+        summary = f"{recovery_prefix}Node '{node_id}' failed: {error}"
     elif event_type == "node_output":
-        summary = f"Node '{node_id}' produced output"
+        summary = f"{recovery_prefix}Node '{node_id}' produced output"
     elif event_type == "tool_call_started":
         tool_name = data.get("tool_id") or data.get("tool_name", "unknown")
-        summary = f"Tool '{tool_name}' called on node '{node_id}'"
+        summary = f"{recovery_prefix}Tool '{tool_name}' called on node '{node_id}'"
     elif event_type == "tool_call_result":
         tool_name = data.get("tool_id") or data.get("tool_name", "unknown")
-        summary = f"Tool '{tool_name}' completed on node '{node_id}'"
+        summary = f"{recovery_prefix}Tool '{tool_name}' completed on node '{node_id}'"
     elif event_type == "run_cancelled":
         reason = data.get("reason", "cancelled")
         summary = f"Run cancelled: {reason}"
     elif event_type == "human_input_needed":
         prompt = data.get("prompt", "Input required")
         summary = f"Waiting for input: {prompt}"
+    elif event_type == "automatic_recovery_started":
+        action = data.get("selected_action") or "automatic recovery"
+        summary = f"Auto-repair started: {action}"
+    elif event_type == "automatic_recovery_completed":
+        status = str(data.get("status") or data.get("last_outcome") or "completed")
+        if status == "completed":
+            summary = "Auto-repair completed"
+        elif status == "exhausted":
+            escalation = str(data.get("escalation_summary") or "").strip()
+            summary = (
+                f"Auto-repair exhausted. {escalation}"
+                if escalation
+                else "Auto-repair exhausted"
+            )
+        else:
+            summary = f"Auto-repair {status}"
     else:
         return None
 

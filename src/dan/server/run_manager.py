@@ -5,6 +5,7 @@ multiplexes events to WebSocket subscribers with catch-up support.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os
 import time
@@ -55,6 +56,7 @@ class RunRecord:
     model: str | None = None
     error: str | None = None
     goal_context: dict[str, Any] | None = None
+    automatic_recovery: dict[str, Any] | None = None
 
     def _result_meta(self) -> dict[str, Any]:
         if self.result is None or not isinstance(self.result.metadata, dict):
@@ -63,6 +65,11 @@ class RunRecord:
 
     def snapshot(self) -> dict[str, Any]:
         meta = self._result_meta()
+        automatic_recovery = (
+            dict(self.automatic_recovery)
+            if isinstance(self.automatic_recovery, dict)
+            else dict(meta.get("automatic_recovery", {}))
+        )
         return {
             "run_id": self.run_id,
             "graph_id": self.graph_id,
@@ -95,6 +102,7 @@ class RunRecord:
             "repair_lineage": dict(meta.get("repair_lineage", {})),
             "pending_overlays": dict(meta.get("pending_overlays", {})),
             "dynamic_topology": dict(meta.get("dynamic_topology", {})),
+            "automatic_recovery": automatic_recovery,
         }
 
     @staticmethod
@@ -114,6 +122,7 @@ class RunRecord:
             elapsed_seconds=summary.get("elapsed_seconds"),
             node_usage=summary.get("node_usage", {}),
             error=summary.get("error"),
+            automatic_recovery=summary.get("automatic_recovery") or None,
         )
         rec.node_statuses = summary.get("node_statuses", {})
         errors = summary.get("errors", {})
@@ -140,6 +149,7 @@ class RunRecord:
                 "repair_lineage": summary.get("repair_lineage", {}) or {},
                 "pending_overlays": summary.get("pending_overlays", {}) or {},
                 "dynamic_topology": summary.get("dynamic_topology", {}) or {},
+                "automatic_recovery": summary.get("automatic_recovery", {}) or {},
             },
         )
         return rec
@@ -169,6 +179,7 @@ class RunManager:
         self._subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._engines: dict[str, Engine] = {}
+        self._automatic_recovery_parent_by_child: dict[str, str] = {}
         self._max_event_buffer = 10000
         self._pending_human_inputs: dict[str, asyncio.Event] = {}
         self._human_input_responses: dict[str, dict[str, Any]] = {}
@@ -378,6 +389,35 @@ class RunManager:
     def list_runs(self) -> list[dict[str, Any]]:
         return [r.snapshot() for r in self._runs.values()]
 
+    def _automatic_recovery_state(self, record: RunRecord | None) -> dict[str, Any]:
+        if record is None:
+            return {}
+        if isinstance(record.automatic_recovery, dict) and record.automatic_recovery:
+            return dict(record.automatic_recovery)
+        result = record.result
+        metadata = result.metadata if result is not None else None
+        if isinstance(metadata, dict):
+            recovery = metadata.get("automatic_recovery")
+            if isinstance(recovery, dict):
+                return dict(recovery)
+        return {}
+
+    def run_is_settled_for_stream(self, run_id: str) -> bool:
+        record = self._runs.get(run_id)
+        if record is None:
+            return True
+        task = self._tasks.get(run_id)
+        if task is not None and not task.done():
+            return False
+        recovery = self._automatic_recovery_state(record)
+        if str(recovery.get("status") or "") in {"ready", "in_progress"}:
+            return False
+        return record.status in (
+            RunStatus.COMPLETED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+        )
+
     def cancel_run(self, run_id: str) -> bool:
         """Cancel a running workflow by cancelling its asyncio task.
 
@@ -540,6 +580,233 @@ class RunManager:
                 queue.put_nowait(event_dict)
             except asyncio.QueueFull:
                 logger.warning("Subscriber queue full for run %s", run_id)
+
+    def _emit_automatic_recovery_event(
+        self,
+        run_id: str,
+        event_type: EventType,
+        data: dict[str, Any],
+    ) -> None:
+        self.emit_event_to_run(
+            run_id,
+            EngineEvent(
+                event_type=event_type,
+                run_id=run_id,
+                data=data,
+            ).to_dict(),
+        )
+
+    def _mirror_automatic_recovery_child_event(
+        self,
+        child_run_id: str,
+        event_dict: dict[str, Any],
+    ) -> None:
+        parent_run_id = self._automatic_recovery_parent_by_child.get(child_run_id)
+        if not parent_run_id:
+            return
+        event_type = str(event_dict.get("event_type") or "")
+        if event_type not in {
+            EventType.NODE_STARTED.value,
+            EventType.NODE_COMPLETED.value,
+            EventType.NODE_FAILED.value,
+            EventType.TOOL_CALL_STARTED.value,
+            EventType.TOOL_CALL_RESULT.value,
+            EventType.NODE_OUTPUT.value,
+        }:
+            return
+
+        mirrored = copy.deepcopy(event_dict)
+        mirrored["run_id"] = parent_run_id
+        data = dict(mirrored.get("data") or {})
+        data.update(
+            {
+                "automatic_recovery": True,
+                "recovery_run_id": child_run_id,
+                "recovery_parent_run_id": parent_run_id,
+            }
+        )
+        mirrored["data"] = data
+        self.emit_event_to_run(parent_run_id, mirrored)
+
+    async def _maybe_start_automatic_recovery(
+        self,
+        record: RunRecord,
+        graph: Graph,
+        *,
+        session_id: str | None = None,
+        run_policy: RunPolicy | dict[str, Any] | None = None,
+    ) -> None:
+        result = record.result
+        if result is None or result.success or not isinstance(result.metadata, dict):
+            return
+
+        candidate = result.metadata.get("automatic_recovery")
+        if not isinstance(candidate, dict) or candidate.get("status") != "ready":
+            return
+        if candidate.get("selected_action") != "rerun_from_checkpoint":
+            return
+
+        from dan.engine.checkpoint import RerunScope
+
+        recovery = {
+            **candidate,
+            "status": "in_progress",
+            "run_id": record.run_id,
+            "workflow_id": record.graph_id,
+            "source_run_id": record.run_id,
+            "message": "Automatic recovery in progress.",
+            "triggered_by": "runtime_repair_controller",
+            "last_action": str(candidate.get("selected_action") or ""),
+            "last_outcome": "scheduled",
+            "attempted_fixes": [
+                *list(candidate.get("attempted_fixes") or []),
+                {
+                    "kind": str(candidate.get("selected_action") or ""),
+                    "outcome": "scheduled",
+                    "cause": str(candidate.get("category") or ""),
+                    "next_step": "Automatic checkpoint rerun scheduled.",
+                },
+            ],
+        }
+        record.automatic_recovery = dict(recovery)
+        result.metadata["automatic_recovery"] = dict(recovery)
+
+        try:
+            child_record = await self.rerun_from_checkpoint(
+                graph,
+                record.graph_id,
+                record.run_id,
+                RerunScope(
+                    scope_type=str(candidate.get("scope_type") or "downstream_of"),
+                    target_node_id=candidate.get("target_node_id"),
+                    sub_graph_key=candidate.get("sub_graph_key"),
+                ),
+                session_id=session_id,
+                run_policy=run_policy,
+                carry_runtime_lineage=True,
+                automatic_recovery={
+                    **recovery,
+                    "root_run_id": str(candidate.get("root_run_id") or record.run_id),
+                },
+            )
+        except Exception as exc:
+            recovery["status"] = "failed_to_start"
+            recovery["error"] = str(exc)
+            recovery["message"] = "Automatic recovery could not start."
+            recovery["last_outcome"] = "failed_to_start"
+            record.automatic_recovery = dict(recovery)
+            result.metadata["automatic_recovery"] = dict(recovery)
+            self._emit_automatic_recovery_event(
+                record.run_id,
+                EventType.AUTOMATIC_RECOVERY_COMPLETED,
+                dict(recovery),
+            )
+            return
+
+        recovery["recovery_run_id"] = child_record.run_id
+        record.automatic_recovery = dict(recovery)
+        result.metadata["automatic_recovery"] = dict(recovery)
+
+        child_record.automatic_recovery = {
+            **(child_record.automatic_recovery or {}),
+            **recovery,
+            "source_run_id": record.run_id,
+            "recovery_run_id": child_record.run_id,
+            "status": "in_progress",
+        }
+
+        self._emit_automatic_recovery_event(
+            record.run_id,
+            EventType.AUTOMATIC_RECOVERY_STARTED,
+            dict(recovery),
+        )
+
+        loop = asyncio.get_running_loop()
+        child_task = self._tasks.get(child_record.run_id)
+        if child_task is None:
+            return
+        child_task.add_done_callback(
+            lambda _task, parent_run_id=record.run_id, child_run_id=child_record.run_id: (
+                loop.create_task(self._finalize_automatic_recovery(parent_run_id, child_run_id))
+            ),
+        )
+
+    async def _finalize_automatic_recovery(
+        self,
+        parent_run_id: str,
+        child_run_id: str,
+    ) -> None:
+        parent = self._runs.get(parent_run_id)
+        child = self._runs.get(child_run_id)
+        if parent is None or child is None:
+            return
+
+        success = bool(child.result and child.result.success)
+        final_status = "completed" if success else "exhausted"
+        message = (
+            "Automatic recovery completed successfully."
+            if success
+            else "Automatic recovery exhausted its bounded rerun."
+        )
+        escalation_summary = (
+            ""
+            if success
+            else "Bounded automatic runtime recovery is exhausted. Manual review or a broader workflow edit is now required."
+        )
+        recommended_actions = (
+            []
+            if success
+            else [
+                "inspect_run_errors",
+                "edit_failed_node_or_workflow",
+                "retry_from_checkpoint_after_changes",
+            ]
+        )
+        finished_at = time.time()
+
+        parent_recovery = {
+            **(parent.automatic_recovery or {}),
+            "recovery_run_id": child_run_id,
+            "status": final_status,
+            "success": success,
+            "child_status": child.status.value,
+            "finished_at": finished_at,
+            "message": message,
+            "last_outcome": final_status,
+            "escalation_needed": not success,
+            "escalation_summary": escalation_summary,
+            "recommended_actions": list(recommended_actions),
+        }
+        parent.automatic_recovery = dict(parent_recovery)
+        if parent.result is not None and isinstance(parent.result.metadata, dict):
+            parent.result.metadata["automatic_recovery"] = dict(parent_recovery)
+
+        child_recovery = {
+            **(child.automatic_recovery or {}),
+            "recovery_run_id": child_run_id,
+            "status": final_status,
+            "success": success,
+            "finished_at": finished_at,
+            "message": message,
+            "last_outcome": final_status,
+            "escalation_needed": not success,
+            "escalation_summary": escalation_summary,
+            "recommended_actions": list(recommended_actions),
+        }
+        child.automatic_recovery = dict(child_recovery)
+        if child.result is not None and isinstance(child.result.metadata, dict):
+            child.result.metadata["automatic_recovery"] = dict(child_recovery)
+
+        self._emit_automatic_recovery_event(
+            parent_run_id,
+            EventType.AUTOMATIC_RECOVERY_COMPLETED,
+            dict(parent_recovery),
+        )
+        self._automatic_recovery_parent_by_child.pop(child_run_id, None)
+
+        if self._run_store is not None:
+            self._run_store.save_summary(parent.graph_id, parent.run_id, parent.snapshot())
+            self._run_store.save_summary(child.graph_id, child.run_id, child.snapshot())
 
     # ------------------------------------------------------------------
     # Subscription
@@ -733,6 +1000,9 @@ class RunManager:
         scope: "RerunScope",
         session_id: str | None = None,
         run_policy: RunPolicy | dict[str, Any] | None = None,
+        *,
+        carry_runtime_lineage: bool = False,
+        automatic_recovery: dict[str, Any] | None = None,
     ) -> RunRecord:
         """Start a partial rerun from a checkpoint.
 
@@ -811,8 +1081,12 @@ class RunManager:
             graph_id=graph_id,
             status=RunStatus.PENDING,
             phase=RunPhase.ACTIVE.value,
+            automatic_recovery=dict(automatic_recovery or {}) or None,
         )
         self._runs[new_run_id] = record
+        parent_run_id = str((automatic_recovery or {}).get("source_run_id") or "")
+        if parent_run_id:
+            self._automatic_recovery_parent_by_child[new_run_id] = parent_run_id
 
         task = asyncio.create_task(
             self._rerun_task(
@@ -823,6 +1097,7 @@ class RunManager:
                 scope=scope,
                 session_id=session_id,
                 run_policy=run_policy,
+                carry_runtime_lineage=carry_runtime_lineage,
             ),
             name=f"dan-rerun-{new_run_id}",
         )
@@ -865,6 +1140,8 @@ class RunManager:
 
             if self._run_store is not None:
                 self._run_store.append_event(record.graph_id, run_id, event_dict)
+
+        self._mirror_automatic_recovery_child_event(run_id, event_dict)
 
         for queue in self._subscribers.get(run_id, []):
             try:
@@ -1542,6 +1819,12 @@ class RunManager:
             record.phase = str(result.metadata.get("run_phase", RunPhase.COMPLETED.value))
             if result.node_statuses:
                 record.node_statuses.update(result.node_statuses)
+            await self._maybe_start_automatic_recovery(
+                record,
+                graph,
+                session_id=session_id,
+                run_policy=run_policy,
+            )
         except Exception as exc:
             logger.exception("Run %s failed with exception", record.run_id)
             record.status = RunStatus.FAILED
@@ -1581,6 +1864,12 @@ class RunManager:
             record.phase = str(result.metadata.get("run_phase", RunPhase.COMPLETED.value))
             if result.node_statuses:
                 record.node_statuses.update(result.node_statuses)
+            await self._maybe_start_automatic_recovery(
+                record,
+                graph,
+                session_id=session_id,
+                run_policy=run_policy,
+            )
         except Exception as exc:
             logger.exception("Resume %s failed with exception", record.run_id)
             record.status = RunStatus.FAILED
@@ -1607,6 +1896,7 @@ class RunManager:
         scope: Any,
         session_id: str | None = None,
         run_policy: RunPolicy | dict[str, Any] | None = None,
+        carry_runtime_lineage: bool = False,
     ) -> None:
         """Execute a partial rerun, injecting checkpoint outputs for skipped nodes."""
         from dan.engine.context_runtime import (
@@ -1644,6 +1934,12 @@ class RunManager:
             # Mark nodes-to-rerun as PENDING (default from __init__).
             for nid in nodes_to_rerun:
                 state.mark(nid, NodeStatus.PENDING)
+
+            if carry_runtime_lineage:
+                source_run_state = (((checkpoint.get("state") or {}).get("run_state")) or {})
+                state.run_state["repair_lineage"] = copy.deepcopy(
+                    source_run_state.get("repair_lineage", {}) or {}
+                )
 
             # Restore shared context and artifacts from checkpoint.
             shared_context = SharedContextStore(graph.shared_context)
@@ -1689,12 +1985,20 @@ class RunManager:
                 "nodes_rerun": sorted(nodes_to_rerun),
                 "nodes_skipped": sorted(nodes_to_skip),
             }
+            if record.automatic_recovery:
+                result.metadata["automatic_recovery"] = dict(record.automatic_recovery)
 
             record.result = result
             record.status = RunStatus.COMPLETED if result.success else RunStatus.FAILED
             record.phase = str(result.metadata.get("run_phase", RunPhase.COMPLETED.value))
             if result.node_statuses:
                 record.node_statuses.update(result.node_statuses)
+            await self._maybe_start_automatic_recovery(
+                record,
+                graph,
+                session_id=session_id,
+                run_policy=run_policy,
+            )
 
         except Exception as exc:
             logger.exception("Rerun %s failed with exception", record.run_id)

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -235,7 +236,12 @@ class ChatAuditStore:
     """Append-only, filesystem-backed audit store for chat turns."""
 
     def __init__(self, base_dir: str | Path | None = None) -> None:
-        self._base = Path(base_dir or (Path.home() / ".dan" / "audit"))
+        default_base_dir = os.environ.get("DAN_AUDIT_DIR")
+        self._base = Path(
+            base_dir
+            or default_base_dir
+            or (Path.home() / ".dan" / "audit")
+        )
         self._base.mkdir(parents=True, exist_ok=True)
 
     def _surface_dir(self, surface_id: str) -> Path:
