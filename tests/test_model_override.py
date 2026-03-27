@@ -429,6 +429,45 @@ async def test_send_message_with_tools_codegen_success_saves_graph_and_emits_cre
 
 
 @pytest.mark.asyncio
+async def test_send_message_with_tools_does_not_persist_when_generation_returns_no_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _RecordingProvider()
+    registry = ProviderRegistry()
+    registry.register("default", provider)
+    saved_calls: list[tuple[str, dict[str, Any]]] = []
+    graph_store = SimpleNamespace(
+        get_graph=lambda workflow_id: dict(EMPTY_GRAPH),
+        save_graph=lambda workflow_id, graph: (
+            saved_calls.append((workflow_id, dict(graph))) or dict(graph)
+        ),
+    )
+    mgr = ChatManager(registry, graph_store=graph_store)
+    mgr._chat_model = "default-model"
+
+    async def _failed_generation(self, *args, **kwargs):
+        return None, [
+            ChatGenerationSummaryEvent(
+                path_taken="structured_generation",
+                wall_clock_ms=420,
+                failure_mode="structured_execution_smoke",
+            )
+        ]
+
+    monkeypatch.setattr(ChatManager, "_generate_workflow_from_intent", _failed_generation)
+
+    _ = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf-build",
+            message="build me a workflow",
+            history=[],
+        )
+    )
+
+    assert saved_calls == []
+
+
+@pytest.mark.asyncio
 async def test_send_message_with_tools_default_model_when_no_override(monkeypatch: pytest.MonkeyPatch) -> None:
     """send_message_with_tools without model_override should use _chat_model."""
     provider = _RecordingProvider()

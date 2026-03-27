@@ -10,6 +10,7 @@ import pytest
 
 import dan.meta.diagnosis as diagnosis_module
 import dan.meta.graph_quality as graph_quality_module
+import dan.meta.intent_compiler as intent_compiler_module
 import dan.meta.planner as planner_module
 import dan.sandbox.runner as sandbox_runner_module
 import dan.server.chat_manager as chat_manager_module
@@ -136,12 +137,49 @@ def test_parse_intent_from_result_reads_tool_call_arguments() -> None:
     assert intent.stages[0].name == "draft"
 
 
+def test_parse_intent_from_result_reads_object_tool_call_arguments() -> None:
+    result = CompletionResult(
+        text="",
+        tool_calls=[
+            SimpleNamespace(
+                function=SimpleNamespace(
+                    name="emit_workflow_intent",
+                    arguments='{"goal":"Build a draft workflow","stages":[{"name":"draft"}]}',
+                )
+            )
+        ],
+    )
+
+    intent = parse_intent_from_result(result)
+
+    assert intent is not None
+    assert intent.goal == "Build a draft workflow"
+    assert len(intent.stages) == 1
+    assert intent.stages[0].name == "draft"
+
+
 def test_parse_intent_from_result_reads_fenced_json() -> None:
     result = CompletionResult(
         text=(
             "Here is the intent\n"
             "```json\n"
             '{"goal":"Build a draft workflow","stages":[{"name":"draft"}]}\n'
+            "```"
+        ),
+    )
+
+    intent = parse_intent_from_result(result)
+
+    assert intent is not None
+    assert intent.goal == "Build a draft workflow"
+    assert intent.stages[0].name == "draft"
+
+
+def test_parse_intent_from_result_repairs_common_json_drift() -> None:
+    result = CompletionResult(
+        text=(
+            "```json\n"
+            "{goal: 'Build a draft workflow', stages: [{name: 'draft'}],}\n"
             "```"
         ),
     )
@@ -505,6 +543,74 @@ async def test_intent_extraction_uses_canonical_system_prompt(
 
 
 @pytest.mark.asyncio
+async def test_intent_extraction_retries_once_after_unparsed_non_tool_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _make_manager([
+        CompletionResult(text="this is not a workflow intent", tool_calls=[]),
+        CompletionResult(
+            text="",
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "emit_workflow_intent",
+                        "arguments": (
+                            '{"goal":"Build a chain","stages":[{"name":"draft"}]}'
+                        ),
+                    }
+                }
+            ],
+        ),
+    ])
+    provider = _default_provider(manager)
+    monkeypatch.setenv("DAN_INTENT_EXTRACTION_MAX_RETRIES", "1")
+    monkeypatch.setattr(chat_manager_module.asyncio, "sleep", _fast_sleep)
+    monkeypatch.setattr(manager, "_emit_intent_extraction_telemetry", lambda **kwargs: None)
+    monkeypatch.setattr(
+        planner_module,
+        "validate_codegen_output",
+        lambda graph_dict: _validation_success_for_graph(graph_dict),
+    )
+    monkeypatch.setattr(
+        graph_quality_module,
+        "compute_quality_report",
+        lambda graph_dict, prompt_text, tier=None: SimpleNamespace(
+            overall_score=95,
+            concerns=[],
+        ),
+    )
+
+    graph_dict = {
+        "nodes": [{"id": "draft", "node_type": "llm_operator"}],
+        "edges": [],
+        "entry_points": ["draft"],
+        "exit_points": ["draft"],
+    }
+
+    class _FakeGraph:
+        def model_dump(self, mode: str = "json") -> dict[str, Any]:
+            return graph_dict
+
+    monkeypatch.setattr(
+        intent_compiler_module.IntentCompiler,
+        "build_graph",
+        lambda self, intent, domain=None: _FakeGraph(),
+    )
+
+    graph, _events = await manager._generate_workflow_from_intent(
+        "Build a chain",
+        "wf-intent-retry",
+        "ch-intent-retry",
+    )
+
+    assert graph is not None
+    assert [node["id"] for node in graph["nodes"]] == ["draft"]
+    assert graph["entry_points"] == ["draft"]
+    assert graph["exit_points"] == ["draft"]
+    assert len(provider.requests) == 2
+
+
+@pytest.mark.asyncio
 async def test_terminal_empty_codegen_response_emits_failure_event_and_outcome(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -745,6 +851,14 @@ async def test_generation_automatic_recovery_can_regenerate_after_diagnosis_exha
         planner_module,
         "validate_codegen_output",
         lambda graph_dict: _validation_success_for_graph(graph_dict),
+    )
+    monkeypatch.setattr(
+        graph_quality_module,
+        "compute_quality_report",
+        lambda graph_dict, prompt_text, tier=None: SimpleNamespace(
+            overall_score=95,
+            concerns=[],
+        ),
     )
 
     class FakeDiagnosisLoop:
