@@ -12,7 +12,7 @@ import time
 import uuid
 from typing import Any, Awaitable, Callable
 
-from dan.providers import CompletionResult
+from dan.providers import CompletionResult, get_model_behavior
 from dan.meta.workflow_contract import workflow_build_provenance
 from dan.server.agent_runtime.workflow_generation_acceptance import (
     accept_candidate_graph,
@@ -31,9 +31,26 @@ from dan.server.chat.events import (
     ChatStreamEvent,
     ChatValidationResultEvent,
 )
-from dan.server.chat.helpers import _is_transient_llm_error
+from dan.server.chat.helpers import (
+    _is_tool_choice_incompatible_error,
+    _is_transient_llm_error,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _intent_tool_choice(provider: Any, model: str) -> str | dict[str, Any]:
+    """Prefer deterministic tool-calling for intent extraction when supported."""
+
+    behavior = get_model_behavior(provider, model)
+    if behavior.supports_exact_tool_choice:
+        return {
+            "type": "function",
+            "function": {"name": "emit_workflow_intent"},
+        }
+    if behavior.supports_required_tool_choice:
+        return "required"
+    return "auto"
 
 
 class WorkflowGenerationRuntime:
@@ -982,15 +999,33 @@ class WorkflowGenerationRuntime:
             {"role": "system", "content": build_intent_extraction_system_prompt()},
             {"role": "user", "content": user_message},
         ]
+        intent_tool_choice: str | dict[str, Any] = _intent_tool_choice(provider, _model)
         for attempt in range(_intent_extraction_max_retries + 1):
             try:
-                intent_result = await provider.complete(
-                    messages=intent_messages,
-                    model=_model,
-                    temperature=0.3,
-                    tools=[intent_tool],
-                    tool_choice="auto",
-                )
+                request_tool_choice = intent_tool_choice
+                while True:
+                    try:
+                        intent_result = await provider.complete(
+                            messages=intent_messages,
+                            model=_model,
+                            temperature=0.3,
+                            tools=[intent_tool],
+                            tool_choice=request_tool_choice,
+                        )
+                        intent_tool_choice = request_tool_choice
+                        break
+                    except Exception as exc:
+                        if (
+                            request_tool_choice != "auto"
+                            and _is_tool_choice_incompatible_error(exc)
+                        ):
+                            logger.warning(
+                                "Intent extraction provider rejected explicit tool_choice for model %s; retrying with auto tool choice",
+                                _model,
+                            )
+                            request_tool_choice = "auto"
+                            continue
+                        raise
                 tool_call_present = bool(intent_result.tool_calls)
                 if (
                     not (intent_result.text or "").strip()
@@ -1010,6 +1045,18 @@ class WorkflowGenerationRuntime:
                     tool_call_present,
                     intent is not None,
                 )
+                if (
+                    intent is None
+                    and tool_call_present
+                    and attempt < _intent_extraction_max_retries
+                ):
+                    retries_used["intent_extraction"] += 1
+                    logger.warning(
+                        "Intent extraction returned an invalid tool payload, retrying (attempt %d)",
+                        attempt + 1,
+                    )
+                    await asyncio.sleep(2)
+                    continue
                 if (
                     intent is None
                     and not tool_call_present
