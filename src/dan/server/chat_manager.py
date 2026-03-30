@@ -246,6 +246,7 @@ from dan.agent_runtime.mutation_preview import (
     format_mutation_preview_content as _format_mutation_preview_content,
     normalize_mutation_ops_for_chat,
     prepare_mutation_auto_apply,
+    resolve_mutation_auto_apply_requested,
     workflow_contract_errors as _workflow_contract_errors,
 )
 from dan.meta.workflow_contract import (
@@ -1113,6 +1114,7 @@ class ChatManager:
                 mode=mode,
                 codegen_enabled=_DAN_USE_CODEGEN_BUILD == "1",
             )
+            workflow_generation_fallback_active = False
             if use_codegen:
                 message_id = uuid.uuid4().hex[:12]
                 handoff_outcome: WorkflowGenerationAttemptOutcome | None = None
@@ -1189,6 +1191,7 @@ class ChatManager:
                         "Codegen path failed for %s, falling back to mutation path",
                         workflow_id,
                     )
+                    workflow_generation_fallback_active = True
 
             # -- 32-4: Structural mutation macro fast path ------------------
             if (
@@ -2157,7 +2160,13 @@ class ChatManager:
                     if mode == "debug":
                         plan_dump.setdefault("metadata", {})["source"] = "debug-fix"
 
-                    auto_apply_requested = bool(mutation_data.get("auto_apply", False))
+                    auto_apply_requested = resolve_mutation_auto_apply_requested(
+                        explicit_auto_apply=bool(mutation_data.get("auto_apply", False)),
+                        is_empty_graph=is_empty_graph,
+                        generation_fallback_active=workflow_generation_fallback_active,
+                        dry_result=dry_result,
+                        plan=plan,
+                    )
                     did_apply = False
                     new_revision = revision
 

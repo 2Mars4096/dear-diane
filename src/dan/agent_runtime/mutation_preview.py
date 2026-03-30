@@ -10,7 +10,13 @@ from typing import Any, Callable, Sequence
 
 from dan.agent_runtime.followup import build_assistant_followup_message
 from dan.agent_runtime.graph_summary import serialize_for_prompt
-from dan.graph_mutator import GraphMutator, MutationPlan, MutationResult, OperationError
+from dan.graph_mutator import (
+    GraphMutator,
+    MutationPlan,
+    MutationResult,
+    OperationError,
+    TOOL_PORT_MANIFESTS,
+)
 from dan.workflow_generation_guidance import (
     render_workflow_generation_contract,
     workflow_generation_contract_enabled,
@@ -47,6 +53,33 @@ class PreparedMutationAutoApply:
     graph_to_save: dict[str, Any] | None = None
     validation_errors: tuple[str, ...] = ()
     contract_report: Any | None = None
+
+
+def resolve_mutation_auto_apply_requested(
+    *,
+    explicit_auto_apply: bool,
+    is_empty_graph: bool,
+    generation_fallback_active: bool,
+    dry_result: Any,
+    plan: Any | None,
+) -> bool:
+    """Decide whether a mutation preview should be auto-applied.
+
+    Normal mutation previews remain opt-in. The one exception is the
+    empty-graph build lane after the fast workflow-generation path already
+    failed: if the fallback mutation preview is dry-run clean, treat it like a
+    recovered build and auto-apply it.
+    """
+
+    if explicit_auto_apply:
+        return True
+    if not generation_fallback_active or not is_empty_graph:
+        return False
+    if plan is None:
+        return False
+    if not getattr(dry_result, "success", False):
+        return False
+    return getattr(dry_result, "new_graph", None) is not None
 
 
 def _coerce_strict_edges(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -160,6 +193,14 @@ def _normalize_generated_mutation_ops(
                         continue
                     rule = dict(item)
                     rule_type = rule.get("rule_type")
+                    if rule_type == "format_check":
+                        rule["rule_type"] = "required_keys"
+                        rule_cfg = rule.get("config")
+                        if not isinstance(rule_cfg, dict):
+                            rule_cfg = {}
+                        rule_cfg.setdefault("keys", [])
+                        rule["config"] = rule_cfg
+                        rule_type = rule["rule_type"]
                     if rule_type in ("required_field", "required_fields"):
                         rule["rule_type"] = "required_keys"
                         rule_cfg = rule.get("config")
@@ -291,6 +332,292 @@ def _graph_node_id_types(graph: dict[str, Any]) -> dict[str, str]:
     return out
 
 
+def _edge_key_from_graph_edge(edge: dict[str, Any]) -> tuple[str, str, str, str] | None:
+    source_id = str(edge.get("source_node_id") or "").strip()
+    source_port = str(edge.get("source_port") or "").strip()
+    target_id = str(edge.get("target_node_id") or "").strip()
+    target_port = str(edge.get("target_port") or "").strip()
+    if not (source_id and source_port and target_id and target_port):
+        return None
+    return (source_id, source_port, target_id, target_port)
+
+
+def _edge_key_from_op(op: dict[str, Any]) -> tuple[str, str, str, str] | None:
+    source_id = str(op.get("source_id") or "").strip()
+    source_port = str(op.get("source_port") or "").strip()
+    target_id = str(op.get("target_id") or "").strip()
+    target_port = str(op.get("target_port") or "").strip()
+    if not (source_id and source_port and target_id and target_port):
+        return None
+    return (source_id, source_port, target_id, target_port)
+
+
+def _edge_semantics_from_graph_edge(edge: dict[str, Any]) -> tuple[str, bool]:
+    return (
+        str(edge.get("edge_type") or "data"),
+        bool(edge.get("spread", False)),
+    )
+
+
+def _edge_semantics_from_op(op: dict[str, Any]) -> tuple[str, bool]:
+    return (
+        str(op.get("edge_type") or "data"),
+        bool(op.get("spread", False)),
+    )
+
+
+def _node_output_ports(node: dict[str, Any]) -> list[str]:
+    ports = node.get("output_ports")
+    if not isinstance(ports, list):
+        return []
+    out: list[str] = []
+    for port in ports:
+        if isinstance(port, dict):
+            name = str(port.get("name") or "").strip()
+            if name:
+                out.append(name)
+    return out
+
+
+def _existing_body_graph(graph: dict[str, Any], node_id: str) -> dict[str, Any] | None:
+    if not node_id:
+        return None
+    body_key: str | None = None
+    for node in graph.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("id") or "").strip() != node_id:
+            continue
+        candidate = str(node.get("body_graph") or "").strip()
+        if candidate:
+            body_key = candidate
+        break
+    if body_key is None:
+        body_key = f"{node_id}__body"
+    body = (graph.get("sub_graphs") or {}).get(body_key)
+    return body if isinstance(body, dict) else None
+
+
+def _infer_added_node_spec(op: dict[str, Any]) -> dict[str, Any] | None:
+    if str(op.get("op") or "").strip() != "add_node":
+        return None
+    node_id = str(op.get("id") or "").strip()
+    if not node_id:
+        return None
+    node_type = str(op.get("node_type") or "").strip()
+    cfg = op.get("config")
+    config = cfg if isinstance(cfg, dict) else {}
+    ports: list[str] = []
+    tool_id = ""
+
+    if node_type == "tool_operator":
+        tool_id = str(config.get("tool_id") or config.get("tool") or "").strip()
+        manifest = TOOL_PORT_MANIFESTS.get(tool_id)
+        if manifest is not None:
+            ports = [
+                str(item.get("name") or "").strip()
+                for item in manifest[1]
+                if isinstance(item, dict) and str(item.get("name") or "").strip()
+            ]
+
+    if not ports:
+        outputs = config.get("outputs")
+        if isinstance(outputs, list):
+            for item in outputs:
+                if isinstance(item, dict):
+                    name = str(item.get("name") or "").strip()
+                else:
+                    name = str(item or "").strip()
+                if name:
+                    ports.append(name)
+
+    if not ports:
+        raw_ports = op.get("output_ports")
+        if isinstance(raw_ports, list):
+            for item in raw_ports:
+                if isinstance(item, dict):
+                    name = str(item.get("name") or "").strip()
+                else:
+                    name = str(item or "").strip()
+                if name:
+                    ports.append(name)
+
+    return {
+        "node_id": node_id,
+        "node_type": node_type,
+        "tool_id": tool_id,
+        "output_ports": ports,
+    }
+
+
+def _seed_node_specs_from_graph(graph: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    specs: dict[str, dict[str, Any]] = {}
+    for node in graph.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("id") or "").strip()
+        if not node_id:
+            continue
+        specs[node_id] = {
+            "node_id": node_id,
+            "node_type": str(node.get("node_type") or "").strip(),
+            "tool_id": str(node.get("tool_id") or "").strip(),
+            "output_ports": _node_output_ports(node),
+        }
+    return specs
+
+
+def _repair_stale_source_port_aliases(
+    graph: dict[str, Any],
+    operations: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    diagnostics: list[str] = []
+
+    def choose_alias(requested: str, spec: dict[str, Any] | None) -> str | None:
+        if spec is None:
+            return None
+        ports = [str(port).strip() for port in spec.get("output_ports") or [] if str(port).strip()]
+        if not ports or requested in ports:
+            return None
+        requested_lc = requested.lower()
+        tool_id = str(spec.get("tool_id") or "").strip()
+
+        if requested_lc == "response":
+            if tool_id == "http_request" and "body" in ports:
+                return "body"
+            if tool_id == "web_fetch" and "text" in ports:
+                return "text"
+            if "result" in ports:
+                return "result"
+
+        if requested_lc == "output" and "result" in ports:
+            return "result"
+
+        return None
+
+    def walk(
+        ops: list[Any],
+        known_specs: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        local_specs = dict(known_specs)
+        repaired: list[dict[str, Any]] = []
+        for raw in ops:
+            if not isinstance(raw, dict):
+                continue
+            op = dict(raw)
+            kind = str(op.get("op") or "").strip()
+
+            if kind == "replace_body_graph":
+                inner = op.get("operations")
+                if isinstance(inner, list):
+                    body_graph = _existing_body_graph(graph, str(op.get("node_id") or "").strip()) or {}
+                    op["operations"] = walk(inner, _seed_node_specs_from_graph(body_graph))
+                repaired.append(op)
+                continue
+
+            added_spec = _infer_added_node_spec(op)
+            if added_spec is not None:
+                local_specs[str(added_spec["node_id"])] = added_spec
+                repaired.append(op)
+                continue
+
+            if kind == "add_edge":
+                source_id = str(op.get("source_id") or "").strip()
+                source_port = str(op.get("source_port") or "").strip()
+                replacement = choose_alias(source_port, local_specs.get(source_id))
+                if replacement and replacement != source_port:
+                    op["source_port"] = replacement
+                    message = (
+                        f"Rewrote stale source_port '{source_port}' to '{replacement}' "
+                        f"for node '{source_id}'."
+                    )
+                    diagnostics.append(message)
+                    logger.info("Mutation self-repair: %s", message)
+                repaired.append(op)
+                continue
+
+            repaired.append(op)
+        return repaired
+
+    return walk(operations, _seed_node_specs_from_graph(graph)), diagnostics
+
+
+def _repair_duplicate_add_edge_operations(
+    graph: dict[str, Any],
+    operations: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Drop redundant add_edge ops when the exact edge already exists."""
+    diagnostics: list[str] = []
+    edge_state: dict[tuple[str, str, str, str], tuple[str, bool]] = {}
+
+    for edge in graph.get("edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        key = _edge_key_from_graph_edge(edge)
+        if key is None:
+            continue
+        edge_state[key] = _edge_semantics_from_graph_edge(edge)
+
+    def walk(
+        ops: list[Any],
+        active_edges: dict[tuple[str, str, str, str], tuple[str, bool]],
+    ) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for raw in ops:
+            if not isinstance(raw, dict):
+                continue
+            op = dict(raw)
+            kind = str(op.get("op") or "").strip()
+
+            if kind == "replace_body_graph":
+                inner = op.get("operations")
+                if isinstance(inner, list):
+                    op["operations"] = walk(inner, {})
+                out.append(op)
+                continue
+
+            if kind == "remove_edge":
+                key = _edge_key_from_op(op)
+                if key is not None:
+                    active_edges.pop(key, None)
+                out.append(op)
+                continue
+
+            if kind == "remove_node":
+                node_id = str(op.get("node_id") or "").strip()
+                if node_id:
+                    active_edges = {
+                        key: semantics
+                        for key, semantics in active_edges.items()
+                        if key[0] != node_id and key[2] != node_id
+                    }
+                out.append(op)
+                continue
+
+            if kind == "add_edge":
+                key = _edge_key_from_op(op)
+                if key is not None:
+                    semantics = _edge_semantics_from_op(op)
+                    existing = active_edges.get(key)
+                    if existing == semantics:
+                        message = (
+                            "Dropped redundant add_edge "
+                            f"'{key[0]}.{key[1]}->{key[2]}.{key[3]}' because it already exists."
+                        )
+                        diagnostics.append(message)
+                        logger.info("Mutation self-repair: %s", message)
+                        continue
+                    active_edges[key] = semantics
+                out.append(op)
+                continue
+
+            out.append(op)
+        return out
+
+    repaired = walk(operations, edge_state)
+    return repaired, diagnostics
+
+
 def _repair_duplicate_add_node_operations(
     graph: dict[str, Any],
     operations: list[dict[str, Any]],
@@ -383,8 +710,12 @@ def normalize_mutation_ops_for_chat(
     ops, id_repairs = _repair_missing_node_ids(ops)
     all_repairs = list(id_repairs)
     if graph is not None:
+        ops, port_repairs = _repair_stale_source_port_aliases(graph, ops)
+        all_repairs.extend(port_repairs)
         ops, duplicate_repairs = _repair_duplicate_add_node_operations(graph, ops)
         all_repairs.extend(duplicate_repairs)
+        ops, edge_repairs = _repair_duplicate_add_edge_operations(graph, ops)
+        all_repairs.extend(edge_repairs)
     if is_empty_graph:
         ops = _coerce_strict_edges(ops)
     return ops, all_repairs
@@ -722,5 +1053,6 @@ __all__ = [
     "format_mutation_preview_content",
     "normalize_mutation_ops_for_chat",
     "prepare_mutation_auto_apply",
+    "resolve_mutation_auto_apply_requested",
     "workflow_contract_errors",
 ]

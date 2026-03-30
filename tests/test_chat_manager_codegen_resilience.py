@@ -611,6 +611,150 @@ async def test_intent_extraction_retries_once_after_unparsed_non_tool_response(
 
 
 @pytest.mark.asyncio
+async def test_intent_extraction_prefers_exact_tool_choice_when_supported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _make_manager([
+        CompletionResult(
+            text="",
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "emit_workflow_intent",
+                        "arguments": (
+                            '{"goal":"Build a chain","stages":[{"name":"draft"}]}'
+                        ),
+                    }
+                }
+            ],
+        ),
+    ])
+    provider = _default_provider(manager)
+    provider.supports_exact_tool_choice = True
+    provider.supports_required_tool_choice = True
+    monkeypatch.setattr(manager, "_emit_intent_extraction_telemetry", lambda **kwargs: None)
+    monkeypatch.setattr(
+        planner_module,
+        "validate_codegen_output",
+        lambda graph_dict: _validation_success_for_graph(graph_dict),
+    )
+    monkeypatch.setattr(
+        graph_quality_module,
+        "compute_quality_report",
+        lambda graph_dict, prompt_text, tier=None: SimpleNamespace(
+            overall_score=95,
+            concerns=[],
+        ),
+    )
+
+    graph_dict = {
+        "nodes": [{"id": "draft", "node_type": "llm_operator"}],
+        "edges": [],
+        "entry_points": ["draft"],
+        "exit_points": ["draft"],
+    }
+
+    class _FakeGraph:
+        def model_dump(self, mode: str = "json") -> dict[str, Any]:
+            return graph_dict
+
+    monkeypatch.setattr(
+        intent_compiler_module.IntentCompiler,
+        "build_graph",
+        lambda self, intent, domain=None: _FakeGraph(),
+    )
+
+    graph, _events = await manager._generate_workflow_from_intent(
+        "Build a chain",
+        "wf-intent-exact",
+        "ch-intent-exact",
+    )
+
+    assert graph is not None
+    assert provider.requests[0]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "emit_workflow_intent"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_intent_extraction_retries_after_invalid_tool_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _make_manager([
+        CompletionResult(
+            text="",
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "emit_workflow_intent",
+                        "arguments": "{bad json",
+                    }
+                }
+            ],
+        ),
+        CompletionResult(
+            text="",
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "emit_workflow_intent",
+                        "arguments": (
+                            '{"goal":"Build a chain","stages":[{"name":"draft"}]}'
+                        ),
+                    }
+                }
+            ],
+        ),
+    ])
+    provider = _default_provider(manager)
+    provider.supports_exact_tool_choice = True
+    provider.supports_required_tool_choice = True
+    monkeypatch.setenv("DAN_INTENT_EXTRACTION_MAX_RETRIES", "1")
+    monkeypatch.setattr(chat_manager_module.asyncio, "sleep", _fast_sleep)
+    monkeypatch.setattr(manager, "_emit_intent_extraction_telemetry", lambda **kwargs: None)
+    monkeypatch.setattr(
+        planner_module,
+        "validate_codegen_output",
+        lambda graph_dict: _validation_success_for_graph(graph_dict),
+    )
+    monkeypatch.setattr(
+        graph_quality_module,
+        "compute_quality_report",
+        lambda graph_dict, prompt_text, tier=None: SimpleNamespace(
+            overall_score=95,
+            concerns=[],
+        ),
+    )
+
+    graph_dict = {
+        "nodes": [{"id": "draft", "node_type": "llm_operator"}],
+        "edges": [],
+        "entry_points": ["draft"],
+        "exit_points": ["draft"],
+    }
+
+    class _FakeGraph:
+        def model_dump(self, mode: str = "json") -> dict[str, Any]:
+            return graph_dict
+
+    monkeypatch.setattr(
+        intent_compiler_module.IntentCompiler,
+        "build_graph",
+        lambda self, intent, domain=None: _FakeGraph(),
+    )
+
+    graph, _events = await manager._generate_workflow_from_intent(
+        "Build a chain",
+        "wf-intent-bad-tool",
+        "ch-intent-bad-tool",
+    )
+
+    assert graph is not None
+    assert len(provider.requests) == 2
+
+
+@pytest.mark.asyncio
 async def test_terminal_empty_codegen_response_emits_failure_event_and_outcome(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
