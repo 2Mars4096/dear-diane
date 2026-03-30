@@ -220,12 +220,17 @@ Write up:
 | `src/dan/server/chat/helpers.py` | Fix — add `workflow_edit` to `_ACTION_HINT_TOOL_MAP` (task 17) |
 | `src/dan/server/concierge/triage.py` | Fix — broaden heuristic fallback regexes (task 18) |
 | `src/dan/server/chat/prompts.py` | Fix — update stale empty-graph and build-intent prompt text (task 19) |
+| `src/dan/server/agent_runtime/workflow_generation.py` | Fix — deterministic intent tool choice and invalid-payload retry for empty-graph builds (task 27) |
+| `src/dan/agent_runtime/mutation_preview.py` | Fix — fallback-only empty-graph auto-apply resolution helper (task 27) |
+| `src/dan/server/chat_manager.py` | Fix — auto-apply recovered empty-graph fallback previews after fast-path failure (task 27) |
 | `src/dan/server/concierge/runtime.py` | Fix — wire live dispatcher resource tracker (task 22) |
 | `src/dan/adapters/telegram_fleet.py` | Fix — friendly overload messaging on Telegram (task 22) |
 | `tests/test_concierge/test_tiered_dispatch.py` | Test — tasks 16-3, 16-4 |
 | `tests/test_concierge/test_resources.py` | Test — task 22 |
 | `tests/test_concierge/test_triage.py` | Test — tasks 18-3, 18-4 |
 | `tests/test_chat_manager_build_path.py` | Test — task 20 |
+| `tests/test_chat_manager_codegen_resilience.py` | Test — task 27 |
+| `tests/test_agent_runtime/test_mutation_preview.py` | Test — task 27 |
 | `tests/test_adapters/test_telegram.py` | Test — task 22 |
 | `docs/bugs.md` | Update — root causes and failed approaches |
 | `docs/changelog.md` | Update — fixes applied |
@@ -238,11 +243,19 @@ Write up:
 - [ ] 24. **End-to-end integration tests** — add 3-5 representative prompts exercising: NL → intent extraction → compilation → validation → enrichment → execution readiness. Each pipeline stage has unit coverage but seams between components are untested.
 - [ ] 25. **Model tiering abstraction** — replace hardcoded `gpt-4o` / `gpt-4o-mini` in `generation_defaults.py` model tiering with abstract tier labels that map to provider-specific models via config, so non-OpenAI users get correct assignments.
 - [ ] 26. **Automated roundtrip test suite** — decompile reference graphs, recompile, and assert structural equivalence to lock down the lossless round-trip claim.
+- [x] 27. **Empty-graph build fallback reliability**
+  - [x] 27-1. Prefer exact or required `emit_workflow_intent` tool choice when the active provider/model supports it instead of defaulting to `tool_choice="auto"` for structured extraction.
+  - [x] 27-2. Retry intent extraction once when a tool call is present but the payload does not parse into a valid `WorkflowIntent`.
+  - [x] 27-3. Auto-apply recovered empty-graph mutation previews only when the fast build path already failed and the dry-run result is clean.
+  - [x] 27-4. Keep normal mutation previews opt-in so non-fallback edits still require explicit `auto_apply`.
+  - [x] 27-5. Added regressions in `tests/test_chat_manager_codegen_resilience.py`, `tests/test_chat_manager_build_path.py`, and `tests/test_agent_runtime/test_mutation_preview.py`, then re-ran the focused auto-apply compatibility subset in `tests/test_post_tool_followup_recovery.py`.
 
 ## Decisions
 
 - **Granular failure modes (33-8 Task 7):** Added `routing_blocked` to `_determine_status()` when events contain "please confirm" or "meta session started" — distinguishes confirmation-blocked builds from generic `no_graph_created`.
 - **Full battery timing:** A full 44-prompt battery was initially deferred on 2026-03-11 because of LLM API reliability and server stability under load, then completed on 2026-03-12 once the evaluation pass was retried. Treat the earlier deferment as historical context, not current status.
+- **Empty-graph structured extraction:** Intent extraction should bias toward deterministic tool emission when the provider can honor it, rather than relying on `tool_choice="auto"` for a structured extraction task.
+- **Fallback preview auto-apply boundary:** Empty-graph fallback auto-apply is only enabled for recovered build-lane previews after the fast path already failed; ordinary mutation previews remain opt-in.
 
 ## Notes
 
@@ -259,3 +272,4 @@ Write up:
 - **Self-adaptive behavior (31-22):** If `DAN_BEHAVIOR_TIER >= 1`, log whether behavior proposals were generated during the battery run.
 - **File reference note (2026-03-16):** The failure-triage table above references pre-rewrite filenames (`classifier.py`, `solver.py`, `entity_grounding.py`, `runtime.py`). These were replaced by `triage.py`, `tiered_dispatch.py`, `tier_executors.py` during the Plan 34 concierge rewrite. The fixes referenced by checked-off tasks were applied to the correct current files.
 - **2026-03-27 benchmark-prep follow-up:** The LR2 benchmark-prep correctness seam is no longer blocked on missing tool args or stale report catalogs. `planner.py` now binds explicit local paths into generated tool configs, `workflow_contract.py` treats required tool args as part of run-readiness, `tests/eval/__main__.py` carries custom prompt-pack paths into report generation, and `executors/code.py` / `executors/llm.py` now mirror bare outputs onto a single declared port for generated nodes. Focused regressions landed, and the isolated rerun on `127.0.0.1:8010` passed (`tests/eval/results/2026-03-27_004702_phase33_lr2_dedicated_rerun_8010_r2.report.json`). The next analysis pass should focus on coverage breadth (LR1/LR3 + broader honest-baseline reruns), not the earlier LR2 plumbing bugs.
+- **Meta-workflow scope:** Keep the meta-workflow builder backlogged for product work for now; use it first as a testing and evaluation flow rather than as a new authoring-layer dependency.

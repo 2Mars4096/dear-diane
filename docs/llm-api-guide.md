@@ -126,6 +126,8 @@ result = {"total": total, "count": len(items)}
 
 **Scope:** Input port values are injected as local variables. The code must set `result` (dict for multi-port output, or scalar for single `result` port).
 
+**Relative files:** In server/local DAN runtimes, inline code-node `open("relative.txt")` resolves relative paths against `DAN_WORKSPACE_ROOT`. If the file lives outside the active workspace, pass an absolute path explicitly.
+
 **Port defaults:** Optional input ports (`required=False`) with a `json_schema` type receive type-appropriate defaults when not wired: `array` → `[]`, `object` → `{}`, `number`/`integer` → `0`, `string` → `""`, `boolean` → `False`. An `inputs` dict is also injected so code can use `inputs.get("field", fallback)`.
 
 ### 3c. Tool Operator
@@ -1404,7 +1406,7 @@ Current policy highlights:
 | `human_in_the_loop` | `wf.human_in_the_loop()` | `response` | Legacy/simple human alias |
 | `vote` | `wf.vote()` | `winner` | Voting / ensemble selection |
 | `rag_operator` | `wf.rag()` | `chunks` | Vector-store retrieval |
-| `validator` | `wf.validator()` | `valid` | Data validation with rule routing |
+| `validator` | `wf.validator()` | `valid` | Data validation with rule routing (`data` input, `invalid` failure branch) |
 | `reflection` | `wf.reflection()` | `principles` | Post-run analysis, distills errors into causal principles |
 | `input` | `wf.input_node()` | `input` | Explicit workflow entry variables (plus variable-specific output ports) |
 | `agent_team` | `wf.team()` / `wf.group_chat()` | `result` | Group-chat style multi-agent coordination |
@@ -1926,6 +1928,8 @@ Injects domain-specific prompt prefixes into targeted nodes:
 6. Client applies the mutation, switches to `mode="mutate"` for follow-up edits
 
 **Build-and-Run shortcut:** When the user asks to build AND run/test in one request, set `auto_apply: true` on `plan_graph_mutations`. If the dry-run passes, the server applies the mutation automatically, saves the graph, and continues the tool loop — the LLM can then call `start_run` immediately in the same turn. `ChatMutationEvent` will have `applied=true`. Omit `auto_apply` (default `false`) for preview-only requests.
+
+**Mechanical alias repair:** Chat-side mutation-preview compilation now rewrites a small set of known stale source-port aliases before dry-run when the node/tool shape makes the replacement unambiguous, for example `http_request.response -> body`. LLM callers should still prefer canonical tool-manifest ports (`status_code`, `headers`, `body`, `result` for `http_request`) instead of relying on repair.
 
 Use `strict=true` in `add_edge` operations when building from intent to fail fast on port typos.
 The backend now tolerates two common harmless mutation drifts during dry-run: `remove_node` on an already-missing id is treated as an idempotent no-op, and if a source node exposes exactly one output port the mutator may normalize a guessed source port onto that sole declared port (for example `for_each.item -> results` or `code_operator.output -> result`). Still prefer canonical port names in generated plans.

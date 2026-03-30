@@ -44,6 +44,7 @@
 - [x] 5. Quality, performance, and docs
   - [x] 5-1. Backend tests: `RunStore` write/read round-trip, `EventLog` append/query, `compare` alignment correctness, retention cleanup, edge cases (partial runs, missing events, corrupted JSON).
   - [ ] 5-2. Frontend tests: history list rendering/filtering, replay mode loading, compare view states, empty/error handling.
+    - [x] 5-2a. Add focused regressions for chat-run log hydration and `run_failed`/`node_failed` error-summary extraction from persisted `errors` maps.
   - [x] 5-3. Update `docs/architecture.md` (new `RunStore`, `EventLog`, API endpoints), `docs/llm-api-guide.md` (if run APIs are externally callable), `docs/changelog.md`.
 
 ## Decisions
@@ -60,3 +61,4 @@
 - This plan is the hard dependency for checkpoint portals and deeper recovery UX in 13-2.
 - `handleRunEvent` in `useGraphStore` already computes `nodeCosts` client-side from event data — persistence should capture the same computation server-side so history entries show cost without re-derivation.
 - Post-review patch pass (2026-03-03): fixed `/api/runs/compare` route precedence (static route no longer shadowed by `/api/runs/{run_id}`), fixed history compare source selection in `RunHistoryPanel`, added history deep-link in `RunRefBlock`, and added backend/frontend regression tests for these issues.
+- Follow-up patch (2026-03-27): chat-started run cards now load persisted run events back into `LogPanel` when users click `View full logs`, and failure summaries now extract from both `data.error` and `data.errors` so distilled-workflow failures no longer collapse to blank/`unknown error` surfaces.

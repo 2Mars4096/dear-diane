@@ -1,6 +1,13 @@
 # Todo
 
 ## Current Backlog
+- [x] [50-mutation-port-alias-repair](plans/50-mutation-port-alias-repair.md) — mutation-preview normalization now rewrites common stale tool output aliases like `http_request.response -> body` before dry-run, which keeps chat-authored workflow previews from failing on known canonical port mismatches
+- [x] [49-cwd-safe-runtime-execution](plans/49-cwd-safe-runtime-execution.md) — server-side runs now anchor checkpoint/memory/cache/rules dirs to the resolved workspace root, inline code-node `open(...)` resolves relative paths against `DAN_WORKSPACE_ROOT`, and missing-cwd run execution is covered by a real `RunManager` regression
+- [x] Chat-started run failure observability — `Save distilled workflow` / other chat-initiated runs now surface the real failure message from `run_failed`/`node_failed`, `View full logs` hydrates the persisted event stream into `LogPanel`, and history replay no longer hides `errors`-map failures behind truncated raw JSON
+- [x] [48-validator-input-port-contract-and-live-codegen](plans/48-validator-input-port-contract-and-live-codegen.md) — generated and auto-inserted validator nodes now declare the canonical `data` / `valid` / `invalid` ports, and the live `.env` builder-code integration subset passes against the enriched graph shape
+- [x] [47-capability-surface-runtime-alignment](plans/47-typed-node-introspection-and-validator-defaults.md) — typed capability surfaces now serialize runtime models correctly (`inspect_node`, `get_activity`) and `list_directory` no longer depends on a valid process cwd for `"."` workspace resolution; generated validator defaults also no longer emit stale `rule_type="format_check"` payloads
+- [x] [46-mutation-duplicate-edge-repair](plans/46-mutation-duplicate-edge-repair.md) — `plan_graph_mutations` now drops exact redundant `add_edge` ops during chat-side normalization instead of surfacing a dry-run failure when the edge already exists
+- [x] [45-backend-startup-path-hardening](plans/45-backend-startup-path-hardening.md) — `dan-up` / `dan-serve` now resolve graph persistence paths before app import so backend startup does not crash when the inherited cwd is missing or unusable
 - [x] Server-backed DAN equity-workflow build stall triage — workflow-generation codegen/diagnosis now enforce the remaining generation budget, mutation-preview repair calls are separately capped, and clean `build`-mode replay again reaches terminal events instead of burning past the budget in silence
 - [x] [12-13-workflow-authoring-triage-stability](plans/12-13-workflow-authoring-triage-stability.md) — concierge/triage routing for workflow-authoring turns is now stabilized end-to-end: lexical and embedding coverage, thread-context-aware continuation routing, JSON-mode + repair for LLM triage, stronger intent-extraction prompting/retry, route-source audit metadata, and repeated-trial stability regressions are landed.
   - ~~Stabilize concierge/triage performance for workflow-authoring turns~~ — subsumed by 12-13 tasks 1–3
@@ -13,7 +20,7 @@
   - [x] [44-3-section-assembly-and-parallel-validation](plans/44-3-section-assembly-and-parallel-validation.md)
   - [x] [44-4-boundary-linking-and-whole-graph-repair](plans/44-4-boundary-linking-and-whole-graph-repair.md)
   - [x] [44-5-routing-rollout-and-evals](plans/44-5-routing-rollout-and-evals.md)
-- [ ] Auto-apply empty-graph mutation fallback after codegen timeout — the folder-digest live prompt can now recover to a dry-run-passed workflow build preview after timeout, but the build lane still leaves that repaired mutation as a proposed preview instead of auto-applying/persisting it, so eval records end with `graph_created=false` / `timeout_codegen`
+- [x] Empty-graph build fallback reliability ([33-5-analysis-and-fixes](plans/33-5-analysis-and-fixes.md)) — empty-graph intent extraction now prefers deterministic `emit_workflow_intent` tool calls and retries invalid tool payloads, and recovered fallback mutation previews now auto-apply/save instead of dying as proposed `timeout_codegen` previews
 - [x] CLI launcher reuse hardening — `dan-up` / `dan-editor` now reuse healthy DAN servers already responding on the requested port even without `~/.dan/server.pid`, and `dan-down` now explains when port `8000` is owned by DAN Desktop or `dan-service`
 - [x] [41-internal-runtime-submodule-restructure](plans/41-internal-runtime-submodule-restructure.md) — internal runtime split landed across `llm_core`, `agent_runtime`, concierge narrowing, `workflow_runtime`, shared composition roots, and module-boundary guardrails
   - [x] [41-1-llm-core-and-model-gateway](plans/41-1-llm-core-and-model-gateway.md)
@@ -584,6 +591,12 @@
 ## Backlog (unphased)
 
 - [ ] **Upgrade the editor Node runtime to >=20.19 for Vite 7 parity** — local `cd editor && npm run build` now passes again, but Vite warns that the current machine is on Node `20.17.0`.
+
+### Workflow-generation acceleration
+- [ ] **Meta workflow builder for graph generation** — keep this backlogged for product work for now; first use the workflow-that-generates-workflows path as a testing/evaluation flow (`message -> orchestrator -> plan -> execution -> mechanical validation -> minimal tests -> delivery`) with explicit semantic and structural I/O contracts → (not yet planned)
+- [ ] **Prompt-secrecy hardening** — system/developer prompts must never be leaked, echoed, exported, or surfaced to end users unless explicitly provided by the developer for sharing → (not yet planned)
+- [ ] **Node-generation context enrichment** — node worker prompts should include not only the local node job but also the whole workflow goal plus immediate predecessor and successor context so each node is generated with both global and local awareness → (not yet planned)
+- [ ] **Speed-first graph-generation rebuild track** — if necessary, rebuild the minimal node/edge graph-generation path from scratch in 1-2 days, make the basic pipeline reliable first, and optimize specifically for strong performance on open-source models before reintroducing more complexity → (not yet planned)
 
 ### Competitive positioning targets
 - [ ] **"We're stronger than DeerFlow overall."** — make this true with clear product wins, benchmark proof, and an end-to-end story that beats DeerFlow on more than architecture alone.
