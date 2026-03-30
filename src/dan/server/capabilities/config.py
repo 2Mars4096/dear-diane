@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from dan.server.capability_registry import CapabilityContext, CapabilityResult
+from dan.server.paths import resolve_workspace_root
 
 _CONFIGURABLE_PREFIXES = (
     "DAN_SMTP_", "DAN_BRAVE_API_KEY", "DAN_TAVILY_API_KEY", "DAN_SERPER_API_KEY",
@@ -20,7 +21,7 @@ _CONFIGURABLE_PREFIXES = (
 
 def _update_env_file(key: str, value: str) -> None:
     """Update or append a key=value in the .env file."""
-    env_path = Path(os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())) / ".env"
+    env_path = Path(resolve_workspace_root()) / ".env"
     if not env_path.exists():
         env_path.write_text(f"{key}={value}\n")
         return

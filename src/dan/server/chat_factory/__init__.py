@@ -12,6 +12,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from dan.server.paths import resolve_graphs_dir, resolve_workspace_root
 from dan.server.runtime_config import (
     append_runtime_degradation,
     log_runtime_degradation_summary,
@@ -151,8 +152,8 @@ def build_chat_services(
     )
     from dan.server.concierge import build_concierge
 
-    _graphs_dir = str(graphs_dir) if graphs_dir else os.environ.get("DAN_GRAPHS_DIR", "./graphs")
-    _workspace = str(workspace_root) if workspace_root else os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())
+    _graphs_dir = str(graphs_dir) if graphs_dir else resolve_graphs_dir()
+    _workspace = str(workspace_root) if workspace_root else resolve_workspace_root()
 
     graph_store = GraphStore(base_dir=_graphs_dir)
     chat_store = ChatStore(base_dir=_graphs_dir)

@@ -10,7 +10,12 @@ logger = logging.getLogger(__name__)
 
 
 def _workspace_root() -> str:
-    return os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())
+    explicit = os.environ.get("DAN_WORKSPACE_ROOT")
+    if explicit:
+        return explicit
+    from dan.server.paths import resolve_workspace_root
+
+    return resolve_workspace_root()
 
 
 def _is_within_workspace(resolved: str, root: str) -> bool:

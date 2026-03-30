@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 
 from dan.server.capability_registry import CapabilityResult
+from dan.server.paths import resolve_workspace_root
 
 logger = logging.getLogger(__name__)
 
@@ -117,5 +118,5 @@ def _resolve_user_path(raw_path: str) -> Path:
     expanded = Path(raw_path).expanduser()
     if expanded.is_absolute():
         return expanded
-    workspace = Path(os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd()))
+    workspace = Path(resolve_workspace_root())
     return (workspace / expanded).resolve()

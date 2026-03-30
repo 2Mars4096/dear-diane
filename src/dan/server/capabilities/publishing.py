@@ -10,6 +10,7 @@ from typing import Any
 
 from dan.server.capability_registry import CapabilityContext, CapabilityResult
 from dan.server.capabilities._helpers import _schedule_export_cleanup, _truncate
+from dan.server.paths import resolve_workspace_root
 
 logger = logging.getLogger(__name__)
 
@@ -298,8 +299,6 @@ async def handle_import_block(
     args: dict[str, Any],
     ctx: CapabilityContext,
 ) -> CapabilityResult:
-    import os
-
     if ctx.block_registry is None:
         return CapabilityResult(success=False, message="Block registry not available.")
     source = str(args.get("source", "")).strip()
@@ -309,7 +308,7 @@ async def handle_import_block(
     workspace_str = args.get("workspace")
     workspace = Path(workspace_str) if workspace_str else None
     if scope == "workspace" and workspace is None:
-        workspace = Path(os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd()))
+        workspace = Path(resolve_workspace_root())
     force = bool(args.get("force", False))
     try:
         from dan.blocks import import_block as _import_block

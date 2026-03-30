@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from dan.engine.executor import EngineConfig
 from dan.providers import ProviderConfig
 from dan.providers.factory import build_provider_registry
 from dan.rag import DEFAULT_EMBEDDING_MODEL
+from dan.server.paths import resolve_workspace_root
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +123,19 @@ def _parse_json_map_env(env_name: str) -> dict[str, str]:
     return {str(key): str(value) for key, value in parsed.items()}
 
 
+def _resolve_runtime_dir(raw_path: str | None, workspace_root: str) -> str | None:
+    """Anchor relative runtime directories to the resolved workspace root."""
+    if raw_path is None:
+        return None
+    text = str(raw_path).strip()
+    if not text:
+        return None
+    path = Path(text).expanduser()
+    if path.is_absolute():
+        return str(path)
+    return str((Path(workspace_root) / path).resolve())
+
+
 def build_engine_config_from_env() -> EngineConfig:
     """Build :class:`EngineConfig` from environment variables."""
 
@@ -191,6 +206,28 @@ def build_engine_config_from_env() -> EngineConfig:
                 logger.warning("Failed to parse DAN_TIER_MAP JSON, using defaults")
         default_model_policy = TierPolicy(tier_map=tier_map)
 
+    workspace_root = resolve_workspace_root()
+    checkpoint_dir = _resolve_runtime_dir(
+        os.environ.get("DAN_CHECKPOINT_DIR", "./checkpoints"),
+        workspace_root,
+    )
+    memory_dir = _resolve_runtime_dir(
+        os.environ.get("DAN_MEMORY_DIR", "./memory"),
+        workspace_root,
+    )
+    rules_dir = _resolve_runtime_dir(
+        os.environ.get("DAN_RULES_DIR", "./rules"),
+        workspace_root,
+    )
+    cache_dir = _resolve_runtime_dir(
+        os.environ.get("DAN_CACHE_DIR") or None,
+        workspace_root,
+    )
+    state_store_dir = _resolve_runtime_dir(
+        os.environ.get("DAN_STATE_STORE_DIR") or None,
+        workspace_root,
+    )
+
     return EngineConfig(
         llm_base_url=os.environ.get(
             "DAN_LLM_BASE_URL",
@@ -201,7 +238,7 @@ def build_engine_config_from_env() -> EngineConfig:
             os.environ.get("LLM_API_KEY", openai_key),
         ),
         llm_default_model=os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6"),
-        checkpoint_dir=os.environ.get("DAN_CHECKPOINT_DIR", "./checkpoints"),
+        checkpoint_dir=checkpoint_dir or "./checkpoints",
         checkpoint_enabled=True,
         providers=providers,
         model_provider_map=_parse_json_map_env("DAN_MODEL_PROVIDER_MAP"),
@@ -211,10 +248,13 @@ def build_engine_config_from_env() -> EngineConfig:
         ),
         default_embedding_model=default_embedding_model,
         default_model_policy=default_model_policy,
+        memory_dir=memory_dir or "./memory",
+        rules_dir=rules_dir or "./rules",
+        state_store_dir=state_store_dir,
         cache_enabled=os.environ.get("DAN_CACHE_ENABLED", "true").lower()
         in ("1", "true", "yes"),
         cache_max_size_mb=int(os.environ.get("DAN_CACHE_MAX_SIZE_MB", "100")),
-        cache_dir=os.environ.get("DAN_CACHE_DIR") or None,
+        cache_dir=cache_dir,
         semantic_cache_threshold=float(
             os.environ.get("DAN_SEMANTIC_CACHE_THRESHOLD", "0.95")
         ),

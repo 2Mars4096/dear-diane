@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Awaitable
 
 from dan.server.exec import execute_python
+from dan.server.paths import resolve_workspace_root
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +92,7 @@ async def _rag_index_documents(
     """Index PDF documents from a directory into a RAG collection."""
     if not pdf_dir:
         return {"error": "pdf_dir is required", "status": "error"}
-    workspace = Path(os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())).resolve()
+    workspace = Path(resolve_workspace_root()).resolve()
     resolved = (workspace / pdf_dir).resolve()
     if not resolved.is_relative_to(workspace):
         return {"error": "Path escapes workspace root; use a relative path or copy files into the workspace", "status": "error"}

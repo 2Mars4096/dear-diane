@@ -8,6 +8,8 @@ from typing import Any
 
 import uvicorn
 
+from dan.server.paths import resolve_graphs_dir, resolve_workspace_root
+
 
 def build_uvicorn_log_config(level: str | None = None) -> dict[str, Any]:
     """Configure uvicorn so DAN app logs are emitted at INFO by default."""
@@ -39,9 +41,13 @@ def main() -> None:
     args = parser.parse_args()
     reload = args.reload and not args.no_reload
     project_root = Path(__file__).resolve().parents[3]
+    graphs_dir = resolve_graphs_dir()
+    workspace_root = resolve_workspace_root()
+    os.environ["DAN_GRAPHS_DIR"] = graphs_dir
+    os.environ["DAN_WORKSPACE_ROOT"] = workspace_root
     reload_dirs = [str(project_root)] if reload else None
     reload_excludes = [
-        str(project_root / "graphs"),
+        graphs_dir,
         str(project_root / "runs"),
         str(project_root / "checkpoints"),
     ] if reload else None

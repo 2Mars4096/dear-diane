@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from dan.server.paths import resolve_workspace_root
 from dan.server.routers.dependencies import get_graph_store, get_block_registry
 
 logger = logging.getLogger(__name__)
@@ -68,7 +69,7 @@ async def get_block_info(name: str):
 async def import_block_endpoint(body: dict[str, Any]):
     from dan.blocks import import_block
 
-    workspace_root = os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())
+    workspace_root = resolve_workspace_root()
     source = body.get("path")
     if not source:
         raise HTTPException(status_code=400, detail="Provide {\"path\": \"...\"} pointing to a tarball, directory, or URL")

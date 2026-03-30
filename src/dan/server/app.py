@@ -29,6 +29,7 @@ from dan.server.llm_gateway import resolve_llm_provider
 from dan.server.mention_resolver import MentionResolver
 from dan.server.chat_store import ChatStore
 from dan.server.graph_store import GraphStore
+from dan.server.paths import resolve_graphs_dir
 from dan.server.run_manager import RunManager
 from dan.server.test_cases import TestCaseStore
 from dan.publish.http_server import PublishRegistry
@@ -53,7 +54,7 @@ def _resolve_cache_dir(config: EngineConfig) -> Path:
         return Path(config.cache_dir).expanduser()
     return Path.home() / ".dan" / "cache"
 
-_graphs_dir = os.environ.get("DAN_GRAPHS_DIR", "./graphs")
+_graphs_dir = resolve_graphs_dir()
 _graph_store = GraphStore(base_dir=_graphs_dir)
 _chat_store = ChatStore(base_dir=_graphs_dir)
 _test_case_store = TestCaseStore(base_dir=_graphs_dir)

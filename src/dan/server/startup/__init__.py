@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from dan.server.app_state import AppState
+from dan.server.paths import resolve_graphs_dir, resolve_workspace_root
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -305,7 +306,7 @@ async def init_stores(state: AppState) -> None:
     runs_dir = os.environ.get("DAN_RUNS_DIR", os.path.join(graphs_dir, "runs"))
     state.run_store = RunStore(base_dir=runs_dir)
 
-    workspace_root = os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())
+    workspace_root = resolve_workspace_root()
     state.block_registry = BlockRegistry(workspace=Path(workspace_root))
     try:
         state.block_registry.scan()
@@ -348,6 +349,7 @@ async def init_stores(state: AppState) -> None:
 
 async def init_engine(state: AppState) -> None:
     """Phase 2: create EngineConfig, TierTracker, TelemetryStore, RunManager."""
+    os.environ["DAN_WORKSPACE_ROOT"] = resolve_workspace_root()
     engine_config = _get_engine_config()
     engine_config.block_registry = state.block_registry
     state.engine_config = engine_config
@@ -472,7 +474,7 @@ async def init_managers(state: AppState) -> None:
     from dan.server.mention_resolver import CodeResolver, MentionResolver
     logger.debug("  phase 4 sub: imports done [%s]", _p4_ms())
 
-    workspace_root = os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())
+    workspace_root = resolve_workspace_root()
     state.mention_resolver = MentionResolver(
         workspace_root=workspace_root,
         chat_store=state.chat_store,
@@ -630,7 +632,7 @@ async def init_integrations(state: AppState, app: FastAPI) -> None:
     from dan.server.gateway.router import init_gateway
     from dan.server.gateway.router import router as gateway_router
 
-    workspace_root = os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())
+    workspace_root = resolve_workspace_root()
     workspace_root_path = Path(workspace_root)
     init_gateway(
         run_manager=state.run_manager,
@@ -1377,7 +1379,7 @@ async def lifespan(app: FastAPI):
     from dan.server.chat_store import ChatStore
     from dan.server.test_cases import TestCaseStore
 
-    graphs_dir = os.environ.get("DAN_GRAPHS_DIR", "./graphs")
+    graphs_dir = resolve_graphs_dir()
 
     state = AppState(
         graphs_dir=graphs_dir,
