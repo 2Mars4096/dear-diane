@@ -340,9 +340,14 @@ def insert_validator(
     validator_node = {
         "id": validator_id,
         "node_type": "validator",
+        "input_ports": [{"name": "data", "json_schema": {}}],
+        "output_ports": [
+            {"name": "valid", "json_schema": {}},
+            {"name": "invalid", "json_schema": {}},
+        ],
         "config": {
             "name": f"validate_{source_id}_to_{target_id}",
-            "validation_rules": rules or [{"rule_type": "format_check", "config": {}}],
+            "validation_rules": rules or [{"rule_type": "required_keys", "config": {"keys": []}}],
             "on_failure": "route",
             "strict_mode": False,
         },

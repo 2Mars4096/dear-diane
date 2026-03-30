@@ -735,7 +735,20 @@ graph = wf.build()
         assert "graph" in result
         graph_data = result["graph"]
         assert graph_data.get("version") == "dan_graph_v1"
-        assert len(graph_data["nodes"]) == 2
+        assert len(graph_data["nodes"]) == 3
+        llm_nodes = [
+            node for node in graph_data["nodes"] if node.get("node_type") == "llm_operator"
+        ]
+        validator_nodes = [
+            node for node in graph_data["nodes"] if node.get("node_type") == "validator"
+        ]
+        assert {node["id"] for node in llm_nodes} == {"summarizer", "translator"}
+        assert len(validator_nodes) == 1
+        assert validator_nodes[0]["input_ports"][0]["name"] == "data"
+        assert {port["name"] for port in validator_nodes[0]["output_ports"]} == {
+            "valid",
+            "invalid",
+        }
 
         from dan.models.graph import Graph
         Graph.model_validate(graph_data)

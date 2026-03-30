@@ -74,6 +74,15 @@ class TestInsertValidator:
         assert result.success
         assert len(result.nodes_added) == 1
         assert len(g["nodes"]) == 4
+        validator = next(node for node in g["nodes"] if node["node_type"] == "validator")
+        assert validator["input_ports"] == [{"name": "data", "json_schema": {}}]
+        assert validator["output_ports"] == [
+            {"name": "valid", "json_schema": {}},
+            {"name": "invalid", "json_schema": {}},
+        ]
+        assert validator["config"]["validation_rules"] == [
+            {"rule_type": "required_keys", "config": {"keys": []}}
+        ]
 
     def test_no_edge(self):
         g = _make_chain()

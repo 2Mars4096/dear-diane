@@ -23,7 +23,7 @@ from dan.models.context import (
     NodeLocalState,
 )
 from dan.models.nodes import NodeBase
-from dan.models.ports import OutputPort
+from dan.models.ports import InputPort, OutputPort
 
 
 def _normalize_state_schema(schema: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -280,6 +280,10 @@ class ValidatorNode(NodeBase):
     strict_mode: bool = False
 
     def model_post_init(self, __context: Any) -> None:
+        if not self.input_ports:
+            self.input_ports = [
+                InputPort(name="data", description="Payload to validate"),
+            ]
         if not self.output_ports:
             self.output_ports = [
                 OutputPort(name="valid", description="Passthrough when all rules pass"),

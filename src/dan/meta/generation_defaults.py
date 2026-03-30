@@ -424,9 +424,14 @@ class DefaultsEnricher:
             return {
                 "id": val_id,
                 "node_type": "validator",
+                "input_ports": [{"name": "data", "json_schema": {}}],
+                "output_ports": [
+                    {"name": "valid", "json_schema": {}},
+                    {"name": "invalid", "json_schema": {}},
+                ],
                 "config": {
                     "name": f"validate_before_{target_id}",
-                    "validation_rules": [{"rule_type": "format_check", "config": {}}],
+                    "validation_rules": [{"rule_type": "required_keys", "config": {"keys": []}}],
                     "on_failure": "route",
                     "strict_mode": False,
                 },
@@ -436,7 +441,12 @@ class DefaultsEnricher:
             "id": val_id,
             "name": f"validate_before_{target_id}",
             "node_type": "validator",
-            "validation_rules": [{"rule_type": "format_check", "config": {}}],
+            "input_ports": [{"name": "data", "json_schema": {}}],
+            "output_ports": [
+                {"name": "valid", "json_schema": {}},
+                {"name": "invalid", "json_schema": {}},
+            ],
+            "validation_rules": [{"rule_type": "required_keys", "config": {"keys": []}}],
             "on_failure": "route",
             "strict_mode": False,
         }

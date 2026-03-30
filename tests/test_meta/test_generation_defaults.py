@@ -241,7 +241,10 @@ def test_robust_profile_enriches_flat_compiled_graph() -> None:
     assert all(node["model_policy"] == {"strategy": "tier"} for node in llm_nodes)
     assert len(validator_nodes) == 1
     assert validator_nodes[0]["name"] == "validate_before_final"
-    assert validator_nodes[0]["validation_rules"][0]["rule_type"] == "format_check"
+    assert validator_nodes[0]["validation_rules"][0] == {
+        "rule_type": "required_keys",
+        "config": {"keys": []},
+    }
     assert len(reviewer_nodes) == 1
     assert reviewer_nodes[0]["model"] == "claude-sonnet-4-6"
     assert reviewer_nodes[0]["task_tier"] == "critical"
@@ -430,6 +433,11 @@ class TestValidationGateTopologies:
         node_types = [n["node_type"] for n in result["nodes"]]
         assert "validator" in node_types
         validator = next(n for n in result["nodes"] if n["node_type"] == "validator")
+        assert validator["input_ports"] == [{"name": "data", "json_schema": {}}]
+        assert validator["output_ports"] == [
+            {"name": "valid", "json_schema": {}},
+            {"name": "invalid", "json_schema": {}},
+        ]
         val_to_b = [e for e in result["edges"] if e["source_node_id"] == validator["id"] and e["target_node_id"] == "b"]
         assert len(val_to_b) == 1
 
@@ -451,6 +459,7 @@ class TestValidationGateTopologies:
         validator = next((n for n in result["nodes"] if n["node_type"] == "validator"), None)
         assert validator is not None
         assert validator["config"]["name"] == "validate_before_c"
+        assert validator["input_ports"] == [{"name": "data", "json_schema": {}}]
 
     def test_no_terminal_llm_skips_insertion(self):
         """A (tool) -> B (tool): no terminal LLM node, no validator inserted."""
@@ -504,6 +513,7 @@ class TestValidationGateTopologies:
         validator = next((n for n in result["nodes"] if n["node_type"] == "validator"), None)
         assert validator is not None
         assert validator["config"]["name"] == "validate_before_d"
+        assert validator["input_ports"] == [{"name": "data", "json_schema": {}}]
 
 
 def test_resolve_default_llm_model_normalizes_legacy_tier_aliases(monkeypatch):
