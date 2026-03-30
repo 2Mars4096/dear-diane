@@ -13,9 +13,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from dan.engine.executor import EngineConfig
+from dan.models.edges import DataEdge
 from dan.models.graph import Graph, GraphMetadata
 from dan.models.nodes import CodeOperator
-from dan.models.ports import OutputPort
+from dan.models.ports import OutputPort, InputPort
 from dan.server.concierge.scheduler import (
     DeliveryTarget,
     ScheduleEntry,
@@ -39,6 +40,7 @@ from dan.server.concierge.scheduler import (
     resolve_scheduler_authority,
 )
 from dan.server.run_manager import RunManager
+from dan.server.runtime_config import build_engine_config_from_env
 
 
 # =========================================================================
@@ -579,6 +581,78 @@ class TestTaskScheduler:
         assert records
         assert records[-1].status == "running"
         assert "Started workflow `wf-scheduled`" in records[-1].result_summary
+
+    @pytest.mark.asyncio
+    async def test_run_manager_survives_missing_cwd_with_workspace_rooted_paths(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+    ) -> None:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "watchlist.csv").write_text("ticker\nRKLB\n", encoding="utf-8")
+
+        graph = Graph(
+            metadata=GraphMetadata(name="cwd-safe-run"),
+            nodes=[
+                CodeOperator(
+                    id="watchlist_path",
+                    name="watchlist_path",
+                    code="result = 'watchlist.csv'",
+                    output_ports=[OutputPort(name="result")],
+                ),
+                CodeOperator(
+                    id="emit",
+                    name="emit",
+                    code="result = 'ok'",
+                    output_ports=[OutputPort(name="result")],
+                ),
+                CodeOperator(
+                    id="read_watchlist_csv",
+                    name="read_watchlist_csv",
+                    code="with open('watchlist.csv', 'r') as f:\n    result = f.read().strip()",
+                    input_ports=[InputPort(name="watchlist_path")],
+                    output_ports=[OutputPort(name="result")],
+                ),
+            ],
+            edges=[
+                DataEdge(
+                    id="watchlist_path.result->read_watchlist_csv.watchlist_path",
+                    source_node_id="watchlist_path",
+                    source_port="result",
+                    target_node_id="read_watchlist_csv",
+                    target_port="watchlist_path",
+                )
+            ],
+            entry_points=["watchlist_path", "emit"],
+            exit_points=["read_watchlist_csv"],
+        )
+
+        monkeypatch.setenv("DAN_WORKSPACE_ROOT", str(workspace))
+        monkeypatch.setenv("DAN_CHECKPOINT_DIR", "./checkpoints")
+        monkeypatch.setenv("DAN_MEMORY_DIR", "./memory")
+        monkeypatch.setenv("DAN_RULES_DIR", "./rules")
+        original_cwd = os.getcwd()
+        vanished = tmp_path / "vanished-cwd"
+        vanished.mkdir()
+        os.chdir(vanished)
+        vanished.rmdir()
+
+        try:
+            run_manager = RunManager(engine_config=build_engine_config_from_env())
+            record = await run_manager.start_run(
+                graph,
+                graph_id="wf-cwd-safe",
+                inputs=None,
+            )
+            await asyncio.wait_for(run_manager._tasks[record.run_id], timeout=5.0)
+        finally:
+            os.chdir(original_cwd)
+
+        assert record.status.value == "completed"
+        assert record.result is not None
+        assert record.result.success is True
+        assert record.result.outputs.get("result") == "ticker\nRKLB"
 
     @pytest.mark.asyncio
     async def test_does_not_refire_while_schedule_is_inflight(self, store):

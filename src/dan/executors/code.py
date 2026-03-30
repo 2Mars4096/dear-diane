@@ -6,6 +6,8 @@ import builtins
 import contextlib
 import io
 import logging
+import os
+from pathlib import Path
 from typing import Any
 
 from dan.engine.executor import ExecutionContext, NodeResult
@@ -16,9 +18,8 @@ from dan.sandbox.runner import SandboxRunner
 
 logger = logging.getLogger(__name__)
 
-_ALLOWED_BUILTINS: dict[str, Any] = {
+_STATIC_ALLOWED_BUILTINS: dict[str, Any] = {
     "__import__": builtins.__import__,
-    "open": builtins.open,
     "NameError": NameError,
     "Exception": Exception,
     "ValueError": ValueError,
@@ -64,7 +65,37 @@ _ALLOWED_BUILTINS: dict[str, Any] = {
     "None": None,
 }
 
+# Compatibility alias for older diagnosis/runtime imports that still reference
+# the historical module-level name.
+_ALLOWED_BUILTINS = _STATIC_ALLOWED_BUILTINS
+
 _runner = SandboxRunner()
+
+
+def _workspace_root() -> Path | None:
+    raw = str(os.environ.get("DAN_WORKSPACE_ROOT", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        return Path(raw).expanduser().resolve()
+    except OSError:
+        return None
+
+
+def _workspace_open(file: Any, *args: Any, **kwargs: Any) -> Any:
+    if isinstance(file, (str, os.PathLike)):
+        path = Path(file).expanduser()
+        if not path.is_absolute():
+            workspace_root = _workspace_root()
+            if workspace_root is not None:
+                file = workspace_root / path
+    return builtins.open(file, *args, **kwargs)
+
+
+def _allowed_builtins() -> dict[str, Any]:
+    allowed = dict(_STATIC_ALLOWED_BUILTINS)
+    allowed["open"] = _workspace_open
+    return allowed
 
 
 def _default_for_schema(json_schema: dict | None) -> Any:
@@ -144,7 +175,7 @@ class CodeExecutor:
                 f"Unsupported language: '{node.language}' (only 'python' is supported)",
             )
 
-        namespace: dict[str, Any] = {"__builtins__": _ALLOWED_BUILTINS}
+        namespace: dict[str, Any] = {"__builtins__": _allowed_builtins()}
         for port in node.input_ports:
             if port.name not in inputs and not port.required:
                 inputs[port.name] = _default_for_schema(port.json_schema)
