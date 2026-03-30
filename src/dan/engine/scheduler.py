@@ -119,6 +119,18 @@ def _stable_input_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _summarize_run_errors(errors: Any) -> str:
+    """Return the most useful single-line failure summary from a run error payload."""
+    if isinstance(errors, str):
+        return errors.strip()
+    if not isinstance(errors, dict):
+        return ""
+    for value in errors.values():
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 @dataclass
 class RunResult:
     """Final result of an Engine.run() or Engine.resume() call."""
@@ -1353,6 +1365,7 @@ class Engine:
             run_id=state.run_id,
             data={
                 "success": result.success,
+                "error": _summarize_run_errors(result.errors),
                 "errors": result.errors,
                 "elapsed_seconds": elapsed,
                 "phase": state.run_state.get("phase", RunPhase.ACTIVE.value),
