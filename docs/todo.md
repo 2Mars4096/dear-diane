@@ -1,13 +1,13 @@
 # Todo
 
 ## Current Backlog
-- [x] [50-mutation-port-alias-repair](plans/50-mutation-port-alias-repair.md) — mutation-preview normalization now rewrites common stale tool output aliases like `http_request.response -> body` before dry-run, which keeps chat-authored workflow previews from failing on known canonical port mismatches
-- [x] [49-cwd-safe-runtime-execution](plans/49-cwd-safe-runtime-execution.md) — server-side runs now anchor checkpoint/memory/cache/rules dirs to the resolved workspace root, inline code-node `open(...)` resolves relative paths against `DAN_WORKSPACE_ROOT`, and missing-cwd run execution is covered by a real `RunManager` regression
+- [ ] [45-workflow-generation-hardening](plans/45-workflow-generation-hardening.md) — direct builder surface, stronger generation contracts, speed-first minimal path experiment, meta-builder eval harness, and explicit benchmark gates before rollout
+  - [ ] [45-1-direct-builder-surface](plans/45-1-direct-builder-surface.md)
+  - [ ] [45-2-generation-contract-and-validation-hardening](plans/45-2-generation-contract-and-validation-hardening.md)
+  - [ ] [45-3-speed-first-minimal-build-path](plans/45-3-speed-first-minimal-build-path.md)
+  - [ ] [45-4-meta-workflow-builder-eval-harness](plans/45-4-meta-workflow-builder-eval-harness.md)
+  - [ ] [45-5-benchmark-and-rollout-gates](plans/45-5-benchmark-and-rollout-gates.md)
 - [x] Chat-started run failure observability — `Save distilled workflow` / other chat-initiated runs now surface the real failure message from `run_failed`/`node_failed`, `View full logs` hydrates the persisted event stream into `LogPanel`, and history replay no longer hides `errors`-map failures behind truncated raw JSON
-- [x] [48-validator-input-port-contract-and-live-codegen](plans/48-validator-input-port-contract-and-live-codegen.md) — generated and auto-inserted validator nodes now declare the canonical `data` / `valid` / `invalid` ports, and the live `.env` builder-code integration subset passes against the enriched graph shape
-- [x] [47-capability-surface-runtime-alignment](plans/47-typed-node-introspection-and-validator-defaults.md) — typed capability surfaces now serialize runtime models correctly (`inspect_node`, `get_activity`) and `list_directory` no longer depends on a valid process cwd for `"."` workspace resolution; generated validator defaults also no longer emit stale `rule_type="format_check"` payloads
-- [x] [46-mutation-duplicate-edge-repair](plans/46-mutation-duplicate-edge-repair.md) — `plan_graph_mutations` now drops exact redundant `add_edge` ops during chat-side normalization instead of surfacing a dry-run failure when the edge already exists
-- [x] [45-backend-startup-path-hardening](plans/45-backend-startup-path-hardening.md) — `dan-up` / `dan-serve` now resolve graph persistence paths before app import so backend startup does not crash when the inherited cwd is missing or unusable
 - [x] Server-backed DAN equity-workflow build stall triage — workflow-generation codegen/diagnosis now enforce the remaining generation budget, mutation-preview repair calls are separately capped, and clean `build`-mode replay again reaches terminal events instead of burning past the budget in silence
 - [x] [12-13-workflow-authoring-triage-stability](plans/12-13-workflow-authoring-triage-stability.md) — concierge/triage routing for workflow-authoring turns is now stabilized end-to-end: lexical and embedding coverage, thread-context-aware continuation routing, JSON-mode + repair for LLM triage, stronger intent-extraction prompting/retry, route-source audit metadata, and repeated-trial stability regressions are landed.
   - ~~Stabilize concierge/triage performance for workflow-authoring turns~~ — subsumed by 12-13 tasks 1–3
@@ -20,6 +20,7 @@
   - [x] [44-3-section-assembly-and-parallel-validation](plans/44-3-section-assembly-and-parallel-validation.md)
   - [x] [44-4-boundary-linking-and-whole-graph-repair](plans/44-4-boundary-linking-and-whole-graph-repair.md)
   - [x] [44-5-routing-rollout-and-evals](plans/44-5-routing-rollout-and-evals.md)
+  - [x] [44-6-rollout-hardening](plans/44-6-rollout-hardening.md) — cwd/startup, mutation-preview, capability-surface, and validator-port patches from the 44-series rollout
 - [x] Empty-graph build fallback reliability ([33-5-analysis-and-fixes](plans/33-5-analysis-and-fixes.md)) — empty-graph intent extraction now prefers deterministic `emit_workflow_intent` tool calls and retries invalid tool payloads, and recovered fallback mutation previews now auto-apply/save instead of dying as proposed `timeout_codegen` previews
 - [x] CLI launcher reuse hardening — `dan-up` / `dan-editor` now reuse healthy DAN servers already responding on the requested port even without `~/.dan/server.pid`, and `dan-down` now explains when port `8000` is owned by DAN Desktop or `dan-service`
 - [x] [41-internal-runtime-submodule-restructure](plans/41-internal-runtime-submodule-restructure.md) — internal runtime split landed across `llm_core`, `agent_runtime`, concierge narrowing, `workflow_runtime`, shared composition roots, and module-boundary guardrails
@@ -464,7 +465,7 @@
   - [x] [33-2-test-harness](plans/33-2-test-harness.md) — B. Automated runner, telemetry reader, JSONL logging, metrics, report *(harness implemented: client, runner, metrics, report, CLI)*
   - [ ] [33-3-small-task-battery](plans/33-3-small-task-battery.md) — C. Small-task battery — T1 build slice reran successfully at 11/11 pass after the workflow-build/router fixes and eval-summary patch; the broader honest-baseline reruns are still pending
   - [ ] [33-4-complex-workflow-battery](plans/33-4-complex-workflow-battery.md) — D. Complex workflows — the dedicated frozen-input prompt pack now has a first clean LR2 build+execute rerun (`tests/eval/results/2026-03-27_004702_phase33_lr2_dedicated_rerun_8010_r2.report.json`), but LR1/LR3 and the remaining long-running slice are still pending
-  - [ ] [33-5-analysis-and-fixes](plans/33-5-analysis-and-fixes.md) — E. Cycle 3+ analysis + Cycle 4 workflow-repair hardening landed; the 2026-03-26 static reviewer evidence is consolidated at `tests/eval/results/2026-03-26_honesty_review_validation.json`, and the 2026-03-27 isolated LR2 rerun passed after fixing explicit tool-arg/run-readiness/reporting seams. The next analysis pass now depends on expanding benchmark-prep coverage beyond LR2 and rerunning the broader honest baseline
+  - [x] [33-5-analysis-and-fixes](plans/33-5-analysis-and-fixes.md) — E. Cycle 3+ analysis and Cycle 6 structural hardening are closed: deterministic seam coverage now lives in `tests/test_meta/test_workflow_generation_pipeline.py`, the builder roundtrip suite now covers stable corpus graphs plus a generated LR2 fixture in `tests/test_loader/test_graph_corpus_builder_roundtrip.py`, and model tiering was verified to already be provider-abstracted. Broader honest-baseline/LR1/LR3 reruns remain in 33-3 / 33-4 / the parent plan.
   - [x] [33-6-intent-compiler-activation](plans/33-6-intent-compiler-activation.md) — F. Intent compiler activation at 68.4% on T1/T2 (100% pass rate when activated). All patch tasks done.
   - [x] [33-7-semantic-quality-gates](plans/33-7-semantic-quality-gates.md) — G. Quality scoring with tier-adaptive thresholds, keyword tuning from eval (avg 93.9). All patch tasks done.
   - [x] [33-8-codegen-resilience](plans/33-8-codegen-resilience.md) — H. Generation failure budget, terminal failure reasons, sandbox timeout classification. All patch tasks done. *(Note: original tasks 1-12 claimed shipped but granular eval categories [task 7] not reflected in battery output — verification moved to 33-9 G.14)*
@@ -593,10 +594,10 @@
 - [ ] **Upgrade the editor Node runtime to >=20.19 for Vite 7 parity** — local `cd editor && npm run build` now passes again, but Vite warns that the current machine is on Node `20.17.0`.
 
 ### Workflow-generation acceleration
-- [ ] **Meta workflow builder for graph generation** — keep this backlogged for product work for now; first use the workflow-that-generates-workflows path as a testing/evaluation flow (`message -> orchestrator -> plan -> execution -> mechanical validation -> minimal tests -> delivery`) with explicit semantic and structural I/O contracts → (not yet planned)
+- [ ] **Meta workflow builder for graph generation** — now planned as [45-4-meta-workflow-builder-eval-harness](plans/45-4-meta-workflow-builder-eval-harness.md) under the 45-workflow-generation-hardening umbrella
 - [ ] **Prompt-secrecy hardening** — system/developer prompts must never be leaked, echoed, exported, or surfaced to end users unless explicitly provided by the developer for sharing → (not yet planned)
-- [ ] **Node-generation context enrichment** — node worker prompts should include not only the local node job but also the whole workflow goal plus immediate predecessor and successor context so each node is generated with both global and local awareness → (not yet planned)
-- [ ] **Speed-first graph-generation rebuild track** — if necessary, rebuild the minimal node/edge graph-generation path from scratch in 1-2 days, make the basic pipeline reliable first, and optimize specifically for strong performance on open-source models before reintroducing more complexity → (not yet planned)
+- [ ] **Node-generation context enrichment** — folded into [45-4](plans/45-4-meta-workflow-builder-eval-harness.md) task 3 (context-rich worker contracts with whole-goal plus predecessor/successor awareness)
+- [ ] **Speed-first graph-generation rebuild track** — now planned as [45-3-speed-first-minimal-build-path](plans/45-3-speed-first-minimal-build-path.md) under the 45-workflow-generation-hardening umbrella
 
 ### Competitive positioning targets
 - [ ] **"We're stronger than DeerFlow overall."** — make this true with clear product wins, benchmark proof, and an end-to-end story that beats DeerFlow on more than architecture alone.
