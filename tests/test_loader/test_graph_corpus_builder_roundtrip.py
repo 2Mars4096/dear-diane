@@ -6,14 +6,18 @@ from typing import Any
 
 import pytest
 
+from dan.builder import workflow
 from dan.builder.compiler import BuildError
 from dan.builder.decompiler import decompile
+from dan.meta.planner import validate_codegen_output
 from dan.models.graph import Graph
 
 
 REFERENCE_GRAPHS = [
     pytest.param("graphs/three_step_chain.json", id="three_step_chain"),
+    pytest.param("graphs/build-probe-simple-a.json", id="build_probe_simple_a"),
     pytest.param("graphs/paper_writing.json", id="paper_writing"),
+    pytest.param("graphs/eval-lr2-01-build-enabled-16df44e3.json", id="eval_lr2_generated"),
     pytest.param(
         "graphs/batch_paper_writing.json",
         id="batch_paper_writing",
@@ -38,6 +42,13 @@ REFERENCE_GRAPHS = [
             strict=True,
         ),
     ),
+]
+
+RUN_READY_GRAPH_FIXTURES = [
+    pytest.param("graphs/three_step_chain.json", id="three_step_chain"),
+    pytest.param("graphs/build-probe-simple-a.json", id="build_probe_simple_a"),
+    pytest.param("graphs/paper_writing.json", id="paper_writing"),
+    pytest.param("graphs/eval-lr2-01-build-enabled-16df44e3.json", id="eval_lr2_generated"),
 ]
 
 
@@ -132,6 +143,26 @@ def _roundtrip_through_builder(graph: Graph) -> Graph:
     return rebuilt
 
 
+def _build_conditional_branch_graph() -> Graph:
+    wf = workflow("conditional_branch_roundtrip")
+    _gate_ref, then_ref, else_ref = wf.branch(
+        condition="1 > 0",
+        then_prompt="Handle the true case.",
+        else_prompt="Handle the false case.",
+        name="check",
+    )
+    merge = wf.llm("merge", prompt="Combine the branch result.")
+    then_ref >> merge
+    else_ref >> merge
+    return wf.build()
+
+
+def _assert_run_ready(graph: Graph, *, context: str) -> None:
+    validation = validate_codegen_output(graph.model_dump(mode="json"))
+    assert validation.success is True, context
+    assert validation.run_ready is True, context
+
+
 @pytest.mark.parametrize("rel_path", REFERENCE_GRAPHS)
 def test_reference_graphs_roundtrip_through_builder_decompile_and_recompile(
     rel_path: str,
@@ -140,3 +171,23 @@ def test_reference_graphs_roundtrip_through_builder_decompile_and_recompile(
     rebuilt = _roundtrip_through_builder(graph)
 
     assert _graph_signature(rebuilt) == _graph_signature(graph)
+
+
+@pytest.mark.parametrize("rel_path", RUN_READY_GRAPH_FIXTURES)
+def test_run_ready_reference_graphs_stay_run_ready_after_builder_roundtrip(
+    rel_path: str,
+) -> None:
+    graph = _load_graph(rel_path)
+    rebuilt = _roundtrip_through_builder(graph)
+
+    _assert_run_ready(graph, context=f"{rel_path}.original")
+    _assert_run_ready(rebuilt, context=f"{rel_path}.rebuilt")
+
+
+def test_conditional_branch_graph_roundtrips_through_builder_with_equivalence_and_run_readiness() -> None:
+    graph = _build_conditional_branch_graph()
+    rebuilt = _roundtrip_through_builder(graph)
+
+    assert _graph_signature(rebuilt) == _graph_signature(graph)
+    _assert_run_ready(graph, context="conditional_branch.original")
+    _assert_run_ready(rebuilt, context="conditional_branch.rebuilt")
