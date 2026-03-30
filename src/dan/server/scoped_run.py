@@ -309,6 +309,19 @@ _CHAT_EVENT_TYPES = frozenset({
 })
 
 
+def _extract_run_event_error(event_dict: dict[str, Any], data: dict[str, Any]) -> str:
+    direct = event_dict.get("error") or data.get("error")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+
+    errors = data.get("errors")
+    if isinstance(errors, dict):
+        for value in errors.values():
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return "unknown error"
+
+
 def map_run_event_to_chat_block(
     event_dict: dict[str, Any],
     scope: str,
@@ -340,35 +353,45 @@ def map_run_event_to_chat_block(
         scope_label = f" ({scope})" if scope != "full" else ""
         target_label = f" on {target}" if target else ""
         summary = f"Run started{scope_label}{target_label}"
+        error: str | None = None
     elif event_type == "run_completed":
         summary = "Run completed successfully"
+        error = None
     elif event_type == "run_failed":
-        error = event_dict.get("error") or data.get("error", "unknown error")
+        error = _extract_run_event_error(event_dict, data)
         summary = f"Run failed: {error}"
     elif event_type == "node_started":
         summary = f"{recovery_prefix}Node '{node_id}' started"
+        error = None
     elif event_type == "node_completed":
         summary = f"{recovery_prefix}Node '{node_id}' completed"
+        error = None
     elif event_type == "node_failed":
-        error = event_dict.get("error") or data.get("error", "unknown error")
+        error = _extract_run_event_error(event_dict, data)
         summary = f"{recovery_prefix}Node '{node_id}' failed: {error}"
     elif event_type == "node_output":
         summary = f"{recovery_prefix}Node '{node_id}' produced output"
+        error = None
     elif event_type == "tool_call_started":
         tool_name = data.get("tool_id") or data.get("tool_name", "unknown")
         summary = f"{recovery_prefix}Tool '{tool_name}' called on node '{node_id}'"
+        error = None
     elif event_type == "tool_call_result":
         tool_name = data.get("tool_id") or data.get("tool_name", "unknown")
         summary = f"{recovery_prefix}Tool '{tool_name}' completed on node '{node_id}'"
+        error = None
     elif event_type == "run_cancelled":
         reason = data.get("reason", "cancelled")
         summary = f"Run cancelled: {reason}"
+        error = None
     elif event_type == "human_input_needed":
         prompt = data.get("prompt", "Input required")
         summary = f"Waiting for input: {prompt}"
+        error = None
     elif event_type == "automatic_recovery_started":
         action = data.get("selected_action") or "automatic recovery"
         summary = f"Auto-repair started: {action}"
+        error = None
     elif event_type == "automatic_recovery_completed":
         status = str(data.get("status") or data.get("last_outcome") or "completed")
         if status == "completed":
@@ -382,6 +405,7 @@ def map_run_event_to_chat_block(
             )
         else:
             summary = f"Auto-repair {status}"
+        error = None
     else:
         return None
 
@@ -394,6 +418,7 @@ def map_run_event_to_chat_block(
             "run_id": run_id,
             "scope": scope,
             "target": target,
+            "error": error,
             "data": data,
         },
     }
