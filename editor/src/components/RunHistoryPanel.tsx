@@ -46,6 +46,23 @@ function formatCost(c: number | null | undefined): string {
   return c >= 0.01 ? `$${c.toFixed(2)}` : `$${c.toFixed(4)}`;
 }
 
+function formatReplayEventData(data?: Record<string, unknown>): string | null {
+  if (!data) return null;
+  if (typeof data.error === "string" && data.error.trim()) {
+    return data.error.trim();
+  }
+  const errors = data.errors;
+  if (errors && typeof errors === "object") {
+    for (const value of Object.values(errors as Record<string, unknown>)) {
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+  }
+  const text = JSON.stringify(data);
+  return text.length > 240 ? `${text.slice(0, 240)}...` : text;
+}
+
 function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
     completed: "bg-green-100 text-green-700",
@@ -539,7 +556,7 @@ function ReplayNodeGroup({
                 <span className="text-gray-400 shrink-0">{ts ? new Date(ts * 1000).toLocaleTimeString(undefined, { hour12: false, fractionalSecondDigits: 1 }) : ""}</span>
                 <span className="text-indigo-500 shrink-0">{type}</span>
                 {data && (
-                  <span className="text-gray-500 truncate">{JSON.stringify(data).slice(0, 120)}</span>
+                  <span className="text-gray-500 whitespace-pre-wrap break-words">{formatReplayEventData(data)}</span>
                 )}
               </div>
             );

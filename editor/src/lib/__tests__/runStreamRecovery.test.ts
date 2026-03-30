@@ -43,7 +43,40 @@ describe("runStreamRecovery", () => {
         run_id: "run-123",
         scope: "full",
         target: null,
+        error: "Unexpected error calling LLM",
         data: { error: "Unexpected error calling LLM" },
+      },
+    });
+  });
+
+  it("maps raw run failures from an errors map into chat payloads", () => {
+    expect(
+      mapRawRunEventToChatPayload(
+        {
+          event_type: "run_failed",
+          run_id: "run-123",
+          data: {
+            errors: {
+              exception: "Missing required input 'watchlist_path'",
+            },
+          },
+        },
+        "full",
+      ),
+    ).toEqual({
+      type: "run_event",
+      event_type: "run_failed",
+      summary: "Run failed: Missing required input 'watchlist_path'",
+      detail: {
+        run_id: "run-123",
+        scope: "full",
+        target: null,
+        error: "Missing required input 'watchlist_path'",
+        data: {
+          errors: {
+            exception: "Missing required input 'watchlist_path'",
+          },
+        },
       },
     });
   });

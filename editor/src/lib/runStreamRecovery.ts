@@ -25,6 +25,21 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
+function extractRunError(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  for (const nested of Object.values(value as Record<string, unknown>)) {
+    if (typeof nested === "string" && nested.trim()) {
+      return nested.trim();
+    }
+  }
+  return null;
+}
+
 function normalizeTerminalRunStatus(status: string): TerminalRunStatus | null {
   if (status === "completed" || status === "failed" || status === "cancelled") {
     return status;
@@ -43,7 +58,11 @@ export function mapRawRunEventToChatPayload(
   const runId = asString(event.run_id) ?? "";
   const nodeId = asString(event.node_id);
   const data = asRecord(event.data);
-  const error = asString(event.error) ?? asString(data.error) ?? "unknown error";
+  const error =
+    extractRunError(event.error) ??
+    extractRunError(data.error) ??
+    extractRunError(data.errors) ??
+    "unknown error";
 
   let summary: string;
   switch (eventType) {
@@ -100,6 +119,7 @@ export function mapRawRunEventToChatPayload(
       run_id: runId,
       scope,
       target: target ?? null,
+      error: eventType === "run_failed" || eventType === "node_failed" ? error : null,
       data,
     },
   };

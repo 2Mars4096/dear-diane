@@ -115,6 +115,21 @@ function getEventIcon(eventType: string): React.JSX.Element {
   return factory ? factory(color) : <CircleIcon className={color} />;
 }
 
+function extractFailureText(data?: Record<string, unknown>): string | null {
+  if (!data) return null;
+  if (typeof data.error === "string" && data.error.trim()) {
+    return data.error.trim();
+  }
+  const errors = data.errors;
+  if (!errors || typeof errors !== "object") return null;
+  for (const value of Object.values(errors as Record<string, unknown>)) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
 function dataContent(entry: LogEntry): string | null {
   const d = entry.data;
   if (!d) return null;
@@ -148,7 +163,7 @@ function dataContent(entry: LogEntry): string | null {
     }
     case "node_failed":
     case "run_failed":
-      return (d.error as string) ?? null;
+      return extractFailureText(d);
     default:
       return null;
   }

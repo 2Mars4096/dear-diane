@@ -21,6 +21,31 @@ interface NodeState {
   endTime?: number;
 }
 
+function extractRunEventError(detail?: Record<string, unknown>): string | undefined {
+  const direct = detail?.error;
+  if (typeof direct === "string" && direct.trim()) {
+    return direct.trim();
+  }
+
+  const data = detail?.data;
+  if (!data || typeof data !== "object") {
+    return undefined;
+  }
+
+  const record = data as Record<string, unknown>;
+  if (typeof record.error === "string" && record.error.trim()) {
+    return record.error.trim();
+  }
+  if (record.errors && typeof record.errors === "object") {
+    for (const value of Object.values(record.errors as Record<string, unknown>)) {
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+  }
+  return undefined;
+}
+
 function deriveNodeStates(events: RunEventPayload[]): {
   nodes: NodeState[];
   runStatus: "running" | "completed" | "failed" | "cancelled";
@@ -76,7 +101,7 @@ function deriveNodeStates(events: RunEventPayload[]): {
       case "node_failed":
         node.status = "failed";
         node.summary = evt.summary;
-        node.error = evt.detail?.error as string | undefined;
+        node.error = extractRunEventError(evt.detail);
         node.endTime = Date.now();
         break;
       case "node_output":
@@ -228,7 +253,11 @@ export default function RunOutputBlock({ events, runRef }: RunOutputBlockProps) 
         <div className="border-t border-gray-100 px-3 py-1.5 flex items-center gap-3">
           <button
             onClick={() => {
-              useGraphStore.getState().focusLogPanel();
+              if (runRef?.runId) {
+                void useGraphStore.getState().loadRunLogs(runRef.runId);
+              } else {
+                useGraphStore.getState().focusLogPanel();
+              }
               setExpanded(true);
             }}
             className="text-[10px] text-indigo-600 hover:text-indigo-800 underline opacity-70 hover:opacity-100 transition"

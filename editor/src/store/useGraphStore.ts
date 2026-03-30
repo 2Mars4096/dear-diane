@@ -280,6 +280,7 @@ interface GraphState {
   // -- 12-1: Log panel focus
   logFocusCounter: number;
   focusLogPanel: () => void;
+  loadRunLogs: (runId: string) => Promise<void>;
 
   // -- 13-1: History panel focus
   historyFocusCounter: number;
@@ -1755,6 +1756,68 @@ export const useGraphStore = create<GraphState>((set, get) => {
   focusLogPanel: () => {
     useAppStore.getState().setMode("operations");
     set((s) => ({ logFocusCounter: s.logFocusCounter + 1 }));
+  },
+  loadRunLogs: async (runId) => {
+    useAppStore.getState().setMode("operations");
+    set((s) => ({ logFocusCounter: s.logFocusCounter + 1 }));
+    try {
+      const [runInfo, eventResponse] = await Promise.all([
+        api.getRun(runId),
+        api.getRunEvents(runId),
+      ]);
+      const runSummary = runInfo as api.RunSummary;
+      const baseSummary = {
+        elapsed_seconds: runSummary.elapsed_seconds,
+        total_prompt_tokens: runSummary.total_prompt_tokens,
+        total_completion_tokens: runSummary.total_completion_tokens,
+        total_tokens: runSummary.total_tokens,
+      };
+      set({
+        runId: runInfo.run_id,
+        runStatus: runInfo.status,
+        nodeStatuses: {},
+        nodeOutputs: {},
+        nodeTimings: {},
+        nodeUsage: runSummary.node_usage ?? {},
+        nodeCosts: {},
+        nodeTiers: {},
+        activeExecutionPath: new Set<string>(),
+        logs: [],
+        runSummary: baseSummary,
+        nodeIterations: {},
+        streamingOutputs: {},
+        pendingHumanInput: null,
+        tokenBreakdowns: {},
+        wasteFindings: [],
+        optimizationMutations: [],
+        edgeTokenCounts: {},
+      });
+      for (const event of eventResponse.events) {
+        get().handleRunEvent(event as Record<string, unknown>);
+      }
+      set((s) => {
+        const finalStatuses =
+          Object.keys(s.nodeStatuses).length > 0 ? s.nodeStatuses : (runInfo.node_statuses ?? {});
+        const finalSummary = {
+          elapsed_seconds: s.runSummary?.elapsed_seconds ?? baseSummary.elapsed_seconds,
+          total_prompt_tokens: s.runSummary?.total_prompt_tokens ?? baseSummary.total_prompt_tokens,
+          total_completion_tokens:
+            s.runSummary?.total_completion_tokens ?? baseSummary.total_completion_tokens,
+          total_tokens: s.runSummary?.total_tokens ?? baseSummary.total_tokens,
+        };
+        return {
+          nodeStatuses: finalStatuses,
+          activeExecutionPath: new Set(Object.keys(finalStatuses)),
+          runStatus: runInfo.status,
+          runSummary: finalSummary,
+        };
+      });
+    } catch (err: unknown) {
+      get().addToast({
+        type: "error",
+        message: (err as Error).message ?? "Failed to load run logs",
+      });
+    }
   },
   focusHistoryPanel: (runId) => {
     useAppStore.getState().setMode("operations");
