@@ -486,9 +486,12 @@ async def handle_get_activity(
             message="Activity tracker not available.",
         )
     snapshot = ctx.activity_tracker.get_activity()
-    active = snapshot.get("active", [])
-    recent = snapshot.get("recent", [])
-    surfaces = snapshot.get("connected_surfaces", [])
+    data = snapshot.model_dump() if hasattr(snapshot, "model_dump") else (
+        snapshot if isinstance(snapshot, dict) else {}
+    )
+    active = data.get("active", [])
+    recent = data.get("recent", [])
+    surfaces = data.get("connected_surfaces", [])
     parts = []
     if active:
         parts.append(f"**Active runs ({len(active)}):**")
@@ -515,6 +518,6 @@ async def handle_get_activity(
     return CapabilityResult(
         success=True,
         message=text,
-        data=snapshot,
+        data=data,
         output_preview=_truncate(text),
     )

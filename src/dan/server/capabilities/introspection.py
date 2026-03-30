@@ -6,6 +6,52 @@ from typing import Any
 from dan.server.capability_registry import CapabilityContext, CapabilityResult
 
 
+_NODE_STRUCTURAL_FIELDS = {
+    "id",
+    "node_type",
+    "type",
+    "name",
+    "description",
+    "input_ports",
+    "output_ports",
+    "position",
+    "ui",
+    "metadata",
+    "tags",
+    "retry_policy",
+    "read_set",
+    "write_set",
+    "memoize",
+    "cache_ttl",
+}
+
+
+def _node_dump(node: Any) -> dict[str, Any]:
+    if isinstance(node, dict):
+        return dict(node)
+    if hasattr(node, "model_dump"):
+        return node.model_dump(mode="json")
+    return {}
+
+
+def _node_type(node: Any, raw_node: dict[str, Any]) -> str:
+    return str(
+        raw_node.get("node_type")
+        or raw_node.get("type")
+        or getattr(node, "node_type", "")
+        or getattr(node, "type", "")
+        or ""
+    )
+
+
+def _node_config(raw_node: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in raw_node.items()
+        if key not in _NODE_STRUCTURAL_FIELDS
+    }
+
+
 async def handle_inspect_node(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
     workflow_id = args.get("workflow_id")
     node_id = args.get("node_id")
@@ -24,11 +70,17 @@ async def handle_inspect_node(args: dict[str, Any], ctx: CapabilityContext) -> C
             return CapabilityResult(success=False, message=f"Node not found: {node_id}")
 
         upstream_vars = compute_upstream_variables(node_id, graph)
+        raw_node = _node_dump(node)
+        node_type = _node_type(node, raw_node)
 
         data = {
-            "node_id": node.id,
-            "type": node.type,
-            "config": node.config,
+            "node_id": str(raw_node.get("id") or getattr(node, "id", node_id)),
+            "name": str(raw_node.get("name") or getattr(node, "name", "")),
+            "type": node_type,
+            "node_type": node_type,
+            "config": _node_config(raw_node),
+            "input_ports": raw_node.get("input_ports", []),
+            "output_ports": raw_node.get("output_ports", []),
             "upstream_variables": upstream_vars,
         }
         return CapabilityResult(success=True, message="Node inspected", data=data)
