@@ -47,6 +47,7 @@ Out of scope:
 | [44-3](44-3-section-assembly-and-parallel-validation.md) | Section Assembly and Parallel Validation | Assemble validated node artifacts into sections, repair section-local issues, and keep candidate graphs staged | P1 | completed |
 | [44-4](44-4-boundary-linking-and-whole-graph-repair.md) | Boundary Linking and Whole-Graph Repair | Link sections, repair section-boundary mismatches first, and gate persistence on whole-graph acceptance | P1 | completed |
 | [44-5](44-5-routing-rollout-and-evals.md) | Routing, Rollout, and Evals | Route the new structured path safely, compare it against the current path, and define acceptance metrics | P1 | completed |
+| [44-6](44-6-rollout-hardening.md) | Rollout Hardening | Fix cwd/startup, mutation-preview, capability-surface, and validator-port bugs from rollout | P1 | completed |
 
 ## Dependencies / Sequencing
 
