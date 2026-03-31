@@ -1340,6 +1340,11 @@ class ChatManager:
                 ]
             if allow_mutation_tool and capability_mode not in READ_ONLY_MODES:
                 all_tools.append(MUTATION_TOOL_SCHEMA)
+            available_tool_names_for_turn = {
+                _tool_schema_name(tool)
+                for tool in all_tools
+                if isinstance(tool, dict)
+            }
             satisfied_tool_names: set[str] = set()
             successful_tool_results: list[dict[str, Any]] = []
             force_file_write_next_turn = False
@@ -1365,6 +1370,12 @@ class ChatManager:
                 ),
             )
 
+            def _retry_prompt_for_available_tools(missing_action_hints: list[str]) -> str:
+                return _tool_retry_prompt_for_missing_actions(
+                    missing_action_hints,
+                    available_tool_names=available_tool_names_for_turn,
+                )
+
             def _tool_request_config(
                 *,
                 force_file_write_now: bool = False,
@@ -1388,14 +1399,9 @@ class ChatManager:
                         allow_exact_tool_choice=allow_exact_tool_choice,
                         allow_required_tool_choice=allow_required_tool_choice,
                     )
-                available_tool_names = {
-                    _tool_schema_name(tool)
-                    for tool in all_tools
-                    if isinstance(tool, dict)
-                }
                 if (
                     preferred_workflow_edit_tool
-                    and preferred_workflow_edit_tool in available_tool_names
+                    and preferred_workflow_edit_tool in available_tool_names_for_turn
                     and preferred_workflow_edit_tool not in satisfied_tool_names
                 ):
                     return _force_single_tool_request(
@@ -1847,7 +1853,7 @@ class ChatManager:
                         run_continuation=_run_no_tool_continuation,
                         merge_usage_totals=_merge_usage_totals,
                         normalize_usage=_normalize_usage,
-                        retry_prompt_builder=_tool_retry_prompt_for_missing_actions,
+                        retry_prompt_builder=_retry_prompt_for_available_tools,
                         interrupted_content_builder=lambda parts: (
                             ""
                             if audit_tool_records
@@ -2584,7 +2590,7 @@ class ChatManager:
                         ),
                         compact_context=_compact_context,
                         pressure_hint=context_pressure_hint,
-                        retry_prompt_builder=_tool_retry_prompt_for_missing_actions,
+                        retry_prompt_builder=_retry_prompt_for_available_tools,
                         write_prompt_builder=_write_file_escalation_prompt,
                     )
                     messages = prepared_followup.messages

@@ -873,11 +873,24 @@ def _extract_chat_params(
 
     stream_channel_id = str(metadata.get("stream_channel_id") or "").strip() or None
     attachment_prompt_context = str(metadata.get("attachment_prompt_context") or "").strip()
+    prefetched_action_contexts = metadata.get("prefilled_action_contexts") or []
+    if not isinstance(prefetched_action_contexts, list):
+        prefetched_action_contexts = []
+    prefetched_action_contexts = [
+        str(item or "").strip()
+        for item in prefetched_action_contexts
+        if str(item or "").strip()
+    ]
     autonomy_resolution = getattr(session, "autonomy_resolution", None)
     prompt_context = system_prompt
     extra_system_sections = [stage_overlay]
     if attachment_prompt_context:
         extra_system_sections.append(attachment_prompt_context)
+    if prefetched_action_contexts:
+        extra_system_sections.append(
+            "Actions already completed during routing:\n"
+            + "\n".join(f"- {item}" for item in prefetched_action_contexts)
+        )
     if run_control_instruction:
         extra_system_sections.append(run_control_instruction)
     extra_system_instructions = "\n\n".join(

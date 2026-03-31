@@ -8,7 +8,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any
+from typing import Any, Collection
 
 from dan.server.capability_registry import CapabilityResult
 from dan.server.search_models import (
@@ -252,7 +252,11 @@ def _preferred_workflow_edit_tool(
     return None
 
 
-def _tool_retry_prompt_for_missing_actions(missing_action_hints: list[str]) -> str:
+def _tool_retry_prompt_for_missing_actions(
+    missing_action_hints: list[str],
+    *,
+    available_tool_names: Collection[str] | None = None,
+) -> str:
     instructions: list[str] = []
     search_pending = "search_web" in missing_action_hints
     write_pending = "write_file" in missing_action_hints
@@ -261,81 +265,144 @@ def _tool_retry_prompt_for_missing_actions(missing_action_hints: list[str]) -> s
     workflow_run_pending = "workflow_run" in missing_action_hints
     workflow_edit_pending = "workflow_edit" in missing_action_hints
     handled_read = False
+    normalized_available_tools = (
+        {
+            str(name or "").strip()
+            for name in available_tool_names
+            if str(name or "").strip()
+        }
+        if available_tool_names is not None
+        else None
+    )
+
+    def _has_any(*tool_names: str) -> bool:
+        if normalized_available_tools is None:
+            return True
+        return any(tool_name in normalized_available_tools for tool_name in tool_names)
 
     if workflow_edit_pending:
-        instructions.append(
-            "You still need to complete workflow editing. If the user is asking "
-            "to apply a previously proposed workflow preview from this chat, call "
-            "`apply_last_mutation`. Otherwise call `plan_graph_mutations` with the "
-            "appropriate operations (add_node, add_edge, expand_pattern, etc.) "
-            "to build or update the workflow."
-        )
+        if _has_any("plan_graph_mutations", "apply_last_mutation"):
+            instructions.append(
+                "You still need to complete workflow editing. If the user is asking "
+                "to apply a previously proposed workflow preview from this chat, call "
+                "`apply_last_mutation`. Otherwise call `plan_graph_mutations` with the "
+                "appropriate operations (add_node, add_edge, expand_pattern, etc.) "
+                "to build or update the workflow."
+            )
+        else:
+            instructions.append(
+                "Workflow editing is still required, but this turn does not expose a workflow "
+                "mutation tool. Do not claim the workflow was updated."
+            )
 
     if search_pending and write_pending:
-        instructions.append(
-            "You still need to gather live web information AND write the "
-            "requested output. Do your research FIRST (web_search, then web_fetch "
-            "or web_search with fetch_content=true), "
-            "then write incrementally:\n"
-            "1. First file_write with mode='overwrite' — preamble + first section only.\n"
-            "2. Subsequent file_write calls with mode='append' — one section each.\n"
-            "3. Final file_write with mode='append' — close the document "
-            "(\\end{document} or equivalent).\n"
-            "Do NOT rely on search snippets alone, and do NOT write until you have gathered sufficient data."
-        )
+        if _has_any("web_search", "web_fetch", "http_request") and _has_any("file_write"):
+            instructions.append(
+                "You still need to gather live web information AND write the "
+                "requested output. Do your research FIRST (web_search, then web_fetch "
+                "or web_search with fetch_content=true), "
+                "then write incrementally:\n"
+                "1. First file_write with mode='overwrite' — preamble + first section only.\n"
+                "2. Subsequent file_write calls with mode='append' — one section each.\n"
+                "3. Final file_write with mode='append' — close the document "
+                "(\\end{document} or equivalent).\n"
+                "Do NOT rely on search snippets alone, and do NOT write until you have gathered sufficient data."
+            )
+        else:
+            instructions.append(
+                "Live web research and writing are still required, but this turn does not expose "
+                "the full tool surface needed to finish them. Do not claim completion."
+            )
     elif read_pending and write_pending:
-        instructions.append(
-            "You still need to inspect the referenced local file or folder AND "
-            "write the requested output. Read the relevant parts FIRST using "
-            "targeted file_read / pdf_read / list_directory calls, then write "
-            "incrementally:\n"
-            "1. First file_write with mode='overwrite' — preamble + first section only.\n"
-            "2. Subsequent file_write calls with mode='append' — one section each.\n"
-            "3. Final file_write with mode='append' — close the document "
-            "(\\end{document} or equivalent).\n"
-            "Do NOT write until you have inspected the necessary local context."
-        )
+        if _has_any("file_read", "pdf_read", "list_directory") and _has_any("file_write"):
+            instructions.append(
+                "You still need to inspect the referenced local file or folder AND "
+                "write the requested output. Read the relevant parts FIRST using "
+                "targeted file_read / pdf_read / list_directory calls, then write "
+                "incrementally:\n"
+                "1. First file_write with mode='overwrite' — preamble + first section only.\n"
+                "2. Subsequent file_write calls with mode='append' — one section each.\n"
+                "3. Final file_write with mode='append' — close the document "
+                "(\\end{document} or equivalent).\n"
+                "Do NOT write until you have inspected the necessary local context."
+            )
+        else:
+            instructions.append(
+                "Reading local context and writing output are still required, but this turn does not "
+                "expose the full tool surface needed to finish them. Do not claim completion."
+            )
         handled_read = True
     elif write_pending:
-        instructions.append(
-            "CRITICAL: You have not yet written the requested output to disk. "
-            "Use file_write NOW — do not research or plan further.\n"
-            "Strategy for long documents:\n"
-            "1. First call: file_write with mode='overwrite' — write the preamble "
-            "and first section only.\n"
-            "2. Each subsequent call: file_write with mode='append' — add one "
-            "section at a time.\n"
-            "3. Final call: file_write with mode='append' — close the document "
-            "(\\end{document} or equivalent).\n"
-            "Do NOT attempt to write the entire document in a single file_write call."
-        )
+        if _has_any("file_write"):
+            instructions.append(
+                "CRITICAL: You have not yet written the requested output to disk. "
+                "Use file_write NOW — do not research or plan further.\n"
+                "Strategy for long documents:\n"
+                "1. First call: file_write with mode='overwrite' — write the preamble "
+                "and first section only.\n"
+                "2. Each subsequent call: file_write with mode='append' — add one "
+                "section at a time.\n"
+                "3. Final call: file_write with mode='append' — close the document "
+                "(\\end{document} or equivalent).\n"
+                "Do NOT attempt to write the entire document in a single file_write call."
+            )
+        else:
+            instructions.append(
+                "Writing output to disk is still required, but this turn does not expose `file_write`. "
+                "Do not claim the file was written."
+            )
     elif search_pending:
-        instructions.append(
-            "You still need grounded live web information. Use web_search to identify sources, "
-            "then web_fetch (or web_search with fetch_content=true) on the most relevant result "
-            "before finalizing. Do not rely on snippets alone."
-        )
+        if _has_any("web_search", "web_fetch", "http_request"):
+            instructions.append(
+                "You still need grounded live web information. Use web_search to identify sources, "
+                "then web_fetch (or web_search with fetch_content=true) on the most relevant result "
+                "before finalizing. Do not rely on snippets alone."
+            )
+        else:
+            instructions.append(
+                "Grounded live web research is still required, but this turn does not expose a web "
+                "research tool. Do not claim the research is complete."
+            )
 
     if read_pending and not handled_read:
-        instructions.append(
-            "You still need to inspect the referenced local file or folder. "
-            "Prefer chunked reads: use file_read or pdf_read with specific "
-            "start_line/end_line ranges (or grep to locate sections) instead of "
-            "re-reading the whole file."
-        )
+        if _has_any("file_read", "pdf_read", "list_directory"):
+            instructions.append(
+                "You still need to inspect the referenced local file or folder. "
+                "Prefer chunked reads: use file_read or pdf_read with specific "
+                "start_line/end_line ranges (or grep to locate sections) instead of "
+                "re-reading the whole file."
+            )
+        else:
+            instructions.append(
+                "Local file inspection is still required, but this turn does not expose a local-read "
+                "tool. Do not claim the file or folder was inspected."
+            )
     if workflow_run_pending:
-        instructions.append(
-            "You still need to execute the workflow itself. Use `start_run` for the current workflow "
-            "(omit `workflow_id` unless you truly need a non-current one). "
-            "Do NOT use `http_request` or Furnace endpoints for an ordinary workflow run."
-        )
+        if _has_any("start_run"):
+            instructions.append(
+                "You still need to execute the workflow itself. Use `start_run` for the current workflow "
+                "(omit `workflow_id` unless you truly need a non-current one). "
+                "Do NOT use `http_request` or Furnace endpoints for an ordinary workflow run."
+            )
+        else:
+            instructions.append(
+                "Workflow execution is still required, but this turn does not expose a workflow "
+                "execution tool. Do not claim the workflow was executed, and do not substitute "
+                "other control surfaces, raw HTTP calls, or shell commands."
+            )
     if run_control_pending:
-        instructions.append(
-            "You still need to perform run control. Use http_request against local "
-            "furnace endpoints (for example `/api/furnace/sessions`, then "
-            "`/api/furnace/sessions/{id}/sources`, then `/api/furnace/sessions/{id}/start`) "
-            "before finalizing. Return session_id and current status in the final answer."
-        )
+        if _has_any("http_request"):
+            instructions.append(
+                "You still need to perform run control. Use http_request against local "
+                "furnace endpoints (for example `/api/furnace/sessions`, then "
+                "`/api/furnace/sessions/{id}/sources`, then `/api/furnace/sessions/{id}/start`) "
+                "before finalizing. Return session_id and current status in the final answer."
+            )
+        else:
+            instructions.append(
+                "Run control is still required, but this turn does not expose the needed session-control "
+                "tool. Do not claim Furnace/session control work was completed."
+            )
     if not instructions:
         instructions.append("A required capability step is still missing. Use an appropriate tool before finalizing.")
     return " ".join(instructions)
