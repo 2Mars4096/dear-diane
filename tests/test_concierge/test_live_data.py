@@ -37,6 +37,7 @@ from dan.server.capability_handlers import (
     register_base_capabilities,
 )
 from dan.server.capabilities.web import _extract_relevant_excerpt
+from dan.tools.browser_control import MockBrowserController
 
 web_fetch_tool_mod = importlib.import_module("dan.tools.web_fetch")
 web_search_tool_mod = importlib.import_module("dan.tools.web_search")
@@ -464,7 +465,7 @@ class TestApplyLastMutationCapabilityRegistration:
 
         assert result.success
         assert mock_fetch.await_count == 2
-        assert "Fetched page excerpts (top results fetched in parallel)" in result.message
+        assert "Fetched page excerpts (bounded fetch attempts over top-ranked results)" in result.message
         assert "[1] Fetched content from http://x1" in result.message
         assert "[2] Fetched content from http://x2" in result.message
         assert result.data["grounded_result_count"] == 2
@@ -500,6 +501,77 @@ class TestApplyLastMutationCapabilityRegistration:
         assert result.success
         assert "Fetch failed for http://x2: boom" in result.message
         assert result.data["grounded_result_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_web_search_handler_rejects_browser_gated_shell_content(self):
+        from unittest.mock import AsyncMock, patch
+
+        fake_result = {
+            "results": [{"title": "r1", "url": "http://x1", "snippet": "s1"}],
+            "provider": "tavily",
+        }
+        fake_fetch = {
+            "url": "http://x1",
+            "content": "Enable JavaScript to run this app.",
+            "status_code": 200,
+            "content_type": "text/html; charset=utf-8",
+            "fetch_via": "http",
+            "browser_fallback_used": False,
+            "content_requires_browser": True,
+        }
+
+        with (
+            patch("dan.tools.web_search.web_search", new_callable=AsyncMock, return_value=fake_result),
+            patch("dan.tools.web_fetch.web_fetch", new_callable=AsyncMock, return_value=fake_fetch),
+        ):
+            result = await handle_web_search(
+                {"query": "test", "num_results": 1, "fetch_content": True},
+                None,
+            )
+
+        assert result.success
+        assert result.data["grounded_result_count"] == 0
+        assert "require a browser-rendered session" in result.message
+        assert "Retry with browser_fallback=true" in result.message
+
+    @pytest.mark.asyncio
+    async def test_web_search_handler_reports_browser_fallback_usage(self):
+        from unittest.mock import AsyncMock, patch
+
+        fake_result = {
+            "results": [{"title": "r1", "url": "http://x1", "snippet": "s1"}],
+            "provider": "tavily",
+        }
+        fake_fetch = {
+            "url": "http://x1",
+            "content": "Quarterly revenue grew 12 percent year over year.",
+            "status_code": 0,
+            "content_type": "text/html; browser-rendered",
+            "fetch_via": "browser",
+            "browser_fallback_used": True,
+            "content_requires_browser": False,
+        }
+
+        with (
+            patch("dan.tools.web_search.web_search", new_callable=AsyncMock, return_value=fake_result),
+            patch("dan.tools.web_fetch.web_fetch", new_callable=AsyncMock, return_value=fake_fetch),
+        ):
+            result = await handle_web_search(
+                {
+                    "query": "quarterly revenue",
+                    "num_results": 1,
+                    "fetch_content": True,
+                    "browser_fallback": True,
+                },
+                None,
+            )
+
+        assert result.success
+        assert result.data["grounded_result_count"] == 1
+        assert result.data["browser_fallback_count"] == 1
+        assert result.data["search_result_set"]["browser_fallback_count"] == 1
+        assert "Browser fallback used for 1 page(s)." in result.message
+        assert "Fetched content from http://x1 (browser-rendered)" in result.message
 
     @pytest.mark.asyncio
     async def test_web_search_handler_auto_promotes_fetch_for_grounding_required(self):
@@ -610,6 +682,51 @@ class TestApplyLastMutationCapabilityRegistration:
             "Fetched https://example.com (HTTP 200; text/html; cache hit)"
         )
         assert result.data["cache_hit"] is True
+
+    @pytest.mark.asyncio
+    async def test_web_fetch_handler_warns_when_page_looks_browser_gated(self):
+        from unittest.mock import AsyncMock, patch
+
+        fake_result = {
+            "url": "https://example.com/app",
+            "content": "Enable JavaScript to run this app.",
+            "status_code": 200,
+            "content_type": "text/html; charset=utf-8",
+            "fetch_via": "http",
+            "browser_fallback_used": False,
+            "content_requires_browser": True,
+        }
+        with patch("dan.tools.web_fetch.web_fetch", new_callable=AsyncMock, return_value=fake_result):
+            result = await handle_web_fetch({"url": "https://example.com/app"}, None)
+
+        assert result.success
+        assert "Page looks browser-rendered or JavaScript-gated." in result.message
+        assert "Retry with browser_fallback=true" in result.message
+
+    @pytest.mark.asyncio
+    async def test_web_fetch_handler_reports_browser_recovery(self):
+        from unittest.mock import AsyncMock, patch
+
+        fake_result = {
+            "url": "https://example.com/app",
+            "content": "Rendered dashboard content",
+            "status_code": 0,
+            "content_type": "text/html; browser-rendered",
+            "fetch_via": "browser",
+            "browser_fallback_used": True,
+            "content_requires_browser": False,
+            "http_error": "HTTP 403 Forbidden",
+        }
+        with patch("dan.tools.web_fetch.web_fetch", new_callable=AsyncMock, return_value=fake_result):
+            result = await handle_web_fetch(
+                {"url": "https://example.com/app", "browser_fallback": True},
+                None,
+            )
+
+        assert result.success
+        assert "browser-rendered content" in result.message
+        assert "Recovered via browser fallback after HTTP fetch error: HTTP 403 Forbidden" in result.message
+        assert result.data["fetch_via"] == "browser"
 
     @pytest.mark.asyncio
     async def test_web_fetch_handler_http_error_returns_failure(self):
@@ -803,6 +920,75 @@ class TestDirectWebToolBehavior:
 
         with pytest.raises(httpx.HTTPStatusError):
             await web_fetch_tool_mod.web_fetch("https://example.com/missing")
+
+    @pytest.mark.asyncio
+    async def test_web_fetch_detects_browser_shell_content(self, monkeypatch: pytest.MonkeyPatch):
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                request=request,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text="<html><body>Please enable JavaScript to run this app.</body></html>",
+            )
+
+        _patch_fetch_transport(monkeypatch, handler)
+
+        result = await web_fetch_tool_mod.web_fetch("https://example.com/app", browser_fallback=False)
+
+        assert result["fetch_via"] == "http"
+        assert result["content_requires_browser"] is True
+        assert result["browser_fallback_used"] is False
+
+    @pytest.mark.asyncio
+    async def test_web_fetch_browser_fallback_recovers_http_error(self, monkeypatch: pytest.MonkeyPatch):
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(403, request=request)
+
+        _patch_fetch_transport(monkeypatch, handler)
+        controller = MockBrowserController(responses={
+            "open": {"status": "ok", "url": "https://example.com/app", "title": "Example App"},
+            "extract_text": "Rendered dashboard content",
+        })
+
+        async def fake_get_controller() -> MockBrowserController:
+            return controller
+
+        monkeypatch.setattr("dan.tools._browser_session.get_controller", fake_get_controller)
+
+        result = await web_fetch_tool_mod.web_fetch("https://example.com/app", browser_fallback=True)
+
+        assert result["fetch_via"] == "browser"
+        assert result["browser_fallback_used"] is True
+        assert result["browser_fallback_reason"] == "http_fetch_failed"
+        assert "403" in result["http_error"]
+        assert [action["action"] for action in controller.actions] == ["open", "wait_for", "extract_text"]
+
+    @pytest.mark.asyncio
+    async def test_web_fetch_browser_fallback_recovers_browser_shell(self, monkeypatch: pytest.MonkeyPatch):
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                request=request,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text="<html><body>Enable JavaScript to run this app.</body></html>",
+            )
+
+        _patch_fetch_transport(monkeypatch, handler)
+        controller = MockBrowserController(responses={
+            "open": {"status": "ok", "url": "https://example.com/app", "title": "Example App"},
+            "extract_text": "Rendered dashboard content",
+        })
+
+        async def fake_get_controller() -> MockBrowserController:
+            return controller
+
+        monkeypatch.setattr("dan.tools._browser_session.get_controller", fake_get_controller)
+
+        result = await web_fetch_tool_mod.web_fetch("https://example.com/app", browser_fallback=True)
+
+        assert result["fetch_via"] == "browser"
+        assert result["browser_fallback_used"] is True
+        assert result["browser_fallback_reason"] == "http_fetch_unusable"
 
 
 # ── Layer 3: Post-execution reflection ────────────────────────────
