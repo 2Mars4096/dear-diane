@@ -44,6 +44,54 @@ interface GraphSnapshot {
 }
 const MAX_HISTORY = 50;
 
+type PersistenceState = Pick<
+  GraphState,
+  "danGraph" | "nodes" | "edges" | "layerStack" | "loopGroups"
+>;
+
+function materializeGraphForPersistence(
+  state: PersistenceState,
+): { graph: DanGraph | null; error?: string } {
+  const { danGraph, nodes, edges, layerStack, loopGroups } = state;
+  if (!danGraph) return { graph: null, error: "No graph loaded." };
+
+  const realNodes = nodes.filter((node) => node.type !== "loopGroup");
+  const realEdges = edges.filter((edge) => !edge.data?.synthetic && !edge.data?.loopGroupEdge);
+  const cleanEdges = realEdges.map((edge) =>
+    edge.data?._groupHidden
+      ? { ...edge, hidden: false, data: { ...edge.data, _groupHidden: undefined } }
+      : edge,
+  );
+  const cleanNodes = realNodes.map((node) => (node.hidden ? { ...node, hidden: false } : node));
+
+  if (layerStack.length === 0) {
+    let updated = reactFlowToDanGraph(cleanNodes, cleanEdges, danGraph);
+    if (loopGroups.length > 0) {
+      updated = { ...updated, metadata: { ...updated.metadata, loop_groups: loopGroups } };
+    } else {
+      const { loop_groups: _removed, ...restMeta } =
+        (updated.metadata ?? {}) as unknown as Record<string, unknown>;
+      updated = { ...updated, metadata: restMeta as unknown as DanGraph["metadata"] };
+    }
+    return { graph: updated };
+  }
+
+  const subBase = resolveGraphAtStack(danGraph, layerStack);
+  if (!subBase) {
+    return { graph: null, error: "Cannot save — layer path invalid. Reset to root." };
+  }
+
+  let updatedSub = reactFlowToDanGraph(cleanNodes, cleanEdges, subBase);
+  if (loopGroups.length > 0) {
+    updatedSub = { ...updatedSub, metadata: { ...updatedSub.metadata, loop_groups: loopGroups } };
+  } else {
+    const meta = (updatedSub.metadata ?? {}) as unknown as Record<string, unknown>;
+    const { loop_groups: _removed, ...restMeta } = meta;
+    updatedSub = { ...updatedSub, metadata: restMeta as unknown as DanGraph["metadata"] };
+  }
+  return { graph: deepSetSubGraph(danGraph, layerStack, updatedSub) };
+}
+
 export interface LogEntry {
   timestamp: number;
   event_type: string;
@@ -158,6 +206,7 @@ interface GraphState {
   createGraph: (graphId: string) => Promise<void>;
   deleteGraph: (graphId: string) => Promise<void>;
   saveGraph: () => Promise<boolean>;
+  saveGraphAs: (newName: string, newGraphId?: string) => Promise<string | null>;
 
   // -- Actions: React Flow callbacks
   onNodesChange: OnNodesChange;
@@ -597,43 +646,26 @@ export const useGraphStore = create<GraphState>((set, get) => {
   },
 
   saveGraph: async () => {
-    const { graphId, danGraph, nodes, edges, layerStack, loopGroups } = get();
+    const { graphId, danGraph } = get();
     if (!graphId || !danGraph) return false;
     set({ savingGraph: true, validationErrors: {} });
     try {
-      const realNodes = nodes.filter((n) => n.type !== "loopGroup");
-      const realEdges = edges.filter((e) => !e.data?.synthetic && !e.data?.loopGroupEdge);
-      const cleanEdges = realEdges.map((e) =>
-        e.data?._groupHidden ? { ...e, hidden: false, data: { ...e.data, _groupHidden: undefined } } : e,
-      );
-      const cleanNodes = realNodes.map((n) => (n.hidden ? { ...n, hidden: false } : n));
-      let updated: DanGraph;
-      if (layerStack.length === 0) {
-        updated = reactFlowToDanGraph(cleanNodes, cleanEdges, danGraph);
-        if (loopGroups.length > 0) {
-          updated = { ...updated, metadata: { ...updated.metadata, loop_groups: loopGroups } };
-        } else {
-          const { loop_groups: _removed, ...restMeta } = (updated.metadata ?? {}) as unknown as Record<string, unknown>;
-          updated = { ...updated, metadata: restMeta as unknown as DanGraph["metadata"] };
-        }
-      } else {
-        const subBase = resolveGraphAtStack(danGraph, layerStack);
-        if (!subBase) {
-          get().addToast({ type: "error", message: "Cannot save — layer path invalid. Reset to root." });
-          const { nodes: rootNodes, edges: rootEdges } = danGraphToReactFlow(danGraph);
-          set({ layerStack: [], nodes: rootNodes, edges: rootEdges, loopGroups: [], savingGraph: false, selectedNodeId: null, selectedEdgeId: null });
-          return false;
-        }
-        let updatedSub = reactFlowToDanGraph(cleanNodes, cleanEdges, subBase);
-        if (loopGroups.length > 0) {
-          updatedSub = { ...updatedSub, metadata: { ...updatedSub.metadata, loop_groups: loopGroups } };
-        } else {
-          const meta = (updatedSub.metadata ?? {}) as unknown as Record<string, unknown>;
-          const { loop_groups: _removed, ...restMeta } = meta;
-          updatedSub = { ...updatedSub, metadata: restMeta as unknown as DanGraph["metadata"] };
-        }
-        updated = deepSetSubGraph(danGraph, layerStack, updatedSub);
+      const materialized = materializeGraphForPersistence(get());
+      if (!materialized.graph) {
+        get().addToast({ type: "error", message: materialized.error ?? "Failed to prepare graph for saving." });
+        const { nodes: rootNodes, edges: rootEdges } = danGraphToReactFlow(danGraph);
+        set({
+          layerStack: [],
+          nodes: rootNodes,
+          edges: rootEdges,
+          loopGroups: [],
+          savingGraph: false,
+          selectedNodeId: null,
+          selectedEdgeId: null,
+        });
+        return false;
       }
+      const updated = materialized.graph;
       const response = await api.updateGraph(
         graphId,
         updated as unknown as Record<string, unknown>,
@@ -668,6 +700,42 @@ export const useGraphStore = create<GraphState>((set, get) => {
     } catch (err: unknown) {
       get().addToast({ type: "error", message: (err as Error).message ?? "Failed to save graph" });
       return false;
+    } finally {
+      set({ savingGraph: false });
+    }
+  },
+
+  saveGraphAs: async (newName, newGraphId) => {
+    const { graphId, danGraph } = get();
+    const trimmedName = newName.trim();
+    if (!graphId || !danGraph || !trimmedName) return null;
+    set({ savingGraph: true, validationErrors: {} });
+    try {
+      const materialized = materializeGraphForPersistence(get());
+      if (!materialized.graph) {
+        get().addToast({ type: "error", message: materialized.error ?? "Failed to prepare graph for saving." });
+        return null;
+      }
+      const response = await api.saveGraphAs(graphId, {
+        new_name: trimmedName,
+        new_graph_id: newGraphId?.trim() || undefined,
+        data: materialized.graph as unknown as Record<string, unknown>,
+      });
+      set({
+        danGraph: response.data as unknown as DanGraph,
+        graphRevision: response.graph_revision ?? get().graphRevision ?? null,
+        dirty: false,
+      });
+      await get().loadGraphList();
+      await get().replaceActiveTabGraph(response.graph_id);
+      get().addToast({
+        type: "success",
+        message: response.graph_id === graphId ? `Saved "${trimmedName}"` : `Saved as "${response.graph_id}"`,
+      });
+      return response.graph_id;
+    } catch (err: unknown) {
+      get().addToast({ type: "error", message: `Save as failed: ${(err as Error).message}` });
+      return null;
     } finally {
       set({ savingGraph: false });
     }
@@ -1766,8 +1834,18 @@ export const useGraphStore = create<GraphState>((set, get) => {
         api.getRunEvents(runId),
       ]);
       const runSummary = runInfo as api.RunSummary;
+      const normalizedNodeUsage = Object.fromEntries(
+        Object.entries(runSummary.node_usage ?? {}).map(([nodeId, usage]) => [
+          nodeId,
+          {
+            prompt_tokens: Number((usage as Record<string, unknown>)?.prompt_tokens ?? 0),
+            completion_tokens: Number((usage as Record<string, unknown>)?.completion_tokens ?? 0),
+            total_tokens: Number((usage as Record<string, unknown>)?.total_tokens ?? 0),
+          },
+        ]),
+      ) as Record<string, { prompt_tokens: number; completion_tokens: number; total_tokens: number }>;
       const baseSummary = {
-        elapsed_seconds: runSummary.elapsed_seconds,
+        elapsed_seconds: runSummary.elapsed_seconds ?? undefined,
         total_prompt_tokens: runSummary.total_prompt_tokens,
         total_completion_tokens: runSummary.total_completion_tokens,
         total_tokens: runSummary.total_tokens,
@@ -1778,7 +1856,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         nodeStatuses: {},
         nodeOutputs: {},
         nodeTimings: {},
-        nodeUsage: runSummary.node_usage ?? {},
+        nodeUsage: normalizedNodeUsage,
         nodeCosts: {},
         nodeTiers: {},
         activeExecutionPath: new Set<string>(),

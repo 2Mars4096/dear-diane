@@ -103,6 +103,7 @@ export interface GraphResponse {
   graph_id: string;
   data: Record<string, unknown>;
   graph_revision?: string | null;
+  source_graph_id?: string;
 }
 
 export const listGraphs = () =>
@@ -127,6 +128,20 @@ export const updateGraph = (id: string, data: Record<string, unknown>) =>
     body: JSON.stringify(data),
     },
   );
+
+export const saveGraphAs = (
+  id: string,
+  body: {
+    new_name: string;
+    new_graph_id?: string;
+    data?: Record<string, unknown>;
+    set_last_opened?: boolean;
+  },
+) =>
+  request<GraphResponse>(`/graphs/${id}/save-as`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 
 export interface ApplyMutationResult {
   success: boolean;

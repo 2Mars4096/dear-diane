@@ -9,11 +9,14 @@ export default function GraphSwitcher() {
   const loadGraph = useGraphStore((s) => s.loadGraph);
   const createGraph = useGraphStore((s) => s.createGraph);
   const deleteGraph = useGraphStore((s) => s.deleteGraph);
+  const saveGraphAs = useGraphStore((s) => s.saveGraphAs);
   const addToast = useGraphStore((s) => s.addToast);
   const loadGraphList = useGraphStore((s) => s.loadGraphList);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
   const [newName, setNewName] = useState("");
+  const [showSaveAs, setShowSaveAs] = useState(false);
+  const [saveAsName, setSaveAsName] = useState("");
 
   const handleCreate = () => {
     const name = newName.trim();
@@ -21,6 +24,14 @@ export default function GraphSwitcher() {
     createGraph(name);
     setNewName("");
     setShowNew(false);
+  };
+
+  const handleSaveAs = async () => {
+    const name = saveAsName.trim();
+    if (!name) return;
+    await saveGraphAs(name);
+    setSaveAsName("");
+    setShowSaveAs(false);
   };
 
   return (
@@ -115,6 +126,44 @@ export default function GraphSwitcher() {
           + New
         </button>
       )}
+
+      {graphId ? (
+        showSaveAs ? (
+          <div className="flex items-center gap-1">
+            <input
+              autoFocus
+              value={saveAsName}
+              onChange={(e) => setSaveAsName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void handleSaveAs()}
+              placeholder="workflow name"
+              className="text-xs border rounded px-2 py-1 w-36"
+            />
+            <button onClick={() => void handleSaveAs()} className="text-xs text-indigo-600 hover:underline">
+              Save
+            </button>
+            <button
+              onClick={() => {
+                setShowSaveAs(false);
+                setSaveAsName("");
+              }}
+              className="text-xs text-gray-400 hover:underline"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => {
+              const current = graphList.find((g) => g.graph_id === graphId);
+              setSaveAsName(current?.name || graphId);
+              setShowSaveAs(true);
+            }}
+            className="text-xs text-indigo-600 hover:underline"
+          >
+            Save As
+          </button>
+        )
+      ) : null}
     </div>
   );
 }
