@@ -48,6 +48,10 @@ _WEB_INTENT_RE = re.compile(
     r"\b(?:web|online|internet|latest|current|news|recent|search|look up|browse|research)\b",
     re.IGNORECASE,
 )
+_WORKFLOW_RUN_INTENT_RE = re.compile(
+    r"\b(?:run|test|execute|launch|start|work(?:ing)?|gonna\s+work)\b",
+    re.IGNORECASE,
+)
 _WORKFLOW_ENTITY_RE = re.compile(
     r"\b(?:workflow|graph|node|edge|port|subgraph)\b",
     re.IGNORECASE,
@@ -182,10 +186,16 @@ _EMBEDDING_HINT_PROTOTYPES: dict[str, tuple[str, ...]] = {
         "save output",
         "写入文件 保存",
     ),
+    "workflow_run": (
+        "run current workflow",
+        "execute the workflow",
+        "test the workflow run",
+        "运行 工作流",
+    ),
     "run_control": (
-        "start run",
+        "furnace session control",
         "resume pause cancel session",
-        "启动 暂停 恢复 会话",
+        "启动 暂停 恢复 会话 熔炉",
     ),
     "workflow_edit": (
         "edit workflow graph",
@@ -479,14 +489,19 @@ async def _embedding_triage_result(text: str, context: ResolvedContext) -> Triag
     elif intent == "agent":
         if target == "workflow" and "workflow_edit" not in action_hints:
             action_hints.append("workflow_edit")
-        if target == "run" and "run_control" not in action_hints:
-            action_hints.append("run_control")
+        if target == "run":
+            if _FURNACE_INTENT_RE.search(stripped):
+                if "run_control" not in action_hints:
+                    action_hints.append("run_control")
+            elif "workflow_run" not in action_hints:
+                action_hints.append("workflow_run")
     else:
         action_hints = [hint for hint in action_hints if hint in {"read_file", "search_web", "status_check"}]
 
     tier = 2 if (
         intent == "plan"
         or "workflow_edit" in action_hints
+        or "workflow_run" in action_hints
         or "write_file" in action_hints
         or "run_control" in action_hints
         or ("search_web" in action_hints and intent == "agent")
@@ -963,8 +978,50 @@ def _post_process_triage_result(
     result.entities = _resolve_entities(result.entities, context, project_store)
     _post_process_resume(result, text, context, project_store)
     result = _enforce_workflow_edit_route(result, text, context)
+    result = _enforce_workflow_run_route(result, text, context)
     result = _enforce_furnace_route(result, text)
     return result
+
+
+def _enforce_workflow_run_route(
+    result: TriageResult,
+    text: str,
+    context: ResolvedContext,
+) -> TriageResult:
+    if _FURNACE_INTENT_RE.search(text):
+        return result
+
+    inferred_hints = _infer_fallback_action_hints(text, context)
+    if "workflow_run" not in inferred_hints:
+        return result
+
+    route = result.route
+    promoted_hints: list[str] = []
+    if route is not None:
+        for hint in route.action_hints:
+            hint_text = str(hint).strip()
+            if not hint_text:
+                continue
+            if hint_text in {"run_control", "workflow_edit", "write_file"}:
+                continue
+            if hint_text not in promoted_hints:
+                promoted_hints.append(hint_text)
+    if "workflow_run" not in promoted_hints:
+        promoted_hints.append("workflow_run")
+
+    forced_route = RouteDecision(
+        mode=RouteMode.AGENT,
+        target="run",
+        action_hints=promoted_hints,
+        rationale="Ordinary workflow run/test follow-up forced to workflow_run route",
+    )
+    return result.model_copy(
+        update={
+            "tier": max(2, int(result.tier)),
+            "intent": "agent",
+            "route": forced_route,
+        }
+    )
 
 
 def _enforce_furnace_route(result: TriageResult, text: str) -> TriageResult:
@@ -1024,7 +1081,7 @@ def _context_text(context: ResolvedContext) -> str:
 
 
 _WORKFLOW_ACTIVITY_INTENTS = frozenset({
-    "workflow_edit", "workflow_build", "build", "mutate",
+    "workflow_edit", "workflow_build", "workflow_run", "build", "mutate",
 })
 _WORKFLOW_ACTIVITY_LABEL_RE = re.compile(
     r"\b(?:workflow|graph|build|node)\b", re.IGNORECASE,
@@ -1102,6 +1159,18 @@ def _infer_fallback_action_hints(text: str, context: ResolvedContext) -> list[st
         hints.append("workflow_edit")
         return hints
 
+    if (
+        not _FURNACE_INTENT_RE.search(text)
+        and _WORKFLOW_RUN_INTENT_RE.search(text)
+        and not file_context_like
+        and (
+            workflow_context_like
+            or (recent_workflow_activity and has_anaphora)
+        )
+    ):
+        hints.append("workflow_run")
+        return hints
+
     if _WEB_INTENT_RE.search(text):
         hints.append("search_web")
     if _WRITE_INTENT_RE.search(text) and (file_context_like or has_anaphora or "write" in lower or "draft" in lower):
@@ -1162,6 +1231,8 @@ def _fallback_triage_result(text: str, context: ResolvedContext) -> TriageResult
         confidence = 0.58
         if "workflow_edit" in action_hints:
             target = "workflow"
+        elif "workflow_run" in action_hints:
+            target = "run"
         elif any(hint in action_hints for hint in ("read_file", "write_file")):
             target = "file"
         elif action_hints == ["search_web"]:
