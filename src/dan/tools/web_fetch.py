@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import html as html_mod
+import logging
 import os
 import re
 import threading
@@ -17,9 +18,10 @@ from dan.server.search_models import canonicalize_search_url
 
 _DEFAULT_CACHE_TTL_SECONDS = 900.0
 _DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; deep-agent-network/0.1; +https://github.com/deep-agent-network)"
-_FETCH_CACHE: dict[tuple[str, int, int], tuple[float, dict[str, Any]]] = {}
-_FETCH_INFLIGHT: dict[tuple[str, int, int], asyncio.Task[dict[str, Any]]] = {}
+_FETCH_CACHE: dict[tuple[str, int, int, int], tuple[float, dict[str, Any]]] = {}
+_FETCH_INFLIGHT: dict[tuple[str, int, int, int], asyncio.Task[dict[str, Any]]] = {}
 _FETCH_STATE_LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
 
 TOOL_METADATA = {
     "tool_id": "web_fetch",
@@ -46,6 +48,14 @@ TOOL_METADATA = {
                 "description": "Maximum characters to return from the response body.",
                 "default": 100000,
             },
+            "browser_fallback": {
+                "type": "boolean",
+                "description": (
+                    "If true, retry through the persistent Playwright browser when a plain HTTP "
+                    "fetch fails or returns a JavaScript shell / browser-gated page."
+                ),
+                "default": False,
+            },
         },
         "required": ["url"],
     },
@@ -61,7 +71,10 @@ TOOL_METADATA = {
         },
     ],
     "category": "web",
-    "returns": "dict with url, content (plain text), status_code, content_type, and cache_hit",
+    "returns": (
+        "dict with url, content (plain text), status_code, content_type, cache_hit, "
+        "fetch_via, and browser_fallback_used"
+    ),
 }
 
 _SCRIPT_STYLE_RE = re.compile(
@@ -81,6 +94,16 @@ _BLOCK_TAG_RE = re.compile(
 _TAG_RE = re.compile(r"<[^>]+>")
 _MULTI_BLANK_RE = re.compile(r"\n{3,}")
 _MULTI_SPACE_RE = re.compile(r"[ \t]{2,}")
+_BROWSER_SHELL_MARKERS = (
+    "enable javascript",
+    "javascript is required",
+    "javascript required",
+    "requires javascript",
+    "please enable cookies",
+    "checking if the site connection is secure",
+    "just a moment",
+    "browser is not supported",
+)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -102,12 +125,28 @@ def _fetch_user_agent() -> str:
     return os.environ.get("DAN_WEB_FETCH_USER_AGENT", _DEFAULT_USER_AGENT).strip() or _DEFAULT_USER_AGENT
 
 
-def _fetch_cache_key(url: str, timeout: int, max_length: int) -> tuple[str, int, int]:
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _browser_fallback_default() -> bool:
+    return _env_bool("DAN_WEB_BROWSER_FALLBACK", False)
+
+
+def _fetch_cache_key(
+    url: str,
+    timeout: int,
+    max_length: int,
+    browser_fallback: bool,
+) -> tuple[str, int, int, int]:
     normalized_url = canonicalize_search_url(url) or url.strip()
-    return normalized_url, int(timeout), int(max_length)
+    return normalized_url, int(timeout), int(max_length), int(bool(browser_fallback))
 
 
-def _get_cached_fetch(key: tuple[str, int, int]) -> dict[str, Any] | None:
+def _get_cached_fetch(key: tuple[str, int, int, int]) -> dict[str, Any] | None:
     now = time.monotonic()
     with _FETCH_STATE_LOCK:
         cached = _FETCH_CACHE.get(key)
@@ -124,7 +163,7 @@ def _get_cached_fetch(key: tuple[str, int, int]) -> dict[str, Any] | None:
     return result
 
 
-def _store_cached_fetch(key: tuple[str, int, int], payload: dict[str, Any]) -> None:
+def _store_cached_fetch(key: tuple[str, int, int, int], payload: dict[str, Any]) -> None:
     ttl_seconds = _fetch_cache_ttl_seconds()
     if ttl_seconds <= 0:
         return
@@ -158,14 +197,88 @@ def _html_to_text(raw_html: str) -> str:
     return text.strip()
 
 
-async def _execute_fetch(url: str, timeout: int, max_length: int) -> dict[str, Any]:
+def _looks_like_browser_shell(content: str, content_type: str) -> bool:
+    normalized = " ".join(str(content or "").lower().split())
+    if not normalized:
+        return True
+    if "html" not in str(content_type or "").lower():
+        return False
+    if len(normalized) > 500:
+        return False
+    return any(marker in normalized for marker in _BROWSER_SHELL_MARKERS)
+
+
+async def _try_browser_fetch(
+    url: str,
+    *,
+    timeout: int,
+    max_length: int,
+    fallback_reason: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        from dan.tools._browser_session import get_controller
+
+        ctrl = await get_controller()
+        opened = await ctrl.open(url)
+        try:
+            await ctrl.wait_for(timeout=min(float(timeout), 10.0))
+        except Exception:
+            logger.debug("Browser wait_for() failed during browser-backed fetch", exc_info=True)
+        text = str(await ctrl.extract_text() or "").strip()
+        if not text:
+            return None, "Browser-rendered page returned no usable text."
+        final_url = str(opened.get("url", "") or url).strip() or url
+        title = str(opened.get("title", "") or "").strip()
+        content = text[:max_length]
+        payload = {
+            "url": final_url,
+            "content": content,
+            "text": content,
+            "status_code": 0,
+            "content_type": "text/html; browser-rendered",
+            "cache_hit": False,
+            "shared_inflight": False,
+            "cache_ttl_seconds": _fetch_cache_ttl_seconds(),
+            "fetch_via": "browser",
+            "browser_fallback_used": True,
+            "browser_fallback_attempted": True,
+            "browser_fallback_reason": fallback_reason,
+            "browser_title": title,
+            "content_requires_browser": False,
+        }
+        return payload, None
+    except Exception as exc:
+        return None, str(exc).strip() or type(exc).__name__
+
+
+async def _execute_fetch(
+    url: str,
+    timeout: int,
+    max_length: int,
+    browser_fallback: bool,
+) -> dict[str, Any]:
     async with httpx.AsyncClient(
         follow_redirects=True,
         timeout=timeout,
         headers={"User-Agent": _fetch_user_agent()},
     ) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
+        try:
+            resp = await client.get(url)
+            resp.raise_for_status()
+        except Exception as exc:
+            if browser_fallback:
+                browser_payload, browser_error = await _try_browser_fetch(
+                    url,
+                    timeout=timeout,
+                    max_length=max_length,
+                    fallback_reason="http_fetch_failed",
+                )
+                if browser_payload is not None:
+                    browser_payload["http_error"] = str(exc).strip() or type(exc).__name__
+                    return browser_payload
+                if browser_error:
+                    logger.debug("Browser-backed fetch fallback failed: %s", browser_error)
+            raise
 
     content_type = resp.headers.get("content-type", "")
     raw = resp.text
@@ -173,7 +286,8 @@ async def _execute_fetch(url: str, timeout: int, max_length: int) -> dict[str, A
         content = _html_to_text(raw)[:max_length]
     else:
         content = raw[:max_length]
-    return {
+
+    payload = {
         "url": str(resp.url),
         "content": content,
         "text": content,
@@ -182,16 +296,36 @@ async def _execute_fetch(url: str, timeout: int, max_length: int) -> dict[str, A
         "cache_hit": False,
         "shared_inflight": False,
         "cache_ttl_seconds": _fetch_cache_ttl_seconds(),
+        "fetch_via": "http",
+        "browser_fallback_used": False,
+        "browser_fallback_attempted": False,
+        "content_requires_browser": _looks_like_browser_shell(content, content_type),
     }
+    if browser_fallback and payload["content_requires_browser"]:
+        browser_payload, browser_error = await _try_browser_fetch(
+            str(resp.url),
+            timeout=timeout,
+            max_length=max_length,
+            fallback_reason="http_fetch_unusable",
+        )
+        if browser_payload is not None:
+            browser_payload["http_status_code"] = resp.status_code
+            return browser_payload
+        payload["browser_fallback_attempted"] = True
+        if browser_error:
+            payload["browser_fallback_error"] = browser_error
+    return payload
 
 
 async def web_fetch(
     url: str,
     timeout: int = 30,
     max_length: int = 100_000,
+    browser_fallback: bool | None = None,
     **_kwargs,
 ) -> dict:
-    key = _fetch_cache_key(url, timeout, max_length)
+    fallback_enabled = _browser_fallback_default() if browser_fallback is None else bool(browser_fallback)
+    key = _fetch_cache_key(url, timeout, max_length, fallback_enabled)
     cached = _get_cached_fetch(key)
     if cached is not None:
         return cached
@@ -200,7 +334,14 @@ async def web_fetch(
         inflight = _FETCH_INFLIGHT.get(key)
         is_owner = inflight is None
         if inflight is None:
-            inflight = asyncio.create_task(_execute_fetch(url.strip(), int(timeout), int(max_length)))
+            inflight = asyncio.create_task(
+                _execute_fetch(
+                    url.strip(),
+                    int(timeout),
+                    int(max_length),
+                    fallback_enabled,
+                )
+            )
             _FETCH_INFLIGHT[key] = inflight
 
     try:

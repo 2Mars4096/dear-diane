@@ -164,7 +164,7 @@ WEB_SEARCH_CAPABILITY_SCHEMA = build_tool_schema(
         "Search the web for current information. Use when the user asks about "
         "live data, recent events, or facts you don't have. "
         "For grounded factual answers or research tasks, use fetch_content=true "
-        "to automatically read the top results in parallel — saves separate "
+        "to automatically read the top-ranked results with bounded fallback — saves separate "
         "web_fetch calls."
     ),
     parameters={
@@ -172,7 +172,8 @@ WEB_SEARCH_CAPABILITY_SCHEMA = build_tool_schema(
         "properties": {
             "query": {"type": "string", "description": "Search query — be specific and include relevant keywords."},
             "num_results": {"type": "integer", "description": "Number of results to return (1-10). Default 3. Use 1 for quick lookups, more for research."},
-            "fetch_content": {"type": "boolean", "description": "If true, automatically fetch and include content from the top search results in parallel. Use this for grounded live answers instead of relying only on snippets."},
+            "fetch_content": {"type": "boolean", "description": "If true, automatically fetch and include content from the top-ranked search results with bounded fallback. Use this for grounded live answers instead of relying only on snippets."},
+            "browser_fallback": {"type": "boolean", "description": "If true, grounding fetches may retry through the persistent browser when plain HTTP fetches fail or return JavaScript-shell / browser-gated pages."},
             "search_depth": {"type": "string", "enum": ["quick", "thorough"], "description": "Quick = snippets only / fewer results. Thorough = richer search and auto-grounding-friendly defaults."},
             "allowed_domains": {"type": "array", "items": {"type": "string"}, "description": "Optional allowlist of domains to prefer/filter to."},
             "blocked_domains": {"type": "array", "items": {"type": "string"}, "description": "Optional blocklist of domains to exclude. Mutually exclusive with allowed_domains."},
@@ -454,6 +455,7 @@ WEB_FETCH_CAPABILITY_SCHEMA = build_tool_schema(
         "properties": {
             "url": {"type": "string", "description": "URL to fetch."},
             "extract_only": {"type": "string", "description": "If set, only return content matching this keyword (case-insensitive grep). Useful for pulling specific data from large pages."},
+            "browser_fallback": {"type": "boolean", "description": "If true, retry through the persistent browser when the plain HTTP fetch fails or only returns a JavaScript shell / browser-gated page."},
         },
         "required": ["url"],
     },

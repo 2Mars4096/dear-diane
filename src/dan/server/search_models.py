@@ -104,6 +104,7 @@ class SearchResultSet(BaseModel):
     sub_queries: list[str] | None = None
     fetch_attempts_made: int = 0
     fetch_target_count: int = 0
+    browser_fallback_count: int = 0
 
 
 class InlineCitation(BaseModel):

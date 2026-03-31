@@ -27,6 +27,7 @@ _MAX_AUTO_FETCH_ATTEMPTS = 4
 _DEFAULT_FETCH_EXCERPT_MAX = 2400
 _DEFAULT_MAX_WEB_SEARCH_CALLS_PER_TURN = 4
 _DEFAULT_MAX_WEB_FETCH_ATTEMPTS_PER_TURN = 8
+_DEFAULT_BROWSER_FALLBACK = False
 _STOP_WORDS = frozenset({
     "a",
     "an",
@@ -77,8 +78,21 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _fetch_excerpt_max() -> int:
     return _env_int("DAN_WEB_FETCH_EXCERPT_MAX", _DEFAULT_FETCH_EXCERPT_MAX)
+
+
+def _browser_fallback_enabled(explicit_value: Any = None) -> bool:
+    if explicit_value is None:
+        return _env_bool("DAN_WEB_BROWSER_FALLBACK", _DEFAULT_BROWSER_FALLBACK)
+    return bool(explicit_value)
 
 
 def _trim_note(text: str, limit: int = 180) -> str:
@@ -124,6 +138,9 @@ def _format_provider_failures(failures: list[dict[str, Any]] | None) -> str:
 def _format_fetch_header(result: dict[str, Any], *, requested_url: str) -> str:
     resolved_url = str(result.get("url", "") or "").strip() or requested_url
     parts: list[str] = []
+    fetch_via = str(result.get("fetch_via", "") or "").strip().lower()
+    if fetch_via == "browser":
+        parts.append("browser-rendered content")
     status_code = result.get("status_code")
     if isinstance(status_code, int) and status_code > 0:
         parts.append(f"HTTP {status_code}")
@@ -132,6 +149,8 @@ def _format_fetch_header(result: dict[str, Any], *, requested_url: str) -> str:
         parts.append(content_type)
     if result.get("cache_hit"):
         parts.append("cache hit")
+    if result.get("browser_fallback_used"):
+        parts.append("browser fallback")
 
     header = f"Fetched {resolved_url}" if resolved_url else "Fetched content"
     if parts:
@@ -380,13 +399,46 @@ def _budget_exhausted_message(kind: str, limit: int) -> str:
     )
 
 
-async def _fetch_grounding_excerpt(result: SearchResult, query: str) -> dict[str, Any]:
+async def _fetch_grounding_excerpt(
+    result: SearchResult,
+    query: str,
+    *,
+    browser_fallback: bool = False,
+) -> dict[str, Any]:
     try:
         from dan.tools.web_fetch import web_fetch
 
-        fetched = await web_fetch(url=result.url)
-        content = _sanitize_web_content(fetched.get("content", ""))
-        content = _extract_relevant_excerpt(content, query)
+        fetch_kwargs: dict[str, Any] = {"url": result.url}
+        if browser_fallback:
+            fetch_kwargs["browser_fallback"] = True
+        fetched = await web_fetch(**fetch_kwargs)
+        raw_content = _sanitize_web_content(fetched.get("content", ""))
+        if not raw_content:
+            return {
+                "index": result.index,
+                "url": result.url,
+                "success": False,
+                "error": "Fetched page returned no usable text.",
+                "fetched_content": "[Fetch failed: fetched page returned no usable text]",
+            }
+        if bool(fetched.get("content_requires_browser")):
+            error = "Fetched page appears to require a browser-rendered session."
+            if browser_fallback:
+                fallback_error = str(fetched.get("browser_fallback_error", "") or "").strip()
+                if fallback_error:
+                    error += f" Browser fallback also failed: {fallback_error}"
+            else:
+                error += " Retry with browser_fallback=true or enable DAN_WEB_BROWSER_FALLBACK."
+            return {
+                "index": result.index,
+                "url": result.url,
+                "success": False,
+                "error": error,
+                "fetched_content": f"[Fetch failed: {error}]",
+                "fetch_via": str(fetched.get("fetch_via", "") or "http"),
+                "browser_fallback_used": bool(fetched.get("browser_fallback_used")),
+            }
+        content = _extract_relevant_excerpt(raw_content, query)
         if not content:
             return {
                 "index": result.index,
@@ -402,6 +454,8 @@ async def _fetch_grounding_excerpt(result: SearchResult, query: str) -> dict[str
             "content": content,
             "cache_hit": bool(fetched.get("cache_hit")),
             "fetched_content": content,
+            "fetch_via": str(fetched.get("fetch_via", "") or "http"),
+            "browser_fallback_used": bool(fetched.get("browser_fallback_used")),
         }
     except Exception as exc:
         error = _summarize_web_exception(exc)[:240]
@@ -480,6 +534,7 @@ async def handle_web_search(
             error_type="invalid_input",
         )
     location = _normalize_location(args.get("location"))
+    browser_fallback_enabled = _browser_fallback_enabled(args.get("browser_fallback"))
 
     search_state = _search_state(ctx)
     budget_state = _budget_state(ctx)
@@ -656,6 +711,7 @@ async def handle_web_search(
     fetch_records: list[dict[str, Any]] = []
     grounded_count = 0
     fetch_attempts_made = 0
+    browser_fallback_count = 0
     fetch_target_count = min(_MAX_AUTO_FETCH_RESULTS, len(filtered_results))
     if fetch_content:
         for result in filtered_results:
@@ -679,11 +735,17 @@ async def handle_web_search(
                 })
                 break
             fetch_attempts_made += 1
-            fetch_record = await _fetch_grounding_excerpt(result, query)
+            fetch_record = await _fetch_grounding_excerpt(
+                result,
+                query,
+                browser_fallback=browser_fallback_enabled,
+            )
             result.fetched_content = str(fetch_record.get("fetched_content") or "").strip() or None
             fetch_records.append(fetch_record)
             if fetch_record.get("success"):
                 grounded_count += 1
+            if fetch_record.get("fetch_via") == "browser":
+                browser_fallback_count += 1
 
     result_set = SearchResultSet(
         query=query,
@@ -696,6 +758,7 @@ async def handle_web_search(
         sub_queries=sub_queries if len(sub_queries) > 1 else None,
         fetch_attempts_made=fetch_attempts_made,
         fetch_target_count=fetch_target_count,
+        browser_fallback_count=browser_fallback_count,
     )
 
     lines = [f'Web search results for "{query}"']
@@ -729,13 +792,18 @@ async def handle_web_search(
             f"Fetched {result_set.grounded_result_count}/{result_set.fetch_target_count} target pages; "
             f"{result_set.fetch_attempts_made} attempts made."
         )
+        if result_set.browser_fallback_count:
+            lines[-1] += f" Browser fallback used for {result_set.browser_fallback_count} page(s)."
         if fetch_records:
             lines.append("")
-            lines.append("Fetched page excerpts (top results fetched in parallel):")
+            lines.append("Fetched page excerpts (bounded fetch attempts over top-ranked results):")
             for record in fetch_records:
                 if record.get("success"):
+                    via_note = ""
+                    if record.get("fetch_via") == "browser":
+                        via_note = " (browser-rendered)"
                     lines.append(
-                        f"\n[{record['index']}] Fetched content from {record['url']}\n{record.get('content', '')}"
+                        f"\n[{record['index']}] Fetched content from {record['url']}{via_note}\n{record.get('content', '')}"
                     )
                 else:
                     lines.append(
@@ -753,6 +821,7 @@ async def handle_web_search(
         "fetch_content_requested": fetch_content,
         "grounded_result_count": result_set.grounded_result_count,
         "fetched_results": fetch_records,
+        "browser_fallback_count": result_set.browser_fallback_count,
         "search_result_set": result_set.model_dump(mode="python"),
     }
     if os.environ.get("DAN_NATIVE_CITATIONS", "0").strip() == "1":
@@ -778,9 +847,13 @@ async def handle_web_fetch(args: dict[str, Any], ctx: CapabilityContext) -> Capa
             error_type="resource_exhausted",
         )
     extract_only = (args.get("extract_only") or "").strip()
+    browser_fallback_enabled = _browser_fallback_enabled(args.get("browser_fallback"))
     try:
         from dan.tools.web_fetch import web_fetch
-        result = await web_fetch(url=url)
+        fetch_kwargs: dict[str, Any] = {"url": url}
+        if browser_fallback_enabled:
+            fetch_kwargs["browser_fallback"] = True
+        result = await web_fetch(**fetch_kwargs)
         content = result.get("content", "")
         content = _sanitize_web_content(content)
 
@@ -804,7 +877,24 @@ async def handle_web_fetch(args: dict[str, Any], ctx: CapabilityContext) -> Capa
         if len(content) > _FILE_READ_MAX:
             content = content[:_FILE_READ_MAX] + "\n\n[truncated]"
         header = _format_fetch_header(result, requested_url=url)
-        message = header if not content else f"{header}\n\n{content}"
+        note_lines: list[str] = []
+        if bool(result.get("content_requires_browser")):
+            note = "Page looks browser-rendered or JavaScript-gated."
+            if browser_fallback_enabled:
+                fallback_error = str(result.get("browser_fallback_error", "") or "").strip()
+                if fallback_error:
+                    note += f" Browser fallback failed: {fallback_error}"
+            else:
+                note += " Retry with browser_fallback=true or enable DAN_WEB_BROWSER_FALLBACK."
+            note_lines.append(note)
+        if result.get("http_error") and result.get("browser_fallback_used"):
+            note_lines.append(f"Recovered via browser fallback after HTTP fetch error: {result['http_error']}")
+        message_parts = [header]
+        if note_lines:
+            message_parts.append("\n".join(note_lines))
+        if content:
+            message_parts.append(content)
+        message = "\n\n".join(part for part in message_parts if part)
         return CapabilityResult(success=True, message=message, data=result)
     except httpx.HTTPStatusError as exc:
         status_code = exc.response.status_code if exc.response is not None else 0
