@@ -1074,7 +1074,7 @@ DAN ships 32 batteries-included tools, auto-registered during server startup. Ea
 | **System** | `current_datetime`, `clipboard`, `python_eval`, `notify` | Time, clipboard, sandboxed code eval, notifications |
 | **File I/O** | `file_read`, `file_write`, `list_directory`, `file_move`, `file_copy`, `file_delete` | Workspace-sandboxed file operations |
 | **Data** | `csv_read`, `spreadsheet_read` | CSV/TSV parsing, Excel (.xlsx) reading |
-| **Web** | `web_search`, `web_fetch`, `http_request` | Tavily/Brave/DuckDuckGo search, URL fetch, general HTTP |
+| **Web** | `web_search`, `web_fetch`, `http_request` | Tavily/Brave/DuckDuckGo search, URL fetch with optional browser-backed recovery, general HTTP |
 | **Shell** | `shell_command` | Subprocess with timeout and allowlist |
 | **Document** | `pdf_read` | PDF: `mode=text` (extract text) or `mode=vision` (vision LLM per page — figures, tables) |
 | **Text Processing** | `text_chunk`, `json_extract`, `regex_match`, `text_diff`, `text_translate` | Chunking, dot-notation extraction, regex, unified diff, LLM translation |
@@ -1086,6 +1086,8 @@ DAN ships 32 batteries-included tools, auto-registered during server startup. Ea
 `pdf_read` parameters: `path` (required), optional `mode`, `start_page`, `end_page`, `vision_model`, and `vision_prompt`. In `mode="vision"`, the tool reports `pages_requested`, `pages_returned`, `truncated`, and `warning` so callers can tell when a long PDF was capped to the first 25 pages.
 
 `list_directory` parameters: `path` (required), optional `glob_pattern`, `recursive`, `limit`, and `start_after`. Results are sorted by relative path and report page metadata: `count` (entries returned in this page), `total_count` (entries matching the current filter/cursor), `remaining_count`, `truncated`, and `next_start_after`. When `truncated=true`, callers should continue with `start_after=next_start_after` or narrow the listing with `glob_pattern` instead of inferring that later entries are absent.
+
+`web_fetch` accepts `url` plus optional `browser_fallback`. When enabled, the tool retries through DAN's persistent Playwright browser if the plain HTTP fetch fails or only returns a short JavaScript/cookie/challenge shell. Returned metadata now includes `fetch_via` (`"http"` or `"browser"`), `browser_fallback_used`, and `content_requires_browser`. The conversation-layer `web_search` / `web_fetch` capability handlers expose the same `browser_fallback` flag and `SearchResultSet.browser_fallback_count` so callers can tell when grounding depended on browser-rendered content.
 
 ### Using Tools in Workflows
 

@@ -11,7 +11,7 @@ Typed graph orchestration for multi-agent LLM workflows. Design agent networks a
 - **Output normalization** — built-in parse → validate → re-prompt → retry on every LLM operator
 - **Retry & fallback** — per-node `RetryPolicy` with exponential backoff, fallback models, and halt/skip/error failure modes
 - **Multi-provider LLM** — built-in support for OpenAI, Anthropic, and Google; prefix-based routing (`gpt-*`, `claude-*`, `gemini-*`) with per-node model override
-- **11 built-in tools** — file I/O, web search/fetch, HTTP, shell commands, PDF reading, text chunking, JSON extraction, regex — relative paths stay sandboxed to the workspace root, while explicit absolute paths are trusted and allowed; for untrusted LLM callers, keep inputs relative or add an approval layer
+- **11 built-in tools** — file I/O, web search/fetch, HTTP, shell commands, PDF reading, text chunking, JSON extraction, regex. Web fetch can optionally recover through DAN's persistent browser for JS-heavy or auth-gated pages; relative paths stay sandboxed to the workspace root, while explicit absolute paths are trusted and allowed. For untrusted LLM callers, keep inputs relative or add an approval layer
 - **Checkpointing** — resume long-running workflows from the last completed level
 
 ## Quick Start

@@ -174,6 +174,7 @@
 - [x] [12-10-workflow-capability-followups](plans/12-10-workflow-capability-followups.md) — J. Workflow follow-up turns now keep the mutation tool visible when the conversation is clearly continuing a workflow build, chat can delete named workflows via `delete_graph`, and obsolete equity workflow JSONs were removed from the local graph catalog
 - [x] [12-11-workflow-delete-safety](plans/12-11-workflow-delete-safety.md) — K. Workflow inventory/delete turns now defer speculative `delete_graph` calls until after fresh inventory results, and already-absent workflow deletes are treated as safe no-ops instead of red errors
 - [x] [12-12-auto-apply-build-and-run](plans/12-12-auto-apply-build-and-run.md) — L. `plan_graph_mutations` now supports `auto_apply: true` to build, apply, and run a workflow in a single conversational turn
+- [x] [12-14-workflow-action-surface-alignment](plans/12-14-workflow-action-surface-alignment.md) — ordinary workflow run/delete/schedule follow-ups now align with native DAN capability surfaces instead of drifting into unavailable tools, Furnace control, or shell/cron advice
 
 ## Phase 8 — Observe & Recover
 > Execution persistence, debugging tools, and iterative refinement capabilities.
@@ -563,6 +564,7 @@
   - [x] [39-3-query-planning-ranking-and-dedup](plans/39-3-query-planning-ranking-and-dedup.md) — C. Multi-query decomposition, TF re-ranking, credibility tiers, canonical-URL dedup, thin-result reformulation
   - [x] [39-4-provider-coverage-and-health](plans/39-4-provider-coverage-and-health.md) — D. Serper (Google) provider, configurable cascade, health tracking, domain/location controls, multi-provider mode, web budgets
   - [x] [39-5-citation-verification](plans/39-5-citation-verification.md) — E. Numeric/date citation verification, native citation parsing, warning events, and `/cost` citation summary
+  - [x] [39-6-browser-escalation-and-interactive-fetch](plans/39-6-browser-escalation-and-interactive-fetch.md) — F. Browser-backed fetch recovery for JS/auth-gated pages, shell-page detection, and grounded browser-fallback metadata
 
 ## Phase 29 — Benchmark Execution Trustworthiness
 > Make benchmark and demo execution honest before treating the resulting runs

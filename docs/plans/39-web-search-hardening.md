@@ -23,6 +23,7 @@ Web search is DAN's primary grounding mechanism for live data, research, and fac
 | [39-3](39-3-query-planning-ranking-and-dedup.md) | Query Planning, Ranking & Dedup | Multi-query decomposition, result re-ranking, cross-turn URL dedup, thin-result reformulation | P2 | completed |
 | [39-4](39-4-provider-coverage-and-health.md) | Provider Coverage & Health | Serper/Google provider, provider health telemetry, health-aware cascade, domain/location controls | P2 | completed |
 | [39-5](39-5-citation-verification.md) | Citation Verification | Narrow phase-tail trust hardening: numeric/date claim verification and audit metadata | P3 | completed |
+| [39-6](39-6-browser-escalation-and-interactive-fetch.md) | Browser Escalation & Interactive Fetch | Detect JS-shell pages, allow bounded browser-backed fetch recovery, and surface browser-grounding metadata | P2 | completed |
 
 ## Dependencies / Sequencing
 
