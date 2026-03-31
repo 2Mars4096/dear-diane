@@ -29,6 +29,13 @@ class CreateGraphRequest(BaseModel):
     data: dict[str, Any] | None = None
 
 
+class SaveAsGraphRequest(BaseModel):
+    new_name: str
+    new_graph_id: str | None = None
+    data: dict[str, Any] | None = None
+    set_last_opened: bool = True
+
+
 class ApplyMutationRequest(BaseModel):
     mutation_plan: dict[str, Any]
     idempotency_key: str | None = None
@@ -115,6 +122,46 @@ async def update_graph(graph_id: str, body: dict[str, Any]):
     return {
         "graph_id": graph_id,
         "status": "saved",
+        "graph_revision": compute_graph_revision(saved),
+    }
+
+
+@router.post("/api/graphs/{graph_id}/save-as")
+async def save_graph_as(graph_id: str, req: SaveAsGraphRequest):
+    from dan.server.graph_store import GraphSaveValidationError, _validate_graph_id
+    from dan.server.chat_manager import compute_graph_revision
+
+    gs = get_graph_store()
+    try:
+        _validate_graph_id(graph_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    requested_id = (req.new_graph_id or "").strip() or None
+    try:
+        new_graph_id, saved = gs.fork_graph(
+            graph_id,
+            new_graph_id=requested_id,
+            new_name=req.new_name,
+            data_override=req.data,
+            exact_id=bool(requested_id),
+        )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except GraphSaveValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ValueError as e:
+        detail = str(e)
+        status_code = 409 if "already exists" in detail.lower() else 400
+        raise HTTPException(status_code=status_code, detail=detail) from e
+
+    if req.set_last_opened:
+        gs.set_last_opened(new_graph_id)
+
+    return {
+        "graph_id": new_graph_id,
+        "source_graph_id": graph_id,
+        "data": saved,
         "graph_revision": compute_graph_revision(saved),
     }
 

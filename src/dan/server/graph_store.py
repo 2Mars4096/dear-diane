@@ -13,6 +13,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from dan.migration.gate_migration import maybe_migrate_graph_dict
+from dan.meta.workflow_contract import normalize_workflow_id
 from dan.models.graph import Graph
 from dan.validation.graph import validate_graph
 
@@ -61,6 +62,26 @@ class GraphStore:
     def _graph_path(self, graph_id: str) -> Path:
         _validate_graph_id(graph_id)
         return self.base_dir / f"{graph_id}.json"
+
+    def suggest_graph_id(
+        self,
+        preferred: str | None,
+        *,
+        fallback: str = "workflow",
+        exact: bool = False,
+    ) -> str:
+        base = normalize_workflow_id(preferred) or normalize_workflow_id(fallback) or "workflow"
+        _validate_graph_id(base)
+        if exact:
+            if self.get_graph(base) is not None:
+                raise ValueError(f"Graph '{base}' already exists")
+            return base
+        candidate = base
+        suffix = 2
+        while self.get_graph(candidate) is not None:
+            candidate = f"{base}-{suffix}"
+            suffix += 1
+        return candidate
 
     def list_graphs(self) -> list[dict[str, Any]]:
         results = []
@@ -119,6 +140,36 @@ class GraphStore:
         data["metadata"]["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
         data["metadata"]["updated_at"] = data["metadata"]["created_at"]
         return self.save_graph(graph_id, data)
+
+    def fork_graph(
+        self,
+        source_graph_id: str,
+        *,
+        new_graph_id: str | None = None,
+        new_name: str | None = None,
+        data_override: dict[str, Any] | None = None,
+        exact_id: bool = False,
+    ) -> tuple[str, dict[str, Any]]:
+        _validate_graph_id(source_graph_id)
+        source = copy.deepcopy(data_override if data_override is not None else self.get_graph(source_graph_id))
+        if source is None:
+            raise KeyError(f"Graph '{source_graph_id}' not found")
+
+        target_id = self.suggest_graph_id(
+            new_graph_id or new_name or f"{source_graph_id}-copy",
+            fallback=f"{source_graph_id}-copy",
+            exact=exact_id and bool(new_graph_id),
+        )
+
+        source.setdefault("metadata", {})
+        metadata = dict(source.get("metadata") or {})
+        display_name = str(new_name or metadata.get("name") or target_id).strip() or target_id
+        metadata["name"] = display_name
+        metadata["forked_from"] = source_graph_id
+        source["metadata"] = metadata
+
+        saved = self.create_graph(target_id, source)
+        return target_id, saved
 
     def delete_graph(self, graph_id: str) -> bool:
         _validate_graph_id(graph_id)

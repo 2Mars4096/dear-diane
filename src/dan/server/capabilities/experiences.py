@@ -1,13 +1,38 @@
 """Experience & workflow catalog capability handlers."""
 from __future__ import annotations
 
+import copy
 import logging
 from typing import Any
 
+from dan.meta.workflow_contract import normalize_workflow_id
 from dan.server.capability_registry import CapabilityContext, CapabilityResult
 from dan.server.capabilities._helpers import _truncate
 
 logger = logging.getLogger(__name__)
+
+
+def _pick_available_workflow_id(
+    graph_store: Any,
+    preferred: str | None,
+    *,
+    fallback: str,
+    exact: bool = False,
+) -> str:
+    if hasattr(graph_store, "suggest_graph_id"):
+        return graph_store.suggest_graph_id(preferred, fallback=fallback, exact=exact)
+
+    base = normalize_workflow_id(preferred) or normalize_workflow_id(fallback) or "workflow"
+    if exact:
+        if graph_store.get_graph(base) is not None:
+            raise ValueError(f"Graph '{base}' already exists")
+        return base
+    candidate = base
+    suffix = 2
+    while graph_store.get_graph(candidate) is not None:
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    return candidate
 
 
 def _format_experience_summary(exp: Any, score: float | None = None) -> str:
@@ -453,26 +478,39 @@ async def handle_fork_workflow(
     if graph_dict is None:
         return CapabilityResult(success=False, message=f"Workflow '{workflow_id}' not found.")
 
-    new_name = args.get("new_name", "").strip() or f"{workflow_id}_fork"
+    new_name = args.get("new_name", "").strip()
+    requested_id = args.get("new_workflow_id", "").strip()
+    fallback_name = new_name or f"{workflow_id} copy"
 
-    import uuid as _uuid
+    try:
+        if hasattr(graph_store, "fork_graph"):
+            new_id, _saved = graph_store.fork_graph(
+                workflow_id,
+                new_graph_id=requested_id or None,
+                new_name=fallback_name,
+                exact_id=bool(requested_id),
+            )
+        else:
+            new_id = _pick_available_workflow_id(
+                graph_store,
+                requested_id or fallback_name,
+                fallback=f"{workflow_id}-copy",
+                exact=bool(requested_id),
+            )
+            forked = copy.deepcopy(graph_dict)
+            forked.setdefault("metadata", {})
+            forked["metadata"] = dict(forked["metadata"])
+            forked["metadata"]["name"] = fallback_name
+            forked["metadata"]["forked_from"] = workflow_id
+            graph_store.save_graph(new_id, forked)
+    except ValueError as exc:
+        return CapabilityResult(success=False, message=str(exc))
 
-    new_id = _uuid.uuid4().hex[:12]
-    forked = dict(graph_dict)
-    if "metadata" in forked:
-        forked["metadata"] = dict(forked["metadata"])
-        forked["metadata"]["name"] = new_name
-        forked["metadata"]["forked_from"] = workflow_id
-    else:
-        forked["metadata"] = {"name": new_name, "forked_from": workflow_id}
-
-    graph_store.save_graph(new_id, forked)
-
-    msg = f"Forked '{workflow_id}' as '{new_name}' (ID: {new_id})."
+    msg = f"Forked '{workflow_id}' as '{fallback_name}' (ID: {new_id})."
     return CapabilityResult(
         success=True,
         message=msg,
-        data={"workflow_id": new_id, "name": new_name, "forked_from": workflow_id},
+        data={"workflow_id": new_id, "name": fallback_name, "forked_from": workflow_id},
     )
 
 
