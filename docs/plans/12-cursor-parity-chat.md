@@ -50,6 +50,9 @@ Phase 7 (plan 10) delivered a functional chat panel with NL→graph mutations, `
 | [12-10](12-10-workflow-capability-followups.md) | Workflow Capability Follow-Ups | Keep workflow mutation/delete capabilities exposed accurately on follow-up turns and remove stale equity workflow fixtures | `capability_handlers.py`, `tier_executors.py`, `tests/test_concierge/`, `graphs/` |
 | [12-11](12-11-workflow-delete-safety.md) | Workflow Delete Safety | Split workflow inventory/delete into a safe two-step tool loop and make already-absent deletes non-fatal | `chat_manager.py`, `capability_handlers.py`, `tests/test_post_tool_followup_recovery.py`, `tests/test_concierge/test_live_data.py` |
 | [12-12](12-12-auto-apply-build-and-run.md) | Auto-Apply Build & Run | `plan_graph_mutations(auto_apply=true)` applies mutation + continues tool loop for `start_run` in one turn | `chat_manager.py`, `prompts.py`, `events.py`, `tests/test_post_tool_followup_recovery.py` |
+| [12-13](12-13-workflow-authoring-triage-stability.md) | Workflow-Authoring Triage Stability | Stabilize concierge routing and intent extraction before workflow generation starts | `concierge/triage.py`, `tier_executors.py`, `workflow_generation.py`, `tests/test_concierge/` |
+| [12-14](12-14-workflow-action-surface-alignment.md) | Workflow Action Surface Alignment | Keep ordinary workflow run/delete/schedule follow-ups on DAN-native capability surfaces | `chat/helpers.py`, `chat_manager.py`, `concierge/triage.py`, `concierge/runtime/__init__.py` |
+| [12-15](12-15-workflow-identity-save-as.md) | Workflow Identity Save-As | Promote `_scratch` drafts into durable named workflow IDs via Save As / stable fork IDs | `graph_store.py`, `routers/graphs.py`, `capabilities/experiences.py`, `useGraphStore.ts`, `GraphSwitcher.tsx` |
 
 ## Dependencies / Sequencing
 

@@ -8,6 +8,24 @@ LLM applications are getting complicated. A single API call becomes wrapped in s
 
 The key insight: different tasks need different network topologies, different models at different nodes, and structured management of inputs and outputs across the entire flow. No single agent should do everything.
 
+### Long-Running Product Goal
+
+Deep Agent Network should win the hard 5% tail tasks: the long-running, high-value tasks that ordinary single-agent tools handle badly because they require decomposition, persistence, tool use, review, and recovery over hours or days. The product goal is not "more agents for everything." It is to make rare but important tasks tractable, inspectable, and repeatable by turning them into persistent workflows and, when the task genuinely justifies it, into large hierarchical swarms of specialized workers. Hundreds or even thousands of agents may matter for some tasks, but only as a means to solve deep work better, not as a product claim by itself.
+
+### Who This Is For / Not For
+
+**For:**
+
+- operators, researchers, and engineers tackling tasks that run long enough to need checkpoints, retries, and resumability
+- high-trust workflows where provenance, reviewability, and controllable execution matter more than conversational smoothness alone
+- decomposable tasks where parallel specialists, nested sub-workflows, or large swarms can materially improve quality, latency, or coverage
+
+**Not for:**
+
+- everyday chat, shallow one-shot requests, or simple coding tasks that a normal copilot can finish faster
+- flat swarm theater where many agents talk without bounded roles, aggregation, or operator control
+- breadth-first product positioning that tries to win generic chat, workflow builders, personal assistants, and autonomous businesses all at once
+
 ### Motivating Example: Multi-Agent Paper Writing
 
 A concrete workflow that stress-tests the concept:
@@ -128,6 +146,8 @@ Some systems already tackle the paper-writing use case specifically:
 - **Next: harden the platform** (multi-provider LLM, built-in tools, retry policies, templates), then add the markdown authoring surface and extended capabilities (RAG, HTTP, sandbox). Followed by distribution (CLI, publish-as-API/MCP), observability (run history, audit log, checkpoint portals), and application-layer features (agent teams, chat integrations).
 
 This approach preserved early backend validation while moving quickly to a practical Langflow/Flowise-like user experience. The foundation (engine, builder, editor, execution UX) is complete; the next phases furnish it for real-world use.
+
+The strategic narrowing from here is to prove DAN on long-running tail tasks first, not to broaden into a generic assistant. That means prioritizing one flagship high-trust workflow family, tightening the always-on continuity UX, and building the supervision, aggregation, checkpointing, and cost controls needed for hierarchical swarms to be useful instead of theatrical.
 
 ---
 

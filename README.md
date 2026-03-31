@@ -1,12 +1,27 @@
 # Deep Agent Network (DAN)
 
-Typed graph orchestration for multi-agent LLM workflows. Design agent networks as directed graphs with typed edges, control-flow primitives, and heterogeneous models — then run them via Python, a visual editor, or (soon) markdown files.
+Typed graph orchestration for the hard 5% of long-running agentic tasks. Design persistent agent networks as directed graphs with typed edges, control-flow primitives, and heterogeneous models — then run them via Python, a visual editor, or (soon) markdown files.
+
+DAN is aimed at deep work that ordinary single-agent copilots handle poorly: multi-stage research, long-running builds, high-trust workflows, and tasks that may genuinely benefit from hierarchical swarms of specialized workers. The goal is not to make everyday chat heavier. The goal is to make rare, high-value tasks tractable, inspectable, and repeatable.
+
+## Who DAN Is For
+
+- Long-running tasks that need planning, decomposition, tool use, checkpoints, and recovery over hours or days
+- High-trust research and operational workflows where provenance, reviewability, and explicit control matter
+- Problems that can be broken into many bounded workers, from a few specialists up to large hierarchical swarms when the task justifies it
+
+## Who DAN Is Not For
+
+- Everyday chat, shallow one-shot requests, or simple tasks a normal copilot can finish faster
+- Flat “more agents = better” swarm setups without bounded roles, aggregation, or operator control
+- Teams looking for the lightest possible AI wrapper rather than a durable workflow and execution system
 
 ## Key Concepts
 
 - **Two-level nodes** — atomic operators (LLM call, tool call, code execution) and composite agents (sub-graphs that behave as single nodes with typed interfaces)
 - **Typed edges** — data (schema-validated), control (conditionals, loops, routing), and context (shared state)
 - **Control-flow primitives** — GateNode (if/else + while loop), ForEach, Reduce, Router, Human-in-the-Loop
+- **Hierarchical swarms** — scale from one agent to many bounded specialists when decomposition pays off; large swarms are useful only with supervision, aggregation, and recoverability
 - **Model heterogeneity** — each operator independently specifies its model (cheap for classification, strong for reasoning)
 - **Output normalization** — built-in parse → validate → re-prompt → retry on every LLM operator
 - **Retry & fallback** — per-node `RetryPolicy` with exponential backoff, fallback models, and halt/skip/error failure modes
@@ -110,6 +125,7 @@ All surfaces compile to the same `dan_graph_v1` JSON and coexist:
 The editor is a full-featured workflow builder inspired by LangFlow, Flowise, and Coze:
 
 - **Multi-tab workflows** — open multiple workflows as tabs, each with isolated editing and run state; background runs continue on the server and catch up when reactivated
+- **Workflow Save As** — promote `_scratch` or any working draft into a durable named workflow ID without losing the current graph state
 - **Node palette** — searchable, categorized sidebar with 12 node types plus pre-built templates (ReAct, Plan-Execute, Gate nodes)
 - **Full editing** — undo/redo, copy/paste/duplicate, right-click context menus, inline rename, port editor (add/remove/rename ports with schemas)
 - **Multi-layer navigation** — double-click composite/loop nodes to drill into sub-graphs; breadcrumb bar for navigation
