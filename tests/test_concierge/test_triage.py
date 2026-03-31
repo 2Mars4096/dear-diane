@@ -255,7 +255,7 @@ async def test_triage_uses_workflow_apply_lexical_scenario_with_recent_context()
 @pytest.mark.parametrize(
     ("text", "scenario_id", "target", "action_hints"),
     [
-        ("run it", "workflow_run_followup", "run", ["workflow_run", "run_control"]),
+        ("run it", "workflow_run_followup", "run", ["workflow_run"]),
         ("status of the workflow", "workflow_query_status", "workflow", ["workflow_query"]),
         ("what workflow is this", "workflow_query_identity", "workflow", ["workflow_query"]),
     ],
@@ -689,6 +689,62 @@ async def test_triage_furnace_topic_only_prefers_search_web():
     assert "run_control" in result.route.action_hints
     assert "search_web" in result.route.action_hints
     assert "write_file" not in result.route.action_hints
+
+
+@pytest.mark.asyncio
+async def test_triage_reinforces_workflow_run_over_run_control_for_ordinary_followup():
+    context, _project, _task = _make_context(turns=_workflow_activity_turns())
+
+    result = await triage(
+        "run it",
+        context,
+        _llm_json(
+            {
+                "tier": 1,
+                "intent": "agent",
+                "route": {
+                    "mode": "agent",
+                    "target": "run",
+                    "action_hints": ["run_control"],
+                },
+                "confidence": 0.72,
+                "goal": "Run the workflow",
+                "deliverable": "Run status",
+                "entities": [],
+                "is_resume": False,
+                "resume_task_id": None,
+                "is_social": False,
+                "social_response": None,
+                "context_needs": [],
+                "subtasks": [],
+                "execution_order": "parallel",
+                "rationale": "wrongly biased to run control",
+            }
+        ),
+    )
+
+    assert result.intent == "agent"
+    assert result.route is not None
+    assert result.route.target == "run"
+    assert result.route.action_hints == ["workflow_run"]
+
+
+@pytest.mark.asyncio
+async def test_triage_keeps_mixed_workflow_followup_on_workflow_edit():
+    context, _project, _task = _make_context(turns=_workflow_activity_turns())
+
+    async def _bad_complete(_messages):
+        return "not json"
+
+    result = await triage(
+        "I'll add manually of the new tickers. Please do delete obsolete workflows. set up automated daily exeuction, increase news search depth, you can try 15+ or even more. report looks good for now",
+        context,
+        _bad_complete,
+    )
+
+    assert result.intent == "agent"
+    assert result.route is not None
+    assert "workflow_edit" in result.route.action_hints
 
 
 def test_fast_classify_text_handles_simple_social_turn():

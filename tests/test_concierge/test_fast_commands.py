@@ -218,6 +218,119 @@ class TestFastCommandSkipsPrep:
         assert entries[0].workflow_id == "wf-current"
 
     @pytest.mark.asyncio
+    async def test_nl_workflow_schedule_followup_bridges_to_schedule_command(
+        self,
+        tmp_path,
+    ):
+        c = _build_concierge(tmp_path)
+        c._schedule_store = ScheduleStore(path=str(tmp_path / "schedules.json"))
+        c._schedule_history_store = ScheduleHistoryStore(path=str(tmp_path / "schedule-history.json"))
+        project = c.project_store.create_project("demo", "user-a")
+        c.project_store.link_workflow(project.project_id, "wf-current", "user-a")
+
+        events = await _collect(
+            c,
+            _make_msg("schedule it daily at 8am", external_id="user-a"),
+        )
+
+        assert len(events) == 1
+        assert "Scheduled workflow" in events[0].content
+        entries = c._schedule_store.list_all()
+        assert len(entries) == 1
+        assert entries[0].workflow_id == "wf-current"
+        assert entries[0].trigger == "daily at 8am"
+        c.chat_manager.send_message.assert_not_called()
+        c.chat_manager.send_message_with_tools.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_nl_workflow_schedule_followup_uses_default_daily_trigger(
+        self,
+        tmp_path,
+    ):
+        c = _build_concierge(tmp_path)
+        c._schedule_store = ScheduleStore(path=str(tmp_path / "schedules.json"))
+        c._schedule_history_store = ScheduleHistoryStore(path=str(tmp_path / "schedule-history.json"))
+        project = c.project_store.create_project("demo", "user-a")
+        c.project_store.link_workflow(project.project_id, "wf-current", "user-a")
+
+        events = await _collect(
+            c,
+            _make_msg("set up automated daily execution", external_id="user-a"),
+        )
+
+        assert len(events) == 1
+        assert "Scheduled workflow" in events[0].content
+        entries = c._schedule_store.list_all()
+        assert len(entries) == 1
+        assert entries[0].workflow_id == "wf-current"
+        assert entries[0].trigger == "every day at 9am"
+
+    @pytest.mark.asyncio
+    async def test_nl_workflow_schedule_followup_executes_embedded_schedule_and_continues_turn(
+        self,
+        tmp_path,
+    ):
+        c = _build_concierge(tmp_path)
+        c._schedule_store = ScheduleStore(path=str(tmp_path / "schedules.json"))
+        c._schedule_history_store = ScheduleHistoryStore(path=str(tmp_path / "schedule-history.json"))
+        project = c.project_store.create_project("demo", "user-a")
+        c.project_store.link_workflow(project.project_id, "wf-current", "user-a")
+
+        events = await _collect(
+            c,
+            _make_msg(
+                "delete the obsolete workflows. schedule it daily at 8am",
+                external_id="user-a",
+            ),
+        )
+
+        assert any(getattr(event, "type", "") == "chat_complete" for event in events)
+        entries = c._schedule_store.list_all()
+        assert len(entries) == 1
+        assert entries[0].workflow_id == "wf-current"
+        assert entries[0].trigger == "daily at 8am"
+        c.chat_manager.send_message.assert_not_called()
+        c.chat_manager.send_message_with_tools.assert_called_once()
+        forwarded_message = c.chat_manager.send_message_with_tools.call_args.kwargs["message"]
+        assert forwarded_message == "delete the obsolete workflows"
+        forwarded_system = c.chat_manager.send_message_with_tools.call_args.kwargs["extra_system_instructions"]
+        assert "Workflow scheduling was already completed during routing" in forwarded_system
+        assert "Scheduled workflow" in forwarded_system
+
+    @pytest.mark.asyncio
+    async def test_nl_workflow_schedule_followup_handles_comma_separated_mixed_turn(
+        self,
+        tmp_path,
+    ):
+        c = _build_concierge(tmp_path)
+        c._schedule_store = ScheduleStore(path=str(tmp_path / "schedules.json"))
+        c._schedule_history_store = ScheduleHistoryStore(path=str(tmp_path / "schedule-history.json"))
+        project = c.project_store.create_project("demo", "user-a")
+        c.project_store.link_workflow(project.project_id, "wf-current", "user-a")
+
+        events = await _collect(
+            c,
+            _make_msg(
+                "Please do delete obsolete workflows. set up automated daily exeuction, increase news search depth, you can try 15+ or even more. report looks good for now",
+                external_id="user-a",
+            ),
+        )
+
+        assert any(getattr(event, "type", "") == "chat_complete" for event in events)
+        entries = c._schedule_store.list_all()
+        assert len(entries) == 1
+        assert entries[0].workflow_id == "wf-current"
+        assert entries[0].trigger == "every day at 9am"
+        c.chat_manager.send_message.assert_not_called()
+        c.chat_manager.send_message_with_tools.assert_called_once()
+        forwarded_message = c.chat_manager.send_message_with_tools.call_args.kwargs["message"]
+        assert "delete obsolete workflows" in forwarded_message
+        assert "increase news search depth" in forwarded_message
+        assert "automated daily exeuction" not in forwarded_message
+        forwarded_system = c.chat_manager.send_message_with_tools.call_args.kwargs["extra_system_instructions"]
+        assert "Workflow scheduling was already completed during routing" in forwarded_system
+
+    @pytest.mark.asyncio
     async def test_progress_override_is_scoped_to_request_surface(self, tmp_path):
         from dan.server.concierge.progress_ux import reset_user_verbosity_override
 
