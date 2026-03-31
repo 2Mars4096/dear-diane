@@ -30,7 +30,7 @@ _ACTION_HINT_TOOL_MAP: dict[str, frozenset[str]] = {
     "read_file": frozenset({"file_read", "pdf_read", "list_directory"}),
     "search_web": frozenset({"web_search", "web_fetch", "http_request"}),
     "write_file": frozenset({"file_write"}),
-    "workflow_edit": frozenset({"plan_graph_mutations", "apply_last_mutation"}),
+    "workflow_edit": frozenset({"plan_graph_mutations", "apply_last_mutation", "delete_graph"}),
     "workflow_run": frozenset({"start_run"}),
     # Run-control turns (e.g. furnace session lifecycle) should execute API control
     # actions instead of ending as narrative prose.
@@ -85,6 +85,15 @@ _APPLY_PREVIEW_CONFIRMATION_RE = re.compile(
     r"|ship\s+it"
     r"|proceed"
     r"|do\s+it)\b",
+    re.IGNORECASE,
+)
+_WORKFLOW_DELETE_RE = re.compile(
+    r"\b(?:delete|remove)\b(?:(?:\W+\w+){0,6}\W+)?\b(?:workflow|workflows|graph|graphs)\b"
+    r"|\b(?:delete|remove)\s+graph\b",
+    re.IGNORECASE,
+)
+_WORKFLOW_STRUCTURE_DELETE_RE = re.compile(
+    r"\b(?:node|nodes|edge|edges|port|ports|subgraph|subgraphs|body[_ -]?graph)\b",
     re.IGNORECASE,
 )
 _WORKFLOW_MODIFICATION_CUE_RE = re.compile(
@@ -232,11 +241,19 @@ def _preferred_workflow_edit_tool(
     preview_available: bool,
     allow_plan_graph_mutations: bool,
     allow_apply_last_mutation: bool,
+    allow_delete_graph: bool = False,
 ) -> str | None:
     if "workflow_edit" not in _dedupe_action_hints(required_action_hints):
         return None
 
     message = str(user_message or "").strip()
+    if (
+        allow_delete_graph
+        and _WORKFLOW_DELETE_RE.search(message)
+        and not _WORKFLOW_STRUCTURE_DELETE_RE.search(message)
+    ):
+        return "delete_graph"
+
     if (
         preview_available
         and allow_apply_last_mutation

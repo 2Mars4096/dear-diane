@@ -1368,6 +1368,13 @@ class ChatManager:
                         capability_mode,
                     )
                 ),
+                allow_delete_graph=(
+                    self._capability_registry is not None
+                    and self._capability_registry.is_available(
+                        "delete_graph",
+                        capability_mode,
+                    )
+                ),
             )
 
             def _retry_prompt_for_available_tools(missing_action_hints: list[str]) -> str:

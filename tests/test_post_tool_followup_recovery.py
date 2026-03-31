@@ -255,6 +255,7 @@ def test_preferred_workflow_edit_tool_prefers_plan_for_fresh_fix_requests() -> N
         preview_available=False,
         allow_plan_graph_mutations=True,
         allow_apply_last_mutation=True,
+        allow_delete_graph=True,
     ) == "plan_graph_mutations"
 
 
@@ -265,7 +266,30 @@ def test_preferred_workflow_edit_tool_uses_apply_for_preview_confirmation() -> N
         preview_available=True,
         allow_plan_graph_mutations=True,
         allow_apply_last_mutation=True,
+        allow_delete_graph=True,
     ) == "apply_last_mutation"
+
+
+def test_preferred_workflow_edit_tool_prefers_delete_for_workflow_delete_requests() -> None:
+    assert _preferred_workflow_edit_tool(
+        ["workflow_edit"],
+        "Remove that obsolete workflow dan-equity-build-clean-20260327b.",
+        preview_available=False,
+        allow_plan_graph_mutations=True,
+        allow_apply_last_mutation=True,
+        allow_delete_graph=True,
+    ) == "delete_graph"
+
+
+def test_preferred_workflow_edit_tool_keeps_remove_node_requests_on_mutations() -> None:
+    assert _preferred_workflow_edit_tool(
+        ["workflow_edit"],
+        "Remove the stale node from the workflow and rewire it.",
+        preview_available=False,
+        allow_plan_graph_mutations=True,
+        allow_apply_last_mutation=True,
+        allow_delete_graph=True,
+    ) == "plan_graph_mutations"
 
 
 def test_normalize_generated_mutation_ops_aliases_set_body_graph() -> None:
@@ -926,6 +950,97 @@ async def test_send_message_with_tools_forces_plan_graph_mutations_for_workflow_
         tool["function"]["name"]
         for tool in first_request["tools"]
     ] == ["plan_graph_mutations"]
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_forces_delete_graph_for_workflow_delete_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_call_log: list[dict[str, Any]] = []
+
+    async def _delete_graph(args: dict[str, Any], context: CapabilityContext) -> CapabilityResult:
+        tool_call_log.append({
+            "tool_name": "delete_graph",
+            "args": dict(args),
+            "workflow_id": context.workflow_id,
+        })
+        return CapabilityResult(
+            success=True,
+            message="Deleted workflow `dan-equity-build-clean-20260327b`.",
+            data={"graph_id": "dan-equity-build-clean-20260327b", "deleted": True},
+        )
+
+    capability_registry = ChatCapabilityRegistry()
+    capability_registry.register(
+        "delete_graph",
+        build_tool_schema(
+            "delete_graph",
+            "Delete a workflow.",
+            {
+                "type": "object",
+                "properties": {"graph_id": {"type": "string"}},
+                "required": ["graph_id"],
+            },
+        ),
+        _delete_graph,
+        modes=["agent"],
+    )
+
+    provider = _SequenceProvider(
+        [
+            CompletionResult(
+                text="I will remove the obsolete workflow.",
+                tool_calls=[
+                    _named_tool_call(
+                        "delete_graph",
+                        {"graph_id": "dan-equity-build-clean-20260327b"},
+                        "call_delete",
+                    )
+                ],
+                usage={"prompt_tokens": 6, "completion_tokens": 3},
+            ),
+            CompletionResult(
+                text="The obsolete workflow has been removed.",
+                tool_calls=[],
+                usage={"prompt_tokens": 4, "completion_tokens": 2},
+            ),
+        ]
+    )
+    provider.supports_exact_tool_choice = True
+    mgr = _make_manager(
+        provider,
+        tool_call_log=[],
+        capability_registry=capability_registry,
+    )
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+
+    await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Remove that obsolete workflow dan-equity-build-clean-20260327b.",
+            history=[],
+            allow_mutation_tool=True,
+            required_action_hints=["workflow_edit"],
+        )
+    )
+
+    first_request = provider.requests[0]
+    assert first_request["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "delete_graph"},
+    }
+    assert [
+        tool["function"]["name"]
+        for tool in first_request["tools"]
+    ] == ["delete_graph"]
+    assert tool_call_log == [
+        {
+            "tool_name": "delete_graph",
+            "args": {"graph_id": "dan-equity-build-clean-20260327b"},
+            "workflow_id": "wf1",
+        }
+    ]
 
 
 @pytest.mark.asyncio

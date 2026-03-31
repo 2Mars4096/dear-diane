@@ -23,3 +23,4 @@
 
 ## Notes
 - Validation: `python -m pytest tests/test_concierge/test_live_data.py tests/test_post_tool_followup_recovery.py tests/test_chat_prompt_modules.py -q`
+- Follow-up hardening on 2026-03-31: delete-like workflow turns such as “remove that obsolete workflow” now prefer `delete_graph` over `plan_graph_mutations`, while remove-node/remove-edge edits stay on the mutation path. Focused validation: `pytest -q tests/test_post_tool_followup_recovery.py -k 'preferred_workflow_edit_tool or forces_plan_graph_mutations_for_workflow_edit or forces_delete_graph_for_workflow_delete_request or defers_delete_graph_until_after_inventory'` (`7 passed, 26 deselected`) and `pytest -q tests/test_concierge/test_live_data.py -k 'delete_graph'` (`6 passed, 47 deselected`).
