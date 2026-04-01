@@ -1,6 +1,12 @@
 # Todo
 
 ## Current Backlog
+- [ ] [47-agent-output-linter](plans/47-agent-output-linter.md) — fast inline validation at every agent-to-agent handoff; three tiers (structural → semantic → intent); per-edge config; auto-fix; zero dependency on engine/worker/models
+  - [ ] [47-1-linter-core-and-rule-protocol](plans/47-1-linter-core-and-rule-protocol.md)
+  - [ ] [47-2-structural-rules](plans/47-2-structural-rules.md)
+  - [ ] [47-3-semantic-rules](plans/47-3-semantic-rules.md)
+  - [ ] [47-4-intent-validation-and-autofix](plans/47-4-intent-validation-and-autofix.md)
+  - [ ] [47-5-engine-integration-and-config-autogen](plans/47-5-engine-integration-and-config-autogen.md)
 - [ ] [46-universal-worker-primitive](plans/46-universal-worker-primitive.md) — replace 21 specialized node types with a single universal `Worker` primitive; contract-based minimal orchestrator; script-first execution; strangler fig migration
   - [ ] [46-1-worker-model-and-type-system](plans/46-1-worker-model-and-type-system.md)
   - [ ] [46-2-worker-executor-and-dispatch](plans/46-2-worker-executor-and-dispatch.md)
