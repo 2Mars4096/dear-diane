@@ -186,6 +186,15 @@ const DEBUG_PROMPTS = [
 ];
 
 type ChatMode = "ask" | "agent" | "plan" | "debug" | "auto";
+type ThreadTarget = { threadId: string; workflowId: string };
+type SearchThreadResult = {
+  thread_id: string;
+  thread_title: string;
+  workflow_id: string;
+  message_id: string;
+  message_preview: string;
+  timestamp: string;
+};
 
 const MODE_CONFIG: Record<ChatMode, { label: string; icon: typeof Sparkles; color: string }> = {
   agent: { label: "Agent", icon: Sparkles, color: "indigo" },
@@ -204,6 +213,10 @@ function relativeTimeShort(iso: string): string {
   const hrs = Math.floor(min / 60);
   if (hrs < 24) return `${hrs}h ago`;
   return `${Math.floor(hrs / 24)}d ago`;
+}
+
+function formatWorkflowLabel(workflowId: string): string {
+  return workflowId === "_scratch" ? "Scratch" : workflowId;
 }
 
 // ---------------------------------------------------------------------------
@@ -436,6 +449,7 @@ export default function ChatPanel({
   const rawGraphId = useGraphStore((s) => s.graphId);
   const activeChatWorkflowId = useAppStore((s) => s.activeChatWorkflowId);
   const graphId = rawGraphId || activeChatWorkflowId || (fullScreen ? "_scratch" : null);
+  const historyUsesAllWorkflows = fullScreen;
   const danGraph = useGraphStore((s) => s.danGraph);
   const graphRevision = useGraphStore((s) => s.graphRevision);
   const isGraphDirty = useGraphStore((s) => s.dirty);
@@ -467,7 +481,7 @@ export default function ChatPanel({
   const [showThreadList, setShowThreadList] = useState(!fullScreen);
   const [loadingThreads, setLoadingThreads] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
-  const [confirmDeleteThreadId, setConfirmDeleteThreadId] = useState<string | null>(null);
+  const [confirmDeleteThreadId, setConfirmDeleteThreadId] = useState<ThreadTarget | null>(null);
   const [threadTitle, setThreadTitle] = useState("");
   const [isComposerFocused, setIsComposerFocused] = useState(false);
   const [rewriteTarget, setRewriteTarget] = useState<RewriteBranchState | null>(null);
@@ -503,22 +517,14 @@ export default function ChatPanel({
     ) => void) | null
   >(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<
-    Array<{
-      thread_id: string;
-      thread_title: string;
-      workflow_id: string;
-      message_id: string;
-      message_preview: string;
-      timestamp: string;
-    }>
-  >([]);
+  const [searchResults, setSearchResults] = useState<SearchThreadResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [showContextPanel, setShowContextPanel] = useState(false);
   const [threadContextMenu, setThreadContextMenu] = useState<{
     x: number;
     y: number;
     threadId: string;
+    workflowId: string;
     threadTitle: string;
     pinned: boolean;
   } | null>(null);
@@ -598,7 +604,6 @@ export default function ChatPanel({
   }, []);
 
   const [bgStreamIds, setBgStreamIds] = useState<Set<string>>(() => getBackgroundThreadIds());
-  const threadBranchTree = useMemo(() => buildThreadBranchTree(threads), [threads]);
   const bgStreamReloadRef = useRef<((wfId: string) => void) | null>(null);
   useEffect(() => {
     let prevIds = getBackgroundThreadIds();
@@ -713,9 +718,15 @@ export default function ChatPanel({
   const fetchThreads = useCallback(async (wfId: string) => {
     setLoadingThreads(true);
     try {
-      const { threads: list } = await api.listChatThreads(wfId);
+      const { threads: list } = historyUsesAllWorkflows
+        ? await api.listAllChatThreads()
+        : await api.listChatThreads(wfId);
       setThreads(list);
-      const active = list.find((t) => t.id === activeThreadIdRef.current);
+      const active = list.find(
+        (t) =>
+          t.id === activeThreadIdRef.current &&
+          t.workflow_id === graphIdRef.current,
+      );
       if (active) {
         setThreadTitle(getDisplayThreadTitle(active.title, ""));
       }
@@ -726,7 +737,7 @@ export default function ChatPanel({
     } finally {
       setLoadingThreads(false);
     }
-  }, []);
+  }, [historyUsesAllWorkflows]);
   bgStreamReloadRef.current = fetchThreads;
 
   const refreshActiveThreadTitle = useCallback(
@@ -973,7 +984,21 @@ export default function ChatPanel({
           appWorkflowId: useAppStore.getState().activeChatWorkflowId,
         });
         if (targetId) {
-          await loadThread(graphId, targetId);
+          const targetThread =
+            sorted.find(
+              (thread) =>
+                thread.id === targetId && thread.workflow_id === graphId,
+            ) ?? sorted.find((thread) => thread.id === targetId);
+          if (targetThread) {
+            if (targetThread.workflow_id !== graphId) {
+              try {
+                await loadGraph(targetThread.workflow_id);
+              } catch (err) {
+                console.warn("Failed to switch workflow for thread:", err);
+              }
+            }
+            await loadThread(targetThread.workflow_id, targetThread.id);
+          }
         }
       } else if (sorted.length === 0) {
         setShowThreadList(true);
@@ -983,7 +1008,7 @@ export default function ChatPanel({
     return () => {
       cancelled = true;
     };
-  }, [chatOpen, graphId, loadThread, fetchThreads, workspaceId]);
+  }, [chatOpen, graphId, fetchThreads, loadGraph, loadThread, workspaceId]);
 
   useEffect(() => {
     if (!showThreadList || !graphId) return;
@@ -2462,7 +2487,10 @@ export default function ChatPanel({
       }
       setIsSearching(true);
       try {
-        const { results } = await api.searchChatThreads(query, graphId || undefined);
+        const { results } = await api.searchChatThreads(
+          query,
+          historyUsesAllWorkflows ? undefined : graphId || undefined,
+        );
         setSearchResults(results);
       } catch (err) {
         console.warn("Search failed:", err);
@@ -2471,14 +2499,13 @@ export default function ChatPanel({
         setIsSearching(false);
       }
     },
-    [graphId],
+    [graphId, historyUsesAllWorkflows],
   );
 
   const handleExportThread = useCallback(
-    async (threadId: string, format: "md" | "json" = "md") => {
-      if (!graphId) return;
+    async ({ threadId, workflowId }: ThreadTarget, format: "md" | "json" = "md") => {
       try {
-        const { content } = await api.exportChatThread(graphId, threadId, format);
+        const { content } = await api.exportChatThread(workflowId, threadId, format);
         const ext = format === "json" ? "json" : "md";
         const blob = new Blob([content], { type: "text/plain" });
         const url = URL.createObjectURL(blob);
@@ -2491,20 +2518,19 @@ export default function ChatPanel({
         console.warn("Export failed:", err);
       }
     },
-    [graphId],
+    [],
   );
 
   const handlePinThread = useCallback(
-    async (threadId: string, pinned: boolean) => {
-      if (!graphId) return;
+    async ({ threadId, workflowId }: ThreadTarget, pinned: boolean) => {
       try {
-        await api.pinChatThread(graphId, threadId, pinned);
-        await fetchThreads(graphId);
+        await api.pinChatThread(workflowId, threadId, pinned);
+        await fetchThreads(graphIdRef.current || workflowId);
       } catch (err) {
         console.warn("Failed to pin thread:", err);
       }
     },
-    [graphId, fetchThreads],
+    [fetchThreads],
   );
 
   // -------------------------------------------------------------------------
@@ -2609,43 +2635,59 @@ export default function ChatPanel({
   }, [graphId, messages, fetchThreads]);
 
   const handleSelectThread = useCallback(
-    async (threadId: string) => {
-      if (!graphId) return;
+    async ({ threadId, workflowId }: ThreadTarget) => {
       setSessionMarkers({});
-      await loadThread(graphId, threadId);
+      if (workflowId !== graphId) {
+        try {
+          await loadGraph(workflowId);
+        } catch (err) {
+          console.warn("Failed to switch workflow for thread:", err);
+        }
+      }
+      await loadThread(workflowId, threadId);
     },
-    [graphId, loadThread],
+    [graphId, loadGraph, loadThread],
   );
 
   const handleDeleteThread = useCallback(
-    (threadId: string) => {
-      setConfirmDeleteThreadId(threadId);
+    (target: ThreadTarget) => {
+      setConfirmDeleteThreadId(target);
     },
     [],
   );
 
   const executeDeleteThread = useCallback(
-    async (threadId: string) => {
-      if (!graphId) return;
+    async ({ threadId, workflowId }: ThreadTarget) => {
       let snapshot: Record<string, unknown> | null = null;
-      const lineageSnapshot = threads.find((thread) => thread.id === threadId) ?? null;
-      const hasChildBranches =
-        (threadBranchTree.childrenByParentId[threadId]?.length ?? 0) > 0;
+      const lineageSnapshot =
+        threads.find(
+          (thread) =>
+            thread.id === threadId && thread.workflow_id === workflowId,
+        ) ?? null;
+      const hasChildBranches = threads.some(
+        (thread) =>
+          thread.workflow_id === workflowId &&
+          thread.parent_thread_id === threadId,
+      );
       try {
-        snapshot = await api.getChatThread(graphId, threadId);
+        snapshot = await api.getChatThread(workflowId, threadId);
       } catch { /* proceed without undo capability */ }
       try {
-        persistenceCoordinatorRef.current?.cancelForThread(graphId, threadId);
-        await api.deleteChatThread(graphId, threadId);
-        const wasActive = activeThreadId === threadId;
+        persistenceCoordinatorRef.current?.cancelForThread(workflowId, threadId);
+        await api.deleteChatThread(workflowId, threadId);
+        const wasActive =
+          activeThreadId === threadId && graphId === workflowId;
         if (wasActive) {
           setActiveThreadId(null);
           setMessages([]);
           setThreadTitle("");
         }
-        const remaining = await fetchThreads(graphId);
+        const remaining = await fetchThreads(graphIdRef.current || workflowId);
         if (wasActive && remaining.length > 0) {
-          await loadThread(graphId, remaining[0].id);
+          await handleSelectThread({
+            threadId: remaining[0].id,
+            workflowId: remaining[0].workflow_id,
+          });
         } else if (wasActive) {
           requestAnimationFrame(() => textareaRef.current?.focus());
         }
@@ -2660,7 +2702,7 @@ export default function ChatPanel({
                 label: "Undo",
                 onClick: async () => {
                   try {
-                    const restored = await api.createChatThread(graphId, {
+                    const restored = await api.createChatThread(workflowId, {
                       title: snapshotTitle,
                       mode: snapshotMode,
                       parent_thread_id:
@@ -2673,14 +2715,17 @@ export default function ChatPanel({
                     if (!restoredId) {
                       throw new Error("Missing restored thread id");
                     }
-                    await api.updateChatThread(graphId, restoredId, {
+                    await api.updateChatThread(workflowId, restoredId, {
                       title: snapshotTitle,
                       messages: snapshotMessages ?? [],
                       mode: snapshotMode,
                     });
-                    await fetchThreads(graphId);
+                    await fetchThreads(graphIdRef.current || workflowId);
                     if (wasActive) {
-                      await loadThread(graphId, restoredId);
+                      await handleSelectThread({
+                        threadId: restoredId,
+                        workflowId,
+                      });
                     }
                     useGraphStore.getState().addToast({
                       type: "success",
@@ -2707,21 +2752,20 @@ export default function ChatPanel({
         console.warn("Failed to delete thread:", err);
       }
     },
-    [graphId, activeThreadId, fetchThreads, loadThread, threadBranchTree, threads],
+    [activeThreadId, fetchThreads, graphId, handleSelectThread, threads],
   );
 
   const handleRenameThread = useCallback(
-    async (threadId: string, newTitle: string) => {
-      if (!graphId) return;
+    async ({ threadId, workflowId }: ThreadTarget, newTitle: string) => {
       const trimmed = normalizeThreadTitleInput(newTitle);
       if (!trimmed) return;
       try {
-        await api.updateChatThread(graphId, threadId, {
+        await api.updateChatThread(workflowId, threadId, {
           title: trimmed,
         });
         setThreads((prev) =>
           prev.map((thread) =>
-            thread.id === threadId
+            thread.id === threadId && thread.workflow_id === workflowId
               ? {
                   ...thread,
                   title: trimmed,
@@ -2730,14 +2774,17 @@ export default function ChatPanel({
               : thread,
           ),
         );
-        if (activeThreadIdRef.current === threadId) {
+        if (
+          activeThreadIdRef.current === threadId &&
+          graphIdRef.current === workflowId
+        ) {
           setThreadTitle(trimmed);
         }
       } catch (err) {
         console.warn("Failed to rename thread:", err);
       }
     },
-    [graphId],
+    [],
   );
 
   const handleTitleSave = useCallback(
@@ -3651,10 +3698,15 @@ export default function ChatPanel({
             <ThreadListView
               threads={threads}
               activeThreadId={activeThreadId}
+              activeWorkflowId={graphId}
               loading={loadingThreads}
-              treeMode
+              treeMode={false}
+              showWorkflowId
               onNewChat={handleNewChat}
-              onSelectThread={(id) => { handleSelectThread(id); setShowThreadList(false); }}
+              onSelectThread={(target) => {
+                handleSelectThread(target);
+                setShowThreadList(false);
+              }}
               onDeleteThread={handleDeleteThread}
               onRenameThread={handleRenameThread}
               onPinThread={handlePinThread}
@@ -3681,12 +3733,13 @@ export default function ChatPanel({
             x={threadContextMenu.x}
             y={threadContextMenu.y}
             threadId={threadContextMenu.threadId}
+            workflowId={threadContextMenu.workflowId}
             threadTitle={threadContextMenu.threadTitle}
             pinned={threadContextMenu.pinned}
-            onPin={(id, pin) => { handlePinThread(id, pin); setThreadContextMenu(null); }}
-            onRename={() => setThreadContextMenu(null)}
-            onExport={(id, fmt) => { handleExportThread(id, fmt); setThreadContextMenu(null); }}
-            onDelete={(id) => { handleDeleteThread(id); setThreadContextMenu(null); }}
+            onPin={(target, pin) => { handlePinThread(target, pin); setThreadContextMenu(null); }}
+            onRename={() => { setThreadContextMenu(null); }}
+            onExport={(target, fmt) => { handleExportThread(target, fmt); setThreadContextMenu(null); }}
+            onDelete={(target) => { handleDeleteThread(target); setThreadContextMenu(null); }}
             onClose={() => setThreadContextMenu(null)}
           />
         )}
@@ -3734,6 +3787,7 @@ export default function ChatPanel({
           <ThreadListView
             threads={threads}
             activeThreadId={activeThreadId}
+            activeWorkflowId={graphId}
             loading={loadingThreads}
             treeMode
             onNewChat={handleNewChat}
@@ -3764,12 +3818,13 @@ export default function ChatPanel({
           x={threadContextMenu.x}
           y={threadContextMenu.y}
           threadId={threadContextMenu.threadId}
+          workflowId={threadContextMenu.workflowId}
           threadTitle={threadContextMenu.threadTitle}
           pinned={threadContextMenu.pinned}
-          onPin={(id, pin) => { handlePinThread(id, pin); setThreadContextMenu(null); }}
-          onRename={() => setThreadContextMenu(null)}
-          onExport={(id, fmt) => { handleExportThread(id, fmt); setThreadContextMenu(null); }}
-          onDelete={(id) => { handleDeleteThread(id); setThreadContextMenu(null); }}
+          onPin={(target, pin) => { handlePinThread(target, pin); setThreadContextMenu(null); }}
+          onRename={() => { setThreadContextMenu(null); }}
+          onExport={(target, fmt) => { handleExportThread(target, fmt); setThreadContextMenu(null); }}
+          onDelete={(target) => { handleDeleteThread(target); setThreadContextMenu(null); }}
           onClose={() => setThreadContextMenu(null)}
         />
       )}
@@ -3835,8 +3890,10 @@ function getThreadBranchBadgeMeta(
 function ThreadListView({
   threads,
   activeThreadId,
+  activeWorkflowId,
   loading,
   treeMode = false,
+  showWorkflowId = false,
   onNewChat,
   onSelectThread,
   onDeleteThread,
@@ -3853,24 +3910,19 @@ function ThreadListView({
 }: {
   threads: ChatThreadSummary[];
   activeThreadId?: string | null;
+  activeWorkflowId?: string | null;
   loading: boolean;
   treeMode?: boolean;
+  showWorkflowId?: boolean;
   onNewChat: () => void;
-  onSelectThread: (id: string) => void;
-  onDeleteThread: (id: string) => void;
-  onRenameThread: (id: string, title: string) => void;
-  onPinThread: (id: string, pinned: boolean) => void;
-  onExportThread: (id: string, format: "md" | "json") => void;
+  onSelectThread: (target: ThreadTarget) => void;
+  onDeleteThread: (target: ThreadTarget) => void;
+  onRenameThread: (target: ThreadTarget, title: string) => void;
+  onPinThread: (target: ThreadTarget, pinned: boolean) => void;
+  onExportThread: (target: ThreadTarget, format: "md" | "json") => void;
   onClose?: () => void;
   searchQuery: string;
-  searchResults: Array<{
-    thread_id: string;
-    thread_title: string;
-    workflow_id: string;
-    message_id: string;
-    message_preview: string;
-    timestamp: string;
-  }>;
+  searchResults: SearchThreadResult[];
   isSearching: boolean;
   onSearch: (query: string) => void;
   bgStreamIds?: Set<string>;
@@ -3878,6 +3930,7 @@ function ThreadListView({
     x: number;
     y: number;
     threadId: string;
+    workflowId: string;
     threadTitle: string;
     pinned: boolean;
   }) => void;
@@ -3894,23 +3947,26 @@ function ThreadListView({
   const sortedPinned = [...pinnedThreads].sort(
     (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
   );
-  const branchTree = useMemo(() => buildThreadBranchTree(threads), [threads]);
+  const branchTree = useMemo(
+    () => (treeMode ? buildThreadBranchTree(threads) : null),
+    [treeMode, threads],
+  );
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [collapsedTreeIds, setCollapsedTreeIds] = useState<Set<string>>(
     () => new Set(),
   );
   const branchStructureKey = useMemo(
     () =>
-      threads
+      (treeMode ? threads : [])
         .map((thread) => `${thread.id}:${thread.parent_thread_id ?? ""}`)
         .sort()
         .join("|"),
-    [threads],
+    [treeMode, threads],
   );
   const lastCollapsedStructureKeyRef = useRef("");
 
   useEffect(() => {
-    if (!treeMode) return;
+    if (!treeMode || !branchTree) return;
     if (lastCollapsedStructureKeyRef.current === branchStructureKey) return;
     lastCollapsedStructureKeyRef.current = branchStructureKey;
     const withChildren = branchTree.rootIds.filter(
@@ -3929,7 +3985,7 @@ function ThreadListView({
   }, []);
 
   useEffect(() => {
-    if (!treeMode || !activeThreadId) return;
+    if (!treeMode || !activeThreadId || !branchTree) return;
     const ancestry = branchTree.ancestryByThreadId[activeThreadId] ?? [];
     setCollapsedTreeIds((prev) => {
       let changed = false;
@@ -4010,7 +4066,7 @@ function ThreadListView({
             </button>
           )}
         </div>
-        {treeMode && !searchQuery.trim() && threads.length > 0 && (
+        {treeMode && branchTree && !searchQuery.trim() && threads.length > 0 && (
           <div className="mt-2 flex items-center justify-between text-[10px] text-gray-400 dark:text-gray-500">
             <span className="inline-flex items-center gap-1">
               <GitBranch size={10} className="text-violet-500 dark:text-violet-300" />
@@ -4030,12 +4086,19 @@ function ThreadListView({
           ) : (
             <div className="py-1">
               {searchResults.map((result, index) => {
-                const isActive = result.thread_id === activeThreadId;
+                const isActive =
+                  result.thread_id === activeThreadId &&
+                  result.workflow_id === activeWorkflowId;
                 return (
                   <div
                     key={`${result.thread_id}-${result.message_id}-${index}`}
                     data-thread-row-id={result.thread_id}
-                    onClick={() => onSelectThread(result.thread_id)}
+                    onClick={() =>
+                      onSelectThread({
+                        threadId: result.thread_id,
+                        workflowId: result.workflow_id,
+                      })
+                    }
                     className={`px-3 py-2.5 cursor-pointer transition-colors ${
                       isActive
                         ? "bg-indigo-50 dark:bg-indigo-500/10"
@@ -4048,6 +4111,11 @@ function ThreadListView({
                     <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5 line-clamp-2">
                       {result.message_preview}
                     </div>
+                    {showWorkflowId && (
+                      <div className="mt-1 text-[10px] text-gray-400 dark:text-gray-500">
+                        {formatWorkflowLabel(result.workflow_id)}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -4078,7 +4146,7 @@ function ThreadListView({
               Start a new chat
             </button>
           </div>
-        ) : treeMode ? (
+        ) : treeMode && branchTree ? (
           <div className="py-1">
             {(() => {
               const pinnedRootIds = branchTree.rootIds.filter(
@@ -4104,7 +4172,9 @@ function ThreadListView({
                           threadId={threadId}
                           depth={0}
                           tree={branchTree}
+                          showWorkflowId={showWorkflowId}
                           activeThreadId={activeThreadId ?? null}
+                          activeWorkflowId={activeWorkflowId ?? null}
                           collapsedTreeIds={collapsedTreeIds}
                           onToggleTreeNode={toggleTreeNode}
                           onSelectThread={onSelectThread}
@@ -4127,7 +4197,9 @@ function ThreadListView({
                       threadId={threadId}
                       depth={0}
                       tree={branchTree}
+                      showWorkflowId={showWorkflowId}
                       activeThreadId={activeThreadId ?? null}
+                      activeWorkflowId={activeWorkflowId ?? null}
                       collapsedTreeIds={collapsedTreeIds}
                       onToggleTreeNode={toggleTreeNode}
                       onSelectThread={onSelectThread}
@@ -4157,14 +4229,54 @@ function ThreadListView({
                   <ThreadRow
                     key={thread.id}
                     thread={thread}
-                    onSelect={() => onSelectThread(thread.id)}
-                    onDelete={() => onDeleteThread(thread.id)}
-                    onRename={(title) => onRenameThread(thread.id, title)}
-                    onPin={() => onPinThread(thread.id, false)}
-                    onExport={(format) => onExportThread(thread.id, format)}
+                    onSelect={() =>
+                      onSelectThread({
+                        threadId: thread.id,
+                        workflowId: thread.workflow_id,
+                      })
+                    }
+                    onDelete={() =>
+                      onDeleteThread({
+                        threadId: thread.id,
+                        workflowId: thread.workflow_id,
+                      })
+                    }
+                    onRename={(title) =>
+                      onRenameThread(
+                        {
+                          threadId: thread.id,
+                          workflowId: thread.workflow_id,
+                        },
+                        title,
+                      )
+                    }
+                    onPin={() =>
+                      onPinThread(
+                        {
+                          threadId: thread.id,
+                          workflowId: thread.workflow_id,
+                        },
+                        false,
+                      )
+                    }
+                    onExport={(format) =>
+                      onExportThread(
+                        {
+                          threadId: thread.id,
+                          workflowId: thread.workflow_id,
+                        },
+                        format,
+                      )
+                    }
                     pinned
-                    isActive={thread.id === activeThreadId}
-                    siblingInfo={branchTree.siblingInfoByThreadId[thread.id]}
+                    isActive={
+                      thread.id === activeThreadId &&
+                      thread.workflow_id === activeWorkflowId
+                    }
+                    siblingInfo={
+                      branchTree?.siblingInfoByThreadId[thread.id]
+                    }
+                    showWorkflowId={showWorkflowId}
                     isStreamingInBg={bgStreamIds?.has(thread.id) ?? false}
                     onContextMenu={onContextMenu}
                   />
@@ -4185,19 +4297,54 @@ function ThreadListView({
                   <ThreadRow
                     key={thread.id}
                     thread={thread}
-                    onSelect={() => onSelectThread(thread.id)}
-                    onDelete={() => onDeleteThread(thread.id)}
-                    onRename={(title) => onRenameThread(thread.id, title)}
+                    onSelect={() =>
+                      onSelectThread({
+                        threadId: thread.id,
+                        workflowId: thread.workflow_id,
+                      })
+                    }
+                    onDelete={() =>
+                      onDeleteThread({
+                        threadId: thread.id,
+                        workflowId: thread.workflow_id,
+                      })
+                    }
+                    onRename={(title) =>
+                      onRenameThread(
+                        {
+                          threadId: thread.id,
+                          workflowId: thread.workflow_id,
+                        },
+                        title,
+                      )
+                    }
                     onPin={() =>
                       onPinThread(
-                        thread.id,
+                        {
+                          threadId: thread.id,
+                          workflowId: thread.workflow_id,
+                        },
                         !(thread as ChatThreadSummary & { pinned?: boolean }).pinned,
                       )
                     }
-                    onExport={(format) => onExportThread(thread.id, format)}
+                    onExport={(format) =>
+                      onExportThread(
+                        {
+                          threadId: thread.id,
+                          workflowId: thread.workflow_id,
+                        },
+                        format,
+                      )
+                    }
                     pinned={false}
-                    isActive={thread.id === activeThreadId}
-                    siblingInfo={branchTree.siblingInfoByThreadId[thread.id]}
+                    isActive={
+                      thread.id === activeThreadId &&
+                      thread.workflow_id === activeWorkflowId
+                    }
+                    siblingInfo={
+                      branchTree?.siblingInfoByThreadId[thread.id]
+                    }
+                    showWorkflowId={showWorkflowId}
                     isStreamingInBg={bgStreamIds?.has(thread.id) ?? false}
                     onContextMenu={onContextMenu}
                   />
@@ -4215,7 +4362,9 @@ function ThreadTreeNode({
   threadId,
   depth,
   tree,
+  showWorkflowId,
   activeThreadId,
+  activeWorkflowId,
   collapsedTreeIds,
   onToggleTreeNode,
   onSelectThread,
@@ -4229,19 +4378,22 @@ function ThreadTreeNode({
   threadId: string;
   depth: number;
   tree: ChatThreadBranchTree;
+  showWorkflowId: boolean;
   activeThreadId: string | null;
+  activeWorkflowId: string | null;
   collapsedTreeIds: Set<string>;
   onToggleTreeNode: (threadId: string) => void;
-  onSelectThread: (id: string) => void;
-  onDeleteThread: (id: string) => void;
-  onRenameThread: (id: string, title: string) => void;
-  onPinThread: (id: string, pinned: boolean) => void;
-  onExportThread: (id: string, format: "md" | "json") => void;
+  onSelectThread: (target: ThreadTarget) => void;
+  onDeleteThread: (target: ThreadTarget) => void;
+  onRenameThread: (target: ThreadTarget, title: string) => void;
+  onPinThread: (target: ThreadTarget, pinned: boolean) => void;
+  onExportThread: (target: ThreadTarget, format: "md" | "json") => void;
   bgStreamIds?: Set<string>;
   onContextMenu?: (menu: {
     x: number;
     y: number;
     threadId: string;
+    workflowId: string;
     threadTitle: string;
     pinned: boolean;
   }) => void;
@@ -4256,20 +4408,38 @@ function ThreadTreeNode({
     <div>
       <ThreadRow
         thread={thread}
-        onSelect={() => onSelectThread(thread.id)}
-        onDelete={() => onDeleteThread(thread.id)}
-        onRename={(title) => onRenameThread(thread.id, title)}
+        onSelect={() =>
+          onSelectThread({ threadId: thread.id, workflowId: thread.workflow_id })
+        }
+        onDelete={() =>
+          onDeleteThread({ threadId: thread.id, workflowId: thread.workflow_id })
+        }
+        onRename={(title) =>
+          onRenameThread(
+            { threadId: thread.id, workflowId: thread.workflow_id },
+            title,
+          )
+        }
         onPin={() =>
           onPinThread(
-            thread.id,
+            { threadId: thread.id, workflowId: thread.workflow_id },
             !(thread as ChatThreadSummary & { pinned?: boolean }).pinned,
           )
         }
-        onExport={(format) => onExportThread(thread.id, format)}
+        onExport={(format) =>
+          onExportThread(
+            { threadId: thread.id, workflowId: thread.workflow_id },
+            format,
+          )
+        }
         pinned={Boolean((thread as ChatThreadSummary & { pinned?: boolean }).pinned)}
-        isActive={thread.id === activeThreadId}
+        isActive={
+          thread.id === activeThreadId &&
+          thread.workflow_id === activeWorkflowId
+        }
         siblingInfo={tree.siblingInfoByThreadId[thread.id]}
         indentLevel={depth}
+        showWorkflowId={showWorkflowId}
         leadingSlot={
           hasChildren ? (
             <button
@@ -4297,7 +4467,9 @@ function ThreadTreeNode({
               threadId={childId}
               depth={depth + 1}
               tree={tree}
+              showWorkflowId={showWorkflowId}
               activeThreadId={activeThreadId}
+              activeWorkflowId={activeWorkflowId}
               collapsedTreeIds={collapsedTreeIds}
               onToggleTreeNode={onToggleTreeNode}
               onSelectThread={onSelectThread}
@@ -4326,6 +4498,7 @@ function ThreadRow({
   isActive = false,
   siblingInfo,
   indentLevel = 0,
+  showWorkflowId = false,
   leadingSlot,
 }: {
   thread: ChatThreadSummary;
@@ -4340,12 +4513,14 @@ function ThreadRow({
     x: number;
     y: number;
     threadId: string;
+    workflowId: string;
     threadTitle: string;
     pinned: boolean;
   }) => void;
   isActive?: boolean;
   siblingInfo?: ChatThreadSiblingInfo;
   indentLevel?: number;
+  showWorkflowId?: boolean;
   leadingSlot?: React.ReactNode;
 }) {
   const title = getDisplayThreadTitle(thread.title, "Untitled chat");
@@ -4382,11 +4557,12 @@ function ThreadRow({
         x: e.clientX,
         y: e.clientY,
         threadId: thread.id,
+        workflowId: thread.workflow_id,
         threadTitle: title,
         pinned,
       });
     },
-    [onContextMenu, thread.id, title, pinned],
+    [onContextMenu, thread.id, thread.workflow_id, title, pinned],
   );
 
   return (
@@ -4467,6 +4643,17 @@ function ThreadRow({
           <span className="text-[10px] text-gray-400 dark:text-gray-500">
             {relativeTimeShort(thread.updated_at)}
           </span>
+          {showWorkflowId && (
+            <>
+              <span className="text-[10px] text-gray-300 dark:text-gray-600">·</span>
+              <span
+                className="text-[10px] text-gray-400 dark:text-gray-500 truncate"
+                title={thread.workflow_id}
+              >
+                {formatWorkflowLabel(thread.workflow_id)}
+              </span>
+            </>
+          )}
           {thread.mode && (
             <>
               <span className="text-[10px] text-gray-300 dark:text-gray-600">·</span>
@@ -4835,6 +5022,7 @@ function ThreadContextMenu({
   x,
   y,
   threadId,
+  workflowId,
   threadTitle,
   pinned,
   onPin,
@@ -4846,12 +5034,13 @@ function ThreadContextMenu({
   x: number;
   y: number;
   threadId: string;
+  workflowId: string;
   threadTitle: string;
   pinned: boolean;
-  onPin: (id: string, pinned: boolean) => void;
-  onRename: (id: string) => void;
-  onExport: (id: string, format: "md" | "json") => void;
-  onDelete: (id: string) => void;
+  onPin: (target: ThreadTarget, pinned: boolean) => void;
+  onRename: (target: ThreadTarget) => void;
+  onExport: (target: ThreadTarget, format: "md" | "json") => void;
+  onDelete: (target: ThreadTarget) => void;
   onClose: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -4889,27 +5078,39 @@ function ThreadContextMenu({
         {threadTitle}
       </div>
       <div className="border-t border-gray-100 mb-1" />
-      <button className={menuItem} onClick={() => onRename(threadId)}>
+      <button
+        className={menuItem}
+        onClick={() => onRename({ threadId, workflowId })}
+      >
         <PencilLine size={12} className="text-gray-400" />
         Rename
       </button>
-      <button className={menuItem} onClick={() => onPin(threadId, !pinned)}>
+      <button
+        className={menuItem}
+        onClick={() => onPin({ threadId, workflowId }, !pinned)}
+      >
         <Pin size={12} className={pinned ? "text-indigo-400" : "text-gray-400"} />
         {pinned ? "Unpin" : "Pin to top"}
       </button>
       <div className="my-1 border-t border-gray-100" />
-      <button className={menuItem} onClick={() => onExport(threadId, "md")}>
+      <button
+        className={menuItem}
+        onClick={() => onExport({ threadId, workflowId }, "md")}
+      >
         <Download size={12} className="text-gray-400" />
         Export as Markdown
       </button>
-      <button className={menuItem} onClick={() => onExport(threadId, "json")}>
+      <button
+        className={menuItem}
+        onClick={() => onExport({ threadId, workflowId }, "json")}
+      >
         <Download size={12} className="text-gray-400" />
         Export as JSON
       </button>
       <div className="my-1 border-t border-gray-100" />
       <button
         className="flex items-center gap-2 px-3 py-2 text-xs text-red-600 hover:bg-red-50 cursor-pointer transition-colors w-full text-left"
-        onClick={() => onDelete(threadId)}
+        onClick={() => onDelete({ threadId, workflowId })}
       >
         <Trash2 size={12} />
         Delete conversation
