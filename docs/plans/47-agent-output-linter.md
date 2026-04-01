@@ -1,7 +1,7 @@
 # 47: Agent Output Linter
 
 **Status:** not-started
-**Goal:** A fast, inline, configurable validation layer at every agent-to-agent handoff boundary — like ESLint for agent output.
+**Goal:** A fast, inline, configurable validation layer at every agent-to-agent handoff boundary — like ESLint for agent output — implemented after the Worker plan so it can target a normalized contract surface instead of today's mixed node landscape.
 
 ## The Problem
 
@@ -89,7 +89,7 @@ edge = DataEdge(
 | [47-2](47-2-structural-rules.md) | Structural Rules | Tier 1: schema validation, type checking, required fields, range bounds, non-empty, format patterns | P0 | not-started |
 | [47-3](47-3-semantic-rules.md) | Semantic Rules | Tier 2: embedding similarity, entity/keyword presence, topic detection, tone classification | P1 | not-started |
 | [47-4](47-4-intent-validation-and-autofix.md) | Intent Validation & Auto-Fix | Tier 3: focused LLM judge; auto-fix strategies (fill, truncate, retry-with-feedback, refocus) | P1 | not-started |
-| [47-5](47-5-engine-integration-and-config-autogen.md) | Engine Integration & Config Auto-Generation | Scheduler hook at `port_data.set()`; topology compiler generates lint configs from contracts | P1 | not-started |
+| [47-5](47-5-engine-integration-and-config-autogen.md) | Engine Integration & Config Auto-Generation | Scheduler hook at `port_data.set()`; topology/compiler generate lint configs from Worker-first contracts | P1 | not-started |
 
 ## Dependencies / Sequencing
 
@@ -109,21 +109,27 @@ edge = DataEdge(
 
 47-5 is where the linter connects to `dan.engine`. Until then, it is a standalone library callable in tests or custom code.
 
-**Cross-plan dependency:** 47-5 integrates with the engine scheduler and optionally with the topology compiler from plan 46. Neither 47-1 through 47-4 nor plan 46 depend on each other.
+**Cross-plan sequencing:** architecturally, 47-1 through 47-4 remain dependency-free on `dan.worker`. Implementation-wise, the whole 47 series starts only after plan 46 so rule/config generation can target the Worker-first contract model rather than hard-coding today's heterogeneous node set.
+
+## Implementation Lane
+
+1. Execute plan 47 only in the dedicated follow-on worktree cut after plan 46.
+2. Keep the `dan.linter` module itself zero-dependency on `dan.worker`, `dan.engine`, and `dan.models`.
+3. Treat Worker metadata from plan 46 as the canonical source for auto-generated lint config. Legacy nodes get best-effort fallback, not first-class design priority.
 
 ## Relationship to Plan 46 (Worker)
 
-These two plans are peers, not parent-child:
+Architecturally they stay decoupled, but the implementation order is intentional:
 
 ```
-dan.worker (46)  ←──→  dan.engine  ←──→  dan.linter (47)
-     ↑                      ↑                    ↑
-  defines nodes      runs the graph      validates handoffs
+plan 46: normalize nodes around Worker
+    ↓
+stable contract / intent surface
+    ↓
+plan 47: validate handoffs against that surface
 ```
 
-`dan.worker` defines what a node IS. `dan.linter` validates what flows BETWEEN nodes. `dan.engine` orchestrates both. No direct dependency between worker and linter.
-
-The only intersection is the topology compiler: when it generates a squad of Workers (46), it also generates lint configs for the edges between them (47-5). That is the compiler's responsibility, not a dependency between the modules.
+`dan.worker` defines what a node IS. `dan.linter` validates what flows BETWEEN nodes. `dan.engine` orchestrates both. The linter module still does not import Worker internals. But from a delivery standpoint, 46 comes first so 47 can consume one normalized authoring/runtime surface instead of twenty-plus node-specific ones.
 
 ## Success Criteria
 
@@ -133,6 +139,7 @@ The only intersection is the topology compiler: when it generates a squad of Wor
 - Tier 3 is only triggered when Tier 2 confidence is below threshold
 - Auto-fix can repair common issues (missing fields, truncation, topic drift) without human intervention
 - The linter works with both legacy node types and the new Worker primitive
+- Auto-generated lint configs are Worker-first and only use best-effort fallbacks for legacy nodes
 - Per-edge lint configs are expressible in graph JSON and editable in the visual editor
 - `src/dan/linter/` has zero imports from `dan.engine`, `dan.worker`, or `dan.models`
 
@@ -147,10 +154,13 @@ The only intersection is the topology compiler: when it generates a squad of Wor
 
 ## Decisions
 
-- (to be filled during execution)
+- The linter module remains architecturally decoupled from `dan.worker`, but the implementation sequence is still 46 → 47. Normalizing contracts first is the point.
+- Worker role/persona/description plus port descriptions/schemas are the canonical source for lint-config generation. Legacy node support exists, but it should not drive the design.
+- Do not start 47 in parallel with 46. Otherwise the config-generation logic will calcify current node heterogeneity instead of the simpler Worker target state.
 
 ## Notes
 
 - The existing `ValidatorNode` and `BoundaryContract` cover structural validation at explicit graph boundaries. The linter generalizes this to *every* edge, adds semantic/intent tiers, and makes it invisible middleware rather than a visible graph node.
 - The existing LLM executor's output normalization loop (parse/validate/re-prompt) is a form of inline auto-fix. The linter's auto-fix extends this pattern to the handoff boundary, not just the LLM output boundary.
 - The linter operates on `port_data` values — the actual data flowing through the graph. It does not need to understand the graph topology, just the data at each edge.
+- The delivery order matters because 47-5 should target Worker-native graphs and compiler outputs first, not embed knowledge of every legacy node flavor.

@@ -2,7 +2,7 @@
 
 **Parent:** [46-universal-worker-primitive](46-universal-worker-primitive.md)
 **Status:** not-started
-**Goal:** Define a clean, well-organized `Worker` model with three clear field groups (identity, capability, composition), optional typed sub-models for execution tuning, and seamless integration into the existing `Node` union.
+**Goal:** Define a clean, well-organized `Worker` model with three clear field groups (identity, capability, composition), optional typed sub-models for execution tuning, seamless integration into the existing `Node` union, and a canonical contract metadata surface for downstream systems.
 
 ## Design: Clean Field Organization
 
@@ -89,6 +89,7 @@ A bare `Worker(id="w1", name="w1")` is valid — it passes inputs through. Addin
     - If `control_flow` is set with `gate_mode="while"`: seed `continue`/`done` output ports
     - If `validation_rules` is non-empty: seed `valid`/`invalid` output ports
     - Otherwise: seed generic `data` input port and `result` output port if none declared
+  - [ ] 5-8. Document and preserve the canonical contract/intent fields on Worker: `description`, `role`, `persona`, input/output port descriptions + schemas, and boundary schemas. Downstream systems must be able to read them without understanding legacy node types.
 - [ ] 6. Define `__init__.py` public API
   - [ ] 6-1. Export: `Worker`, `WorkerAuthority`, `LLMHints`, `ControlFlowConfig`
   - [ ] 6-2. Export: `role` function (placeholder — implemented in 46-3)
@@ -130,9 +131,11 @@ A bare `Worker(id="w1", name="w1")` is valid — it passes inputs through. Addin
 - **Validation rules stay flat.** `validation_rules: list[ValidationRule]` is a simple list, not worth a sub-model wrapper. Empty list = no validation.
 - **Default ports are smart.** A bare Worker gets `data` input + `result` output. A gate Worker gets mode-appropriate routing ports. A validator gets `valid`/`invalid`. This is the "it just works" philosophy at the model level.
 - **`persona` vs `llm.system_prompt`.** `persona` is the Worker's identity — always available, used for logging/display even on non-LLM workers. `llm.system_prompt` is the LLM system message (defaults to `persona` when not set explicitly). This avoids overloading one field.
+- **Worker contract metadata is canonical.** `description`, `role`, `persona`, port descriptions/schemas, and `external_*_schema` fields are preserved even for non-LLM workers because later systems (generation, lint autogen, editor) consume them.
 
 ## Notes
 
 - The `src/dan/worker/` module is self-contained. It imports from `dan.models` (NodeBase, ports, context, control_flow) but nothing outside `dan.worker/` imports from deep inside it — only from the public `__init__.py` API.
 - The composite-node contract fields are identical to those on existing types (WhileLoopNode, CompositeNode, etc.) — same Pydantic types, same defaults. This ensures the engine's composite execution path works without changes.
 - The `sub_workers` field generalizes `OrchestratorNode.teams` and `AgentTeamNode.agents`. One name, one concept.
+- This sub-plan is where the post-46 lint/autogen surface really gets standardized. If these fields are lossy here, plan 47 will be forced into heuristic guessing later.

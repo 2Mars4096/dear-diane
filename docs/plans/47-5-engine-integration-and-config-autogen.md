@@ -2,7 +2,7 @@
 
 **Parent:** [47-agent-output-linter](47-agent-output-linter.md)
 **Status:** not-started
-**Goal:** Connect the standalone linter to the DAN engine scheduler at the `port_data.set()` handoff point, and enable the topology compiler to auto-generate lint configs from worker contracts.
+**Goal:** Connect the standalone linter to the DAN engine scheduler at the `port_data.set()` handoff point, and enable the topology/compiler stack to auto-generate lint configs from the Worker-first contract surface established by plan 46.
 
 ## Part A: Engine Integration
 
@@ -53,13 +53,14 @@
   - [ ] 7-4. Extract `format_patterns` from string fields with `pattern` constraints
   - [ ] 7-5. This is pure schema analysis — deterministic, no LLM needed
 - [ ] 8. Semantic config generation from node descriptions
-  - [ ] 8-1. Given the receiving node's `description`, `persona` (for Workers), and input port descriptions, generate `SemanticConfig`
-  - [ ] 8-2. Extract `topic_keywords` by simple NLP: tokenize description, remove stop words, take top-N terms
-  - [ ] 8-3. Set `embedding_reference` to the receiving node's description text
-  - [ ] 8-4. Default `min_topic_similarity` based on task risk level (0.7 for normal, 0.85 for high-risk)
+  - [ ] 8-1. Given the receiving node's `description`, and for Workers especially `role`, `persona`, and input port descriptions, generate `SemanticConfig`
+  - [ ] 8-2. Prefer a Worker-first path; legacy nodes fall back to their existing descriptions and executor-specific fields only when Worker metadata is unavailable
+  - [ ] 8-3. Extract `topic_keywords` by simple NLP: tokenize the canonical contract description, remove stop words, take top-N terms
+  - [ ] 8-4. Set `embedding_reference` to the receiving node's contract/intent text
+  - [ ] 8-5. Default `min_topic_similarity` based on task risk level (0.7 for normal, 0.85 for high-risk)
 - [ ] 9. Intent config generation from worker roles
-  - [ ] 9-1. Given the receiving worker's `role`, `persona`, and the edge's purpose in the workflow, generate an `IntentConfig`
-  - [ ] 9-2. The `intent` string is a synthesized statement: "Output that serves as {port_description} for a {role} agent whose goal is {persona_summary}"
+  - [ ] 9-1. Given the receiving worker's `role`, `persona`, input-port descriptions, and the edge's purpose in the workflow, generate an `IntentConfig`
+  - [ ] 9-2. The `intent` string is a synthesized statement: "Output that serves as {port_description} for a {role} worker whose goal is {persona_summary}"
   - [ ] 9-3. This can be generated deterministically from the node metadata — no LLM call needed for basic intents
   - [ ] 9-4. For complex workflows, optionally use a single LLM call at graph construction time to refine the intent statement
 - [ ] 10. Auto-generation entry point
@@ -67,6 +68,7 @@
   - [ ] 10-2. Called by the topology compiler when creating edges between workers
   - [ ] 10-3. Called by the builder DSL when connecting nodes (optional — off by default, enabled by config)
   - [ ] 10-4. The generated config is stored in `edge.metadata["lint"]` and can be manually overridden
+  - [ ] 10-5. If source/target metadata is too weak to generate a trustworthy config, omit autogen rather than guess; manual lint config remains allowed
 - [ ] 11. Tests
   - [ ] 11-1. `tests/test_linter/test_config_generation.py` — schema-to-structural, description-to-semantic, role-to-intent
   - [ ] 11-2. Round-trip: generated config serializes to JSON and parses back to equivalent `LintConfig`
@@ -109,7 +111,8 @@ The linter never imports from `dan.engine`. The engine imports from `dan.linter`
 
 ## Decisions
 
-- (to be filled during execution)
+- Worker metadata from plan 46 is the canonical autogen source. Legacy nodes are supported via best-effort fallback only.
+- Autogen should be conservative. Missing or weak contract metadata means "leave lint unset," not "invent a brittle config."
 
 ## Notes
 
@@ -117,3 +120,4 @@ The linter never imports from `dan.engine`. The engine imports from `dan.linter`
 - The auto-generation is best-effort and conservative. A generated config should never be stricter than what the node contracts specify. Manual override is always available.
 - The embedder adapter wraps the same model gateway that LLM executors use, so embedding calls go through the existing rate limiting, telemetry, and retry infrastructure.
 - When lint fails with error severity, the scheduler treats it like a node failure: the node is marked failed, diagnostics are stored in `node_metadata`, and the normal retry/error handling kicks in. This means lint failures are visible in the UI, the event stream, and the run history.
+- This sub-plan is the explicit bridge back to 46. The linter library itself stays isolated, but autogen should primarily target Worker-native graphs produced by the post-46 builder/compiler/generation surfaces.

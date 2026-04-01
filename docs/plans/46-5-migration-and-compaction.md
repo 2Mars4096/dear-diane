@@ -2,7 +2,7 @@
 
 **Parent:** [46-universal-worker-primitive](46-universal-worker-primitive.md)
 **Status:** not-started
-**Goal:** Migrate existing workflows to Workers, deprecate old node types, and compact the codebase — delivering the clean, tight architecture that the Worker primitive makes possible.
+**Goal:** Migrate existing workflows to Workers, deprecate old node types, and compact the codebase — delivering the clean, tight architecture that the Worker primitive makes possible and establishing the Worker-first surfaces that plan 47 will target.
 
 ## The Compaction Target
 
@@ -33,6 +33,7 @@ That's the tightening.
   - [ ] 2-4. Update `node_worker.py` (structured generation) to output Workers
   - [ ] 2-5. Gate behind `DAN_WORKER_GENERATION` env var (disabled/canary/enabled)
   - [ ] 2-6. Old-type generation continues working — this is additive
+  - [ ] 2-7. Ensure generated Worker nodes populate enough contract metadata (`description`, `persona`, `role`, port descriptions/schemas) for downstream lint-config autogen
 - [ ] 3. Builder alias refactoring
   - [ ] 3-1. `llm()` → internally constructs Worker with `model` + `llm` hints
   - [ ] 3-2. `tool()` → internally constructs Worker with `tool_ids`
@@ -60,6 +61,16 @@ That's the tightening.
   - [ ] 7-3. Workflow generation produces Worker graphs that pass quality/contract checks
   - [ ] 7-4. No performance regression from WorkerExecutor dispatch overhead
 
+## Exit Gate for Plan 47
+
+Plan 47 should start only after this plan has produced a stable Worker-first contract surface:
+
+- `Worker` is in the runtime union and executor registry, and Worker-native graphs run end to end
+- Builder/compiler/decompiler preserve Worker contract metadata without lossy fallback
+- Generation/authoring surfaces can emit Worker-native graphs with meaningful descriptions, roles/personas, and port schemas/descriptions
+- Legacy graphs still deserialize and execute unchanged
+- The remaining compaction tail may continue later, but the above gate must be true before the linter plan begins
+
 ## Likely Files
 
 **Modified:**
@@ -81,6 +92,7 @@ That's the tightening.
 - Builder convenience methods (`llm()`, `tool()`, `code()`) are **never removed**. They become thin wrappers over `worker()`. Existing user code keeps working unchanged.
 - Workflow generation migration is the highest-impact change. Once the NL→workflow pipeline generates Workers instead of old types, all new workflows are Worker-native. Old workflows can be migrated at leisure.
 - Graph-store migration CLI (`dan migrate-to-workers`) is optional. The `convert_graph()` function exists for programmatic use, but most users won't need a CLI tool.
+- Plan 47 consumes the Worker-first contract surface produced here. Auto-generated lint config should prefer Worker metadata and only fall back to legacy heuristics when necessary.
 
 ## Notes
 
