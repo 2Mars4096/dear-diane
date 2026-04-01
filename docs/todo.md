@@ -1,24 +1,31 @@
 # Todo
 
 ## Current Backlog
-- [ ] [47-agent-output-linter](plans/47-agent-output-linter.md) — fast inline validation at every agent-to-agent handoff; three tiers (structural → semantic → intent); per-edge config; auto-fix; zero dependency on engine/worker/models
-  - [ ] [47-1-linter-core-and-rule-protocol](plans/47-1-linter-core-and-rule-protocol.md)
-  - [ ] [47-2-structural-rules](plans/47-2-structural-rules.md)
-  - [ ] [47-3-semantic-rules](plans/47-3-semantic-rules.md)
-  - [ ] [47-4-intent-validation-and-autofix](plans/47-4-intent-validation-and-autofix.md)
-  - [ ] [47-5-engine-integration-and-config-autogen](plans/47-5-engine-integration-and-config-autogen.md)
-- [ ] [46-universal-worker-primitive](plans/46-universal-worker-primitive.md) — replace 21 specialized node types with a single universal `Worker` primitive; contract-based minimal orchestrator; script-first execution; strangler fig migration
+- [ ] [2-frontend-hardening](UI-plans/2-frontend-hardening.md) — frontend hardening pass for mode-shell isolation, compact/full chat history reliability, honest Development-mode desktop/browser gating, Research-mode UX cleanup, and performance/test guardrails
+  - [ ] [2-1-mode-shell-isolation](UI-plans/2-1-mode-shell-isolation.md)
+  - [ ] [2-2-chat-sidebar-and-history](UI-plans/2-2-chat-sidebar-and-history.md)
+  - [ ] [2-3-development-mode-honesty](UI-plans/2-3-development-mode-honesty.md)
+  - [ ] [2-4-research-mode-ux-hardening](UI-plans/2-4-research-mode-ux-hardening.md)
+  - [ ] [2-5-performance-and-regression-coverage](UI-plans/2-5-performance-and-regression-coverage.md)
+- [ ] [46-universal-worker-primitive](plans/46-universal-worker-primitive.md) — replace 21 specialized node types with a single universal `Worker` primitive; establish the worker-first contract surface that later linting and generation can target; execute first in an isolated worktree
   - [ ] [46-1-worker-model-and-type-system](plans/46-1-worker-model-and-type-system.md)
   - [ ] [46-2-worker-executor-and-dispatch](plans/46-2-worker-executor-and-dispatch.md)
   - [ ] [46-3-type-derivation-and-equivalence](plans/46-3-type-derivation-and-equivalence.md)
   - [ ] [46-4-builder-dsl-and-authoring](plans/46-4-builder-dsl-and-authoring.md)
   - [ ] [46-5-migration-and-compaction](plans/46-5-migration-and-compaction.md)
+- [ ] [47-agent-output-linter](plans/47-agent-output-linter.md) — fast inline validation at every agent-to-agent handoff; three tiers (structural → semantic → intent); per-edge config; auto-fix; zero dependency on engine/worker/models; execute only after 46 in the follow-on isolated worktree
+  - [ ] [47-1-linter-core-and-rule-protocol](plans/47-1-linter-core-and-rule-protocol.md)
+  - [ ] [47-2-structural-rules](plans/47-2-structural-rules.md)
+  - [ ] [47-3-semantic-rules](plans/47-3-semantic-rules.md)
+  - [ ] [47-4-intent-validation-and-autofix](plans/47-4-intent-validation-and-autofix.md)
+  - [ ] [47-5-engine-integration-and-config-autogen](plans/47-5-engine-integration-and-config-autogen.md)
 - [ ] [45-workflow-generation-hardening](plans/45-workflow-generation-hardening.md) — direct builder surface, stronger generation contracts, speed-first minimal path experiment, meta-builder eval harness, and explicit benchmark gates before rollout
   - [ ] [45-1-direct-builder-surface](plans/45-1-direct-builder-surface.md)
   - [ ] [45-2-generation-contract-and-validation-hardening](plans/45-2-generation-contract-and-validation-hardening.md)
   - [ ] [45-3-speed-first-minimal-build-path](plans/45-3-speed-first-minimal-build-path.md)
   - [ ] [45-4-meta-workflow-builder-eval-harness](plans/45-4-meta-workflow-builder-eval-harness.md)
   - [ ] [45-5-benchmark-and-rollout-gates](plans/45-5-benchmark-and-rollout-gates.md)
+- [x] [48-global-chat-history-discovery](plans/48-global-chat-history-discovery.md) — full-screen DAN chat history now discovers persisted threads across workflows instead of only the currently loaded workflow, and thread actions/search carry explicit `workflow_id` targeting so old conversations stop looking missing after workflow switches or Save As
 - [x] Chat-started run failure observability — `Save distilled workflow` / other chat-initiated runs now surface the real failure message from `run_failed`/`node_failed`, `View full logs` hydrates the persisted event stream into `LogPanel`, and history replay no longer hides `errors`-map failures behind truncated raw JSON
 - [x] Server-backed DAN equity-workflow build stall triage — workflow-generation codegen/diagnosis now enforce the remaining generation budget, mutation-preview repair calls are separately capped, and clean `build`-mode replay again reaches terminal events instead of burning past the budget in silence
 - [x] [12-13-workflow-authoring-triage-stability](plans/12-13-workflow-authoring-triage-stability.md) — concierge/triage routing for workflow-authoring turns is now stabilized end-to-end: lexical and embedding coverage, thread-context-aware continuation routing, JSON-mode + repair for LLM triage, stronger intent-extraction prompting/retry, route-source audit metadata, and repeated-trial stability regressions are landed.
