@@ -872,6 +872,12 @@ async def search_chat_threads(q: str = "", workflow_id: str | None = None):
     return {"results": results}
 
 
+@router.get("/api/chats")
+async def list_all_chat_threads():
+    cs = get_chat_store()
+    return {"threads": cs.list_all_threads()}
+
+
 @router.get("/api/chats/{workflow_id}")
 async def list_chat_threads(workflow_id: str):
     cs = get_chat_store()

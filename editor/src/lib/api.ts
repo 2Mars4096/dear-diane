@@ -409,6 +409,9 @@ export interface ChatThreadSummary {
   branch_type?: "edit" | "regenerate" | "explore" | null;
 }
 
+export const listAllChatThreads = () =>
+  request<{ threads: ChatThreadSummary[] }>("/chats");
+
 export const listChatThreads = (workflowId: string) =>
   request<{ threads: ChatThreadSummary[] }>(`/chats/${workflowId}`);
 

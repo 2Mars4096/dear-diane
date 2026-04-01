@@ -506,18 +506,7 @@ class ChatStore:
         """Search message content across threads (case-insensitive substring)."""
         query_lower = query.lower()
         results: list[dict[str, Any]] = []
-        search_dirs: list[Path] = []
-        chats_root = self.base_dir / "chats"
-        if workflow_id:
-            wf_dir = chats_root / workflow_id
-            if wf_dir.exists():
-                search_dirs.append(wf_dir)
-        elif chats_root.exists():
-            search_dirs.extend(
-                d for d in chats_root.iterdir()
-                if d.is_dir() and d.name != "checkpoints"
-            )
-        for wf_dir in search_dirs:
+        for wf_dir in self._workflow_dirs(workflow_id):
             for p in wf_dir.glob("*.json"):
                 if p.name.endswith(".meta.json"):
                     continue
@@ -630,34 +619,48 @@ class ChatStore:
             "branch_type": meta.get("branch_type"),
         }
 
+    def _workflow_dirs(self, workflow_id: str | None = None) -> list[Path]:
+        chats_root = self.base_dir / "chats"
+        if workflow_id:
+            wf_dir = chats_root / workflow_id
+            return [wf_dir] if wf_dir.exists() else []
+        if not chats_root.exists():
+            return []
+        return sorted(
+            d for d in chats_root.iterdir()
+            if d.is_dir() and d.name != "checkpoints"
+        )
+
     def list_threads(self, workflow_id: str) -> list[dict[str, Any]]:
         """List thread summaries sorted by updated_at descending (most recent first)."""
-        chats_dir = self.base_dir / "chats" / workflow_id
-        if not chats_dir.exists():
-            return []
         results: list[dict[str, Any]] = []
-        for p in sorted(chats_dir.glob("*.json")):
-            if p.name.endswith(".meta.json"):
-                continue
-            try:
-                thread = self._load_thread_from_path(p)
-                if thread is None:
+        for wf_dir in self._workflow_dirs(workflow_id):
+            for p in sorted(wf_dir.glob("*.json")):
+                if p.name.endswith(".meta.json"):
                     continue
-                meta = self.get_thread_meta(workflow_id, thread.id)
-                results.append({
-                    "id": thread.id,
-                    "title": thread.title,
-                    "workflow_id": thread.workflow_id,
-                    "message_count": len(thread.messages),
-                    "created_at": thread.created_at.isoformat(),
-                    "updated_at": thread.updated_at.isoformat(),
-                    "pinned": meta.get("pinned", False),
-                    "mode": self._normalize_mode(meta.get("mode")),
-                    "parent_thread_id": meta.get("parent_thread_id"),
-                    "branch_point_message_id": meta.get("branch_point_message_id"),
-                    "branch_type": meta.get("branch_type"),
-                })
-            except (ValueError, OSError):
-                continue
+                try:
+                    thread = self._load_thread_from_path(p)
+                    if thread is None:
+                        continue
+                    meta = self.get_thread_meta(thread.workflow_id, thread.id)
+                    results.append({
+                        "id": thread.id,
+                        "title": thread.title,
+                        "workflow_id": thread.workflow_id,
+                        "message_count": len(thread.messages),
+                        "created_at": thread.created_at.isoformat(),
+                        "updated_at": thread.updated_at.isoformat(),
+                        "pinned": meta.get("pinned", False),
+                        "mode": self._normalize_mode(meta.get("mode")),
+                        "parent_thread_id": meta.get("parent_thread_id"),
+                        "branch_point_message_id": meta.get("branch_point_message_id"),
+                        "branch_type": meta.get("branch_type"),
+                    })
+                except (ValueError, OSError):
+                    continue
         results.sort(key=lambda t: t["updated_at"], reverse=True)
         return results
+
+    def list_all_threads(self) -> list[dict[str, Any]]:
+        """List thread summaries across every workflow, newest first."""
+        return self.list_threads("")
