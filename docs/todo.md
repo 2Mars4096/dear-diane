@@ -1,6 +1,12 @@
 # Todo
 
 ## Current Backlog
+- [ ] [46-universal-worker-primitive](plans/46-universal-worker-primitive.md) — replace 21 specialized node types with a single universal `Worker` primitive; contract-based minimal orchestrator; script-first execution; strangler fig migration
+  - [ ] [46-1-worker-model-and-type-system](plans/46-1-worker-model-and-type-system.md)
+  - [ ] [46-2-worker-executor-and-dispatch](plans/46-2-worker-executor-and-dispatch.md)
+  - [ ] [46-3-type-derivation-and-equivalence](plans/46-3-type-derivation-and-equivalence.md)
+  - [ ] [46-4-builder-dsl-and-authoring](plans/46-4-builder-dsl-and-authoring.md)
+  - [ ] [46-5-migration-and-compaction](plans/46-5-migration-and-compaction.md)
 - [ ] [45-workflow-generation-hardening](plans/45-workflow-generation-hardening.md) — direct builder surface, stronger generation contracts, speed-first minimal path experiment, meta-builder eval harness, and explicit benchmark gates before rollout
   - [ ] [45-1-direct-builder-surface](plans/45-1-direct-builder-surface.md)
   - [ ] [45-2-generation-contract-and-validation-hardening](plans/45-2-generation-contract-and-validation-hardening.md)
