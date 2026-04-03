@@ -45,7 +45,7 @@ async def test_triage_llm_complete_uses_model_gateway_when_available() -> None:
     gateway.complete.assert_awaited_once()
     assert gateway.complete.await_args.kwargs["model"] == "triage-model"
     assert gateway.complete.await_args.kwargs["temperature"] == 0.0
-    assert gateway.complete.await_args.kwargs["max_tokens"] == 256
+    assert gateway.complete.await_args.kwargs["max_tokens"] == 1024
     assert gateway.complete.await_args.kwargs["pii_session"] is not None
 
 

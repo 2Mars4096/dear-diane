@@ -8,9 +8,11 @@ import json
 import logging
 import os
 import re
+import shlex
 import time
 import uuid
 from contextvars import ContextVar
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
@@ -234,6 +236,9 @@ class Concierge:
         self._telem_is_fast_command = False
         self._telem_model: str | None = None
         self._telem_intent: str | None = None
+        self._telem_chat_mode: str | None = None
+        self._telem_session_id: str | None = None
+        self._telem_surface: str | None = None
         self._last_context: Any = None
         self.bot_name = bot_name
         self.auto_summarize_turn_threshold: int = 10
@@ -434,7 +439,7 @@ class Concierge:
                 messages=messages,
                 model=model,
                 temperature=0.0,
-                max_tokens=256,
+                max_tokens=1024,
                 pii_session_key=self._current_surface_id,
                 **request_kwargs,
             )
@@ -588,6 +593,8 @@ class Concierge:
                 surface=msg.surface,
                 session_id=msg.external_id,
                 model=model,
+                model_used=model,
+                chat_mode=self._telem_chat_mode,
                 intent=intent,
                 prompt_tokens=tokens.get("prompt_tokens", 0),
                 completion_tokens=tokens.get("completion_tokens", 0),
@@ -600,6 +607,43 @@ class Concierge:
             await self._telemetry_store.record(ev)
         except Exception:
             logger.debug("Telemetry emit failed", exc_info=True)
+
+    def _record_gateway_call_telemetry(self, call: Any) -> None:
+        store = getattr(self, "_telemetry_store", None)
+        if store is None:
+            return
+        try:
+            from dan.server.telemetry import TelemetryEvent
+
+            usage = getattr(call, "usage", {}) or {}
+            model = str(getattr(call, "model", "") or "").strip() or None
+            if model:
+                self._telem_model = model
+
+            event = TelemetryEvent(
+                event_type="gateway_call",
+                parent_event_id=getattr(self, "_current_turn_event_id", None),
+                project_id=getattr(getattr(self._last_context, "project", None), "project_id", None),
+                task_id=getattr(getattr(self._last_context, "task", None), "task_id", None),
+                surface=self._telem_surface,
+                session_id=self._telem_session_id,
+                model=model,
+                model_used=model,
+                chat_mode=self._telem_chat_mode,
+                prompt_tokens=int(usage.get("prompt_tokens", 0) or 0),
+                completion_tokens=int(usage.get("completion_tokens", 0) or 0),
+                total_tokens=int(usage.get("total_tokens", 0) or 0),
+                duration_ms=float(getattr(call, "elapsed_ms", 0.0) or 0.0),
+                success=not bool(getattr(call, "error", None)),
+                retry_count=int(getattr(call, "retries", 0) or 0),
+                metadata={
+                    "pii_applied": bool(getattr(call, "pii_applied", False)),
+                    "fallback_used": bool(getattr(call, "fallback_used", False)),
+                },
+            )
+            asyncio.create_task(store.record(event))
+        except Exception:
+            logger.debug("Gateway call telemetry emit failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # Fast command dispatch
@@ -1100,6 +1144,167 @@ class Concierge:
         )
         return self._complete_event(content=result.message)
 
+    async def handle_analytics_command(self, msg: SurfaceMessage) -> ChatCompleteEvent:
+        if self._telemetry_store is None:
+            return self._complete_event(
+                content="Telemetry is not enabled — no analytics available.",
+            )
+
+        from dan.telemetry_api import TelemetryQuery, groupable_columns, summarize_telemetry
+
+        args_str = re.sub(r"^/analytics\b", "", msg.text, count=1, flags=re.IGNORECASE).strip()
+        try:
+            args = shlex.split(args_str)
+        except ValueError:
+            return self._complete_event(
+                content="Usage: `/analytics [--by field[,field...]] [--event <type|all>] [--days <n>] [--limit <n>]`",
+            )
+
+        group_by: list[str] = []
+        event_type: str | None = None
+        days = 30
+        limit = 10
+
+        idx = 0
+        while idx < len(args):
+            token = args[idx]
+            if token == "--by":
+                idx += 1
+                if idx >= len(args):
+                    return self._complete_event(content="`--by` requires a comma-separated field list.")
+                group_by = [part.strip() for part in args[idx].split(",") if part.strip()]
+            elif token == "--event":
+                idx += 1
+                if idx >= len(args):
+                    return self._complete_event(content="`--event` requires an event type or `all`.")
+                raw = args[idx].strip()
+                event_type = None if raw == "all" else raw
+            elif token == "--days":
+                idx += 1
+                if idx >= len(args):
+                    return self._complete_event(content="`--days` requires an integer value.")
+                try:
+                    days = max(1, int(args[idx]))
+                except ValueError:
+                    return self._complete_event(content="`--days` must be an integer.")
+            elif token == "--limit":
+                idx += 1
+                if idx >= len(args):
+                    return self._complete_event(content="`--limit` requires an integer value.")
+                try:
+                    limit = max(1, min(100, int(args[idx])))
+                except ValueError:
+                    return self._complete_event(content="`--limit` must be an integer.")
+            else:
+                return self._complete_event(
+                    content=f"Unknown analytics argument: `{token}`",
+                )
+            idx += 1
+
+        if group_by:
+            valid_fields = groupable_columns()
+            invalid = [field for field in group_by if field not in valid_fields]
+            if invalid:
+                return self._complete_event(
+                    content=(
+                        "Invalid analytics field(s): "
+                        + ", ".join(f"`{field}`" for field in invalid)
+                    ),
+                )
+
+            filters = TelemetryQuery(limit=max(limit * 5, 100))
+            if event_type is not None:
+                filters.event_type = event_type
+            filters.since = datetime.now(timezone.utc) - timedelta(days=days)
+
+            rows = await self._telemetry_store.aggregate(filters, group_by=group_by)
+            if not rows:
+                return self._complete_event(
+                    content="No telemetry found for the requested analytics window.",
+                )
+
+            lines = [
+                "**Telemetry Analytics**",
+                f"Window: last {days} day(s)",
+            ]
+            if event_type is not None:
+                lines.append(f"Event filter: `{event_type}`")
+            lines.append("")
+            for row in rows[:limit]:
+                key = ", ".join(
+                    f"{field}={row.group_key.get(field, '') or '(none)'}"
+                    for field in group_by
+                )
+                lines.append(
+                    f"- {key} — {row.count} events, {row.total_tokens:,} tokens, ${row.total_cost:.4f}"
+                )
+            return self._complete_event(content="\n".join(lines))
+
+        filters = TelemetryQuery(
+            session_id=str(msg.external_id or "").strip() or None,
+            limit=max(limit * 20, 1000),
+        )
+        if event_type is not None:
+            filters.event_type = event_type
+
+        summary = await summarize_telemetry(
+            self._telemetry_store,
+            filters,
+            hours=days * 24,
+        )
+        totals = summary.get("totals", {})
+        if not totals.get("events", 0):
+            return self._complete_event(
+                content="No telemetry recorded for this session yet.",
+            )
+
+        lines = [
+            "**Session Analytics**",
+            f"- {int(totals.get('events', 0))} events, {int(totals.get('gateway_calls', 0))} gateway calls",
+            (
+                f"- {int(totals.get('total_tokens', 0)):,} total tokens, "
+                f"${float(totals.get('total_cost', 0.0)):.4f} estimated cost"
+            ),
+        ]
+
+        mode_rows = summary.get("modes") or []
+        if mode_rows:
+            modes = ", ".join(
+                f"`{row['group_key'].get('chat_mode', '(none)')}` ({row['count']})"
+                for row in mode_rows[:limit]
+            )
+            lines.append(f"- modes: {modes}")
+
+        model_rows = summary.get("models") or []
+        if model_rows:
+            models = ", ".join(
+                f"`{row['group_key'].get('model_used', '(none)')}` ({row['count']})"
+                for row in model_rows[:limit]
+            )
+            lines.append(f"- models: {models}")
+
+        hour_rows = summary.get("activity_by_hour") or []
+        if hour_rows:
+            hours = ", ".join(
+                f"{str(row['group_key'].get('hour', ''))[11:16]} UTC ({row['count']})"
+                for row in hour_rows[:limit]
+                if str(row["group_key"].get("hour", "")).strip()
+            )
+            if hours:
+                lines.append(f"- active hours: {hours}")
+
+        lint_summary = summary.get("lint") or {}
+        if lint_summary.get("workflow_runs", 0):
+            lines.append(
+                "- lint runs: "
+                f"{int(lint_summary.get('workflow_runs', 0))} total, "
+                f"{int(lint_summary.get('blocked_runs', 0))} blocked, "
+                f"{int(lint_summary.get('autofixed_runs', 0))} auto-fixed, "
+                f"{int(lint_summary.get('passed_runs', 0))} passed"
+            )
+
+        return self._complete_event(content="\n".join(lines))
+
     async def _try_fast_command(
         self, msg: SurfaceMessage,
     ) -> ChatCompleteEvent | None:
@@ -1368,6 +1573,9 @@ class Concierge:
         self._telem_is_fast_command = False
         self._telem_model = None
         self._telem_intent = None
+        self._telem_chat_mode = None
+        self._telem_session_id = None
+        self._telem_surface = None
         _telem_success = True
 
         if self._REASSURANCE_INITIAL_DELAY <= 0 or self._is_messaging_surface(msg):
@@ -1513,6 +1721,13 @@ class Concierge:
             )
             self._concierge_state.last_interaction_at = time.time()
             self._telem_model = default_llm_model(self.chat_manager) or None
+            self._telem_chat_mode = str(
+                (msg.metadata or {}).get("mode")
+                if isinstance(getattr(msg, "metadata", None), dict)
+                else ""
+            ).strip() or None
+            self._telem_session_id = str(msg.external_id or "").strip() or None
+            self._telem_surface = str(msg.surface or "").strip() or None
             try:
                 msg = await self._apply_embedded_workflow_schedule_followup(msg)
                 fast_event = await self._try_fast_command(msg)

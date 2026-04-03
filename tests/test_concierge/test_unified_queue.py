@@ -229,7 +229,7 @@ async def test_run_coroutine_sync_reuses_running_loop_from_thread() -> None:
 
 
 @pytest.mark.asyncio
-async def test_triage_llm_complete_uses_256_token_budget_and_parses_json(
+async def test_triage_llm_complete_uses_1024_token_budget_and_parses_json(
 ) -> None:
     complete_calls: list[dict[str, Any]] = []
 
@@ -294,7 +294,7 @@ async def test_triage_llm_complete_uses_256_token_budget_and_parses_json(
             )
 
     assert complete_calls
-    assert complete_calls[0]["max_tokens"] == 256
+    assert complete_calls[0]["max_tokens"] == 1024
     assert result.intent == "ask"
     assert result.goal == "Explain the quarterly task"
     assert result.route is not None
