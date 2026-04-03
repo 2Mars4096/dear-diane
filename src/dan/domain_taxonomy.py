@@ -62,6 +62,92 @@ _CANONICAL_DOMAIN_ALIASES = {
 }
 
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+_DEFAULT_DOMAIN_KEYWORDS: dict[str, list[str]] = {
+    "paper_rendering": [
+        "latex", "paper", "manuscript", "journal", "tex", "bibliography",
+        "bibtex", "figure", "table", "abstract", "appendix",
+    ],
+    "equity_research": [
+        "equity", "stock", "portfolio", "factor", "alpha", "crsp", "wrds",
+        "returns", "market cap", "hedge",
+    ],
+    "data_analysis": [
+        "dataset", "dataframe", "csv", "merge", "join", "pandas",
+        "cleaning", "transform", "aggregate", "pivot",
+    ],
+    "literature_review": [
+        "literature", "review", "survey", "systematic", "meta-analysis",
+        "citation", "bibliography",
+    ],
+    "code_generation": [
+        "code", "function", "class", "module", "refactor", "debug",
+        "test", "implement", "api",
+    ],
+    "workflow_building": [
+        "workflow", "pipeline", "automate", "schedule", "node", "edge",
+        "graph", "dag",
+    ],
+    "supply_chain_management": [
+        "supply chain", "supply chain logistics", "logistics", "procurement",
+        "inventory optimization", "inventory management", "warehouse",
+        "fulfillment", "demand planning", "s&op",
+    ],
+    "operations_management": [
+        "operations management", "ops management", "process improvement",
+        "capacity planning", "throughput", "lean", "six sigma",
+        "production planning", "service operations",
+    ],
+    "operations_research": [
+        "operations research", "linear programming",
+        "integer programming", "stochastic optimization", "queueing",
+        "simulation", "scheduling problem",
+    ],
+    "inventory_optimization": [
+        "inventory optimization", "inventory policy", "safety stock",
+        "reorder point", "stockout", "multi echelon", "forecast accuracy",
+    ],
+    "marketing_analytics": [
+        "marketing analytics", "attribution", "customer segmentation",
+        "conversion funnel", "campaign performance", "ltv", "cac",
+    ],
+    "product_management": [
+        "product management", "product strategy", "roadmap", "feature prioritization",
+        "user story", "product requirement", "product launch",
+    ],
+    "financial_modeling": [
+        "financial modeling", "financial modelling", "discounted cash flow",
+        "dcf", "valuation model", "forecast model", "scenario analysis",
+    ],
+    "healthcare_informatics": [
+        "healthcare informatics", "health informatics", "ehr", "electronic health record",
+        "clinical workflow", "patient outcomes", "medical coding",
+    ],
+    "machine_learning": [
+        "machine learning", "ml", "feature engineering", "model training",
+        "hyperparameter tuning", "supervised learning", "unsupervised learning",
+    ],
+    "natural_language_processing": [
+        "natural language processing", "nlp", "language model",
+        "text classification", "named entity recognition", "tokenization",
+        "sentiment analysis",
+    ],
+    "computer_vision": [
+        "computer vision", "cv", "image classification", "object detection",
+        "segmentation", "vision transformer",
+    ],
+    "reinforcement_learning": [
+        "reinforcement learning", "rl", "policy gradient", "q learning",
+        "reward function", "agent training",
+    ],
+    "causal_inference": [
+        "causal inference", "treatment effect", "difference in differences",
+        "instrumental variables", "regression discontinuity",
+    ],
+    "econometrics": [
+        "econometrics", "panel regression", "fixed effects", "standard errors",
+        "identification strategy", "endogeneity",
+    ],
+}
 
 
 def normalize_domain_name(domain: str | None) -> str:
@@ -134,6 +220,11 @@ def normalize_domain_keyword_map(
             bucket.append(cleaned)
             seen.add(cleaned)
     return {domain: keywords for domain, keywords in normalized.items() if keywords}
+
+
+def default_domain_keyword_map() -> dict[str, list[str]]:
+    """Return the shared canonical default domain keyword map."""
+    return normalize_domain_keyword_map(_DEFAULT_DOMAIN_KEYWORDS)
 
 
 def format_domain_label(domain: str | None) -> str:

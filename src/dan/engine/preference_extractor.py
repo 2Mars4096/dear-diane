@@ -3,7 +3,10 @@ from __future__ import annotations
 import re
 from typing import Any, Callable
 
-from dan.domain_taxonomy import normalize_domain_keyword_map
+from dan.domain_taxonomy import (
+    default_domain_keyword_map,
+    normalize_domain_keyword_map,
+)
 
 _MODEL_PATTERNS = {
     "claude": re.compile(r"\bclaude[-\s]?(opus|sonnet|haiku|3\.5|3|4)[\w.-]*\b", re.IGNORECASE),
@@ -132,7 +135,16 @@ class PreferenceExtractor:
                 )
             except Exception:
                 return {}
-        return {}
+        if self._behavior_store is not None:
+            try:
+                stored = normalize_domain_keyword_map(
+                    self._behavior_store.get("domains/keyword_maps")
+                )
+                if stored:
+                    return stored
+            except Exception:
+                pass
+        return default_domain_keyword_map()
 
     @staticmethod
     def _domain_keyword_matches(text_lower: str, keyword: str) -> bool:

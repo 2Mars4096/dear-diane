@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from dan.domain_taxonomy import normalize_domain_list, normalize_domain_name, preserve_domain_labels
+from dan.domain_taxonomy import normalize_domain_list, normalize_domain_name
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ def _normalize_search_dir(path: str) -> str:
 
 
 def _normalize_common_domains(profile: "UserProfile") -> bool:
-    normalized = preserve_domain_labels(profile.common_domains)
+    normalized = normalize_domain_list(profile.common_domains)
     if normalized == list(profile.common_domains):
         return False
     profile.common_domains = normalized
@@ -106,19 +106,15 @@ class UserProfile(BaseModel):
                 if k not in self.preferred_models:
                     self.preferred_models[k] = v
         if domains:
-            current_domains = preserve_domain_labels(self.common_domains)
-            existing = {
-                normalize_domain_name(domain)
-                for domain in current_domains
-                if normalize_domain_name(domain)
-            }
-            for raw_domain in preserve_domain_labels(domains):
-                canonical = normalize_domain_name(raw_domain)
-                if not canonical or canonical in existing:
+            existing = normalize_domain_list(self.common_domains)
+            additions = normalize_domain_list(domains)
+            seen = set(existing)
+            for domain in additions:
+                if domain in seen:
                     continue
-                current_domains.append(raw_domain)
-                existing.add(canonical)
-            self.common_domains = current_domains
+                existing.append(domain)
+                seen.add(domain)
+            self.common_domains = existing
         if output_format and not self.preferred_output_format:
             self.preferred_output_format = output_format
         self.updated_at = datetime.now(timezone.utc)
