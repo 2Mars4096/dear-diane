@@ -1,8 +1,8 @@
 # 46-2: Worker Executor & Auto-Detection
 
 **Parent:** [46-universal-worker-primitive](46-universal-worker-primitive.md)
-**Status:** not-started
-**Goal:** Build a universal `WorkerExecutor` that auto-detects execution mode from the Worker's configuration, prefers script/code paths over LLM API calls, and reuses existing executor internals.
+**Status:** in-progress
+**Goal:** Build a universal `WorkerExecutor` for Worker-native compute behaviors that auto-detects execution mode from the Worker's configuration, prefers script/code paths over LLM API calls, and reuses existing executor internals, while allowing specialized control/runtime executors to remain first-class where that is clearer and more stable.
 
 ## Design: Auto-Detection, Not Mode Flags
 
@@ -16,11 +16,13 @@ Worker has model?       → pure LLM completion
 Worker has body_graph?  → composite sub-graph execution
 Worker has sub_workers? → multi-team orchestration
 Worker has control_flow? → condition evaluation and routing
-Worker has validation_rules? → rule evaluation and routing
+Worker has validator metadata? → rule evaluation and routing
 Worker has nothing?     → pass inputs through to outputs (contract-only)
 ```
 
-Multiple capabilities can combine. A Worker with `code` AND `model` runs the code first, then feeds the result to the LLM. A Worker with `body_graph` AND `control_flow` is a loop.
+Multiple capabilities can combine. A Worker with `code` AND `model` runs the code first, then feeds the result to the LLM.
+
+This plan should be read carefully: `WorkerExecutor` is the primary dispatch for Worker-native compute composition. It does **not** have to subsume every existing scheduler/control primitive. For branch/loop/team semantics, delegation to specialized executors is acceptable and may remain the canonical runtime path.
 
 **Dispatch priority (script-first):**
 1. Code/script (cheapest, fastest, deterministic)
@@ -32,68 +34,96 @@ Multiple capabilities can combine. A Worker with `code` AND `model` runs the cod
 7. Validation
 8. Pass-through (no execution, just forward data)
 
+## Design: Async Runtime, Blocking, and Locks
+
+The execution model must be explicit:
+
+- The engine/scheduler remains **async**.
+- Workers become runnable when their required upstream dependencies are satisfied.
+- Workers may execute **concurrently** when dependencies allow and no resource locks conflict.
+- Sequential behavior comes from graph/control dependencies, not from “worker-ness” itself.
+- Additional serialization comes from explicit named locks or blocking policies.
+- The tiered linter sits on the **handoff publication path**: downstream workers do not see an output until linting/fixes have completed and any required locks are released.
+
+## Current State
+
+- `WorkerExecutor` is live for pass-through, code, direct tool, LLM, `body_graph`, `sub_workers`, Worker-shaped `control_flow`, and the bridged specialized surfaces (`router`, `validator`, `reflection`, `rag`, `human`, `vote`).
+- The first-class Worker composition surface is now exercised end-to-end: `body_graph` execution honors `input_mappings` / `output_mappings`, `sub_workers` honor Worker `parallelism` / `merge_strategy`, and delegation can be bounded by `spawn_policy.max_spawns_per_node`.
+- Ordered `ExecutionMode` detection is live, including the conservative staged `code -> llm/tool` path and model-less LLM execution when `llm_hints` plus shared defaults imply LLM mode.
+- Shared instruction, memory-policy, provider, retry, toolset, and authority refs are resolved at execution time from `graph.worker_resources`, and authority/lock checks are enforced before privileged tool use, memory writes, or delegation.
+- The hot simple-compute path is now lighter too: no-shared-resource Workers use a cached effective-config fast path, static LLM Workers reuse a fully resolved legacy `LLMOperator` template instead of rebuilding it per call, and the code/tool/llm/specialized compatibility projections now reuse cached legacy templates instead of rebuilding full Pydantic node models on every run.
+- The executor test matrix now covers graph-default resolution and `inherit_defaults` behavior, direct resolution of default/bundle/ref memory policies, real Worker `LLM_WITH_TOOLS` tool-loop execution through `LLMExecutor`, first-class validator rules, `body_graph` input/output mappings, `sub_workers` merge behavior, and failure propagation for script, direct-tool, and LLM timeout paths.
+- A deterministic dispatch benchmark now exists at `tests/eval/worker_dispatch_benchmark.py` and currently passes the strict local `--max-overhead-ratio 1.25` gate for `code_only`, `tool_only`, `llm_only`, `code -> tool -> llm`, `body_graph` input/output mapping, and sub-worker merge/orchestration cases. The harness now measures legacy and Worker runs in an interleaved pairwise order so dispatch ratios are not biased by two separate timing phases inside one Python process.
+- When both `body_graph` and `sub_workers` are present, the current runtime treats `body_graph` as the executable surface; named `sub_workers` are composition assets for that surface rather than an automatic second execution phase.
+- The remaining out-of-band compute registration seams are gone too. Default engine wiring, the local client, and the server run-manager now all feed bridged compute node kinds through the same Worker-backed registry path, with custom tool registries injected into `register_default_executors(..., tool_registry=...)` instead of bypassing Worker compaction with ad hoc `tool_operator` registrations.
+
 ## Tasks
 
-- [ ] 1. Create `src/dan/worker/executor.py`
-  - [ ] 1-1. `WorkerExecutor` implements `NodeExecutor` protocol
-  - [ ] 1-2. `execute(node: Worker, inputs: dict, context: ExecutionContext) -> NodeResult`
-- [ ] 2. Implement auto-detection
-  - [ ] 2-1. `_detect_modes(worker: Worker) -> list[ExecutionMode]` — inspect config, return ordered mode list
-  - [ ] 2-2. `ExecutionMode` enum: `SCRIPT`, `TOOL`, `LLM_WITH_TOOLS`, `LLM`, `COMPOSITE`, `ORCHESTRATE`, `GATE`, `VALIDATE`, `PASSTHROUGH`
-  - [ ] 2-3. A Worker with no capabilities configured → `PASSTHROUGH`
-  - [ ] 2-4. Combined modes resolve by priority (code first, then LLM, etc.)
-- [ ] 3. Implement SCRIPT mode
-  - [ ] 3-1. Reuse `CodeExecutor` internals (sandbox, multi-language)
-  - [ ] 3-2. Input port data injected as variables into the script scope
-  - [ ] 3-3. Script return value mapped to output ports
-  - [ ] 3-4. Structured error on script failure
-- [ ] 4. Implement TOOL mode (no LLM)
-  - [ ] 4-1. Resolve `tool_ids` from `ToolRegistry` via `ExecutionContext`
-  - [ ] 4-2. Map input port data to tool arguments
-  - [ ] 4-3. Reuse `ToolExecutor` internals for invocation
-  - [ ] 4-4. Tool output mapped to output ports
-- [ ] 5. Implement LLM modes (LLM and LLM_WITH_TOOLS)
-  - [ ] 5-1. Reuse `LLMExecutor` internals (provider dispatch, prompt assembly, output normalization)
-  - [ ] 5-2. Build prompt from `persona` + `llm.prompt_template` + input port data
-  - [ ] 5-3. If `llm.tools` is set: run tool-calling loop with `llm.max_tool_rounds` bound
-  - [ ] 5-4. Respect `llm.temperature`, `llm.output_json_schema`, `llm.task_tier`
-  - [ ] 5-5. If code ran first (combined mode): inject code output into prompt context
-- [ ] 6. Implement COMPOSITE and ORCHESTRATE modes
-  - [ ] 6-1. COMPOSITE (`body_graph` set): reuse `CompositeExecutor` internals, apply `input_mappings`/`output_mappings`
-  - [ ] 6-2. ORCHESTRATE (`sub_workers` set): reuse `OrchestratorExecutor` internals, run teams concurrently
-  - [ ] 6-3. Apply composite contract (projections, compaction, failure policy)
-  - [ ] 6-4. Respect `parallelism` and `merge_strategy`
-  - [ ] 6-5. Use `run_subgraph` callback from `ExecutionContext`
-- [ ] 7. Implement GATE mode
-  - [ ] 7-1. If `control_flow` is set: evaluate `control_flow.condition` on inputs
-  - [ ] 7-2. Route to appropriate output port based on `control_flow.gate_mode`
-  - [ ] 7-3. Reuse `GateExecutor` internals
-  - [ ] 7-4. Support `control_flow.max_iterations` for while-mode
-- [ ] 8. Implement VALIDATE mode
-  - [ ] 8-1. If `validation_rules` is non-empty: run rules sequentially
-  - [ ] 8-2. Route to `valid` or `invalid` output port
-  - [ ] 8-3. Reuse `ValidatorExecutor` internals
-- [ ] 9. Implement PASSTHROUGH mode
-  - [ ] 9-1. Forward all input port data to matching output ports by name
-  - [ ] 9-2. If port names don't match: forward first input to first output
-  - [ ] 9-3. This is the "bare Worker" behavior — zero config, still useful
-- [ ] 10. Register in `executor_defaults.py`
-  - [ ] 10-1. Import `WorkerExecutor` from `dan.worker`
-  - [ ] 10-2. Add `("worker", WorkerExecutor())` to defaults
-  - [ ] 10-3. Existing 20 registrations remain unchanged
-- [ ] 11. Tests
-  - [ ] 11-1. Auto-detection: verify correct mode resolution for each config combination
-  - [ ] 11-2. PASSTHROUGH: bare Worker forwards data
-  - [ ] 11-3. SCRIPT: code executes, inputs → outputs
-  - [ ] 11-4. TOOL: direct tool invocation, no LLM
-  - [ ] 11-5. LLM: mock provider, verify prompt assembly from `persona` + `llm` hints
-  - [ ] 11-6. LLM_WITH_TOOLS: mock provider + tool loop
-  - [ ] 11-7. COMPOSITE: sub-graph execution with port mapping
-  - [ ] 11-8. GATE: condition evaluation, if_else and while modes
-  - [ ] 11-9. VALIDATE: rule evaluation, valid/invalid routing
-  - [ ] 11-10. Combined: code + LLM (code runs first, output feeds LLM)
-  - [ ] 11-11. Error paths: script failure, tool failure, LLM timeout
-  - [ ] 11-12. Retry policy: Worker inherits `NodeBase.retry_policy`, executor respects it
+- [x] 1. Create `src/dan/worker/executor.py`
+  - [x] 1-1. `WorkerExecutor` implements `NodeExecutor` protocol
+  - [x] 1-2. `execute(node: Worker, inputs: dict, context: ExecutionContext) -> NodeResult`
+- [x] 2. Implement auto-detection
+  - [x] 2-1. `_detect_modes(worker: Worker) -> list[ExecutionMode]` — inspect config, return ordered mode list
+  - [x] 2-2. `ExecutionMode` enum: `SCRIPT`, `TOOL`, `LLM_WITH_TOOLS`, `LLM`, `COMPOSITE`, `ORCHESTRATE`, `GATE`, `VALIDATE`, `PASSTHROUGH`
+  - [x] 2-3. A Worker with no capabilities configured → `PASSTHROUGH`
+  - [x] 2-4. Combined modes resolve by priority (code first, then LLM, etc.)
+- [x] 3. Implement SCRIPT mode
+  - [x] 3-1. Reuse `CodeExecutor` internals (sandbox, multi-language)
+  - [x] 3-2. Input port data injected as variables into the script scope
+  - [x] 3-3. Script return value mapped to output ports
+  - [x] 3-4. Structured error on script failure
+- [x] 4. Implement TOOL mode (no LLM)
+  - [x] 4-1. Resolve `tool_ids` from `ToolRegistry` via `ExecutionContext`
+  - [x] 4-2. Map input port data to tool arguments
+  - [x] 4-3. Reuse `ToolExecutor` internals for invocation
+  - [x] 4-4. Tool output mapped to output ports
+- [x] 5. Implement LLM modes (LLM and LLM_WITH_TOOLS)
+  - [x] 5-1. Reuse `LLMExecutor` internals (provider dispatch, prompt assembly, output normalization)
+  - [x] 5-2. Build prompt from resolved instruction/profile context + `llm.prompt_template` + input port data
+  - [x] 5-3. If `llm.tools` is set: run tool-calling loop with `llm.max_tool_rounds` bound
+  - [x] 5-4. Respect `llm.temperature`, `llm.output_json_schema`, `llm.task_tier`
+  - [x] 5-5. If code ran first (combined mode): inject code output into prompt context
+  - [x] 5-6. Resolve referenced instruction profiles, context bundles, provider policies, and retry defaults through `ExecutionContext` before execution, without copying those heavy structures into the Worker model
+- [x] 6. Implement COMPOSITE and ORCHESTRATE modes
+  - [x] 6-1. COMPOSITE (`body_graph` set): reuse `CompositeExecutor` internals, apply `input_mappings`/`output_mappings`
+  - [x] 6-2. ORCHESTRATE (`sub_workers` set): reuse `OrchestratorExecutor` internals, run teams concurrently
+  - [x] 6-3. Apply composite contract (projections, compaction, failure policy)
+  - [x] 6-4. Respect `parallelism` and `merge_strategy`
+  - [x] 6-5. Use `run_subgraph` callback from `ExecutionContext`
+  - [x] 6-6. Enforce authority caps before delegation/spawn: Worker cannot launch child work above its tier/authority policy
+- [x] 7. Implement GATE mode
+  - [x] 7-1. If `control_flow` is set: evaluate `control_flow.condition` on inputs where Worker-native gating is appropriate
+  - [x] 7-2. Route to appropriate output port based on `control_flow.gate_mode`
+  - [x] 7-3. Reuse `GateExecutor` internals or delegate directly to retained specialized control executors
+  - [x] 7-4. Support `control_flow.max_iterations` for Worker-native while-style coordination, but do not force specialized loop executors to disappear
+- [x] 8. Implement VALIDATE mode
+  - [x] 8-1. If validator-style metadata/config is present: run rules sequentially or delegate to the retained validator executor
+  - [x] 8-2. Route to `valid` or `invalid` output port
+  - [x] 8-3. Reuse `ValidatorExecutor` internals
+- [x] 9. Implement PASSTHROUGH mode
+  - [x] 9-1. Forward all input port data to matching output ports by name
+  - [x] 9-2. If port names don't match: forward first input to first output
+  - [x] 9-3. This is the "bare Worker" behavior — zero config, still useful
+- [x] 10. Register in `executor_defaults.py`
+  - [x] 10-1. Import `WorkerExecutor` from `dan.worker`
+  - [x] 10-2. Add `("worker", WorkerExecutor())` to defaults
+  - [x] 10-3. Existing specialized control/runtime registrations remain valid until there is a clear reason to collapse them
+- [x] 11. Tests
+  - [x] 11-1. Auto-detection: verify correct mode resolution for each config combination
+  - [x] 11-2. PASSTHROUGH: bare Worker forwards data
+  - [x] 11-3. SCRIPT: code executes, inputs → outputs
+  - [x] 11-4. TOOL: direct tool invocation, no LLM
+  - [x] 11-5. LLM: mock provider, verify prompt assembly from `persona` + `llm` hints
+  - [x] 11-6. LLM_WITH_TOOLS: mock provider + tool loop
+  - [x] 11-7. COMPOSITE: sub-graph execution with port mapping
+  - [x] 11-8. GATE: condition evaluation, if_else and while modes
+  - [x] 11-9. VALIDATE: rule evaluation, valid/invalid routing
+  - [x] 11-10. Combined: code + LLM (code runs first, output feeds LLM)
+  - [x] 11-11. Error paths: script failure, tool failure, LLM timeout
+  - [x] 11-12. Retry policy: Worker inherits `NodeBase.retry_policy`, executor respects it
+  - [x] 11-13. Reference resolution: instruction/memory/context/provider/retry refs are resolved from shared runtime registries
+  - [x] 11-14. Authority enforcement: Worker cannot exceed spawn/task-tier caps
+  - [x] 11-15. Lock semantics: workers with conflicting `resource_locks` serialize, while unrelated workers still run concurrently
 
 ## Likely Files
 
@@ -111,9 +141,14 @@ Multiple capabilities can combine. A Worker with `code` AND `model` runs the cod
 - The `WorkerExecutor` **delegates**, it does not reimplement. It holds internal references to `CodeExecutor`, `LLMExecutor`, `ToolExecutor`, `GateExecutor`, `CompositeExecutor`, `ValidatorExecutor` and calls their core logic. Zero duplication.
 - PASSTHROUGH mode is intentional and useful. A Worker that just forwards data acts as a named checkpoint, a contract boundary, or a future expansion point. "It just works" means even doing nothing is valid.
 - Combined modes follow priority ordering. Code always runs first if set. Its output is available to the LLM prompt (if model is also set) or to the composite sub-graph (if body_graph is also set). This enables hybrid deterministic+LLM execution within a single node.
+- Specialized control semantics are allowed to stay specialized. If `while_loop`, `goal_loop`, `if_else`, or team-turn protocol behavior is clearer through dedicated executors, `WorkerExecutor` should delegate rather than pretend to reimplement them generically.
+- `WorkerExecutor` resolves shared references; it does not own the underlying heavy systems. Tools, memory contents, long instruction packs, and provider defaults remain external.
+- Blocking semantics must stay visible: edges/control-flow determine readiness, locks determine serialization, and lint determines handoff publication.
 
 ## Notes
 
-- The `ToolRegistry` is available through `ExecutionContext`. The executor resolves `tool_ids` against it for TOOL mode.
-- For COMPOSITE/ORCHESTRATE modes, the executor needs the `run_subgraph` callback from `ExecutionContext`. This is the same callback used by `CompositeExecutor` and `OrchestratorExecutor` today.
-- The `persona` field on Worker serves double duty: it's the Worker's identity label AND the default LLM system prompt (when `llm.system_prompt` is not explicitly set). This is the "it just works" behavior — set `persona` once, it applies everywhere.
+- `ToolRegistry` still comes through `ExecutionContext`; Worker only carries tool ids and toolset refs, not embedded tool definitions.
+- `run_subgraph` remains the honest composite/orchestration seam. Worker uses it for `body_graph` and named `sub_workers` instead of inventing a second runtime substrate.
+- The remaining `46-2` tail is not about whether Worker can express composition at all; it is about how much more of the heavier orchestration/composite behavior should move from compatibility delegation into a cleaner Worker-native runtime over time.
+- The clean boundary is unchanged: Worker-native compute and contract handling live here; branch/loop/team scheduler semantics may still live in specialized runtime code even when authoring surfaces present them cohesively.
+- Detailed per-slice runtime history now lives in `docs/changelog.md`; this plan tracks the remaining executor-unification tail, not every landed dispatch improvement.
