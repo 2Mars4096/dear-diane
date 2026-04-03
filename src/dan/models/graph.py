@@ -1,4 +1,10 @@
-"""Graph container — the top-level ``dan_graph_v1`` serialisation target."""
+"""Graph container — the top-level ``dan_graph_v1`` serialisation target.
+
+Legacy compute/compatibility node models are imported from
+``dan.models.legacy`` so the runtime union has one explicit compatibility
+surface instead of pulling those types from both ``nodes`` and
+``control_flow``.
+"""
 
 from __future__ import annotations
 
@@ -13,21 +19,28 @@ from dan.models.control_flow import (
     ForEachNode,
     GateNode,
     GoalLoopNode,
-    HumanInTheLoopNode,
-    HumanNode,
     IfElseNode,
-    InputNode,
     OrchestratorNode,
     ParallelSubagentsNode,
-    ReduceNode,
-    RouterNode,
-    ValidatorNode,
-    VoteNode,
     WhileLoopNode,
 )
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
 from dan.models.hyperedges import Hyperedge
-from dan.models.nodes import CodeOperator, LLMOperator, RAGOperator, ReflectionNode, ToolOperator
+from dan.models.legacy import (
+    CodeOperator,
+    HumanInTheLoopNode,
+    HumanNode,
+    InputNode,
+    LLMOperator,
+    RAGOperator,
+    ReduceNode,
+    ReflectionNode,
+    RouterNode,
+    ToolOperator,
+    ValidatorNode,
+    VoteNode,
+)
+from dan.worker.model import Worker
 
 # ---------------------------------------------------------------------------
 # Discriminated unions — Pydantic resolves the concrete type from JSON
@@ -57,6 +70,7 @@ Node = Annotated[
         VoteNode,
         ReflectionNode,
         GoalLoopNode,
+        Worker,
     ],
     Field(discriminator="node_type"),
 ]
@@ -101,6 +115,13 @@ class Graph(BaseModel):
 
     shared_context: list[SharedContextDeclaration] = Field(default_factory=list)
     artifact_refs: list[ArtifactRef] = Field(default_factory=list)
+    worker_resources: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description=(
+            "Named shared bundles and policies resolved by Worker refs "
+            "(instruction profiles, toolsets, provider policies, retry policies, …)"
+        ),
+    )
 
     hyperedges: list[Hyperedge] = Field(
         default_factory=list,

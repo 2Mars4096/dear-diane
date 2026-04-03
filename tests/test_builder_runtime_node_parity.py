@@ -25,6 +25,37 @@ def test_builder_supports_input_node_with_aggregate_output() -> None:
     assert "variables=[{'name': 'topic'" in code
 
 
+def test_builder_supports_rag_node_and_decompiles_to_rag_api() -> None:
+    wf = workflow("rag_parity")
+    retriever = wf.rag(
+        "retrieve",
+        collection="papers",
+        top_k=7,
+        query_template="Find chunks for {query}",
+        include_metadata=False,
+        rerank=True,
+    )
+
+    graph = wf.build()
+    node = graph.node_by_id("retrieve")
+
+    assert node is not None
+    assert node.node_type == "rag_operator"
+    assert node.collection == "papers"
+    assert node.top_k == 7
+    assert node.query_template == "Find chunks for {query}"
+    assert node.include_metadata is False
+    assert node.rerank is True
+    assert [port.name for port in node.input_ports] == ["query"]
+    assert [port.name for port in node.output_ports] == ["chunks"]
+
+    code = decompile(graph)
+    assert "wf.rag('retrieve'" in code
+    assert "collection='papers'" in code
+    assert "top_k=7" in code
+    assert "rerank=True" in code
+
+
 def test_builder_supports_human_node_and_decompiles_to_human_api() -> None:
     wf = workflow("human_parity")
     reviewer = wf.human(
@@ -40,6 +71,8 @@ def test_builder_supports_human_node_and_decompiles_to_human_api() -> None:
 
     assert node is not None
     assert node.node_type == "human"
+    assert [port.name for port in node.input_ports] == ["input"]
+    assert [port.name for port in node.output_ports] == ["response"]
 
     code = decompile(graph)
     assert "wf.human('review'" in code
@@ -89,6 +122,8 @@ def test_builder_supports_vote_node_and_decompiles_to_vote_api() -> None:
 
     assert node is not None
     assert node.node_type == "vote"
+    assert [port.name for port in node.input_ports] == ["input"]
+    assert [port.name for port in node.output_ports] == ["winner"]
 
     code = decompile(graph)
     assert "wf.vote('choose_best'" in code
@@ -112,3 +147,26 @@ def test_builder_supports_ensemble_alias() -> None:
     assert node.vote_strategy == "judge"
     assert node.candidates == ["claude-sonnet-4-6", "gpt-4o", "gemini-2.5-pro"]
     assert node.num_votes == 3
+
+
+def test_builder_supports_worker_control_flow_and_decompiles_to_worker_api() -> None:
+    wf = workflow("worker_control_flow_parity")
+    route = wf.worker(
+        "route",
+        control_flow={"condition": "score > 0.5", "gate_mode": "if_else"},
+    )
+
+    graph = wf.build()
+    node = graph.node_by_id(route.node_id)
+
+    assert node is not None
+    assert node.node_type == "worker"
+    assert node.control_flow is not None
+    assert node.control_flow.condition == "score > 0.5"
+    assert node.control_flow.gate_mode == "if_else"
+    assert [port.name for port in node.output_ports] == ["true", "false"]
+
+    code = decompile(graph)
+    assert "wf.worker('route'" in code
+    assert "control_flow={'condition': 'score > 0.5'" in code
+    assert "'gate_mode': 'if_else'" in code

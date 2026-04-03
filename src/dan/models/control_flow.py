@@ -22,6 +22,18 @@ from dan.models.context import (
     MergeStrategy,
     NodeLocalState,
 )
+from dan.models.legacy import (
+    HumanInTheLoopNode,
+    HumanNode,
+    InputNode,
+    InputVariable,
+    ReduceNode,
+    RouterNode,
+    ValidationRule,
+    ValidatorNode,
+    VoteConfig,
+    VoteNode,
+)
 from dan.models.nodes import NodeBase
 from dan.models.ports import InputPort, OutputPort
 
@@ -77,31 +89,6 @@ class ChildResultEnvelope(BaseModel):
     template_key: str = ""
     layer_path: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-# ---------------------------------------------------------------------------
-# Input node — pre-run configuration surface for workflow inputs
-# ---------------------------------------------------------------------------
-
-
-class InputVariable(BaseModel):
-    """A single typed variable declared on an InputNode."""
-
-    name: str
-    type: Literal["string", "number", "boolean"] = "string"
-    default: Any = None
-    description: str = ""
-
-
-class InputNode(NodeBase):
-    """Visual entry point for workflow inputs.
-
-    Each variable becomes an output port whose value is provided
-    before the run starts (on the canvas UI or via the API).
-    """
-
-    node_type: Literal["input"] = "input"
-    variables: list[InputVariable] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -168,127 +155,6 @@ class GateNode(NodeBase):
                     OutputPort(name="done", description="Exit loop — condition is false"),
                 ]
         self.state_schema = _normalize_state_schema(self.state_schema)
-
-
-class ReduceNode(NodeBase):
-    """Aggregates results from parallel fan-out branches."""
-
-    node_type: Literal["reduce"] = "reduce"
-    reducer: str = Field(
-        description="Expression or function name that combines branch outputs"
-    )
-
-
-class RouterNode(NodeBase):
-    """LLM-powered dynamic routing.
-
-    The model reads the incoming data and decides which named route to
-    activate.  ``route_descriptions`` maps route names to natural-language
-    descriptions the LLM uses to choose.
-    """
-
-    node_type: Literal["router"] = "router"
-    model: str
-    route_descriptions: dict[str, str] = Field(
-        default_factory=dict,
-        description="route_name → natural-language description",
-    )
-    model_policy: Any | None = Field(
-        default=None,
-        description="Policy-driven model selection (ModelPolicy from dan.providers.model_policy)",
-    )
-    # -- 18-5: Task-level model tiering ----------------------------------------
-    task_tier: Literal["micro", "routine", "reasoning", "critical"] | None = Field(
-        default=None,
-        description="Explicit task tier override. Bypasses automatic scoring.",
-    )
-
-
-class HumanNode(NodeBase):
-    """First-class human interaction node with typed I/O and render modes.
-
-    Pauses execution and waits for human input via a rendering surface
-    (dialog, chat panel, CLI, programmatic).  Supports multiple interaction
-    modes: free-text, approval, form, selection, file upload, and rich
-    multi-turn chat.
-    """
-
-    node_type: Literal["human"] = "human"
-    prompt: str = ""
-    timeout_seconds: float | None = None
-    default_action: str | None = None
-    input_schema: dict[str, Any] | None = Field(
-        default=None,
-        description="JSON Schema for what the human receives (presentation hint)",
-    )
-    output_schema: dict[str, Any] | None = Field(
-        default=None,
-        description="JSON Schema for what the human must provide (validated on submit)",
-    )
-    render_mode: Literal["text", "approval", "form", "selection", "file_upload", "rich"] = Field(
-        default="text",
-        description="Hint to the rendering surface for how to present the interaction",
-    )
-    options: list[str] | None = Field(
-        default=None,
-        description="Choices for 'selection' render mode",
-    )
-    instructions: str = Field(
-        default="",
-        description="Guidance text shown above the input area (supports markdown)",
-    )
-    render_target: Literal["dialog", "chat", "both"] = Field(
-        default="dialog",
-        description="Where the interaction appears: popup dialog, chat panel, or both",
-    )
-
-
-class HumanInTheLoopNode(HumanNode):
-    """Backward-compatible alias — deserializes ``"human_in_the_loop"`` JSON."""
-
-    node_type: Literal["human_in_the_loop"] = "human_in_the_loop"  # type: ignore[assignment]
-
-
-# ---------------------------------------------------------------------------
-# Validation / handoff node
-# ---------------------------------------------------------------------------
-
-
-class ValidationRule(BaseModel):
-    """A single validation rule applied by a ValidatorNode."""
-
-    rule_type: Literal[
-        "required_keys",
-        "non_empty",
-        "schema_conformance",
-        "type_check",
-        "custom_expression",
-    ]
-    config: dict[str, Any] = Field(default_factory=dict)
-
-
-class ValidatorNode(NodeBase):
-    """Checks data at agent boundaries and routes to valid/invalid ports.
-
-    Visible on the canvas — not hidden middleware.  Rule evaluation is
-    sequential; ``strict_mode`` stops at the first violation.
-    """
-
-    node_type: Literal["validator"] = "validator"
-    validation_rules: list[ValidationRule] = Field(default_factory=list)
-    on_failure: Literal["route", "warn", "halt"] = "route"
-    strict_mode: bool = False
-
-    def model_post_init(self, __context: Any) -> None:
-        if not self.input_ports:
-            self.input_ports = [
-                InputPort(name="data", description="Payload to validate"),
-            ]
-        if not self.output_ports:
-            self.output_ports = [
-                OutputPort(name="valid", description="Passthrough when all rules pass"),
-                OutputPort(name="invalid", description="Data + errors when any rule fails"),
-            ]
 
 
 # ---------------------------------------------------------------------------
@@ -636,11 +502,6 @@ class AgentTeamNode(NodeBase):
     boundary_contract: BoundaryContract | None = None
 
 
-# ---------------------------------------------------------------------------
-# 16-2: Voting / ensemble — quality primitive via redundancy
-# ---------------------------------------------------------------------------
-
-
 class GoalLoopNode(NodeBase):
     """Iterates a body sub-graph until a goal metric is satisfied or limits hit.
 
@@ -678,66 +539,3 @@ class GoalLoopNode(NodeBase):
     boundary_contract: BoundaryContract | None = Field(
         default=None, description="Formal boundary contract (Plan 14-2)",
     )
-
-
-class VoteConfig(BaseModel):
-    """Strategy-specific configuration for VoteNode."""
-
-    judge_model: str | None = Field(
-        default=None, description="Model used for 'judge'/'best_of_n' strategies",
-    )
-    judge_prompt: str | None = Field(
-        default=None, description="Custom prompt for the judge model",
-    )
-    quality_metric: str | None = Field(
-        default=None,
-        description="Expression evaluated on each vote output for 'weighted' strategy",
-    )
-    unanimity_threshold: float = Field(
-        default=1.0,
-        description="Fraction of agreement required for 'unanimous' strategy",
-    )
-    consensus_mode: Literal["whole", "field"] = Field(
-        default="whole",
-        description="Compare entire output ('whole') or per-field ('field') for structured outputs",
-    )
-
-
-class VoteNode(NodeBase):
-    """Runs the same task through multiple model instances and selects the best.
-
-    ``candidates`` lists models to vote across. If a single entry, that model
-    runs ``num_votes`` times (same-model voting). For cross-model ensemble,
-    set ``candidates`` to multiple models with ``num_votes=len(candidates)``.
-    """
-
-    node_type: Literal["vote"] = "vote"
-
-    candidates: list[str] = Field(
-        description="Model names to vote across; single entry = same-model voting",
-    )
-    num_votes: int = Field(default=3, ge=1, description="How many times to run the task")
-    prompt_template: str = Field(
-        default="", description="Prompt with {input_port} placeholders",
-    )
-    system_prompt: str = ""
-    temperature: float = Field(
-        default=0.7,
-        description="Temperature for all candidates; higher = more diverse votes",
-    )
-    output_json_schema: dict[str, Any] | None = Field(
-        default=None,
-        description="If set, all votes must conform; enables structured comparison",
-    )
-    vote_strategy: Literal["majority", "weighted", "best_of_n", "judge", "unanimous"] = Field(
-        default="majority",
-        description="How to select the winner from collected votes",
-    )
-    vote_config: VoteConfig | None = None
-    # -- 18-5: Task-level model tiering ----------------------------------------
-    task_tier: Literal["micro", "routine", "reasoning", "critical"] | None = Field(
-        default=None,
-        description="Explicit task tier override. Bypasses automatic scoring.",
-    )
-    parallelism: int = Field(default=3, ge=1, description="Max concurrent LLM calls")
-    timeout_seconds: float | None = None

@@ -6,7 +6,8 @@ not need to hand-maintain parallel node-type lists.
 
 from __future__ import annotations
 
-from typing import Type, get_args
+import os
+from typing import Literal, Type, get_args
 
 from dan.models.graph import Node
 from dan.models.nodes import NodeBase
@@ -40,6 +41,34 @@ CANONICAL_RUNTIME_NODE_TYPES: tuple[str, ...] = tuple(
     node_type
     for node_type in RUNTIME_NODE_TYPES_IN_ORDER
     if node_type not in DEPRECATED_RUNTIME_ALIAS_NODE_TYPES
+)
+
+# New compute authoring should target `worker`; the remaining explicit
+# primitives here are retained because they carry real scheduler/protocol
+# semantics rather than being redundant compute wrappers.
+CANONICAL_COMPUTE_NODE_TYPES: frozenset[str] = frozenset({"worker"})
+RETAINED_RUNTIME_NODE_TYPES: frozenset[str] = frozenset({
+    "gate",
+    "while_loop",
+    "for_each",
+    "parallel_subagents",
+    "orchestrator",
+    "composite",
+    "agent_team",
+    "goal_loop",
+})
+LEGACY_COMPATIBILITY_NODE_TYPES: frozenset[str] = frozenset(
+    RUNTIME_NODE_TYPES
+    - CANONICAL_COMPUTE_NODE_TYPES
+    - RETAINED_RUNTIME_NODE_TYPES
+)
+CANONICAL_AUTHORING_NODE_TYPES: tuple[str, ...] = tuple(
+    ["worker"]
+    + [
+        node_type
+        for node_type in CANONICAL_RUNTIME_NODE_TYPES
+        if node_type != "worker" and node_type in RETAINED_RUNTIME_NODE_TYPES
+    ]
 )
 
 # Runtime node kinds whose primary semantics depend on owned subgraphs.
@@ -77,15 +106,71 @@ MUTATION_NODE_TYPES: tuple[str, ...] = tuple(
     if node_type != "if_else"
 )
 
+WorkerGenerationMode = Literal["disabled", "canary", "enabled"]
+WorkerBuilderMode = Literal["disabled", "canary", "enabled"]
+
 # The lightweight planner `GENERATE` spec intentionally targets only a reduced
 # subset of simple runtime node kinds. Richer runtime primitives are expected to
 # arrive through mutation, builder code, or other authoring surfaces.
-GENERATE_SPEC_NODE_TYPES: tuple[str, ...] = (
+GENERATE_SPEC_LEGACY_NODE_TYPES: tuple[str, ...] = (
     "llm_operator",
     "tool_operator",
     "code_operator",
     "gate",
 )
+GENERATE_SPEC_NODE_TYPES: tuple[str, ...] = ("worker", *GENERATE_SPEC_LEGACY_NODE_TYPES)
+
+
+def resolve_worker_generation_mode(raw: str | None = None) -> WorkerGenerationMode:
+    """Resolve the additive Worker-generation rollout mode.
+
+    `disabled`: generation continues preferring legacy compute node types.
+    `canary` / `enabled`: generation prefers Worker for simple compute stages
+    while retaining specialized control/runtime primitives such as `gate`.
+    """
+
+    mode = str(raw if raw is not None else os.environ.get("DAN_WORKER_GENERATION", "disabled")).strip().lower()
+    if mode in {"canary", "enabled"}:
+        return mode
+    return "disabled"
+
+
+def preferred_generate_spec_node_types(
+    *,
+    mode: str | None = None,
+) -> tuple[str, ...]:
+    """Return the preferred lightweight `GENERATE` contract for the active mode."""
+
+    resolved = resolve_worker_generation_mode(mode)
+    if resolved == "disabled":
+        return GENERATE_SPEC_LEGACY_NODE_TYPES
+    return ("worker", "gate")
+
+
+def worker_generation_uses_workers(*, mode: str | None = None) -> bool:
+    """Whether generation should prefer Worker-native compute nodes."""
+
+    return resolve_worker_generation_mode(mode) != "disabled"
+
+
+def resolve_worker_builder_mode(raw: str | None = None) -> WorkerBuilderMode:
+    """Resolve the additive Worker-builder rollout mode.
+
+    `disabled`: builder aliases continue emitting legacy compute node types.
+    `canary` / `enabled`: simple compute aliases may emit Worker-native nodes
+    while retained control/runtime primitives stay explicit.
+    """
+
+    mode = str(raw if raw is not None else os.environ.get("DAN_WORKER_BUILDER", "disabled")).strip().lower()
+    if mode in {"canary", "enabled"}:
+        return mode
+    return "disabled"
+
+
+def worker_builder_uses_workers(*, mode: str | None = None) -> bool:
+    """Whether public Python builder aliases should emit Worker nodes."""
+
+    return resolve_worker_builder_mode(mode) != "disabled"
 
 # Runtime kinds that the markdown loader/decompiler can currently represent
 # directly as agent/workflow markdown without dropping to a stub.
@@ -108,4 +193,5 @@ MARKDOWN_DECOMPILER_SUPPORTED_NODE_TYPES: frozenset[str] = frozenset({
 
 # Fail fast if policy subsets drift from the runtime union (catches typos early).
 assert set(GENERATE_SPEC_NODE_TYPES) <= RUNTIME_NODE_TYPES
+assert set(GENERATE_SPEC_LEGACY_NODE_TYPES) <= RUNTIME_NODE_TYPES
 assert MARKDOWN_DECOMPILER_SUPPORTED_NODE_TYPES <= RUNTIME_NODE_TYPES

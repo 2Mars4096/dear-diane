@@ -4,6 +4,9 @@ import re
 from pathlib import Path
 from typing import get_args
 
+import dan.models.control_flow as control_flow_models
+import dan.models.legacy as legacy_models
+import dan.models.nodes as node_models
 from dan.engine.scheduler import _NODE_SLOT_BYPASS_TYPES
 from dan.models.control_flow import (
     AgentTeamNode,
@@ -13,8 +16,12 @@ from dan.models.control_flow import (
 )
 from dan.models.graph import Graph, Node
 from dan.models.node_taxonomy import (
+    CANONICAL_AUTHORING_NODE_TYPES,
+    CANONICAL_COMPUTE_NODE_TYPES,
     GENERATE_SPEC_NODE_TYPES,
+    LEGACY_COMPATIBILITY_NODE_TYPES,
     MARKDOWN_DECOMPILER_SUPPORTED_NODE_TYPES,
+    RETAINED_RUNTIME_NODE_TYPES,
     RUNTIME_NODE_TYPES,
     SUBGRAPH_BEARING_RUNTIME_NODE_TYPES,
 )
@@ -52,6 +59,7 @@ def test_validation_known_node_types_match_graph_runtime_union_exactly() -> None
 
 def test_validation_composite_node_types_match_runtime_subgraph_bearers() -> None:
     expected = {
+        "worker",
         "composite",
         "while_loop",
         "for_each",
@@ -128,3 +136,72 @@ def test_markdown_decompiler_supported_types_are_runtime_types() -> None:
 
 def test_generate_spec_node_types_are_runtime_types() -> None:
     assert set(GENERATE_SPEC_NODE_TYPES) <= RUNTIME_NODE_TYPES
+
+
+def test_runtime_taxonomy_explicitly_partitions_canonical_retained_and_legacy() -> None:
+    assert CANONICAL_COMPUTE_NODE_TYPES == {"worker"}
+    assert CANONICAL_COMPUTE_NODE_TYPES.isdisjoint(RETAINED_RUNTIME_NODE_TYPES)
+    assert CANONICAL_COMPUTE_NODE_TYPES.isdisjoint(LEGACY_COMPATIBILITY_NODE_TYPES)
+    assert RETAINED_RUNTIME_NODE_TYPES.isdisjoint(LEGACY_COMPATIBILITY_NODE_TYPES)
+    assert (
+        CANONICAL_COMPUTE_NODE_TYPES
+        | RETAINED_RUNTIME_NODE_TYPES
+        | LEGACY_COMPATIBILITY_NODE_TYPES
+    ) == RUNTIME_NODE_TYPES
+
+
+def test_legacy_module_reexports_existing_runtime_class_objects() -> None:
+    assert legacy_models.LLMOperator is node_models.LLMOperator
+    assert legacy_models.ToolOperator is node_models.ToolOperator
+    assert legacy_models.CodeOperator is node_models.CodeOperator
+    assert legacy_models.RAGOperator is node_models.RAGOperator
+    assert legacy_models.ReflectionNode is node_models.ReflectionNode
+    assert legacy_models.InputNode is control_flow_models.InputNode
+    assert legacy_models.RouterNode is control_flow_models.RouterNode
+    assert legacy_models.ValidatorNode is control_flow_models.ValidatorNode
+    assert legacy_models.HumanNode is control_flow_models.HumanNode
+    assert legacy_models.HumanInTheLoopNode is control_flow_models.HumanInTheLoopNode
+    assert legacy_models.VoteNode is control_flow_models.VoteNode
+    assert legacy_models.ReduceNode is control_flow_models.ReduceNode
+
+
+def test_graph_runtime_union_accepts_legacy_module_exports() -> None:
+    union_type = get_args(Node)[0]
+    runtime_classes = set(get_args(union_type))
+    for legacy_class in (
+        legacy_models.LLMOperator,
+        legacy_models.ToolOperator,
+        legacy_models.CodeOperator,
+        legacy_models.RAGOperator,
+        legacy_models.InputNode,
+        legacy_models.ReduceNode,
+        legacy_models.RouterNode,
+        legacy_models.HumanNode,
+        legacy_models.ValidatorNode,
+        legacy_models.VoteNode,
+        legacy_models.ReflectionNode,
+    ):
+        assert legacy_class in runtime_classes
+
+
+def test_canonical_authoring_node_types_follow_worker_plus_retained_runtime_policy() -> None:
+    expected = tuple(
+        node_type
+        for node_type in (
+            "worker",
+            "gate",
+            "while_loop",
+            "for_each",
+            "parallel_subagents",
+            "orchestrator",
+            "composite",
+            "agent_team",
+            "goal_loop",
+        )
+    )
+    assert CANONICAL_AUTHORING_NODE_TYPES == expected
+    assert set(CANONICAL_AUTHORING_NODE_TYPES) == (
+        CANONICAL_COMPUTE_NODE_TYPES | RETAINED_RUNTIME_NODE_TYPES
+    )
+    assert "if_else" not in CANONICAL_AUTHORING_NODE_TYPES
+    assert "human_in_the_loop" not in CANONICAL_AUTHORING_NODE_TYPES

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 
 class InputPort(BaseModel):
@@ -19,6 +19,7 @@ class InputPort(BaseModel):
     json_schema: dict[str, Any] = Field(
         default_factory=dict,
         description="JSON Schema defining the expected data shape",
+        validation_alias=AliasChoices("json_schema", "schema"),
     )
     required: bool = True
     description: str = ""
@@ -31,5 +32,6 @@ class OutputPort(BaseModel):
     json_schema: dict[str, Any] = Field(
         default_factory=dict,
         description="JSON Schema defining the produced data shape",
+        validation_alias=AliasChoices("json_schema", "schema"),
     )
     description: str = ""
