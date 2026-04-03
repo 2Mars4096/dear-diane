@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-04-04
+- [fix] Tightened the concierge clarification follow-up again. `src/dan/server/concierge/tiered_dispatch.py` now only activates the low-confidence clarification pause after `set_pending_action(...)` succeeds, so persistence failures fall back to normal execution instead of returning an unresolvable clarification; and `src/dan/server/concierge/dispatcher.py` now pauses same-project queue drain while a project-scoped pending action is active, so queued follow-ups do not run ahead of the clarification reply.
+- [test] Added focused concierge regressions in `tests/test_concierge/test_tiered_dispatch.py` for the persistence-failure fallback path and the queued-follow-up ordering path, then revalidated the low-confidence clarification slice plus the queue sanity slice.
+- [docs] Synced `docs/plans/38-8-concierge-triage-correctness.md`, `docs/architecture.md`, and `docs/bugs.md` so the clarification contract now explicitly covers durable persistence and same-project queue ordering.
+- [fix] Patched two review-found runtime issues while rechecking the 46/47 merge batch. `src/dan/providers/registry.py` no longer masks an explicit model override pinned to a missing provider by silently falling back to `default` during direct `resolve(...)`, while still preserving the single-key strict-prefix fallback for historical `default`-only configs.
+- [test] Added focused regressions in `tests/test_providers/test_registry.py` for direct-`resolve(...)` override failures. Revalidated the provider/compatibility slice (`6 passed`).
+- [docs] Updated the 46 worker-model plan and bugs log so the repo-wide validation cleanup trail now records the explicit-provider-override regression outside the Worker/linter foundation.
+
 ## 2026-04-03
 - [fix] Continued the last explicit 46 validation gate by hardening stale chat server tests to the current runtime contracts. `tests/test_server/test_chat_integration.py` now resolves the live `dan.server.routers.chat` module state at collection time instead of holding stale module-level `_chat_streams` / `_chat_produce_tasks` references, which fixes ask-mode and run-handoff assertions under long full-suite runs. `tests/test_server/test_chat_manager.py` now checks the current empty-workflow prompt contract (`workflow building`, `Build from scratch.`) instead of assuming literal `plan_graph_mutations` guidance is always injected for generic `_build_messages(...)` calls.
 - [test] Revalidated the focused ask-mode/chat-integration slice (`1 passed`), the full chat-integration file (`29 passed`), and the focused empty-graph prompt assertion (`1 passed`). The unchanged full-suite gate now reaches `6632 passed` before the next unrelated blocker.

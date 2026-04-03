@@ -86,6 +86,12 @@
 - Added a low-confidence clarification stop in `tiered_dispatch.py`, then narrowed it so only action-like execution routes pause; plain low-confidence `ask/general` turns still answer normally.
 - Revalidated the focused follow-up slices in `tests/test_concierge/test_triage.py`, `tests/test_concierge/test_tiered_dispatch.py`, `tests/test_concierge/test_pending_actions.py`, and `tests/test_concierge/test_unified_queue.py`.
 
+### 2026-04-04 clarification queue follow-up
+
+- Tightened low-confidence clarification persistence so the pause only activates after `project_store.set_pending_action(...)` succeeds; persistence failures now fall through to normal execution instead of returning an unresolvable clarification.
+- Taught `ConcurrentDispatcher._drain_project_queue()` to stop draining same-project queued turns while a project-scoped pending action is active, then resume after the clarification reply clears that pending state.
+- Added focused regressions for both the persist-failure fallback path and the queued-follow-up ordering path in `tests/test_concierge/test_tiered_dispatch.py`.
+
 ## Follow-Up Tightening Scope (2026-03-21)
 
 The original 38-8 work fixed dispatch correctness. A separate follow-up is still needed to make the tiered concierge feel intentionally different across execution layers instead of merely using different models. Today the system has:
