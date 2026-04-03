@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -182,6 +186,39 @@ def _make_execution_context(
         tool_registry=tool_registry,
         graph=graph,
     )
+
+
+def test_worker_executor_import_can_skip_openai_when_llm_executor_is_injected() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = f"{repo_root / 'src'}:{repo_root}"
+    script = """
+import importlib.abc
+
+class _OpenAIBlocker(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "openai" or fullname.startswith("openai."):
+            raise ModuleNotFoundError("blocked openai import for worker executor portability test")
+        return None
+
+import sys
+sys.meta_path.insert(0, _OpenAIBlocker())
+
+from dan.worker.executor import WorkerExecutor
+
+WorkerExecutor(llm_executor=object())
+print("ok")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
 
 
 @pytest.mark.asyncio

@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dan.engine.conditions import evaluate_reducer
 from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.state import NodeStatus
 from dan.executors.code import CodeExecutor
 from dan.executors.control_flow import GateExecutor, HumanNodeExecutor, ReduceExecutor, RouterExecutor, VoteExecutor
-from dan.executors.llm import LLMExecutor
 from dan.executors.rag import RAGExecutor
 from dan.executors.reflection import ReflectionExecutor
 from dan.executors.tool import ToolExecutor
@@ -31,6 +31,9 @@ from dan.worker.model import (
     WorkerAuthority,
     llm_hints_configured,
 )
+
+if TYPE_CHECKING:
+    from dan.executors.llm import LLMExecutor
 
 _TASK_TIER_ORDER = {
     "micro": 0,
@@ -79,6 +82,15 @@ def _extract_text(value: Any) -> str:
     return str(value)
 
 
+def _stable_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _worker_fingerprint(node: Worker) -> str:
+    payload = node.model_dump(mode="json")
+    return hashlib.sha256(_stable_json(payload).encode("utf-8")).hexdigest()
+
+
 def _scope_allows_key(scope: str, key: str) -> bool:
     if scope == "*":
         return True
@@ -107,7 +119,7 @@ class WorkerExecutor:
     def __init__(
         self,
         *,
-        llm_executor: LLMExecutor | None = None,
+        llm_executor: "LLMExecutor | None" = None,
         tool_executor: ToolExecutor | None = None,
         code_executor: CodeExecutor | None = None,
         gate_executor: GateExecutor | None = None,
@@ -119,7 +131,11 @@ class WorkerExecutor:
         vote_executor: VoteExecutor | None = None,
         reduce_executor: ReduceExecutor | None = None,
     ) -> None:
-        self._llm = llm_executor or LLMExecutor()
+        if llm_executor is None:
+            from dan.executors.llm import LLMExecutor
+
+            llm_executor = LLMExecutor()
+        self._llm = llm_executor
         self._tool = tool_executor
         self._code = code_executor or CodeExecutor()
         self._gate = gate_executor or GateExecutor()
@@ -130,13 +146,13 @@ class WorkerExecutor:
         self._human = human_executor or HumanNodeExecutor()
         self._vote = vote_executor or VoteExecutor()
         self._reduce = reduce_executor or ReduceExecutor()
-        self._static_effective_configs: dict[int, EffectiveWorkerConfig] = {}
-        self._static_modes: dict[int, tuple[ExecutionMode, ...]] = {}
-        self._static_llm_templates: dict[tuple[int, str], LLMOperator] = {}
-        self._code_templates: dict[int, CodeOperator] = {}
-        self._tool_templates: dict[tuple[int, str], ToolOperator] = {}
-        self._llm_templates: dict[int, LLMOperator] = {}
-        self._specialized_templates: dict[int, NodeBase] = {}
+        self._static_effective_configs: dict[str, EffectiveWorkerConfig] = {}
+        self._static_modes: dict[str, tuple[ExecutionMode, ...]] = {}
+        self._static_llm_templates: dict[tuple[str, str], LLMOperator] = {}
+        self._code_templates: dict[str, CodeOperator] = {}
+        self._tool_templates: dict[tuple[str, str], ToolOperator] = {}
+        self._llm_templates: dict[str, LLMOperator] = {}
+        self._specialized_templates: dict[str, NodeBase] = {}
 
     async def execute(
         self,
@@ -287,9 +303,10 @@ class WorkerExecutor:
     ) -> EffectiveWorkerConfig:
         catalog = getattr(getattr(context, "graph", None), "worker_resources", {}) or {}
         bindings = node.context
+        node_key = _worker_fingerprint(node)
 
         if not catalog and self._bindings_are_noop(bindings):
-            cached = self._static_effective_configs.get(id(node))
+            cached = self._static_effective_configs.get(node_key)
             if cached is None:
                 local_instruction = (node.instruction or node.persona).strip()
                 cached = EffectiveWorkerConfig(
@@ -304,7 +321,7 @@ class WorkerExecutor:
                     provider_policy={},
                     retry_policy=None,
                 )
-                self._static_effective_configs[id(node)] = cached
+                self._static_effective_configs[node_key] = cached
             return cached
 
         bindings = bindings or ContextBindings()
@@ -543,7 +560,7 @@ class WorkerExecutor:
     ) -> LLMOperator:
         hints = effective.llm_hints or LLMHints()
         resolved_model = self._resolved_model(effective, context)
-        cache_key = (id(node), resolved_model)
+        cache_key = (_worker_fingerprint(node), resolved_model)
         template = self._static_llm_templates.get(cache_key)
         if template is not None:
             return template
@@ -679,7 +696,8 @@ class WorkerExecutor:
         context: ExecutionContext,
         effective: EffectiveWorkerConfig,
     ) -> NodeResult:
-        template = self._code_templates.get(id(node))
+        node_key = _worker_fingerprint(node)
+        template = self._code_templates.get(node_key)
         if template is None:
             template = CodeOperator(
                 id=node.id,
@@ -700,7 +718,7 @@ class WorkerExecutor:
                 language=node.language,
                 sandbox_config=dict(node.metadata.get("sandbox_config") or {}),
             )
-            self._code_templates[id(node)] = template
+            self._code_templates[node_key] = template
         legacy = self._apply_retry_policy_template(
             template,
             self._effective_retry_policy(node, effective),
@@ -731,7 +749,7 @@ class WorkerExecutor:
         if tool_executor is None:
             registry = getattr(context, "tool_registry", None)
             tool_executor = ToolExecutor(registry)
-        template_key = (id(node), tool_id)
+        template_key = (_worker_fingerprint(node), tool_id)
         template = self._tool_templates.get(template_key)
         if template is None:
             template = ToolOperator(
@@ -784,7 +802,8 @@ class WorkerExecutor:
         resolved_system_prompt = "\n\n".join(part for part in system_parts if part)
         resolved_tools = self._resolve_tool_schemas(effective.tool_ids, hints.tools)
 
-        template = self._llm_templates.get(id(node))
+        node_key = _worker_fingerprint(node)
+        template = self._llm_templates.get(node_key)
         if template is None:
             template = LLMOperator(
                 id=node.id,
@@ -812,7 +831,7 @@ class WorkerExecutor:
                 history_policy=hints.history_policy,
                 task_tier=hints.task_tier,
             )
-            self._llm_templates[id(node)] = template
+            self._llm_templates[node_key] = template
         if (
             template.retry_policy == resolved_retry_policy
             and template.model == resolved_model
@@ -854,11 +873,12 @@ class WorkerExecutor:
     ) -> NodeResult:
         from dan.worker.presets import worker_to_legacy
 
-        legacy = self._specialized_templates.get(id(node))
+        node_key = _worker_fingerprint(node)
+        legacy = self._specialized_templates.get(node_key)
         if legacy is None:
             legacy = worker_to_legacy(node)
             if legacy is not None:
-                self._specialized_templates[id(node)] = legacy
+                self._specialized_templates[node_key] = legacy
         if legacy is None:
             return NodeResult(
                 outputs={},
@@ -1021,10 +1041,11 @@ class WorkerExecutor:
         if memory_scope_error is not None:
             return NodeResult(outputs={}, status=NodeStatus.FAILED, error=memory_scope_error)
 
-        modes = self._static_modes.get(id(node))
+        node_key = _worker_fingerprint(node)
+        modes = self._static_modes.get(node_key)
         if modes is None:
             modes = tuple(self._detect_modes(node, effective))
-            self._static_modes[id(node)] = modes
+            self._static_modes[node_key] = modes
 
         if modes == (ExecutionMode.SCRIPT,):
             return await self._run_code(node, inputs, context, effective)
