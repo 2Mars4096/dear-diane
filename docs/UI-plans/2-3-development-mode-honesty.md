@@ -1,7 +1,7 @@
 # 2-3: Development Mode Honesty
 
 **Parent:** [2-frontend-hardening](2-frontend-hardening.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Make Development mode truthful and reliable by clearly separating Electron-only capabilities from browser-preview-safe surfaces, and by removing or downgrading UI that looks finished but is still placeholder or demo-only.
 
 ## Context
@@ -37,22 +37,22 @@ The hardening goal here is not to make browser preview fully capable. It is to m
 
 ## Tasks
 
-- [ ] 1. Classify Development-mode capabilities by runtime
-  - [ ] 1-1. Inventory every major panel/action as `desktop-only`, `browser-safe`, or `placeholder`
-  - [ ] 1-2. Define the minimum browser-preview contract the app should support intentionally
-- [ ] 2. Harden capability gating and messaging
-  - [ ] 2-1. Disable or hide nonfunctional controls in browser preview instead of relying on inert bridge fallbacks
-  - [ ] 2-2. Tighten the warning/banner copy so it names what still works and what does not
-  - [ ] 2-3. Make terminal, git, search, and LSP surfaces visibly unavailable when they are not backed by Electron
-  - [ ] 2-4. Ensure the browser-preview states look intentionally disabled, not visually broken
-- [ ] 3. Remove low-trust placeholder surfaces
-  - [ ] 3-1. Replace Code-mode Workflow/Furnace placeholder sidebars with real functionality or remove the activity-bar entries until implemented
-  - [ ] 3-2. Audit other low-signal or decorative IDE chrome that implies capability it does not yet have
-- [ ] 4. Reduce Code-mode shell complexity while hardening it
-  - [ ] 4-1. Extract shortcut wiring, shell chrome, and mode-chat context assembly out of the main `CodeMode` file
-  - [ ] 4-2. Establish a small runtime-capability utility that child panels can consume consistently
+- [x] 1. Classify Development-mode capabilities by runtime
+  - [x] 1-1. Inventory every major panel/action as `desktop-only`, `browser-safe`, or `placeholder`
+  - [x] 1-2. Define the minimum browser-preview contract the app should support intentionally
+- [x] 2. Harden capability gating and messaging
+  - [x] 2-1. Disable or hide nonfunctional controls in browser preview instead of relying on inert bridge fallbacks
+  - [x] 2-2. Tighten the warning/banner copy so it names what still works and what does not
+  - [x] 2-3. Make terminal, git, search, and LSP surfaces visibly unavailable when they are not backed by Electron
+  - [x] 2-4. Ensure the browser-preview states look intentionally disabled, not visually broken
+- [x] 3. Remove low-trust placeholder surfaces
+  - [x] 3-1. Replace Code-mode Workflow/Furnace placeholder sidebars with real functionality or remove the activity-bar entries until implemented
+  - [x] 3-2. Audit other low-signal or decorative IDE chrome that implies capability it does not yet have
+- [x] 4. Reduce Code-mode shell complexity while hardening it
+  - [x] 4-1. Extract shortcut wiring, shell chrome, and mode-chat context assembly out of the main `CodeMode` file
+  - [x] 4-2. Establish a small runtime-capability utility that child panels can consume consistently
 - [ ] 5. Verify desktop-vs-browser honesty
-  - [ ] 5-1. Add focused tests for browser gating and warning states
+  - [x] 5-1. Add focused tests for browser gating and warning states
   - [ ] 5-2. Manually smoke-test the same flows in Electron and browser preview
 
 ## User-Facing Acceptance
@@ -69,3 +69,5 @@ The hardening goal here is not to make browser preview fully capable. It is to m
 ## Notes
 
 - This subplan is about trust and clarity, not about expanding browser support to parity with Electron.
+- Landed 2026-04-02: browser preview now routes preview-only sidebars through an honest `DevelopmentPreviewPanel`, activity-bar icons carry preview-limited affordances, the old placeholder Workflow/Furnace panels were replaced with real data-backed handoff panels, and Development mode now uses a runtime status strip instead of a second top-bar chat button.
+- Follow-up slice landed 2026-04-02: `CodeMode.tsx` now delegates shell chrome to `DevelopmentModeShell.tsx`, keyboard wiring to `useDevelopmentModeShortcuts.ts`, and compact-chat context assembly to `developmentModeChatContext.ts`. Non-core Development surfaces are lazy-loaded behind those shell helpers, `useDebugEvents.ts` was split out of `DebugPanel.tsx` so the debug UI can remain lazy, and `editor/src/components/modes/__tests__/DevelopmentModeShell.test.ts` now locks browser-vs-desktop gating states.

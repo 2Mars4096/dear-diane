@@ -1,7 +1,7 @@
 # 2-4: Research Mode UX Hardening
 
 **Parent:** [2-frontend-hardening](2-frontend-hardening.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Make Research mode structurally clearer, less redundant, and easier to trust by simplifying navigation, reducing cross-mode coupling, and extracting its large inline orchestration logic into maintainable pieces.
 
 ## Context
@@ -40,21 +40,22 @@ This is a UX and maintainability issue more than a pure feature-gap issue.
 
 ## Tasks
 
-- [ ] 1. Audit the current surface for redundancy and cognitive load
-  - [ ] 1-1. Reassess duplicated chat toggles and decide on a single primary chat affordance
-  - [ ] 1-2. Reassess terminal visibility inside Research mode and its coupling to the code store
-  - [ ] 1-3. Identify low-value controls in the left rail and top bar that can be consolidated or removed
+- [x] 1. Audit the current surface for redundancy and cognitive load
+  - [x] 1-1. Reassess duplicated chat toggles and decide on a single primary chat affordance
+  - [x] 1-2. Reassess terminal visibility inside Research mode and its coupling to the code store
+  - [x] 1-3. Identify low-value controls in the left rail and top bar that can be consolidated or removed
 - [ ] 2. Split the shell into durable sub-surfaces
-  - [ ] 2-1. Extract `FunctionRail`, `PrimaryPanel`, `ContextPanel`, and `PipelineProgress` into separate modules/hooks
-  - [ ] 2-2. Extract Furnace session orchestration and SSE ownership out of the top-level mode component
-  - [ ] 2-3. Keep layout code focused on layout, not session business logic
+  - [x] 2-1. Extract `FunctionRail`, `PrimaryPanel`, `ContextPanel`, and `PipelineProgress` into separate modules/hooks
+  - [x] 2-2. Extract Furnace session orchestration and SSE ownership out of the top-level mode component
+  - [x] 2-3. Keep layout code focused on layout, not session business logic
+  - [x] 2-4. Extract shortcut/status/chat-context support out of the top-level mode component so the later panel breakup starts from a thinner shell
 - [ ] 3. Tighten research-specific UX truthfulness
-  - [ ] 3-1. Clarify session lifecycle states: starting, running, paused, reconnecting, failed, completed
-  - [ ] 3-2. Make document-writing vs training/session-management actions visually distinct
-  - [ ] 3-3. Ensure long-running session state survives surface switching without hidden surprises
-  - [ ] 3-4. Tighten empty/first-use states so users can tell where to write, where to find papers, and where to manage training without guesswork
+  - [x] 3-1. Clarify session lifecycle states: starting, running, paused, reconnecting, failed, completed
+  - [x] 3-2. Make document-writing vs training/session-management actions visually distinct
+  - [x] 3-3. Ensure long-running session state survives surface switching without hidden surprises
+  - [x] 3-4. Tighten empty/first-use states so users can tell where to write, where to find papers, and where to manage training without guesswork
 - [ ] 4. Verify Research mode flows
-  - [ ] 4-1. Add focused tests for panel toggles, session-state rendering, and SSE reconnect behavior
+  - [x] 4-1. Add focused tests for panel toggles, session-state rendering, and SSE reconnect behavior
   - [ ] 4-2. Manually smoke-test create/resume/pause/cancel/delete/recipe flows plus context-pane authoring
 
 ## User-Facing Acceptance
@@ -71,3 +72,13 @@ This is a UX and maintainability issue more than a pure feature-gap issue.
 ## Notes
 
 - This plan should not dilute the mode into generic IDE chrome. The goal is to make Research mode more intentional, not more like Code mode.
+- Landed 2026-04-02: Research removed the duplicate top-bar chat button, now uses a calmer desk-status strip, and shares the same active-mode listener contract as other shells so hidden Research mode no longer reacts once the user switches away.
+- Support-layer extraction also landed on 2026-04-02: `ResearchStatusStrip.tsx`, `useResearchModeShortcuts.ts`, `useResearchAutoShowFurnace.ts`, and `researchModeChatContext.ts` now hold the mode-level status, shortcut, auto-rail, and sidecar-context seams that were previously embedded in `ResearchMode.tsx`. Focused regressions now cover Research shortcuts and the extracted chat-context builder, while the larger FunctionRail / panel / Furnace-session breakup remains open.
+- Shell-panel extraction also landed on 2026-04-02: `ResearchModeShell.tsx` now owns `FunctionRail`, `PipelineProgress`, `PrimaryPanel`, and `ContextPanel`, and `ResearchMode.tsx` dropped from 3174 lines to 2047 lines. Focused shell regressions now cover empty-desk quick start, furnace tab routing, pipeline-stage panel routing, rail section switching, and context-tab rendering via `editor/src/components/modes/__tests__/ResearchModeShell.test.ts`.
+- Furnace session-sync extraction also landed on 2026-04-02: `useResearchFurnaceSessions.ts` now owns backend session polling, SSE stream ownership, and reconnect scheduling/status updates, which drops `ResearchMode.tsx` further from 2047 lines to 1858 lines and removes the last active session-stream effects from the top-level file.
+- Focused regression coverage now includes `editor/src/components/modes/__tests__/useResearchFurnaceSessions.test.ts`, which locks the extracted hook around backend summary sync plus SSE reconnect behavior.
+- Additional Research lifecycle hardening landed on 2026-04-02: `researchFurnaceSessionStatus.ts` now centralizes Furnace session lifecycle labels/tone so the desk shows `Ready`, `Live`, `Paused`, `Reconnecting`, `Completed`, and `Failed` states intentionally instead of rendering raw status strings. `ResearchMode.tsx` now uses that helper for the Furnace cards, and `researchFurnaceSessionStatus.test.ts` adds explicit regression coverage for live, reconnecting, and failed session-state presentation.
+- Additional Furnace session extraction also landed on 2026-04-02: `ResearchFurnaceSessionCards.tsx` now owns the family/session card rendering, tag editing, recipe reveal, and per-session action wiring that previously sat inline inside `ResearchMode.tsx`. The Research mode file now stays more clearly about Furnace composition and desk layout, while `ResearchFurnaceSessionCards.test.ts` locks the extracted card/group surface around reconnecting-state presentation and expanded family summaries.
+- Additional Furnace desk extraction landed on 2026-04-02: `ResearchFurnacePanel.tsx` now owns the full Furnace composer/session-desk surface, `ResearchMode.tsx` has dropped to shell-layout composition plus a lazy-loaded Furnace entry point, and the top-level Research session controller is now mounted with an explicit `activeMode === "research"` gate so live session polling survives desk-surface switches without keeping hidden modes active. The new Furnace desk also separates the warm composer lane from the cooler session desk, tightens first-use copy, and lazy-loads the full Furnace surface into its own chunk.
+- Focused regression coverage now also includes `editor/src/components/modes/__tests__/ResearchFurnacePanel.test.ts`, while `useResearchFurnaceSessions.test.ts` now locks the new disabled-controller path so hidden/non-active Research shells do not keep syncing in the background.
+- The remaining open work in this plan is manual flow smoke (`4-2`), not another large inline `FurnacePanel` breakup.
