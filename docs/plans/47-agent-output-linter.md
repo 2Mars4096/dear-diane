@@ -1,7 +1,7 @@
 # 47: Agent Output Linter
 
-**Status:** not-started
-**Goal:** A fast, inline, configurable validation layer at every agent-to-agent handoff boundary — like ESLint for agent output — implemented after the Worker plan so it can target a normalized contract surface instead of today's mixed node landscape.
+**Status:** completed
+**Goal:** A fast, inline, configurable validation layer at every agent-to-agent handoff boundary — like ESLint for agent output — implemented after the Worker plan so it can target a normalized contract surface instead of today's mixed node landscape, while still applying across retained specialized control/runtime primitives where edge handoffs exist.
 
 ## The Problem
 
@@ -68,28 +68,28 @@ Lint config lives on the *edge*, not the node. Different downstream consumers of
 ```python
 edge = DataEdge(
     ...,
-    metadata={
-        "lint": {
-            "structural": {"schema": {...}, "ranges": {...}},
-            "semantic": {"topic_keywords": [...], "min_similarity": 0.7},
-            "intent": "A concise financial summary suitable for executive briefing",
-            "tier3_threshold": 0.6,
-            "severity": "error",
-            "autofix": ["fill_defaults", "retry_with_feedback"],
-        }
-    }
+    lint={
+        "structural": {"schema": {...}, "ranges": {...}},
+        "semantic": {"topic_keywords": [...], "min_similarity": 0.7},
+        "intent": {"intent": "A concise financial summary suitable for executive briefing"},
+        "tier3_threshold": 0.6,
+        "severity": "error",
+        "autofix": ["fill_defaults", "retry_with_feedback"],
+    },
 )
 ```
+
+Legacy `metadata["lint"]` is still accepted and mirrored for compatibility, but the canonical runtime/model surface is now `DataEdge.lint`.
 
 ## Sub-Plans
 
 | # | Sub-Plan | Scope | Priority | Status |
 |---|----------|-------|----------|--------|
-| [47-1](47-1-linter-core-and-rule-protocol.md) | Linter Core & Rule Protocol | `lint()` engine, `LintConfig`, `LintResult`, `Rule` protocol, tiered execution, severity model | P0 | not-started |
-| [47-2](47-2-structural-rules.md) | Structural Rules | Tier 1: schema validation, type checking, required fields, range bounds, non-empty, format patterns | P0 | not-started |
-| [47-3](47-3-semantic-rules.md) | Semantic Rules | Tier 2: embedding similarity, entity/keyword presence, topic detection, tone classification | P1 | not-started |
-| [47-4](47-4-intent-validation-and-autofix.md) | Intent Validation & Auto-Fix | Tier 3: focused LLM judge; auto-fix strategies (fill, truncate, retry-with-feedback, refocus) | P1 | not-started |
-| [47-5](47-5-engine-integration-and-config-autogen.md) | Engine Integration & Config Auto-Generation | Scheduler hook at `port_data.set()`; topology/compiler generate lint configs from Worker-first contracts | P1 | not-started |
+| [47-1](47-1-linter-core-and-rule-protocol.md) | Linter Core & Rule Protocol | `lint()` engine, `LintConfig`, `LintResult`, `Rule` protocol, tiered execution, severity model | P0 | completed |
+| [47-2](47-2-structural-rules.md) | Structural Rules | Tier 1: schema validation, type checking, required fields, range bounds, non-empty, format patterns | P0 | completed |
+| [47-3](47-3-semantic-rules.md) | Semantic Rules | Tier 2: embedding similarity, entity/keyword presence, topic detection, tone classification | P1 | completed |
+| [47-4](47-4-intent-validation-and-autofix.md) | Intent Validation & Auto-Fix | Tier 3: focused LLM judge; auto-fix strategies (fill, truncate, retry-with-feedback, refocus) | P1 | completed |
+| [47-5](47-5-engine-integration-and-config-autogen.md) | Engine Integration & Config Auto-Generation | Scheduler hook at `port_data.set()`; topology/compiler generate lint configs from Worker-first contracts | P1 | completed |
 
 ## Dependencies / Sequencing
 
@@ -109,13 +109,13 @@ edge = DataEdge(
 
 47-5 is where the linter connects to `dan.engine`. Until then, it is a standalone library callable in tests or custom code.
 
-**Cross-plan sequencing:** architecturally, 47-1 through 47-4 remain dependency-free on `dan.worker`. Implementation-wise, the whole 47 series starts only after plan 46 so rule/config generation can target the Worker-first contract model rather than hard-coding today's heterogeneous node set.
+**Cross-plan sequencing:** architecturally, 47-1 through 47-4 remain dependency-free on `dan.worker`. In practice the 47 series can start once the Worker-first contract surface is stable enough for config generation, even if 46 still has a smaller rollout/compaction tail.
 
 ## Implementation Lane
 
-1. Execute plan 47 only in the dedicated follow-on worktree cut after plan 46.
+1. Execute plan 47 only in the dedicated follow-on worktree cut after the Worker-first contract surface from plan 46 is stable.
 2. Keep the `dan.linter` module itself zero-dependency on `dan.worker`, `dan.engine`, and `dan.models`.
-3. Treat Worker metadata from plan 46 as the canonical source for auto-generated lint config. Legacy nodes get best-effort fallback, not first-class design priority.
+3. Treat Worker metadata from plan 46 as the canonical source for auto-generated lint config. Retained specialized control/runtime primitives and legacy nodes get best-effort fallback rather than driving the design.
 
 ## Relationship to Plan 46 (Worker)
 
@@ -157,10 +157,12 @@ plan 47: validate handoffs against that surface
 - The linter module remains architecturally decoupled from `dan.worker`, but the implementation sequence is still 46 → 47. Normalizing contracts first is the point.
 - Worker role/persona/description plus port descriptions/schemas are the canonical source for lint-config generation. Legacy node support exists, but it should not drive the design.
 - Do not start 47 in parallel with 46. Otherwise the config-generation logic will calcify current node heterogeneity instead of the simpler Worker target state.
+- The linter is not “Worker-only middleware.” It should validate any real edge handoff, including those around retained control/runtime primitives, but Worker-first contracts remain the canonical source of rich lint metadata.
+- The linter is the tiered contract gate between workers. In runtime terms, the handoff is not published downstream until the lint decision is made.
 
 ## Notes
 
-- The existing `ValidatorNode` and `BoundaryContract` cover structural validation at explicit graph boundaries. The linter generalizes this to *every* edge, adds semantic/intent tiers, and makes it invisible middleware rather than a visible graph node.
-- The existing LLM executor's output normalization loop (parse/validate/re-prompt) is a form of inline auto-fix. The linter's auto-fix extends this pattern to the handoff boundary, not just the LLM output boundary.
-- The linter operates on `port_data` values — the actual data flowing through the graph. It does not need to understand the graph topology, just the data at each edge.
-- The delivery order matters because 47-5 should target Worker-native graphs and compiler outputs first, not embed knowledge of every legacy node flavor.
+- `ValidatorNode` and `BoundaryContract` stay relevant for explicit visible validation boundaries; the linter generalizes validation to every edge as middleware.
+- The linter operates on `port_data` values, not graph topology. Worker-first contracts matter mainly because they make autogen and diagnostics much cleaner.
+- The current landed state is substantial: standalone tiers, first-class edge lint, scheduler gating/retry, editor and telemetry surfacing, Worker-first autogen, optional graph-construction-time intent refinement, deterministic autofix, and deterministic plus optional live-provider rollout benchmarks are all live.
+- Detailed incremental history now lives in `docs/changelog.md`; this plan now records the completed 47 foundation and leaves future rollout extensions to later follow-up plans instead of appending more history here.
