@@ -23,8 +23,8 @@ import CommandPalette from "../CommandPalette";
 import ChatPanel from "../ChatPanel";
 import ModeChatSidebar from "../shared/ModeChatSidebar";
 import { MessageSquare } from "lucide-react";
-import { useAppStore } from "../../store/useAppStore";
 import { importBlock } from "../../lib/api";
+import { useModeScopedWindowEvent } from "../../hooks/useModeScopedWindowEvent";
 
 type BottomTab = "logs" | "output" | "history" | "optimizations";
 
@@ -42,6 +42,18 @@ export default function OperationsMode() {
   const [bottomTab, setBottomTab] = useState<BottomTab>("logs");
   const [panelHeight, setPanelHeight] = useState(DEFAULT_PANEL_HEIGHT);
   const [showChatSidebar, setShowChatSidebar] = useState(false);
+  const toggleChatSidebar = useCallback(() => {
+    setShowChatSidebar((value) => !value);
+  }, []);
+  const closeChatSidebar = useCallback(() => {
+    setShowChatSidebar(false);
+  }, []);
+  const operationsChatContext = useCallback(() => {
+    const gs = useGraphStore.getState();
+    const lines: string[] = ["[Operations Context]"];
+    if (gs.graphId) lines.push(`Active workflow: ${gs.graphId}`);
+    return lines.join("\n");
+  }, []);
   const dragging = useRef(false);
 
   const [blockExportNodeId, setBlockExportNodeId] = useState<string | null>(null);
@@ -113,14 +125,7 @@ export default function OperationsMode() {
     if (historyFocusCounter > 0) setBottomTab("history");
   }, [historyFocusCounter]);
 
-  useEffect(() => {
-    const handleChatToggle = () => {
-      if (useAppStore.getState().activeMode !== "operations") return;
-      setShowChatSidebar((v) => !v);
-    };
-    window.addEventListener("app:toggleModeChatSidebar", handleChatToggle);
-    return () => window.removeEventListener("app:toggleModeChatSidebar", handleChatToggle);
-  }, []);
+  useModeScopedWindowEvent("operations", "app:toggleModeChatSidebar", toggleChatSidebar);
 
   return (
     <ReactFlowProvider>
@@ -165,7 +170,7 @@ export default function OperationsMode() {
                 ))}
                 <span className="flex-1" />
                 <button
-                  onClick={() => setShowChatSidebar((v) => !v)}
+                  onClick={toggleChatSidebar}
                   title={showChatSidebar ? "Hide AI chat (⌘J)" : "Show AI chat (⌘J)"}
                   className={`p-1.5 transition-colors shrink-0 ${showChatSidebar ? "text-indigo-500" : "text-gray-500 hover:text-indigo-600"}`}
                 >
@@ -189,13 +194,8 @@ export default function OperationsMode() {
             <div className="w-[350px] min-w-[250px] border-l border-gray-200 shrink-0">
               <ModeChatSidebar
                 mode="operations"
-                onClose={() => setShowChatSidebar(false)}
-                contextProvider={() => {
-                  const gs = useGraphStore.getState();
-                  const lines: string[] = ["[Operations Context]"];
-                  if (gs.graphId) lines.push(`Active workflow: ${gs.graphId}`);
-                  return lines.join("\n");
-                }}
+                onClose={closeChatSidebar}
+                contextProvider={operationsChatContext}
               />
             </div>
           )}
