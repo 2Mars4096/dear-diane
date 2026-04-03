@@ -317,6 +317,87 @@ async def test_triage_uses_explicit_non_workflow_lexical_scenarios(
 
 
 @pytest.mark.asyncio
+async def test_triage_does_not_short_circuit_web_lookup_on_common_freshness_words():
+    context, _project, _task = _make_context()
+    llm_calls = 0
+
+    async def _complete(_messages):
+        nonlocal llm_calls
+        llm_calls += 1
+        return json.dumps(
+            {
+                "tier": 1,
+                "intent": "agent",
+                "route": {
+                    "mode": "agent",
+                    "target": "file",
+                    "action_hints": ["read_file"],
+                },
+                "confidence": 0.83,
+                "goal": "Review the latest draft",
+                "deliverable": "Draft review",
+                "entities": [],
+                "is_resume": False,
+                "resume_task_id": None,
+                "is_social": False,
+                "social_response": None,
+                "context_needs": [],
+                "subtasks": [],
+                "execution_order": "parallel",
+                "rationale": "Freshness words alone should not force web routing",
+            }
+        )
+
+    result = await triage("look at the latest draft", context, _complete)
+
+    assert llm_calls == 1
+    assert result.route_source == "llm"
+    assert result.route is not None
+    assert result.route.target == "file"
+    assert result.route.action_hints == ["read_file"]
+
+
+@pytest.mark.asyncio
+async def test_triage_does_not_short_circuit_file_read_on_generic_report_language():
+    context, _project, _task = _make_context()
+    llm_calls = 0
+
+    async def _complete(_messages):
+        nonlocal llm_calls
+        llm_calls += 1
+        return json.dumps(
+            {
+                "tier": 1,
+                "intent": "ask",
+                "route": {
+                    "mode": "ask",
+                    "target": "general",
+                    "action_hints": [],
+                },
+                "confidence": 0.81,
+                "goal": "Summarize the report request",
+                "deliverable": "Clarified summary request",
+                "entities": [],
+                "is_resume": False,
+                "resume_task_id": None,
+                "is_social": False,
+                "social_response": None,
+                "context_needs": [],
+                "subtasks": [],
+                "execution_order": "parallel",
+                "rationale": "Generic report language should stay on the LLM path",
+            }
+        )
+
+    result = await triage("summarize the report", context, _complete)
+
+    assert llm_calls == 1
+    assert result.route_source == "llm"
+    assert result.route is not None
+    assert result.route.target == "general"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "text",
     [
@@ -747,6 +828,47 @@ async def test_triage_keeps_mixed_workflow_followup_on_workflow_edit():
     assert "workflow_edit" in result.route.action_hints
 
 
+@pytest.mark.asyncio
+async def test_triage_trusts_confident_llm_file_route_over_workflow_history():
+    context, _project, _task = _make_context(
+        turns=_workflow_activity_turns(),
+        task_label="Fix the README copy",
+    )
+
+    result = await triage(
+        "fix the typo in the readme",
+        context,
+        _llm_json(
+            {
+                "tier": 1,
+                "intent": "agent",
+                "route": {
+                    "mode": "agent",
+                    "target": "file",
+                    "action_hints": ["write_file"],
+                },
+                "confidence": 0.92,
+                "goal": "Fix the README typo",
+                "deliverable": "Updated README",
+                "entities": [],
+                "is_resume": False,
+                "resume_task_id": None,
+                "is_social": False,
+                "social_response": None,
+                "context_needs": [],
+                "subtasks": [],
+                "execution_order": "parallel",
+                "rationale": "Confident file edit classification",
+            }
+        ),
+    )
+
+    assert result.route_source == "llm"
+    assert result.route is not None
+    assert result.route.target == "file"
+    assert result.route.action_hints == ["write_file"]
+
+
 def test_fast_classify_text_handles_simple_social_turn():
     result = fast_classify_text("Thanks!")
     assert result is not None
@@ -760,12 +882,12 @@ def test_fast_classify_text_ignores_non_social_turn():
     assert result is None
 
 
-def test_build_triage_messages_includes_six_recent_turns_with_wider_truncation():
+def test_build_triage_messages_includes_eight_recent_turns_and_full_last_user_turn():
     turns = [
         TaskTurn(role="user", content=f"user turn {idx} " + ("x" * 450))
         if idx % 2 == 0
         else TaskTurn(role="assistant", content=f"assistant turn {idx} " + ("y" * 450))
-        for idx in range(8)
+        for idx in range(10)
     ]
     context, _project, _task = _make_context(turns=turns)
 
@@ -777,10 +899,43 @@ def test_build_triage_messages_includes_six_recent_turns_with_wider_truncation()
         if message["role"] in {"user", "assistant"}
     ]
     prior_messages = history_messages[:-1]
-    assert len(prior_messages) == 6
+    assert len(prior_messages) == 8
     assert "turn 0" not in prior_messages[0]["content"]
     assert "turn 2" in prior_messages[0]["content"]
     assert len(prior_messages[0]["content"]) == 400
+    last_user_message = next(
+        message for message in reversed(prior_messages) if message["role"] == "user"
+    )
+    assert "turn 8" in last_user_message["content"]
+    assert len(last_user_message["content"]) > 400
+
+
+def test_build_triage_messages_includes_recent_assistant_context_for_anaphora():
+    turns = [
+        TaskTurn(role="assistant", content="First assistant note about the reporting workflow."),
+        TaskTurn(role="user", content="Okay"),
+        TaskTurn(role="assistant", content="Second assistant note describing the last proposed fix."),
+    ]
+    context, _project, task = _make_context(turns=turns)
+    task.pending_steps = ["Verify the last proposed fix"]
+
+    messages = _build_triage_messages("do that again", context)
+
+    anaphora_context = next(
+        message
+        for message in messages
+        if message["role"] == "system"
+        and "pronoun resolution" in message["content"]
+    )
+    current_context = next(
+        message
+        for message in messages
+        if message["role"] == "system"
+        and message["content"].startswith("Current context:\n")
+    )
+    assert "Second assistant note" in anaphora_context["content"]
+    assert "Current task:" in current_context["content"]
+    assert "Pending steps:" in current_context["content"]
 
 
 def test_build_classifier_prompt_includes_conversational_workflow_authoring_examples():
@@ -877,6 +1032,65 @@ async def test_triage_embedding_primary_takes_precedence_over_llm(monkeypatch):
     assert result.route is not None
     assert result.route.target == "run"
     assert "run_control" in result.route.action_hints
+
+
+@pytest.mark.asyncio
+async def test_triage_trusts_confident_embedding_file_route_over_workflow_history(monkeypatch):
+    context, _project, _task = _make_context(
+        turns=_workflow_activity_turns(),
+        task_label="Fix the README copy",
+    )
+
+    async def _embed_result(_text, _context):
+        return triage_module.TriageResult(
+            tier=1,
+            intent="agent",
+            route=triage_module.RouteDecision(
+                mode=triage_module.RouteMode.AGENT,
+                target="file",
+                action_hints=["write_file"],
+                rationale="embedding test",
+            ),
+            confidence=0.91,
+            goal="Fix the README typo",
+            deliverable="Fix the README typo",
+            route_source="embedding",
+        )
+
+    monkeypatch.setattr(triage_module, "_embedding_triage_result", _embed_result)
+
+    result = await triage(
+        "fix the typo in the readme",
+        context,
+        _llm_json(
+            {
+                "tier": 2,
+                "intent": "agent",
+                "route": {
+                    "mode": "agent",
+                    "target": "workflow",
+                    "action_hints": ["workflow_edit"],
+                },
+                "confidence": 0.7,
+                "goal": "ignored",
+                "deliverable": "ignored",
+                "entities": [],
+                "is_resume": False,
+                "resume_task_id": None,
+                "is_social": False,
+                "social_response": None,
+                "context_needs": [],
+                "subtasks": [],
+                "execution_order": "parallel",
+                "rationale": "ignored",
+            }
+        ),
+    )
+
+    assert result.route_source == "embedding"
+    assert result.route is not None
+    assert result.route.target == "file"
+    assert result.route.action_hints == ["write_file"]
 
 
 @pytest.mark.asyncio

@@ -53,7 +53,7 @@ _WORKFLOW_RUN_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 _WORKFLOW_ENTITY_RE = re.compile(
-    r"\b(?:workflow|graph|node|edge|port|subgraph)\b",
+    r"\b(?:workflow(?:s)?|graph(?:s)?|node(?:s)?|edge(?:s)?|port(?:s)?|subgraph(?:s)?)\b",
     re.IGNORECASE,
 )
 _WORKFLOW_EDIT_RE = re.compile(
@@ -62,7 +62,7 @@ _WORKFLOW_EDIT_RE = re.compile(
 )
 _WORKFLOW_AUTHORING_RE = re.compile(
     r"\b(?:build|create|design|automate|orchestrate|compose|construct|generate|set\s+up|setup)\b"
-    r"(?:\W+\w+){0,4}\W+\b(?:workflow|pipeline|graph)\b|\b(?:workflow|pipeline|graph)\b"
+    r"(?:\W+\w+){0,4}\W+\b(?:workflow(?:s)?|pipeline(?:s)?|graph(?:s)?)\b|\b(?:workflow(?:s)?|pipeline(?:s)?|graph(?:s)?)\b"
     r"(?:\W+\w+){0,4}\W+\b(?:build|create|design|automate|orchestrate|compose|construct|generate|set\s+up|setup)\b",
     re.IGNORECASE,
 )
@@ -84,6 +84,20 @@ _FURNACE_INTENT_RE = re.compile(
 _TOPIC_ONLY_ONLINE_RE = re.compile(
     r"\b(?:topic|learn|online|web|internet|research)\b",
     re.IGNORECASE,
+)
+_TRIAGE_HISTORY_TURNS = int(os.environ.get("DAN_TRIAGE_HISTORY_TURNS", "8") or "8")
+_TRIAGE_HISTORY_CHARS = int(os.environ.get("DAN_TRIAGE_HISTORY_CHARS", "400") or "400")
+_TRIAGE_LAST_USER_TURN_CHARS = int(
+    os.environ.get("DAN_TRIAGE_LAST_USER_TURN_CHARS", "1600") or "1600"
+)
+_TRIAGE_ANAPHORA_ASSISTANT_LOOKBACK = int(
+    os.environ.get("DAN_TRIAGE_ANAPHORA_ASSISTANT_LOOKBACK", "3") or "3"
+)
+_TRIAGE_ANAPHORA_ASSISTANT_CHARS = int(
+    os.environ.get("DAN_TRIAGE_ANAPHORA_ASSISTANT_CHARS", "600") or "600"
+)
+_TRIAGE_POST_PROCESS_OVERRIDE_MAX_CONFIDENCE = float(
+    os.environ.get("DAN_TRIAGE_POST_PROCESS_OVERRIDE_MAX_CONFIDENCE", "0.8")
 )
 _TRIAGE_EMBEDDING_ENABLED = os.environ.get("DAN_TRIAGE_EMBEDDING_ENABLED", "1").lower() in (
     "1",
@@ -569,6 +583,8 @@ _TRIAGE_SYSTEM_PROMPT: str = (
     "For tier 2 tasks, provide:\n"
     "- subtasks: ordered list of sub-steps\n"
     '- execution_order: "parallel" if subtasks are independent, "serial" if ordered, "mixed" otherwise\n\n'
+    "Prefer empty arrays for optional fields unless the evidence is strong. "
+    "Do not invent entities, context_needs, or subtasks.\n\n"
     "## Output format\n"
     "Return ONLY a JSON object (no markdown fences, no commentary):\n"
     "{\n"
@@ -596,6 +612,27 @@ _TRIAGE_SYSTEM_PROMPT: str = (
 # ---------------------------------------------------------------------------
 
 
+def _trim_triage_history_text(value: str, limit: int) -> str:
+    text = str(value or "")
+    if limit <= 0:
+        return text
+    return text[:limit]
+
+
+def _recent_assistant_anaphora_context(context: ResolvedContext) -> list[str]:
+    snippets: list[str] = []
+    for turn in reversed(context.task.turns):
+        if turn.role != "assistant" or not turn.content:
+            continue
+        snippets.append(
+            _trim_triage_history_text(turn.content, _TRIAGE_ANAPHORA_ASSISTANT_CHARS)
+        )
+        if len(snippets) >= _TRIAGE_ANAPHORA_ASSISTANT_LOOKBACK:
+            break
+    snippets.reverse()
+    return snippets
+
+
 def _build_triage_messages(
     text: str,
     context: ResolvedContext,
@@ -605,16 +642,41 @@ def _build_triage_messages(
         {"role": "system", "content": _TRIAGE_SYSTEM_PROMPT},
     ]
 
-    recent = context.task.turns[-6:]
-    for turn in recent:
+    has_anaphora = bool(_ANAPHORA_RE.search(text))
+    recent = context.task.turns[-_TRIAGE_HISTORY_TURNS:]
+    last_user_idx = max(
+        (
+            idx
+            for idx, turn in enumerate(recent)
+            if turn.role == "user" and turn.content
+        ),
+        default=-1,
+    )
+    for idx, turn in enumerate(recent):
         if turn.role in ("user", "assistant") and turn.content:
-            messages.append({"role": turn.role, "content": turn.content[:400]})
+            limit = _TRIAGE_HISTORY_CHARS
+            if turn.role == "user" and idx == last_user_idx:
+                limit = _TRIAGE_LAST_USER_TURN_CHARS
+            messages.append({
+                "role": turn.role,
+                "content": _trim_triage_history_text(turn.content, limit),
+            })
 
     context_parts: list[str] = []
     if context.project.label:
         context_parts.append(f"Active project: {context.project.label}")
     if context.project.summary:
         context_parts.append(f"Project summary: {context.project.summary[:300]}")
+    if context.task.label:
+        context_parts.append(f"Current task: {context.task.label[:240]}")
+    if context.task.pending_steps:
+        context_parts.append(
+            "Pending steps: " + "; ".join(
+                step[:120] for step in context.task.pending_steps[:4] if step
+            )
+        )
+    if context.task.current_blocker:
+        context_parts.append(f"Current blocker: {context.task.current_blocker[:200]}")
     if concierge_state and concierge_state.active_goals:
         goals_summary = "; ".join(
             (
@@ -645,6 +707,18 @@ def _build_triage_messages(
             "role": "system",
             "content": "Current context:\n" + "\n".join(context_parts),
         })
+
+    if has_anaphora:
+        assistant_context = _recent_assistant_anaphora_context(context)
+        if assistant_context:
+            messages.append({
+                "role": "system",
+                "content": "Recent assistant context for pronoun resolution:\n"
+                + "\n\n".join(
+                    f"Assistant {idx + 1}: {snippet}"
+                    for idx, snippet in enumerate(assistant_context)
+                ),
+            })
 
     messages.append({"role": "user", "content": text})
     return messages
@@ -910,6 +984,17 @@ def _post_process_resume(
         result.resume_task_id = context.task.task_id
 
 
+def _should_apply_confidence_gated_route_override(result: TriageResult) -> bool:
+    route_source = str(getattr(result, "route_source", "") or "").strip().lower()
+    if route_source not in {"llm", "embedding"}:
+        return True
+    try:
+        confidence = float(getattr(result, "confidence", 0.0))
+    except (TypeError, ValueError):
+        return True
+    return confidence < _TRIAGE_POST_PROCESS_OVERRIDE_MAX_CONFIDENCE
+
+
 def _enforce_workflow_edit_route(
     result: TriageResult,
     text: str,
@@ -977,8 +1062,9 @@ def _post_process_triage_result(
     result.context_needs = normalize_context_needs(result.context_needs)
     result.entities = _resolve_entities(result.entities, context, project_store)
     _post_process_resume(result, text, context, project_store)
-    result = _enforce_workflow_edit_route(result, text, context)
-    result = _enforce_workflow_run_route(result, text, context)
+    if _should_apply_confidence_gated_route_override(result):
+        result = _enforce_workflow_edit_route(result, text, context)
+        result = _enforce_workflow_run_route(result, text, context)
     result = _enforce_furnace_route(result, text)
     return result
 

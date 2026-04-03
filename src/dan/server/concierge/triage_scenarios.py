@@ -42,8 +42,24 @@ _WORKFLOW_RUN_RE = re.compile(
     re.IGNORECASE,
 )
 _PATH_HINT_RE = re.compile(r"(?:~?/|\.{1,2}/|[A-Za-z]:\\)")
-_WEB_RE = re.compile(
-    r"\b(?:web|online|internet|latest|current|news|recent|search|look up|browse)\b",
+_FILE_NAME_HINT_RE = re.compile(
+    r"\b[\w.-]+\.(?:md|txt|pdf|tex|py|json|yaml|yml|csv|ts|tsx|js|jsx|html|css)\b",
+    re.IGNORECASE,
+)
+_WEB_LOOKUP_ACTION_RE = re.compile(
+    r"\b(?:search(?:\s+for)?|look\s+up|browse)\b",
+    re.IGNORECASE,
+)
+_WEB_MEDIUM_RE = re.compile(
+    r"\b(?:web|online|internet)\b",
+    re.IGNORECASE,
+)
+_WEB_FRESHNESS_RE = re.compile(
+    r"\b(?:latest|current|news|recent)\b",
+    re.IGNORECASE,
+)
+_LOCAL_LOOKUP_SUBJECT_RE = re.compile(
+    r"\b(?:path|folder|directory|file|draft|readme|repo|repository|codebase)\b",
     re.IGNORECASE,
 )
 _FURNACE_RE = re.compile(
@@ -86,6 +102,7 @@ class LexicalScenario:
     id: str
     description: str
     positive_patterns: tuple[re.Pattern[str], ...]
+    min_positive_matches: int = 1
     negative_patterns: tuple[re.Pattern[str], ...] = ()
     required_context: tuple[str, ...] = ()
     intent: Literal["ask", "agent", "plan"] = "agent"
@@ -196,9 +213,21 @@ DEFAULT_LEXICAL_SCENARIOS: tuple[LexicalScenario, ...] = (
         id="explicit_file_read",
         description="Explicit read/review request anchored to a file/path.",
         positive_patterns=(
-            _PATH_HINT_RE,
-            re.compile(r"\b(?:check this file|review this file|read this file|open this file)\b", re.IGNORECASE),
-            re.compile(r"\b(?:read|review|inspect|open|summarize)\b.*\b(?:file|document|paper|report|draft|readme)\b", re.IGNORECASE),
+            re.compile(
+                r"\b(?:check|review|read|inspect|open|show|summarize)\b.*"
+                r"\b(?:this|that|attached)\s+(?:file|document|paper|report|draft|readme)\b",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                r"\b(?:check|review|read|inspect|open|show|summarize)\b.*"
+                r"(?:~?/|\.{1,2}/|[A-Za-z]:\\)",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                r"\b(?:check|review|read|inspect|open|show|summarize)\b.*"
+                r"\b[\w.-]+\.(?:md|txt|pdf|tex|py|json|yaml|yml|csv|ts|tsx|js|jsx|html|css)\b",
+                re.IGNORECASE,
+            ),
         ),
         intent="agent",
         target="file",
@@ -260,10 +289,16 @@ DEFAULT_LEXICAL_SCENARIOS: tuple[LexicalScenario, ...] = (
         id="explicit_web_lookup",
         description="Explicit web/latest/current lookup request.",
         positive_patterns=(
-            re.compile(r"\b(?:search that online|look that up|browse the web)\b", re.IGNORECASE),
-            _WEB_RE,
+            _WEB_LOOKUP_ACTION_RE,
+            _WEB_MEDIUM_RE,
+            _WEB_FRESHNESS_RE,
         ),
-        negative_patterns=(_FURNACE_RE,),
+        min_positive_matches=2,
+        negative_patterns=(
+            _FURNACE_RE,
+            _PATH_HINT_RE,
+            _LOCAL_LOOKUP_SUBJECT_RE,
+        ),
         intent="agent",
         target="web",
         action_hints=("search_web",),
@@ -358,7 +393,10 @@ def evaluate_lexical_scenarios(
     gated: list[tuple[LexicalScenario, tuple[str, ...]]] = []
 
     for scenario in scenarios:
-        if not any(pattern.search(stripped) for pattern in scenario.positive_patterns):
+        positive_hits = sum(
+            1 for pattern in scenario.positive_patterns if pattern.search(stripped)
+        )
+        if positive_hits < max(1, int(scenario.min_positive_matches)):
             continue
         if any(pattern.search(stripped) for pattern in scenario.negative_patterns):
             continue
