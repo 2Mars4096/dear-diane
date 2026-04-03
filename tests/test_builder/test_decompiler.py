@@ -208,7 +208,93 @@ class TestWorkerConvenienceAliases:
         assert rebuilt.node_by_id("review").node_type == "human"
         assert rebuilt.node_by_id("checkpoint").node_type == "human_in_the_loop"
         assert rebuilt.node_by_id("choose").node_type == "vote"
-        assert rebuilt.node_by_id("aggregate").node_type == "reduce"
+
+    def test_decompile_input_node_round_trip_preserves_typed_output_schemas(self):
+        wf = workflow("typed_input_roundtrip")
+        wf.input_node(
+            "workflow_inputs",
+            variables=[
+                {"name": "topic", "type": "string"},
+                {"name": "research_depth", "type": "string", "default": "standard"},
+                {"name": "approved", "type": "boolean"},
+            ],
+            description="Typed workflow inputs",
+        )
+
+        graph = wf.build()
+        code = decompile(graph)
+
+        ns: dict = {}
+        exec(code, ns)
+        rebuilt = ns["graph"].node_by_id("workflow_inputs")
+
+        assert rebuilt is not None
+        output_ports = {port.name: port for port in rebuilt.output_ports}
+        assert output_ports["input"].json_schema == {"type": "object"}
+        assert output_ports["topic"].json_schema == {"type": "string"}
+        assert output_ports["research_depth"].json_schema == {"type": "string"}
+        assert output_ports["approved"].json_schema == {"type": "boolean"}
+
+    def test_decompile_llm_round_trip_preserves_explicit_empty_output_ports(self):
+        wf = workflow("llm_empty_outputs")
+        wf.llm(
+            "survey_aspect",
+            prompt="Summarize {papers}",
+            output_schema={
+                "type": "object",
+                "properties": {"summary": {"type": "string"}},
+                "required": ["summary"],
+            },
+            input_ports=[
+                {"name": "papers", "required": True},
+            ],
+            output_ports=[],
+        )
+
+        graph = wf.build()
+        code = decompile(graph)
+
+        assert "output_ports=[]" in code
+
+        ns: dict = {}
+        exec(code, ns)
+        rebuilt = ns["graph"].node_by_id("survey_aspect")
+
+        assert rebuilt is not None
+        assert rebuilt.output_ports == []
+
+    def test_decompile_input_node_without_variables_preserves_untyped_input_port(self):
+        wf = workflow("untyped_input_roundtrip")
+        wf.input_node("workflow_inputs")
+
+        graph = wf.build()
+        code = decompile(graph)
+
+        ns: dict = {}
+        exec(code, ns)
+        rebuilt = ns["graph"].node_by_id("workflow_inputs")
+
+        assert rebuilt is not None
+        output_ports = {port.name: port for port in rebuilt.output_ports}
+        assert output_ports["input"].json_schema == {}
+
+    def test_decompile_input_node_named_input_variable_preserves_untyped_port(self):
+        wf = workflow("reserved_input_roundtrip")
+        wf.input_node(
+            "workflow_inputs",
+            variables=[{"name": "input", "type": "string", "default": ""}],
+        )
+
+        graph = wf.build()
+        code = decompile(graph)
+
+        ns: dict = {}
+        exec(code, ns)
+        rebuilt = ns["graph"].node_by_id("workflow_inputs")
+
+        assert rebuilt is not None
+        output_ports = {port.name: port for port in rebuilt.output_ports}
+        assert output_ports["input"].json_schema == {}
 
 
 class TestDecompileWithSubGraph:

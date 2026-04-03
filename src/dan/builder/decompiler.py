@@ -286,6 +286,8 @@ class _Decompiler:
                 kwargs.append(f"max_tokens={node.max_tokens!r}")
             if node.output_json_schema is not None:
                 kwargs.append(f"output_schema={node.output_json_schema!r}")
+            if node.output_ports == []:
+                kwargs.append("output_ports=[]")
         elif nt == "tool_operator":
             method = "wf.tool"
             kwargs.append(f"tool_id={node.tool_id!r}")
@@ -465,6 +467,34 @@ class _Decompiler:
                 kwargs.append(
                     f"spawn_policy={node.spawn_policy.model_dump(mode='json', exclude_none=True)!r}"
                 )
+            if node.external_input_schema is not None:
+                kwargs.append(f"external_input_schema={node.external_input_schema!r}")
+            if node.external_output_schema is not None:
+                kwargs.append(f"external_output_schema={node.external_output_schema!r}")
+            if node.control_state_schema:
+                kwargs.append(f"control_state_schema={node.control_state_schema!r}")
+            local_state = node.local_state.model_dump(
+                mode="json",
+                exclude_none=True,
+                exclude_defaults=True,
+            )
+            if local_state:
+                kwargs.append(f"local_state={local_state!r}")
+            if node.compaction_rule is not None:
+                kwargs.append(
+                    f"compaction_rule={node.compaction_rule.model_dump(mode='json', exclude_none=True)!r}"
+                )
+            failure_policy = node.failure_policy.model_dump(
+                mode="json",
+                exclude_none=True,
+                exclude_defaults=True,
+            )
+            if failure_policy:
+                kwargs.append(f"failure_policy={failure_policy!r}")
+            if node.projections:
+                kwargs.append(
+                    f"projections={[projection.model_dump(mode='json', exclude_none=True) for projection in node.projections]!r}"
+                )
             if node.boundary_contract is not None:
                 kwargs.append(
                     f"boundary_contract={node.boundary_contract.model_dump(mode='json', exclude_none=True)!r}"
@@ -538,6 +568,25 @@ class _Decompiler:
                 node.control_flow is not None,
                 node.body_graph is not None,
                 bool(node.sub_workers),
+                node.external_input_schema is not None,
+                node.external_output_schema is not None,
+                bool(node.control_state_schema),
+                bool(
+                    node.local_state.model_dump(
+                        mode="json",
+                        exclude_none=True,
+                        exclude_defaults=True,
+                    )
+                ),
+                node.compaction_rule is not None,
+                bool(
+                    node.failure_policy.model_dump(
+                        mode="json",
+                        exclude_none=True,
+                        exclude_defaults=True,
+                    )
+                ),
+                bool(node.projections),
                 node.boundary_contract is not None,
             ]
         )
@@ -560,6 +609,25 @@ class _Decompiler:
                 node.control_flow is not None,
                 node.body_graph is not None,
                 bool(node.sub_workers),
+                node.external_input_schema is not None,
+                node.external_output_schema is not None,
+                bool(node.control_state_schema),
+                bool(
+                    node.local_state.model_dump(
+                        mode="json",
+                        exclude_none=True,
+                        exclude_defaults=True,
+                    )
+                ),
+                node.compaction_rule is not None,
+                bool(
+                    node.failure_policy.model_dump(
+                        mode="json",
+                        exclude_none=True,
+                        exclude_defaults=True,
+                    )
+                ),
+                bool(node.projections),
                 node.boundary_contract is not None,
                 bool(node.read_set),
                 bool(node.write_set),
@@ -1275,6 +1343,34 @@ class _Decompiler:
             if node.spawn_policy is not None:
                 kwargs_parts.append(
                     f"spawn_policy={node.spawn_policy.model_dump(mode='json', exclude_none=True)!r}"
+                )
+            if node.external_input_schema is not None:
+                kwargs_parts.append(f"external_input_schema={node.external_input_schema!r}")
+            if node.external_output_schema is not None:
+                kwargs_parts.append(f"external_output_schema={node.external_output_schema!r}")
+            if node.control_state_schema:
+                kwargs_parts.append(f"control_state_schema={node.control_state_schema!r}")
+            local_state = node.local_state.model_dump(
+                mode="json",
+                exclude_none=True,
+                exclude_defaults=True,
+            )
+            if local_state:
+                kwargs_parts.append(f"local_state={local_state!r}")
+            if node.compaction_rule is not None:
+                kwargs_parts.append(
+                    f"compaction_rule={node.compaction_rule.model_dump(mode='json', exclude_none=True)!r}"
+                )
+            failure_policy = node.failure_policy.model_dump(
+                mode="json",
+                exclude_none=True,
+                exclude_defaults=True,
+            )
+            if failure_policy:
+                kwargs_parts.append(f"failure_policy={failure_policy!r}")
+            if node.projections:
+                kwargs_parts.append(
+                    f"projections={[projection.model_dump(mode='json', exclude_none=True) for projection in node.projections]!r}"
                 )
             if node.boundary_contract is not None:
                 kwargs_parts.append(

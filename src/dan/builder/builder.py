@@ -359,9 +359,9 @@ class WorkflowBuilder:
         """Add an LLM operator node."""
         from dan.models.ports import InputPort, OutputPort
 
-        explicit_input_ports = [InputPort(**p) for p in (input_ports or [])]
-        explicit_output_ports = [OutputPort(**p) for p in (output_ports or [])]
-        if not explicit_output_ports:
+        explicit_input_ports = [InputPort(**p) for p in input_ports] if input_ports is not None else []
+        explicit_output_ports = [OutputPort(**p) for p in output_ports] if output_ports is not None else []
+        if output_ports is None and not explicit_output_ports:
             explicit_output_ports = [OutputPort(name="text")]
         worker_kwargs: dict[str, Any] = {
             "name": name or node_id,
@@ -523,6 +523,13 @@ class WorkflowBuilder:
         parallelism: int = 1,
         merge_strategy: MergeStrategy = MergeStrategy.APPEND,
         spawn_policy: dict[str, Any] | None = None,
+        external_input_schema: dict[str, Any] | None = None,
+        external_output_schema: dict[str, Any] | None = None,
+        control_state_schema: dict[str, Any] | None = None,
+        local_state: dict[str, Any] | None = None,
+        compaction_rule: dict[str, Any] | None = None,
+        failure_policy: dict[str, Any] | None = None,
+        projections: list[dict[str, Any]] | None = None,
         boundary_contract: dict[str, Any] | None = None,
         validation_rules: list[dict[str, Any]] | None = None,
         name: str | None = None,
@@ -560,6 +567,20 @@ class WorkflowBuilder:
             kwargs["merge_strategy"] = merge_strategy
         if spawn_policy is not None:
             kwargs["spawn_policy"] = spawn_policy
+        if external_input_schema is not None:
+            kwargs["external_input_schema"] = external_input_schema
+        if external_output_schema is not None:
+            kwargs["external_output_schema"] = external_output_schema
+        if control_state_schema is not None:
+            kwargs["control_state_schema"] = control_state_schema
+        if local_state is not None:
+            kwargs["local_state"] = local_state
+        if compaction_rule is not None:
+            kwargs["compaction_rule"] = compaction_rule
+        if failure_policy is not None:
+            kwargs["failure_policy"] = failure_policy
+        if projections is not None:
+            kwargs["projections"] = projections
         if tool_config:
             kwargs["metadata"] = {"tool_config": dict(tool_config)}
         if model is not None:
@@ -621,6 +642,13 @@ class WorkflowBuilder:
         parallelism: int = 1,
         merge_strategy: MergeStrategy = MergeStrategy.APPEND,
         spawn_policy: dict[str, Any] | None = None,
+        external_input_schema: dict[str, Any] | None = None,
+        external_output_schema: dict[str, Any] | None = None,
+        control_state_schema: dict[str, Any] | None = None,
+        local_state: dict[str, Any] | None = None,
+        compaction_rule: dict[str, Any] | None = None,
+        failure_policy: dict[str, Any] | None = None,
+        projections: list[dict[str, Any]] | None = None,
         boundary_contract: dict[str, Any] | None = None,
         validation_rules: list[dict[str, Any]] | None = None,
         name: str | None = None,
@@ -654,6 +682,13 @@ class WorkflowBuilder:
             parallelism=parallelism,
             merge_strategy=merge_strategy,
             spawn_policy=spawn_policy,
+            external_input_schema=external_input_schema,
+            external_output_schema=external_output_schema,
+            control_state_schema=control_state_schema,
+            local_state=local_state,
+            compaction_rule=compaction_rule,
+            failure_policy=failure_policy,
+            projections=projections,
             boundary_contract=boundary_contract,
             validation_rules=validation_rules,
             name=name,
@@ -998,13 +1033,27 @@ class WorkflowBuilder:
         from dan.models.legacy import InputVariable
         from dan.models.ports import OutputPort
 
+        type_to_schema = {
+            "string": {"type": "string"},
+            "number": {"type": "number"},
+            "boolean": {"type": "boolean"},
+        }
         variable_models = [InputVariable(**v) for v in (variables or [])]
         output_ports: list[OutputPort] = []
         names = {var.name for var in variable_models}
         if "input" not in names:
-            output_ports.append(OutputPort(name="input"))
+            aggregate_schema = {"type": "object"} if variable_models else {}
+            output_ports.append(OutputPort(name="input", json_schema=aggregate_schema))
         for var in variable_models:
-            output_ports.append(OutputPort(name=var.name))
+            variable_schema = {} if var.name == "input" else dict(
+                type_to_schema.get(var.type, {"type": "string"})
+            )
+            output_ports.append(
+                OutputPort(
+                    name=var.name,
+                    json_schema=variable_schema,
+                )
+            )
 
         worker_kwargs = {
             "name": name or node_id,
@@ -2469,6 +2518,13 @@ class _WorkerScopeContext:
         parallelism: int,
         merge_strategy: MergeStrategy,
         spawn_policy: dict[str, Any] | None,
+        external_input_schema: dict[str, Any] | None,
+        external_output_schema: dict[str, Any] | None,
+        control_state_schema: dict[str, Any] | None,
+        local_state: dict[str, Any] | None,
+        compaction_rule: dict[str, Any] | None,
+        failure_policy: dict[str, Any] | None,
+        projections: list[dict[str, Any]] | None,
         boundary_contract: dict[str, Any] | None,
         validation_rules: list[dict[str, Any]] | None,
         name: str | None,
@@ -2510,6 +2566,13 @@ class _WorkerScopeContext:
             "parallelism": parallelism,
             "merge_strategy": merge_strategy,
             "spawn_policy": spawn_policy,
+            "external_input_schema": external_input_schema,
+            "external_output_schema": external_output_schema,
+            "control_state_schema": control_state_schema,
+            "local_state": local_state,
+            "compaction_rule": compaction_rule,
+            "failure_policy": failure_policy,
+            "projections": projections,
             "boundary_contract": boundary_contract,
             "validation_rules": validation_rules,
             "name": name,
@@ -2580,6 +2643,13 @@ class _WorkerScopeContext:
             parallelism=self._node_kwargs["parallelism"],
             merge_strategy=self._node_kwargs["merge_strategy"],
             spawn_policy=self._node_kwargs["spawn_policy"],
+            external_input_schema=self._node_kwargs["external_input_schema"],
+            external_output_schema=self._node_kwargs["external_output_schema"],
+            control_state_schema=self._node_kwargs["control_state_schema"],
+            local_state=self._node_kwargs["local_state"],
+            compaction_rule=self._node_kwargs["compaction_rule"],
+            failure_policy=self._node_kwargs["failure_policy"],
+            projections=self._node_kwargs["projections"],
             body_graph=body_graph_key,
             sub_workers=self._sub_workers or None,
             boundary_contract=self._node_kwargs["boundary_contract"],

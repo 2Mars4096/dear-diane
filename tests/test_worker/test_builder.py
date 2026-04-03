@@ -102,6 +102,16 @@ def test_worker_scope_round_trips_body_and_named_sub_workers() -> None:
         parallelism=2,
         merge_strategy=MergeStrategy.LAST_WRITE_WINS,
         spawn_policy={"max_spawns_per_node": 2},
+        external_input_schema={"type": "object", "required": ["brief"]},
+        external_output_schema={"type": "object", "required": ["text"]},
+        control_state_schema={"type": "object", "properties": {"iteration": {"type": "integer"}}},
+        local_state={
+            "json_schema": {"type": "object", "properties": {"history": {"type": "array"}}},
+            "description": "manager-local state",
+        },
+        compaction_rule={"strategy": "sliding_window", "window_size": 2},
+        failure_policy={"max_iterations": 3, "stagnation_threshold": 2},
+        projections=[{"name": "manager_view", "local_state_keys": ["history"]}],
         output_ports=[{"name": "text"}],
     ) as manager:
         planner = manager.code("planner", code="result = {'plan': 'draft'}")
@@ -131,6 +141,14 @@ def test_worker_scope_round_trips_body_and_named_sub_workers() -> None:
     assert manager_node.merge_strategy == MergeStrategy.LAST_WRITE_WINS
     assert manager_node.spawn_policy is not None
     assert manager_node.spawn_policy.max_spawns_per_node == 2
+    assert manager_node.external_input_schema == {"type": "object", "required": ["brief"]}
+    assert manager_node.external_output_schema == {"type": "object", "required": ["text"]}
+    assert manager_node.control_state_schema["type"] == "object"
+    assert manager_node.local_state.description == "manager-local state"
+    assert manager_node.compaction_rule is not None
+    assert manager_node.compaction_rule.window_size == 2
+    assert manager_node.failure_policy.max_iterations == 3
+    assert manager_node.projections[0].name == "manager_view"
     assert "manager_body" in graph.sub_graphs
     assert "manager_research" in graph.sub_graphs
     reviewer_node = graph.sub_graphs["manager_body"].node_by_id("reviewer")
@@ -148,6 +166,13 @@ def test_worker_scope_round_trips_body_and_named_sub_workers() -> None:
     assert "parallelism=2" in code
     assert "merge_strategy='last_write_wins'" in code
     assert "spawn_policy={" in code
+    assert "external_input_schema={'type': 'object', 'required': ['brief']}" in code
+    assert "external_output_schema={'type': 'object', 'required': ['text']}" in code
+    assert "control_state_schema={'type': 'object', 'properties': {'iteration': {'type': 'integer'}}}" in code
+    assert "local_state={'json_schema': {'type': 'object', 'properties': {'history': {'type': 'array'}}}, 'description': 'manager-local state'}" in code
+    assert "compaction_rule={'strategy': 'sliding_window', 'window_size': 2, 'require_persistent_recall': True}" in code
+    assert "failure_policy={'max_iterations': 3, 'stagnation_threshold': 2}" in code
+    assert "projections=[{'name': 'manager_view', 'context_keys': [], 'local_state_keys': ['history'], 'artifact_uris': [], 'description': ''}]" in code
     assert "'max_spawns_per_node': 2" in code
     assert "validation_rules=[{'rule_type': 'required_keys', 'config': {'keys': ['plan']}}]" in code
     assert "'required_keys': ['plan']" in code
@@ -168,12 +193,54 @@ def test_worker_scope_round_trips_body_and_named_sub_workers() -> None:
     assert rebuilt_manager.merge_strategy == MergeStrategy.LAST_WRITE_WINS
     assert rebuilt_manager.spawn_policy is not None
     assert rebuilt_manager.spawn_policy.max_spawns_per_node == 2
+    assert rebuilt_manager.external_input_schema == {"type": "object", "required": ["brief"]}
+    assert rebuilt_manager.external_output_schema == {"type": "object", "required": ["text"]}
+    assert rebuilt_manager.control_state_schema["type"] == "object"
+    assert rebuilt_manager.local_state.description == "manager-local state"
+    assert rebuilt_manager.compaction_rule is not None
+    assert rebuilt_manager.compaction_rule.window_size == 2
+    assert rebuilt_manager.failure_policy.max_iterations == 3
+    assert rebuilt_manager.projections[0].name == "manager_view"
     rebuilt_reviewer = rebuilt.sub_graphs["manager_body"].node_by_id("reviewer")
     assert isinstance(rebuilt_reviewer, Worker)
     assert rebuilt_reviewer.validation_rules[0].rule_type == "required_keys"
     assert rebuilt.sub_graphs["manager_body"].edges[0].lint is not None
     assert rebuilt.sub_graphs["manager_body"].edges[0].lint.severity.value == "error"
     assert rebuilt.sub_graphs["manager_body"].edges[0].metadata["lint"]["severity"] == "error"
+
+
+def test_worker_builder_round_trips_composite_contract_fields() -> None:
+    wf = workflow("worker_composite_contract")
+    node = wf.worker(
+        "review",
+        role="manager",
+        external_input_schema={"type": "object", "required": ["draft"]},
+        external_output_schema={"type": "object", "required": ["summary"]},
+        control_state_schema={"type": "object", "properties": {"iteration": {"type": "integer"}}},
+        local_state={
+            "json_schema": {"type": "object", "properties": {"history": {"type": "array"}}},
+            "description": "review-local state",
+        },
+        compaction_rule={"strategy": "sliding_window", "window_size": 2},
+        failure_policy={"max_iterations": 4},
+        projections=[{"name": "review_view", "local_state_keys": ["history"]}],
+    )
+
+    graph = wf.build()
+    worker = graph.node_by_id(node.node_id)
+    assert isinstance(worker, Worker)
+    assert worker.external_input_schema == {"type": "object", "required": ["draft"]}
+    assert worker.external_output_schema == {"type": "object", "required": ["summary"]}
+    assert worker.control_state_schema["type"] == "object"
+    assert worker.local_state.description == "review-local state"
+    assert worker.compaction_rule is not None
+    assert worker.failure_policy.max_iterations == 4
+    assert worker.projections[0].name == "review_view"
+
+    code = decompile(graph)
+    assert "external_input_schema={'type': 'object', 'required': ['draft']}" in code
+    assert "external_output_schema={'type': 'object', 'required': ['summary']}" in code
+    assert "compaction_rule={'strategy': 'sliding_window', 'window_size': 2, 'require_persistent_recall': True}" in code
 
 
 def test_worker_scope_accepts_llm_alias() -> None:
@@ -384,6 +451,55 @@ def test_builder_env_gate_can_enable_extended_compute_aliases(monkeypatch) -> No
         (edge.source_node_id, edge.source_port, edge.target_node_id, edge.target_port)
         for edge in graph.edges
     } == {("inputs", "input", "retrieve", "query")}
+
+
+def test_input_node_infers_output_port_schemas_from_variables() -> None:
+    wf = workflow("typed_input_node")
+    wf.input_node(
+        "workflow_inputs",
+        variables=[
+            {"name": "topic", "type": "string"},
+            {"name": "budget", "type": "number"},
+            {"name": "approved", "type": "boolean"},
+        ],
+    )
+
+    graph = wf.build()
+    node = graph.node_by_id("workflow_inputs")
+
+    assert node is not None
+    output_ports = {port.name: port for port in node.output_ports}
+    assert output_ports["input"].json_schema == {"type": "object"}
+    assert output_ports["topic"].json_schema == {"type": "string"}
+    assert output_ports["budget"].json_schema == {"type": "number"}
+    assert output_ports["approved"].json_schema == {"type": "boolean"}
+
+
+def test_input_node_without_variables_keeps_untyped_input_port() -> None:
+    wf = workflow("untyped_input_node")
+    wf.input_node("workflow_inputs")
+
+    graph = wf.build()
+    node = graph.node_by_id("workflow_inputs")
+
+    assert node is not None
+    output_ports = {port.name: port for port in node.output_ports}
+    assert output_ports["input"].json_schema == {}
+
+
+def test_input_node_named_input_variable_keeps_legacy_untyped_port() -> None:
+    wf = workflow("reserved_input_variable")
+    wf.input_node(
+        "workflow_inputs",
+        variables=[{"name": "input", "type": "string", "default": ""}],
+    )
+
+    graph = wf.build()
+    node = graph.node_by_id("workflow_inputs")
+
+    assert node is not None
+    output_ports = {port.name: port for port in node.output_ports}
+    assert output_ports["input"].json_schema == {}
 
 
 def test_worker_builder_autogenerates_lint_when_enabled() -> None:
