@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -36,23 +37,54 @@ from dan.models.control_flow import (
     ForEachNode,
     GateNode,
     GoalLoopNode,
-    HumanNode,
-    HumanInTheLoopNode,
-    InputNode,
-    InputVariable,
     OrchestratorNode,
     ParallelSubagentsNode,
-    RouterNode,
-    VoteConfig,
-    VoteNode,
 )
 from dan.models.edges import DataEdge
 from dan.models.graph import Graph, GraphMetadata
 from dan.models.hyperedges import Hyperedge
-from dan.models.nodes import CodeOperator, LLMOperator, NodeBase, ReflectionNode, RetryPolicy, ToolOperator
+from dan.models.node_taxonomy import worker_builder_uses_workers
+from dan.models.legacy import (
+    CodeOperator,
+    HumanInTheLoopNode,
+    HumanNode,
+    InputNode,
+    InputVariable,
+    LLMOperator,
+    ReflectionNode,
+    RouterNode,
+    ToolOperator,
+    VoteConfig,
+    VoteNode,
+)
+from dan.models.nodes import NodeBase, RetryPolicy
 from dan.models.ports import InputPort, OutputPort
+from dan.worker.presets import legacy_to_worker
 
 _BLOCK_REF_RE = re.compile(r"^(?P<name>[^@]+)@(?P<version>\d+\.\d+\.\d+[\w.+-]*)$")
+
+
+def _loader_uses_workers() -> bool:
+    """Whether markdown authoring should emit Worker compute nodes."""
+
+    return worker_builder_uses_workers(mode=os.environ.get("DAN_WORKER_BUILDER"))
+
+
+def _maybe_workerize_loaded_node(node: NodeBase | None) -> NodeBase | None:
+    if node is None or not _loader_uses_workers():
+        return node
+    worker = legacy_to_worker(node)
+    if worker is None:
+        return node
+    metadata = dict(worker.metadata)
+    default_output = _default_output_port(node)
+    if default_output:
+        metadata.setdefault("loader_default_output_port", default_output)
+    default_input = _default_input_port(node)
+    if default_input:
+        metadata.setdefault("loader_default_input_port", default_input)
+    worker.metadata = metadata
+    return worker
 
 
 def _try_resolve_block(
@@ -582,7 +614,7 @@ def _compile_agent(
                 source=spec.source,
             )
 
-    return node, nested_sub_graphs
+    return _maybe_workerize_loaded_node(node), nested_sub_graphs
 
 
 def _agents_used_outside_each_body(statements: list[FlowStatement]) -> set[str]:
@@ -1258,7 +1290,7 @@ def _create_input_node(
             f"{', '.join(v.name for v in variables)}"
         ),
     )
-    return input_node
+    return _maybe_workerize_loaded_node(input_node)
 
 
 def _compile_context(
@@ -1695,6 +1727,10 @@ def _default_output_port(node: NodeBase) -> str:
     if node.node_type == "gate":
         gate_mode = getattr(node, "gate_mode", "if_else")
         return "done" if gate_mode == "while" else "true"
+    if node.node_type == "worker":
+        default_port = str(getattr(node, "metadata", {}).get("loader_default_output_port") or "").strip()
+        if default_port and any(port.name == default_port for port in node.output_ports):
+            return default_port
     # For composite or tool with "results" (array), prefer it for ForEach wiring
     if node.node_type in ("composite", "tool_operator") and any(
         p.name == "results" for p in node.output_ports
@@ -1709,6 +1745,10 @@ def _default_output_port(node: NodeBase) -> str:
 
 
 def _default_input_port(node: NodeBase) -> str:
+    if node.node_type == "worker":
+        default_port = str(getattr(node, "metadata", {}).get("loader_default_input_port") or "").strip()
+        if default_port and any(port.name == default_port for port in node.input_ports):
+            return default_port
     if node.input_ports:
         return node.input_ports[0].name
     return DEFAULT_INPUT_PORT

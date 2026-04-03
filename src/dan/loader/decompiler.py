@@ -12,23 +12,29 @@ import yaml
 
 from dan.loader.compiler import DEFAULT_INPUT_PORT, DEFAULT_OUTPUT_PORTS
 from dan.loader.diagnostics import DecompileResult, Diagnostic
-from dan.models.node_taxonomy import MARKDOWN_DECOMPILER_SUPPORTED_NODE_TYPES
 from dan.models.control_flow import (
     AgentTeamNode,
     CompositeNode,
     ForEachNode,
     GateNode,
     GoalLoopNode,
-    HumanNode,
-    HumanInTheLoopNode,
-    InputNode,
-    RouterNode,
-    VoteNode,
 )
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
 from dan.models.graph import Graph
 from dan.models.hyperedges import Hyperedge
-from dan.models.nodes import CodeOperator, LLMOperator, NodeBase, ReflectionNode, ToolOperator
+from dan.models.legacy import (
+    CodeOperator,
+    HumanInTheLoopNode,
+    HumanNode,
+    InputNode,
+    LLMOperator,
+    ReflectionNode,
+    RouterNode,
+    ToolOperator,
+    VoteNode,
+)
+from dan.models.node_taxonomy import MARKDOWN_DECOMPILER_SUPPORTED_NODE_TYPES
+from dan.models.nodes import NodeBase
 
 _SUPPORTED_NODE_TYPES = MARKDOWN_DECOMPILER_SUPPORTED_NODE_TYPES
 

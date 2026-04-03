@@ -25,18 +25,26 @@ from dan.models.control_flow import (
     GoalLoopNode,
     OrchestratorNode,
     ParallelSubagentsNode,
-    ValidatorNode,
     WhileLoopNode,
 )
-from dan.models.nodes import RAGOperator, ReflectionNode
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
 from dan.models.graph import Graph
 from dan.models.hyperedges import Hyperedge
+from dan.models.legacy import RAGOperator, ReflectionNode, ValidatorNode
+from dan.worker.model import LLMHints, Worker
 
 
-def decompile(graph: Graph) -> str:
-    """Convert a Graph model into executable Python builder DSL code."""
-    return _Decompiler(graph).generate()
+def decompile(graph: Graph, *, use_convenience_aliases: bool = False) -> str:
+    """Convert a Graph model into executable Python builder DSL code.
+
+    The default output stays canonical and lossless for Worker nodes. When
+    ``use_convenience_aliases`` is enabled, simple leaf Workers may be rendered
+    as readability-oriented legacy aliases like ``wf.llm(...)``.
+    """
+    return _Decompiler(
+        graph,
+        use_convenience_aliases=use_convenience_aliases,
+    ).generate()
 
 
 def _to_var_name(node_id: str) -> str:
@@ -50,11 +58,32 @@ def _to_var_name(node_id: str) -> str:
 
 
 class _Decompiler:
-    def __init__(self, graph: Graph) -> None:
+    def __init__(self, graph: Graph, *, use_convenience_aliases: bool = False) -> None:
         self.graph = graph
+        self.use_convenience_aliases = use_convenience_aliases
         self.node_map = {n.id: n for n in graph.nodes}
         self.var_names: dict[str, str] = {}
         self._assign_var_names()
+
+    @staticmethod
+    def _is_scoped_worker(node: Any) -> bool:
+        return isinstance(node, Worker) and (
+            node.body_graph is not None or bool(node.sub_workers)
+        )
+
+    def _is_scoped_node(self, node: Any) -> bool:
+        return isinstance(
+            node,
+            (
+                WhileLoopNode,
+                GoalLoopNode,
+                ForEachNode,
+                CompositeNode,
+                ParallelSubagentsNode,
+                OrchestratorNode,
+                AgentTeamNode,
+            ),
+        ) or self._is_scoped_worker(node)
 
     def _assign_var_names(self) -> None:
         used: set[str] = set()
@@ -67,6 +96,15 @@ class _Decompiler:
                 counter += 1
             used.add(name)
             self.var_names[node.id] = name
+
+    @staticmethod
+    def _edge_lint_payload(edge: DataEdge) -> dict[str, Any] | None:
+        lint_meta = getattr(edge, "metadata", {}).get("lint")
+        if isinstance(lint_meta, dict):
+            return lint_meta
+        if getattr(edge, "lint", None) is not None:
+            return DataEdge._compact_lint_payload(edge.lint)
+        return None
 
     def generate(self) -> str:
         lines: list[str] = []
@@ -105,6 +143,12 @@ class _Decompiler:
         if self.graph.shared_context or self.graph.artifact_refs:
             lines.append("")
 
+        for kind, refs in sorted((self.graph.worker_resources or {}).items()):
+            for ref_name, value in sorted(refs.items()):
+                lines.append(f"wf.resource({kind!r}, {ref_name!r}, {value!r})")
+        if self.graph.worker_resources:
+            lines.append("")
+
         # Hyperedges
         for he in self.graph.hyperedges:
             lines.append(self._emit_hyperedge(he))
@@ -125,7 +169,7 @@ class _Decompiler:
             node = self.node_map[node_id]
             var = self.var_names[node_id]
 
-            if isinstance(node, (WhileLoopNode, GoalLoopNode, ForEachNode, CompositeNode, ParallelSubagentsNode, OrchestratorNode, AgentTeamNode)):
+            if self._is_scoped_node(node):
                 body_var = f"_{var}_body"
                 node_lines = self._emit_subgraph_node(node, body_var, builder_var="wf")
                 lines.extend(node_lines)
@@ -138,10 +182,7 @@ class _Decompiler:
             lines.append("")
 
         # Emit >> chains (only for non-subgraph nodes)
-        subgraph_node_ids = {
-            n.id for n in self.graph.nodes
-            if isinstance(n, (WhileLoopNode, GoalLoopNode, ForEachNode, CompositeNode, ParallelSubagentsNode, OrchestratorNode, AgentTeamNode))
-        }
+        subgraph_node_ids = {n.id for n in self.graph.nodes if self._is_scoped_node(n)}
         emitted_chain_pairs: set[tuple[str, str]] = set()
         for chain in chains:
             current_segment: list[str] = []
@@ -174,13 +215,19 @@ class _Decompiler:
         for edge in self.graph.edges:
             if isinstance(edge, DataEdge):
                 pair = (edge.source_node_id, edge.target_node_id)
-                if pair in emitted_chain_pairs and self._is_default_data_edge(edge):
+                if (
+                    pair in emitted_chain_pairs
+                    and self._is_default_data_edge(edge)
+                    and self._edge_lint_payload(edge) is None
+                ):
                     continue
                 src_var = self.var_names.get(edge.source_node_id, edge.source_node_id)
                 tgt_var = self.var_names.get(edge.target_node_id, edge.target_node_id)
                 spread_arg = ", spread=True" if getattr(edge, "spread", False) else ""
+                lint_meta = self._edge_lint_payload(edge)
+                lint_arg = f", lint={lint_meta!r}" if lint_meta is not None else ""
                 lines.append(
-                    f'wf.edge({src_var}["{edge.source_port}"], {tgt_var}["{edge.target_port}"]{spread_arg})'
+                    f'wf.edge({src_var}["{edge.source_port}"], {tgt_var}["{edge.target_port}"]{spread_arg}{lint_arg})'
                 )
             elif isinstance(edge, ControlEdge):
                 lines.append(self._emit_control_edge(edge))
@@ -367,6 +414,65 @@ class _Decompiler:
                 kwargs.append(f"parallelism={node.parallelism!r}")
             if getattr(node, "timeout_seconds", None) is not None:
                 kwargs.append(f"timeout_seconds={node.timeout_seconds!r}")
+        elif nt == "worker":
+            convenience_call = self._emit_worker_convenience_call(node)
+            if convenience_call is not None:
+                return convenience_call
+            method = "wf.worker"
+            if node.role:
+                kwargs.append(f"role={node.role!r}")
+            if node.instruction:
+                kwargs.append(f"instruction={node.instruction!r}")
+            if node.persona:
+                kwargs.append(f"persona={node.persona!r}")
+            if node.authority.value != "leaf":
+                kwargs.append(f"authority={node.authority.value!r}")
+            if node.model is not None:
+                kwargs.append(f"model={node.model!r}")
+            if node.tool_ids:
+                kwargs.append(f"tool_ids={node.tool_ids!r}")
+            if node.code:
+                kwargs.append(f"code={node.code!r}")
+            if node.language != "python":
+                kwargs.append(f"language={node.language!r}")
+            if node.llm_hints is not None:
+                kwargs.append(f"llm_hints={node.llm_hints.model_dump(mode='json', exclude_none=True)!r}")
+            if node.context is not None:
+                kwargs.append(f"context={node.context.model_dump(mode='json', exclude_none=True)!r}")
+            if node.authority_policy is not None:
+                kwargs.append(
+                    f"authority_policy={node.authority_policy.model_dump(mode='json', exclude_none=True)!r}"
+                )
+            if node.execution is not None:
+                kwargs.append(f"execution={node.execution.model_dump(mode='json', exclude_none=True)!r}")
+            if node.control_flow is not None:
+                kwargs.append(
+                    f"control_flow={node.control_flow.model_dump(mode='json', exclude_none=True)!r}"
+                )
+            if node.body_graph is not None:
+                kwargs.append(f"body_graph={node.body_graph!r}")
+            if node.sub_workers:
+                kwargs.append(f"sub_workers={node.sub_workers!r}")
+            if node.input_mappings:
+                kwargs.append(f"input_mappings={node.input_mappings!r}")
+            if node.output_mappings:
+                kwargs.append(f"output_mappings={node.output_mappings!r}")
+            if node.parallelism != 1:
+                kwargs.append(f"parallelism={node.parallelism!r}")
+            if node.merge_strategy.value != "append":
+                kwargs.append(f"merge_strategy={node.merge_strategy.value!r}")
+            if node.spawn_policy is not None:
+                kwargs.append(
+                    f"spawn_policy={node.spawn_policy.model_dump(mode='json', exclude_none=True)!r}"
+                )
+            if node.boundary_contract is not None:
+                kwargs.append(
+                    f"boundary_contract={node.boundary_contract.model_dump(mode='json', exclude_none=True)!r}"
+                )
+            if node.validation_rules:
+                kwargs.append(
+                    f"validation_rules={[rule.model_dump(mode='json', exclude_none=True) for rule in node.validation_rules]!r}"
+                )
         else:
             method = f"wf.llm"  # fallback
 
@@ -391,6 +497,482 @@ class _Decompiler:
 
         all_args = ", ".join(args + kwargs)
         return f"{method}({all_args})"
+
+    def _emit_worker_convenience_call(self, node: Worker) -> str | None:
+        if not self.use_convenience_aliases:
+            return None
+
+        if self._is_simple_input_worker(node):
+            return self._emit_simple_input_worker(node)
+        if self._is_simple_reduce_worker(node):
+            return self._emit_simple_reduce_worker(node)
+        if self._is_simple_rag_worker(node):
+            return self._emit_simple_rag_worker(node)
+        if self._is_simple_reflection_worker(node):
+            return self._emit_simple_reflection_worker(node)
+        if self._is_simple_human_worker(node):
+            return self._emit_simple_human_worker(node)
+        if self._is_simple_human_in_the_loop_worker(node):
+            return self._emit_simple_human_in_the_loop_worker(node)
+        if self._is_simple_vote_worker(node):
+            return self._emit_simple_vote_worker(node)
+        if self._is_simple_llm_worker(node):
+            return self._emit_simple_llm_worker(node)
+        if self._is_simple_tool_worker(node):
+            return self._emit_simple_tool_worker(node)
+        if self._is_simple_code_worker(node):
+            return self._emit_simple_code_worker(node)
+        return None
+
+    @staticmethod
+    def _has_non_aliasable_worker_state(node: Worker) -> bool:
+        return any(
+            [
+                node.role,
+                node.instruction,
+                node.persona,
+                node.authority.value != "leaf",
+                node.context is not None,
+                node.authority_policy is not None,
+                node.execution is not None,
+                node.control_flow is not None,
+                node.body_graph is not None,
+                bool(node.sub_workers),
+                node.boundary_contract is not None,
+            ]
+        )
+
+    @staticmethod
+    def _has_non_aliasable_specialized_worker_state(
+        node: Worker,
+        *,
+        expected_role: str,
+    ) -> bool:
+        return any(
+            [
+                node.role != expected_role,
+                node.instruction,
+                node.persona,
+                node.authority.value != "leaf",
+                node.context is not None,
+                node.authority_policy is not None,
+                node.execution is not None,
+                node.control_flow is not None,
+                node.body_graph is not None,
+                bool(node.sub_workers),
+                node.boundary_contract is not None,
+                bool(node.read_set),
+                bool(node.write_set),
+                bool(node.tool_ids),
+                bool(node.code),
+                node.llm_hints is not None,
+            ]
+        )
+
+    def _is_simple_llm_worker(self, node: Worker) -> bool:
+        hints = node.llm_hints or LLMHints()
+        return bool(
+            node.model is not None
+            and not node.code
+            and not node.tool_ids
+            and not node.read_set
+            and not node.write_set
+            and not self._has_non_aliasable_worker_state(node)
+            and not hints.tools
+            and hints.max_tool_rounds == 10
+            and hints.task_tier is None
+            and hints.history_policy is None
+        )
+
+    def _is_simple_tool_worker(self, node: Worker) -> bool:
+        return bool(
+            len(node.tool_ids) == 1
+            and node.model is None
+            and not node.code
+            and not node.read_set
+            and not node.write_set
+            and node.llm_hints is None
+            and not self._has_non_aliasable_worker_state(node)
+        )
+
+    def _is_simple_code_worker(self, node: Worker) -> bool:
+        return bool(
+            node.code
+            and node.model is None
+            and not node.tool_ids
+            and node.llm_hints is None
+            and not self._has_non_aliasable_worker_state(node)
+        )
+
+    def _is_simple_input_worker(self, node: Worker) -> bool:
+        return bool(
+            not node.model
+            and not node.tool_ids
+            and not node.code
+            and node.llm_hints is None
+            and not node.read_set
+            and not node.write_set
+            and not self._has_non_aliasable_worker_state(node)
+            and set(node.metadata) <= {"input_variables"}
+            and isinstance(node.metadata.get("input_variables"), list)
+        )
+
+    def _is_simple_reduce_worker(self, node: Worker) -> bool:
+        return bool(
+            not node.model
+            and self._has_non_aliasable_specialized_worker_state(node, expected_role="reduce") is False
+            and set(node.metadata) <= {"reduce_expression"}
+            and isinstance(node.metadata.get("reduce_expression"), str)
+            and node.metadata.get("reduce_expression")
+        )
+
+    def _is_simple_rag_worker(self, node: Worker) -> bool:
+        allowed = {
+            "rag_collection",
+            "rag_top_k",
+            "rag_similarity_threshold",
+            "rag_embedding_model",
+            "rag_vector_store_config",
+            "rag_query_template",
+            "rag_include_metadata",
+            "rag_rerank",
+        }
+        return bool(
+            not node.model
+            and self._has_non_aliasable_specialized_worker_state(node, expected_role="rag") is False
+            and set(node.metadata) <= allowed
+            and "rag_collection" in node.metadata
+        )
+
+    def _is_simple_reflection_worker(self, node: Worker) -> bool:
+        allowed = {
+            "reflection_prompt",
+            "reflection_source",
+            "reflection_source_config",
+            "reflection_output_format",
+            "reflection_max_principles",
+            "reflection_min_confidence",
+            "reflection_dedup_strategy",
+            "reflection_model",
+        }
+        return bool(
+            self._has_non_aliasable_specialized_worker_state(node, expected_role="reflection") is False
+            and set(node.metadata) <= allowed
+            and "reflection_prompt" in node.metadata
+        )
+
+    def _is_simple_human_worker(self, node: Worker) -> bool:
+        allowed = {
+            "human_prompt",
+            "human_timeout_seconds",
+            "human_default_action",
+            "human_input_schema",
+            "human_output_schema",
+            "human_render_mode",
+            "human_options",
+            "human_instructions",
+            "human_render_target",
+        }
+        return bool(
+            not node.model
+            and self._has_non_aliasable_specialized_worker_state(node, expected_role="human") is False
+            and set(node.metadata) <= allowed
+        )
+
+    def _is_simple_human_in_the_loop_worker(self, node: Worker) -> bool:
+        allowed = {
+            "human_prompt",
+            "human_timeout_seconds",
+            "human_default_action",
+        }
+        return bool(
+            not node.model
+            and self._has_non_aliasable_specialized_worker_state(node, expected_role="human_in_the_loop") is False
+            and set(node.metadata) <= allowed
+        )
+
+    def _is_simple_vote_worker(self, node: Worker) -> bool:
+        allowed = {
+            "vote_candidates",
+            "vote_num_votes",
+            "vote_prompt_template",
+            "vote_system_prompt",
+            "vote_temperature",
+            "vote_strategy",
+            "vote_parallelism",
+            "vote_output_json_schema",
+            "vote_config",
+            "vote_timeout_seconds",
+        }
+        return bool(
+            not node.model
+            and self._has_non_aliasable_specialized_worker_state(node, expected_role="vote") is False
+            and set(node.metadata) <= allowed
+            and "vote_candidates" in node.metadata
+            and "vote_prompt_template" in node.metadata
+        )
+
+    def _emit_simple_llm_worker(self, node: Worker) -> str:
+        args = [repr(node.id)]
+        kwargs: list[str] = []
+        hints = node.llm_hints or LLMHints()
+
+        if node.name and node.name != node.id:
+            kwargs.append(f"name={node.name!r}")
+        if node.description:
+            kwargs.append(f"description={node.description!r}")
+        kwargs.append(f"model={node.model!r}")
+        if hints.prompt_template:
+            kwargs.append(f"prompt={hints.prompt_template!r}")
+        if hints.system_prompt:
+            kwargs.append(f"system_prompt={hints.system_prompt!r}")
+        if hints.temperature != 0.7:
+            kwargs.append(f"temperature={hints.temperature!r}")
+        if hints.max_tokens is not None:
+            kwargs.append(f"max_tokens={hints.max_tokens!r}")
+        if hints.output_json_schema is not None:
+            kwargs.append(f"output_schema={hints.output_json_schema!r}")
+        kwargs.append(
+            f"input_ports={[self._serialize_input_port(p) for p in node.input_ports]!r}"
+        )
+        kwargs.append(
+            f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
+        )
+        return f"wf.llm({', '.join(args + kwargs)})"
+
+    def _emit_simple_tool_worker(self, node: Worker) -> str:
+        args = [repr(node.id)]
+        kwargs: list[str] = []
+
+        if node.name and node.name != node.id:
+            kwargs.append(f"name={node.name!r}")
+        if node.description:
+            kwargs.append(f"description={node.description!r}")
+        kwargs.append(f"tool_id={node.tool_ids[0]!r}")
+        tool_config = dict(node.metadata.get("tool_config") or {})
+        if tool_config:
+            kwargs.append(f"tool_config={tool_config!r}")
+        kwargs.append(
+            f"input_ports={[self._serialize_input_port(p) for p in node.input_ports]!r}"
+        )
+        kwargs.append(
+            f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
+        )
+        return f"wf.tool({', '.join(args + kwargs)})"
+
+    def _emit_simple_code_worker(self, node: Worker) -> str:
+        args = [repr(node.id)]
+        kwargs: list[str] = []
+
+        if node.name and node.name != node.id:
+            kwargs.append(f"name={node.name!r}")
+        if node.description:
+            kwargs.append(f"description={node.description!r}")
+        kwargs.append(f"code={node.code!r}")
+        if node.language != "python":
+            kwargs.append(f"language={node.language!r}")
+        if node.read_set:
+            kwargs.append(
+                f"read_set={[self._serialize_context_decl(d) for d in node.read_set]!r}"
+            )
+        if node.write_set:
+            kwargs.append(
+                f"write_set={[self._serialize_context_decl(d) for d in node.write_set]!r}"
+            )
+        kwargs.append(
+            f"input_ports={[self._serialize_input_port(p) for p in node.input_ports]!r}"
+        )
+        kwargs.append(
+            f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
+        )
+        return f"wf.code({', '.join(args + kwargs)})"
+
+    def _emit_simple_input_worker(self, node: Worker) -> str:
+        args = [repr(node.id)]
+        kwargs: list[str] = []
+
+        if node.name and node.name != node.id:
+            kwargs.append(f"name={node.name!r}")
+        if node.description:
+            kwargs.append(f"description={node.description!r}")
+        variables = list(node.metadata.get("input_variables") or [])
+        kwargs.append(f"variables={variables!r}")
+        return f"wf.input_node({', '.join(args + kwargs)})"
+
+    def _emit_simple_reduce_worker(self, node: Worker) -> str:
+        args = [repr(node.id)]
+        kwargs: list[str] = []
+
+        if node.name and node.name != node.id:
+            kwargs.append(f"name={node.name!r}")
+        if node.description:
+            kwargs.append(f"description={node.description!r}")
+        kwargs.append(f"reducer={node.metadata['reduce_expression']!r}")
+        kwargs.append(
+            f"input_ports={[self._serialize_input_port(p) for p in node.input_ports]!r}"
+        )
+        kwargs.append(
+            f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
+        )
+        return f"wf.reduce({', '.join(args + kwargs)})"
+
+    def _emit_simple_rag_worker(self, node: Worker) -> str:
+        args = [repr(node.id)]
+        kwargs: list[str] = []
+        metadata = node.metadata
+
+        if node.name and node.name != node.id:
+            kwargs.append(f"name={node.name!r}")
+        if node.description:
+            kwargs.append(f"description={node.description!r}")
+        kwargs.append(f"collection={metadata['rag_collection']!r}")
+        if metadata.get("rag_top_k", 5) != 5:
+            kwargs.append(f"top_k={metadata['rag_top_k']!r}")
+        if "rag_similarity_threshold" in metadata:
+            kwargs.append(f"similarity_threshold={metadata['rag_similarity_threshold']!r}")
+        if metadata.get("rag_embedding_model"):
+            kwargs.append(f"embedding_model={metadata['rag_embedding_model']!r}")
+        if metadata.get("rag_vector_store_config"):
+            kwargs.append(f"vector_store_config={metadata['rag_vector_store_config']!r}")
+        if metadata.get("rag_query_template", "{query}") != "{query}":
+            kwargs.append(f"query_template={metadata['rag_query_template']!r}")
+        if metadata.get("rag_include_metadata", True) is not True:
+            kwargs.append(f"include_metadata={metadata['rag_include_metadata']!r}")
+        if metadata.get("rag_rerank", False):
+            kwargs.append(f"rerank={metadata['rag_rerank']!r}")
+        kwargs.append(
+            f"input_ports={[self._serialize_input_port(p) for p in node.input_ports]!r}"
+        )
+        kwargs.append(
+            f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
+        )
+        return f"wf.rag({', '.join(args + kwargs)})"
+
+    def _emit_simple_reflection_worker(self, node: Worker) -> str:
+        args = [repr(node.id)]
+        kwargs: list[str] = []
+        metadata = node.metadata
+
+        if node.name and node.name != node.id:
+            kwargs.append(f"name={node.name!r}")
+        if node.description:
+            kwargs.append(f"description={node.description!r}")
+        if metadata.get("reflection_prompt"):
+            kwargs.append(f"reflection_prompt={metadata['reflection_prompt']!r}")
+        if node.model is not None:
+            kwargs.append(f"reflection_model={node.model!r}")
+        if metadata.get("reflection_source", "last_run") != "last_run":
+            kwargs.append(f"source={metadata['reflection_source']!r}")
+        if metadata.get("reflection_source_config"):
+            kwargs.append(f"source_config={metadata['reflection_source_config']!r}")
+        if metadata.get("reflection_output_format", "principles") != "principles":
+            kwargs.append(f"output_format={metadata['reflection_output_format']!r}")
+        if metadata.get("reflection_max_principles", 10) != 10:
+            kwargs.append(f"max_principles={metadata['reflection_max_principles']!r}")
+        if metadata.get("reflection_min_confidence", 0.3) != 0.3:
+            kwargs.append(f"min_confidence={metadata['reflection_min_confidence']!r}")
+        if metadata.get("reflection_dedup_strategy", "embedding_similarity") != "embedding_similarity":
+            kwargs.append(f"dedup_strategy={metadata['reflection_dedup_strategy']!r}")
+        kwargs.append(
+            f"input_ports={[self._serialize_input_port(p) for p in node.input_ports]!r}"
+        )
+        kwargs.append(
+            f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
+        )
+        return f"wf.reflection({', '.join(args + kwargs)})"
+
+    def _emit_simple_human_worker(self, node: Worker) -> str:
+        args = [repr(node.id)]
+        kwargs: list[str] = []
+        metadata = node.metadata
+
+        if node.name and node.name != node.id:
+            kwargs.append(f"name={node.name!r}")
+        if node.description:
+            kwargs.append(f"description={node.description!r}")
+        if metadata.get("human_prompt"):
+            kwargs.append(f"prompt={metadata['human_prompt']!r}")
+        if "human_timeout_seconds" in metadata:
+            kwargs.append(f"timeout_seconds={metadata['human_timeout_seconds']!r}")
+        if "human_default_action" in metadata:
+            kwargs.append(f"default_action={metadata['human_default_action']!r}")
+        if "human_input_schema" in metadata:
+            kwargs.append(f"input_schema={metadata['human_input_schema']!r}")
+        if "human_output_schema" in metadata:
+            kwargs.append(f"output_schema={metadata['human_output_schema']!r}")
+        if metadata.get("human_render_mode", "text") != "text":
+            kwargs.append(f"render_mode={metadata['human_render_mode']!r}")
+        if "human_options" in metadata:
+            kwargs.append(f"options={metadata['human_options']!r}")
+        if metadata.get("human_instructions"):
+            kwargs.append(f"instructions={metadata['human_instructions']!r}")
+        if metadata.get("human_render_target", "dialog") != "dialog":
+            kwargs.append(f"render_target={metadata['human_render_target']!r}")
+        kwargs.append(
+            f"input_ports={[self._serialize_input_port(p) for p in node.input_ports]!r}"
+        )
+        kwargs.append(
+            f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
+        )
+        return f"wf.human({', '.join(args + kwargs)})"
+
+    def _emit_simple_human_in_the_loop_worker(self, node: Worker) -> str:
+        args = [repr(node.id)]
+        kwargs: list[str] = []
+        metadata = node.metadata
+
+        if node.name and node.name != node.id:
+            kwargs.append(f"name={node.name!r}")
+        if node.description:
+            kwargs.append(f"description={node.description!r}")
+        if metadata.get("human_prompt"):
+            kwargs.append(f"prompt={metadata['human_prompt']!r}")
+        if "human_timeout_seconds" in metadata:
+            kwargs.append(f"timeout_seconds={metadata['human_timeout_seconds']!r}")
+        if "human_default_action" in metadata:
+            kwargs.append(f"default_action={metadata['human_default_action']!r}")
+        kwargs.append(
+            f"input_ports={[self._serialize_input_port(p) for p in node.input_ports]!r}"
+        )
+        kwargs.append(
+            f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
+        )
+        return f"wf.human_in_the_loop({', '.join(args + kwargs)})"
+
+    def _emit_simple_vote_worker(self, node: Worker) -> str:
+        args = [repr(node.id)]
+        kwargs: list[str] = []
+        metadata = node.metadata
+
+        if node.name and node.name != node.id:
+            kwargs.append(f"name={node.name!r}")
+        if node.description:
+            kwargs.append(f"description={node.description!r}")
+        kwargs.append(f"prompt={metadata['vote_prompt_template']!r}")
+        kwargs.append(f"candidates={metadata['vote_candidates']!r}")
+        if metadata.get("vote_num_votes", 3) != 3:
+            kwargs.append(f"num_votes={metadata['vote_num_votes']!r}")
+        if metadata.get("vote_strategy", "majority") != "majority":
+            kwargs.append(f"strategy={metadata['vote_strategy']!r}")
+        if metadata.get("vote_system_prompt"):
+            kwargs.append(f"system_prompt={metadata['vote_system_prompt']!r}")
+        if metadata.get("vote_temperature", 0.7) != 0.7:
+            kwargs.append(f"temperature={metadata['vote_temperature']!r}")
+        if "vote_output_json_schema" in metadata:
+            kwargs.append(f"output_schema={metadata['vote_output_json_schema']!r}")
+        if "vote_config" in metadata:
+            kwargs.append(f"vote_config={metadata['vote_config']!r}")
+        if metadata.get("vote_parallelism", 3) != 3:
+            kwargs.append(f"parallelism={metadata['vote_parallelism']!r}")
+        if "vote_timeout_seconds" in metadata:
+            kwargs.append(f"timeout_seconds={metadata['vote_timeout_seconds']!r}")
+        kwargs.append(
+            f"input_ports={[self._serialize_input_port(p) for p in node.input_ports]!r}"
+        )
+        kwargs.append(
+            f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
+        )
+        return f"wf.vote({', '.join(args + kwargs)})"
 
     def _emit_subgraph_node(
         self,
@@ -637,6 +1219,92 @@ class _Decompiler:
             kw_str = f", {', '.join(kwargs_parts)}" if kwargs_parts else ""
             lines.append(f"{pad}with {builder_var}.team({node.id!r}{kw_str}) as {body_var}:")
 
+        elif nt == "worker":
+            kwargs_parts = []
+            if node.name and node.name != node.id:
+                kwargs_parts.append(f"name={node.name!r}")
+            if node.description:
+                kwargs_parts.append(f"description={node.description!r}")
+            if node.role:
+                kwargs_parts.append(f"role={node.role!r}")
+            if node.instruction:
+                kwargs_parts.append(f"instruction={node.instruction!r}")
+            if node.persona:
+                kwargs_parts.append(f"persona={node.persona!r}")
+            if node.authority.value != "leaf":
+                kwargs_parts.append(f"authority={node.authority.value!r}")
+            if node.model is not None:
+                kwargs_parts.append(f"model={node.model!r}")
+            if node.tool_ids:
+                kwargs_parts.append(f"tool_ids={node.tool_ids!r}")
+            tool_config = dict(node.metadata.get("tool_config") or {})
+            if tool_config:
+                kwargs_parts.append(f"tool_config={tool_config!r}")
+            if node.code:
+                kwargs_parts.append(f"code={node.code!r}")
+            if node.language != "python":
+                kwargs_parts.append(f"language={node.language!r}")
+            if node.llm_hints is not None:
+                kwargs_parts.append(
+                    f"llm_hints={node.llm_hints.model_dump(mode='json', exclude_none=True)!r}"
+                )
+            if node.context is not None:
+                kwargs_parts.append(
+                    f"context={node.context.model_dump(mode='json', exclude_none=True)!r}"
+                )
+            if node.authority_policy is not None:
+                kwargs_parts.append(
+                    f"authority_policy={node.authority_policy.model_dump(mode='json', exclude_none=True)!r}"
+                )
+            if node.execution is not None:
+                kwargs_parts.append(
+                    f"execution={node.execution.model_dump(mode='json', exclude_none=True)!r}"
+                )
+            if node.control_flow is not None:
+                kwargs_parts.append(
+                    f"control_flow={node.control_flow.model_dump(mode='json', exclude_none=True)!r}"
+                )
+            if node.input_mappings:
+                kwargs_parts.append(f"input_mappings={node.input_mappings!r}")
+            if node.output_mappings:
+                kwargs_parts.append(f"output_mappings={node.output_mappings!r}")
+            if node.parallelism != 1:
+                kwargs_parts.append(f"parallelism={node.parallelism!r}")
+            if node.merge_strategy.value != "append":
+                kwargs_parts.append(f"merge_strategy={node.merge_strategy.value!r}")
+            if node.spawn_policy is not None:
+                kwargs_parts.append(
+                    f"spawn_policy={node.spawn_policy.model_dump(mode='json', exclude_none=True)!r}"
+                )
+            if node.boundary_contract is not None:
+                kwargs_parts.append(
+                    f"boundary_contract={node.boundary_contract.model_dump(mode='json', exclude_none=True)!r}"
+                )
+            if node.validation_rules:
+                kwargs_parts.append(
+                    f"validation_rules={[rule.model_dump(mode='json', exclude_none=True) for rule in node.validation_rules]!r}"
+                )
+            if node.input_ports:
+                kwargs_parts.append(
+                    f"input_ports={[self._serialize_input_port(p) for p in node.input_ports]!r}"
+                )
+            if node.output_ports:
+                kwargs_parts.append(
+                    f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
+                )
+            if node.read_set:
+                kwargs_parts.append(
+                    f"read_set={[self._serialize_context_decl(d) for d in node.read_set]!r}"
+                )
+            if node.write_set:
+                kwargs_parts.append(
+                    f"write_set={[self._serialize_context_decl(d) for d in node.write_set]!r}"
+                )
+            kw_str = f", {', '.join(kwargs_parts)}" if kwargs_parts else ""
+            lines.append(
+                f"{pad}with {builder_var}.worker_scope({node.id!r}{kw_str}) as {body_var}:"
+            )
+
         # Resolve the body sub-graph from the root graph (handles nested graphs)
         body_graph_key = getattr(node, "body_graph", None)
         branch_graphs = getattr(node, "branch_graphs", None)
@@ -700,6 +1368,7 @@ class _Decompiler:
                     lines.append(f"{inner_pad}    pass")
             return lines
 
+        handled_body = False
         if sub_graph and sub_graph.nodes:
             sub_ordered = self._topological_sort_graph(sub_graph)
             emitted_in_chain: set[str] = set()
@@ -710,7 +1379,7 @@ class _Decompiler:
                 if sub_node is None:
                     continue
                 sub_var = _to_var_name(sub_nid)
-                if isinstance(sub_node, (WhileLoopNode, GoalLoopNode, ForEachNode, CompositeNode, AgentTeamNode)):
+                if self._is_scoped_node(sub_node):
                     nested_body_var = f"_{sub_var}_body"
                     nested_lines = self._emit_subgraph_node(
                         sub_node,
@@ -729,10 +1398,7 @@ class _Decompiler:
             sub_chains = self._detect_chains_in(sub_graph)
             emitted_chain_pairs: set[tuple[str, str]] = set()
             sub_node_map = {n.id: n for n in sub_graph.nodes}
-            subgraph_node_ids = {
-                n.id for n in sub_graph.nodes
-                if isinstance(n, (WhileLoopNode, GoalLoopNode, ForEachNode, CompositeNode, AgentTeamNode))
-            }
+            subgraph_node_ids = {n.id for n in sub_graph.nodes if self._is_scoped_node(n)}
             for chain in sub_chains:
                 current_segment = []
                 for nid in chain:
@@ -766,12 +1432,21 @@ class _Decompiler:
             for edge in sub_graph.edges:
                 if isinstance(edge, DataEdge):
                     pair = (edge.source_node_id, edge.target_node_id)
-                    if pair in emitted_chain_pairs and self._is_default_data_edge_in(edge, sub_node_map):
+                    if (
+                        pair in emitted_chain_pairs
+                        and self._is_default_data_edge_in(edge, sub_node_map)
+                        and self._edge_lint_payload(edge) is None
+                    ):
                         continue
                     src_var = _to_var_name(edge.source_node_id)
                     tgt_var = _to_var_name(edge.target_node_id)
                     spread_arg = ", spread=True" if getattr(edge, "spread", False) else ""
-                    lines.append(f'{inner_pad}{body_var}.edge({src_var}["{edge.source_port}"], {tgt_var}["{edge.target_port}"]{spread_arg})')
+                    lint_meta = self._edge_lint_payload(edge)
+                    lint_arg = f", lint={lint_meta!r}" if lint_meta is not None else ""
+                    lines.append(
+                        f'{inner_pad}{body_var}.edge({src_var}["{edge.source_port}"], '
+                        f'{tgt_var}["{edge.target_port}"]{spread_arg}{lint_arg})'
+                    )
                 elif isinstance(edge, ControlEdge):
                     src_var = _to_var_name(edge.source_node_id)
                     tgt_var = _to_var_name(edge.target_node_id)
@@ -788,7 +1463,22 @@ class _Decompiler:
                         f'{tgt_var}["{edge.target_port}"], '
                         f"context_key={edge.context_key!r}, mode={edge.mode.value!r})"
                     )
-        else:
+            handled_body = True
+
+        if nt == "worker" and getattr(node, "sub_workers", None):
+            for alias, sub_key in sorted(node.sub_workers.items()):
+                sub_worker_graph = self._resolve_sub_graph(sub_key)
+                alias_var = f"_{body_var}_{alias}"
+                lines.append(f"{inner_pad}with {body_var}.sub_worker({alias!r}) as {alias_var}:")
+                if sub_worker_graph and sub_worker_graph.nodes:
+                    lines.extend(
+                        self._emit_parallel_branch_content(sub_worker_graph, alias_var, indent + 2)
+                    )
+                else:
+                    lines.append(f"{inner_pad}    pass")
+            handled_body = True
+
+        if not handled_body:
             lines.append(f"{inner_pad}pass")
 
         return lines
@@ -808,10 +1498,7 @@ class _Decompiler:
             if sub_node is None:
                 continue
             sub_var = _to_var_name(sub_nid)
-            if isinstance(
-                sub_node,
-                (WhileLoopNode, GoalLoopNode, ForEachNode, CompositeNode, ParallelSubagentsNode, OrchestratorNode, AgentTeamNode),
-            ):
+            if self._is_scoped_node(sub_node):
                 nested_body_var = f"_{sub_var}_body"
                 nested_lines = self._emit_subgraph_node(
                     sub_node,
@@ -831,10 +1518,7 @@ class _Decompiler:
         sub_chains = self._detect_chains_in(sub_graph)
         emitted_chain_pairs: set[tuple[str, str]] = set()
         sub_node_map = {n.id: n for n in sub_graph.nodes}
-        subgraph_node_ids = {
-            n.id for n in sub_graph.nodes
-            if isinstance(n, (WhileLoopNode, GoalLoopNode, ForEachNode, CompositeNode, ParallelSubagentsNode, OrchestratorNode, AgentTeamNode))
-        }
+        subgraph_node_ids = {n.id for n in sub_graph.nodes if self._is_scoped_node(n)}
         for chain in sub_chains:
             current_segment: list[str] = []
             for nid in chain:
@@ -850,7 +1534,7 @@ class _Decompiler:
                     current_segment = [nid]
                     continue
                 prev = current_segment[-1]
-                if self._is_default_chain_edge(prev, nid):
+                if self._is_default_chain_edge_in(sub_graph, prev, nid):
                     current_segment.append(nid)
                 else:
                     if len(current_segment) >= 2:
@@ -868,16 +1552,20 @@ class _Decompiler:
         for edge in sub_graph.edges:
             if isinstance(edge, DataEdge):
                 pair = (edge.source_node_id, edge.target_node_id)
-                if pair in emitted_chain_pairs and self._is_default_data_edge_in(
-                    edge, sub_node_map
+                if (
+                    pair in emitted_chain_pairs
+                    and self._is_default_data_edge_in(edge, sub_node_map)
+                    and self._edge_lint_payload(edge) is None
                 ):
                     continue
                 src_var = _to_var_name(edge.source_node_id)
                 tgt_var = _to_var_name(edge.target_node_id)
                 spread_arg = ", spread=True" if getattr(edge, "spread", False) else ""
+                lint_meta = self._edge_lint_payload(edge)
+                lint_arg = f", lint={lint_meta!r}" if lint_meta is not None else ""
                 lines.append(
                     f'{inner_pad}{scope_var}.edge({src_var}["{edge.source_port}"], '
-                    f'{tgt_var}["{edge.target_port}"]{spread_arg})'
+                    f'{tgt_var}["{edge.target_port}"]{spread_arg}{lint_arg})'
                 )
             elif isinstance(edge, ControlEdge):
                 src_var = _to_var_name(edge.source_node_id)
@@ -1049,15 +1737,20 @@ class _Decompiler:
         )
 
     def _is_default_chain_edge(self, src_node_id: str, tgt_node_id: str) -> bool:
+        return self._is_default_chain_edge_in(self.graph, src_node_id, tgt_node_id)
+
+    @staticmethod
+    def _is_default_chain_edge_in(graph: Graph, src_node_id: str, tgt_node_id: str) -> bool:
         data_edges = [
-            e for e in self.graph.edges
+            e for e in graph.edges
             if isinstance(e, DataEdge)
             and e.source_node_id == src_node_id
             and e.target_node_id == tgt_node_id
         ]
         if len(data_edges) != 1:
             return False
-        return self._is_default_data_edge(data_edges[0])
+        node_map = {n.id: n for n in graph.nodes}
+        return _Decompiler._is_default_data_edge_in(data_edges[0], node_map)
 
     @staticmethod
     def _serialize_input_port(port: Any) -> dict[str, Any]:

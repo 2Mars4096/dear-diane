@@ -50,6 +50,20 @@ class TestCompileSimpleWorkflow:
         assert any(p.name == "topic" for p in gen.input_ports)
         assert any(p.name == "ideas" or p.name == "text" for p in gen.output_ports)
 
+    def test_worker_builder_gate_can_emit_worker_compute_nodes(self, monkeypatch):
+        from dan.loader.compiler import compile_workflow
+
+        monkeypatch.setenv("DAN_WORKER_BUILDER", "enabled")
+        result = compile_workflow(FIXTURES / "simple_workflow.md")
+
+        assert not result.has_errors
+        types = {n.id: n.node_type for n in result.graph.nodes}
+        assert types.get("generator") == "worker"
+        assert types.get("planner") == "worker"
+        assert types.get("searcher") == "worker"
+        if "workflow_inputs" in types:
+            assert types["workflow_inputs"] == "worker"
+
 
 class TestCompileComplexWorkflow:
     def test_compiles_successfully(self):
@@ -101,6 +115,18 @@ class TestCompileComplexWorkflow:
             if n.node_type in ("gate", "for_each", "input"):
                 continue
             assert "source" in n.metadata, f"Node {n.id} missing source metadata"
+
+    def test_worker_builder_gate_keeps_specialized_loader_primitives(self, monkeypatch):
+        from dan.loader.compiler import compile_workflow
+
+        monkeypatch.setenv("DAN_WORKER_BUILDER", "enabled")
+        result = compile_workflow(FIXTURES / "complex_workflow.md")
+
+        assert not result.has_errors, [d.message for d in result.diagnostics if d.level == "error"]
+        node_types = {n.node_type for n in result.graph.nodes}
+        assert "worker" in node_types
+        assert "gate" in node_types
+        assert "for_each" in node_types
 
 
 class TestCompilerDiagnostics:

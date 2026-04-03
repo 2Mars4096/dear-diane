@@ -34,11 +34,28 @@ from dan.models.context import (
     SharedContextDeclaration,
 )
 from dan.models.graph import Graph
+from dan.models.node_taxonomy import worker_builder_uses_workers
+from dan.validation.linting import IntentRefiner
 
 
-def workflow(name: str, *, description: str = "", tags: list[str] | None = None) -> WorkflowBuilder:
+def workflow(
+    name: str,
+    *,
+    description: str = "",
+    tags: list[str] | None = None,
+    canonical_workers: bool | None = None,
+    lint_autogen: str | None = None,
+    lint_intent_refiner: IntentRefiner | None = None,
+) -> WorkflowBuilder:
     """Create a new workflow builder — the primary entry point for the DSL."""
-    return WorkflowBuilder(name, description=description, tags=tags or [])
+    return WorkflowBuilder(
+        name,
+        description=description,
+        tags=tags or [],
+        _canonical_workers=canonical_workers,
+        _lint_autogen=lint_autogen,
+        _lint_intent_refiner=lint_intent_refiner,
+    )
 
 
 class WorkflowBuilder:
@@ -56,12 +73,27 @@ class WorkflowBuilder:
         tags: list[str] | None = None,
         _parent: WorkflowBuilder | None = None,
         _scope_type: str | None = None,
+        _canonical_workers: bool | None = None,
+        _lint_autogen: str | None = None,
+        _lint_intent_refiner: IntentRefiner | None = None,
     ) -> None:
         self._name = name
         self._description = description
         self._tags = tags or []
         self._parent = _parent
         self._scope_type = _scope_type
+        inherited_canonical_workers = _parent._canonical_workers if _parent is not None else None
+        self._canonical_workers = (
+            inherited_canonical_workers if _canonical_workers is None else _canonical_workers
+        )
+        if self._canonical_workers is None:
+            self._canonical_workers = worker_builder_uses_workers()
+        self._lint_autogen = _parent._lint_autogen if _parent is not None and _lint_autogen is None else _lint_autogen
+        self._lint_intent_refiner = (
+            _parent._lint_intent_refiner
+            if _parent is not None and _lint_intent_refiner is None
+            else _lint_intent_refiner
+        )
 
         self._nodes: list[_PendingNode] = []
         self._edges: list[_PendingEdge] = []
@@ -69,6 +101,7 @@ class WorkflowBuilder:
         self._port_ref_connections: list[tuple[PortRef, str, str]] = []
         self._shared_context: list[SharedContextDeclaration] = []
         self._artifact_refs: list[ArtifactRef] = []
+        self._worker_resources: dict[str, dict[str, Any]] = {}
 
         self._node_map: dict[str, _PendingNode] = {}
         self._hyperedges: list[dict[str, Any]] = []
@@ -76,6 +109,9 @@ class WorkflowBuilder:
         # Virtual entry-point refs for sub-graph builders
         self._entry_input_ref: PortRef | None = None
         self._entry_item_ref: PortRef | None = None
+
+    def _emit_canonical_worker_alias(self) -> bool:
+        return bool(self._canonical_workers)
 
     # ── Virtual entry refs for sub-graph scopes ────────────────────
 
@@ -87,13 +123,223 @@ class WorkflowBuilder:
         return self._entry_input_ref
 
     @property
+    def entry_input(self) -> PortRef:
+        """Explicit alias for the sub-graph entry input ref."""
+        return self.input
+
+    @property
     def item(self) -> PortRef:
         """Virtual ref to the current iteration item (for for_each bodies)."""
         if self._entry_item_ref is None:
             raise BuildError(["`.item` is only available inside a for_each context"])
         return self._entry_item_ref
 
+    @property
+    def entry_item(self) -> PortRef:
+        """Explicit alias for the current iteration item ref."""
+        return self.item
+
     # ── Node creation methods ──────────────────────────────────────
+
+    def _legacy_compute_pending_from_worker(
+        self,
+        node_id: str,
+        *,
+        expected_node_type: str,
+        worker_kwargs: dict[str, Any],
+        explicit_input_ports: list[Any],
+        explicit_output_ports: list[Any],
+    ) -> _PendingNode:
+        """Project a Worker-shaped alias payload back to the legacy compute pending node.
+
+        This keeps public builder aliases stable while forcing their config
+        through the Worker contract surface first.
+        """
+
+        from dan.models.legacy import (
+            CodeOperator,
+            HumanInTheLoopNode,
+            HumanNode,
+            InputNode,
+            LLMOperator,
+            RAGOperator,
+            ReduceNode,
+            ReflectionNode,
+            RouterNode,
+            ToolOperator,
+            ValidatorNode,
+            VoteNode,
+        )
+        from dan.worker.model import Worker
+        from dan.worker.presets import worker_to_legacy
+
+        copied_input_ports = [port.model_copy(deep=True) for port in explicit_input_ports]
+        copied_output_ports = [port.model_copy(deep=True) for port in explicit_output_ports]
+        materialized_worker_kwargs = dict(worker_kwargs)
+        metadata = dict(materialized_worker_kwargs.get("metadata") or {})
+        if "tool_config" in materialized_worker_kwargs:
+            metadata["tool_config"] = dict(materialized_worker_kwargs.pop("tool_config") or {})
+        if metadata:
+            materialized_worker_kwargs["metadata"] = metadata
+        worker = Worker(
+            id=node_id,
+            name=str(materialized_worker_kwargs.get("name") or node_id),
+            description=str(materialized_worker_kwargs.get("description") or ""),
+            input_ports=[port.model_copy(deep=True) for port in copied_input_ports],
+            output_ports=[port.model_copy(deep=True) for port in copied_output_ports],
+            **{k: v for k, v in materialized_worker_kwargs.items() if k not in {"name", "description"}},
+        )
+        legacy = worker_to_legacy(worker)
+        if legacy is None or legacy.node_type != expected_node_type:
+            raise BuildError([
+                f"Could not project Worker alias {node_id!r} to legacy node type {expected_node_type!r}",
+            ])
+
+        kwargs: dict[str, Any] = {
+            "name": legacy.name,
+            "description": legacy.description,
+        }
+        if isinstance(legacy, LLMOperator):
+            kwargs.update({
+                "model": legacy.model,
+                "prompt_template": legacy.prompt_template,
+                "system_prompt": legacy.system_prompt,
+                "temperature": legacy.temperature,
+            })
+            if legacy.max_tokens is not None:
+                kwargs["max_tokens"] = legacy.max_tokens
+            if legacy.output_json_schema is not None:
+                kwargs["output_json_schema"] = legacy.output_json_schema
+        elif isinstance(legacy, ToolOperator):
+            kwargs.update({
+                "tool_id": legacy.tool_id,
+                "tool_config": dict(legacy.tool_config),
+            })
+        elif isinstance(legacy, RAGOperator):
+            kwargs.update({
+                "collection": legacy.collection,
+                "top_k": legacy.top_k,
+                "query_template": legacy.query_template,
+                "include_metadata": legacy.include_metadata,
+                "rerank": legacy.rerank,
+            })
+            if legacy.similarity_threshold is not None:
+                kwargs["similarity_threshold"] = legacy.similarity_threshold
+            if legacy.embedding_model:
+                kwargs["embedding_model"] = legacy.embedding_model
+            if legacy.vector_store_config:
+                kwargs["vector_store_config"] = dict(legacy.vector_store_config)
+        elif isinstance(legacy, HumanNode):
+            kwargs.update({
+                "prompt": legacy.prompt,
+                "render_mode": legacy.render_mode,
+                "instructions": legacy.instructions,
+                "render_target": legacy.render_target,
+            })
+            if legacy.timeout_seconds is not None:
+                kwargs["timeout_seconds"] = legacy.timeout_seconds
+            if legacy.default_action is not None:
+                kwargs["default_action"] = legacy.default_action
+            if legacy.input_schema is not None:
+                kwargs["input_schema"] = legacy.input_schema
+            if legacy.output_schema is not None:
+                kwargs["output_schema"] = legacy.output_schema
+            if legacy.options is not None:
+                kwargs["options"] = list(legacy.options)
+        elif isinstance(legacy, VoteNode):
+            kwargs.update({
+                "candidates": list(legacy.candidates),
+                "num_votes": legacy.num_votes,
+                "prompt_template": legacy.prompt_template,
+                "system_prompt": legacy.system_prompt,
+                "temperature": legacy.temperature,
+                "vote_strategy": legacy.vote_strategy,
+                "parallelism": legacy.parallelism,
+            })
+            if legacy.output_json_schema is not None:
+                kwargs["output_json_schema"] = legacy.output_json_schema
+            if legacy.vote_config is not None:
+                kwargs["vote_config"] = legacy.vote_config
+            if legacy.task_tier is not None:
+                kwargs["task_tier"] = legacy.task_tier
+            if legacy.timeout_seconds is not None:
+                kwargs["timeout_seconds"] = legacy.timeout_seconds
+        elif isinstance(legacy, InputNode):
+            kwargs["variables"] = list(legacy.variables)
+        elif isinstance(legacy, ReduceNode):
+            kwargs["reducer"] = legacy.reducer
+        elif isinstance(legacy, RouterNode):
+            kwargs.update({
+                "model": legacy.model,
+                "route_descriptions": dict(legacy.route_descriptions),
+            })
+            if legacy.task_tier is not None:
+                kwargs["task_tier"] = legacy.task_tier
+        elif isinstance(legacy, ValidatorNode):
+            kwargs.update({
+                "validation_rules": list(legacy.validation_rules),
+                "on_failure": legacy.on_failure,
+                "strict_mode": legacy.strict_mode,
+            })
+        elif isinstance(legacy, ReflectionNode):
+            kwargs.update({
+                "reflection_prompt": legacy.reflection_prompt,
+                "source": legacy.source,
+                "source_config": dict(legacy.source_config),
+                "output_format": legacy.output_format,
+                "max_principles": legacy.max_principles,
+                "min_confidence": legacy.min_confidence,
+                "dedup_strategy": legacy.dedup_strategy,
+            })
+            if legacy.reflection_model is not None:
+                kwargs["reflection_model"] = legacy.reflection_model
+            if legacy.task_tier is not None:
+                kwargs["task_tier"] = legacy.task_tier
+        elif isinstance(legacy, CodeOperator):
+            kwargs.update({
+                "code": legacy.code,
+                "language": legacy.language,
+            })
+            if legacy.read_set:
+                kwargs["read_set"] = legacy.read_set
+            if legacy.write_set:
+                kwargs["write_set"] = legacy.write_set
+        else:
+            raise BuildError([
+                f"Unsupported legacy projection type {type(legacy).__name__!r} for alias {node_id!r}",
+            ])
+
+        return _PendingNode(
+            id=node_id,
+            node_type=expected_node_type,
+            kwargs=kwargs,
+            explicit_input_ports=copied_input_ports,
+            explicit_output_ports=copied_output_ports,
+        )
+
+    def _worker_pending_alias(
+        self,
+        node_id: str,
+        *,
+        worker_kwargs: dict[str, Any],
+        explicit_input_ports: list[Any],
+        explicit_output_ports: list[Any],
+    ) -> _PendingNode:
+        """Materialize a simple compute alias directly as a Worker pending node."""
+
+        materialized_kwargs = dict(worker_kwargs)
+        metadata = dict(materialized_kwargs.get("metadata") or {})
+        if "tool_config" in materialized_kwargs:
+            metadata["tool_config"] = dict(materialized_kwargs.pop("tool_config") or {})
+        if metadata:
+            materialized_kwargs["metadata"] = metadata
+        return _PendingNode(
+            id=node_id,
+            node_type="worker",
+            kwargs=materialized_kwargs,
+            explicit_input_ports=[port.model_copy(deep=True) for port in explicit_input_ports],
+            explicit_output_ports=[port.model_copy(deep=True) for port in explicit_output_ports],
+        )
 
     def llm(
         self,
@@ -113,28 +359,44 @@ class WorkflowBuilder:
         """Add an LLM operator node."""
         from dan.models.ports import InputPort, OutputPort
 
-        kwargs: dict[str, Any] = {
+        explicit_input_ports = [InputPort(**p) for p in (input_ports or [])]
+        explicit_output_ports = [OutputPort(**p) for p in (output_ports or [])]
+        if not explicit_output_ports:
+            explicit_output_ports = [OutputPort(name="text")]
+        worker_kwargs: dict[str, Any] = {
             "name": name or node_id,
             "description": description,
-            "model": model,
-            "prompt_template": prompt,
-            "system_prompt": system_prompt,
-            "temperature": temperature,
+            "model": model or None,
+            "llm_hints": {
+                "prompt_template": prompt,
+                "system_prompt": system_prompt,
+                "temperature": temperature,
+            },
         }
         if max_tokens is not None:
-            kwargs["max_tokens"] = max_tokens
+            worker_kwargs["llm_hints"]["max_tokens"] = max_tokens
         if output_schema is not None:
-            kwargs["output_json_schema"] = output_schema
+            worker_kwargs["llm_hints"]["output_json_schema"] = output_schema
 
-        pn = _PendingNode(
-            id=node_id,
-            node_type="llm_operator",
-            kwargs=kwargs,
-            explicit_input_ports=[InputPort(**p) for p in (input_ports or [])],
-            explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
-        )
+        if self._emit_canonical_worker_alias():
+            pn = self._worker_pending_alias(
+                node_id,
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "worker", self, _default_output="text")
+        else:
+            pn = self._legacy_compute_pending_from_worker(
+                node_id,
+                expected_node_type="llm_operator",
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "llm_operator", self)
         self._add_node(pn)
-        return NodeRef(node_id, "llm_operator", self)
+        return ref
 
     def tool(
         self,
@@ -155,21 +417,35 @@ class WorkflowBuilder:
         from dan.models.ports import InputPort, OutputPort
 
         effective_config = tool_config or config or {}
-        kwargs: dict[str, Any] = {
+        explicit_input_ports = [InputPort(**p) for p in (input_ports or [])]
+        explicit_output_ports = [OutputPort(**p) for p in (output_ports or [])]
+        if not explicit_output_ports:
+            explicit_output_ports = [OutputPort(name="result")]
+        worker_kwargs: dict[str, Any] = {
             "name": name or node_id,
             "description": description,
-            "tool_id": tool_id,
             "tool_config": effective_config,
+            "tool_ids": [tool_id],
         }
-        pn = _PendingNode(
-            id=node_id,
-            node_type="tool_operator",
-            kwargs=kwargs,
-            explicit_input_ports=[InputPort(**p) for p in (input_ports or [])],
-            explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
-        )
+        if self._emit_canonical_worker_alias():
+            pn = self._worker_pending_alias(
+                node_id,
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "worker", self, _default_output="result")
+        else:
+            pn = self._legacy_compute_pending_from_worker(
+                node_id,
+                expected_node_type="tool_operator",
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "tool_operator", self)
         self._add_node(pn)
-        return NodeRef(node_id, "tool_operator", self)
+        return ref
 
     def code(
         self,
@@ -187,25 +463,208 @@ class WorkflowBuilder:
         """Add a code operator node."""
         from dan.models.ports import InputPort, OutputPort
 
-        kwargs: dict[str, Any] = {
+        explicit_input_ports = [InputPort(**p) for p in (input_ports or [])]
+        explicit_output_ports = [OutputPort(**p) for p in (output_ports or [])]
+        if not explicit_output_ports:
+            explicit_output_ports = [OutputPort(name="result")]
+        worker_kwargs: dict[str, Any] = {
             "name": name or node_id,
             "description": description,
             "code": code,
             "language": language,
         }
         if read_set is not None:
+            worker_kwargs["read_set"] = read_set
+        if write_set is not None:
+            worker_kwargs["write_set"] = write_set
+        if self._emit_canonical_worker_alias():
+            pn = self._worker_pending_alias(
+                node_id,
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "worker", self, _default_output="result")
+        else:
+            pn = self._legacy_compute_pending_from_worker(
+                node_id,
+                expected_node_type="code_operator",
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "code_operator", self)
+        self._add_node(pn)
+        return ref
+
+    def worker(
+        self,
+        node_id: str,
+        *,
+        role: str = "",
+        instruction: str = "",
+        persona: str = "",
+        authority: str = "leaf",
+        model: str | None = None,
+        tool_ids: list[str] | None = None,
+        tool_config: dict[str, Any] | None = None,
+        code: str = "",
+        language: str = "python",
+        llm: dict[str, Any] | None = None,
+        llm_hints: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
+        authority_policy: dict[str, Any] | None = None,
+        execution: dict[str, Any] | None = None,
+        control_flow: dict[str, Any] | None = None,
+        body_graph: str | None = None,
+        sub_workers: dict[str, str] | None = None,
+        input_mappings: dict[str, str] | None = None,
+        output_mappings: dict[str, str] | None = None,
+        parallelism: int = 1,
+        merge_strategy: MergeStrategy = MergeStrategy.APPEND,
+        spawn_policy: dict[str, Any] | None = None,
+        boundary_contract: dict[str, Any] | None = None,
+        validation_rules: list[dict[str, Any]] | None = None,
+        name: str | None = None,
+        description: str = "",
+        read_set: list[ContextDeclaration] | None = None,
+        write_set: list[ContextDeclaration] | None = None,
+        input_ports: list[dict[str, Any]] | None = None,
+        output_ports: list[dict[str, Any]] | None = None,
+    ) -> NodeRef:
+        """Add a lightweight Worker node."""
+        from dan.models.ports import InputPort, OutputPort
+
+        if llm is not None and llm_hints is not None:
+            raise BuildError(["worker() accepts either `llm` or `llm_hints`, not both"])
+
+        kwargs: dict[str, Any] = {
+            "name": name or node_id,
+            "description": description,
+            "role": role,
+            "instruction": instruction,
+            "persona": persona,
+            "authority": authority,
+            "tool_ids": tool_ids or [],
+            "code": code,
+            "language": language,
+            "sub_workers": sub_workers or {},
+        }
+        if input_mappings:
+            kwargs["input_mappings"] = dict(input_mappings)
+        if output_mappings:
+            kwargs["output_mappings"] = dict(output_mappings)
+        if parallelism != 1:
+            kwargs["parallelism"] = parallelism
+        if merge_strategy != MergeStrategy.APPEND:
+            kwargs["merge_strategy"] = merge_strategy
+        if spawn_policy is not None:
+            kwargs["spawn_policy"] = spawn_policy
+        if tool_config:
+            kwargs["metadata"] = {"tool_config": dict(tool_config)}
+        if model is not None:
+            kwargs["model"] = model
+        effective_llm_hints = llm_hints if llm_hints is not None else llm
+        if effective_llm_hints is not None:
+            kwargs["llm_hints"] = effective_llm_hints
+        if context is not None:
+            kwargs["context"] = context
+        if authority_policy is not None:
+            kwargs["authority_policy"] = authority_policy
+        if execution is not None:
+            kwargs["execution"] = execution
+        if control_flow is not None:
+            kwargs["control_flow"] = control_flow
+        if body_graph is not None:
+            kwargs["body_graph"] = body_graph
+        if boundary_contract is not None:
+            kwargs["boundary_contract"] = boundary_contract
+        if validation_rules is not None:
+            kwargs["validation_rules"] = validation_rules
+        if read_set is not None:
             kwargs["read_set"] = read_set
         if write_set is not None:
             kwargs["write_set"] = write_set
+
         pn = _PendingNode(
             id=node_id,
-            node_type="code_operator",
+            node_type="worker",
             kwargs=kwargs,
             explicit_input_ports=[InputPort(**p) for p in (input_ports or [])],
             explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
         )
         self._add_node(pn)
-        return NodeRef(node_id, "code_operator", self)
+        return NodeRef(node_id, "worker", self)
+
+    @contextmanager
+    def worker_scope(
+        self,
+        node_id: str,
+        *,
+        role: str = "",
+        instruction: str = "",
+        persona: str = "",
+        authority: str = "leaf",
+        model: str | None = None,
+        tool_ids: list[str] | None = None,
+        tool_config: dict[str, Any] | None = None,
+        code: str = "",
+        language: str = "python",
+        llm: dict[str, Any] | None = None,
+        llm_hints: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
+        authority_policy: dict[str, Any] | None = None,
+        execution: dict[str, Any] | None = None,
+        control_flow: dict[str, Any] | None = None,
+        input_mappings: dict[str, str] | None = None,
+        output_mappings: dict[str, str] | None = None,
+        parallelism: int = 1,
+        merge_strategy: MergeStrategy = MergeStrategy.APPEND,
+        spawn_policy: dict[str, Any] | None = None,
+        boundary_contract: dict[str, Any] | None = None,
+        validation_rules: list[dict[str, Any]] | None = None,
+        name: str | None = None,
+        description: str = "",
+        read_set: list[ContextDeclaration] | None = None,
+        write_set: list[ContextDeclaration] | None = None,
+        input_ports: list[dict[str, Any]] | None = None,
+        output_ports: list[dict[str, Any]] | None = None,
+    ) -> Generator["_WorkerScopeContext", None, None]:
+        """Context manager for a Worker with an authored body graph and/or named sub-workers."""
+        ctx = _WorkerScopeContext(
+            self,
+            node_id,
+            role=role,
+            instruction=instruction,
+            persona=persona,
+            authority=authority,
+            model=model,
+            tool_ids=tool_ids or [],
+            tool_config=tool_config,
+            code=code,
+            language=language,
+            llm=llm,
+            llm_hints=llm_hints,
+            context=context,
+            authority_policy=authority_policy,
+            execution=execution,
+            control_flow=control_flow,
+            input_mappings=input_mappings,
+            output_mappings=output_mappings,
+            parallelism=parallelism,
+            merge_strategy=merge_strategy,
+            spawn_policy=spawn_policy,
+            boundary_contract=boundary_contract,
+            validation_rules=validation_rules,
+            name=name,
+            description=description,
+            read_set=read_set,
+            write_set=write_set,
+            input_ports=input_ports,
+            output_ports=output_ports,
+        )
+        yield ctx
+        ctx._finalize()
 
     def rag(
         self,
@@ -227,31 +686,52 @@ class WorkflowBuilder:
         """Add a RAG operator node for vector-store retrieval."""
         from dan.models.ports import InputPort, OutputPort
 
-        kwargs: dict[str, Any] = {
-            "name": name or node_id,
-            "description": description,
-            "collection": collection,
-            "top_k": top_k,
-            "query_template": query_template,
-            "include_metadata": include_metadata,
-            "rerank": rerank,
+        explicit_input_ports = [InputPort(**p) for p in (input_ports or [])]
+        explicit_output_ports = [OutputPort(**p) for p in (output_ports or [])]
+        if not explicit_input_ports:
+            explicit_input_ports = [InputPort(name="query", required=False)]
+        if not explicit_output_ports:
+            explicit_output_ports = [OutputPort(name="chunks")]
+
+        metadata: dict[str, Any] = {
+            "rag_collection": collection,
+            "rag_top_k": top_k,
+            "rag_query_template": query_template,
+            "rag_include_metadata": include_metadata,
+            "rag_rerank": rerank,
         }
         if similarity_threshold is not None:
-            kwargs["similarity_threshold"] = similarity_threshold
+            metadata["rag_similarity_threshold"] = similarity_threshold
         if embedding_model:
-            kwargs["embedding_model"] = embedding_model
+            metadata["rag_embedding_model"] = embedding_model
         if vector_store_config:
-            kwargs["vector_store_config"] = vector_store_config
+            metadata["rag_vector_store_config"] = vector_store_config
 
-        pn = _PendingNode(
-            id=node_id,
-            node_type="rag_operator",
-            kwargs=kwargs,
-            explicit_input_ports=[InputPort(**p) for p in (input_ports or [])],
-            explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
-        )
+        worker_kwargs = {
+            "name": name or node_id,
+            "description": description,
+            "role": "rag",
+            "metadata": metadata,
+        }
+        if self._emit_canonical_worker_alias():
+            pn = self._worker_pending_alias(
+                node_id,
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "worker", self, _default_input="query", _default_output="chunks")
+        else:
+            pn = self._legacy_compute_pending_from_worker(
+                node_id,
+                expected_node_type="rag_operator",
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "rag_operator", self)
         self._add_node(pn)
-        return NodeRef(node_id, "rag_operator", self)
+        return ref
 
     def validator(
         self,
@@ -268,20 +748,31 @@ class WorkflowBuilder:
         """Add a validator node for data validation at agent boundaries."""
         from dan.models.ports import InputPort, OutputPort
 
-        kwargs: dict[str, Any] = {
-            "name": name or node_id,
-            "description": description,
-            "validation_rules": rules or [],
-            "on_failure": on_failure,
-            "strict_mode": strict_mode,
-        }
+        explicit_input_ports = [InputPort(**p) for p in (input_ports or [])]
+        explicit_output_ports = [OutputPort(**p) for p in (output_ports or [])]
+        if not explicit_input_ports:
+            explicit_input_ports = [InputPort(name="data")]
+        if not explicit_output_ports:
+            explicit_output_ports = [
+                OutputPort(name="valid"),
+                OutputPort(name="invalid"),
+            ]
 
-        pn = _PendingNode(
-            id=node_id,
-            node_type="validator",
-            kwargs=kwargs,
-            explicit_input_ports=[InputPort(**p) for p in (input_ports or [])],
-            explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
+        pn = self._legacy_compute_pending_from_worker(
+            node_id,
+            expected_node_type="validator",
+            worker_kwargs={
+                "name": name or node_id,
+                "description": description,
+                "role": "validator",
+                "metadata": {
+                    "validation_rules": list(rules or []),
+                    "validator_on_failure": on_failure,
+                    "validator_strict_mode": strict_mode,
+                },
+            },
+            explicit_input_ports=explicit_input_ports,
+            explicit_output_ports=explicit_output_ports,
         )
         self._add_node(pn)
         return NodeRef(node_id, "validator", self)
@@ -306,29 +797,49 @@ class WorkflowBuilder:
         """Add a reflection node for post-run analysis."""
         from dan.models.ports import InputPort, OutputPort
 
-        kwargs: dict[str, Any] = {
-            "name": name or node_id,
-            "description": description,
+        explicit_input_ports = [InputPort(**p) for p in (input_ports or [])]
+        explicit_output_ports = [OutputPort(**p) for p in (output_ports or [])]
+        if not explicit_output_ports:
+            explicit_output_ports = [OutputPort(name="principles")]
+
+        metadata: dict[str, Any] = {
             "reflection_prompt": reflection_prompt,
-            "source": source,
-            "source_config": source_config or {},
-            "output_format": output_format,
-            "max_principles": max_principles,
-            "min_confidence": min_confidence,
-            "dedup_strategy": dedup_strategy,
+            "reflection_source": source,
+            "reflection_source_config": source_config or {},
+            "reflection_output_format": output_format,
+            "reflection_max_principles": max_principles,
+            "reflection_min_confidence": min_confidence,
+            "reflection_dedup_strategy": dedup_strategy,
         }
         if reflection_model is not None:
-            kwargs["reflection_model"] = reflection_model
+            metadata["reflection_model"] = reflection_model
 
-        pn = _PendingNode(
-            id=node_id,
-            node_type="reflection",
-            kwargs=kwargs,
-            explicit_input_ports=[InputPort(**p) for p in (input_ports or [])],
-            explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
-        )
+        worker_kwargs = {
+            "name": name or node_id,
+            "description": description,
+            "role": "reflection",
+            "model": reflection_model,
+            "metadata": metadata,
+        }
+        if self._emit_canonical_worker_alias():
+            pn = self._worker_pending_alias(
+                node_id,
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "worker", self, _default_output="principles")
+        else:
+            pn = self._legacy_compute_pending_from_worker(
+                node_id,
+                expected_node_type="reflection",
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "reflection", self)
         self._add_node(pn)
-        return NodeRef(node_id, "reflection", self)
+        return ref
 
     def if_else(
         self,
@@ -409,20 +920,33 @@ class WorkflowBuilder:
         """Add a reduce (fan-in) node."""
         from dan.models.ports import InputPort, OutputPort
 
-        kwargs: dict[str, Any] = {
+        explicit_input_ports = [InputPort(**p) for p in (input_ports or [])]
+        explicit_output_ports = [OutputPort(**p) for p in (output_ports or [])]
+        worker_kwargs = {
             "name": name or node_id,
             "description": description,
-            "reducer": reducer,
+            "role": "reduce",
+            "metadata": {"reduce_expression": reducer},
         }
-        pn = _PendingNode(
-            id=node_id,
-            node_type="reduce",
-            kwargs=kwargs,
-            explicit_input_ports=[InputPort(**p) for p in (input_ports or [])],
-            explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
-        )
+        if self._emit_canonical_worker_alias():
+            pn = self._worker_pending_alias(
+                node_id,
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "worker", self)
+        else:
+            pn = self._legacy_compute_pending_from_worker(
+                node_id,
+                expected_node_type="reduce",
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "reduce", self)
         self._add_node(pn)
-        return NodeRef(node_id, "reduce", self)
+        return ref
 
     def router(
         self,
@@ -438,18 +962,26 @@ class WorkflowBuilder:
         """Add a router node (LLM-powered routing)."""
         from dan.models.ports import InputPort, OutputPort
 
-        kwargs: dict[str, Any] = {
-            "name": name or node_id,
-            "description": description,
-            "model": model,
-            "route_descriptions": route_descriptions,
-        }
-        pn = _PendingNode(
-            id=node_id,
-            node_type="router",
-            kwargs=kwargs,
-            explicit_input_ports=[InputPort(**p) for p in (input_ports or [])],
-            explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
+        explicit_input_ports = [InputPort(**p) for p in (input_ports or [])]
+        explicit_output_ports = [OutputPort(**p) for p in (output_ports or [])]
+        if not explicit_output_ports:
+            explicit_output_ports = [
+                OutputPort(name="route"),
+                OutputPort(name="result"),
+            ]
+
+        pn = self._legacy_compute_pending_from_worker(
+            node_id,
+            expected_node_type="router",
+            worker_kwargs={
+                "name": name or node_id,
+                "description": description,
+                "role": "router",
+                "model": model,
+                "metadata": {"route_descriptions": dict(route_descriptions)},
+            },
+            explicit_input_ports=explicit_input_ports,
+            explicit_output_ports=explicit_output_ports,
         )
         self._add_node(pn)
         return NodeRef(node_id, "router", self)
@@ -463,7 +995,7 @@ class WorkflowBuilder:
         description: str = "",
     ) -> NodeRef:
         """Add an explicit workflow input node."""
-        from dan.models.control_flow import InputVariable
+        from dan.models.legacy import InputVariable
         from dan.models.ports import OutputPort
 
         variable_models = [InputVariable(**v) for v in (variables or [])]
@@ -474,18 +1006,35 @@ class WorkflowBuilder:
         for var in variable_models:
             output_ports.append(OutputPort(name=var.name))
 
-        pn = _PendingNode(
-            id=node_id,
-            node_type="input",
-            kwargs={
-                "name": name or node_id,
-                "description": description,
-                "variables": variable_models,
+        worker_kwargs = {
+            "name": name or node_id,
+            "description": description,
+            "metadata": {
+                "input_variables": [
+                    variable.model_dump(mode="json")
+                    for variable in variable_models
+                ],
             },
-            explicit_output_ports=output_ports,
-        )
+        }
+        if self._emit_canonical_worker_alias():
+            pn = self._worker_pending_alias(
+                node_id,
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=[],
+                explicit_output_ports=output_ports,
+            )
+            ref = NodeRef(node_id, "worker", self, _default_output="input")
+        else:
+            pn = self._legacy_compute_pending_from_worker(
+                node_id,
+                expected_node_type="input",
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=[],
+                explicit_output_ports=output_ports,
+            )
+            ref = NodeRef(node_id, "input", self)
         self._add_node(pn)
-        return NodeRef(node_id, "input", self)
+        return ref
 
     def human(
         self,
@@ -508,34 +1057,55 @@ class WorkflowBuilder:
         """Add a canonical human interaction node."""
         from dan.models.ports import InputPort, OutputPort
 
-        kwargs: dict[str, Any] = {
-            "name": name or node_id,
-            "description": description,
-            "prompt": prompt,
-            "render_mode": render_mode,
-            "instructions": instructions,
-            "render_target": render_target,
+        explicit_input_ports = [InputPort(**p) for p in (input_ports or [])]
+        explicit_output_ports = [OutputPort(**p) for p in (output_ports or [])]
+        if not explicit_input_ports:
+            explicit_input_ports = [InputPort(name="input", required=False)]
+        if not explicit_output_ports:
+            explicit_output_ports = [OutputPort(name="response")]
+
+        metadata: dict[str, Any] = {
+            "human_prompt": prompt,
+            "human_render_mode": render_mode,
+            "human_instructions": instructions,
+            "human_render_target": render_target,
         }
         if timeout_seconds is not None:
-            kwargs["timeout_seconds"] = timeout_seconds
+            metadata["human_timeout_seconds"] = timeout_seconds
         if default_action is not None:
-            kwargs["default_action"] = default_action
+            metadata["human_default_action"] = default_action
         if input_schema is not None:
-            kwargs["input_schema"] = input_schema
+            metadata["human_input_schema"] = input_schema
         if output_schema is not None:
-            kwargs["output_schema"] = output_schema
+            metadata["human_output_schema"] = output_schema
         if options is not None:
-            kwargs["options"] = options
+            metadata["human_options"] = options
 
-        pn = _PendingNode(
-            id=node_id,
-            node_type="human",
-            kwargs=kwargs,
-            explicit_input_ports=[InputPort(**p) for p in (input_ports or [])],
-            explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
-        )
+        worker_kwargs = {
+            "name": name or node_id,
+            "description": description,
+            "role": "human",
+            "metadata": metadata,
+        }
+        if self._emit_canonical_worker_alias():
+            pn = self._worker_pending_alias(
+                node_id,
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "worker", self, _default_output="response")
+        else:
+            pn = self._legacy_compute_pending_from_worker(
+                node_id,
+                expected_node_type="human",
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "human", self)
         self._add_node(pn)
-        return NodeRef(node_id, "human", self)
+        return ref
 
     def approval(
         self,
@@ -608,25 +1178,46 @@ class WorkflowBuilder:
         """Add a human-in-the-loop node."""
         from dan.models.ports import InputPort, OutputPort
 
-        kwargs: dict[str, Any] = {
-            "name": name or node_id,
-            "description": description,
-            "prompt": prompt,
+        explicit_input_ports = [InputPort(**p) for p in (input_ports or [])]
+        explicit_output_ports = [OutputPort(**p) for p in (output_ports or [])]
+        if not explicit_input_ports:
+            explicit_input_ports = [InputPort(name="input", required=False)]
+        if not explicit_output_ports:
+            explicit_output_ports = [OutputPort(name="response")]
+
+        metadata: dict[str, Any] = {
+            "human_prompt": prompt,
         }
         if timeout_seconds is not None:
-            kwargs["timeout_seconds"] = timeout_seconds
+            metadata["human_timeout_seconds"] = timeout_seconds
         if default_action is not None:
-            kwargs["default_action"] = default_action
+            metadata["human_default_action"] = default_action
 
-        pn = _PendingNode(
-            id=node_id,
-            node_type="human_in_the_loop",
-            kwargs=kwargs,
-            explicit_input_ports=[InputPort(**p) for p in (input_ports or [])],
-            explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
-        )
+        worker_kwargs = {
+            "name": name or node_id,
+            "description": description,
+            "role": "human_in_the_loop",
+            "metadata": metadata,
+        }
+        if self._emit_canonical_worker_alias():
+            pn = self._worker_pending_alias(
+                node_id,
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "worker", self, _default_output="response")
+        else:
+            pn = self._legacy_compute_pending_from_worker(
+                node_id,
+                expected_node_type="human_in_the_loop",
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "human_in_the_loop", self)
         self._add_node(pn)
-        return NodeRef(node_id, "human_in_the_loop", self)
+        return ref
 
     def vote(
         self,
@@ -650,33 +1241,54 @@ class WorkflowBuilder:
         """Add a vote/ensemble node."""
         from dan.models.ports import InputPort, OutputPort
 
-        kwargs: dict[str, Any] = {
-            "name": name or node_id,
-            "description": description,
-            "candidates": candidates,
-            "num_votes": num_votes,
-            "prompt_template": prompt,
-            "system_prompt": system_prompt,
-            "temperature": temperature,
+        explicit_input_ports = [InputPort(**p) for p in (input_ports or [])]
+        explicit_output_ports = [OutputPort(**p) for p in (output_ports or [])]
+        if not explicit_input_ports:
+            explicit_input_ports = [InputPort(name="input", required=False)]
+        if not explicit_output_ports:
+            explicit_output_ports = [OutputPort(name="winner")]
+
+        metadata: dict[str, Any] = {
+            "vote_candidates": list(candidates),
+            "vote_num_votes": num_votes,
+            "vote_prompt_template": prompt,
+            "vote_system_prompt": system_prompt,
+            "vote_temperature": temperature,
             "vote_strategy": strategy,
-            "parallelism": parallelism,
+            "vote_parallelism": parallelism,
         }
         if output_schema is not None:
-            kwargs["output_json_schema"] = output_schema
+            metadata["vote_output_json_schema"] = output_schema
         if vote_config is not None:
-            kwargs["vote_config"] = vote_config
+            metadata["vote_config"] = vote_config
         if timeout_seconds is not None:
-            kwargs["timeout_seconds"] = timeout_seconds
+            metadata["vote_timeout_seconds"] = timeout_seconds
 
-        pn = _PendingNode(
-            id=node_id,
-            node_type="vote",
-            kwargs=kwargs,
-            explicit_input_ports=[InputPort(**p) for p in (input_ports or [])],
-            explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
-        )
+        worker_kwargs = {
+            "name": name or node_id,
+            "description": description,
+            "role": "vote",
+            "metadata": metadata,
+        }
+        if self._emit_canonical_worker_alias():
+            pn = self._worker_pending_alias(
+                node_id,
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "worker", self, _default_output="winner")
+        else:
+            pn = self._legacy_compute_pending_from_worker(
+                node_id,
+                expected_node_type="vote",
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "vote", self)
         self._add_node(pn)
-        return NodeRef(node_id, "vote", self)
+        return ref
 
     def ensemble(
         self,
@@ -1663,7 +2275,14 @@ class WorkflowBuilder:
 
     # ── Explicit edge wiring ───────────────────────────────────────
 
-    def edge(self, source: PortRef, target: PortRef, *, spread: bool = False) -> None:
+    def edge(
+        self,
+        source: PortRef,
+        target: PortRef,
+        *,
+        spread: bool = False,
+        lint: dict[str, Any] | None = None,
+    ) -> None:
         """Explicitly wire a source port to a target port."""
         self._edges.append(_PendingEdge(
             source_node_id=source.node_id,
@@ -1672,6 +2291,7 @@ class WorkflowBuilder:
             target_port=target.port_name,
             edge_type="data",
             spread=spread,
+            metadata={"lint": lint} if lint is not None else {},
         ))
 
     def spread_edge(self, source: PortRef, target: PortRef) -> None:
@@ -1744,9 +2364,14 @@ class WorkflowBuilder:
             description=description,
         ))
 
+    def resource(self, kind: str, ref: str, value: dict[str, Any]) -> None:
+        """Register a named Worker-shared resource."""
+        bucket = self._worker_resources.setdefault(kind, {})
+        bucket[ref] = dict(value)
+
     # ── Build / serialize ──────────────────────────────────────────
 
-    def build(self) -> Graph:
+    def build(self, *, lint_autogen: str | None = None) -> Graph:
         """Compile this builder into a validated Graph model."""
         return compile_graph(
             name=self._name,
@@ -1756,9 +2381,12 @@ class WorkflowBuilder:
             edges=list(self._edges),
             sub_graphs=list(self._sub_graphs),
             shared_context=list(self._shared_context),
+            worker_resources={k: dict(v) for k, v in self._worker_resources.items()},
             port_ref_connections=list(self._port_ref_connections),
             artifact_refs=list(self._artifact_refs),
             hyperedge_specs=list(self._hyperedges),
+            lint_autogen=self._lint_autogen if lint_autogen is None else lint_autogen,
+            lint_intent_refiner=self._lint_intent_refiner,
         )
 
     def to_graph(self) -> Graph:
@@ -1803,11 +2431,179 @@ class WorkflowBuilder:
             edges=list(self._edges),
             sub_graphs=list(self._sub_graphs),
             shared_context=list(self._shared_context),
+            worker_resources={k: dict(v) for k, v in self._worker_resources.items()},
             port_ref_connections=list(self._port_ref_connections),
             artifact_refs=list(self._artifact_refs),
             hyperedge_specs=list(self._hyperedges),
+            lint_autogen=self._lint_autogen,
+            lint_intent_refiner=self._lint_intent_refiner,
             validate=True,
         )
+
+
+class _WorkerScopeContext:
+    """Context object for defining a Worker body graph and named sub-workers."""
+
+    def __init__(
+        self,
+        builder: WorkflowBuilder,
+        node_id: str,
+        *,
+        role: str,
+        instruction: str,
+        persona: str,
+        authority: str,
+        model: str | None,
+        tool_ids: list[str],
+        tool_config: dict[str, Any] | None,
+        code: str,
+        language: str,
+        llm: dict[str, Any] | None,
+        llm_hints: dict[str, Any] | None,
+        context: dict[str, Any] | None,
+        authority_policy: dict[str, Any] | None,
+        execution: dict[str, Any] | None,
+        control_flow: dict[str, Any] | None,
+        input_mappings: dict[str, str] | None,
+        output_mappings: dict[str, str] | None,
+        parallelism: int,
+        merge_strategy: MergeStrategy,
+        spawn_policy: dict[str, Any] | None,
+        boundary_contract: dict[str, Any] | None,
+        validation_rules: list[dict[str, Any]] | None,
+        name: str | None,
+        description: str,
+        read_set: list[ContextDeclaration] | None,
+        write_set: list[ContextDeclaration] | None,
+        input_ports: list[dict[str, Any]] | None,
+        output_ports: list[dict[str, Any]] | None,
+    ) -> None:
+        self._builder = builder
+        self._node_id = node_id
+        self._body_key = f"{node_id}_body"
+        self._body = WorkflowBuilder(
+            self._body_key,
+            _parent=builder,
+            _scope_type="worker",
+        )
+        self._body._entry_input_ref = PortRef("__entry__", "input", self._body)
+        self._sub_workers: dict[str, str] = {}
+        self._sub_graphs: list[tuple[str, Graph]] = []
+        self._node_kwargs: dict[str, Any] = {
+            "role": role,
+            "instruction": instruction,
+            "persona": persona,
+            "authority": authority,
+            "model": model,
+            "tool_ids": tool_ids,
+            "tool_config": tool_config,
+            "code": code,
+            "language": language,
+            "llm": llm,
+            "llm_hints": llm_hints,
+            "context": context,
+            "authority_policy": authority_policy,
+            "execution": execution,
+            "control_flow": control_flow,
+            "input_mappings": input_mappings,
+            "output_mappings": output_mappings,
+            "parallelism": parallelism,
+            "merge_strategy": merge_strategy,
+            "spawn_policy": spawn_policy,
+            "boundary_contract": boundary_contract,
+            "validation_rules": validation_rules,
+            "name": name,
+            "description": description,
+            "read_set": read_set,
+            "write_set": write_set,
+            "input_ports": input_ports,
+            "output_ports": output_ports,
+        }
+
+    def __getattr__(self, name: str) -> Any:
+        if hasattr(self._body, name):
+            return getattr(self._body, name)
+        raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
+
+    @contextmanager
+    def sub_worker(self, alias: str) -> Generator[WorkflowBuilder, None, None]:
+        """Define a named sub-worker graph owned by this Worker."""
+        sub_key = f"{self._node_id}_{alias}"
+        sub = WorkflowBuilder(
+            sub_key,
+            _parent=self._builder,
+            _scope_type="worker_sub",
+        )
+        sub._entry_input_ref = PortRef("__entry__", "input", sub)
+        yield sub
+        sub_graph = sub._compile_as_subgraph()
+        self._sub_workers[alias] = sub_key
+        self._sub_graphs.append((sub_key, sub_graph))
+
+    @staticmethod
+    def _has_material_content(graph: Graph) -> bool:
+        return bool(
+            graph.nodes
+            or graph.edges
+            or graph.sub_graphs
+            or graph.shared_context
+            or graph.artifact_refs
+            or graph.hyperedges
+            or graph.worker_resources
+        )
+
+    def _finalize(self) -> None:
+        body_graph = self._body._compile_as_subgraph()
+        body_graph_key: str | None = None
+        if self._has_material_content(body_graph):
+            body_graph_key = self._body_key
+
+        self._builder.worker(
+            self._node_id,
+            role=self._node_kwargs["role"],
+            instruction=self._node_kwargs["instruction"],
+            persona=self._node_kwargs["persona"],
+            authority=self._node_kwargs["authority"],
+            model=self._node_kwargs["model"],
+            tool_ids=self._node_kwargs["tool_ids"],
+            tool_config=self._node_kwargs["tool_config"],
+            code=self._node_kwargs["code"],
+            language=self._node_kwargs["language"],
+            llm=self._node_kwargs["llm"],
+            llm_hints=self._node_kwargs["llm_hints"],
+            context=self._node_kwargs["context"],
+            authority_policy=self._node_kwargs["authority_policy"],
+            execution=self._node_kwargs["execution"],
+            control_flow=self._node_kwargs["control_flow"],
+            input_mappings=self._node_kwargs["input_mappings"],
+            output_mappings=self._node_kwargs["output_mappings"],
+            parallelism=self._node_kwargs["parallelism"],
+            merge_strategy=self._node_kwargs["merge_strategy"],
+            spawn_policy=self._node_kwargs["spawn_policy"],
+            body_graph=body_graph_key,
+            sub_workers=self._sub_workers or None,
+            boundary_contract=self._node_kwargs["boundary_contract"],
+            validation_rules=self._node_kwargs["validation_rules"],
+            name=self._node_kwargs["name"],
+            description=self._node_kwargs["description"],
+            read_set=self._node_kwargs["read_set"],
+            write_set=self._node_kwargs["write_set"],
+            input_ports=self._node_kwargs["input_ports"],
+            output_ports=self._node_kwargs["output_ports"],
+        )
+
+        if body_graph_key is not None:
+            self._builder._sub_graphs.append(_PendingSubGraph(
+                parent_node_id=self._node_id,
+                sub_graph_key=body_graph_key,
+                graph=body_graph,
+            ))
+        for sub_key, sub_graph in self._sub_graphs:
+            self._builder._sub_graphs.append(_PendingSubGraph(
+                parent_node_id=self._node_id,
+                sub_graph_key=sub_key,
+                graph=sub_graph,
+            ))
 
 
 class _ParallelSubagentsContext:

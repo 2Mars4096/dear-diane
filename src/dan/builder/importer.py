@@ -26,6 +26,11 @@ def namespace_graph(graph: Graph, prefix: str) -> Graph:
         d["id"] = id_map[node.id]
         if "body_graph" in d and d["body_graph"]:
             d["body_graph"] = f"{prefix}{d['body_graph']}"
+        if "sub_workers" in d and isinstance(d["sub_workers"], dict):
+            d["sub_workers"] = {
+                name: f"{prefix}{ref}" if ref else ref
+                for name, ref in d["sub_workers"].items()
+            }
         new_nodes.append(d)
 
     new_edges = []
@@ -55,6 +60,7 @@ def namespace_graph(graph: Graph, prefix: str) -> Graph:
         "exit_points": new_exit,
         "shared_context": [sc.model_dump() for sc in graph.shared_context],
         "artifact_refs": [ar.model_dump() for ar in graph.artifact_refs],
+        "worker_resources": graph.worker_resources,
     })
 
 

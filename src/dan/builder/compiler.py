@@ -12,6 +12,8 @@ Responsibilities:
 from __future__ import annotations
 
 import copy
+import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -24,24 +26,33 @@ from dan.models.control_flow import (
     ForEachNode,
     GateNode,
     GoalLoopNode,
-    HumanNode,
-    HumanInTheLoopNode,
     IfElseNode,
-    InputNode,
     OrchestratorNode,
     ParallelSubagentsNode,
-    ReduceNode,
-    RouterNode,
-    ValidatorNode,
-    VoteNode,
     WhileLoopNode,
 )
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
 from dan.models.graph import Graph, GraphMetadata
 from dan.models.hyperedges import Hyperedge
-from dan.models.nodes import CodeOperator, LLMOperator, NodeBase, RAGOperator, ReflectionNode, ToolOperator
+from dan.models.legacy import (
+    CodeOperator,
+    HumanInTheLoopNode,
+    HumanNode,
+    InputNode,
+    LLMOperator,
+    RAGOperator,
+    ReduceNode,
+    ReflectionNode,
+    RouterNode,
+    ToolOperator,
+    ValidatorNode,
+    VoteNode,
+)
+from dan.models.nodes import NodeBase
 from dan.models.ports import InputPort, OutputPort
+from dan.validation.linting import IntentRefiner, generate_lint_config
 from dan.validation.graph import validate_graph
+from dan.worker.model import Worker
 
 _VALIDATION_WARNING_PATTERNS = (
     "schema safety bypassed",
@@ -75,6 +86,7 @@ DEFAULT_OUTPUT_PORTS: dict[str, str] = {
     "input": "input",
     "human": "response",
     "vote": "winner",
+    "worker": "result",
 }
 
 DEFAULT_INPUT_PORT = "input"
@@ -132,6 +144,7 @@ class _PendingEdge:
     context_key: str | None = None
     mode: ContextMode | str | None = None
     spread: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -161,9 +174,12 @@ def compile_graph(
     edges: list[_PendingEdge],
     sub_graphs: list[_PendingSubGraph],
     shared_context: list[SharedContextDeclaration],
+    worker_resources: dict[str, dict[str, Any]] | None,
     port_ref_connections: list[tuple[PortRef, str, str]],
     artifact_refs: list[ArtifactRef] | None = None,
     hyperedge_specs: list[dict[str, Any]] | None = None,
+    lint_autogen: str | None = None,
+    lint_intent_refiner: IntentRefiner | None = None,
     *,
     validate: bool = True,
 ) -> Graph:
@@ -182,6 +198,12 @@ def compile_graph(
                 pn.kwargs["prompt_template"], pn.id
             )
             marker_hits.extend(hits)
+        elif pn.node_type == "worker":
+            llm_hints = pn.kwargs.get("llm_hints")
+            if isinstance(llm_hints, dict) and isinstance(llm_hints.get("prompt_template"), str):
+                resolved, hits = _resolve_markers(llm_hints["prompt_template"], pn.id)
+                llm_hints["prompt_template"] = resolved
+                marker_hits.extend(hits)
 
     # ── Step 2: Collect all edges ──────────────────────────────────
     all_edges: list[_PendingEdge] = list(working_edges)
@@ -205,7 +227,7 @@ def compile_graph(
         ))
 
     # Deduplicate edges
-    seen: set[tuple[str, str, str, str, str, str | None, str | None, str | None]] = set()
+    seen: set[tuple[str, str, str, str, str, str | None, str | None, str | None, str]] = set()
     deduped: list[_PendingEdge] = []
     for e in all_edges:
         mode = e.mode.value if isinstance(e.mode, ContextMode) else e.mode
@@ -218,6 +240,7 @@ def compile_graph(
             e.condition,
             e.context_key,
             mode,
+            json.dumps(e.metadata, sort_keys=True, default=str),
         )
         if key not in seen:
             seen.add(key)
@@ -271,8 +294,11 @@ def compile_graph(
         exit_points=exit_points,
         shared_context=shared_context,
         artifact_refs=artifact_refs or [],
+        worker_resources=worker_resources or {},
         hyperedges=compiled_hyperedges,
     )
+
+    _apply_lint_autogen(graph, lint_autogen, lint_intent_refiner)
 
     # ── Step 9: Validate ───────────────────────────────────────────
     if validate:
@@ -289,6 +315,51 @@ def compile_graph(
 def _is_warning(msg: str) -> bool:
     lower = msg.lower()
     return any(p in lower for p in _VALIDATION_WARNING_PATTERNS)
+
+
+def _resolve_lint_autogen_mode(mode: str | None) -> str:
+    raw = mode if mode is not None else os.environ.get("DAN_LINT_AUTOGEN", "disabled")
+    normalized = str(raw or "disabled").strip().lower()
+    if normalized not in {"disabled", "canary", "enabled"}:
+        return "disabled"
+    return normalized
+
+
+def _apply_lint_autogen(
+    graph: Graph,
+    mode: str | None,
+    intent_refiner: IntentRefiner | None = None,
+) -> None:
+    resolved_mode = _resolve_lint_autogen_mode(mode)
+    if resolved_mode == "disabled":
+        return
+
+    for edge in graph.edges:
+        if not isinstance(edge, DataEdge):
+            continue
+        if edge.lint is not None or getattr(edge, "metadata", {}).get("lint") is not None:
+            continue
+
+        source_node = graph.node_by_id(edge.source_node_id)
+        target_node = graph.node_by_id(edge.target_node_id)
+        if source_node is None or target_node is None:
+            continue
+
+        if resolved_mode == "canary" and not (
+            isinstance(source_node, Worker) and isinstance(target_node, Worker)
+        ):
+            continue
+
+        generated = generate_lint_config(
+            source_node,
+            target_node,
+            edge,
+            graph,
+            intent_refiner=intent_refiner,
+        )
+        if generated is None:
+            continue
+        edge.lint = generated
 
 
 def _resolve_markers(
@@ -400,6 +471,8 @@ def _build_node(pn: _PendingNode) -> NodeBase:
         return GoalLoopNode(**common, **kwargs)
     elif pn.node_type == "input":
         return InputNode(**common, **kwargs)
+    elif pn.node_type == "worker":
+        return Worker(**common, **kwargs)
     else:
         raise BuildError([f"Unknown node_type: {pn.node_type!r}"])
 
@@ -467,6 +540,7 @@ def _build_edge(edge: _PendingEdge, index: int) -> DataEdge | ControlEdge | Cont
             target_node_id=edge.target_node_id,
             target_port=edge.target_port,
             spread=edge.spread,
+            metadata=edge.metadata,
         )
     if edge.edge_type == "control":
         return ControlEdge(
@@ -476,6 +550,7 @@ def _build_edge(edge: _PendingEdge, index: int) -> DataEdge | ControlEdge | Cont
             target_node_id=edge.target_node_id,
             target_port=edge.target_port,
             condition=edge.condition,
+            metadata=edge.metadata,
         )
     if edge.edge_type == "context":
         if edge.context_key is None:
@@ -491,5 +566,6 @@ def _build_edge(edge: _PendingEdge, index: int) -> DataEdge | ControlEdge | Cont
             target_port=edge.target_port,
             context_key=edge.context_key,
             mode=mode,
+            metadata=edge.metadata,
         )
     raise BuildError([f"Unknown edge_type: {edge.edge_type!r}"])
