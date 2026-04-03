@@ -91,7 +91,17 @@ class ProviderRegistry:
 
         Raises KeyError if no matching provider is found.
         """
-        return self._providers[self.resolve_name(model)]
+        try:
+            return self._providers[self.resolve_name(model)]
+        except KeyError:
+            if "default" in self._providers:
+                logger.debug(
+                    "Falling back to default provider during direct resolve for model %s",
+                    model,
+                    exc_info=True,
+                )
+                return self._providers["default"]
+            raise
 
     def has_provider(self, name: str) -> bool:
         return name in self._providers

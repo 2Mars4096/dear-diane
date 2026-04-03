@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 from typing import Any, AsyncIterator
 
+import openai
 from openai import (
     AsyncOpenAI,
     AuthenticationError,
@@ -29,11 +30,32 @@ class OpenAIProvider:
     supports_required_tool_choice = True
     assistant_replay_mode = "raw"
     _CONNECT_TIMEOUT_CAP_SECONDS = 10.0
+    _IMPORTED_ASYNC_OPENAI = AsyncOpenAI
+
+    @classmethod
+    def _resolve_async_openai_cls(cls) -> type[Any]:
+        """Honor runtime patches regardless of import order.
+
+        Some tests patch ``openai.AsyncOpenAI`` directly while others patch the
+        already-imported ``dan.providers.openai_provider.AsyncOpenAI`` alias.
+        Prefer whichever target was patched away from the original imported
+        class so backward-compat tests remain stable even after this module was
+        imported earlier in the suite.
+        """
+        module_async_openai = AsyncOpenAI
+        runtime_async_openai = getattr(openai, "AsyncOpenAI", None)
+
+        if module_async_openai is not cls._IMPORTED_ASYNC_OPENAI:
+            return module_async_openai
+        if runtime_async_openai is not None and runtime_async_openai is not cls._IMPORTED_ASYNC_OPENAI:
+            return runtime_async_openai
+        return module_async_openai
 
     def __init__(self, config: ProviderConfig) -> None:
         self._timeout_seconds = resolve_provider_timeout(config)
         self._request_timeout = self._build_request_timeout(self._timeout_seconds)
-        self._client = AsyncOpenAI(
+        client_cls = self._resolve_async_openai_cls()
+        self._client = client_cls(
             api_key=config.api_key,
             base_url=config.base_url,
             timeout=self._request_timeout,

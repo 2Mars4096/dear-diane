@@ -33,7 +33,10 @@ def _provider_registry(chat_manager: Any) -> Any | None:
     registry = _explicit_attr(chat_manager, "provider_registry")
     if registry is not None:
         return registry
-    return getattr(chat_manager, "_providers", None)
+    instance_dict = getattr(chat_manager, "__dict__", None)
+    if isinstance(instance_dict, dict) and "_providers" in instance_dict:
+        return instance_dict["_providers"]
+    return None
 
 
 def _provider_resolver(chat_manager: Any) -> Any | None:
@@ -166,6 +169,10 @@ def resolve_model_gateway(chat_manager: Any) -> Any | None:
     registry = _provider_registry(chat_manager)
     if registry is None or not hasattr(registry, "resolve"):
         return None
+    resolver = _provider_resolver(chat_manager)
+    provider_names = getattr(registry, "provider_names", None)
+    if resolver is not None and callable(provider_names) and not provider_names():
+        return None
 
     try:
         from dan.llm_core.config import GatewayConfig
@@ -199,14 +206,34 @@ def resolve_llm_provider(
 ) -> Any:
     """Resolve an LLM provider from the chat surface and apply PII wrapping."""
     registry = _provider_registry(chat_manager)
-    if registry is not None:
-        return _resolve_wrapped_registry_provider(
-            chat_manager,
-            model=model,
-            pii_session_key=pii_session_key,
-        )
-
     resolver = _provider_resolver(chat_manager)
+    if registry is not None:
+        try:
+            return _resolve_wrapped_registry_provider(
+                chat_manager,
+                model=model,
+                pii_session_key=pii_session_key,
+            )
+        except KeyError:
+            default_provider = _default_registry_provider(chat_manager)
+            if default_provider is not None:
+                logger.debug(
+                    "Falling back to default provider after registry lookup failed for model %s",
+                    model,
+                    exc_info=True,
+                )
+                return _resolve_wrapped_registry_provider(
+                    chat_manager,
+                    model="default",
+                    pii_session_key=pii_session_key,
+                )
+            if resolver is None:
+                raise
+            logger.debug(
+                "Falling back to explicit provider resolver after registry lookup failed for model %s",
+                model,
+                exc_info=True,
+            )
     if resolver is None:
         raise RuntimeError("No provider registry available")
     return resolver(
@@ -242,12 +269,37 @@ def resolve_tool_capable_provider(
         )
         return provider
 
-    provider = _resolve_registry_provider(chat_manager, model)
+    resolver = _provider_resolver(chat_manager)
+    used_explicit_resolver = False
+    default_provider = _default_registry_provider(chat_manager)
+    try:
+        provider = _resolve_registry_provider(chat_manager, model)
+    except KeyError:
+        if default_provider is not None:
+            provider = default_provider
+        elif resolver is None:
+            raise
+        else:
+            log.debug(
+                "Falling back to explicit provider resolver after tool-capable registry lookup failed for model %s",
+                model,
+                exc_info=True,
+            )
+            provider = resolver(
+                model=model,
+                pii_session_key=pii_session_key,
+            )
+            used_explicit_resolver = True
     raw_provider = getattr(provider, "_provider", provider)
     if supports_tool_calls(provider):
+        if used_explicit_resolver:
+            return provider
+        wrapped_model = model
+        if default_provider is not None and raw_provider is default_provider:
+            wrapped_model = "default"
         return _resolve_wrapped_registry_provider(
             chat_manager,
-            model=model,
+            model=wrapped_model,
             pii_session_key=pii_session_key,
         )
 
