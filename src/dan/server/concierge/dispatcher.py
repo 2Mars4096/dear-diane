@@ -364,6 +364,12 @@ class ConcurrentDispatcher:
 
         while not q.empty():
             queued_msg, channel_id = await q.get()
+            if self._project_has_pending_action(project_id, queued_msg.external_id):
+                self._restore_project_queue(
+                    project_id,
+                    [(queued_msg, channel_id), *self._drain_queue_items(q)],
+                )
+                return
             bus = self._get_or_create_bus(channel_id)
             run_slot_held = False
             try:
@@ -392,6 +398,41 @@ class ConcurrentDispatcher:
                 await bus.put(None)
 
         self._project_queues.pop(project_id, None)
+
+    def _project_has_pending_action(self, project_id: str, surface_id: str) -> bool:
+        project_store = getattr(self._concierge, "project_store", None)
+        if project_store is None:
+            return False
+        try:
+            project = project_store.get_project(project_id, surface_id)
+        except Exception:
+            logger.debug(
+                "Failed to inspect pending action before draining queue",
+                exc_info=True,
+            )
+            return False
+        return project is not None and getattr(project, "pending_action", None) is not None
+
+    @staticmethod
+    def _drain_queue_items(
+        q: asyncio.Queue[tuple[SurfaceMessage, str]],
+    ) -> list[tuple[SurfaceMessage, str]]:
+        items: list[tuple[SurfaceMessage, str]] = []
+        while not q.empty():
+            items.append(q.get_nowait())
+        return items
+
+    def _restore_project_queue(
+        self,
+        project_id: str,
+        items: list[tuple[SurfaceMessage, str]],
+    ) -> None:
+        restored: asyncio.Queue[tuple[SurfaceMessage, str]] = asyncio.Queue(
+            maxsize=self._max_queue_depth,
+        )
+        for item in items:
+            restored.put_nowait(item)
+        self._project_queues[project_id] = restored
 
     async def _drain_global_overflow(self) -> None:
         """Pick up overflow-queued messages once a project slot frees up."""

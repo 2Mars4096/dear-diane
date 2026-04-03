@@ -15,6 +15,7 @@ from dan.server.chat_manager import (
     ChatManager,
     ChatCompleteEvent,
     ChatInterruptedEvent,
+    ChatQueuedEvent,
     ChatToolCallResultEvent,
     ChatToolCallStartEvent,
 )
@@ -25,6 +26,7 @@ from dan.server.concierge.models import (
     RouteMode,
     SurfaceMessage,
 )
+from dan.server.concierge.dispatcher import ConcurrentDispatcher
 from dan.server.concierge.project_store import ProjectStore
 from dan.server.concierge.runtime import Concierge
 from dan.server.concierge.session import SessionManager, SessionResult, SessionState, SessionTier
@@ -202,7 +204,6 @@ def _complete_stream(content: str) -> Callable[[], AsyncIterator[Any]]:
         )
 
     return _stream
-
 
 def _tool_stream(
     *,
@@ -1258,10 +1259,11 @@ async def test_low_confidence_triage_requests_clarification_and_retriages_reply(
 
 
 @pytest.mark.asyncio
-async def test_low_confidence_clarification_still_pauses_when_pending_action_persist_fails(
+async def test_low_confidence_clarification_falls_through_when_pending_action_persist_fails(
     tmp_path: Path,
 ) -> None:
     concierge = _make_concierge(tmp_path)
+    concierge.chat_manager._responses["do it"] = "Executed without clarification."
 
     async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
         return TriageResult(
@@ -1298,8 +1300,142 @@ async def test_low_confidence_clarification_still_pauses_when_pending_action_per
     final = next(
         event for event in reversed(events) if isinstance(event, ChatCompleteEvent)
     )
-    assert "Which file should I update" in final.content
-    assert concierge.chat_manager.call_log == []
+    assert final.content.endswith("Executed without clarification.")
+    assert concierge.chat_manager.call_log == ["do it"]
+    assert concierge.project_store.get_pending_project("cli-user") is None
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_clarification_pauses_same_project_queue_until_reply(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+    dispatcher = ConcurrentDispatcher(concierge, max_concurrent_projects=5)
+    triage_calls: list[str] = []
+    queue_channel_id = ""
+    original_text = "do it"
+    queued_text = "also check the tests"
+    clarification_reply = "update README.md to fix the typo"
+    replay_text = f"{original_text}\n[User clarification: {clarification_reply}]"
+    first_triage_started = asyncio.Event()
+    allow_first_triage = asyncio.Event()
+
+    async def triage_fn(text: str, *args: Any, **kwargs: Any) -> TriageResult:
+        triage_calls.append(text)
+        if text == original_text:
+            first_triage_started.set()
+            await allow_first_triage.wait()
+            return TriageResult(
+                tier=1,
+                intent="agent",
+                confidence=0.55,
+                goal="Do the task",
+                deliverable="Do the task",
+                route=RouteDecision(
+                    mode=RouteMode.AGENT,
+                    target="file",
+                    action_hints=["write_file"],
+                ),
+            )
+        if text == replay_text:
+            return TriageResult(
+                tier=1,
+                intent="agent",
+                confidence=0.91,
+                goal="Update README",
+                deliverable="Update README",
+                route=RouteDecision(
+                    mode=RouteMode.AGENT,
+                    target="file",
+                    action_hints=["write_file"],
+                ),
+            )
+        return TriageResult(
+            tier=1,
+            intent="ask",
+            confidence=0.91,
+            goal="Check the tests",
+            deliverable="Check the tests",
+            route=RouteDecision(
+                mode=RouteMode.ASK,
+                target="general",
+                action_hints=["status_check"],
+            ),
+        )
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses[replay_text] = "Updated README."
+    concierge.chat_manager._responses[queued_text] = "Checked tests."
+
+    async def _run_first() -> list[Any]:
+        return [
+            event
+            async for event in dispatcher.dispatch(
+                SurfaceMessage(surface="cli", external_id="cli-user", text=original_text)
+            )
+        ]
+
+    async def _run_second() -> list[Any]:
+        nonlocal queue_channel_id
+        events: list[Any] = []
+        async for event in dispatcher.dispatch(
+            SurfaceMessage(surface="cli", external_id="cli-user", text=queued_text)
+        ):
+            events.append(event)
+            if isinstance(event, ChatQueuedEvent):
+                queue_channel_id = event.stream_channel_id
+        return events
+
+    first_task = asyncio.create_task(_run_first())
+    await first_triage_started.wait()
+    second_events = await _run_second()
+    assert any(isinstance(event, ChatQueuedEvent) for event in second_events)
+    assert queue_channel_id
+
+    allow_first_triage.set()
+    first_events = await first_task
+    first_final = next(
+        event for event in reversed(first_events) if isinstance(event, ChatCompleteEvent)
+    )
+    assert "Which file should I update" in first_final.content
+
+    queued_bus = dispatcher.get_response_bus(queue_channel_id)
+    assert queued_bus is not None
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(queued_bus.get(), timeout=0.1)
+
+    clarification_events = [
+        event
+        async for event in dispatcher.dispatch(
+            SurfaceMessage(surface="cli", external_id="cli-user", text=clarification_reply)
+        )
+    ]
+    clarification_final = next(
+        event
+        for event in reversed(clarification_events)
+        if isinstance(event, ChatCompleteEvent)
+    )
+    assert clarification_final.content.endswith("Updated README.")
+
+    queued_bus_events: list[Any] = []
+    try:
+        while True:
+            item = await asyncio.wait_for(queued_bus.get(), timeout=1.0)
+            if item is None:
+                break
+            queued_bus_events.append(item)
+    finally:
+        dispatcher.cleanup_response_bus(queue_channel_id)
+    queued_final = next(
+        event
+        for event in reversed(queued_bus_events)
+        if isinstance(event, ChatCompleteEvent)
+        and getattr(event, "detected_mode", None) != "progress_ack"
+    )
+    assert queued_final.content.endswith("Checked tests.")
+    assert concierge.chat_manager.call_log == [replay_text, queued_text]
+    assert triage_calls == [original_text, replay_text, queued_text]
+    assert concierge.project_store.get_pending_project("cli-user") is None
 
 
 @pytest.mark.asyncio

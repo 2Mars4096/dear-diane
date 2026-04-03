@@ -721,11 +721,12 @@ class TieredDispatcher:
                 "route_target": str(getattr(route, "target", "") or ""),
             },
         )
-        project.pending_action = pending
         try:
             project_store.set_pending_action(project.project_id, pending, msg.external_id)
         except Exception:
             logger.debug("Failed to persist low-confidence clarification", exc_info=True)
+            return None
+        project.pending_action = pending
         session.context = context
         self._session_manager.update_state(session.id, "running")
         self._session_manager.update_state(session.id, "completed")
