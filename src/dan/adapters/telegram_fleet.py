@@ -11,6 +11,7 @@ HTTP — it does not embed the concierge.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -615,14 +616,30 @@ class BotFleet:
             self._remember_message_lane(ctx.chat_id, ctx.message_id, lane_key)
             self._mark_conversation_dispatch_started(conversation_key)
 
+            dispatch_params = {}
+            try:
+                signature = inspect.signature(self._dispatch)
+                accepts_kwargs = any(
+                    param.kind == inspect.Parameter.VAR_KEYWORD
+                    for param in signature.parameters.values()
+                )
+                if accepts_kwargs or "conversation_key" in signature.parameters:
+                    dispatch_params["conversation_key"] = conversation_key
+                if accepts_kwargs or "lane_key" in signature.parameters:
+                    dispatch_params["lane_key"] = lane_key
+            except (TypeError, ValueError):
+                dispatch_params = {
+                    "conversation_key": conversation_key,
+                    "lane_key": lane_key,
+                }
+
             task = asyncio.create_task(
                 self._dispatch(
                     selected,
                     ext_id,
                     text,
                     ctx,
-                    conversation_key=conversation_key,
-                    lane_key=lane_key,
+                    **dispatch_params,
                 ),
             )
             self._bg_tasks.add(task)
@@ -650,9 +667,17 @@ class BotFleet:
         text: str,
         ctx: MessageContext,
         *,
-        conversation_key: str,
-        lane_key: str,
+        conversation_key: str | None = None,
+        lane_key: str | None = None,
     ) -> None:
+        if conversation_key is None:
+            conversation_key = _conversation_thread_key(ctx, bot.name)
+        if lane_key is None:
+            lane_key = _conversation_lane_key(
+                ctx,
+                bot.name,
+                fork_for_parallel=self._conversation_has_active_dispatch(conversation_key),
+            )
         if bot.adapter is None or self._http is None:
             self._mark_conversation_dispatch_finished(conversation_key)
             return

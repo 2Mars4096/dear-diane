@@ -2173,8 +2173,14 @@ class ChatManager:
                     if mode == "debug":
                         plan_dump.setdefault("metadata", {})["source"] = "debug-fix"
 
+                    explicit_auto_apply_raw = mutation_data.get("auto_apply")
+                    explicit_auto_apply = (
+                        explicit_auto_apply_raw
+                        if isinstance(explicit_auto_apply_raw, bool)
+                        else None
+                    )
                     auto_apply_requested = resolve_mutation_auto_apply_requested(
-                        explicit_auto_apply=bool(mutation_data.get("auto_apply", False)),
+                        explicit_auto_apply=explicit_auto_apply,
                         is_empty_graph=is_empty_graph,
                         generation_fallback_active=workflow_generation_fallback_active,
                         dry_result=dry_result,

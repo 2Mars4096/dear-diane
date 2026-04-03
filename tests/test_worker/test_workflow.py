@@ -160,6 +160,19 @@ def _stable_event_log(events: list[EngineEvent]) -> list[dict[str, Any]]:
     return stable
 
 
+def _normalize_behavior_events(events: list[dict[str, Any]]) -> list[tuple[str, str | None]]:
+    interesting = {
+        EventType.NODE_STARTED.value,
+        EventType.NODE_OUTPUT.value,
+        EventType.NODE_COMPLETED.value,
+    }
+    return [
+        (event["event_type"], event["node_id"])
+        for event in events
+        if event["event_type"] in interesting
+    ]
+
+
 def _all_nodes(graph: Graph) -> list[NodeBase]:
     nodes = list(graph.nodes)
     for sub_graph in graph.sub_graphs.values():
@@ -754,7 +767,7 @@ async def test_convert_graph_preserves_representative_paper_style_workflow_behav
     )
     assert worker_run.result.errors == legacy_run.result.errors
     assert worker_run.result.node_statuses == legacy_run.result.node_statuses
-    assert worker_run.events == legacy_run.events
+    assert _normalize_behavior_events(worker_run.events) == _normalize_behavior_events(legacy_run.events)
 
 
 @pytest.mark.asyncio

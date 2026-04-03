@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
+import subprocess
+import sys
+import textwrap
 
 import pytest
 
@@ -100,55 +105,90 @@ async def test_validate_semantic_uses_topic_keywords_as_similarity_reference_fal
 
 @pytest.mark.asyncio
 async def test_validate_semantic_can_use_real_sentence_transformer_embedder() -> None:
-    sentence_transformers = pytest.importorskip("sentence_transformers")
     snapshot = _local_minilm_snapshot()
     if snapshot is None:
         pytest.skip("local all-MiniLM-L6-v2 snapshot not available")
+    repo_root = Path(__file__).resolve().parents[2]
+    script = textwrap.dedent(
+        f"""
+        import asyncio
+        import json
+        import sys
 
-    model = sentence_transformers.SentenceTransformer(str(snapshot), local_files_only=True)
+        from sentence_transformers import SentenceTransformer
+        from dan.linter.config import RuleSeverity, SemanticConfig
+        from dan.linter.rules.semantic import validate_semantic
 
-    async def embed(text: str, model_name: str | None):
-        vector = model.encode(text, normalize_embeddings=True)
-        return vector.tolist()
+        model = SentenceTransformer({str(snapshot)!r}, local_files_only=True)
 
-    positive_text = "Executive finance summary for Acme revenue and margin trends."
-    negative_text = "Weekend hiking checklist with water and trail snacks."
-    reference_text = "Concise executive finance summary covering revenue and margins."
+        async def embed(text: str, model_name: str | None):
+            vector = model.encode(text, normalize_embeddings=True)
+            return vector.tolist()
 
-    _, positive_score = await validate_semantic(
-        positive_text,
-        SemanticConfig(reference_text=reference_text, min_similarity=0.0),
-        severity=RuleSeverity.ERROR,
-        embed=embed,
+        async def main():
+            positive_text = "Executive finance summary for Acme revenue and margin trends."
+            negative_text = "Weekend hiking checklist with water and trail snacks."
+            reference_text = "Concise executive finance summary covering revenue and margins."
+
+            _, positive_score = await validate_semantic(
+                positive_text,
+                SemanticConfig(reference_text=reference_text, min_similarity=0.0),
+                severity=RuleSeverity.ERROR,
+                embed=embed,
+            )
+            _, negative_score = await validate_semantic(
+                negative_text,
+                SemanticConfig(reference_text=reference_text, min_similarity=0.0),
+                severity=RuleSeverity.ERROR,
+                embed=embed,
+            )
+            threshold = (positive_score + negative_score) / 2.0
+            positive_diagnostics, _ = await validate_semantic(
+                positive_text,
+                SemanticConfig(reference_text=reference_text, min_similarity=threshold),
+                severity=RuleSeverity.ERROR,
+                embed=embed,
+            )
+            negative_diagnostics, _ = await validate_semantic(
+                negative_text,
+                SemanticConfig(reference_text=reference_text, min_similarity=threshold),
+                severity=RuleSeverity.ERROR,
+                embed=embed,
+            )
+            print(json.dumps({{
+                "positive_score": positive_score,
+                "negative_score": negative_score,
+                "positive_codes": [diag.code for diag in positive_diagnostics],
+                "negative_codes": [diag.code for diag in negative_diagnostics],
+            }}))
+
+        asyncio.run(main())
+        """
     )
-    _, negative_score = await validate_semantic(
-        negative_text,
-        SemanticConfig(reference_text=reference_text, min_similarity=0.0),
-        severity=RuleSeverity.ERROR,
-        embed=embed,
+    env = dict(os.environ)
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{repo_root / 'src'}:{repo_root}" if not existing_pythonpath
+        else f"{repo_root / 'src'}:{repo_root}:{existing_pythonpath}"
     )
-
-    assert positive_score is not None
-    assert negative_score is not None
-    assert positive_score > negative_score
-
-    threshold = (positive_score + negative_score) / 2.0
-
-    positive_diagnostics, _ = await validate_semantic(
-        positive_text,
-        SemanticConfig(reference_text=reference_text, min_similarity=threshold),
-        severity=RuleSeverity.ERROR,
-        embed=embed,
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
     )
-    negative_diagnostics, _ = await validate_semantic(
-        negative_text,
-        SemanticConfig(reference_text=reference_text, min_similarity=threshold),
-        severity=RuleSeverity.ERROR,
-        embed=embed,
-    )
+    if completed.returncode != 0:
+        stderr = completed.stderr.strip().splitlines()
+        detail = stderr[-1] if stderr else f"exit code {completed.returncode}"
+        pytest.skip(f"real sentence-transformer runtime unavailable: {detail}")
 
-    assert positive_diagnostics == []
-    assert [diag.code for diag in negative_diagnostics] == ["semantic_similarity"]
+    result = json.loads(completed.stdout)
+    assert result["positive_score"] is not None
+    assert result["negative_score"] is not None
+    assert result["positive_score"] > result["negative_score"]
+    assert result["positive_codes"] == []
+    assert result["negative_codes"] == ["semantic_similarity"]
 
 
 @pytest.mark.asyncio

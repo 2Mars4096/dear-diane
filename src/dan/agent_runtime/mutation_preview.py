@@ -23,7 +23,7 @@ from dan.workflow_generation_guidance import (
 )
 
 logger = logging.getLogger(__name__)
-_CHAT_NODE_ID_RE = re.compile(r"[^A-Za-z0-9_]+")
+_CHAT_NODE_ID_RE = re.compile(r"[^a-z0-9]+")
 _STALE_REPLAN_PROMPT = (
     "The graph has changed since your last plan. "
     "Please re-plan the requested changes against "
@@ -57,7 +57,7 @@ class PreparedMutationAutoApply:
 
 def resolve_mutation_auto_apply_requested(
     *,
-    explicit_auto_apply: bool,
+    explicit_auto_apply: bool | None,
     is_empty_graph: bool,
     generation_fallback_active: bool,
     dry_result: Any,
@@ -71,8 +71,10 @@ def resolve_mutation_auto_apply_requested(
     recovered build and auto-apply it.
     """
 
-    if explicit_auto_apply:
+    if explicit_auto_apply is True:
         return True
+    if explicit_auto_apply is False:
+        return False
     if not generation_fallback_active or not is_empty_graph:
         return False
     if plan is None:
@@ -238,12 +240,28 @@ def _suggest_chat_node_id(name: str) -> str:
     raw = str(name or "").strip()
     if not raw:
         return ""
-    candidate = _CHAT_NODE_ID_RE.sub("_", raw).strip("_")
+    candidate = _CHAT_NODE_ID_RE.sub("-", raw.lower()).strip("-")
     if not candidate:
         return ""
-    if candidate[0].isdigit():
-        candidate = f"node_{candidate}"
     return candidate
+
+
+def _chat_node_id_aliases(*values: str) -> set[str]:
+    aliases: set[str] = set()
+    for value in values:
+        raw = str(value or "").strip()
+        if not raw:
+            continue
+        aliases.add(raw)
+        aliases.add(raw.lower())
+        suggested = _suggest_chat_node_id(raw)
+        if suggested:
+            aliases.add(suggested)
+            aliases.add(suggested.lower())
+        slug = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")
+        if slug:
+            aliases.add(slug)
+    return aliases
 
 
 def _repair_missing_node_ids(
@@ -292,9 +310,11 @@ def _repair_missing_node_ids(
                         )
                 if current_id:
                     used_ids.add(current_id)
-                    alias_map[current_id] = current_id
+                    for alias in _chat_node_id_aliases(current_id):
+                        alias_map[alias] = current_id
                 if name and current_id:
-                    alias_map[name] = current_id
+                    for alias in _chat_node_id_aliases(name):
+                        alias_map[alias] = current_id
                 normalized.append(op)
                 continue
 
@@ -307,6 +327,8 @@ def _repair_missing_node_ids(
                 for field in ("source_id", "target_id"):
                     ref = str(op.get(field) or "").strip()
                     replacement = alias_map.get(ref)
+                    if replacement is None:
+                        replacement = alias_map.get(ref.lower())
                     if replacement and replacement != ref:
                         op[field] = replacement
                         diagnostics.append(

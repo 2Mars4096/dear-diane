@@ -56,6 +56,14 @@ from .provider_runtime import resolve_completion_provider
 logger = logging.getLogger(__name__)
 
 
+def _apply_feedback_selector(
+    data: dict[str, Any],
+    selector: Any,
+) -> dict[str, Any]:
+    """Compatibility wrapper for the legacy control-flow helper import path."""
+    return apply_feedback_selector(data, selector)
+
+
 # ---------------------------------------------------------------------------
 # IfElse
 # ---------------------------------------------------------------------------
