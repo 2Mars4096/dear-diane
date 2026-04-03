@@ -112,6 +112,7 @@ packages = ["src/dan"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+norecursedirs = ["tests/fixtures"]
 addopts = "-m 'not integration and not quality_suite and not slow'"
 markers = [
     "integration: tests that require a live LLM API key (deselect with -m 'not integration')",
