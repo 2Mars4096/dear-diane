@@ -8,7 +8,8 @@ from typing import Any
 
 from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.state import NodeStatus
-from dan.models.nodes import NodeBase, RAGOperator
+from dan.models.legacy import RAGOperator
+from dan.models.nodes import NodeBase
 from dan.rag.stores import QueryResult, VectorStore, VectorStoreConfig, VectorStoreFactory
 from dan.utils.template_render import render_runtime_template
 

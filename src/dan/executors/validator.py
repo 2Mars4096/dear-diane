@@ -15,7 +15,7 @@ from typing import Any
 from dan.engine.conditions import ConditionError, evaluate_condition
 from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.state import NodeStatus
-from dan.models.control_flow import ValidatorNode, ValidationRule
+from dan.models.legacy import ValidationRule, ValidatorNode
 from dan.models.nodes import NodeBase
 
 logger = logging.getLogger(__name__)

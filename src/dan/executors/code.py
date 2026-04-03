@@ -12,7 +12,8 @@ from typing import Any
 
 from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.state import NodeStatus
-from dan.models.nodes import CodeOperator, NodeBase
+from dan.models.legacy import CodeOperator
+from dan.models.nodes import NodeBase
 from dan.sandbox import SandboxConfig, SandboxResult
 from dan.sandbox.runner import SandboxRunner
 

@@ -10,7 +10,8 @@ from typing import Any
 
 from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.state import NodeStatus
-from dan.models.nodes import NodeBase, ReflectionNode
+from dan.models.legacy import ReflectionNode
+from dan.models.nodes import NodeBase
 
 from .provider_runtime import resolve_completion_provider
 

@@ -26,7 +26,8 @@ from dan.engine.token_optimization import (
     SystemPromptTracker,
     ToolSchemaResolver,
 )
-from dan.models.nodes import LLMOperator, NodeBase, RetryPolicy
+from dan.models.legacy import LLMOperator
+from dan.models.nodes import NodeBase, RetryPolicy
 from dan.providers import CompletionResult
 from dan.providers.cost_tracker import TokenSaving
 from dan.executors.provider_runtime import resolve_llm_provider
@@ -480,6 +481,21 @@ class LLMExecutor:
             if node.system_prompt
             else ""
         )
+        lint_feedback = assembled_inputs.get("__lint_feedback__") or assembled_inputs.get("lint_feedback")
+        lint_retry_attempt = assembled_inputs.get("__lint_retry_attempt__")
+        if isinstance(lint_feedback, str) and lint_feedback.strip():
+            lint_feedback_prefix = "Previous output failed downstream handoff lint."
+            if lint_retry_attempt is not None:
+                lint_feedback_prefix += f" Retry attempt {lint_retry_attempt}."
+            lint_feedback_block = (
+                f"{lint_feedback_prefix}\n\n"
+                f"Use this feedback to regenerate a corrected answer:\n{lint_feedback.strip()}"
+            )
+            rendered_system_prompt = (
+                f"{rendered_system_prompt}\n\n{lint_feedback_block}".strip()
+                if rendered_system_prompt
+                else lint_feedback_block
+            )
 
         await context.emit_event(
             event_type="llm_thinking",

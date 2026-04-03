@@ -30,20 +30,22 @@ from dan.models.control_flow import (
     ForEachNode,
     GateNode,
     HandoffRequest,
-    HumanInTheLoopNode,
-    HumanNode,
     IfElseNode,
     OrchestratorNode,
     ParallelSubagentsNode,
-    ReduceNode,
-    RouterNode,
     TeamConversation,
     TeamMessage,
-    VoteConfig,
-    VoteNode,
     WhileLoopNode,
 )
 from dan.models.context import CompactionStrategy, MergeStrategy
+from dan.models.legacy import (
+    HumanInTheLoopNode,
+    HumanNode,
+    ReduceNode,
+    RouterNode,
+    VoteConfig,
+    VoteNode,
+)
 from dan.models.nodes import NodeBase
 from dan.engine.state_store import LoopIterationState, TeamTurnState
 from dan.engine.token_optimization import LoopCompactor

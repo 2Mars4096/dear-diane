@@ -6,7 +6,7 @@ from typing import Any
 
 from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.state import NodeStatus
-from dan.models.control_flow import InputNode
+from dan.models.legacy import InputNode
 from dan.models.nodes import NodeBase
 
 

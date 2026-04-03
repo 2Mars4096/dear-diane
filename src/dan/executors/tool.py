@@ -8,7 +8,8 @@ from typing import Any, Awaitable, Callable
 
 from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.state import NodeStatus
-from dan.models.nodes import NodeBase, RetryPolicy, ToolOperator
+from dan.models.legacy import ToolOperator
+from dan.models.nodes import NodeBase, RetryPolicy
 
 logger = logging.getLogger(__name__)
 
