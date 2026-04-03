@@ -19,7 +19,7 @@ describe("run log loading", () => {
   beforeEach(() => {
     getRunMock.mockReset();
     getRunEventsMock.mockReset();
-    useAppStore.setState({ activeMode: "chat" });
+    useAppStore.setState({ activeMode: "chat", notifications: [], unreadCount: 0 });
     useGraphStore.setState({
       runId: null,
       runStatus: null,
@@ -91,5 +91,58 @@ describe("run log loading", () => {
       "run_failed",
     ]);
     expect(useGraphStore.getState().runSummary?.total_tokens).toBe(15);
+  });
+
+  it("does not emit live notifications when hydrating historical lint failures", async () => {
+    getRunMock.mockResolvedValue({
+      run_id: "run-lint-history",
+      graph_id: "wf-1",
+      status: "failed",
+      node_statuses: { source: "node_failed" },
+      started_at: 1,
+      finished_at: 2,
+      success: false,
+      errors: { source: "Lint blocked the handoff" },
+      outputs: {},
+      total_prompt_tokens: 10,
+      total_completion_tokens: 5,
+      total_tokens: 15,
+      elapsed_seconds: 0.2,
+    });
+    getRunEventsMock.mockResolvedValue({
+      source: "persisted",
+      events: [
+        {
+          event_type: "lint_failed",
+          run_id: "run-lint-history",
+          node_id: "source",
+          timestamp: 1.1,
+          data: {
+            edge_id: "e1",
+            source_port: "result",
+            target_node_id: "reviewer",
+            target_port: "draft",
+            severity: "error",
+            handoff_committed: false,
+            attempt: 1,
+            diagnostics: [{ message: "Missing summary" }],
+          },
+        },
+        {
+          event_type: "run_failed",
+          run_id: "run-lint-history",
+          timestamp: 1.2,
+          data: { errors: { source: "Lint blocked the handoff" } },
+        },
+      ],
+    });
+
+    await useGraphStore.getState().loadRunLogs("run-lint-history");
+
+    expect(useGraphStore.getState().logs.map((entry) => entry.event_type)).toEqual([
+      "lint_failed",
+      "run_failed",
+    ]);
+    expect(useAppStore.getState().notifications).toEqual([]);
   });
 });

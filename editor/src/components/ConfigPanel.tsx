@@ -4,7 +4,16 @@ import { resolveGraphAtStack } from "../lib/graphAdapter";
 import { getNodeInputs } from "../lib/api";
 import type { UpstreamVariable } from "../lib/api";
 import TestCaseSection from "./TestCasePanel";
-import type { DanNode, InputPort, OutputPort, RetryPolicy } from "../types/graph";
+import type {
+  ContextEdge,
+  ControlEdge,
+  DanEdge,
+  DanNode,
+  DataEdge,
+  InputPort,
+  OutputPort,
+  RetryPolicy,
+} from "../types/graph";
 
 const SKIP_FIELDS = new Set([
   "id", "node_type", "input_ports", "output_ports", "position", "ui", "metadata",
@@ -91,7 +100,47 @@ const HUMAN_DEDICATED_FIELDS = new Set([
   "instructions",
 ]);
 
+// Worker borrows a few fields from other compute shapes (`code`, `language`, etc.),
+// so keep them out of the generic field loop and render them only in the Worker UI.
+const WORKER_DEDICATED_FIELDS = new Set([
+  "role",
+  "instruction",
+  "persona",
+  "authority",
+  "model",
+  "tool_ids",
+  "code",
+  "language",
+  "llm_hints",
+  "context",
+  "authority_policy",
+  "execution",
+  "body_graph",
+  "sub_workers",
+  "boundary_contract",
+]);
+
 const SCHEMA_TYPES = ["string", "number", "boolean", "array", "object"] as const;
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function getEdgeLintConfig(edge: DanEdge | null | undefined): Record<string, unknown> | null {
+  if (!edge || edge.edge_type !== "data") return null;
+
+  const direct = edge.lint;
+  if (isObjectRecord(direct)) {
+    return direct;
+  }
+
+  const legacy = edge.metadata?.lint;
+  if (isObjectRecord(legacy)) {
+    return legacy;
+  }
+
+  return null;
+}
 
 // -- Port Editor Row ---------------------------------------------------------
 
@@ -100,6 +149,7 @@ function PortRow({
   portType,
   nodeId,
   allPortNames,
+  allPorts,
   showRequired,
   onRequiredChange,
 }: {
@@ -107,13 +157,36 @@ function PortRow({
   portType: "input" | "output";
   nodeId: string;
   allPortNames: string[];
+  allPorts: Array<InputPort | OutputPort>;
   showRequired: boolean;
   onRequiredChange?: (checked: boolean) => void;
 }) {
   const renamePort = useGraphStore((s) => s.renamePort);
   const deletePort = useGraphStore((s) => s.deletePort);
+  const updateNodeData = useGraphStore((s) => s.updateNodeData);
   const [name, setName] = useState(port.name);
   const [error, setError] = useState("");
+  const [schemaText, setSchemaText] = useState(
+    JSON.stringify(port.schema ?? {}, null, 2),
+  );
+  const [schemaError, setSchemaError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setName(port.name);
+  }, [port.name]);
+
+  useEffect(() => {
+    setSchemaText(JSON.stringify(port.schema ?? {}, null, 2));
+    setSchemaError(null);
+  }, [port.schema]);
+
+  const updatePort = (patch: Partial<InputPort & OutputPort>) => {
+    const portKey = portType === "input" ? "input_ports" : "output_ports";
+    const ports = allPorts.map((p) =>
+      p.name === port.name ? { ...p, ...patch } : p,
+    );
+    updateNodeData(nodeId, { [portKey]: ports } as Partial<DanNode>);
+  };
 
   const commitName = () => {
     const trimmed = name.trim();
@@ -127,35 +200,71 @@ function PortRow({
     renamePort(nodeId, portType, port.name, trimmed);
   };
 
+  const commitSchema = (raw: string, reportError: boolean) => {
+    try {
+      const parsed = raw.trim() ? JSON.parse(raw) : {};
+      setSchemaError(null);
+      updatePort({ schema: parsed });
+    } catch (err) {
+      if (reportError) {
+        setSchemaError((err as Error).message);
+      }
+    }
+  };
+
   return (
-    <div className="flex items-center gap-1">
-      <input
-        value={name}
-        onChange={(e) => { setName(e.target.value); setError(""); }}
-        onBlur={commitName}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-          if (e.key === "Escape") { setName(port.name); setError(""); }
-        }}
-        className={`flex-1 min-w-0 border rounded px-1.5 py-0.5 text-xs ${error ? "border-red-400 bg-red-50" : ""}`}
-        title={error || undefined}
-      />
-      {showRequired && (
+    <div className="border rounded bg-white px-2 py-1.5">
+      <div className="flex items-center gap-1">
         <input
-          type="checkbox"
-          checked={(port as InputPort).required !== false}
-          onChange={(e) => onRequiredChange?.(e.target.checked)}
-          title="Required"
-          className="w-3 h-3 shrink-0"
+          value={name}
+          onChange={(e) => { setName(e.target.value); setError(""); }}
+          onBlur={commitName}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            if (e.key === "Escape") { setName(port.name); setError(""); }
+          }}
+          className={`flex-1 min-w-0 border rounded px-1.5 py-0.5 text-xs ${error ? "border-red-400 bg-red-50" : ""}`}
+          title={error || undefined}
         />
-      )}
-      <button
-        onClick={() => deletePort(nodeId, portType, port.name)}
-        className="text-gray-400 hover:text-red-500 text-sm leading-none px-0.5 shrink-0"
-        title="Delete port"
-      >
-        ×
-      </button>
+        {showRequired && (
+          <input
+            type="checkbox"
+            checked={(port as InputPort).required !== false}
+            onChange={(e) => onRequiredChange?.(e.target.checked)}
+            title="Required"
+            className="w-3 h-3 shrink-0"
+          />
+        )}
+        <button
+          onClick={() => deletePort(nodeId, portType, port.name)}
+          className="text-gray-400 hover:text-red-500 text-sm leading-none px-0.5 shrink-0"
+          title="Delete port"
+        >
+          ×
+        </button>
+      </div>
+      <div className="mt-1.5 flex flex-col gap-1">
+        <input
+          type="text"
+          value={port.description ?? ""}
+          onChange={(e) => updatePort({ description: e.target.value })}
+          placeholder="Port description"
+          aria-label={`${portType} port ${port.name} description`}
+          className="border rounded px-1.5 py-0.5 text-[11px]"
+        />
+        <textarea
+          value={schemaText}
+          onChange={(e) => {
+            setSchemaText(e.target.value);
+            setSchemaError(null);
+          }}
+          onBlur={() => commitSchema(schemaText, true)}
+          placeholder='{"type":"string"}'
+          aria-label={`${portType} port ${port.name} schema`}
+          className={`border rounded px-1.5 py-0.5 text-[10px] font-mono min-h-14 resize-y ${schemaError ? "border-red-400 bg-red-50" : ""}`}
+        />
+        {schemaError && <p className="text-[9px] text-red-500">{schemaError}</p>}
+      </div>
     </div>
   );
 }
@@ -655,6 +764,254 @@ function BodyGraphConfigSection({
         )}
       </div>
     </div>
+  );
+}
+
+function WorkerConfigSection({
+  nodeId,
+  data,
+}: {
+  nodeId: string;
+  data: Record<string, unknown>;
+}) {
+  const updateNodeData = useGraphStore((s) => s.updateNodeData);
+  const danGraph = useGraphStore((s) => s.danGraph);
+  const layerStack = useGraphStore((s) => s.layerStack);
+
+  const role = (data.role as string) ?? "";
+  const instruction = (data.instruction as string) ?? "";
+  const persona = (data.persona as string) ?? "";
+  const authority = (data.authority as string) ?? "leaf";
+  const model = (data.model as string | null | undefined) ?? "";
+  const toolIds = (data.tool_ids ?? []) as string[];
+  const code = (data.code as string) ?? "";
+  const language = (data.language as string) ?? "python";
+  const llmHints = ((data.llm_hints ?? {}) as Record<string, unknown>);
+  const promptTemplate = (llmHints.prompt_template as string) ?? "";
+  const systemPrompt = (llmHints.system_prompt as string) ?? "";
+  const temperature = typeof llmHints.temperature === "number" ? (llmHints.temperature as number) : 0.7;
+  const maxTokens = llmHints.max_tokens as number | null | undefined;
+  const context = data.context ?? null;
+  const authorityPolicy = data.authority_policy ?? null;
+  const execution = data.execution ?? null;
+  const subWorkers = (data.sub_workers ?? {}) as Record<string, string>;
+  const boundaryContract = data.boundary_contract ?? null;
+
+  const currentGraph = useMemo(() => {
+    if (!danGraph) return null;
+    return resolveGraphAtStack(danGraph, layerStack);
+  }, [danGraph, layerStack]);
+  const availableSubGraphKeys = Object.keys(currentGraph?.sub_graphs ?? {});
+
+  const update = (patch: Record<string, unknown>) => {
+    updateNodeData(nodeId, patch as unknown as Partial<DanNode>);
+  };
+
+  const updateLLMHints = (patch: Record<string, unknown>) => {
+    const next = { ...llmHints, ...patch };
+    update({ llm_hints: next });
+  };
+
+  return (
+    <>
+      <div className="mt-3">
+        <h3 className="text-[11px] font-semibold text-gray-400 uppercase mb-1">Worker Identity</h3>
+        <div className="flex flex-col gap-2 pl-2 border-l border-sky-200">
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">role</span>
+            <input
+              type="text"
+              value={role}
+              onChange={(e) => update({ role: e.target.value })}
+              placeholder="manager / reviewer / tool_runner"
+              className="border rounded px-2 py-1 text-xs"
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">authority</span>
+            <select
+              value={authority}
+              onChange={(e) => update({ authority: e.target.value })}
+              className="border rounded px-2 py-1 text-xs"
+            >
+              <option value="leaf">leaf</option>
+              <option value="delegate">delegate</option>
+              <option value="lead">lead</option>
+              <option value="director">director</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">instruction</span>
+            <textarea
+              value={instruction}
+              onChange={(e) => update({ instruction: e.target.value })}
+              placeholder="Short local behavior instruction"
+              className="border rounded px-2 py-1 text-xs min-h-16 resize-y"
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">persona</span>
+            <textarea
+              value={persona}
+              onChange={(e) => update({ persona: e.target.value })}
+              placeholder="Short descriptive persona hint"
+              className="border rounded px-2 py-1 text-xs min-h-12 resize-y"
+            />
+          </label>
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <h3 className="text-[11px] font-semibold text-gray-400 uppercase mb-1">Worker Capability</h3>
+        <div className="flex flex-col gap-2 pl-2 border-l border-violet-200">
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">model</span>
+            <input
+              type="text"
+              value={model}
+              onChange={(e) => update({ model: e.target.value || null })}
+              placeholder="Use engine default"
+              className="border rounded px-2 py-1 text-xs"
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">tool_ids</span>
+            <input
+              type="text"
+              value={toolIds.join(", ")}
+              onChange={(e) =>
+                update({
+                  tool_ids: e.target.value
+                    .split(",")
+                    .map((item) => item.trim())
+                    .filter(Boolean),
+                })
+              }
+              placeholder="web_search, file_read"
+              className="border rounded px-2 py-1 text-xs"
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">language</span>
+            <input
+              type="text"
+              value={language}
+              onChange={(e) => update({ language: e.target.value })}
+              placeholder="python"
+              className="border rounded px-2 py-1 text-xs"
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">code</span>
+            <textarea
+              value={code}
+              onChange={(e) => update({ code: e.target.value })}
+              placeholder="result = {...}"
+              className="border rounded px-2 py-1 text-xs font-mono min-h-24 resize-y"
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">prompt_template</span>
+            <textarea
+              value={promptTemplate}
+              onChange={(e) => updateLLMHints({ prompt_template: e.target.value })}
+              placeholder="Prompt with {input} placeholders"
+              className="border rounded px-2 py-1 text-xs min-h-16 resize-y"
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">system_prompt</span>
+            <textarea
+              value={systemPrompt}
+              onChange={(e) => updateLLMHints({ system_prompt: e.target.value })}
+              placeholder="Optional system instructions"
+              className="border rounded px-2 py-1 text-xs min-h-16 resize-y"
+            />
+          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="flex flex-col gap-0.5">
+              <span className="text-[11px] font-medium text-gray-500">temperature</span>
+              <input
+                type="number"
+                min={0}
+                max={2}
+                step={0.05}
+                value={temperature}
+                onChange={(e) => updateLLMHints({ temperature: parseFloat(e.target.value) || 0 })}
+                className="border rounded px-2 py-1 text-xs"
+              />
+            </label>
+            <label className="flex flex-col gap-0.5">
+              <span className="text-[11px] font-medium text-gray-500">max_tokens</span>
+              <input
+                type="number"
+                min={1}
+                value={maxTokens ?? ""}
+                onChange={(e) =>
+                  updateLLMHints({
+                    max_tokens: e.target.value ? parseInt(e.target.value, 10) : null,
+                  })
+                }
+                placeholder="Auto"
+                className="border rounded px-2 py-1 text-xs"
+              />
+            </label>
+          </div>
+          <JsonConfigEditor
+            label="llm_hints"
+            value={data.llm_hints ?? null}
+            onChange={(value) => update({ llm_hints: value })}
+            placeholder='{"task_tier":"reasoning","tools":[]}'
+          />
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <h3 className="text-[11px] font-semibold text-gray-400 uppercase mb-1">Worker Policies</h3>
+        <div className="flex flex-col gap-2 pl-2 border-l border-emerald-200">
+          <JsonConfigEditor
+            label="context"
+            value={context}
+            onChange={(value) => update({ context: value })}
+            placeholder='{"instruction_profile_ref":"analyst"}'
+          />
+          <JsonConfigEditor
+            label="authority_policy"
+            value={authorityPolicy}
+            onChange={(value) => update({ authority_policy: value })}
+            placeholder='{"allow_delegate":true,"max_spawned_workers":2}'
+          />
+          <JsonConfigEditor
+            label="execution"
+            value={execution}
+            onChange={(value) => update({ execution: value })}
+            placeholder='{"resource_locks":["memory:shared"],"blocking_mode":"exclusive"}'
+          />
+          <JsonConfigEditor
+            label="boundary_contract"
+            value={boundaryContract}
+            onChange={(value) => update({ boundary_contract: value })}
+            placeholder='{"emit_up":["summary"]}'
+          />
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <h3 className="text-[11px] font-semibold text-gray-400 uppercase mb-1">Worker Composition</h3>
+        <div className="pl-2 border-l border-amber-200">
+          <BodyGraphConfigSection nodeId={nodeId} data={data} />
+          <div className="mt-3">
+            <NamedSubgraphListEditor
+              nodeId={nodeId}
+              itemLabel="Sub-worker"
+              mappings={subWorkers}
+              availableSubGraphKeys={availableSubGraphKeys}
+              setMappings={(mappings) => update({ sub_workers: mappings })}
+            />
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -1565,6 +1922,70 @@ function RuleConfigEditor({ value, onChange }: { value: Record<string, unknown>;
   );
 }
 
+function JsonConfigEditor({
+  label,
+  value,
+  onChange,
+  placeholder,
+  allowNull = true,
+}: {
+  label: string;
+  value: unknown;
+  onChange: (value: unknown) => void;
+  placeholder?: string;
+  allowNull?: boolean;
+}) {
+  const [text, setText] = useState(() =>
+    value == null ? "" : JSON.stringify(value, null, 2),
+  );
+  const [parseError, setParseError] = useState<string | null>(null);
+  const canonical = value == null ? "" : JSON.stringify(value, null, 2);
+
+  useEffect(() => {
+    if (text !== canonical) {
+      setText(canonical);
+      setParseError(null);
+    }
+  }, [canonical, text]);
+
+  const commit = () => {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      if (allowNull) {
+        setParseError(null);
+        onChange(null);
+      } else {
+        setParseError("JSON required");
+      }
+      return;
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      setParseError(null);
+      onChange(parsed);
+    } catch (err) {
+      setParseError((err as Error).message);
+    }
+  };
+
+  return (
+    <label className="flex flex-col gap-0.5">
+      <span className="text-[11px] font-medium text-gray-500">{label}</span>
+      <textarea
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value);
+          setParseError(null);
+        }}
+        onBlur={commit}
+        className={`border rounded px-2 py-1 text-xs font-mono min-h-16 resize-y ${parseError ? "border-red-400 bg-red-50" : ""}`}
+        placeholder={placeholder}
+      />
+      {parseError && <p className="text-[9px] text-red-500 mt-0.5">{parseError}</p>}
+    </label>
+  );
+}
+
 function ValidatorConfigSection({ nodeId, data }: { nodeId: string; data: Record<string, unknown> }) {
   const updateNodeData = useGraphStore((s) => s.updateNodeData);
 
@@ -2034,6 +2455,32 @@ export default function ConfigPanel() {
   const updateNodeData = useGraphStore((s) => s.updateNodeData);
   const updateEdgeData = useGraphStore((s) => s.updateEdgeData);
   const deleteSelected = useGraphStore((s) => s.deleteSelected);
+  const selectedEdge = useMemo(
+    () => edges.find((edge) => edge.id === selectedEdgeId) ?? null,
+    [edges, selectedEdgeId],
+  );
+  const selectedDanEdge = useMemo<DanEdge | null>(
+    () => (selectedEdge?.data?.danEdge as DanEdge | undefined) ?? null,
+    [selectedEdge],
+  );
+  const selectedEdgeLint = useMemo(
+    () => getEdgeLintConfig(selectedDanEdge),
+    [selectedDanEdge],
+  );
+  const [edgeLintDraft, setEdgeLintDraft] = useState("");
+  const [edgeLintError, setEdgeLintError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedEdgeId) {
+      setEdgeLintDraft("");
+      setEdgeLintError(null);
+      return;
+    }
+    setEdgeLintDraft(
+      selectedEdgeLint ? JSON.stringify(selectedEdgeLint, null, 2) : "",
+    );
+    setEdgeLintError(null);
+  }, [selectedEdgeId, selectedEdgeLint]);
 
   // -- 6-1: Multi-select summary
   if (selectedNodeIds.size > 1) {
@@ -2061,6 +2508,7 @@ export default function ConfigPanel() {
     const editableFields = Object.entries(d).filter(
       ([k]) =>
         !SKIP_FIELDS.has(k) &&
+        !(d.node_type === "worker" && WORKER_DEDICATED_FIELDS.has(k)) &&
         !(BODY_GRAPH_DEDICATED_TYPES.has(d.node_type) && k === "body_graph") &&
         !(d.node_type === "goal_loop" && GOAL_LOOP_DEDICATED_FIELDS.has(k)) &&
         !(d.node_type === "vote" && VOTE_DEDICATED_FIELDS.has(k)) &&
@@ -2147,6 +2595,7 @@ export default function ConfigPanel() {
                 portType="input"
                 nodeId={d.id}
                 allPortNames={d.input_ports.map((p) => p.name)}
+                allPorts={d.input_ports}
                 showRequired
                 onRequiredChange={(checked) => {
                   const updated = d.input_ports.map((p) =>
@@ -2184,6 +2633,7 @@ export default function ConfigPanel() {
                 portType="output"
                 nodeId={d.id}
                 allPortNames={d.output_ports.map((p) => p.name)}
+                allPorts={d.output_ports}
                 showRequired={false}
               />
             ))}
@@ -2206,6 +2656,10 @@ export default function ConfigPanel() {
 
         {/* 13-2: Upstream Inputs Inspector */}
         <UpstreamInputsSection nodeId={d.id} />
+
+        {d.node_type === "worker" && (
+          <WorkerConfigSection nodeId={d.id} data={d as unknown as Record<string, unknown>} />
+        )}
 
         {/* 7-2: Dedicated LLM config section — model, temperature, system_prompt, advanced */}
         {(d.node_type === "llm_operator" || d.node_type === "router") && (
@@ -2340,10 +2794,30 @@ export default function ConfigPanel() {
   }
 
   if (selectedEdgeId) {
-    const edge = edges.find((e) => e.id === selectedEdgeId);
-    if (!edge) return null;
-    const danEdge = (edge.data?.danEdge ?? {}) as Record<string, unknown>;
+    const edge = selectedEdge;
+    const danEdge = selectedDanEdge;
+    if (!edge || !danEdge) return null;
     const edgeType = (danEdge.edge_type as string) ?? "data";
+    const controlEdge = edgeType === "control" ? (danEdge as ControlEdge) : null;
+    const contextEdge = edgeType === "context" ? (danEdge as ContextEdge) : null;
+    const lintEnabled = edgeType === "data" && selectedEdgeLint !== null;
+    const updateEdgeLint = (nextLint: Record<string, unknown> | null) => {
+      if (danEdge.edge_type !== "data") return;
+
+      const nextMetadata = {
+        ...(((danEdge.metadata as Record<string, unknown> | undefined) ?? {})),
+      };
+      if (nextLint === null) {
+        delete nextMetadata.lint;
+      } else {
+        nextMetadata.lint = nextLint;
+      }
+
+      updateEdgeData(edge.id, {
+        lint: nextLint,
+        metadata: nextMetadata,
+      } as Partial<DataEdge>);
+    };
 
     return (
       <div className="w-72 bg-gray-50 border-l border-gray-200 p-3 overflow-y-auto">
@@ -2372,7 +2846,7 @@ export default function ConfigPanel() {
               <span className="text-[11px] font-medium text-gray-500">condition</span>
               <input
                 type="text"
-                value={(danEdge.condition as string) ?? ""}
+                value={controlEdge?.condition ?? ""}
                 onChange={(e) => updateEdgeData(edge.id, { condition: e.target.value || null })}
                 placeholder="e.g. output.success == true"
                 className="border rounded px-2 py-1 text-xs font-mono"
@@ -2386,7 +2860,7 @@ export default function ConfigPanel() {
                 <span className="text-[11px] font-medium text-gray-500">context_key</span>
                 <input
                   type="text"
-                  value={(danEdge.context_key as string) ?? ""}
+                  value={contextEdge?.context_key ?? ""}
                   onChange={(e) => updateEdgeData(edge.id, { context_key: e.target.value })}
                   className="border rounded px-2 py-1 text-xs"
                 />
@@ -2394,7 +2868,7 @@ export default function ConfigPanel() {
               <label className="flex flex-col gap-0.5">
                 <span className="text-[11px] font-medium text-gray-500">mode</span>
                 <select
-                  value={(danEdge.mode as string) ?? "read"}
+                  value={contextEdge?.mode ?? "read"}
                   onChange={(e) => updateEdgeData(edge.id, { mode: e.target.value })}
                   className="border rounded px-2 py-1 text-xs"
                 >
@@ -2404,6 +2878,87 @@ export default function ConfigPanel() {
                 </select>
               </label>
             </>
+          )}
+
+          {edgeType === "data" && (
+            <div className="rounded border border-gray-200 bg-white p-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-medium text-gray-500">Lint Config</span>
+                <label className="flex items-center gap-1 text-[11px] text-gray-600">
+                  <input
+                    type="checkbox"
+                    aria-label="enable edge lint"
+                    checked={lintEnabled}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        const defaultLint = { severity: "error" };
+                        setEdgeLintDraft(JSON.stringify(defaultLint, null, 2));
+                        setEdgeLintError(null);
+                        updateEdgeLint(defaultLint);
+                      } else {
+                        setEdgeLintDraft("");
+                        setEdgeLintError(null);
+                        updateEdgeLint(null);
+                      }
+                    }}
+                  />
+                  enabled
+                </label>
+              </div>
+              <p className="mt-1 text-[10px] text-gray-400">
+                Tiered handoff validation for this data edge.
+              </p>
+              {lintEnabled && (
+                <div className="mt-2 flex flex-col gap-2">
+                  <textarea
+                    aria-label="edge lint json"
+                    value={edgeLintDraft}
+                    onChange={(e) => {
+                      setEdgeLintDraft(e.target.value);
+                      if (edgeLintError) setEdgeLintError(null);
+                    }}
+                    spellCheck={false}
+                    className="min-h-28 rounded border px-2 py-1 text-[11px] font-mono"
+                  />
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        try {
+                          const parsed = JSON.parse(edgeLintDraft || "{}");
+                          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+                            throw new Error("Lint config must be a JSON object");
+                          }
+                          setEdgeLintError(null);
+                          updateEdgeLint(parsed as Record<string, unknown>);
+                        } catch (err) {
+                          setEdgeLintError(
+                            err instanceof Error ? err.message : "Invalid lint JSON",
+                          );
+                        }
+                      }}
+                      className="rounded bg-gray-900 px-2 py-1 text-[11px] text-white"
+                    >
+                      Apply lint JSON
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const current = getEdgeLintConfig(danEdge);
+                        setEdgeLintDraft(current ? JSON.stringify(current, null, 2) : "");
+                        setEdgeLintError(null);
+                      }}
+                      className="rounded border px-2 py-1 text-[11px]"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                  {edgeLintError && (
+                    <div className="text-[11px] text-red-600">{edgeLintError}</div>
+                  )}
+                </div>
+              )}
+            </div>
           )}
 
           <div className="mt-2">

@@ -7,7 +7,11 @@ import {
   type LayerStackEntry,
   MAX_DRILL_DEPTH,
 } from "../graphAdapter";
-import { PALETTE_NODE_TO_RUNTIME_NODE_TYPE, type DanGraph } from "../../types/graph";
+import {
+  NODE_TYPE_CATALOG,
+  PALETTE_NODE_TO_RUNTIME_NODE_TYPE,
+  type DanGraph,
+} from "../../types/graph";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -186,6 +190,7 @@ describe("deepSetSubGraph", () => {
 
 describe("createDefaultNode", () => {
   it("exposes explicit palette-to-runtime node lowering", () => {
+    expect(PALETTE_NODE_TO_RUNTIME_NODE_TYPE.worker).toBe("worker");
     expect(PALETTE_NODE_TO_RUNTIME_NODE_TYPE.gate_if_else).toBe("gate");
     expect(PALETTE_NODE_TO_RUNTIME_NODE_TYPE.gate_while).toBe("gate");
     expect(PALETTE_NODE_TO_RUNTIME_NODE_TYPE.human).toBe("human");
@@ -194,6 +199,22 @@ describe("createDefaultNode", () => {
     expect(PALETTE_NODE_TO_RUNTIME_NODE_TYPE.reflection).toBe("reflection");
     expect(PALETTE_NODE_TO_RUNTIME_NODE_TYPE.orchestrator).toBe("orchestrator");
     expect(PALETTE_NODE_TO_RUNTIME_NODE_TYPE.agent_team).toBe("agent_team");
+  });
+
+  it("surfaces worker in the palette catalog", () => {
+    expect(
+      NODE_TYPE_CATALOG.some((item) => item.type === "worker" && item.category === "operator"),
+    ).toBe(true);
+  });
+
+  it("creates worker nodes with canonical defaults", () => {
+    const node = createDefaultNode("worker", { x: 10, y: 20 });
+    expect(node.node_type).toBe("worker");
+    expect("authority" in node && node.authority).toBe("leaf");
+    expect(node.input_ports.map((p) => p.name)).toEqual(["input"]);
+    expect(node.output_ports.map((p) => p.name)).toEqual(["result"]);
+    expect("tool_ids" in node && node.tool_ids).toEqual([]);
+    expect("body_graph" in node && node.body_graph).toBeNull();
   });
 
   it("lowers palette gate_if_else to runtime gate", () => {

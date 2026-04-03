@@ -395,6 +395,27 @@ export function createDefaultNode(
   };
 
   switch (nodeType) {
+    case "worker":
+      return {
+        ...base,
+        node_type: "worker",
+        role: "",
+        instruction: "",
+        persona: "",
+        authority: "leaf",
+        model: null,
+        tool_ids: [],
+        code: "",
+        language: "python",
+        llm_hints: null,
+        context: null,
+        authority_policy: null,
+        execution: null,
+        body_graph: null,
+        sub_workers: {},
+        boundary_contract: null,
+        output_ports: [{ name: "result", schema: {} }],
+      };
     case "llm_operator":
       return { ...base, node_type: "llm_operator", model: "", prompt_template: "", system_prompt: "", temperature: 0.7, max_tokens: null, output_json_schema: null };
     case "tool_operator":

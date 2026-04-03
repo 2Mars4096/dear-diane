@@ -73,6 +73,25 @@ export interface CodeOperator extends NodeBase {
   sandbox_config: Record<string, unknown>;
 }
 
+export interface WorkerNodeType extends NodeBase {
+  node_type: "worker";
+  role?: string;
+  instruction?: string;
+  persona?: string;
+  authority?: "leaf" | "delegate" | "lead" | "director";
+  model?: string | null;
+  tool_ids?: string[];
+  code?: string;
+  language?: string;
+  llm_hints?: Record<string, unknown> | null;
+  context?: Record<string, unknown> | null;
+  authority_policy?: Record<string, unknown> | null;
+  execution?: Record<string, unknown> | null;
+  body_graph?: string | null;
+  sub_workers?: Record<string, string>;
+  boundary_contract?: Record<string, unknown> | null;
+}
+
 export interface IfElseNode extends NodeBase {
   node_type: "if_else";
   condition: string;
@@ -270,6 +289,7 @@ export interface InputNodeType extends NodeBase {
 }
 
 export type DanNode =
+  | WorkerNodeType
   | LLMOperator
   | ToolOperator
   | CodeOperator
@@ -308,6 +328,7 @@ export interface EdgeBase {
 export interface DataEdge extends EdgeBase {
   edge_type: "data";
   spread?: boolean;
+  lint?: Record<string, unknown> | null;
 }
 
 export interface ControlEdge extends EdgeBase {
@@ -365,6 +386,7 @@ export interface DanGraph {
 // -- Node type catalogue (for palette) ---------------------------------------
 
 export const NODE_TYPE_CATALOG = [
+  { type: "worker", label: "Worker", category: "operator" },
   { type: "llm_operator", label: "LLM Operator", category: "operator" },
   { type: "tool_operator", label: "Tool Operator", category: "operator" },
   { type: "code_operator", label: "Code Operator", category: "operator" },
@@ -398,6 +420,7 @@ export type NodeTypeString = PaletteNodeType;
 export type RuntimeNodeType = DanNode["node_type"];
 
 export const PALETTE_NODE_TO_RUNTIME_NODE_TYPE: Record<PaletteNodeType, RuntimeNodeType> = {
+  worker: "worker",
   llm_operator: "llm_operator",
   tool_operator: "tool_operator",
   code_operator: "code_operator",
@@ -425,6 +448,11 @@ export const NODE_DESCRIPTIONS: Record<
   string,
   { description: string; inputs: string[]; outputs: string[] }
 > = {
+  worker: {
+    description: "Universal compute node with lightweight contract and shared-context refs",
+    inputs: ["input"],
+    outputs: ["result"],
+  },
   llm_operator: {
     description: "Call an LLM with a prompt template",
     inputs: ["input"],

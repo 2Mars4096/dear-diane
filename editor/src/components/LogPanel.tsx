@@ -51,6 +51,15 @@ function CircleIcon({ className }: { className?: string }) {
   );
 }
 
+function ShieldIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3l7 3v6c0 5-3.5 7.5-7 9-3.5-1.5-7-4-7-9V6l7-3z" />
+      <path d="m9.5 12 1.75 1.75L15 10" />
+    </svg>
+  );
+}
+
 function ChevronIcon({ open, className }: { open: boolean; className?: string }) {
   return (
     <svg className={`${className ?? ""} transition-transform ${open ? "rotate-90" : ""}`} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -69,6 +78,9 @@ const EVENT_ICON: Record<string, (cls: string) => React.JSX.Element> = {
   tool_call_result: (cls) => <WrenchIcon className={cls} />,
   code_output: (cls) => <TerminalIcon className={cls} />,
   intermediate_text: (cls) => <TerminalIcon className={cls} />,
+  lint_passed: (cls) => <ShieldIcon className={cls} />,
+  lint_failed: (cls) => <ShieldIcon className={cls} />,
+  lint_auto_fixed: (cls) => <WrenchIcon className={cls} />,
   node_failed: (cls) => <XCircleIcon className={cls} />,
   run_failed: (cls) => <XCircleIcon className={cls} />,
 };
@@ -79,6 +91,9 @@ const EVENT_COLORS: Record<string, string> = {
   tool_call_result: "text-blue-400",
   code_output: "text-cyan-500",
   intermediate_text: "text-cyan-400",
+  lint_passed: "text-emerald-600",
+  lint_failed: "text-amber-600",
+  lint_auto_fixed: "text-teal-600",
   node_failed: "text-red-500",
   run_failed: "text-red-600",
   run_started: "text-blue-500",
@@ -96,6 +111,7 @@ const CATEGORY_LABEL: Record<string, string> = {
   thinking: "Thinking",
   tool: "Tool Calls",
   output: "Output",
+  lint: "Lint Gates",
   error: "Errors",
   lifecycle: "Lifecycle",
 };
@@ -128,6 +144,101 @@ function extractFailureText(data?: Record<string, unknown>): string | null {
     }
   }
   return null;
+}
+
+function formatLintDetail(entry: LogEntry): string | null {
+  const d = entry.data;
+  if (!d) return null;
+
+  const routeParts: string[] = [];
+  const sourcePort = typeof d.source_port === "string" ? d.source_port : null;
+  const targetNodeId = typeof d.target_node_id === "string" ? d.target_node_id : null;
+  const targetPort = typeof d.target_port === "string" ? d.target_port : null;
+  if (sourcePort || targetNodeId || targetPort) {
+    routeParts.push(
+      `${sourcePort ?? "?"} -> ${targetNodeId ?? "?"}.${targetPort ?? "?"}`,
+    );
+  }
+
+  const metrics: string[] = [];
+  if (typeof d.severity === "string" && d.severity) {
+    metrics.push(`severity=${d.severity}`);
+  }
+  if (typeof d.tier_reached === "number") {
+    metrics.push(`tier=${d.tier_reached}`);
+  }
+  if (typeof d.attempt === "number") {
+    metrics.push(`attempt=${d.attempt}`);
+  }
+  if (typeof d.handoff_committed === "boolean") {
+    metrics.push(`handoff=${d.handoff_committed ? "committed" : "blocked"}`);
+  }
+  if (d.retry_scheduled === true) {
+    metrics.push("retry=scheduled");
+  }
+
+  const rules = Array.isArray(d.rule_codes)
+    ? d.rule_codes.filter((value): value is string => typeof value === "string" && value.length > 0)
+    : [];
+  if (rules.length > 0) {
+    metrics.push(`rules=${rules.join(",")}`);
+  }
+
+  const fixes = Array.isArray(d.applied_fixes)
+    ? d.applied_fixes.filter((value): value is string => typeof value === "string" && value.length > 0)
+    : [];
+  if (fixes.length > 0) {
+    metrics.push(`fixes=${fixes.join(",")}`);
+  }
+  if (typeof d.elapsed_ms === "number") {
+    metrics.push(`elapsed=${d.elapsed_ms}ms`);
+  }
+  if (typeof d.diagnostic_count === "number") {
+    metrics.push(`diagnostics=${d.diagnostic_count}`);
+  }
+
+  const lines: string[] = [];
+  const summary = [...routeParts, ...metrics].filter(Boolean).join("  ");
+  if (summary) {
+    lines.push(summary);
+  }
+
+  if (typeof d.semantic_score === "number" || typeof d.intent_score === "number") {
+    const scoreParts: string[] = [];
+    if (typeof d.semantic_score === "number") {
+      scoreParts.push(`semantic=${d.semantic_score.toFixed(3)}`);
+    }
+    if (typeof d.intent_score === "number") {
+      scoreParts.push(`intent=${d.intent_score.toFixed(3)}`);
+    }
+    if (scoreParts.length > 0) {
+      lines.push(scoreParts.join("  "));
+    }
+  }
+
+  const diagnostics = Array.isArray(d.diagnostics)
+    ? d.diagnostics.filter(
+        (value): value is Record<string, unknown> =>
+          Boolean(value) && typeof value === "object" && !Array.isArray(value),
+      )
+    : [];
+  if (diagnostics.length > 0) {
+    lines.push(
+      ...diagnostics.map((diagnostic) => {
+        const code = typeof diagnostic.code === "string" ? diagnostic.code : "diag";
+        const message =
+          typeof diagnostic.message === "string" && diagnostic.message.trim()
+            ? diagnostic.message.trim()
+            : JSON.stringify(diagnostic);
+        return `${code}: ${message}`;
+      }),
+    );
+  }
+
+  if (lines.length === 0) {
+    return entry.message || null;
+  }
+  return lines.join("\n");
 }
 
 function dataContent(entry: LogEntry): string | null {
@@ -164,9 +275,21 @@ function dataContent(entry: LogEntry): string | null {
     case "node_failed":
     case "run_failed":
       return extractFailureText(d);
+    case "lint_passed":
+    case "lint_failed":
+    case "lint_auto_fixed":
+      return formatLintDetail(entry);
     default:
       return null;
   }
+}
+
+function isBlockingLintFailure(entry: LogEntry): boolean {
+  return (
+    entry.event_type === "lint_failed" &&
+    typeof entry.data?.severity === "string" &&
+    entry.data.severity === "error"
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -234,7 +357,20 @@ function NodeGroup({
     return groups;
   }, [entries]);
 
-  const hasRichEvents = Boolean(categorized.thinking || categorized.tool || categorized.output || categorized.error);
+  const hasRichEvents = Boolean(
+    categorized.thinking ||
+      categorized.tool ||
+      categorized.output ||
+      categorized.lint ||
+      categorized.error,
+  );
+  const actionableErrors = useMemo(
+    () => [
+      ...(categorized.error ?? []),
+      ...((categorized.lint ?? []).filter(isBlockingLintFailure)),
+    ],
+    [categorized.error, categorized.lint],
+  );
 
   const handleInspectInputs = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -254,8 +390,7 @@ function NodeGroup({
 
   const handleFixThis = (e: React.MouseEvent) => {
     e.stopPropagation();
-    const errorEntries = categorized.error ?? [];
-    const firstError = errorEntries[0];
+    const firstError = actionableErrors[0];
     const errorType = firstError?.event_type ?? "error";
     const errorMsg = firstError ? (dataContent(firstError) ?? firstError.message) : "unknown error";
     const firstLine = errorMsg.split("\n")[0].slice(0, 120);
@@ -278,7 +413,7 @@ function NodeGroup({
           <span className="text-gray-400 font-normal ml-auto shrink-0">{entries.length}</span>
         </button>
         <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover/nodegroup:opacity-100 hover:opacity-100" style={{ opacity: open ? 1 : undefined }}>
-          {categorized.error && categorized.error.length > 0 && (
+          {actionableErrors.length > 0 && (
             <button onClick={handleFixThis} title="Fix this error in Debug mode" className="p-0.5 rounded text-red-400 hover:text-red-600 hover:bg-red-50">
               <WrenchIcon className="text-current" />
             </button>
@@ -365,6 +500,7 @@ function RunSummaryBar() {
   const nodeUsage = useGraphStore((s) => s.nodeUsage);
   const wasteFindings = useGraphStore((s) => s.wasteFindings);
   const nodes = useGraphStore((s) => s.nodes);
+  const logs = useGraphStore((s) => s.logs);
   const [expanded, setExpanded] = useState(false);
   if (!runSummary || (runStatus !== "completed" && runStatus !== "failed")) return null;
   const ok = runStatus === "completed";
@@ -391,6 +527,13 @@ function RunSummaryBar() {
   // 18-4: Waste summary
   const totalWaste = wasteFindings.reduce((a, f) => a + f.estimated_saveable_tokens, 0);
   const wasteCategories = new Set(wasteFindings.map((f) => f.category));
+  const lintPassed = logs.filter((entry) => entry.event_type === "lint_passed").length;
+  const lintAutoFixed = logs.filter((entry) => entry.event_type === "lint_auto_fixed").length;
+  const lintBlocked = logs.filter(isBlockingLintFailure).length;
+  const lintWarnings = logs.filter(
+    (entry) => entry.event_type === "lint_failed" && !isBlockingLintFailure(entry),
+  ).length;
+  const hasLintSummary = lintPassed + lintAutoFixed + lintBlocked + lintWarnings > 0;
 
   return (
     <div className={`border-t ${ok ? "border-green-200" : "border-red-200"}`}>
@@ -411,6 +554,14 @@ function RunSummaryBar() {
           <>
             <span className="text-gray-400">|</span>
             <span className="text-amber-600">{wasteFindings.length} waste finding{wasteFindings.length > 1 ? "s" : ""}</span>
+          </>
+        )}
+        {hasLintSummary && (
+          <>
+            <span className="text-gray-400">|</span>
+            <span className={lintBlocked > 0 ? "text-amber-700" : "text-emerald-700"}>
+              lint {lintBlocked} blocked / {lintAutoFixed} fixed / {lintPassed} passed
+            </span>
           </>
         )}
         <span className="ml-auto text-gray-400 text-[10px]">{expanded ? "collapse" : "details"}</span>
@@ -445,6 +596,16 @@ function RunSummaryBar() {
               </div>
               <div className="text-gray-500">
                 Categories: {[...wasteCategories].join(", ")}
+              </div>
+            </div>
+          )}
+
+          {hasLintSummary && (
+            <div>
+              <div className="font-semibold text-gray-600 mb-0.5">Lint Summary</div>
+              <div className="text-gray-500">
+                {lintBlocked} blocked, {lintAutoFixed} auto-fixed, {lintPassed} passed
+                {lintWarnings > 0 ? `, ${lintWarnings} warning-only` : ""}
               </div>
             </div>
           )}

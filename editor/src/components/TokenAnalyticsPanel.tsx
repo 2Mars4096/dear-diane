@@ -422,6 +422,7 @@ function TelemetrySummaryStrip({
   const modelRows = summary?.models.slice(0, 2) ?? [];
   const modeRows = summary?.modes.slice(0, 2) ?? [];
   const recentHours = summary?.activity_by_hour.slice(-3) ?? [];
+  const lintSummary = summary?.lint;
 
   return (
     <div className="px-3 py-2 border-b border-slate-200 bg-slate-50/80 shrink-0">
@@ -490,6 +491,31 @@ function TelemetrySummaryStrip({
               {formatTelemetryHour(row.group_key.hour ?? "")}: {row.count}
             </span>
           ))}
+          {lintSummary && lintSummary.workflow_runs > 0 && (
+            <span className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-slate-600">
+              lint: {lintSummary.with_activity}/{lintSummary.workflow_runs} runs
+            </span>
+          )}
+          {lintSummary && lintSummary.blocked_runs > 0 && (
+            <span className="px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-700">
+              blocked {lintSummary.blocked_runs}
+            </span>
+          )}
+          {lintSummary && lintSummary.autofixed_runs > 0 && (
+            <span className="px-1.5 py-0.5 rounded bg-teal-50 border border-teal-200 text-teal-700">
+              auto-fixed {lintSummary.autofixed_runs}
+            </span>
+          )}
+          {lintSummary && lintSummary.warning_runs > 0 && (
+            <span className="px-1.5 py-0.5 rounded bg-yellow-50 border border-yellow-200 text-yellow-700">
+              warnings {lintSummary.warning_runs}
+            </span>
+          )}
+          {lintSummary && lintSummary.passed_runs > 0 && (
+            <span className="px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-700">
+              passed {lintSummary.passed_runs}
+            </span>
+          )}
         </div>
       )}
       {error && (

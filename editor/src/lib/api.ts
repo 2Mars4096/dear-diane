@@ -591,6 +591,15 @@ export interface TelemetryAnalyticsResponse {
   activity_by_hour: TelemetryAggregateRow[];
   models: TelemetryAggregateRow[];
   modes: TelemetryAggregateRow[];
+  lint: {
+    workflow_runs: number;
+    with_activity: number;
+    blocked_runs: number;
+    autofixed_runs: number;
+    warning_runs: number;
+    passed_runs: number;
+    states: TelemetryAggregateRow[];
+  };
   window_hours: number;
 }
 

@@ -100,6 +100,10 @@ export interface LogEntry {
   data?: Record<string, unknown>;
 }
 
+interface RunEventHandleOptions {
+  historical?: boolean;
+}
+
 // -- 5-3: Rich logging -------------------------------------------------------
 export const EVENT_CATEGORY: Record<string, string> = {
   llm_thinking: "thinking",
@@ -107,6 +111,9 @@ export const EVENT_CATEGORY: Record<string, string> = {
   tool_call_result: "tool",
   code_output: "output",
   intermediate_text: "output",
+  lint_passed: "lint",
+  lint_failed: "lint",
+  lint_auto_fixed: "lint",
   node_failed: "error",
   run_failed: "error",
   node_started: "lifecycle",
@@ -229,7 +236,7 @@ interface GraphState {
   recoverActiveRun: () => Promise<void>;
 
   // -- Actions: event handling
-  handleRunEvent: (event: Record<string, unknown>) => void;
+  handleRunEvent: (event: Record<string, unknown>, options?: RunEventHandleOptions) => void;
 
   // -- 5-3: Rich logging
   selectNodeFromLog: (nodeId: string) => void;
@@ -377,6 +384,7 @@ const COST_PER_1K: Record<string, { prompt: number; completion: number }> = {
 };
 
 const VALID_TIERS = new Set<string>(["micro", "routine", "reasoning", "critical"]);
+const RUN_NOTIFICATION_KEYS = new Set<string>();
 
 function estimateCost(model: string, promptTokens: number, completionTokens: number): number | null {
   let rates = COST_PER_1K[model];
@@ -387,6 +395,47 @@ function estimateCost(model: string, promptTokens: number, completionTokens: num
   }
   if (!rates) return null;
   return (promptTokens * rates.prompt + completionTokens * rates.completion) / 1000;
+}
+
+function _stringField(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function _lintRouteSummary(data: Record<string, unknown>): string | null {
+  const sourcePort = _stringField(data.source_port);
+  const targetNode = _stringField(data.target_node_id);
+  const targetPort = _stringField(data.target_port);
+  if (!sourcePort && !targetNode && !targetPort) return null;
+  return `${sourcePort ?? "?"} -> ${targetNode ?? "?"}.${targetPort ?? "?"}`;
+}
+
+function _firstLintDiagnosticMessage(data: Record<string, unknown>): string | null {
+  const diagnostics = data.diagnostics;
+  if (Array.isArray(diagnostics)) {
+    for (const item of diagnostics) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const message = _stringField((item as Record<string, unknown>).message);
+      if (message) return message;
+    }
+  }
+  return _stringField(data.message);
+}
+
+function _lintNotificationKey(
+  runId: string | null,
+  eventType: string,
+  nodeId: string | undefined,
+  timestamp: number,
+  data: Record<string, unknown>,
+): string {
+  return [
+    runId ?? "no-run",
+    eventType,
+    nodeId ?? "no-node",
+    _stringField(data.edge_id) ?? "no-edge",
+    typeof data.attempt === "number" ? String(data.attempt) : "no-attempt",
+    String(timestamp),
+  ].join("|");
 }
 
 export const useGraphStore = create<GraphState>((set, get) => {
@@ -1136,11 +1185,12 @@ export const useGraphStore = create<GraphState>((set, get) => {
 
   // -- Event handling --------------------------------------------------------
 
-  handleRunEvent: (event) => {
+  handleRunEvent: (event, options) => {
     // 6-9: Ignore events from other tabs' runs
     const activeRunId = get().runId;
     const eventRunId = event.run_id as string | undefined;
     if (activeRunId && eventRunId && eventRunId !== activeRunId) return;
+    const isHistorical = options?.historical === true;
 
     const eventType = event.event_type as string;
     const nodeId = event.node_id as string | undefined;
@@ -1157,7 +1207,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         });
       }
       for (const be of buffered) {
-        get().handleRunEvent(be);
+        get().handleRunEvent(be, options);
       }
       const pendingHI = (event.pending_human_inputs ?? []) as Array<Record<string, unknown>>;
       if (pendingHI.length > 0) {
@@ -1306,6 +1356,36 @@ export const useGraphStore = create<GraphState>((set, get) => {
         pendingHumanInput: newPendingHuman,
       };
     });
+
+    if (
+      !isHistorical &&
+      eventType === "lint_failed" &&
+      data.severity === "error" &&
+      data.handoff_committed === false
+    ) {
+      const notificationKey = _lintNotificationKey(
+        eventRunId ?? activeRunId ?? null,
+        eventType,
+        nodeId,
+        ts,
+        data,
+      );
+      if (!RUN_NOTIFICATION_KEYS.has(notificationKey)) {
+        RUN_NOTIFICATION_KEYS.add(notificationKey);
+        const route = _lintRouteSummary(data);
+        const diagnostic = _firstLintDiagnosticMessage(data);
+        useAppStore.getState().addNotification({
+          type: "error",
+          title: nodeId ? `Lint blocked handoff in ${nodeId}` : "Lint blocked handoff",
+          message: [route, diagnostic].filter(Boolean).join(" — "),
+          source: "run",
+          action: {
+            label: "Open logs",
+            callback: () => get().focusLogPanel(),
+          },
+        });
+      }
+    }
 
     if (eventType === "run_completed" || eventType === "run_failed") {
       _persistTabState();
@@ -1871,7 +1951,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         edgeTokenCounts: {},
       });
       for (const event of eventResponse.events) {
-        get().handleRunEvent(event as Record<string, unknown>);
+        get().handleRunEvent(event as Record<string, unknown>, { historical: true });
       }
       set((s) => {
         const finalStatuses =

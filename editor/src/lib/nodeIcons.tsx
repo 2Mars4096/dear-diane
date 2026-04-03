@@ -3,6 +3,13 @@ import React from "react";
 const S = 16;
 
 const icons: Record<string, React.JSX.Element> = {
+  worker: (
+    <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
+      <rect x="2" y="3" width="12" height="10" rx="2" stroke="currentColor" strokeWidth={1.3} />
+      <path d="M5 1.8v2.1M8 1.8v2.1M11 1.8v2.1M5 12.1v2.1M8 12.1v2.1M11 12.1v2.1" stroke="currentColor" strokeWidth={1.1} strokeLinecap="round" />
+      <path d="M5.3 6.2h5.4M5.3 8h5.4M5.3 9.8h3.2" stroke="currentColor" strokeWidth={1.1} strokeLinecap="round" />
+    </svg>
+  ),
   llm_operator: (
     <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
       <path d="M8 1l1.5 3.5L13 6l-3.5 1.5L8 11 6.5 7.5 3 6l3.5-1.5L8 1z" fill="currentColor" />

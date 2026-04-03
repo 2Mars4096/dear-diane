@@ -19,6 +19,55 @@ interface NodeState {
   error?: string;
   startTime?: number;
   endTime?: number;
+  lintBlockedCount?: number;
+  lintAutoFixedCount?: number;
+  lintPassedCount?: number;
+  lintMessages?: string[];
+}
+
+interface LintOutcomeSummary {
+  blocked: number;
+  autoFixed: number;
+  passed: number;
+}
+
+function extractLintPayload(detail?: Record<string, unknown>): Record<string, unknown> | null {
+  if (!detail) return null;
+  const nested = detail.data;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    return nested as Record<string, unknown>;
+  }
+  return detail;
+}
+
+function extractLintMessage(detail?: Record<string, unknown>): string | undefined {
+  const payload = extractLintPayload(detail);
+  if (!payload) return undefined;
+  const diagnostics = payload.diagnostics;
+  if (Array.isArray(diagnostics)) {
+    for (const item of diagnostics) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const message = (item as Record<string, unknown>).message;
+      if (typeof message === "string" && message.trim()) return message.trim();
+    }
+  }
+  const message = payload.message;
+  return typeof message === "string" && message.trim() ? message.trim() : undefined;
+}
+
+function extractLintRoute(detail?: Record<string, unknown>): string | undefined {
+  const payload = extractLintPayload(detail);
+  if (!payload) return undefined;
+  const sourcePort = typeof payload.source_port === "string" ? payload.source_port : "?";
+  const targetNodeId = typeof payload.target_node_id === "string" ? payload.target_node_id : "?";
+  const targetPort = typeof payload.target_port === "string" ? payload.target_port : "?";
+  if (sourcePort === "?" && targetNodeId === "?" && targetPort === "?") return undefined;
+  return `${sourcePort} -> ${targetNodeId}.${targetPort}`;
+}
+
+function isBlockingLintFailure(detail?: Record<string, unknown>): boolean {
+  const payload = extractLintPayload(detail);
+  return payload?.severity === "error" && payload?.handoff_committed === false;
 }
 
 function extractRunEventError(detail?: Record<string, unknown>): string | undefined {
@@ -49,9 +98,11 @@ function extractRunEventError(detail?: Record<string, unknown>): string | undefi
 function deriveNodeStates(events: RunEventPayload[]): {
   nodes: NodeState[];
   runStatus: "running" | "completed" | "failed" | "cancelled";
+  lintSummary: LintOutcomeSummary;
 } {
   const nodeMap = new Map<string, NodeState>();
   let runStatus: "running" | "completed" | "failed" | "cancelled" = "running";
+  const lintSummary: LintOutcomeSummary = { blocked: 0, autoFixed: 0, passed: 0 };
 
   for (const evt of events) {
     const nodeId = evt.node_id;
@@ -87,6 +138,32 @@ function deriveNodeStates(events: RunEventPayload[]): {
     }
     const node = nodeMap.get(nodeId)!;
 
+    if (evt.event_type === "lint_failed") {
+      const route = extractLintRoute(evt.detail);
+      const message = extractLintMessage(evt.detail) ?? evt.summary;
+      node.lintMessages = [...(node.lintMessages ?? []), [route, message].filter(Boolean).join(" — ")];
+      if (isBlockingLintFailure(evt.detail)) {
+        node.lintBlockedCount = (node.lintBlockedCount ?? 0) + 1;
+        lintSummary.blocked += 1;
+      }
+      continue;
+    }
+
+    if (evt.event_type === "lint_auto_fixed") {
+      const route = extractLintRoute(evt.detail);
+      const message = extractLintMessage(evt.detail) ?? evt.summary;
+      node.lintMessages = [...(node.lintMessages ?? []), [route, message].filter(Boolean).join(" — ")];
+      node.lintAutoFixedCount = (node.lintAutoFixedCount ?? 0) + 1;
+      lintSummary.autoFixed += 1;
+      continue;
+    }
+
+    if (evt.event_type === "lint_passed") {
+      node.lintPassedCount = (node.lintPassedCount ?? 0) + 1;
+      lintSummary.passed += 1;
+      continue;
+    }
+
     switch (evt.event_type) {
       case "node_started":
         node.status = "running";
@@ -115,6 +192,7 @@ function deriveNodeStates(events: RunEventPayload[]): {
   return {
     nodes: Array.from(nodeMap.values()),
     runStatus,
+    lintSummary,
   };
 }
 
@@ -158,7 +236,7 @@ export default function RunOutputBlock({ events, runRef }: RunOutputBlockProps) 
 
   if (events.length === 0 && !runRef) return null;
 
-  const { nodes, runStatus } = deriveNodeStates(events);
+  const { nodes, runStatus, lintSummary } = deriveNodeStates(events);
   const hasError = nodes.some((n) => n.status === "failed");
   const [expanded, setExpanded] = useState(hasError);
   const finalStatus =
@@ -168,6 +246,11 @@ export default function RunOutputBlock({ events, runRef }: RunOutputBlockProps) 
       ? (runRef.status as "completed" | "failed" | "cancelled")
     : runStatus;
   const cfg = RUN_STATUS_CONFIG[finalStatus];
+  const hasLintSummary =
+    lintSummary.blocked + lintSummary.autoFixed + lintSummary.passed > 0;
+  const lintSummaryText = hasLintSummary
+    ? `${lintSummary.blocked} lint blocked / ${lintSummary.autoFixed} auto-fixed / ${lintSummary.passed} passed`
+    : null;
 
   const toggleNode = (nodeId: string) => {
     setExpandedNodes((prev) => {
@@ -190,61 +273,99 @@ export default function RunOutputBlock({ events, runRef }: RunOutputBlockProps) 
         <span className="text-xs font-medium flex-1 text-left">
           {expanded
             ? `Run ${runRef?.scope ? `(${runRef.scope})` : ""}`
-            : `${nodes.length} node${nodes.length !== 1 ? "s" : ""} — ${cfg.label}`}
+            : `${nodes.length} node${nodes.length !== 1 ? "s" : ""} — ${cfg.label}${lintSummaryText ? ` · ${lintSummaryText}` : ""}`}
         </span>
         {cfg.icon}
         <span className="text-[10px] font-medium">{cfg.label}</span>
       </button>
 
       {/* Node list */}
-      {expanded && nodes.length > 0 && (
+      {expanded && (
         <div className="border-t border-gray-100">
-          {nodes.map((node) => {
-            const isExpanded = expandedNodes.has(node.nodeId);
-            const elapsed =
-              node.startTime && node.endTime
-                ? node.endTime - node.startTime
-                : null;
+          {hasLintSummary && (
+            <div className="px-3 py-1.5 text-[10px] bg-amber-50/60 text-amber-700 border-b border-amber-100">
+              Lint Summary: {lintSummary.blocked} blocked, {lintSummary.autoFixed} auto-fixed, {lintSummary.passed} passed
+            </div>
+          )}
+          {nodes.length > 0 && (
+            nodes.map((node) => {
+              const isExpanded = expandedNodes.has(node.nodeId);
+              const elapsed =
+                node.startTime && node.endTime
+                  ? node.endTime - node.startTime
+                  : null;
+              const hasDetails = Boolean(
+                node.output || node.error || (node.lintMessages?.length ?? 0) > 0,
+              );
 
-            return (
-              <div key={node.nodeId} className="border-b border-gray-50 last:border-b-0">
-                <button
-                  onClick={() => toggleNode(node.nodeId)}
-                  className="flex items-center gap-1.5 w-full px-3 py-1.5 hover:bg-gray-50/50 transition-colors"
-                >
-                  {NODE_STATUS_ICON[node.status]}
-                  <span className="text-[11px] text-gray-700 flex-1 text-left truncate font-mono">
-                    {node.nodeId}
-                  </span>
-                  {elapsed != null && (
-                    <span className="flex items-center gap-0.5 text-[9px] text-gray-400 tabular-nums">
-                      <Clock size={8} />
-                      {elapsed < 1000 ? `${elapsed}ms` : `${(elapsed / 1000).toFixed(1)}s`}
+              return (
+                <div key={node.nodeId} className="border-b border-gray-50 last:border-b-0">
+                  <button
+                    onClick={() => toggleNode(node.nodeId)}
+                    className="flex items-center gap-1.5 w-full px-3 py-1.5 hover:bg-gray-50/50 transition-colors"
+                  >
+                    {NODE_STATUS_ICON[node.status]}
+                    <span className="text-[11px] text-gray-700 flex-1 text-left truncate font-mono">
+                      {node.nodeId}
                     </span>
-                  )}
-                  {(node.output || node.error) && (
-                    isExpanded
-                      ? <ChevronDown size={10} className="text-gray-300" />
-                      : <ChevronRight size={10} className="text-gray-300" />
-                  )}
-                </button>
+                    {(node.lintBlockedCount ?? 0) > 0 && (
+                      <span className="text-[9px] rounded bg-amber-100 text-amber-700 px-1 py-0.5">
+                        {node.lintBlockedCount} blocked
+                      </span>
+                    )}
+                    {(node.lintAutoFixedCount ?? 0) > 0 && (
+                      <span className="text-[9px] rounded bg-teal-100 text-teal-700 px-1 py-0.5">
+                        {node.lintAutoFixedCount} fixed
+                      </span>
+                    )}
+                    {(node.lintPassedCount ?? 0) > 0 && (
+                      <span className="text-[9px] rounded bg-emerald-100 text-emerald-700 px-1 py-0.5">
+                        {node.lintPassedCount} passed
+                      </span>
+                    )}
+                    {elapsed != null && (
+                      <span className="flex items-center gap-0.5 text-[9px] text-gray-400 tabular-nums">
+                        <Clock size={8} />
+                        {elapsed < 1000 ? `${elapsed}ms` : `${(elapsed / 1000).toFixed(1)}s`}
+                      </span>
+                    )}
+                    {hasDetails &&
+                      (isExpanded ? (
+                        <ChevronDown size={10} className="text-gray-300" />
+                      ) : (
+                        <ChevronRight size={10} className="text-gray-300" />
+                      ))}
+                  </button>
 
-                {isExpanded && (node.output || node.error) && (
-                  <div className="px-3 pb-2">
-                    <pre
-                      className={`text-[10px] rounded p-2 overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed ${
-                        node.error
-                          ? "text-red-600 bg-red-50"
-                          : "text-gray-600 bg-gray-50"
-                      }`}
-                    >
-                      {node.error || node.output}
-                    </pre>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                  {isExpanded && hasDetails && (
+                    <div className="px-3 pb-2">
+                      {(node.error || node.output) && (
+                        <pre
+                          className={`text-[10px] rounded p-2 overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed ${
+                            node.error
+                              ? "text-red-600 bg-red-50"
+                              : "text-gray-600 bg-gray-50"
+                          }`}
+                        >
+                          {node.error || node.output}
+                        </pre>
+                      )}
+                      {(node.lintMessages?.length ?? 0) > 0 && (
+                        <div className="mt-2 rounded bg-amber-50 px-2 py-1.5 text-[10px] text-amber-800">
+                          <div className="font-medium mb-1">Lint activity</div>
+                          <div className="space-y-1">
+                            {node.lintMessages?.map((message, index) => (
+                              <div key={`${node.nodeId}-lint-${index}`}>{message}</div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
         </div>
       )}
 
