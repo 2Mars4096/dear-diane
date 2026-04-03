@@ -1,6 +1,6 @@
 /**
  * ModeChatSidebar: reusable AI chat sidebar for any mode.
- * Persists chat history per workspace + mode in localStorage.
+ * Persists compact chat session state per workspace + mode + workflow in localStorage.
  * Each mode provides its own context via the `contextProvider` prop.
  */
 import {
@@ -35,43 +35,24 @@ import {
 import { useAppStore, type AppMode } from "../../store/useAppStore";
 import { useGraphStore } from "../../store/useGraphStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
-import { isElectron, nativeTerminal, nativeFs } from "../../lib/electronBridge";
-import { useCodeStore } from "../../store/useCodeStore";
-import type { ChatMessage, ReviewableFileEdit } from "../../types/chat";
-import type { ChatThreadSummary } from "../../lib/api";
+import type { ChatMessage } from "../../types/chat";
 import * as api from "../../lib/api";
 import {
   type ComposerAttachmentDraft,
   cloneAttachmentDraft,
-  type EditorChatMode,
   fileToAttachmentDraft,
-  normalizeAttachmentDrafts,
   resolveAttachmentName,
-  sanitizeChatHistory,
-  startEditorChat,
-  streamEditorChatResponse,
 } from "../../lib/editorChat";
 import ChatMessageBubble from "../ChatMessage";
 import MentionAutocomplete from "../MentionAutocomplete";
 import {
   findMentionQuery,
   insertMention,
-  parseMentions,
   type MentionRef,
 } from "../../lib/mentionParser";
 import {
-  fromBackendMessage,
-  safeTokenUsage,
   toBackendMessage,
 } from "../../lib/chatMessagePersistence";
-import {
-  applyAssistantRunEvent,
-  applyAssistantToolCallResult,
-  applyAssistantToolCallStart,
-  insertInjectedUserBeforeAssistant,
-  shouldStopSidebarThreadSnapshotPolling,
-  upsertAssistantMessage,
-} from "./modeChatSidebarState";
 import {
   deriveDraftThreadTitleFromMessage,
   getDisplayThreadTitle,
@@ -82,17 +63,27 @@ import {
   getExploreBranchTarget,
   getRegenerateBranchTarget,
 } from "../../lib/chatBranching";
-import { extractFileWritePaths } from "../../lib/toolCallPresentation";
-import { buildSurfaceContext } from "../../lib/contextBudget";
-import { extractImportPaths } from "../../lib/importResolver";
 import {
   formatCodeContextForChat,
   resolveClipboardCodeContext,
 } from "../../lib/clipboardContext";
 import {
-  detectProjectType,
-  type ProjectDetection,
-} from "../../lib/workspaceIntelligence";
+  buildModeChatScopeKey,
+  formatModeChatWorkflowLabel,
+  loadModeChatSession,
+  resolveModeChatWorkflowId,
+  saveModeChatSession,
+  type StoredModeChatSession,
+} from "./modeChatSidebarSession";
+import {
+  type BranchType,
+  type PendingQueueItem,
+  type RewriteBranchState,
+  type SidebarChatMode,
+} from "./modeChatSidebarTypes";
+import { useModeChatSidebarHistory } from "./useModeChatSidebarHistory";
+import { useModeChatSidebarNativeActions } from "./useModeChatSidebarNativeActions";
+import { useModeChatSidebarTransport } from "./useModeChatSidebarTransport";
 
 /* ------------------------------------------------------------------ */
 /*  Chat sender registry (per-mode)                                    */
@@ -182,124 +173,55 @@ export interface ModeChatSidebarProps {
   contextProvider?: () => string;
 }
 
-type SidebarChatMode = Exclude<EditorChatMode, "conversation">;
-
-const PROJECT_DETECTION_TTL_MS = 60_000;
-const projectDetectionCache = new Map<
-  string,
-  { detectedAt: number; detection: ProjectDetection }
->();
-
-async function getCachedProjectDetection(rootPath: string): Promise<ProjectDetection> {
-  const cached = projectDetectionCache.get(rootPath);
-  if (cached && Date.now() - cached.detectedAt < PROJECT_DETECTION_TTL_MS) {
-    return cached.detection;
-  }
-  const detection = await detectProjectType(rootPath);
-  projectDetectionCache.set(rootPath, {
-    detectedAt: Date.now(),
-    detection,
-  });
-  return detection;
-}
-
-interface PendingQueueItem {
-  id: string;
-  content: string;
-  timestamp: number;
-  attachments: ComposerAttachmentDraft[];
-  mode: SidebarChatMode;
-  mentions: Array<{ type: string; identifier: string }>;
-}
-
-interface StoredModeChatSession {
-  messages: ChatMessage[];
-  threadId: string | null;
-  chatMode: SidebarChatMode;
-}
-
-type BranchType = "edit" | "regenerate" | "explore";
-
-type RewriteBranchState = {
-  sourceMessageId: string;
-  historyBefore: ChatMessage[];
-  branchType: BranchType;
-};
-
-/* ------------------------------------------------------------------ */
-/*  Persistence                                                        */
-/* ------------------------------------------------------------------ */
-
-function chatStorageKey(workspaceId: string, mode: AppMode): string {
-  return `dan-chat-${workspaceId}-${mode}`;
-}
-
-function defaultStoredSession(): StoredModeChatSession {
-  return {
-    messages: [],
-    threadId: null,
-    chatMode: "auto",
+interface ModeChatSidebarInnerProps extends ModeChatSidebarProps {
+  workflowId: string;
+  workspaceId: string | null;
+  sidebarCopy: {
+    surfaceLabel: string;
+    emptyPrimary: string;
+    emptySecondary: string;
   };
 }
 
-function loadChatSession(
-  workspaceId: string | null,
-  mode: AppMode,
-): StoredModeChatSession {
-  if (!workspaceId) return defaultStoredSession();
-  try {
-    const raw = localStorage.getItem(chatStorageKey(workspaceId, mode));
-    if (!raw) return defaultStoredSession();
-    const parsed = JSON.parse(raw);
-
-    // Legacy format stored the message array directly.
-    if (Array.isArray(parsed)) {
-      return {
-        ...defaultStoredSession(),
-        messages: parsed as ChatMessage[],
-      };
-    }
-
-    if (!parsed || typeof parsed !== "object") {
-      return defaultStoredSession();
-    }
-
-    return {
-      messages: Array.isArray((parsed as { messages?: unknown }).messages)
-        ? ((parsed as { messages: ChatMessage[] }).messages ?? [])
-        : [],
-      threadId:
-        typeof (parsed as { threadId?: unknown }).threadId === "string"
-          ? ((parsed as { threadId: string }).threadId ?? null)
-          : null,
-      chatMode:
-        typeof (parsed as { chatMode?: unknown }).chatMode === "string"
-          ? (((parsed as { chatMode: SidebarChatMode }).chatMode ?? "auto") as SidebarChatMode)
-          : "auto",
-    };
-  } catch {
-    return defaultStoredSession();
+const MODE_SIDECAR_COPY: Record<
+  AppMode,
+  {
+    surfaceLabel: string;
+    emptyPrimary: string;
+    emptySecondary: string;
   }
-}
-
-const MAX_PERSISTED_MESSAGES = 200;
-
-function saveChatSession(
-  workspaceId: string | null,
-  mode: AppMode,
-  session: StoredModeChatSession,
-) {
-  if (!workspaceId) return;
-  try {
-    localStorage.setItem(
-      chatStorageKey(workspaceId, mode),
-      JSON.stringify({
-        ...session,
-        messages: session.messages.slice(-MAX_PERSISTED_MESSAGES),
-      }),
-    );
-  } catch { /* quota */ }
-}
+> = {
+  chat: {
+    surfaceLabel: "Chat sidecar",
+    emptyPrimary: "Ask a question or reopen a saved conversation.",
+    emptySecondary: "Use History to revisit threads, drag files in, paste images, type @ for mentions, or / for commands.",
+  },
+  research: {
+    surfaceLabel: "Research sidecar",
+    emptyPrimary: "Ask about the active paper, citations, notes, or training run.",
+    emptySecondary: "Use History to reopen saved chats, or drag files here, paste files/images, use @ mentions, and type / for commands.",
+  },
+  development: {
+    surfaceLabel: "Code sidecar",
+    emptyPrimary: "Ask about the open file, workspace state, or pending code review.",
+    emptySecondary: "Use History to reopen saved chats, or drag files here, paste files/images, use @ mentions, and type / for commands.",
+  },
+  operations: {
+    surfaceLabel: "Workflow sidecar",
+    emptyPrimary: "Ask about the current graph, run logs, or workflow edits.",
+    emptySecondary: "Use History to revisit saved threads, or drag files here, paste files/images, use @ mentions, and type / for commands.",
+  },
+  analytics: {
+    surfaceLabel: "Analytics sidecar",
+    emptyPrimary: "Ask about dashboards, metrics, or recent telemetry.",
+    emptySecondary: "Use History to revisit saved chats, or drag files here, paste files/images, use @ mentions, and type / for commands.",
+  },
+  content: {
+    surfaceLabel: "Content sidecar",
+    emptyPrimary: "Ask about drafts, notes, or structured writing tasks.",
+    emptySecondary: "Use History to revisit saved chats, or drag files here, paste files/images, use @ mentions, and type / for commands.",
+  },
+};
 
 /* ------------------------------------------------------------------ */
 /*  Composer + command helpers                                         */
@@ -390,91 +312,6 @@ function parseLeadingCommand(input: string): {
     command: command.toLowerCase(),
     remainder: rest.join(" ").trim(),
   };
-}
-
-function collectStructuredMentions(text: string): Array<{ type: string; identifier: string }> {
-  return parseMentions(text).segments
-    .filter((segment) => segment.type === "mention")
-    .map((segment) => ({
-      type: (segment as { type: "mention"; mention: MentionRef }).mention.type,
-      identifier: (segment as { type: "mention"; mention: MentionRef }).mention.id,
-    }));
-}
-
-interface MentionContext {
-  mentioned_files: Array<{ path: string; content: string; lines: number }>;
-  mentioned_symbols: string[];
-  mentioned_folders: Array<{ path: string; entries: string[] }>;
-  context_summary: string;
-}
-
-async function expandMentionContext(
-  mentions: Array<{ type: string; identifier: string }>,
-): Promise<MentionContext> {
-  const ctx: MentionContext = {
-    mentioned_files: [],
-    mentioned_symbols: [],
-    mentioned_folders: [],
-    context_summary: "",
-  };
-
-  const fileMentions = mentions.filter((m) => m.type === "file");
-  const symbolMentions = mentions.filter((m) => m.type === "symbol");
-  const folderMentions = mentions.filter((m) => m.type === "folder");
-
-  const fileResults = await Promise.allSettled(
-    fileMentions.map(async (m) => {
-      const content = await nativeFs.readFile(m.identifier);
-      if (content != null) {
-        const lines = content.split("\n").length;
-        return { path: m.identifier, content, lines };
-      }
-      return null;
-    }),
-  );
-  for (const r of fileResults) {
-    if (r.status === "fulfilled" && r.value) ctx.mentioned_files.push(r.value);
-  }
-
-  for (const m of symbolMentions) {
-    ctx.mentioned_symbols.push(m.identifier);
-  }
-
-  const folderResults = await Promise.allSettled(
-    folderMentions.map(async (m) => {
-      const entries = await nativeFs.readDir(m.identifier);
-      if (entries) {
-        return {
-          path: m.identifier,
-          entries: entries.map((e: { name: string; isDirectory: boolean }) => `${e.name}${e.isDirectory ? "/" : ""}`),
-        };
-      }
-      return null;
-    }),
-  );
-  for (const r of folderResults) {
-    if (r.status === "fulfilled" && r.value) ctx.mentioned_folders.push(r.value);
-  }
-
-  const parts: string[] = [];
-  if (ctx.mentioned_files.length > 0) {
-    const fileList = ctx.mentioned_files
-      .map((f) => `${f.path} (${f.lines} lines)`)
-      .join(", ");
-    parts.push(`Files: ${fileList}`);
-  }
-  if (ctx.mentioned_symbols.length > 0) {
-    parts.push(`Symbols: ${ctx.mentioned_symbols.join(", ")}`);
-  }
-  if (ctx.mentioned_folders.length > 0) {
-    const folderList = ctx.mentioned_folders
-      .map((f) => `${f.path} (${f.entries.length} items)`)
-      .join(", ");
-    parts.push(`Folders: ${folderList}`);
-  }
-  ctx.context_summary = parts.length > 0 ? `[Context: ${parts.join("; ")}]` : "";
-
-  return ctx;
 }
 
 function SlashCommandPopup({
@@ -572,16 +409,16 @@ function SmartPasteHint({
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export default function ModeChatSidebar({ mode, onClose, contextProvider }: ModeChatSidebarProps) {
-  const workspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const graphWorkflowId = useGraphStore((s) => s.graphId);
-  const activeChatWorkflowId = useAppStore((s) => s.activeChatWorkflowId);
-  const workflowId = useMemo(() => {
-    const candidate = (graphWorkflowId || activeChatWorkflowId || "").trim();
-    return candidate || "_scratch";
-  }, [activeChatWorkflowId, graphWorkflowId]);
+function ModeChatSidebarInner({
+  mode,
+  onClose,
+  contextProvider,
+  workflowId,
+  workspaceId,
+  sidebarCopy,
+}: ModeChatSidebarInnerProps) {
   const initialSessionRef = useRef<StoredModeChatSession>(
-    loadChatSession(workspaceId, mode),
+    loadModeChatSession(workspaceId, mode, workflowId),
   );
 
   const [messages, setMessages] = useState<ChatMessage[]>(
@@ -596,17 +433,10 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
   const [threadTitle, setThreadTitle] = useState<string>(
     summarizeThreadTitle(initialSessionRef.current.messages),
   );
-  const [threads, setThreads] = useState<ChatThreadSummary[]>([]);
-  const [loadingThreads, setLoadingThreads] = useState(false);
-  const [showThreadList, setShowThreadList] = useState(false);
   const [detectedMode, setDetectedMode] = useState<SidebarChatMode | null>(null);
   const [input, setInput] = useState("");
-  const [streaming, setStreaming] = useState(false);
   const [userAttachments, setUserAttachments] = useState<ComposerAttachmentDraft[]>([]);
-  const [pendingQueue, setPendingQueue] = useState<PendingQueueItem[]>([]);
-  const [pendingOpenFullChat, setPendingOpenFullChat] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [isComposerFocused, setIsComposerFocused] = useState(false);
   const [pasteHint, setPasteHint] = useState<
     { type: "url" | "code"; value: string } | null
@@ -619,21 +449,35 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
   const [rewriteTarget, setRewriteTarget] = useState<RewriteBranchState | null>(
     null,
   );
+  const {
+    allowRunCodeBlocks,
+    resetTurnState,
+    onRunCodeBlock,
+    onReviewMultiFileEdits,
+    onToolCallStart,
+    onToolCallResult,
+  } = useModeChatSidebarNativeActions({ mode, setMessages });
+  const workflowLabel = useMemo(
+    () => formatModeChatWorkflowLabel(workflowId),
+    [workflowId],
+  );
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const threadIdRef = useRef<string | null>(threadId);
-  const activeChannelIdRef = useRef<string | null>(activeChannelId);
   const chatModeRef = useRef<SidebarChatMode>(chatMode);
-  const activeRequestModeRef = useRef<SidebarChatMode | null>(null);
   const messagesRef = useRef(messages);
-  const fileSnapshotsRef = useRef<Map<string, string | null>>(new Map());
-  const fileSnapshotLoadsRef = useRef<Map<string, Promise<void>>>(new Map());
+  const historyActionsRef = useRef<{
+    fetchThreads: () => Promise<void>;
+    hideThreadList: () => void;
+  }>({
+    fetchThreads: async () => {},
+    hideThreadList: () => {},
+  });
   messagesRef.current = messages;
   threadIdRef.current = threadId;
-  activeChannelIdRef.current = activeChannelId;
   chatModeRef.current = chatMode;
 
   const applyMode = useCallback((nextMode: SidebarChatMode) => {
@@ -641,11 +485,14 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     setDetectedMode(null);
   }, []);
 
+  const refreshThreads = useCallback(() => historyActionsRef.current.fetchThreads(), []);
+  const hideThreadList = useCallback(() => historyActionsRef.current.hideThreadList(), []);
+
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
-      saveChatSession(workspaceId, mode, {
+      saveModeChatSession(workspaceId, mode, workflowId, {
         messages,
         threadId,
         chatMode,
@@ -655,25 +502,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [messages, workspaceId, mode, threadId, chatMode]);
-
-  const fetchThreads = useCallback(async () => {
-    setLoadingThreads(true);
-    try {
-      const data = await api.listChatThreads(workflowId);
-      const next = Array.isArray(data.threads)
-        ? [...data.threads].sort(
-            (a, b) =>
-              Date.parse(b.updated_at || "") - Date.parse(a.updated_at || ""),
-          )
-        : [];
-      setThreads(next);
-    } catch (error) {
-      console.warn("Failed to fetch sidebar chat threads:", error);
-    } finally {
-      setLoadingThreads(false);
-    }
-  }, [workflowId]);
+  }, [chatMode, messages, mode, threadId, workflowId, workspaceId]);
 
   const createBranchedThread = useCallback(
     async (
@@ -711,8 +540,8 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
         setMessages(seedMessages);
         setPendingQueue([]);
         setRewriteTarget(null);
-        setShowThreadList(false);
-        void fetchThreads();
+        hideThreadList();
+        void refreshThreads();
         requestAnimationFrame(() => textareaRef.current?.focus());
         return nextThreadId;
       } catch (error) {
@@ -720,8 +549,89 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
         return null;
       }
     },
-    [fetchThreads, threadTitle, workflowId],
+    [hideThreadList, refreshThreads, threadTitle, workflowId],
   );
+
+  const {
+    activeChannelId,
+    canPushIntoCurrentTurn,
+    handleStop,
+    injectPendingQueueItem,
+    pendingQueue,
+    queueMessage,
+    resetTransportState,
+    sendNow,
+    setPendingQueue,
+    streaming,
+  } = useModeChatSidebarTransport({
+    mode,
+    workflowId,
+    workspaceId,
+    contextProvider,
+    chatModeRef,
+    messagesRef,
+    threadIdRef,
+    abortRef,
+    rewriteTarget,
+    setMessages,
+    setThreadId,
+    setThreadTitle,
+    setDetectedMode,
+    setRewriteTarget,
+    resetTurnState,
+    fetchThreads: refreshThreads,
+    createBranchedThread,
+    onToolCallStart,
+    onToolCallResult,
+  });
+
+  const clearPendingQueue = useCallback(() => {
+    setPendingQueue([]);
+  }, [setPendingQueue]);
+
+  const {
+    threads,
+    loadingThreads,
+    showThreadList,
+    pendingOpenFullChat,
+    setShowThreadList,
+    fetchThreads,
+    loadThread,
+    handleNewChat,
+    handleClear,
+    openFullChat,
+  } = useModeChatSidebarHistory({
+    mode,
+    workflowId,
+    workspaceId,
+    onClose,
+    streaming,
+    pendingQueueLength: pendingQueue.length,
+    messagesRef,
+    threadIdRef,
+    chatModeRef,
+    abortRef,
+    saveTimerRef,
+    textareaRef,
+    resetTransportState,
+    resetTurnState,
+    clearPendingQueue,
+    setMessages,
+    setChatMode,
+    setThreadId,
+    setThreadTitle,
+    setDetectedMode,
+    setInput,
+    setUserAttachments,
+    setRewriteTarget,
+    setPasteHint,
+    setMentionQuery,
+    setMentionAnchor,
+  });
+  historyActionsRef.current = {
+    fetchThreads,
+    hideThreadList: () => setShowThreadList(false),
+  };
 
   // Flush any pending debounced save when the sidebar unmounts
   useEffect(() => {
@@ -729,45 +639,15 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
       abortRef.current?.abort();
       if (saveTimerRef.current) {
         clearTimeout(saveTimerRef.current);
-        const wsId = useWorkspaceStore.getState().activeWorkspaceId;
-        saveChatSession(wsId, mode, {
+        saveModeChatSession(workspaceId, mode, workflowId, {
           messages: messagesRef.current,
           threadId: threadIdRef.current,
-          chatMode,
+          chatMode: chatModeRef.current,
         });
         saveTimerRef.current = null;
       }
     };
-  }, [chatMode, mode]);
-
-  useEffect(() => {
-    const session = loadChatSession(workspaceId, mode);
-    abortRef.current?.abort();
-    setMessages(session.messages);
-    setChatMode(session.chatMode);
-    setThreadId(session.threadId);
-    threadIdRef.current = session.threadId;
-    setThreadTitle(summarizeThreadTitle(session.messages));
-    setDetectedMode(null);
-    setInput("");
-    setStreaming(false);
-    setPendingQueue([]);
-    setPendingOpenFullChat(false);
-    setUserAttachments([]);
-    setActiveChannelId(null);
-    activeChannelIdRef.current = null;
-    activeRequestModeRef.current = null;
-    setPasteHint(null);
-    setMentionQuery(null);
-    setMentionAnchor(null);
-    setShowThreadList(false);
-    void fetchThreads();
-  }, [workspaceId, mode]);
-
-  useEffect(() => {
-    if (!showThreadList) return;
-    void fetchThreads();
-  }, [fetchThreads, showThreadList]);
+  }, [mode, workflowId, workspaceId]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -915,332 +795,10 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     ]);
   }, []);
 
-  /* ------ Code block click handler ----------------------------------- */
-
-  const handleRunInTerminal = useCallback(async (command: string) => {
-    if (!isElectron()) return;
-    const { pinnedRoots, setShowTerminal, addTerminal, setActiveTerminal } =
-      useCodeStore.getState();
-    setShowTerminal(true);
-    const cwd = pinnedRoots[0] || undefined;
-    const id = await nativeTerminal.create({ cwd });
-    if (id) {
-      const shortCmd = command.length > 40 ? command.slice(0, 37) + "..." : command;
-      addTerminal(id, `\u26A1 ${shortCmd}`);
-      setActiveTerminal(id);
-      setTimeout(() => nativeTerminal.write(id, command + "\n"), 300);
-    }
-  }, []);
-
-  const capturePreWriteSnapshot = useCallback(async (filePath: string) => {
-    if (!filePath || fileSnapshotsRef.current.has(filePath)) return;
-    const pending = fileSnapshotLoadsRef.current.get(filePath);
-    if (pending) {
-      await pending;
-      return;
-    }
-
-    const load = (async () => {
-      const openFile = useCodeStore
-        .getState()
-        .openFiles.find((entry) => entry.path === filePath);
-      if (openFile) {
-        fileSnapshotsRef.current.set(filePath, openFile.content);
-        return;
-      }
-
-      const exists = await nativeFs.exists(filePath);
-      if (!exists) {
-        if (!fileSnapshotsRef.current.has(filePath)) {
-          fileSnapshotsRef.current.set(filePath, null);
-        }
-        return;
-      }
-
-      const content = await nativeFs.readFile(filePath);
-      if (!fileSnapshotsRef.current.has(filePath)) {
-        fileSnapshotsRef.current.set(filePath, content ?? null);
-      }
-    })();
-
-    fileSnapshotLoadsRef.current.set(filePath, load);
-    try {
-      await load;
-    } finally {
-      fileSnapshotLoadsRef.current.delete(filePath);
-    }
-  }, []);
-
-  const handleReviewMultiFileEdits = useCallback((edits: ReviewableFileEdit[]) => {
-    if (edits.length === 0) return;
-    useCodeStore.getState().openMultiFileReview(
-      edits.map((edit) => ({
-        filePath: edit.filePath,
-        originalContent: edit.originalContent,
-        modifiedContent: edit.modifiedContent,
-        createdByThisTurn: edit.createdByThisTurn,
-        accepted: null,
-      })),
-    );
-  }, []);
-
-  const persistReviewableEdits = useCallback(async (
-    assistantMessageId: string,
-    toolCall: { toolName: string; argsPreview: string; status: string },
-  ) => {
-    if (
-      toolCall.status !== "success"
-      || (
-        toolCall.toolName !== "file_write"
-        && toolCall.toolName !== "write_file"
-        && toolCall.toolName !== "edit_file"
-      )
-    ) {
-      return;
-    }
-
-    const filePaths = extractFileWritePaths([toolCall]);
-    if (filePaths.length === 0) return;
-
-    const edits = await Promise.all(
-      filePaths.map(async (filePath) => {
-        await capturePreWriteSnapshot(filePath);
-        const originalContent = fileSnapshotsRef.current.has(filePath)
-          ? (fileSnapshotsRef.current.get(filePath) ?? null)
-          : null;
-        const modifiedContent = await nativeFs.readFile(filePath);
-        if (modifiedContent === null) return null;
-        return {
-          filePath,
-          originalContent,
-          modifiedContent,
-          createdByThisTurn: originalContent === null,
-        } satisfies ReviewableFileEdit;
-      }),
-    );
-
-    const nextEdits = edits.filter((edit): edit is ReviewableFileEdit => edit !== null);
-    if (nextEdits.length === 0) return;
-
-    setMessages((prev) =>
-      prev.map((message) => {
-        if (message.id !== assistantMessageId) return message;
-        const merged = new Map(
-          (message.reviewableFileEdits ?? []).map((edit) => [edit.filePath, edit]),
-        );
-        nextEdits.forEach((edit) => merged.set(edit.filePath, edit));
-        return {
-          ...message,
-          reviewableFileEdits: Array.from(merged.values()),
-        };
-      }),
-    );
-  }, [capturePreWriteSnapshot]);
-
-  const persistThreadSnapshot = useCallback(async (options?: { forceCreate?: boolean }) => {
-    const snapshot = messagesRef.current;
-    const currentMode = chatModeRef.current;
-    const existingThreadId = threadIdRef.current;
-    const forceCreate = options?.forceCreate ?? false;
-
-    if (snapshot.length === 0) {
-      if (existingThreadId) {
-        try {
-          await api.updateChatThread(workflowId, existingThreadId, {
-            mode: currentMode,
-          });
-        } catch {
-          /* ignore */
-        }
-      }
-      if (!forceCreate) {
-        return existingThreadId;
-      }
-      const created = await api.createChatThread(workflowId, {
-        title: "New Chat",
-        mode: currentMode,
-      });
-      const nextThreadId =
-        typeof created.id === "string" && created.id.trim() ? created.id : null;
-      if (!nextThreadId) return existingThreadId;
-      setThreadId(nextThreadId);
-      threadIdRef.current = nextThreadId;
-      return nextThreadId;
-    }
-
-    const payload = {
-      messages: snapshot.map(toBackendMessage),
-      mode: currentMode,
-    };
-
-    if (existingThreadId) {
-      try {
-        await api.updateChatThread(workflowId, existingThreadId, payload);
-        return existingThreadId;
-      } catch (error) {
-        console.warn("Failed to sync mode chat thread, creating a fresh one:", error);
-      }
-    }
-
-    const firstUserMessage =
-      snapshot.find((message) => message.role === "user" && message.content.trim())?.content ??
-      "New Chat";
-    const created = await api.createChatThread(workflowId, {
-      title: deriveDraftThreadTitleFromMessage(firstUserMessage),
-      mode: currentMode,
-    });
-    const nextThreadId =
-      typeof created.id === "string" && created.id.trim() ? created.id : null;
-    if (!nextThreadId) return null;
-
-    await api.updateChatThread(workflowId, nextThreadId, payload);
-    setThreadId(nextThreadId);
-    threadIdRef.current = nextThreadId;
-    return nextThreadId;
-  }, [workflowId]);
-
-  const loadThread = useCallback(async (targetThreadId: string) => {
-    try {
-      await persistThreadSnapshot();
-      const data = await api.getChatThread(workflowId, targetThreadId);
-      const backendMsgs = Array.isArray(data.messages)
-        ? (data.messages as Record<string, unknown>[])
-        : [];
-      const normalized = backendMsgs.map(fromBackendMessage);
-      const rawMode = typeof data.mode === "string" ? data.mode : "auto";
-      const nextMode = (
-        ["auto", "agent", "ask", "plan", "debug"].includes(rawMode)
-          ? rawMode
-          : "auto"
-      ) as SidebarChatMode;
-      setMessages(normalized);
-      setThreadId(targetThreadId);
-      threadIdRef.current = targetThreadId;
-      setThreadTitle(
-        getDisplayThreadTitle(
-          typeof data.title === "string" ? data.title : summarizeThreadTitle(normalized),
-          "New Chat",
-        ),
-      );
-      setChatMode(nextMode);
-      chatModeRef.current = nextMode;
-      setDetectedMode(null);
-      setInput("");
-      setUserAttachments([]);
-      setPendingQueue([]);
-      setRewriteTarget(null);
-      setShowThreadList(false);
-      requestAnimationFrame(() => textareaRef.current?.focus());
-    } catch (error) {
-      console.warn("Failed to load sidebar chat thread:", error);
-    }
-  }, [persistThreadSnapshot, workflowId]);
-
-  const handleNewChat = useCallback(async () => {
-    try {
-      await persistThreadSnapshot();
-    } catch (error) {
-      console.warn("Failed to persist sidebar chat before starting a new one:", error);
-    }
-    abortRef.current?.abort();
-    setMessages([]);
-    setThreadId(null);
-    threadIdRef.current = null;
-    setThreadTitle("New Chat");
-    setDetectedMode(null);
-    setInput("");
-    setStreaming(false);
-    setPendingQueue([]);
-    setPendingOpenFullChat(false);
-    setUserAttachments([]);
-    setActiveChannelId(null);
-    activeChannelIdRef.current = null;
-    activeRequestModeRef.current = null;
-    setPasteHint(null);
-    setMentionQuery(null);
-    setMentionAnchor(null);
-    setRewriteTarget(null);
-    setShowThreadList(false);
-    requestAnimationFrame(() => textareaRef.current?.focus());
-  }, [persistThreadSnapshot]);
-
-  const completeOpenFullChat = useCallback(async () => {
-    let targetThreadId = threadIdRef.current;
-    try {
-      targetThreadId =
-        (await persistThreadSnapshot({ forceCreate: true })) ?? targetThreadId;
-    } catch (error) {
-      console.warn("Failed to prepare sidebar thread for full chat handoff:", error);
-    }
-
-    if (targetThreadId) {
-      useWorkspaceStore.getState().setActiveThread(targetThreadId);
-      useAppStore.getState().setActiveChatThread(targetThreadId, workflowId);
-    } else {
-      useAppStore.getState().setActiveChatThread(null, workflowId);
-    }
-    useAppStore.getState().setMode("chat");
-    onClose();
-  }, [onClose, persistThreadSnapshot, workflowId]);
-
-  const openFullChat = useCallback(() => {
-    if (streaming || abortRef.current || pendingQueue.length > 0) {
-      setPendingOpenFullChat(true);
-      return;
-    }
-    void completeOpenFullChat();
-  }, [completeOpenFullChat, pendingQueue.length, streaming]);
-
-  const handleClear = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    if (saveTimerRef.current) {
-      clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = null;
-    }
-    setMessages([]);
-    messagesRef.current = [];
-    setUserAttachments([]);
-    setPendingQueue([]);
-    setPendingOpenFullChat(false);
-    setInput("");
-    setStreaming(false);
-    fileSnapshotsRef.current.clear();
-    fileSnapshotLoadsRef.current.clear();
-    setThreadId(null);
-    threadIdRef.current = null;
-    setThreadTitle("New Chat");
-    setActiveChannelId(null);
-    activeChannelIdRef.current = null;
-    activeRequestModeRef.current = null;
-    setDetectedMode(null);
-    setPasteHint(null);
-    setMentionQuery(null);
-    setMentionAnchor(null);
-    setRewriteTarget(null);
-    setShowThreadList(false);
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
-    if (workspaceId) {
-      try {
-        localStorage.removeItem(chatStorageKey(workspaceId, mode));
-      } catch {
-        /* ignore */
-      }
-    }
-  }, [workspaceId, mode]);
-
   const handleCopyMessage = useCallback((message: ChatMessage) => {
     const role = message.role.charAt(0).toUpperCase() + message.role.slice(1);
     const markdown = `### ${role}\n\n${message.content}`;
     navigator.clipboard.writeText(markdown).catch(() => {});
-  }, []);
-
-  const finishStream = useCallback(() => {
-    setStreaming(false);
-    setActiveChannelId(null);
-    activeChannelIdRef.current = null;
-    activeRequestModeRef.current = null;
-    abortRef.current = null;
   }, []);
 
   const processLocalCommand = useCallback(
@@ -1288,505 +846,6 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
       return { handled: false, messageText: rawText };
     },
     [applyMode, handleClear, openFullChat],
-  );
-
-  const queueMessage = useCallback(
-    (
-      text: string,
-      attachments: ComposerAttachmentDraft[],
-      modeOverride?: SidebarChatMode,
-    ) => {
-      const trimmed = text.trim();
-      if (!trimmed && attachments.length === 0) return;
-      setPendingQueue((prev) => [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          content: trimmed,
-          timestamp: Date.now(),
-          attachments: attachments.map(cloneAttachmentDraft),
-          mode: modeOverride ?? chatModeRef.current,
-          mentions: collectStructuredMentions(trimmed),
-        },
-      ]);
-    },
-    [],
-  );
-
-  const sendNow = useCallback(
-    async (
-      rawText: string,
-      attachmentDrafts: ComposerAttachmentDraft[],
-      modeOverride?: SidebarChatMode,
-      historyOverride?: ChatMessage[],
-      threadIdOverride?: string | null,
-    ) => {
-      const trimmed = rawText.trim();
-      if (!trimmed && attachmentDrafts.length === 0) return;
-      const effectiveMode = modeOverride ?? chatModeRef.current;
-
-      if (rewriteTarget && !historyOverride) {
-        const branchedThreadId = await createBranchedThread(
-          rewriteTarget.historyBefore,
-          trimmed,
-          {
-            branchType: rewriteTarget.branchType,
-            branchPointMessageId: rewriteTarget.sourceMessageId,
-          },
-        );
-        if (!branchedThreadId) return;
-        await sendNow(
-          rawText,
-          attachmentDrafts.map(cloneAttachmentDraft),
-          modeOverride,
-          rewriteTarget.historyBefore,
-          branchedThreadId,
-        );
-        return;
-      }
-
-      if (trimmed.startsWith("/")) {
-        const parsed = parseLeadingCommand(trimmed);
-        if (parsed) trackCommand(parsed.command);
-      }
-
-      fileSnapshotsRef.current.clear();
-      fileSnapshotLoadsRef.current.clear();
-      const attachments = await normalizeAttachmentDrafts(attachmentDrafts);
-      const ctx = contextProvider?.() ?? "";
-      const structuredMentions = collectStructuredMentions(trimmed);
-      const backendMentions = structuredMentions.filter(
-        (m) => m.type !== "file" && m.type !== "symbol" && m.type !== "folder",
-      );
-
-      const codeMentions = structuredMentions.filter(
-        (m) => m.type === "file" || m.type === "symbol" || m.type === "folder",
-      );
-      let mentionCtx: MentionContext | null = null;
-      if (codeMentions.length > 0) {
-        mentionCtx = await expandMentionContext(codeMentions);
-      }
-
-      const contextParts = [ctx];
-      if (mentionCtx?.context_summary) contextParts.push(mentionCtx.context_summary);
-      const combinedCtx = contextParts.filter(Boolean).join("\n");
-      const fullMessage = combinedCtx
-        ? trimmed
-          ? `${combinedCtx}\n\n${trimmed}`
-          : combinedCtx
-        : trimmed;
-      let surfaceContext: Record<string, unknown> = {
-        mode,
-        workspace_id: workspaceId ?? "_scratch",
-      };
-      if (mode === "development") {
-        const codeState = useCodeStore.getState();
-        const activeFile = codeState.openFiles.find(
-          (file) => file.path === codeState.activeFilePath,
-        );
-        const root = codeState.pinnedRoots[0];
-        const detection = root ? await getCachedProjectDetection(root) : null;
-        surfaceContext = {
-          ...buildSurfaceContext({
-          activeFilePath: activeFile?.path ?? null,
-          activeFileContent: activeFile?.content ?? null,
-          activeFileLanguage: activeFile?.language ?? null,
-          selectionText: null,
-          openFilePaths: codeState.openFiles.map((file) => file.path),
-          importNeighbors:
-            activeFile != null
-              ? extractImportPaths(activeFile.content, activeFile.path)
-              : [],
-          project: detection
-            ? {
-                type: detection.type,
-                name: detection.name,
-                frameworks: detection.frameworks,
-                package_manager: detection.packageManager,
-              }
-            : null,
-          mode,
-          workspace_id: workspaceId ?? "_scratch",
-          }),
-        };
-        if (root) {
-          surfaceContext = {
-            ...surfaceContext,
-            workspace_root: root,
-          };
-        }
-      }
-      if (mentionCtx) {
-        surfaceContext = {
-          ...surfaceContext,
-          mentioned_files: mentionCtx.mentioned_files.map((f) => ({
-            path: f.path,
-            lines: f.lines,
-            content: f.content,
-          })),
-          mentioned_symbols: mentionCtx.mentioned_symbols,
-          mentioned_folders: mentionCtx.mentioned_folders,
-        };
-      }
-
-      const userMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: "user",
-        content:
-          trimmed ||
-          (attachments.length === 1
-            ? `Attached ${resolveAttachmentName(
-                attachments[0].name,
-                attachments[0].mimeType,
-              )}`
-            : `Attached ${attachments.length} items`),
-        timestamp: Date.now(),
-        attachments:
-          attachments.length > 0
-            ? attachments.map((attachment) => ({
-                path: attachment.path ?? attachment.source ?? attachment.name,
-                filename: attachment.name,
-                size: attachment.size,
-                mimeType: attachment.mimeType,
-                kind: attachment.kind,
-                caption: attachment.caption,
-                source: attachment.source,
-              }))
-            : undefined,
-      };
-
-      if (!(threadIdOverride ?? threadIdRef.current)) {
-        setThreadTitle(
-          deriveDraftThreadTitleFromMessage(userMsg.content, "New Chat"),
-        );
-      }
-
-      const assistantId = crypto.randomUUID();
-      const assistantMsg: ChatMessage = {
-        id: assistantId,
-        role: "assistant",
-        content: "",
-        timestamp: Date.now(),
-      };
-
-      const baseHistory = historyOverride ?? messagesRef.current;
-      setMessages([...baseHistory, userMsg, assistantMsg]);
-      setStreaming(true);
-      setDetectedMode(null);
-      setRewriteTarget(null);
-
-      const controller = new AbortController();
-      abortRef.current = controller;
-      activeRequestModeRef.current = effectiveMode;
-
-      try {
-        const { threadId: nextThreadId, response } = await startEditorChat({
-          message: fullMessage,
-          workflowId,
-          history: sanitizeChatHistory(
-            baseHistory.flatMap((message) =>
-              message.role === "user" || message.role === "assistant"
-                ? [{ role: message.role, content: message.content }]
-                : [],
-            ),
-          ),
-          threadId: threadIdOverride ?? threadIdRef.current,
-          mode: effectiveMode,
-          scope: `mode-chat:${mode}`,
-          attachments,
-          mentions: backendMentions.length > 0 ? backendMentions : undefined,
-          signal: controller.signal,
-          surfaceContext,
-        });
-        setThreadId(nextThreadId);
-        threadIdRef.current = nextThreadId;
-        setThreadTitle((prev) =>
-          getDisplayThreadTitle(prev, summarizeThreadTitle(baseHistory)),
-        );
-        void fetchThreads();
-        const nextChatChannel =
-          typeof response.stream_channel_id === "string" &&
-          response.stream_channel_id.startsWith("chat-")
-            ? response.stream_channel_id
-            : null;
-        setActiveChannelId(nextChatChannel);
-        activeChannelIdRef.current = nextChatChannel;
-        if (
-          response.type === "run_started" &&
-          typeof response.run_id === "string"
-        ) {
-          const runId = response.run_id;
-          const runScope = response.scope ?? "full";
-          setMessages((prev) =>
-            upsertAssistantMessage(prev, assistantId, (message) => ({
-              ...message,
-              runRef: {
-                runId,
-                scope: runScope,
-                status: "running",
-              },
-            })),
-          );
-        }
-
-        const ws = streamEditorChatResponse(response, {
-          onQueued: (position) => {
-            setMessages((prev) =>
-              upsertAssistantMessage(prev, assistantId, (message) => ({
-                ...message,
-                content:
-                  position > 1
-                    ? `Queued behind ${position} earlier messages...`
-                    : "Queued behind an earlier message...",
-              })),
-            );
-          },
-          onProgress: (content) => {
-            if (controller.signal.aborted) return;
-            setMessages((prev) =>
-              upsertAssistantMessage(prev, assistantId, (message) => ({
-                ...message,
-                content,
-                progressStatus: undefined,
-                progressFilePath: undefined,
-              })),
-            );
-          },
-          onProgressStatus: (status) => {
-            if (controller.signal.aborted) return;
-            setMessages((prev) =>
-              upsertAssistantMessage(prev, assistantId, (message) => ({
-                ...message,
-                progressStatus: status || message.progressStatus,
-                progressFilePath: undefined,
-              })),
-            );
-          },
-          onToolCallStart: (toolCall) => {
-            if (
-              toolCall.toolName === "file_write"
-              || toolCall.toolName === "write_file"
-              || toolCall.toolName === "edit_file"
-            ) {
-              const paths = extractFileWritePaths([toolCall]);
-              for (const p of paths) {
-                void capturePreWriteSnapshot(p);
-              }
-            }
-            setMessages((prev) => applyAssistantToolCallStart(prev, assistantId, toolCall));
-          },
-          onToolCallResult: (toolCall) => {
-            void persistReviewableEdits(assistantId, toolCall);
-            setMessages((prev) => applyAssistantToolCallResult(prev, assistantId, toolCall));
-          },
-          onRunEvent: (runEvent) => {
-            setMessages((prev) => applyAssistantRunEvent(prev, assistantId, runEvent));
-            if (
-              runEvent.event_type === "run_completed" ||
-              runEvent.event_type === "run_failed" ||
-              runEvent.event_type === "run_cancelled"
-            ) {
-              finishStream();
-            }
-          },
-          onInjectedMessage: (injectedMessage) => {
-            const injectedUserMsg: ChatMessage = {
-              id: injectedMessage.id,
-              role: "user",
-              content: injectedMessage.content,
-              timestamp: Date.now(),
-            };
-            setMessages((prev) =>
-              insertInjectedUserBeforeAssistant(
-                prev,
-                assistantId,
-                injectedUserMsg,
-                Date.now(),
-              ),
-            );
-          },
-          onNotice: (content) => {
-            if (controller.signal.aborted || !content.trim()) return;
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: crypto.randomUUID(),
-                role: "system",
-                content,
-                timestamp: Date.now(),
-              },
-            ]);
-          },
-          onChannelChange: (nextChannelId) => {
-            setActiveChannelId(nextChannelId);
-            activeChannelIdRef.current = nextChannelId;
-          },
-          onFileAttachment: (attachment) => {
-            setMessages((prev) =>
-              prev.map((message) =>
-                message.id === assistantId
-                  ? {
-                      ...message,
-                      attachments: (message.attachments ?? []).some(
-                        (existing) => existing.path === attachment.path,
-                      )
-                        ? message.attachments
-                        : [
-                            ...(message.attachments ?? []),
-                            {
-                              path: attachment.path,
-                              filename: attachment.filename,
-                              size: attachment.size,
-                            },
-                          ],
-                    }
-                  : message,
-              ),
-            );
-          },
-          onComplete: (content, event) => {
-            if (controller.signal.aborted) return;
-            setMessages((prev) =>
-              upsertAssistantMessage(prev, assistantId, (message) => ({
-                ...message,
-                content,
-                tokenUsage:
-                  "token_usage" in event
-                    ? safeTokenUsage(event.token_usage) ?? message.tokenUsage ?? null
-                    : message.tokenUsage ?? null,
-                estimatedCost:
-                  "estimated_cost" in event &&
-                  typeof event.estimated_cost === "number"
-                    ? event.estimated_cost
-                    : message.estimatedCost ?? null,
-                runRef:
-                  "run_id" in event && typeof event.run_id === "string"
-                    ? {
-                        runId: event.run_id,
-                        scope:
-                          "scope" in event && typeof event.scope === "string"
-                            ? event.scope
-                            : "full",
-                        status:
-                          "type" in event && event.type === "run_error"
-                            ? "failed"
-                            : "running",
-                      }
-                    : message.runRef ?? null,
-                progressStatus: undefined,
-                progressFilePath: undefined,
-              })),
-            );
-            if (
-              chatMode === "auto" &&
-              "detected_mode" in event &&
-              typeof event.detected_mode === "string" &&
-              event.detected_mode !== "progress_ack" &&
-              event.detected_mode in MODE_CONFIG
-            ) {
-              setDetectedMode(event.detected_mode as SidebarChatMode);
-            }
-            const nextChannel =
-              "stream_channel_id" in event && typeof event.stream_channel_id === "string"
-                ? event.stream_channel_id.trim()
-                : "";
-            if (!nextChannel) {
-              finishStream();
-            }
-          },
-          onError: (message) => {
-            if (controller.signal.aborted) return;
-            setMessages((prev) =>
-              upsertAssistantMessage(prev, assistantId, (entry) => ({
-                ...entry,
-                content: message || "Failed to connect to DAN server.",
-                progressStatus: undefined,
-                progressFilePath: undefined,
-              })),
-            );
-            finishStream();
-          },
-          onCloseWithoutTerminalEvent: () => {
-            if (controller.signal.aborted) return;
-            setMessages((prev) =>
-              upsertAssistantMessage(prev, assistantId, (entry) =>
-                entry.content
-                  ? entry
-                  : {
-                      ...entry,
-                      content: "Connection lost. Please try again.",
-                      progressStatus: undefined,
-                      progressFilePath: undefined,
-                    },
-              ),
-            );
-            finishStream();
-          },
-        });
-
-        if (ws) {
-          controller.signal.addEventListener(
-            "abort",
-            () => {
-              ws.close();
-              finishStream();
-            },
-            { once: true },
-          );
-        }
-
-        if (nextChatChannel) {
-          void (async () => {
-            for (let attempt = 0; attempt < 12; attempt += 1) {
-              await new Promise((resolve) => setTimeout(resolve, 5000));
-              if (controller.signal.aborted) return;
-              if (activeChannelIdRef.current !== nextChatChannel) return;
-              try {
-                const data = await api.getChatThread(workflowId, nextThreadId);
-                const backendMsgs = Array.isArray(data.messages)
-                  ? (data.messages as Record<string, unknown>[])
-                  : [];
-                const normalized = backendMsgs.map(fromBackendMessage);
-                const lastMessage = normalized.at(-1);
-                if (lastMessage?.role === "assistant" && lastMessage.content.trim()) {
-                  setMessages(normalized);
-                  finishStream();
-                  return;
-                }
-              } catch (error) {
-                if (shouldStopSidebarThreadSnapshotPolling(error)) {
-                  // Sidebar-only turns are not always persisted as server chat threads.
-                  // Stop polling once the backend confirms this thread doesn't exist.
-                  return;
-                }
-                // Keep polling; the live websocket may still succeed.
-              }
-            }
-          })();
-        }
-      } catch {
-        setMessages((prev) =>
-          upsertAssistantMessage(prev, assistantId, (entry) =>
-            entry.content
-              ? entry
-              : { ...entry, content: "Failed to connect to DAN server." },
-          ),
-        );
-        finishStream();
-      }
-    },
-    [
-      capturePreWriteSnapshot,
-      createBranchedThread,
-      contextProvider,
-      fetchThreads,
-      finishStream,
-      mode,
-      persistReviewableEdits,
-      rewriteTarget,
-      workflowId,
-      workspaceId,
-    ],
   );
 
   const submitComposer = useCallback(() => {
@@ -1914,54 +973,6 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     };
   }, [appendAttachment, handleInjectedSend, mode]);
 
-  useEffect(() => {
-    if (streaming || pendingQueue.length === 0) return;
-    const [next] = pendingQueue;
-    setPendingQueue((prev) => prev.slice(1));
-    void sendNow(next.content, next.attachments, next.mode);
-  }, [pendingQueue, sendNow, streaming]);
-
-  useEffect(() => {
-    if (
-      !pendingOpenFullChat ||
-      streaming ||
-      abortRef.current ||
-      pendingQueue.length > 0
-    ) {
-      return;
-    }
-    setPendingOpenFullChat(false);
-    void completeOpenFullChat();
-  }, [completeOpenFullChat, pendingOpenFullChat, pendingQueue.length, streaming]);
-
-  const handleStop = useCallback(async () => {
-    const channelId = activeChannelIdRef.current;
-    if (!channelId) return;
-    try {
-      await api.stopChatStream(channelId);
-    } catch (error) {
-      if (api.isApiStatusError(error, 404)) {
-        if (abortRef.current) {
-          abortRef.current.abort();
-        } else {
-          finishStream();
-        }
-        return;
-      }
-      console.warn("Failed to stop mode chat stream:", error);
-    }
-  }, [finishStream]);
-
-  const canPushIntoCurrentTurn = useCallback(
-    (item: PendingQueueItem) =>
-      streaming &&
-      Boolean(activeChannelId) &&
-      item.attachments.length === 0 &&
-      item.mentions.length === 0 &&
-      item.mode === activeRequestModeRef.current,
-    [activeChannelId, streaming],
-  );
-
   const modeSelector = (
     <div className="shrink-0 border-b border-gray-200 bg-gray-50/80 px-3 py-1.5 dark:border-gray-800 dark:bg-gray-900/40">
       <div className="flex flex-wrap items-center gap-1">
@@ -2013,13 +1024,17 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
             </div>
           ) : showThreadList ? (
             <div className="truncate text-[10px] text-gray-400 dark:text-gray-500">
-              Chat history
+              History for {workflowLabel}
             </div>
           ) : threadId ? (
             <div className="truncate text-[10px] text-gray-400 dark:text-gray-500">
-              {getDisplayThreadTitle(threadTitle, "Scratch chat")}
+              {workflowLabel} · {getDisplayThreadTitle(threadTitle, "Scratch chat")}
             </div>
-          ) : null}
+          ) : (
+            <div className="truncate text-[10px] text-gray-400 dark:text-gray-500">
+              {sidebarCopy.surfaceLabel} · {workflowLabel}
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-1">
           <button
@@ -2086,7 +1101,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
               </div>
             ) : threads.length === 0 ? (
               <div className="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
-                No saved chats yet.
+                No saved chats yet for {workflowLabel}.
               </div>
             ) : (
               <div className="space-y-1">
@@ -2117,10 +1132,9 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
         ) : messages.length === 0 ? (
           <div className="flex h-full select-none flex-col items-center justify-center gap-2 px-2 text-center text-xs text-gray-500 dark:text-gray-600">
             <Sparkles size={24} className="text-gray-400 dark:text-gray-700" />
-            <span>
-              {mode === "research"
-                ? "Ask about the active paper, notes, or figures"
-                : "Ask anything about your code"}
+            <span>{sidebarCopy.emptyPrimary}</span>
+            <span className="text-[10px] text-gray-400 dark:text-gray-600">
+              Working inside {workflowLabel}.
             </span>
             <button
               onClick={openFullChat}
@@ -2129,7 +1143,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
               Open full Chat for the larger workspace view
             </button>
             <span className="text-[10px] text-gray-400 dark:text-gray-600">
-              Use History to reopen saved chats, or drag files here, paste files/images, use `@` mentions, and type `/` for commands
+              {sidebarCopy.emptySecondary}
             </span>
           </div>
         ) : (
@@ -2160,9 +1174,9 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
                 onCopyMarkdown={
                   message.content ? () => handleCopyMessage(message) : undefined
                 }
-                allowRunCodeBlocks
-                onRunCodeBlock={handleRunInTerminal}
-                onReviewMultiFileEdits={handleReviewMultiFileEdits}
+                allowRunCodeBlocks={allowRunCodeBlocks}
+                onRunCodeBlock={onRunCodeBlock}
+                onReviewMultiFileEdits={onReviewMultiFileEdits}
               />
             ))}
           </div>
@@ -2199,23 +1213,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
                 <div className="flex shrink-0 items-center gap-0.5">
                   {index === 0 && canPushIntoCurrentTurn(item) && (
                     <button
-                      onClick={() => {
-                        const channelId = activeChannelIdRef.current;
-                        if (!channelId) return;
-                        api
-                          .injectChatMessage(channelId, item.content, item.id)
-                          .then(() => {
-                            setPendingQueue((prev) =>
-                              prev.filter((entry) => entry.id !== item.id),
-                            );
-                          })
-                          .catch((error) => {
-                            console.warn(
-                              "Failed to inject queued mode-chat message:",
-                              error,
-                            );
-                          });
-                      }}
+                      onClick={() => void injectPendingQueueItem(item)}
                       className="rounded bg-indigo-50 px-1.5 py-0.5 text-xs font-medium text-indigo-600 transition-colors hover:bg-indigo-100 hover:text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300 dark:hover:bg-indigo-500/20"
                       title="Inject into the current turn"
                     >
@@ -2464,5 +1462,27 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
         )}
       </div>
     </div>
+  );
+}
+
+export default function ModeChatSidebar(props: ModeChatSidebarProps) {
+  const graphWorkflowId = useGraphStore((state) => state.graphId);
+  const activeChatWorkflowId = useAppStore((state) => state.activeChatWorkflowId);
+  const workspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
+  const workflowId = resolveModeChatWorkflowId(
+    graphWorkflowId,
+    activeChatWorkflowId,
+  );
+  const sidebarCopy = MODE_SIDECAR_COPY[props.mode] ?? MODE_SIDECAR_COPY.chat;
+  const scopeKey = buildModeChatScopeKey(workspaceId, props.mode, workflowId);
+
+  return (
+    <ModeChatSidebarInner
+      key={scopeKey}
+      {...props}
+      workflowId={workflowId}
+      workspaceId={workspaceId}
+      sidebarCopy={sidebarCopy}
+    />
   );
 }
