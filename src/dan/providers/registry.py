@@ -91,17 +91,41 @@ class ProviderRegistry:
 
         Raises KeyError if no matching provider is found.
         """
-        try:
-            return self._providers[self.resolve_name(model)]
-        except KeyError:
-            if "default" in self._providers:
-                logger.debug(
-                    "Falling back to default provider during direct resolve for model %s",
-                    model,
-                    exc_info=True,
+        if model in self._model_overrides:
+            provider_name = self._model_overrides[model]
+            if provider_name not in self._providers:
+                raise KeyError(
+                    f"Model '{model}' is pinned to provider '{provider_name}', "
+                    f"but that provider is not registered. Registered providers: {sorted(self._providers)}"
                 )
-                return self._providers["default"]
-            raise
+            return self._providers[provider_name]
+
+        for prefix, provider_name in self._prefix_patterns:
+            if not model.startswith(prefix):
+                continue
+            if provider_name in self._providers:
+                return self._providers[provider_name]
+            if provider_name in _STRICT_PREFIX_PROVIDERS:
+                if "default" in self._providers:
+                    logger.debug(
+                        "Falling back to default provider during direct resolve for model %s",
+                        model,
+                    )
+                    return self._providers["default"]
+                raise KeyError(
+                    f"Model '{model}' requires provider '{provider_name}', "
+                    f"but that provider is not registered. Registered providers: {sorted(self._providers)}"
+                )
+            break
+
+        if "default" in self._providers:
+            return self._providers["default"]
+
+        raise KeyError(
+            f"No provider found for model '{model}'. "
+            f"Registered providers: {sorted(self._providers)}. "
+            f"Model overrides: {self._model_overrides}"
+        )
 
     def has_provider(self, name: str) -> bool:
         return name in self._providers
