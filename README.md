@@ -19,7 +19,9 @@ DAN is aimed at deep work that ordinary single-agent copilots handle poorly: mul
 ## Key Concepts
 
 - **Two-level nodes** — atomic operators (LLM call, tool call, code execution) and composite agents (sub-graphs that behave as single nodes with typed interfaces)
+- **Worker-first compute surface** — new compute stages can be authored as `wf.worker(...)` with shared context/tool/memory refs, while pure control primitives stay explicit instead of being forced into one opaque super-node
 - **Typed edges** — data (schema-validated), control (conditionals, loops, routing), and context (shared state)
+- **Tiered handoff lint** — optional per-edge structural → semantic → intent validation with autofix blocks bad handoffs before downstream nodes consume them
 - **Control-flow primitives** — GateNode (if/else + while loop), ForEach, Reduce, Router, Human-in-the-Loop
 - **Hierarchical swarms** — scale from one agent to many bounded specialists when decomposition pays off; large swarms are useful only with supervision, aggregation, and recoverability
 - **Model heterogeneity** — each operator independently specifies its model (cheap for classification, strong for reasoning)

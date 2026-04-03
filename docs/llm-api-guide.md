@@ -10,6 +10,7 @@ from dan.engine import Engine, EngineConfig, RunResult
 from dan.engine.executor import ExecutorRegistry
 from dan.executors.tool import ToolExecutor, ToolRegistry
 from dan.models.context import MergeStrategy, CompactionStrategy, CompactionRule, FailurePolicy
+from dan.worker import Worker
 ```
 
 ---
@@ -18,7 +19,9 @@ from dan.models.context import MergeStrategy, CompactionStrategy, CompactionRule
 
 **Graph** — A directed acyclic graph (with loops expressed as composite nodes) of typed nodes connected by typed edges. Serialized as `dan_graph_v1` JSON.
 
-**Node** — An operator (atomic unit of work) or a composite (sub-graph that behaves as a single node). 15 node types total.
+**Node** — An operator (atomic unit of work) or a composite (sub-graph that behaves as a single node). The runtime currently exposes 20+ node types, including the newer `worker` contract primitive.
+
+For new authored compute stages, prefer `wf.worker(...)` or the classic compute aliases (`wf.llm(...)`, `wf.tool(...)`, `wf.code(...)`, `wf.rag(...)`, `wf.input_node(...)`, `wf.reflection(...)`, `wf.human(...)`, `wf.human_in_the_loop(...)`, `wf.vote(...)`, `wf.ensemble(...)`) that now normalize through the Worker contract surface internally. If you want those aliases to emit canonical `worker` nodes directly, use `workflow(..., canonical_workers=True)` or `DAN_WORKER_BUILDER=canary|enabled`. If you need to import the older concrete compute/compatibility model classes directly, prefer `dan.models.legacy` as the canonical compatibility surface rather than mixing imports from `dan.models.nodes` and `dan.models.control_flow`.
 
 **Edge** — A typed connection between node ports. Three types: data, control, context.
 
@@ -28,7 +31,7 @@ from dan.models.context import MergeStrategy, CompactionStrategy, CompactionRule
 
 **Builder DSL** — Fluent Python API for constructing graphs programmatically.
 
-**InputNode:** Not created via `wf.input()` — `wf.input` is a *property* (returns `PortRef` for sub-graph entry). InputNode is created by the loader (markdown compile) or scoped_run; the builder DSL does not expose a node-creation method for it.
+**InputNode:** Created via `wf.input_node(...)`. `wf.input` is still a *property* used only inside scoped sub-graphs as the entry `PortRef`.
 
 ---
 
@@ -43,17 +46,41 @@ wf = workflow(
     "my_workflow",              # graph name (required)
     description="What it does", # optional
     tags=["demo", "research"],  # optional
+    canonical_workers=False,    # optional: emit worker-native compute-like aliases
+    lint_autogen="disabled",    # optional: disabled | canary | enabled
+    lint_intent_refiner=None,   # optional: callable(base_intent, context) -> refined intent
 )
 ```
 
 ### Build and Serialize
 
 ```python
-graph = wf.build()                          # -> Graph (validated Pydantic model)
-json_str = wf.to_json(indent=2)             # -> JSON string
-d = wf.to_dict()                            # -> dict
-code_str = decompile(graph)                 # -> executable Python that reconstructs the graph
+graph = wf.build()                                              # -> Graph (validated Pydantic model)
+graph = wf.build(lint_autogen="enabled")                       # optional per-build override
+json_str = wf.to_json(indent=2)                                 # -> JSON string
+d = wf.to_dict()                                                # -> dict
+code_str = decompile(graph)                                     # -> canonical executable Python
+readable_code = decompile(graph, use_convenience_aliases=True)  # -> optional readability-oriented aliases (llm/tool/code plus simple input/reduce/rag/reflection/human/vote leaves)
 ```
+
+`lint_autogen` controls whether conservative per-edge lint configs are generated at compile/build time from node contracts:
+- `disabled` (default): do not stamp generated lint onto edges
+- `canary`: only auto-generate for Worker-to-Worker data edges
+- `enabled`: best-effort auto-generate for any data edge with strong enough contract metadata
+
+You can also set `DAN_LINT_AUTOGEN=disabled|canary|enabled` as a process-wide default.
+
+`lint_intent_refiner` is an optional graph-construction-time hook for complex workflows. When provided, compile/build-time lint autogen passes the deterministic intent string plus a small context dict (`graph_name`, source/target IDs/types/descriptions, target role/port, resolved instruction) to the callable and uses the returned text if it is non-empty. If the callable is absent or raises, autogen falls back to the deterministic intent text.
+
+`canonical_workers` controls whether the classic compute-like aliases (`wf.llm(...)`, `wf.tool(...)`, `wf.code(...)`, `wf.input_node(...)`, `wf.reduce(...)`, `wf.rag(...)`, `wf.reflection(...)`, `wf.human(...)`, `wf.human_in_the_loop(...)`, `wf.vote(...)`, `wf.ensemble(...)`) emit legacy compute/compatibility node types or canonical `worker` nodes:
+- `False` (default): keep emitting legacy public graph shapes
+- `True`: emit `worker` nodes directly while preserving the familiar default ports (`text` for `llm`, `result` for `tool` / `code`)
+
+You can also set `DAN_WORKER_BUILDER=disabled|canary|enabled` as a process-wide default. `canary` and `enabled` both currently opt that broader compute-like alias bucket into Worker-native emission; retained control/runtime primitives such as router, validator, gate, loops, and orchestration nodes still stay explicit.
+
+The markdown loader/compiler now honors that same authoring gate for compute-like agent specs. With `DAN_WORKER_BUILDER=canary|enabled`, loaded `llm` / `tool` / `code` / `human` / `reflection` / `vote`-style agents are Workerized while retained control/runtime primitives such as `gate`, `for_each`, `goal_loop`, `parallel_subagents`, `orchestrator`, and `agent_team` stay explicit.
+
+Chat/editor mutation add-node follows the same additive rollout too. With `DAN_WORKER_BUILDER=canary|enabled`, `GraphMutator` now Workerizes the full safe compute-like mutation bucket: `llm_operator`, `tool_operator`, `code_operator`, `rag_operator`, `input`, `reflection`, `human`, `human_in_the_loop`, `vote`, and `reduce`. It preserves their familiar default ports and maps their specialized config onto Worker metadata while leaving router, validator, gate, loop, and orchestration primitives explicit. Plain leaf Workers also no longer get fake empty `body_graph` stubs during mutation add-node.
 
 ---
 
@@ -403,6 +430,64 @@ shared_context_keys:
 - [writer](writer.md)
 ```
 
+### 3p. Worker
+
+Lightweight universal compute/contract node. Use this when you want one node shape that can act as pass-through, tool runner, code runner, LLM worker, composite body owner, or sub-worker coordinator without introducing a new legacy node type.
+
+```python
+node = wf.worker(
+    "reviewer",
+    role="reviewer",
+    instruction="Check the draft for completeness and evidence gaps.",
+    model="claude-sonnet-4-6",
+    llm={"prompt_template": "Review:\n{input}"},
+    context={
+        "instruction_profile_ref": "review_profile",
+        "toolset_refs": ["analysis_tools"],
+    },
+    execution={
+        "resource_locks": ["shared_review_budget"],
+        "blocking_mode": "exclusive",
+    },
+    input_ports=[{"name": "input", "required": False}],
+    output_ports=[{"name": "text"}],
+)
+```
+
+Useful fields:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `role` / `instruction` / `persona` | `str` | Short contract/behavior metadata |
+| `model` | `str \| None` | LLM model ref |
+| `tool_ids` | `list[str]` | Direct tool refs |
+| `tool_config` | `dict` | Static args for direct-tool Workers; stored in `Worker.metadata["tool_config"]` |
+| `code` / `language` | `str` | Inline deterministic execution |
+| `llm` / `llm_hints` | `dict` | Prompt template, system prompt, temperature, output schema, tools |
+| `context` | `dict` | Shared refs such as `instruction_profile_ref`, `memory_policy_ref`, `context_bundle_refs`, `toolset_refs`, `provider_policy_ref`, `retry_policy_ref` |
+| `authority_policy` | `dict` | Delegation / tier caps |
+| `execution` | `dict` | Locks and async coordination hints |
+| `control_flow` | `dict` | Lightweight gate-style routing contract (`condition`, `gate_mode`, `max_iterations`, optional loop feedback fields) |
+| `body_graph` / `sub_workers` | internal refs | Usually authored via `wf.worker_scope(...)` |
+| `input_mappings` / `output_mappings` | `dict[str, str]` | Outer Worker port → inner `body_graph` entry / exit port mapping |
+| `parallelism` | `int` | Max concurrent named `sub_workers` when the Worker delegates |
+| `merge_strategy` | `str` | Sub-worker fan-in policy (`append`, `last_write_wins`, `reducer`; `reducer` currently expects `metadata["merge_reducer"]`) |
+| `spawn_policy` | `dict` | Additional delegation caps such as `max_spawns_per_node` |
+| `validation_rules` | `list[dict]` | First-class validator rules for Worker-shaped validation |
+
+Graph-level shared refs for Workers:
+
+```python
+wf.resource("instruction_profiles", "review_profile", {"instruction": "Stay skeptical and concrete."})
+wf.resource("toolsets", "analysis_tools", {"tool_ids": ["file_read", "web_search"]})
+```
+
+Workflow-generation rollout note:
+- `DAN_WORKER_GENERATION=disabled|canary|enabled` lets the lightweight planner/spec and deterministic intent-compiler paths prefer Worker-native simple compute stages while leaving legacy generation and specialized control primitives intact.
+- `wf.llm(...)`, `wf.tool(...)`, and `wf.code(...)` remain stable public convenience methods, but simple compute aliases are now internally normalized through the Worker contract surface before projecting back to legacy node types for compatibility. That means new Worker-first contract fixes can benefit both direct `wf.worker(...)` authoring and the classic compute aliases without changing their user-facing signatures.
+- `wf.worker(..., control_flow={...})` is the lightweight Worker-facing routing surface. At runtime it still delegates to the specialized `gate` executor rather than pretending branch/while semantics are generic LLM/tool behavior.
+- `wf.worker(..., validation_rules=[...])` is now the first-class Worker-facing validator surface. Runtime still delegates through the retained validator executor where that is the honest compatibility path.
+
 ---
 
 ## 4. Edge Wiring — Four Mechanisms
@@ -449,6 +534,42 @@ Full control over source and target ports.
 ```python
 wf.edge(node_a["output_port"], node_b["input_port"])
 ```
+
+Optional lint config lives first-class on `DataEdge.lint` and is preserved through build/decompile round-trip. Legacy `metadata["lint"]` is still accepted and mirrored for compatibility:
+
+```python
+wf.edge(
+    writer["result"],
+    reviewer["input"],
+    lint={
+        "enabled": True,
+        "structural": {
+            "required_keys": ["draft"],
+            "string_max_lengths": {"draft": 4000},
+            "ranges": {"confidence": {"minimum": 0, "maximum": 1}},
+            "format_patterns": {"ticket_id": r"[A-Z]{3}-\d{4}"},
+        },
+        "semantic": {
+            "topic_keywords": ["finance", "summary", "recommendation"],
+            "min_keyword_ratio": 0.67,
+            "required_entities": ["Acme"],
+            "entity_match_mode": "fuzzy",
+            "entity_fuzzy_threshold": 0.85,
+            "expected_language": "en",
+            "contradiction_reference_text": "Acme revenue decreased to 8% this quarter.",
+            "contradiction_min_claim_overlap": 0.6,
+            "confidence_aggregation": "min",
+        },
+        "severity": "error",
+        "autofix": ["fill_defaults", "truncate", "clamp", "coerce"],
+        "retry_budget_ms": 2500,
+    },
+)
+```
+
+`enabled` defaults to `True`. Set it to `False` if you want to keep a resolved lint contract attached to an edge but temporarily disable enforcement without deleting the config.
+
+When `lint_autogen` is enabled and no explicit `lint=` is supplied, the builder/compiler can conservatively auto-generate `DataEdge.lint` from the source/target contracts and mirror it into legacy metadata. That autogen currently understands schema `required`, `maxLength`, numeric `minimum` / `maximum`, and string `pattern` constraints. Tier 2 semantic lint also supports `min_keyword_ratio` for partial keyword coverage, configurable entity matching (`exact`, `fuzzy`, or `embedding`), lightweight `expected_language` checks, conservative contradiction detection via `contradiction_reference_text`, and `confidence_aggregation` (`min` or `mean`) for Tier 3 escalation. If `reference_text` is omitted but `topic_keywords` are present, the semantic similarity path uses those keywords as the fallback reference text. Language mismatches are warning-only diagnostics, and contradiction detection intentionally only catches obvious same-subject numeric / negation / polarity conflicts. Deterministic structural autofix now supports `fill_defaults`, `truncate`, `clamp`, and `coerce`, with iterative re-lint so composed cases like string-number coercion followed by range clamp can settle in one lint pass. Model-backed retry loops are bounded by both `max_retries` and optional `retry_budget_ms` across the whole handoff retry cycle. Explicit `lint=` always wins.
 
 ### Control and Context Edges
 
@@ -673,6 +794,47 @@ from dan.builder import namespace_graph, derive_ports
 namespaced = namespace_graph(graph, prefix="my_prefix__")
 input_ports, output_ports, in_map, out_map = derive_ports(namespaced)
 ```
+
+### 5g. Worker Scope
+
+Author a Worker-owned body graph and optional named sub-worker graphs without hand-writing `body_graph` keys.
+
+```python
+with wf.worker_scope(
+    "manager",
+    role="manager",
+    instruction="Plan locally, then delegate parallel research.",
+    model="claude-sonnet-4-6",
+    llm={"prompt_template": "Plan from {input}"},
+    input_mappings={"brief": "planner::input"},
+    output_mappings={"text": "final_text"},
+    parallelism=2,
+    merge_strategy="last_write_wins",
+    spawn_policy={"max_spawns_per_node": 2},
+) as manager:
+    planner = manager.code("planner", code="result = {'plan': 'draft'}")
+    reviewer = manager.worker(
+        "reviewer",
+        role="reviewer",
+        validation_rules=[{"rule_type": "required_keys", "config": {"keys": ["plan"]}}],
+        input_ports=[{"name": "input", "required": False}],
+    )
+    manager.edge(
+        planner["result"],
+        reviewer["input"],
+        lint={"structural": {"required_keys": ["plan"]}, "severity": "error"},
+    )
+
+    with manager.sub_worker("research") as research:
+        research.code("collect", code="result = {'notes': ['a', 'b']}")
+```
+
+Notes:
+- Inside the scope, use `.input` / `.item` or the explicit aliases `.entry_input` / `.entry_item`.
+- `manager.sub_worker("name")` creates a named subgraph recorded in `Worker.sub_workers`.
+- `input_mappings` / `output_mappings` apply to the Worker's `body_graph`; `parallelism`, `merge_strategy`, and `spawn_policy` apply when the Worker delegates to named `sub_workers`.
+- The decompiler emits `with wf.worker_scope(...):` for Workers that own a `body_graph` or named `sub_workers`.
+- `decompile(graph)` stays canonical and Worker-preserving by default. `decompile(graph, use_convenience_aliases=True)` may lower simple leaf Workers to familiar aliases such as `wf.llm(...)`, `wf.tool(...)`, `wf.code(...)`, `wf.rag(...)`, `wf.input_node(...)`, `wf.reflection(...)`, `wf.human(...)`, `wf.human_in_the_loop(...)`, or `wf.vote(...)` for readability.
 
 ---
 

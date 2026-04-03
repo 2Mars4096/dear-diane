@@ -28,6 +28,76 @@ The `PYTHONPATH=src` prefix is a repo-local bootstrap bridge for this checkout b
 
 ## Commands
 
+### Worker / Linter rollout benchmark (plans 46/47)
+
+```bash
+PYTHONPATH=src:. python -m tests.eval.worker_lint_benchmark --repeats 5
+```
+
+This in-process harness writes a JSON report under `tests/eval/results/` and covers:
+- Worker parity for a linear code→tool chain
+- retained specialized `for_each` parity with Workerized body compute
+- retained specialized `goal_loop` parity with Workerized body compute
+- retained specialized `parallel_subagents` parity with Workerized branch compute
+- retained specialized `agent_team` parity with Workerized member compute
+- retained specialized `orchestrator` parity for both static-fanout and deterministic LLM-driven coordinator paths
+- blocking lint failure
+- structural autofix/truncate
+- provider-less semantic-tier graceful skip
+- deterministic contradiction blocking for obvious same-subject semantic conflicts
+- non-blocking Tier 3 partial-warning handling with completeness follow-up
+- retry-with-feedback carrying missing intent requirements plus a preview of the rejected output
+
+Deterministic mode is the quickest repeatable 46/47 rollout check. For live Tier 2/3 coverage from the worktree, load an env file and opt into provider-backed cases:
+
+```bash
+DAN_ENABLE_LOCAL_EMBEDDINGS=1 \
+DAN_DEFAULT_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2 \
+DAN_LOCAL_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2 \
+PYTHONPATH=src:. python -m tests.eval.worker_lint_benchmark \
+  --env-file /Volumes/data/Dropbox/Projects/deep-agent-network/.env \
+  --live-provider auto \
+  --repeats 1
+```
+
+Live mode adds:
+- semantic pass/fail with a real embedding backend
+- intent pass/fail with a real judge backend
+
+`--live-provider auto` records explicit skips when backends are not configured. `--live-provider required` turns those skips into a failing benchmark.
+
+### Worker dispatch-overhead benchmark (plan 46-5 gate)
+
+```bash
+PYTHONPATH=src python -m tests.eval.worker_dispatch_benchmark --warmup 20 --repeats 200 --strict
+```
+
+This in-process harness measures `WorkerExecutor` dispatch overhead against the equivalent legacy compute nodes for:
+- `code_only`
+- `tool_only`
+- `llm_only`
+- `code -> tool -> llm` chain
+- `body_graph` input/output mapping
+- sub-worker `last_write_wins` merge
+
+The harness alternates legacy and Worker runs in an interleaved pairwise order to reduce timing drift from two separate measurement phases inside one Python process. It writes a JSON report under `tests/eval/results/` and fails in `--strict` mode when the Worker median runtime exceeds the configured `--max-overhead-ratio` (default `1.25`) for any case.
+
+### Semantic Tier-2 latency benchmark (plan 47-3 gate)
+
+```bash
+PYTHONPATH=src python -m tests.eval.semantic_lint_benchmark --repeats 500 --strict
+```
+
+This in-process harness measures Tier 2 semantic lint latency with a mock embedder and fails in `--strict` mode if the median runtime exceeds the configured `--max-median-ms` (default `10.0`).
+
+### Structural Tier-1 latency benchmark (plan 47-2 gate)
+
+```bash
+PYTHONPATH=src python -m tests.eval.structural_lint_benchmark --repeats 1000 --strict
+```
+
+This in-process harness measures Tier 1 structural lint latency on a realistic structured agent payload and fails in `--strict` mode if the median runtime exceeds the configured `--max-median-ms` (default `1.0`).
+
 ### Workflow smoke battery (recommended first live check)
 
 ```bash
