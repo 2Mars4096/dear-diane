@@ -488,6 +488,43 @@ def _materialize_node_plan(plan: NodePlan) -> tuple[dict[str, Any], dict[str, An
             temperature=float(config.get("temperature", 0.2)),
             tools=list(config.get("tools", []) or []),
         )
+    elif plan.node_type == "worker":
+        tool_ids = [
+            str(item).strip()
+            for item in config.get("tool_ids", []) or []
+            if str(item).strip()
+        ]
+        if not tool_ids and str(config.get("tool_id") or "").strip():
+            tool_ids = [str(config.get("tool_id") or "").strip()]
+        node_dict.update(
+            role=str(config.get("role") or "").strip(),
+            instruction=str(config.get("instruction") or plan.purpose).strip(),
+            persona=str(config.get("persona") or "").strip(),
+            authority=str(config.get("authority") or "leaf").strip() or "leaf",
+            tool_ids=tool_ids,
+            code=str(config.get("code") or ""),
+            language=str(config.get("language") or "python"),
+        )
+        if config.get("model") is not None:
+            node_dict["model"] = str(config.get("model") or "")
+        llm_hints: dict[str, Any] = {}
+        if config.get("prompt_template"):
+            llm_hints["prompt_template"] = str(config.get("prompt_template") or "")
+        if config.get("system_prompt"):
+            llm_hints["system_prompt"] = str(config.get("system_prompt") or "")
+        if config.get("temperature") is not None:
+            llm_hints["temperature"] = float(config.get("temperature", 0.2))
+        if config.get("max_tokens") is not None:
+            llm_hints["max_tokens"] = config.get("max_tokens")
+        if config.get("task_tier") is not None:
+            llm_hints["task_tier"] = config.get("task_tier")
+        if llm_hints:
+            node_dict["llm_hints"] = llm_hints
+        tool_config = dict(config.get("tool_config", {}) or {})
+        if tool_config:
+            metadata = dict(node_dict.get("metadata") or {})
+            metadata["tool_config"] = tool_config
+            node_dict["metadata"] = metadata
     elif plan.node_type == "tool_operator":
         node_dict.update(
             tool_id=str(config.get("tool_id") or ""),

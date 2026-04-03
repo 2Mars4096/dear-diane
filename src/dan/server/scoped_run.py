@@ -12,13 +12,12 @@ from pydantic import BaseModel, Field
 from dan.models.control_flow import (
     CompositeNode,
     ForEachNode,
-    InputNode,
-    InputVariable,
     WhileLoopNode,
 )
 from dan.models.edges import DataEdge
 from dan.models.graph import Graph, GraphMetadata
 from dan.models.ports import OutputPort
+from dan.worker.model import Worker
 from dan.validation.graph import validate_graph
 
 logger = logging.getLogger(__name__)
@@ -80,6 +79,36 @@ class ScopedGraphResult:
         self.graph = graph
         self.error = error
         self.scope_metadata = scope_metadata or {}
+
+
+def _json_schema_for_value(
+    value: Any,
+    *,
+    fallback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if isinstance(fallback, dict) and fallback:
+        return dict(fallback)
+    if isinstance(value, bool):
+        return {"type": "boolean"}
+    if isinstance(value, int) and not isinstance(value, bool):
+        return {"type": "integer"}
+    if isinstance(value, float):
+        return {"type": "number"}
+    if isinstance(value, str):
+        return {"type": "string"}
+    if isinstance(value, list):
+        return {"type": "array"}
+    if isinstance(value, dict):
+        return {"type": "object"}
+    return {}
+
+
+def _input_variable_type_for_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return "number"
+    return "string"
 
 
 def build_scoped_graph(
@@ -151,13 +180,41 @@ def _build_node_scope(
 
     if inputs:
         input_node_id = f"_scoped_input_{uuid.uuid4().hex[:8]}"
-        variables = [InputVariable(name=k, type="string") for k in inputs]
-        output_ports = [OutputPort(name=k, json_schema={"type": "string"}) for k in inputs]
-        input_node = InputNode(
+        output_ports = [OutputPort(name="input", json_schema={"type": "object"})]
+        input_variables: list[dict[str, Any]] = []
+
+        for port_name, value in inputs.items():
+            target_port = next(
+                (p for p in target.input_ports if p.name == port_name), None,
+            )
+            output_ports.append(
+                OutputPort(
+                    name=port_name,
+                    json_schema=_json_schema_for_value(
+                        value,
+                        fallback=(target_port.json_schema if target_port is not None else None),
+                    ),
+                    description=(target_port.description if target_port is not None else ""),
+                )
+            )
+            input_variables.append(
+                {
+                    "name": port_name,
+                    "type": _input_variable_type_for_value(value),
+                    "default": value,
+                    "description": target_port.description if target_port is not None else "",
+                }
+            )
+
+        input_node = Worker(
             id=input_node_id,
             name="Scoped Input",
-            variables=variables,
+            description="Internal scoped-run entry helper.",
             output_ports=output_ports,
+            metadata={
+                "input_variables": input_variables,
+                "scoped_helper": "input",
+            },
         )
         nodes.insert(0, input_node)
         entry_points = [input_node_id]

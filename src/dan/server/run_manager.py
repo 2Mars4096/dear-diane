@@ -18,12 +18,125 @@ from dan.engine.events import EngineEvent, EventType
 from dan.engine.executor import EngineConfig, ExecutorRegistry
 from dan.engine.runtime_policy import RunPhase, RunPolicy
 from dan.engine.scheduler import Engine, RunResult
-from dan.executors.tool import ToolExecutor, ToolRegistry
+from dan.executor_defaults import register_default_executors
+from dan.executors.tool import ToolRegistry
 from dan.models.graph import Graph
+from dan.models.ports import InputPort, OutputPort
 from dan.providers.costs import estimate_cost
 from dan.server.run_store import RunStore
+from dan.worker.model import Worker
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_event_data(event: dict[str, Any]) -> dict[str, Any]:
+    data = event.get("data")
+    if isinstance(data, dict):
+        return data
+    return {}
+
+
+def _json_schema_for_runtime_value(value: Any) -> dict[str, Any]:
+    if isinstance(value, bool):
+        return {"type": "boolean"}
+    if isinstance(value, int) and not isinstance(value, bool):
+        return {"type": "integer"}
+    if isinstance(value, float):
+        return {"type": "number"}
+    if isinstance(value, str):
+        return {"type": "string"}
+    if isinstance(value, list):
+        return {"type": "array"}
+    if isinstance(value, dict):
+        return {"type": "object"}
+    return {}
+
+
+def _empty_lint_summary() -> dict[str, Any]:
+    return {
+        "lint_total_count": 0,
+        "lint_passed_count": 0,
+        "lint_auto_fixed_count": 0,
+        "lint_failed_count": 0,
+        "lint_blocked_count": 0,
+        "lint_warning_count": 0,
+        "had_lint_activity": False,
+        "had_lint_blocks": False,
+        "had_lint_autofix": False,
+        "lint_state": "none",
+    }
+
+
+def _finalize_lint_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    summary["lint_total_count"] = (
+        summary["lint_passed_count"]
+        + summary["lint_auto_fixed_count"]
+        + summary["lint_failed_count"]
+    )
+    summary["had_lint_activity"] = summary["lint_total_count"] > 0
+    summary["had_lint_blocks"] = summary["lint_blocked_count"] > 0
+    summary["had_lint_autofix"] = summary["lint_auto_fixed_count"] > 0
+
+    if summary["had_lint_blocks"] and summary["had_lint_autofix"]:
+        summary["lint_state"] = "blocked+auto_fixed"
+    elif summary["had_lint_blocks"]:
+        summary["lint_state"] = "blocked"
+    elif summary["had_lint_autofix"]:
+        summary["lint_state"] = "auto_fixed"
+    elif summary["lint_warning_count"] > 0:
+        summary["lint_state"] = "warning"
+    elif summary["lint_passed_count"] > 0:
+        summary["lint_state"] = "passed"
+    else:
+        summary["lint_state"] = "none"
+    return summary
+
+
+def _summarize_lint_events(
+    events: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    overall = _empty_lint_summary()
+    per_node: dict[str, dict[str, Any]] = {}
+
+    for event in events:
+        event_type = event.get("event_type")
+        if event_type not in {"lint_passed", "lint_failed", "lint_auto_fixed"}:
+            continue
+
+        node_id = event.get("node_id")
+        node_summary = None
+        if isinstance(node_id, str) and node_id:
+            node_summary = per_node.setdefault(node_id, _empty_lint_summary())
+
+        data = _coerce_event_data(event)
+        is_blocking_failure = (
+            event_type == "lint_failed"
+            and (
+                data.get("handoff_committed") is False
+                or data.get("severity") == "error"
+            )
+        )
+
+        targets = [overall]
+        if node_summary is not None:
+            targets.append(node_summary)
+
+        for target in targets:
+            if event_type == "lint_passed":
+                target["lint_passed_count"] += 1
+            elif event_type == "lint_auto_fixed":
+                target["lint_auto_fixed_count"] += 1
+            else:
+                target["lint_failed_count"] += 1
+                if is_blocking_failure:
+                    target["lint_blocked_count"] += 1
+                else:
+                    target["lint_warning_count"] += 1
+
+    _finalize_lint_summary(overall)
+    for node_id, summary in list(per_node.items()):
+        per_node[node_id] = _finalize_lint_summary(summary)
+    return overall, per_node
 
 
 class RunStatus(str, Enum):
@@ -1151,7 +1264,7 @@ class RunManager:
 
     def _make_executor_registry(self) -> ExecutorRegistry:
         reg = ExecutorRegistry()
-        reg.register("tool_operator", ToolExecutor(self._tool_registry))
+        register_default_executors(reg, tool_registry=self._tool_registry)
         return reg
 
     def _emit_learning_event(
@@ -1504,7 +1617,6 @@ class RunManager:
                 "tier": "reflection",
             })
 
-            from dan.models.nodes import ReflectionNode
             from dan.models.graph import Graph
 
             errors_data = []
@@ -1515,18 +1627,6 @@ class RunManager:
                         "error": msg,
                         "node_type": record.node_statuses.get(nid, ""),
                     })
-
-            reflection_node = ReflectionNode(
-                id="reflection-auto",
-                name="Auto Reflection",
-                source="last_run",
-            )
-
-            graph = Graph(
-                nodes=[reflection_node],
-                entry_points=["reflection-auto"],
-                exit_points=["reflection-auto"],
-            )
 
             inputs = {
                 "run_id": record.run_id,
@@ -1548,6 +1648,39 @@ class RunManager:
                     else {}
                 ),
             }
+
+            reflection_input_ports = [
+                InputPort(
+                    name=key,
+                    required=False,
+                    json_schema=_json_schema_for_runtime_value(value),
+                )
+                for key, value in inputs.items()
+            ]
+
+            reflection_node = Worker(
+                id="reflection-auto",
+                name="Auto Reflection",
+                description="Internal post-run reflection helper.",
+                role="reflection",
+                input_ports=reflection_input_ports,
+                output_ports=[
+                    OutputPort(name="principles", json_schema={"type": "array"}),
+                    OutputPort(name="principle_count", json_schema={"type": "integer"}),
+                    OutputPort(name="source", json_schema={"type": "string"}),
+                    OutputPort(name="text", json_schema={"type": "string"}),
+                ],
+                metadata={
+                    "reflection_source": "last_run",
+                    "scoped_helper": "auto_reflection",
+                },
+            )
+
+            graph = Graph(
+                nodes=[reflection_node],
+                entry_points=["reflection-auto"],
+                exit_points=["reflection-auto"],
+            )
 
             async def _do_reflection():
                 try:
@@ -1740,6 +1873,7 @@ class RunManager:
 
             project_id = (record.goal_context or {}).get("project_id")
             parent_event_id = (record.goal_context or {}).get("turn_event_id")
+            lint_summary, per_node_lint = _summarize_lint_events(record.events)
 
             for node_id, usage in record.node_usage.items():
                 node_model = None
@@ -1755,6 +1889,7 @@ class RunManager:
                     c = estimate_cost(node_model, pt, ct)
                     if c is not None:
                         node_cost = c
+                node_metadata = dict(per_node_lint.get(node_id, _empty_lint_summary()))
                 await self._telemetry_store.record(TelemetryEvent(
                     event_type="workflow_node",
                     project_id=project_id,
@@ -1769,8 +1904,14 @@ class RunManager:
                     estimated_cost=node_cost,
                     duration_ms=0.0,
                     success=record.status.value == "completed",
+                    metadata=node_metadata,
                 ))
 
+            run_metadata = {
+                "node_count": len(record.node_usage),
+                "error": record.error,
+                **lint_summary,
+            }
             await self._telemetry_store.record(TelemetryEvent(
                 event_type="workflow_run",
                 project_id=project_id,
@@ -1784,7 +1925,7 @@ class RunManager:
                 estimated_cost=record.total_cost or 0.0,
                 duration_ms=(record.elapsed_seconds or 0) * 1000,
                 success=record.status.value == "completed",
-                metadata={"node_count": len(record.node_usage), "error": record.error},
+                metadata=run_metadata,
             ))
         except Exception:
             logger.debug("Workflow telemetry failed", exc_info=True)

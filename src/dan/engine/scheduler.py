@@ -11,6 +11,7 @@ import logging
 import os
 import time as _time
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
@@ -62,8 +63,12 @@ from dan.engine.memory_store import FileSystemMemoryStore, MemoryStore, NullMemo
 from dan.engine.state import ExecutionState, NodeStatus
 from dan.engine.state_store import FileSystemStateStore, NodeExecutionSummary, NullStateStore
 from dan.engine.token_optimization import TokenBudgetAdvisor
+from dan.linter import IntentConfig, LintConfig, LintResult, LintRuntime, RuleSeverity, lint as run_lint
+from dan.linter.rules.intent import build_intent_judge_prompt
 from dan.models.edges import ControlEdge, ContextEdge, DataEdge
 from dan.models.graph import Graph
+from dan.validation.linting import generate_lint_config
+from dan.worker.model import Worker
 from dan.utils.template_render import render_runtime_template
 from dan.utils.tokens import estimate_tokens
 
@@ -89,6 +94,7 @@ _NODE_SLOT_BYPASS_TYPES = frozenset({
     "vote",
     "reflection",
     "rag_operator",
+    "worker",
 })
 
 _VALIDATION_WARNING_PATTERNS = (
@@ -97,6 +103,9 @@ _VALIDATION_WARNING_PATTERNS = (
     "deprecated",
     "warning:",
 )
+_LINT_FEEDBACK_INPUT_KEY = "__lint_feedback__"
+_LINT_FEEDBACK_ALIAS = "lint_feedback"
+_LINT_RETRY_ATTEMPT_INPUT_KEY = "__lint_retry_attempt__"
 
 
 def _is_validation_warning(msg: str) -> bool:
@@ -129,6 +138,18 @@ def _summarize_run_errors(errors: Any) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def _preview_lint_payload(payload: Any, *, limit: int = 800) -> str:
+    """Compact preview of a failing handoff payload for retry feedback."""
+    try:
+        text = json.dumps(payload, sort_keys=True, indent=2, default=str)
+    except Exception:
+        text = str(payload)
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 3].rstrip()}..."
 
 
 @dataclass
@@ -382,6 +403,7 @@ class Engine:
             self.embedding_registry = self._build_embedding_registry()
         self._register_defaults()
         self._active_run_states: dict[str, ExecutionState] = {}
+        self._resource_locks: dict[str, asyncio.Lock] = {}
 
     def _build_provider_registry(self):
         """Create the ProviderRegistry from engine config."""
@@ -462,6 +484,558 @@ class Engine:
         from dan.executor_defaults import register_default_executors
 
         register_default_executors(self.executor_registry)
+
+    @asynccontextmanager
+    async def _resource_lock_scope(self, node: Any):
+        """Serialize Worker execution/publication when resource locks are declared."""
+        execution = getattr(node, "execution", None)
+        if not isinstance(node, Worker) or execution is None:
+            yield
+            return
+        if execution.blocking_mode == "shared" or not execution.resource_locks:
+            yield
+            return
+
+        lock_names = sorted(set(execution.resource_locks))
+        locks = [self._resource_locks.setdefault(name, asyncio.Lock()) for name in lock_names]
+        for lock in locks:
+            await lock.acquire()
+        try:
+            yield
+        finally:
+            for lock in reversed(locks):
+                lock.release()
+
+    def _build_lint_runtime(self, context: ExecutionContext) -> LintRuntime:
+        async def _embed(text: str, model: str | None) -> list[float]:
+            registry = getattr(context, "embedding_registry", None)
+            if registry is None:
+                return []
+            model_name = model or getattr(context.config, "default_embedding_model", "")
+            provider = registry.resolve(model_name)
+            result = await provider.embed([text], model_name)
+            return result.vectors[0] if result.vectors else []
+
+        async def _judge(
+            payload: Any,
+            config: IntentConfig,
+            judge_context: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            gateway = getattr(context, "model_gateway", None)
+            if gateway is None:
+                return {
+                    "passed": False,
+                    "score": 0.0,
+                    "message": "Intent judge unavailable",
+                }
+            model_name = config.judge_model or context.config.llm_default_model
+            prompt_variant = str((judge_context or {}).get("prompt_variant") or "alignment")
+            prompt = build_intent_judge_prompt(
+                payload,
+                config,
+                prompt_variant=prompt_variant,
+                missing=(judge_context or {}).get("missing"),
+            )
+            result = await gateway.complete(
+                [
+                    {"role": "system", "content": "Return strict JSON only."},
+                    {"role": "user", "content": prompt},
+                ],
+                model_name,
+                temperature=0.0,
+                max_tokens=200,
+            )
+            raw = (result.text or "").strip()
+            try:
+                parsed = json.loads(raw)
+                raw_verdict = str(
+                    parsed.get("verdict")
+                    or parsed.get("judgment")
+                    or parsed.get("result")
+                    or ""
+                ).strip().lower()
+                explicit_passed = parsed.get("passed")
+                response: dict[str, Any] = {
+                    "score": float(parsed.get("score", 0.0)),
+                    "message": str(parsed.get("message") or parsed.get("reason") or ""),
+                    "missing": parsed.get("missing", []),
+                    "covered": parsed.get("covered", []),
+                }
+                if raw_verdict:
+                    response["verdict"] = raw_verdict
+                if isinstance(explicit_passed, bool) and raw_verdict != "partial":
+                    response["passed"] = explicit_passed
+                elif raw_verdict in {"pass", "passed", "yes", "true"}:
+                    response["passed"] = True
+                elif raw_verdict in {"fail", "failed", "no", "false"}:
+                    response["passed"] = False
+                return response
+            except Exception:
+                lowered = raw.lower()
+                passed = "pass" in lowered and "fail" not in lowered
+                return {
+                    "passed": passed,
+                    "score": 1.0 if passed else 0.0,
+                    "message": raw[:300],
+                    "covered": [],
+                    "missing": [],
+                }
+
+        runtime = LintRuntime()
+        if getattr(context, "embedding_registry", None) is not None:
+            runtime.embed = _embed
+        if getattr(context, "model_gateway", None) is not None:
+            runtime.judge_intent = _judge
+        return runtime
+
+    def _resolve_edge_lint_config(
+        self,
+        edge: DataEdge,
+        source_node: Any,
+        target_node: Any,
+        graph: Graph,
+    ) -> LintConfig | None:
+        if edge.lint is not None:
+            return edge.lint
+        explicit = getattr(edge, "metadata", {}).get("lint")
+        if explicit is not None:
+            return LintConfig.model_validate(explicit)
+        generated = generate_lint_config(source_node, target_node, edge, graph)
+        return generated
+
+    @staticmethod
+    def _lint_tier_reached(config: LintConfig, lint_result: LintResult) -> int:
+        if not config.enabled:
+            return 0
+        if lint_result.tier_reached is not None:
+            return int(lint_result.tier_reached)
+        if lint_result.intent_score is not None or any(diag.tier == 3 for diag in lint_result.diagnostics):
+            return 3
+        if lint_result.semantic_score is not None or any(diag.tier == 2 for diag in lint_result.diagnostics):
+            return 2
+        if config.structural is not None or any(diag.tier == 1 for diag in lint_result.diagnostics):
+            return 1
+        return 0
+
+    @staticmethod
+    def _lint_retry_requested(config: LintConfig) -> bool:
+        flags = {str(flag).strip().lower().replace("-", "_") for flag in config.autofix}
+        return bool({"retry_with_feedback", "refocus"} & flags) and config.max_retries > 0
+
+    @staticmethod
+    def _lint_retry_budget_ms(retry_failures: list[dict[str, Any]]) -> int:
+        budgets = [
+            int(item["retry_budget_ms"])
+            for item in retry_failures
+            if int(item.get("retry_budget_ms", 0) or 0) > 0
+        ]
+        return min(budgets) if budgets else 0
+
+    @staticmethod
+    def _supports_lint_feedback_retry(node: Any) -> bool:
+        return getattr(node, "node_type", None) in {"worker", "llm_operator"}
+
+    @staticmethod
+    def _augment_lint_retry_inputs(
+        inputs: dict[str, Any],
+        feedback: str,
+        retry_attempt: int,
+    ) -> dict[str, Any]:
+        updated = dict(inputs)
+        updated[_LINT_FEEDBACK_INPUT_KEY] = feedback
+        updated[_LINT_FEEDBACK_ALIAS] = feedback
+        updated[_LINT_RETRY_ATTEMPT_INPUT_KEY] = retry_attempt
+        return updated
+
+    @staticmethod
+    def _build_lint_retry_feedback(
+        node: Any,
+        retry_failures: list[dict[str, Any]],
+    ) -> str:
+        lines = [
+            "Your previous output was rejected by downstream handoff lint.",
+            f"Producer: {node.id}",
+            "Regenerate the full output so it satisfies every downstream requirement below.",
+        ]
+        for failure in retry_failures:
+            lines.append(
+                f"Handoff: {failure['source_port']} -> "
+                f"{failure['target_node_id']}.{failure['target_port']}"
+            )
+            if failure.get("suggested_feedback"):
+                lines.append(str(failure["suggested_feedback"]))
+                continue
+            if failure["rule_codes"]:
+                lines.append(f"Rule codes: {', '.join(failure['rule_codes'])}")
+            for message in failure["messages"]:
+                lines.append(f"Issue: {message}")
+            if failure.get("intent"):
+                lines.append(f"Downstream intent: {failure['intent']}")
+            if failure.get("covered"):
+                lines.append(f"Already covered: {', '.join(failure['covered'])}")
+            if failure.get("missing"):
+                lines.append(f"Still missing: {', '.join(failure['missing'])}")
+            if failure.get("output_preview"):
+                lines.append("Previous output:")
+                lines.append(str(failure["output_preview"]))
+        lines.append("Return only the corrected output payload.")
+        return "\n".join(lines)
+
+    async def _emit_lint_event(
+        self,
+        *,
+        event_type: EventType,
+        state: ExecutionState,
+        node: Any,
+        data: dict[str, Any],
+    ) -> None:
+        await self._emit(EngineEvent(
+            event_type=event_type,
+            run_id=state.run_id,
+            node_id=node.id,
+            node_type=node.node_type,
+            data=data,
+        ))
+
+    async def _execute_lint_retry(
+        self,
+        node: Any,
+        inputs: dict[str, Any],
+        context: ExecutionContext,
+    ) -> NodeResult:
+        node_type = getattr(node, "node_type", None)
+        if node_type is None or not self.executor_registry.has(node_type):
+            return NodeResult(
+                outputs={},
+                status=NodeStatus.FAILED,
+                error=f"No executor for node_type '{node_type}' during lint retry",
+            )
+
+        executor = self.executor_registry.get(node_type)
+        try:
+            if node_type in _NODE_SLOT_BYPASS_TYPES:
+                return await executor.execute(node, inputs, context)
+            async with context.node_slot():
+                return await executor.execute(node, inputs, context)
+        except Exception as exc:
+            logger.exception("Executor raised during lint retry for node '%s'", getattr(node, "id", "?"))
+            return NodeResult(
+                outputs={},
+                status=NodeStatus.FAILED,
+                error=f"Executor exception during lint retry: {exc}",
+            )
+
+    async def _apply_lint_to_outputs(
+        self,
+        node: Any,
+        graph: Graph,
+        state: ExecutionState,
+        context: ExecutionContext,
+        result: NodeResult,
+        *,
+        base_inputs: dict[str, Any] | None = None,
+    ) -> NodeResult:
+        """Lint handoffs before publishing outputs to downstream nodes."""
+        if not result.outputs or result.status != NodeStatus.COMPLETED:
+            return result
+
+        lint_runtime = self._build_lint_runtime(context)
+        outgoing_by_port: dict[str, list[DataEdge]] = defaultdict(list)
+        for edge in graph.edges:
+            if isinstance(edge, DataEdge) and edge.source_node_id == node.id:
+                outgoing_by_port[edge.source_port].append(edge)
+
+        current_result = result
+        retry_count = 0
+        all_diagnostics_meta: list[dict[str, Any]] = []
+        retry_history: list[dict[str, Any]] = []
+        stable_inputs = dict(base_inputs or {})
+        retry_window_started = _time.time()
+
+        while True:
+            diagnostics_meta: list[dict[str, Any]] = []
+            published_outputs: dict[str, Any] = {}
+            pass_events: list[dict[str, Any]] = []
+            fail_events: list[dict[str, Any]] = []
+            autofix_events: list[dict[str, Any]] = []
+            retry_failures: list[dict[str, Any]] = []
+            failure_reason: str | None = None
+
+            for port_name, value in current_result.outputs.items():
+                lint_edges = outgoing_by_port.get(port_name, [])
+                fixed_candidates: list[tuple[str, Any, list[str], dict[str, Any]]] = []
+                port_retry_failures: list[dict[str, Any]] = []
+
+                for edge in lint_edges:
+                    target_node = graph.node_by_id(edge.target_node_id)
+                    if target_node is None:
+                        continue
+                    config = self._resolve_edge_lint_config(edge, node, target_node, graph)
+                    if config is None or not config.enabled:
+                        continue
+
+                    lint_started = _time.time()
+                    lint_result = await run_lint(value, config, runtime=lint_runtime)
+                    elapsed_ms = round((_time.time() - lint_started) * 1000, 3)
+                    diagnostics = [diag.model_dump(mode="json") for diag in lint_result.diagnostics]
+                    tier_reached = self._lint_tier_reached(config, lint_result)
+                    rule_codes = [diag["code"] for diag in diagnostics]
+                    event_data = {
+                        "edge_id": edge.id,
+                        "source_port": port_name,
+                        "target_node_id": edge.target_node_id,
+                        "target_port": edge.target_port,
+                        "elapsed_ms": elapsed_ms,
+                        "tier_reached": tier_reached,
+                        "rule_codes": rule_codes,
+                        "diagnostic_count": len(diagnostics),
+                        "semantic_score": lint_result.semantic_score,
+                        "intent_score": lint_result.intent_score,
+                        "severity": config.severity.value,
+                    }
+
+                    if diagnostics or lint_result.applied_fixes:
+                        diagnostics_meta.append(
+                            {
+                                **event_data,
+                                "attempt": retry_count + 1,
+                                "diagnostics": diagnostics,
+                                "applied_fixes": list(lint_result.applied_fixes),
+                                "suggested_fixes": list(lint_result.suggested_fixes),
+                                "passed": lint_result.passed,
+                            }
+                        )
+
+                    if lint_result.fixed_data is not None and lint_result.applied_fixes:
+                        fixed_candidates.append(
+                            (
+                                edge.id,
+                                lint_result.fixed_data,
+                                list(lint_result.applied_fixes),
+                                dict(event_data),
+                            )
+                        )
+                        if lint_result.passed:
+                            continue
+
+                    if lint_result.passed:
+                        pass_events.append(event_data)
+                        continue
+
+                    retry_requested = self._lint_retry_requested(config)
+                    retry_supported = retry_requested and self._supports_lint_feedback_retry(node)
+                    failure_event = {
+                        **event_data,
+                        "diagnostics": diagnostics,
+                        "retry_supported": retry_supported,
+                        "max_retries": config.max_retries,
+                        "retry_budget_ms": config.retry_budget_ms,
+                    }
+                    fail_events.append(failure_event)
+
+                    if config.severity != RuleSeverity.ERROR:
+                        continue
+
+                    if retry_supported:
+                        missing_items = sorted(
+                            {
+                                str(item).strip()
+                                for diag in diagnostics
+                                for item in (diag.get("metadata") or {}).get("missing", [])
+                                if str(item).strip()
+                            }
+                        )
+                        covered_items = sorted(
+                            {
+                                str(item).strip()
+                                for diag in diagnostics
+                                for item in (diag.get("metadata") or {}).get("covered", [])
+                                if str(item).strip()
+                            }
+                        )
+                        port_retry_failures.append(
+                            {
+                                "edge_id": edge.id,
+                                "source_port": port_name,
+                                "target_node_id": edge.target_node_id,
+                                "target_port": edge.target_port,
+                                "diagnostics": diagnostics,
+                                "messages": [diag["message"] for diag in diagnostics],
+                                "rule_codes": rule_codes,
+                                "intent": config.intent.intent if config.intent is not None else "",
+                                "missing": missing_items,
+                                "covered": covered_items,
+                                "output_preview": _preview_lint_payload(value),
+                                "suggested_feedback": lint_result.retry_feedback or lint_result.refocus_feedback,
+                                "suggested_fixes": list(lint_result.suggested_fixes),
+                                "max_retries": config.max_retries,
+                                "retry_budget_ms": config.retry_budget_ms,
+                            }
+                        )
+                        continue
+
+                    failure_reason = (
+                        f"Lint failed for handoff {node.id}.{port_name} -> "
+                        f"{edge.target_node_id}.{edge.target_port}"
+                    )
+                    break
+
+                if failure_reason is not None:
+                    break
+
+                if port_retry_failures:
+                    retry_failures.extend(port_retry_failures)
+                    continue
+
+                final_value = value
+                if fixed_candidates:
+                    unique_by_payload: dict[str, tuple[str, Any, list[str], dict[str, Any]]] = {}
+                    for edge_id, fixed_value, fixes, event_data in fixed_candidates:
+                        payload_key = json.dumps(fixed_value, sort_keys=True, default=str)
+                        unique_by_payload.setdefault(payload_key, (edge_id, fixed_value, fixes, event_data))
+                    if len(unique_by_payload) > 1:
+                        failure_reason = (
+                            f"Conflicting lint auto-fixes for worker output '{node.id}.{port_name}'"
+                        )
+                        fail_events.append(
+                            {
+                                "source_port": port_name,
+                                "reason": "conflicting_auto_fixes",
+                                "diagnostics": [],
+                                "severity": RuleSeverity.ERROR.value,
+                                "retry_supported": False,
+                                "max_retries": 0,
+                            }
+                        )
+                        break
+                    edge_id, final_value, fixes, event_data = next(iter(unique_by_payload.values()))
+                    autofix_events.append(
+                        {
+                            **event_data,
+                            "edge_id": edge_id,
+                            "applied_fixes": fixes,
+                            "applied_to_handoff": True,
+                        }
+                    )
+
+                published_outputs[port_name] = final_value
+
+            max_retry_budget = max((item["max_retries"] for item in retry_failures), default=0)
+            retry_budget_ms = self._lint_retry_budget_ms(retry_failures)
+            retry_elapsed_ms = round((_time.time() - retry_window_started) * 1000, 3)
+            retry_budget_exhausted = (
+                bool(retry_failures)
+                and retry_budget_ms > 0
+                and retry_elapsed_ms >= retry_budget_ms
+            )
+            if retry_budget_exhausted and failure_reason is None:
+                failure_reason = f"Lint retry budget exceeded for node '{node.id}'"
+            retry_scheduled = (
+                bool(retry_failures)
+                and retry_count < max_retry_budget
+                and failure_reason is None
+            )
+            committed = failure_reason is None and not retry_scheduled
+            retry_edge_ids = {item["edge_id"] for item in retry_failures}
+
+            for event_data in pass_events:
+                await self._emit_lint_event(
+                    event_type=EventType.LINT_PASSED,
+                    state=state,
+                    node=node,
+                    data={
+                        **event_data,
+                        "attempt": retry_count + 1,
+                        "handoff_committed": committed,
+                    },
+                )
+
+            for event_data in autofix_events:
+                await self._emit_lint_event(
+                    event_type=EventType.LINT_AUTO_FIXED,
+                    state=state,
+                    node=node,
+                    data={
+                        **event_data,
+                        "attempt": retry_count + 1,
+                        "handoff_committed": committed,
+                    },
+                )
+
+            for event_data in fail_events:
+                edge_id = event_data.get("edge_id")
+                event_committed = committed and event_data.get("severity") != RuleSeverity.ERROR.value
+                await self._emit_lint_event(
+                    event_type=EventType.LINT_FAILED,
+                    state=state,
+                    node=node,
+                    data={
+                        **event_data,
+                        "attempt": retry_count + 1,
+                        "retry_scheduled": retry_scheduled and edge_id in retry_edge_ids,
+                        "retry_budget_ms": event_data.get("retry_budget_ms", 0),
+                        "retry_elapsed_ms": retry_elapsed_ms if edge_id in retry_edge_ids else None,
+                        "retry_budget_exhausted": retry_budget_exhausted and edge_id in retry_edge_ids,
+                        "handoff_committed": event_committed,
+                    },
+                )
+
+            all_diagnostics_meta.extend(diagnostics_meta)
+
+            if retry_scheduled:
+                feedback = self._build_lint_retry_feedback(node, retry_failures)
+                retry_count += 1
+                retry_history.append(
+                    {
+                        "attempt": retry_count,
+                        "max_retries": max_retry_budget,
+                        "retry_budget_ms": retry_budget_ms,
+                        "retry_elapsed_ms": retry_elapsed_ms,
+                        "edge_ids": sorted(retry_edge_ids),
+                        "feedback": feedback,
+                    }
+                )
+                await self._emit(EngineEvent(
+                    event_type=EventType.RETRY_ATTEMPTED,
+                    run_id=state.run_id,
+                    node_id=node.id,
+                    node_type=node.node_type,
+                    data={
+                        "reason": "lint_feedback",
+                        "attempt": retry_count,
+                        "max_retries": max_retry_budget,
+                        "retry_budget_ms": retry_budget_ms,
+                        "retry_elapsed_ms": retry_elapsed_ms,
+                        "edge_ids": sorted(retry_edge_ids),
+                        "feedback_preview": feedback[:500],
+                    },
+                ))
+                retry_inputs = self._augment_lint_retry_inputs(stable_inputs, feedback, retry_count)
+                current_result = await self._execute_lint_retry(node, retry_inputs, context)
+                if current_result.status != NodeStatus.COMPLETED:
+                    if not isinstance(current_result.metadata, dict):
+                        current_result.metadata = {}
+                    if all_diagnostics_meta:
+                        current_result.metadata.setdefault("lint", all_diagnostics_meta)
+                    if retry_history:
+                        current_result.metadata.setdefault("lint_retries", retry_history)
+                    return current_result
+                continue
+
+            if failure_reason is not None:
+                current_result.status = NodeStatus.FAILED
+                current_result.error = failure_reason
+                current_result.outputs = {}
+            else:
+                current_result.outputs = published_outputs
+
+            if not isinstance(current_result.metadata, dict):
+                current_result.metadata = {}
+            if all_diagnostics_meta:
+                current_result.metadata.setdefault("lint", all_diagnostics_meta)
+            if retry_history:
+                current_result.metadata.setdefault("lint_retries", retry_history)
+            return current_result
 
     @staticmethod
     def _apply_parameter_mutations(graph: Graph, mutations) -> Graph:
@@ -2007,6 +2581,15 @@ class Engine:
                 var_name = getattr(var, "name", None)
                 if var_name and state.port_data.has(virtual_src, var_name):
                     inputs[var_name] = state.port_data.get(virtual_src, var_name)
+        elif getattr(node, "node_type", None) == "worker":
+            input_variables = getattr(node, "metadata", {}).get("input_variables")
+            if isinstance(input_variables, list):
+                for raw_var in input_variables:
+                    if not isinstance(raw_var, dict):
+                        continue
+                    var_name = raw_var.get("name")
+                    if var_name and state.port_data.has(virtual_src, var_name):
+                        inputs[var_name] = state.port_data.get(virtual_src, var_name)
         for port in node.input_ports:
             if state.port_data.has(virtual_src, port.name):
                 inputs[port.name] = state.port_data.get(virtual_src, port.name)
@@ -2214,11 +2797,12 @@ class Engine:
 
         if not used_node_cache and not used_semantic_cache:
             try:
-                if node_type_str in _NODE_SLOT_BYPASS_TYPES:
-                    result = await executor.execute(node, inputs, context)
-                else:
-                    async with context.node_slot():
+                async with self._resource_lock_scope(node):
+                    if node_type_str in _NODE_SLOT_BYPASS_TYPES:
                         result = await executor.execute(node, inputs, context)
+                    else:
+                        async with context.node_slot():
+                            result = await executor.execute(node, inputs, context)
             except Exception as exc:
                 logger.exception("Executor raised for node '%s'", node_id)
                 result = NodeResult(
@@ -2483,6 +3067,16 @@ class Engine:
             result.metadata = {}
         result.metadata["runtime_repair_summary"] = repair_summary_for_node(state, node_id)
 
+        async with self._resource_lock_scope(node):
+            result = await self._apply_lint_to_outputs(
+                node,
+                graph,
+                state,
+                context,
+                result,
+                base_inputs=inputs,
+            )
+
         state.mark(node_id, result.status)
         if result.error:
             state.node_errors[node_id] = result.error
@@ -2546,7 +3140,7 @@ class Engine:
                     data={"outputs": result.outputs},
                 ))
 
-            if node_type_str == "llm_operator" and context.cost_tracker is not None:
+            if context.cost_tracker is not None:
                 bd = context.cost_tracker.get_breakdown(node_id)
                 if bd is not None:
                     await self._emit(EngineEvent(

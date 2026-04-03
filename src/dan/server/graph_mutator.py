@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import os
 import re
 import uuid
 from typing import Annotated, Any, Literal, Union
@@ -12,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from dan.models.node_taxonomy import BODY_GRAPH_RUNTIME_NODE_TYPES
 from dan.models.graph import Graph
+from dan.models.node_taxonomy import worker_builder_uses_workers
 from dan.validation.graph import validate_graph
 
 __all__ = [
@@ -39,6 +41,21 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+_WORKER_MUTATOR_LEGACY_COMPUTE_TYPES: frozenset[str] = frozenset({
+    "llm_operator",
+    "tool_operator",
+    "code_operator",
+    "rag_operator",
+    "router",
+    "validator",
+    "reflection",
+    "input",
+    "human",
+    "human_in_the_loop",
+    "vote",
+    "reduce",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +252,169 @@ _OP_SORT_ORDER: dict[str, int] = {
 
 
 # ---------------------------------------------------------------------------
+# Worker-builder rollout helpers
+# ---------------------------------------------------------------------------
+
+
+def _graph_mutator_uses_workers() -> bool:
+    return worker_builder_uses_workers(mode=os.environ.get("DAN_WORKER_BUILDER"))
+
+
+def _workerize_mutation_node_config(
+    node_type: str,
+    config: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    if not _graph_mutator_uses_workers() or node_type not in _WORKER_MUTATOR_LEGACY_COMPUTE_TYPES:
+        return node_type, config
+
+    worker_config = copy.deepcopy(config)
+    metadata = dict(worker_config.pop("metadata", {}) or {})
+
+    if node_type == "llm_operator":
+        llm_hints = dict(worker_config.pop("llm_hints", {}) or {})
+        for key in (
+            "prompt_template",
+            "system_prompt",
+            "temperature",
+            "max_tokens",
+            "output_json_schema",
+            "tools",
+            "max_tool_rounds",
+            "history_policy",
+            "task_tier",
+        ):
+            if key in worker_config:
+                llm_hints[key] = worker_config.pop(key)
+        worker_config["llm_hints"] = llm_hints
+        return "worker", worker_config
+
+    if node_type == "tool_operator":
+        tool_id = worker_config.pop("tool_id", "")
+        worker_config["tool_ids"] = [tool_id] if tool_id else []
+        tool_config = worker_config.pop("tool_config", None)
+        if tool_config:
+            metadata["tool_config"] = tool_config
+        worker_config["metadata"] = metadata
+        return "worker", worker_config
+
+    if node_type == "code_operator":
+        worker_config.pop("sandbox_config", None)
+        return "worker", worker_config
+
+    if node_type == "rag_operator":
+        worker_config["role"] = "rag"
+        metadata.update({
+            "rag_collection": worker_config.pop("collection", ""),
+            "rag_top_k": worker_config.pop("top_k", 5),
+            "rag_query_template": worker_config.pop("query_template", "{query}"),
+            "rag_include_metadata": worker_config.pop("include_metadata", True),
+            "rag_rerank": worker_config.pop("rerank", False),
+        })
+        if "similarity_threshold" in worker_config:
+            metadata["rag_similarity_threshold"] = worker_config.pop("similarity_threshold")
+        if worker_config.get("embedding_model"):
+            metadata["rag_embedding_model"] = worker_config.pop("embedding_model")
+        if worker_config.get("vector_store_config"):
+            metadata["rag_vector_store_config"] = worker_config.pop("vector_store_config")
+        worker_config["metadata"] = metadata
+        return "worker", worker_config
+
+    if node_type == "router":
+        worker_config["role"] = "router"
+        metadata["route_descriptions"] = dict(worker_config.pop("route_descriptions", {}) or {})
+        worker_config["metadata"] = metadata
+        return "worker", worker_config
+
+    if node_type == "validator":
+        worker_config["role"] = "validator"
+        worker_config["validation_rules"] = list(worker_config.pop("validation_rules", []))
+        metadata["validator_on_failure"] = worker_config.pop("on_failure", "route")
+        metadata["validator_strict_mode"] = bool(worker_config.pop("strict_mode", False))
+        worker_config["metadata"] = metadata
+        return "worker", worker_config
+
+    if node_type == "reflection":
+        worker_config["role"] = "reflection"
+        reflection_model = worker_config.pop("reflection_model", None)
+        source = worker_config.pop("source", None)
+        source_config = worker_config.pop("source_config", None)
+        output_format = worker_config.pop("output_format", None)
+        max_principles = worker_config.pop("max_principles", None)
+        min_confidence = worker_config.pop("min_confidence", None)
+        dedup_strategy = worker_config.pop("dedup_strategy", None)
+        metadata["reflection_prompt"] = worker_config.pop("reflection_prompt", "")
+        if reflection_model is not None:
+            worker_config["model"] = reflection_model
+            metadata["reflection_model"] = reflection_model
+        if source is not None:
+            metadata["reflection_source"] = source
+        if source_config is not None:
+            metadata["reflection_source_config"] = source_config
+        if output_format is not None:
+            metadata["reflection_output_format"] = output_format
+        if max_principles is not None:
+            metadata["reflection_max_principles"] = max_principles
+        if min_confidence is not None:
+            metadata["reflection_min_confidence"] = min_confidence
+        if dedup_strategy is not None:
+            metadata["reflection_dedup_strategy"] = dedup_strategy
+        worker_config["metadata"] = metadata
+        return "worker", worker_config
+
+    if node_type == "input":
+        metadata["input_variables"] = worker_config.pop("variables", [])
+        worker_config["metadata"] = metadata
+        return "worker", worker_config
+
+    if node_type in {"human", "human_in_the_loop"}:
+        worker_config["role"] = node_type
+        metadata["human_prompt"] = worker_config.pop("prompt", "")
+        if "timeout_seconds" in worker_config:
+            metadata["human_timeout_seconds"] = worker_config.pop("timeout_seconds")
+        if "default_action" in worker_config:
+            metadata["human_default_action"] = worker_config.pop("default_action")
+        if "input_schema" in worker_config:
+            metadata["human_input_schema"] = worker_config.pop("input_schema")
+        if "output_schema" in worker_config:
+            metadata["human_output_schema"] = worker_config.pop("output_schema")
+        metadata["human_render_mode"] = worker_config.pop("render_mode", "text")
+        if "options" in worker_config:
+            metadata["human_options"] = worker_config.pop("options")
+        metadata["human_instructions"] = worker_config.pop("instructions", "")
+        metadata["human_render_target"] = worker_config.pop("render_target", "dialog")
+        worker_config["metadata"] = metadata
+        return "worker", worker_config
+
+    if node_type == "vote":
+        worker_config["role"] = "vote"
+        metadata.update({
+            "vote_candidates": worker_config.pop("candidates", []),
+            "vote_num_votes": worker_config.pop("num_votes", 3),
+            "vote_prompt_template": worker_config.pop("prompt_template", ""),
+            "vote_system_prompt": worker_config.pop("system_prompt", ""),
+            "vote_temperature": worker_config.pop("temperature", 0.7),
+            "vote_strategy": worker_config.pop("vote_strategy", "majority"),
+            "vote_parallelism": worker_config.pop("parallelism", 3),
+        })
+        if "output_json_schema" in worker_config:
+            metadata["vote_output_json_schema"] = worker_config.pop("output_json_schema")
+        if "vote_config" in worker_config:
+            metadata["vote_config"] = worker_config.pop("vote_config")
+        if "timeout_seconds" in worker_config:
+            metadata["vote_timeout_seconds"] = worker_config.pop("timeout_seconds")
+        worker_config["metadata"] = metadata
+        return "worker", worker_config
+
+    if node_type == "reduce":
+        worker_config["role"] = "reduce"
+        metadata["reduce_expression"] = worker_config.pop("reducer", "")
+        worker_config["metadata"] = metadata
+        return "worker", worker_config
+
+    return node_type, config
+
+
+# ---------------------------------------------------------------------------
 # Default ports by node type
 # ---------------------------------------------------------------------------
 
@@ -256,6 +436,10 @@ def _default_ports(
             [{"name": "result", "schema": {}}],
         ),
         "code_operator": (
+            [{"name": "input", "schema": {}, "required": False}],
+            [{"name": "result", "schema": {}}],
+        ),
+        "worker": (
             [{"name": "input", "schema": {}, "required": False}],
             [{"name": "result", "schema": {}}],
         ),
@@ -416,6 +600,17 @@ def _default_node_config(node_type: str) -> dict[str, Any]:
         "tool_operator": {
             "tool_id": "",
             "tool_config": {},
+        },
+        "worker": {
+            "role": "",
+            "instruction": "",
+            "persona": "",
+            "authority": "leaf",
+            "model": None,
+            "tool_ids": [],
+            "code": "",
+            "language": "python",
+            "sub_workers": {},
         },
         "gate": {
             "gate_mode": "if_else",
@@ -1351,27 +1546,33 @@ class GraphMutator:
         else:
             node_id = _generate_node_id(op.name, existing_ids)
 
-        config = _default_node_config(op.node_type)
+        requested_node_type = op.node_type
+        config = _default_node_config(requested_node_type)
         config.update(op.config)
-        input_ports, output_ports = _default_ports(op.node_type, config)
+        input_ports, output_ports = _default_ports(requested_node_type, config)
+        effective_node_type, effective_config = _workerize_mutation_node_config(
+            requested_node_type,
+            config,
+        )
 
         node: dict[str, Any] = {
             "id": node_id,
-            "node_type": op.node_type,
+            "node_type": effective_node_type,
             "name": op.name,
-            "description": config.pop("description", ""),
-            "input_ports": config.pop("input_ports", input_ports),
-            "output_ports": config.pop("output_ports", output_ports),
-            "position": config.pop("position", {"x": 0, "y": 0}),
-            "ui": config.pop("ui", {}),
-            "metadata": config.pop("metadata", {}),
+            "description": effective_config.pop("description", ""),
+            "input_ports": effective_config.pop("input_ports", input_ports),
+            "output_ports": effective_config.pop("output_ports", output_ports),
+            "position": effective_config.pop("position", {"x": 0, "y": 0}),
+            "ui": effective_config.pop("ui", {}),
+            "metadata": effective_config.pop("metadata", {}),
         }
-        node.update(config)
+        node.update(effective_config)
 
         graph.setdefault("nodes", []).append(node)
-        if _node_uses_body_graph(op.node_type):
-            _ensure_subgraph(graph, node_id, [], [], [], [])
-        logger.debug("Added node %s (%s)", node_id, op.node_type)
+        if _node_uses_body_graph(effective_node_type):
+            if effective_node_type != "worker" or bool(node.get("body_graph")):
+                _ensure_subgraph(graph, node_id, [], [], [], [])
+        logger.debug("Added node %s (%s)", node_id, effective_node_type)
         return None
 
     def _op_remove_node(

@@ -1,7 +1,7 @@
-"""Boundary auto-insert — generate ValidatorNodes at composite boundaries.
+"""Boundary auto-insert — generate validator-shaped Workers at composite boundaries.
 
 Inspects ``external_input_schema`` and ``external_output_schema`` on
-composite-style nodes and produces ValidatorNodes with appropriate
+composite-style nodes and produces validator Workers with appropriate
 required_keys + schema_conformance rules, wired into the graph.
 """
 
@@ -9,11 +9,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from dan.models.control_flow import ValidatorNode, ValidationRule
 from dan.models.edges import DataEdge
 from dan.models.graph import Graph
+from dan.models.legacy import ValidationRule
 from dan.models.nodes import NodeBase
 from dan.models.ports import InputPort, OutputPort
+from dan.worker.model import Worker
 
 
 def _unique_port_names(names: list[str]) -> list[str]:
@@ -55,8 +56,8 @@ def _validator_output_ports(boundary_ports: list[str]) -> list[OutputPort]:
 def generate_entry_validator(
     composite_node: NodeBase,
     port_names: list[str] | None = None,
-) -> tuple[ValidatorNode, list[DataEdge]]:
-    """Generate a ValidatorNode from a composite node's ``external_input_schema``.
+) -> tuple[Worker, list[DataEdge]]:
+    """Generate a validator Worker from a composite node's ``external_input_schema``.
 
     Returns the validator node and a list of DataEdges that should be
     inserted to wire it into the graph (replacing the composite's
@@ -80,13 +81,17 @@ def generate_entry_validator(
             config={"schema": schema},
         ))
 
-    validator = ValidatorNode(
+    validator = Worker(
         id=node_id,
         name=f"Entry validator for {composite_node.id}",
+        role="validator",
         validation_rules=rules,
-        on_failure="route",
         input_ports=[InputPort(name=port, required=False) for port in boundary_ports],
         output_ports=_validator_output_ports(boundary_ports),
+        metadata={
+            "generated": True,
+            "validator_on_failure": "route",
+        },
     )
 
     edges_to_composite = [
@@ -106,8 +111,8 @@ def generate_entry_validator(
 def generate_exit_validator(
     composite_node: NodeBase,
     port_names: list[str] | None = None,
-) -> tuple[ValidatorNode, list[DataEdge]]:
-    """Generate a ValidatorNode from a composite node's ``external_output_schema``.
+) -> tuple[Worker, list[DataEdge]]:
+    """Generate a validator Worker from a composite node's ``external_output_schema``.
 
     Returns the validator node and a list of DataEdges wiring the
     composite's output into the validator.
@@ -130,13 +135,17 @@ def generate_exit_validator(
             config={"schema": schema},
         ))
 
-    validator = ValidatorNode(
+    validator = Worker(
         id=node_id,
         name=f"Exit validator for {composite_node.id}",
+        role="validator",
         validation_rules=rules,
-        on_failure="route",
         input_ports=[InputPort(name=port, required=False) for port in boundary_ports],
         output_ports=_validator_output_ports(boundary_ports),
+        metadata={
+            "generated": True,
+            "validator_on_failure": "route",
+        },
     )
 
     edges_from_composite = [

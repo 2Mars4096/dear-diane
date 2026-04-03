@@ -186,7 +186,8 @@ class DanClientOrLocal:
     def _make_engine(self, *, event_callback: Any | None = None) -> Any:
         """Build the local execution engine through one explicit adapter seam."""
         from dan.engine.executor import EngineConfig, ExecutorRegistry
-        from dan.executors.tool import ToolExecutor, ToolRegistry
+        from dan.executors.tool import ToolRegistry
+        from dan.executor_defaults import register_default_executors
         from dan.engine.scheduler import Engine
 
         cfg = self._engine_config
@@ -200,7 +201,7 @@ class DanClientOrLocal:
             tool_registry.register_builtin_tools()
 
         executor_registry = ExecutorRegistry()
-        executor_registry.register("tool_operator", ToolExecutor(tool_registry))
+        register_default_executors(executor_registry, tool_registry=tool_registry)
 
         return Engine(
             config=cfg,

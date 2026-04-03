@@ -58,6 +58,9 @@ class EventType(str, Enum):
     SANDBOX_COMPLETED = "sandbox_completed"
     # -- 9-3: Validator events --------------------------------------------------
     VALIDATION_RESULT = "validation_result"
+    LINT_PASSED = "lint_passed"
+    LINT_FAILED = "lint_failed"
+    LINT_AUTO_FIXED = "lint_auto_fixed"
     # -- 6-14: Dead-edge warnings -----------------------------------------------
     DEAD_EDGE_WARNING = "dead_edge_warning"
     # -- 7-9: Async parallel subagents -----------------------------------------

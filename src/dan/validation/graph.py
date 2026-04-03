@@ -32,6 +32,7 @@ from dan.models.control_flow import (
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
 from dan.models.hyperedges import VALID_HOOKS_BY_TYPE
 from dan.validation.schema import check_schema_compatible
+from dan.worker.model import Worker
 
 try:
     from dan.models.control_flow import GateNode  # noqa: F401
@@ -63,6 +64,7 @@ def validate_graph(graph: "Graph") -> list[str]:
     errors.extend(_validate_gate_cycles(graph))
     errors.extend(_check_deprecated_edge_conditions(graph))
     errors.extend(_check_hyperedges(graph))
+    errors.extend(_check_worker_resource_refs(graph))
     return errors
 
 
@@ -167,6 +169,16 @@ def _check_sub_graph_refs(graph: "Graph") -> list[str]:
                 if ref not in graph.sub_graphs:
                     errors.append(
                         _missing_ref_error(node.id, ref, f"agent '{agent_name}'")
+                    )
+            continue
+
+        if isinstance(node, Worker):
+            if node.body_graph and node.body_graph not in graph.sub_graphs:
+                errors.append(_missing_ref_error(node.id, node.body_graph, "body_graph"))
+            for alias, ref in sorted(node.sub_workers.items()):
+                if ref not in graph.sub_graphs:
+                    errors.append(
+                        _missing_ref_error(node.id, ref, f"sub_worker '{alias}'")
                     )
     return errors
 
@@ -526,5 +538,41 @@ def _check_hyperedges(graph: "Graph") -> list[str]:
                 f"not valid for type '{he.hyperedge_type}' "
                 f"(valid: {sorted(valid_hooks)})"
             )
+
+    return warnings
+
+
+def _check_worker_resource_refs(graph: "Graph") -> list[str]:
+    """Validate Worker refs against the graph-level worker resource catalog."""
+    warnings: list[str] = []
+    catalog = getattr(graph, "worker_resources", {}) or {}
+
+    def _warn(node_id: str, label: str, ref: str, kind: str) -> None:
+        warnings.append(
+            f"Warning: worker '{node_id}' {label} '{ref}' is missing from "
+            f"graph.worker_resources['{kind}']"
+        )
+
+    for node in graph.nodes:
+        if not isinstance(node, Worker) or node.context is None:
+            continue
+        ctx = node.context
+
+        def _check(kind: str, ref: str | None, label: str) -> None:
+            if not ref:
+                return
+            available = catalog.get(kind) or {}
+            if ref not in available:
+                _warn(node.id, label, ref, kind)
+
+        _check("instruction_profiles", ctx.instruction_profile_ref, "instruction_profile_ref")
+        _check("memory_policies", ctx.memory_policy_ref, "memory_policy_ref")
+        _check("provider_policies", ctx.provider_policy_ref, "provider_policy_ref")
+        _check("retry_policies", ctx.retry_policy_ref, "retry_policy_ref")
+        _check("authority_policies", ctx.authority_policy_ref, "authority_policy_ref")
+        for ref in ctx.context_bundle_refs:
+            _check("context_bundles", ref, "context_bundle_ref")
+        for ref in ctx.toolset_refs:
+            _check("toolsets", ref, "toolset_ref")
 
     return warnings

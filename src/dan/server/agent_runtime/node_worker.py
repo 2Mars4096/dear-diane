@@ -250,15 +250,20 @@ def build_node_plan(
         issues.append(
             NodePlanIssue(
                 code="missing_executable_code",
-                message=f"code_operator node {node.node_id!r} must provide non-empty config.code",
+                message=f"{node.node_type} node {node.node_id!r} must provide non-empty config.code",
                 node_id=node.node_id,
             )
         )
-    if executor_kind == NodeExecutorKind.tool and not tools.get(str(node.grounding.tool_id or "").strip()):
+    if executor_kind == NodeExecutorKind.tool and not tools.get(
+        str(node.grounding.tool_id or next(iter(_worker_tool_ids(node)), "")).strip()
+    ):
         issues.append(
             NodePlanIssue(
                 code="unknown_tool",
-                message=f"tool_operator node {node.node_id!r} references unknown tool_id {node.grounding.tool_id!r}",
+                message=(
+                    f"{node.node_type} node {node.node_id!r} references unknown tool_id "
+                    f"{str(node.grounding.tool_id or next(iter(_worker_tool_ids(node)), '')).strip()!r}"
+                ),
                 node_id=node.node_id,
             )
         )
@@ -364,7 +369,14 @@ def _build_output_ports(
     manifest_ports = _manifest_output_ports(node)
     if manifest_ports:
         return manifest_ports
-    if node.node_type == "tool_operator" and tools.get(str(node.grounding.tool_id or "").strip()):
+    if (
+        node.node_type == "tool_operator"
+        and tools.get(str(node.grounding.tool_id or "").strip())
+    ) or (
+        node.node_type == "worker"
+        and node.execution_family == ExecutionFamily.tool
+        and any(tool_id in tools for tool_id in _worker_tool_ids(node))
+    ):
         return [WorkflowPortSpec(name="result", required=False, aliases=["output"])]
     return _default_output_ports(node)
 
@@ -451,28 +463,33 @@ def _run_grounding_checks(
     checks: list[NodeGroundingCheck] = []
     tool_id = str(node.grounding.tool_id or "").strip()
 
-    if node.node_type == "tool_operator":
+    if node.node_type == "tool_operator" or (
+        node.node_type == "worker" and node.execution_family == ExecutionFamily.tool
+    ):
+        resolved_tool_id = tool_id or next(iter(_worker_tool_ids(node)), "")
         checks.append(
             NodeGroundingCheck(
                 name="tool registry lookup",
-                passed=bool(tool_id and tool_id in tools),
+                passed=bool(resolved_tool_id and resolved_tool_id in tools),
                 detail=(
-                    f"tool_operator node {node.node_id!r} resolved registered tool_id {tool_id!r}"
-                    if tool_id and tool_id in tools
-                    else f"tool_operator node {node.node_id!r} references unknown tool_id {tool_id!r}"
+                    f"{node.node_type} node {node.node_id!r} resolved registered tool_id {resolved_tool_id!r}"
+                    if resolved_tool_id and resolved_tool_id in tools
+                    else f"{node.node_type} node {node.node_id!r} references unknown tool_id {resolved_tool_id!r}"
                 ),
             )
         )
-    if node.node_type == "code_operator":
+    if node.node_type == "code_operator" or (
+        node.node_type == "worker" and node.execution_family == ExecutionFamily.code
+    ):
         code = str(node.config.get("code") or "").strip()
         checks.append(
             NodeGroundingCheck(
                 name="code presence",
                 passed=bool(code),
                 detail=(
-                    f"code_operator node {node.node_id!r} carries executable code"
+                    f"{node.node_type} node {node.node_id!r} carries executable code"
                     if code
-                    else f"code_operator node {node.node_id!r} must provide non-empty config.code"
+                    else f"{node.node_type} node {node.node_id!r} must provide non-empty config.code"
                 ),
             )
         )
@@ -481,15 +498,18 @@ def _run_grounding_checks(
         for action in node.grounding.declared_actions
         if action.strip()
     }
-    if node.node_type == "llm_operator" and declared_actions & _EXTERNAL_ACTION_VERBS:
+    if (
+        node.node_type == "llm_operator"
+        or (node.node_type == "worker" and node.execution_family == ExecutionFamily.llm)
+    ) and declared_actions & _EXTERNAL_ACTION_VERBS:
         checks.append(
             NodeGroundingCheck(
                 name="llm external action grounding",
                 passed=bool(tool_id),
                 detail=(
-                    f"llm_operator node {node.node_id!r} declares external actions with tool binding {tool_id!r}"
+                    f"{node.node_type} node {node.node_id!r} declares external actions with tool binding {tool_id!r}"
                     if tool_id
-                    else f"llm_operator node {node.node_id!r} declares external actions but has no tool binding"
+                    else f"{node.node_type} node {node.node_id!r} declares external actions but has no tool binding"
                 ),
             )
         )
@@ -577,6 +597,60 @@ def _build_executor_config(
             "temperature": float(config.get("temperature", 0.2)),
             "tools": llm_tools,
         }
+    if node.node_type == "worker":
+        role = str(config.get("role") or "").strip()
+        instruction = str(config.get("instruction") or node.purpose).strip()
+        persona = str(config.get("persona") or "").strip()
+        llm_hints = _worker_llm_hints(node)
+        tool_ids = _worker_tool_ids(node)
+        if node.execution_family == ExecutionFamily.llm:
+            llm_tools: list[dict[str, Any]] = []
+            tool_id = str(node.grounding.tool_id or next(iter(tool_ids), "")).strip()
+            if tool_id and tool_id in tools:
+                llm_tools.append(_tool_schema(tool_id, tools=tools))
+            return {
+                "role": role,
+                "instruction": instruction,
+                "persona": persona,
+                "tool_ids": tool_ids,
+                "model": str(config.get("model") or "gpt-5-mini"),
+                "prompt_template": str(
+                    llm_hints.get("prompt_template")
+                    or config.get("prompt_template")
+                    or config.get("prompt")
+                    or node.purpose
+                ).strip(),
+                "system_prompt": str(
+                    llm_hints.get("system_prompt")
+                    or config.get("system_prompt")
+                    or ""
+                ).strip(),
+                "temperature": float(llm_hints.get("temperature", config.get("temperature", 0.2))),
+                "max_tokens": llm_hints.get("max_tokens"),
+                "task_tier": llm_hints.get("task_tier"),
+                "tools": llm_tools,
+            }
+        if node.execution_family == ExecutionFamily.tool:
+            return {
+                "role": role,
+                "instruction": instruction,
+                "persona": persona,
+                "tool_id": str(node.grounding.tool_id or next(iter(tool_ids), "")).strip(),
+                "tool_ids": tool_ids,
+                "tool_config": dict(node.grounding.bound_arguments or config.get("tool_config", {}) or {}),
+            }
+        if node.execution_family == ExecutionFamily.code:
+            return {
+                "role": role,
+                "instruction": instruction,
+                "persona": persona,
+                "code": str(config.get("code") or "").rstrip(),
+                "language": str(config.get("language") or "python").strip() or "python",
+                "sandbox_config": dict(config.get("sandbox_config", {}) or {}),
+            }
+        config.setdefault("declared_input_ports", [item.name for item in input_ports])
+        config.setdefault("declared_output_ports", [item.name for item in output_ports])
+        return config
     if node.node_type == "tool_operator":
         return {
             "tool_id": str(node.grounding.tool_id or "").strip(),
@@ -647,7 +721,10 @@ def _default_output_ports(node: WorkflowSpecNode) -> list[WorkflowPortSpec]:
         "reflection": ["principles", "principle_count", "source", "text"],
         "vote": ["winner", "winner_model", "winner_index", "all_votes"],
     }
-    port_names = defaults.get(node.node_type, ["output"])
+    if node.node_type == "worker":
+        port_names = ["text"] if node.execution_family == ExecutionFamily.llm else ["result"]
+    else:
+        port_names = defaults.get(node.node_type, ["output"])
     return [
         WorkflowPortSpec(
             name=name,
@@ -664,6 +741,12 @@ def _manifest_input_ports(node: WorkflowSpecNode) -> list[WorkflowPortSpec]:
         if node.node_type == "for_each":
             return [WorkflowPortSpec(name="items", required=False)]
         if node.node_type in {"llm_operator", "tool_operator", "code_operator", "gate"}:
+            return [WorkflowPortSpec(name="input", required=False)]
+        if node.node_type == "worker" and node.execution_family in {
+            ExecutionFamily.llm,
+            ExecutionFamily.tool,
+            ExecutionFamily.code,
+        }:
             return [WorkflowPortSpec(name="input", required=False)]
         return []
     return _coerce_port_specs(manifest[0], required_default=False)
@@ -789,12 +872,35 @@ def _safe_tool_registry() -> dict[str, tuple[Any, dict[str, Any]]]:
         return {}
 
 
+def _worker_tool_ids(node: WorkflowSpecNode) -> list[str]:
+    tool_ids = [
+        str(item).strip()
+        for item in node.config.get("tool_ids", []) or []
+        if str(item).strip()
+    ]
+    if tool_ids:
+        return tool_ids
+    tool_id = str(
+        node.grounding.tool_id
+        or node.config.get("tool_id")
+        or node.config.get("tool_name")
+        or ""
+    ).strip()
+    return [tool_id] if tool_id else []
+
+
+def _worker_llm_hints(node: WorkflowSpecNode) -> dict[str, Any]:
+    raw = node.config.get("llm_hints")
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
 def _default_input_aliases(node: WorkflowSpecNode, name: str) -> list[str]:
     aliases: list[str] = []
     default_name = {
         "llm_operator": "input",
         "tool_operator": "input",
         "code_operator": "input",
+        "worker": "input",
         "for_each": "items",
     }.get(node.node_type)
     if default_name and default_name != name:
@@ -808,6 +914,7 @@ def _default_output_aliases(node: WorkflowSpecNode, name: str) -> list[str]:
         "llm_operator": "text",
         "tool_operator": "result",
         "code_operator": "result",
+        "worker": "text" if node.execution_family == ExecutionFamily.llm else "result",
         "input": "input",
     }.get(node.node_type)
     if default_name and default_name != name:
@@ -842,6 +949,12 @@ def _should_allow_implicit_binding(
         return True
     if node.node_type == "tool_operator":
         required_args = _required_tool_args(str(node.grounding.tool_id or "").strip(), tools=tools)
+        return input_name not in required_args and input_name in _GENERIC_INPUT_NAMES
+    if node.node_type == "worker" and node.execution_family == ExecutionFamily.tool:
+        required_args = _required_tool_args(
+            str(node.grounding.tool_id or next(iter(_worker_tool_ids(node)), "")).strip(),
+            tools=tools,
+        )
         return input_name not in required_args and input_name in _GENERIC_INPUT_NAMES
     return input_name in _GENERIC_INPUT_NAMES
 

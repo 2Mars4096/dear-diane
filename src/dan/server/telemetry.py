@@ -84,6 +84,16 @@ _METADATA_GROUPABLE_COLUMNS = {
     "route_source",
     "scenario_id",
     "scenario_confidence",
+    "had_lint_activity",
+    "had_lint_blocks",
+    "had_lint_autofix",
+    "lint_state",
+}
+
+_BOOLEAN_METADATA_GROUPABLE_COLUMNS = {
+    "had_lint_activity",
+    "had_lint_blocks",
+    "had_lint_autofix",
 }
 
 _ALL_GROUPABLE_COLUMNS = (
@@ -113,6 +123,12 @@ def _normalize_group_value(value: Any) -> str:
     if isinstance(value, (dict, list)):
         return json.dumps(value, sort_keys=True)
     return str(value)
+
+
+def _normalize_sql_group_value(column: str, value: Any) -> str:
+    if column in _BOOLEAN_METADATA_GROUPABLE_COLUMNS and value in (0, 1):
+        return "True" if value == 1 else "False"
+    return _normalize_group_value(value)
 
 
 def _hour_bucket(timestamp: datetime) -> str:
@@ -608,7 +624,7 @@ class SQLiteTelemetryStore(TelemetryStore):
             rd = dict(r)
             cnt = rd["cnt"] or 0
             result.append(AggregateRow(
-                group_key={c: str(rd.get(c, "") or "") for c in valid},
+                group_key={c: _normalize_sql_group_value(c, rd.get(c, "")) for c in valid},
                 count=cnt,
                 total_tokens=rd.get("sum_tokens", 0) or 0,
                 total_cost=rd.get("sum_cost", 0.0) or 0.0,
@@ -757,7 +773,34 @@ def _empty_summary(filters: TelemetryQuery | None = None) -> dict[str, Any]:
         "activity_by_hour": [],
         "models": [],
         "modes": [],
+        "lint": {
+            "workflow_runs": 0,
+            "with_activity": 0,
+            "blocked_runs": 0,
+            "autofixed_runs": 0,
+            "warning_runs": 0,
+            "passed_runs": 0,
+            "states": [],
+        },
     }
+
+
+def _metadata_bool(event: TelemetryEvent, key: str) -> bool:
+    value = event.metadata.get(key) if isinstance(event.metadata, dict) else None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() == "true"
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return False
+
+
+def _metadata_text(event: TelemetryEvent, key: str) -> str:
+    value = event.metadata.get(key) if isinstance(event.metadata, dict) else None
+    if value is None:
+        return ""
+    return str(value)
 
 
 async def summarize_telemetry(
@@ -806,6 +849,25 @@ async def summarize_telemetry(
         row for row in _aggregate_events(model_events, ["model_used"])
         if row.group_key.get("model_used", "").strip()
     ]
+    workflow_run_events = [
+        event for event in events
+        if event.event_type == "workflow_run"
+    ]
+    lint_state_rows = [
+        row for row in _aggregate_events(workflow_run_events, ["lint_state"])
+        if row.group_key.get("lint_state", "").strip()
+        and row.group_key.get("lint_state", "").strip() != "none"
+    ]
+
+    lint_summary = {
+        "workflow_runs": len(workflow_run_events),
+        "with_activity": sum(1 for event in workflow_run_events if _metadata_bool(event, "had_lint_activity")),
+        "blocked_runs": sum(1 for event in workflow_run_events if _metadata_bool(event, "had_lint_blocks")),
+        "autofixed_runs": sum(1 for event in workflow_run_events if _metadata_bool(event, "had_lint_autofix")),
+        "warning_runs": sum(1 for event in workflow_run_events if _metadata_text(event, "lint_state") == "warning"),
+        "passed_runs": sum(1 for event in workflow_run_events if _metadata_text(event, "lint_state") == "passed"),
+        "states": [row.model_dump() for row in lint_state_rows],
+    }
 
     totals = {
         "events": len(events),
@@ -830,6 +892,7 @@ async def summarize_telemetry(
         "activity_by_hour": [row.model_dump() for row in hour_rows],
         "models": [row.model_dump() for row in model_rows],
         "modes": [row.model_dump() for row in mode_rows],
+        "lint": lint_summary,
     }
 
 
