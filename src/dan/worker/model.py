@@ -7,7 +7,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from dan.models.context import BoundaryContract, FeedbackSelector, MergeStrategy
+from dan.models.context import (
+    BoundaryContract,
+    CompactionRule,
+    ContextProjection,
+    FailurePolicy,
+    FeedbackSelector,
+    MergeStrategy,
+    NodeLocalState,
+)
 from dan.models.control_flow import SpawnPolicy
 from dan.models.legacy import ValidationRule
 from dan.models.nodes import HistoryPolicy, NodeBase
@@ -122,6 +130,13 @@ class WorkerConfig(BaseModel):
     parallelism: int = Field(default=1, ge=1)
     merge_strategy: MergeStrategy = MergeStrategy.APPEND
     spawn_policy: SpawnPolicy | None = None
+    external_input_schema: dict[str, Any] | None = None
+    external_output_schema: dict[str, Any] | None = None
+    control_state_schema: dict[str, Any] = Field(default_factory=dict)
+    local_state: NodeLocalState = Field(default_factory=NodeLocalState)
+    compaction_rule: CompactionRule | None = None
+    failure_policy: FailurePolicy = Field(default_factory=FailurePolicy)
+    projections: list[ContextProjection] = Field(default_factory=list)
     boundary_contract: BoundaryContract | None = None
     validation_rules: list[ValidationRule] = Field(default_factory=list)
 
@@ -153,6 +168,13 @@ class Worker(NodeBase):
     parallelism: int = Field(default=1, ge=1)
     merge_strategy: MergeStrategy = MergeStrategy.APPEND
     spawn_policy: SpawnPolicy | None = None
+    external_input_schema: dict[str, Any] | None = None
+    external_output_schema: dict[str, Any] | None = None
+    control_state_schema: dict[str, Any] = Field(default_factory=dict)
+    local_state: NodeLocalState = Field(default_factory=NodeLocalState)
+    compaction_rule: CompactionRule | None = None
+    failure_policy: FailurePolicy = Field(default_factory=FailurePolicy)
+    projections: list[ContextProjection] = Field(default_factory=list)
     boundary_contract: BoundaryContract | None = None
     validation_rules: list[ValidationRule] = Field(default_factory=list)
 

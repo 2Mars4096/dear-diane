@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from dan.models.context import MergeStrategy
+from dan.models.context import (
+    CompactionRule,
+    ContextProjection,
+    MergeStrategy,
+    NodeLocalState,
+)
 from dan.models.control_flow import SpawnPolicy
 from dan.models.graph import Graph
 from dan.models.legacy import ValidationRule
@@ -162,6 +167,42 @@ def test_worker_round_trip_preserves_refs_and_policies() -> None:
                 "parallelism": 2,
                 "merge_strategy": "last_write_wins",
                 "spawn_policy": {"max_spawns_per_node": 2},
+                "external_input_schema": {
+                    "type": "object",
+                    "properties": {"draft": {"type": "string"}},
+                    "required": ["draft"],
+                },
+                "external_output_schema": {
+                    "type": "object",
+                    "properties": {"summary": {"type": "string"}},
+                    "required": ["summary"],
+                },
+                "control_state_schema": {
+                    "type": "object",
+                    "properties": {"iteration": {"type": "integer"}},
+                },
+                "local_state": {
+                    "json_schema": {
+                        "type": "object",
+                        "properties": {"history": {"type": "array"}},
+                    },
+                    "description": "Review-local state",
+                },
+                "compaction_rule": {
+                    "strategy": "sliding_window",
+                    "window_size": 2,
+                },
+                "failure_policy": {
+                    "max_iterations": 3,
+                    "stagnation_threshold": 2,
+                },
+                "projections": [
+                    {
+                        "name": "reviewer_view",
+                        "context_keys": ["memory.team"],
+                        "local_state_keys": ["history"],
+                    }
+                ],
                 "boundary_contract": {
                     "external_input_schema": {"type": "object", "properties": {"draft": {"type": "string"}}},
                     "external_output_schema": {"type": "object", "properties": {"summary": {"type": "string"}}},
@@ -263,6 +304,13 @@ def test_worker_model_json_schema_exposes_context_and_policy_fields() -> None:
     assert "authority_policy" in properties
     assert "execution" in properties
     assert "llm_hints" in properties
+    assert "external_input_schema" in properties
+    assert "external_output_schema" in properties
+    assert "control_state_schema" in properties
+    assert "local_state" in properties
+    assert "compaction_rule" in properties
+    assert "failure_policy" in properties
+    assert "projections" in properties
 
 
 def test_llm_hints_defaults_are_stable_and_optional() -> None:
@@ -294,3 +342,29 @@ def test_worker_with_control_flow_defaults_to_gate_ports() -> None:
     )
 
     assert [port.name for port in worker.output_ports] == ["true", "false"]
+
+
+def test_worker_composite_contract_fields_are_typed_and_stable() -> None:
+    worker = Worker(
+        id="review",
+        name="Review",
+        body_graph="review_body",
+        external_input_schema={"type": "object", "required": ["draft"]},
+        external_output_schema={"type": "object", "required": ["summary"]},
+        control_state_schema={"type": "object", "properties": {"iteration": {"type": "integer"}}},
+        local_state=NodeLocalState(
+            json_schema={"type": "object", "properties": {"history": {"type": "array"}}},
+            description="review state",
+        ),
+        compaction_rule=CompactionRule(strategy="sliding_window", window_size=2),
+        projections=[ContextProjection(name="reviewer_view", local_state_keys=["history"])],
+    )
+
+    assert worker.external_input_schema == {"type": "object", "required": ["draft"]}
+    assert worker.external_output_schema == {"type": "object", "required": ["summary"]}
+    assert worker.control_state_schema["type"] == "object"
+    assert worker.local_state.description == "review state"
+    assert worker.compaction_rule is not None
+    assert worker.compaction_rule.window_size == 2
+    assert worker.failure_policy.max_iterations is None
+    assert worker.projections[0].name == "reviewer_view"
