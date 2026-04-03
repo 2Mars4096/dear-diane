@@ -781,6 +781,64 @@ class TestBoundaryValidators:
             "comp_custom__exit_validator", "confidence", "down", "confidence_in"
         ) in edge_tuples
 
+    def test_insert_boundary_validators_accepts_worker_composites(self):
+        from dan.models.nodes import LLMOperator
+        from dan.validation.boundaries import insert_boundary_validators
+        from dan.worker import Worker
+
+        comp = Worker(
+            id="worker_comp",
+            name="Worker Composite",
+            role="manager",
+            body_graph="worker_comp_body",
+            external_input_schema={"type": "object", "required": ["topic"]},
+            external_output_schema={"type": "object", "required": ["summary"]},
+            input_ports=[InputPort(name="topic")],
+            output_ports=[OutputPort(name="summary")],
+        )
+        upstream = LLMOperator(
+            id="llm1",
+            name="LLM",
+            model="test",
+            prompt_template="Generate",
+            output_ports=[OutputPort(name="text")],
+        )
+        downstream = LLMOperator(
+            id="llm2",
+            name="LLM2",
+            model="test",
+            prompt_template="Consume",
+            input_ports=[InputPort(name="input")],
+        )
+
+        graph = Graph(
+            nodes=[upstream, comp, downstream],
+            edges=[
+                DataEdge(
+                    id="e1",
+                    source_node_id="llm1",
+                    source_port="text",
+                    target_node_id="worker_comp",
+                    target_port="topic",
+                ),
+                DataEdge(
+                    id="e2",
+                    source_node_id="worker_comp",
+                    source_port="summary",
+                    target_node_id="llm2",
+                    target_port="input",
+                ),
+            ],
+            entry_points=["llm1"],
+            exit_points=["llm2"],
+        )
+
+        result = insert_boundary_validators(graph, "worker_comp")
+
+        node_ids = {n.id for n in result.nodes}
+        assert "worker_comp__entry_validator" in node_ids
+        assert "worker_comp__exit_validator" in node_ids
+
 
 # ===========================================================================
 # Builder / decompiler round-trip

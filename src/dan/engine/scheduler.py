@@ -68,7 +68,7 @@ from dan.linter.rules.intent import build_intent_judge_prompt
 from dan.models.edges import ControlEdge, ContextEdge, DataEdge
 from dan.models.graph import Graph
 from dan.validation.linting import generate_lint_config
-from dan.worker.model import Worker
+from dan.worker.model import Worker, llm_hints_configured
 from dan.utils.template_render import render_runtime_template
 from dan.utils.tokens import estimate_tokens
 
@@ -393,6 +393,7 @@ class Engine:
             self.provider_registry = provider_registry
         else:
             self.provider_registry = self._build_provider_registry()
+        self._owns_model_gateway = model_gateway is None
         if model_gateway is not None:
             self.model_gateway = model_gateway
         else:
@@ -419,6 +420,17 @@ class Engine:
         from dan.llm_core.gateway import ModelGateway
 
         return ModelGateway(registry=registry)
+
+    def _current_model_gateway(self):
+        """Return the effective gateway for the current provider registry."""
+        gateway = getattr(self, "model_gateway", None)
+        if not getattr(self, "_owns_model_gateway", True):
+            return gateway
+        if gateway is not None and not hasattr(gateway, "registry"):
+            return gateway
+        gateway = self._build_model_gateway()
+        self.model_gateway = gateway
+        return gateway
 
     def _build_embedding_registry(self):
         """Create the EmbeddingRegistry from engine config."""
@@ -600,6 +612,8 @@ class Engine:
         explicit = getattr(edge, "metadata", {}).get("lint")
         if explicit is not None:
             return LintConfig.model_validate(explicit)
+        if not isinstance(source_node, Worker) and not isinstance(target_node, Worker):
+            return None
         generated = generate_lint_config(source_node, target_node, edge, graph)
         return generated
 
@@ -633,7 +647,12 @@ class Engine:
 
     @staticmethod
     def _supports_lint_feedback_retry(node: Any) -> bool:
-        return getattr(node, "node_type", None) in {"worker", "llm_operator"}
+        node_type = getattr(node, "node_type", None)
+        if node_type == "llm_operator":
+            return True
+        if not isinstance(node, Worker):
+            return False
+        return bool(node.model) or llm_hints_configured(node.llm_hints)
 
     @staticmethod
     def _augment_lint_retry_inputs(
@@ -1314,6 +1333,9 @@ class Engine:
         ) == "1"
 
     def _llm_max_concurrency(self) -> int | None:
+        configured = getattr(self.config, "llm_max_concurrency", None)
+        if configured is not None and configured > 0:
+            return configured
         raw = os.getenv("DAN_MAX_CONCURRENT_LLM")
         if raw is not None and raw.strip():
             try:
@@ -1321,9 +1343,6 @@ class Engine:
                 return value if value > 0 else None
             except ValueError:
                 logger.warning("Ignoring invalid DAN_MAX_CONCURRENT_LLM=%r", raw)
-        configured = getattr(self.config, "llm_max_concurrency", None)
-        if configured is not None and configured > 0:
-            return configured
         if self.config.max_concurrency is not None and self.config.max_concurrency > 0:
             return self.config.max_concurrency
         return None
@@ -3189,6 +3208,18 @@ class Engine:
                     if state.port_data.has(virtual_src, edge.target_port):
                         continue
             if not state.port_data.has(edge.source_node_id, edge.source_port):
+                virtual_src = f"__input__{node_id}"
+                if state.port_data.has(virtual_src, edge.target_port):
+                    continue
+                sibling_source_available = any(
+                    isinstance(other_edge, DataEdge)
+                    and other_edge is not edge
+                    and other_edge.target_port == edge.target_port
+                    and state.port_data.has(other_edge.source_node_id, other_edge.source_port)
+                    for other_edge in graph.edges_to(node_id)
+                )
+                if sibling_source_available:
+                    continue
                 if source_node is None or _is_gate_node(source_node):
                     return True
                 target_port = next(
@@ -3426,7 +3457,7 @@ class Engine:
             run_id=state.run_id,
             layer_path=layer_path,
             provider_registry=self.provider_registry,
-            model_gateway=self.model_gateway,
+            model_gateway=self._current_model_gateway(),
             tool_registry=tool_registry,
             embedding_registry=self.embedding_registry,
             state_store=self.state_store,

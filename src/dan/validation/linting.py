@@ -191,10 +191,16 @@ def generate_lint_config(
 
     if not any([structural, semantic, intent]):
         return None
+    # Structural rules come directly from explicit schema/required contracts and
+    # are safe to enforce as blocking errors. Semantic/intent autogen is more
+    # heuristic, so generated configs without a structural contract should start
+    # in warning/canary mode unless a caller promotes them explicitly.
+    severity = RuleSeverity.ERROR if structural is not None else RuleSeverity.WARNING
+    autofix = ["fill_defaults", "truncate", "clamp"] if structural is not None else []
     return LintConfig(
         structural=structural,
         semantic=semantic,
         intent=intent,
-        severity=RuleSeverity.ERROR,
-        autofix=["fill_defaults", "truncate", "clamp"],
+        severity=severity,
+        autofix=autofix,
     )

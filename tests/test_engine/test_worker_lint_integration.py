@@ -15,6 +15,7 @@ from dan.executors.tool import ToolExecutor, ToolRegistry
 from dan.linter import IntentConfig
 from dan.models.edges import DataEdge
 from dan.models.graph import Graph
+from dan.models.legacy import CodeOperator
 from dan.models.ports import InputPort, OutputPort
 from dan.providers import CompletionResult
 from dan.worker.executor import WorkerExecutor
@@ -178,6 +179,56 @@ async def test_disabled_edge_lint_skips_runtime_and_emits_no_lint_events() -> No
     assert result.success is True
     assert result.node_statuses["source"] == "completed"
     assert result.node_statuses["target"] == "completed"
+    assert not any(
+        event.event_type in {EventType.LINT_PASSED, EventType.LINT_FAILED, EventType.LINT_AUTO_FIXED}
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_runtime_lint_autogen_does_not_run_for_legacy_only_edges() -> None:
+    source = CodeOperator(
+        id="source",
+        name="Source",
+        code="result = {'value': 1}",
+        output_ports=[OutputPort(name="value", json_schema={"type": "integer"})],
+    )
+    target = CodeOperator(
+        id="target",
+        name="Target",
+        code="result = {'value': value + 1}",
+        input_ports=[InputPort(name="value", json_schema={"type": "integer"})],
+        output_ports=[OutputPort(name="value", json_schema={"type": "integer"})],
+    )
+    graph = Graph(
+        nodes=[source, target],
+        edges=[
+            DataEdge(
+                id="e1",
+                source_node_id="source",
+                source_port="value",
+                target_node_id="target",
+                target_port="value",
+            )
+        ],
+        entry_points=["source"],
+        exit_points=["target"],
+    )
+
+    events: list[EngineEvent] = []
+
+    async def capture(event: EngineEvent) -> None:
+        events.append(event)
+
+    engine = Engine(
+        config=EngineConfig(checkpoint_enabled=False),
+        checkpoint_store=NullCheckpointStore(),
+        event_callback=capture,
+    )
+    result = await engine.run(graph)
+
+    assert result.success is True
+    assert result.outputs["value"] == 2
     assert not any(
         event.event_type in {EventType.LINT_PASSED, EventType.LINT_FAILED, EventType.LINT_AUTO_FIXED}
         for event in events
@@ -531,6 +582,58 @@ async def test_worker_lint_retry_with_feedback_reexecutes_producer() -> None:
     assert retry_event.data["attempt"] == 1
     assert passed_event.data["attempt"] == 2
     assert passed_event.data["handoff_committed"] is True
+
+
+@pytest.mark.asyncio
+async def test_worker_lint_retry_with_feedback_does_not_reexecute_non_llm_workers() -> None:
+    source = Worker(
+        id="source",
+        name="Source",
+        code="result = {'draft': 'missing summary'}",
+        output_ports=[OutputPort(name="result")],
+    )
+    target = Worker(
+        id="target",
+        name="Target",
+        input_ports=[InputPort(name="input", required=True)],
+        output_ports=[OutputPort(name="result")],
+    )
+    graph = Graph(
+        nodes=[source, target],
+        edges=[
+            DataEdge(
+                id="e1",
+                source_node_id="source",
+                source_port="result",
+                target_node_id="target",
+                target_port="input",
+                lint={
+                    "structural": {"required_keys": ["summary"]},
+                    "severity": "error",
+                    "autofix": ["retry_with_feedback"],
+                    "max_retries": 1,
+                },
+            )
+        ],
+        entry_points=["source"],
+        exit_points=["target"],
+    )
+
+    events: list[EngineEvent] = []
+
+    async def capture(event: EngineEvent) -> None:
+        events.append(event)
+
+    engine = _engine_with_worker(WorkerExecutor(), callback=capture)
+    result = await engine.run(graph)
+
+    assert result.success is False
+    assert result.node_statuses["source"] == "failed"
+    assert result.node_statuses["target"] == "skipped"
+    assert len([event for event in events if event.event_type == EventType.RETRY_ATTEMPTED]) == 0
+    failed_event = next(event for event in events if event.event_type == EventType.LINT_FAILED)
+    assert failed_event.data["retry_supported"] is False
+    assert failed_event.data["retry_scheduled"] is False
 
 
 @pytest.mark.asyncio

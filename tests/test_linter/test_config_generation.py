@@ -131,6 +131,40 @@ def test_generate_lint_config_omits_weak_metadata() -> None:
     assert config is None
 
 
+def test_generate_lint_config_uses_warning_severity_for_heuristic_only_autogen() -> None:
+    source = Worker(id="source", name="Source", output_ports=[OutputPort(name="result")])
+    target = Worker(
+        id="target",
+        name="Target",
+        role="reviewer",
+        instruction="Check the draft for clarity and factual alignment.",
+        description="Reviews a draft for clarity and factual alignment.",
+        input_ports=[
+            InputPort(
+                name="input",
+                required=False,
+                description="Draft content for review",
+            )
+        ],
+        output_ports=[OutputPort(name="result")],
+    )
+    graph = Graph(
+        nodes=[source, target],
+        edges=[],
+        entry_points=["source"],
+        exit_points=["target"],
+    )
+
+    config = generate_lint_config(source, target, _base_edge(), graph)
+
+    assert config is not None
+    assert config.structural is None
+    assert config.semantic is not None
+    assert config.intent is not None
+    assert config.severity.value == "warning"
+    assert config.autofix == []
+
+
 def test_generate_lint_config_uses_stricter_threshold_for_critical_workers() -> None:
     source = Worker(id="source", name="Source", output_ports=[OutputPort(name="result")])
     target = Worker(
