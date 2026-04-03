@@ -2,63 +2,16 @@
  * Code mode: VS Code-like IDE workspace with resizable panels.
  * Layout: ActivityBar | Sidebar | (EditorTabs / TerminalPanel) | StatusBar
  */
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { lazy, Suspense, useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { Allotment } from "allotment";
-import {
-  Files,
-  Search,
-  GitBranch,
-  Blocks,
-  MessageSquare,
-  Terminal as TerminalIcon,
-  AlertTriangle,
-  FileText,
-  Settings,
-  Clock,
-  ListTodo,
-  FlaskConical,
-  ListTree,
-  Bug,
-  Workflow,
-  Flame,
-  Play,
-  Plus,
-} from "lucide-react";
 import { useCodeStore, type MultiFileEditEntry } from "../../store/useCodeStore";
-import { useAppStore } from "../../store/useAppStore";
-import FileExplorer from "../code/FileExplorer";
-import SearchPanel from "../code/SearchPanel";
-import GitPanel from "../code/GitPanel";
 import MonacoTabs from "../code/MonacoTabs";
-import DiffView from "../code/DiffView";
-import SettingsPanel from "../code/SettingsPanel";
-import KeybindingsPanel from "../code/KeybindingsPanel";
-import TerminalPanel from "../code/TerminalPanel";
-import ProblemsPanel, { useProblemsCount } from "../code/ProblemsPanel";
-import OutputPanel from "../code/OutputPanel";
 import ModeChatSidebar from "../shared/ModeChatSidebar";
-import QuickOpen from "../code/QuickOpen";
-import CommandPalette from "../code/CommandPalette";
-import SymbolSearch from "../code/SymbolSearch";
-import LocalHistoryPanel from "../code/LocalHistoryPanel";
 import CrashRecoveryBanner from "../code/CrashRecoveryBanner";
-import WriteConfirmDialog from "../code/WriteConfirmDialog";
-import CodebaseQA from "../code/CodebaseQA";
-import TaskRunner from "../code/TaskRunner";
-import TestExplorer from "../code/TestExplorer";
-import OutlineView from "../code/OutlineView";
-import SplitEditor from "../code/SplitEditor";
-import ZenMode from "../code/ZenMode";
 import WorkspaceInfo from "../code/WorkspaceInfo";
-import DebugPanel, { DebugConsole, useDebugEvents } from "../code/DebugPanel";
-import InteractiveRebase from "../code/InteractiveRebase";
-import MergeEditor from "../code/MergeEditor";
-import ExtensionsPanel from "../code/ExtensionsPanel";
-import CallHierarchy from "../code/CallHierarchy";
-import MultiFileEdit from "../code/MultiFileEdit";
+import { useDebugEvents } from "../code/useDebugEvents";
 import type { FileEdit } from "../code/MultiFileEdit";
 import ProjectDetectionToast from "../code/ProjectDetectionToast";
-import FeatureTour from "../code/FeatureTour";
 import {
   detectProjectType,
   type ProjectDetection,
@@ -72,397 +25,49 @@ import { useMonacoLsp } from "../../hooks/useMonacoLsp";
 import { useLspDocSync } from "../../hooks/useLspDocSync";
 import { useWorkspaceMemory } from "../../hooks/useWorkspaceMemory";
 import { useFileChangeDetection } from "../../hooks/useFileChangeDetection";
-import { useSettingsStore } from "../../store/useSettingsStore";
-import { useDebugStore } from "../../store/useDebugStore";
-import { isElectron, nativeGit, nativeFs, nativeDebug } from "../../lib/electronBridge";
-import { goBack, goForward } from "../../hooks/useCursorHistory";
+import { useModeScopedWindowEvent } from "../../hooks/useModeScopedWindowEvent";
+import { isElectron, nativeGit, nativeFs } from "../../lib/electronBridge";
 import { activateAllInstalledExtensions } from "../../lib/extensions/extensionActivator";
+import {
+  DevelopmentActivityBar,
+  DevelopmentBottomPanelSurface,
+  DevelopmentBottomPanelTabs,
+  DevelopmentModeStatusStrip,
+  DevelopmentRuntimeBanner,
+  DevelopmentSidebarSurface,
+  DevelopmentStatusBar,
+} from "./DevelopmentModeShell";
+import type { BottomTab } from "./DevelopmentModeShell";
+import { buildDevelopmentModeChatContext } from "./developmentModeChatContext";
+import { useDevelopmentModeShortcuts } from "./useDevelopmentModeShortcuts";
 
-/* ------------------------------------------------------------------ */
-/*  Sidebar panels (Workflow, Furnace)                                */
-/* ------------------------------------------------------------------ */
-
-function WorkflowSidebarPanel() {
-  return (
-    <div className="h-full flex flex-col text-gray-800 dark:text-gray-300">
-      <div className="border-b border-gray-200 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:border-gray-800 dark:text-gray-400">
-        Workflows
-      </div>
-      <div className="flex-1 overflow-y-auto px-3 py-2">
-        <div className="space-y-2 text-xs text-gray-500 dark:text-gray-500">
-          <p>Available workflows from your workspace.</p>
-          <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-gray-800">
-            <Play size={12} className="text-green-400" />
-            <span>Run Workflow…</span>
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function FurnaceSidebarPanel() {
-  return (
-    <div className="h-full flex flex-col text-gray-800 dark:text-gray-300">
-      <div className="border-b border-gray-200 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:border-gray-800 dark:text-gray-400">
-        Furnace
-      </div>
-      <div className="flex-1 overflow-y-auto px-3 py-2">
-        <div className="space-y-2 text-xs text-gray-500 dark:text-gray-500">
-          <p>Training sessions and recipe management.</p>
-          <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-gray-800">
-            <Plus size={12} className="text-orange-400" />
-            <span>New Recipe</span>
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Activity bar                                                      */
-/* ------------------------------------------------------------------ */
-
-interface ActivityItemProps {
-  icon: React.ReactNode;
-  active?: boolean;
-  title: string;
-  onClick?: () => void;
-}
-
-function ActivityItem({ icon, active, title, onClick }: ActivityItemProps) {
-  return (
-    <button
-      title={title}
-      onClick={onClick}
-      className={`w-full flex items-center justify-center py-2.5 transition-colors ${
-        active
-          ? "border-l-2 border-blue-600 bg-blue-50/80 text-blue-700 dark:border-white dark:bg-transparent dark:text-white"
-          : "border-l-2 border-transparent text-gray-500 hover:bg-gray-100 hover:text-gray-900 dark:hover:bg-transparent dark:hover:text-gray-300"
-      }`}
-    >
-      {icon}
-    </button>
-  );
-}
-
-function ActivitySeparator() {
-  return <div className="my-1 mx-auto w-5 border-t border-gray-300 dark:border-gray-700/50" />;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Status bar                                                        */
-/* ------------------------------------------------------------------ */
-
-function StatusBar() {
-  const activeFilePath = useCodeStore((s) => s.activeFilePath);
-  const openFiles = useCodeStore((s) => s.openFiles);
-  const cursorPosition = useCodeStore((s) => s.cursorPosition);
-  const currentBranch = useCodeStore((s) => s.currentBranch);
-  const activeFile = openFiles.find((f) => f.path === activeFilePath);
-  const { errors, warnings } = useProblemsCount();
-  const tabSize = useSettingsStore((s) => s.tabSize);
-
-  return (
-    <div className="h-[22px] bg-[#007acc] text-white flex items-center justify-between px-2 text-[11px] shrink-0 select-none">
-      <div className="flex items-center gap-3">
-        <span className="flex items-center gap-1">
-          <GitBranch size={12} />
-          {currentBranch || "no branch"}
-        </span>
-        {(errors > 0 || warnings > 0) && (
-          <span className="flex items-center gap-1.5">
-            {errors > 0 && (
-              <span className="flex items-center gap-0.5">&#x2297; {errors}</span>
-            )}
-            {warnings > 0 && (
-              <span className="flex items-center gap-0.5">&#x26A0; {warnings}</span>
-            )}
-          </span>
-        )}
-      </div>
-      <div className="flex items-center gap-3">
-        {activeFile && (
-          <>
-            <button className="hover:bg-white/10 px-1 rounded">
-              Ln {cursorPosition.lineNumber}, Col {cursorPosition.column}
-            </button>
-            <span>Spaces: {tabSize}</span>
-            <span>UTF-8</span>
-            <button className="hover:bg-white/10 px-1 rounded capitalize">
-              {activeFile.language}
-            </button>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Keyboard shortcuts                                                */
-/* ------------------------------------------------------------------ */
-
-function useCodeShortcuts() {
-  const activeMode = useAppStore((s) => s.activeMode);
-  const toggleTerminal = useCodeStore((s) => s.toggleTerminal);
-  const activeFilePath = useCodeStore((s) => s.activeFilePath);
-  const markFileSaved = useCodeStore((s) => s.markFileSaved);
-  const closeFile = useCodeStore((s) => s.closeFile);
-
-  const setActiveSidebarPanel = useCodeStore((s) => s.setActiveSidebarPanel);
-  const setQuickOpenVisible = useCodeStore((s) => s.setQuickOpenVisible);
-  const setCommandPaletteVisible = useCodeStore((s) => s.setCommandPaletteVisible);
-  const toggleSettings = useCodeStore((s) => s.toggleSettings);
-
-  const zenPendingRef = useRef(false);
-  const zenTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-
-  const handleSaveAll = useCallback(async () => {
-    const state = useCodeStore.getState();
-    for (const f of state.openFiles) {
-      if (f.dirty) {
-        const isUnderRoot = state.pinnedRoots.some(
-          (root) => f.path.startsWith(root + "/") || f.path === root,
-        );
-        if (!isUnderRoot && !state.allowedExternalPaths.has(f.path)) {
-          state.setPendingWriteConfirmation({ filePath: f.path, content: f.content });
-          return;
-        }
-        const ok = await nativeFs.writeFile(f.path, f.content);
-        if (ok) state.markFileSaved(f.path);
-      }
-    }
-  }, []);
-
-  const navigateCursorHistory = useCallback(
-    async (direction: "back" | "forward") => {
-      const entry = await (direction === "back" ? goBack() : goForward());
-      if (!entry) return;
-      const { openFiles, openFile, setActiveFile } = useCodeStore.getState();
-      const isOpen = openFiles.find((f) => f.path === entry.filePath);
-      if (isOpen) {
-        setActiveFile(entry.filePath);
-      } else {
-        const content = await nativeFs.readFile(entry.filePath);
-        if (content !== null) openFile(entry.filePath, content);
-      }
-      window.dispatchEvent(
-        new CustomEvent("editor:goToLine", {
-          detail: { lineNumber: entry.lineNumber, column: entry.column },
-        }),
-      );
-    },
-    [],
-  );
-
-  const handler = useCallback(
-    (e: KeyboardEvent) => {
-      if (activeMode !== "development") return;
-      const meta = e.metaKey || e.ctrlKey;
-
-      if (!meta && zenPendingRef.current && e.key === "z") {
-        e.preventDefault();
-        zenPendingRef.current = false;
-        clearTimeout(zenTimeoutRef.current);
-        const state = useCodeStore.getState();
-        if (state.zenModeFilePath) {
-          state.setZenModeFilePath(null);
-        } else if (state.activeFilePath) {
-          state.setZenModeFilePath(state.activeFilePath);
-        }
-        return;
-      }
-
-      if (meta && e.key === "k") {
-        zenPendingRef.current = true;
-        clearTimeout(zenTimeoutRef.current);
-        zenTimeoutRef.current = setTimeout(() => { zenPendingRef.current = false; }, 1500);
-      } else if (!meta || e.key !== "k") {
-        if (zenPendingRef.current && e.key !== "z") zenPendingRef.current = false;
-      }
-
-      if (e.altKey && !meta && e.key === "ArrowLeft") {
-        e.preventDefault();
-        navigateCursorHistory("back");
-        return;
-      }
-      if (e.altKey && !meta && e.key === "ArrowRight") {
-        e.preventDefault();
-        navigateCursorHistory("forward");
-        return;
-      }
-
-      // Shift+Alt+H: call hierarchy
-      if (e.shiftKey && e.altKey && (e.key === "h" || e.key === "H") && !meta) {
-        e.preventDefault();
-        window.dispatchEvent(new CustomEvent("codemode:showCallHierarchy"));
-        return;
-      }
-
-      // Debug shortcuts (function keys, no meta required)
-      if (e.key === "F5" && !meta) {
-        e.preventDefault();
-        const ds = useDebugStore.getState();
-        if (e.shiftKey) {
-          nativeDebug.stop();
-        } else if (ds.status === "paused") {
-          nativeDebug.continue_(ds.activeThreadId ?? 1);
-        } else if (ds.status === "idle" || ds.status === "stopped") {
-          const config = ds.launchConfigs[ds.activeLaunchConfigIndex];
-          if (config) {
-            ds.setStatus("running");
-            nativeDebug.start(config).then((r) => {
-              if (!r.success) {
-                ds.setStatus("idle");
-                ds.appendConsoleOutput(`Error: ${r.error}\n`);
-              }
-            });
-          }
-        }
-        return;
-      }
-      if (e.key === "F10" && !meta && !e.shiftKey) {
-        e.preventDefault();
-        const ds = useDebugStore.getState();
-        if (ds.status === "paused") nativeDebug.next(ds.activeThreadId ?? 1);
-        return;
-      }
-      if (e.key === "F11" && !meta) {
-        e.preventDefault();
-        const ds = useDebugStore.getState();
-        if (ds.status === "paused") {
-          if (e.shiftKey) {
-            nativeDebug.stepOut(ds.activeThreadId ?? 1);
-          } else {
-            nativeDebug.stepIn(ds.activeThreadId ?? 1);
-          }
-        }
-        return;
-      }
-
-      if (!meta) return;
-
-      if (e.key === "b" && e.shiftKey) {
-        e.preventDefault();
-        window.dispatchEvent(new CustomEvent("taskRunner:runBuild"));
-      } else if (e.key === "`") {
-        e.preventDefault();
-        toggleTerminal();
-      } else if (e.key === "s" && e.altKey) {
-        e.preventDefault();
-        handleSaveAll();
-      } else if (e.key === "s") {
-        e.preventDefault();
-        if (activeFilePath) {
-          const state = useCodeStore.getState();
-          const file = state.openFiles.find((f) => f.path === activeFilePath);
-          if (file?.dirty) {
-            const isUnderRoot = state.pinnedRoots.some(
-              (root) => activeFilePath.startsWith(root + "/") || activeFilePath === root,
-            );
-            if (!isUnderRoot && !state.allowedExternalPaths.has(activeFilePath)) {
-              state.setPendingWriteConfirmation({ filePath: activeFilePath, content: file.content });
-              return;
-            }
-            nativeFs.writeFile(activeFilePath, file.content).then((ok) => {
-              if (ok) markFileSaved(activeFilePath);
-            });
-          }
-        }
-      } else if (e.key === "w") {
-        e.preventDefault();
-        if (activeFilePath) closeFile(activeFilePath);
-      } else if (e.key === "t" && e.shiftKey) {
-        e.preventDefault();
-        window.dispatchEvent(new CustomEvent("taskRunner:runTest"));
-      } else if (e.key === "t" && !e.shiftKey) {
-        e.preventDefault();
-        useCodeStore.getState().setSymbolSearchVisible(true);
-      } else if (e.key === "p" && e.shiftKey) {
-        e.preventDefault();
-        setCommandPaletteVisible(true);
-      } else if (e.key === "p") {
-        e.preventDefault();
-        setQuickOpenVisible(true);
-      } else if (e.key === "f" && e.shiftKey) {
-        e.preventDefault();
-        setActiveSidebarPanel("search");
-      } else if (e.key === "x" && e.shiftKey) {
-        e.preventDefault();
-        setActiveSidebarPanel("extensions");
-      } else if (e.key === ",") {
-        e.preventDefault();
-        toggleSettings();
-      } else if (e.key === "i" && e.shiftKey) {
-        e.preventDefault();
-        window.dispatchEvent(new CustomEvent("codemode:toggleQA"));
-      } else if (e.key === "\\") {
-        e.preventDefault();
-        const state = useCodeStore.getState();
-        if (state.splitFilePath) {
-          state.setSplitFilePath(null);
-        } else if (state.activeFilePath) {
-          state.setSplitFilePath(state.activeFilePath);
-        }
-      }
-    },
-    [activeMode, toggleTerminal, activeFilePath, markFileSaved, closeFile, handleSaveAll, setActiveSidebarPanel, setQuickOpenVisible, setCommandPaletteVisible, toggleSettings, navigateCursorHistory],
-  );
-
-  useEffect(() => {
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [handler]);
-}
-
-/* ------------------------------------------------------------------ */
-/*  Bottom panel tabs (Terminal / Problems)                            */
-/* ------------------------------------------------------------------ */
-
-type BottomTab = "terminal" | "problems" | "output" | "debugConsole";
-
-function BottomPanelTabs({
-  activeTab,
-  onTabChange,
-}: {
-  activeTab: BottomTab;
-  onTabChange: (tab: BottomTab) => void;
-}) {
-  const tabs: { id: BottomTab; label: string; icon: React.ReactNode }[] = [
-    { id: "terminal", label: "Terminal", icon: <TerminalIcon size={13} /> },
-    { id: "problems", label: "Problems", icon: <AlertTriangle size={13} /> },
-    { id: "output", label: "Output", icon: <FileText size={13} /> },
-    { id: "debugConsole", label: "Debug Console", icon: <Bug size={13} /> },
-  ];
-
-  return (
-    <div
-      data-tour="bottom-panel"
-      className="flex items-center border-b border-gray-200 bg-gray-50 shrink-0 dark:border-[#3c3c3c] dark:bg-[#252526]"
-    >
-      {tabs.map((t) => (
-        <button
-          key={t.id}
-          onClick={() => onTabChange(t.id)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide border-b transition-colors ${
-            activeTab === t.id
-              ? "border-blue-600 text-blue-700 dark:border-white dark:text-white"
-              : "border-transparent text-gray-500 hover:text-gray-900 dark:hover:text-gray-300"
-          }`}
-        >
-          {t.icon}
-          {t.label}
-        </button>
-      ))}
-    </div>
-  );
-}
+const DiffView = lazy(() => import("../code/DiffView"));
+const SettingsPanel = lazy(() => import("../code/SettingsPanel"));
+const KeybindingsPanel = lazy(() => import("../code/KeybindingsPanel"));
+const QuickOpen = lazy(() => import("../code/QuickOpen"));
+const CommandPalette = lazy(() => import("../code/CommandPalette"));
+const SymbolSearch = lazy(() => import("../code/SymbolSearch"));
+const WriteConfirmDialog = lazy(() => import("../code/WriteConfirmDialog"));
+const CodebaseQA = lazy(() => import("../code/CodebaseQA"));
+const SplitEditor = lazy(() => import("../code/SplitEditor"));
+const ZenMode = lazy(() => import("../code/ZenMode"));
+const InteractiveRebase = lazy(() => import("../code/InteractiveRebase"));
+const MergeEditor = lazy(() => import("../code/MergeEditor"));
+const CallHierarchy = lazy(() => import("../code/CallHierarchy"));
+const MultiFileEdit = lazy(() => import("../code/MultiFileEdit"));
+const FeatureTour = lazy(() => import("../code/FeatureTour"));
 
 /* ------------------------------------------------------------------ */
 /*  Main layout                                                       */
 /* ------------------------------------------------------------------ */
+
+function DeferredSurfaceFallback({ label }: { label?: string }) {
+  return (
+    <div className="flex h-full items-center justify-center text-xs text-gray-500 dark:text-gray-400">
+      {label ? `Loading ${label}...` : "Loading..."}
+    </div>
+  );
+}
 
 export default function CodeMode() {
   const electron = isElectron();
@@ -482,6 +87,7 @@ export default function CodeMode() {
   const symbolSearchVisible = useCodeStore((s) => s.symbolSearchVisible);
   const setSymbolSearchVisible = useCodeStore((s) => s.setSymbolSearchVisible);
   const setCurrentBranch = useCodeStore((s) => s.setCurrentBranch);
+  const currentBranch = useCodeStore((s) => s.currentBranch);
   const pinnedRoots = useCodeStore((s) => s.pinnedRoots);
   const addPinnedRoot = useCodeStore((s) => s.addPinnedRoot);
   const pendingWriteConfirmation = useCodeStore((s) => s.pendingWriteConfirmation);
@@ -514,13 +120,26 @@ export default function CodeMode() {
   });
   const [mergeEditorState, setMergeEditorState] = useState<{ cwd: string; filePath: string } | null>(null);
   const [rebaseState, setRebaseState] = useState<{ cwd: string } | null>(null);
+  const toggleChatSidebar = useCallback(() => {
+    setShowChatSidebar((value) => !value);
+  }, []);
+  const closeChatSidebar = useCallback(() => {
+    setShowChatSidebar(false);
+  }, []);
+  const toggleModeSidebar = useCallback(() => {
+    useCodeStore.getState().toggleSidebar();
+  }, []);
+  const developmentModeChatContext = useCallback(
+    () => buildDevelopmentModeChatContext(useCodeStore.getState()),
+    [],
+  );
   const sidebarPaneWidthRef = useRef(sidebarPaneWidth);
   sidebarPaneWidthRef.current = sidebarPaneWidth;
   const chatPaneWidthRef = useRef(chatPaneWidth);
   chatPaneWidthRef.current = chatPaneWidth;
   const lastDetectedRootRef = useRef<string | null>(null);
 
-  useCodeShortcuts();
+  useDevelopmentModeShortcuts();
   useDebugEvents();
 
   useEffect(() => {
@@ -556,23 +175,9 @@ export default function CodeMode() {
     return () => window.removeEventListener("codemode:toggleQA", handler);
   }, []);
 
-  useEffect(() => {
-    const handler = () => {
-      if (useAppStore.getState().activeMode !== "development") return;
-      setShowChatSidebar((v) => !v);
-    };
-    window.addEventListener("app:toggleModeChatSidebar", handler);
-    return () => window.removeEventListener("app:toggleModeChatSidebar", handler);
-  }, []);
+  useModeScopedWindowEvent("development", "app:toggleModeChatSidebar", toggleChatSidebar);
 
-  useEffect(() => {
-    const handler = () => {
-      if (useAppStore.getState().activeMode !== "development") return;
-      useCodeStore.getState().toggleSidebar();
-    };
-    window.addEventListener("app:toggleModeSidebar", handler);
-    return () => window.removeEventListener("app:toggleModeSidebar", handler);
-  }, []);
+  useModeScopedWindowEvent("development", "app:toggleModeSidebar", toggleModeSidebar);
 
   // Listen for call hierarchy trigger
   useEffect(() => {
@@ -805,22 +410,6 @@ export default function CodeMode() {
     }
   }, [acceptPendingMultiFileEdits, getCommonPinnedRoot]);
 
-  const sidebarContent = (() => {
-    switch (activeSidebarPanel) {
-      case "search": return <SearchPanel />;
-      case "git": return <GitPanel />;
-      case "extensions": return <ExtensionsPanel />;
-      case "tasks": return <TaskRunner />;
-      case "testing": return <TestExplorer />;
-      case "timeline": return <LocalHistoryPanel />;
-      case "outline": return <OutlineView />;
-      case "debug": return <DebugPanel />;
-      case "workflow": return <WorkflowSidebarPanel />;
-      case "furnace": return <FurnaceSidebarPanel />;
-      default: return <FileExplorer />;
-    }
-  })();
-
   return (
     <div className="h-full w-full flex flex-col bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-white">
       {recoveredFileCount > 0 && (
@@ -829,126 +418,28 @@ export default function CodeMode() {
           onDismiss={dismissRecovery}
         />
       )}
-      {!electron && (
-        <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
-          <AlertTriangle size={14} className="shrink-0" />
-          <span>
-            Development mode requires the desktop app for folders, git, LSP, and terminal access. Browser preview stays available for demo and layout purposes only.
-          </span>
-        </div>
-      )}
+      <DevelopmentRuntimeBanner electron={electron} />
       <div className="flex-1 min-h-0 flex">
-        {/* Activity bar */}
-        <div className="w-[40px] bg-white border-r border-gray-200 flex flex-col shrink-0 dark:bg-gray-900 dark:border-gray-800">
-          <div className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center py-1">
-            {/* Core IDE */}
-            <ActivityItem
-              icon={<Files size={20} />}
-              active={showSidebar && activeSidebarPanel === "explorer"}
-              title="Explorer (Cmd+B)"
-              onClick={() => handleActivityClick("explorer")}
-            />
-            <ActivityItem
-              icon={<Search size={20} />}
-              active={showSidebar && activeSidebarPanel === "search"}
-              title="Search (Cmd+Shift+F)"
-              onClick={() => handleActivityClick("search")}
-            />
-            <ActivityItem
-              icon={<GitBranch size={20} />}
-              active={showSidebar && activeSidebarPanel === "git"}
-              title="Source Control"
-              onClick={() => handleActivityClick("git")}
-            />
-
-            <ActivitySeparator />
-
-            {/* Build & Quality */}
-            <ActivityItem
-              icon={<Blocks size={20} />}
-              active={showSidebar && activeSidebarPanel === "extensions"}
-              title="Extensions (⌘⇧X)"
-              onClick={() => handleActivityClick("extensions")}
-            />
-            <ActivityItem
-              icon={<ListTodo size={20} />}
-              active={showSidebar && activeSidebarPanel === "tasks"}
-              title="Tasks (⌘⇧B: Build)"
-              onClick={() => handleActivityClick("tasks")}
-            />
-            <ActivityItem
-              icon={<FlaskConical size={20} />}
-              active={showSidebar && activeSidebarPanel === "testing"}
-              title="Testing (⌘⇧T: Test)"
-              onClick={() => handleActivityClick("testing")}
-            />
-
-            <ActivitySeparator />
-
-            {/* Navigation & Debug */}
-            <ActivityItem
-              icon={<Clock size={20} />}
-              active={showSidebar && activeSidebarPanel === "timeline"}
-              title="Timeline"
-              onClick={() => handleActivityClick("timeline")}
-            />
-            <ActivityItem
-              icon={<ListTree size={20} />}
-              active={showSidebar && activeSidebarPanel === "outline"}
-              title="Outline"
-              onClick={() => handleActivityClick("outline")}
-            />
-            <ActivityItem
-              icon={<Bug size={20} />}
-              active={showSidebar && activeSidebarPanel === "debug"}
-              title="Debug (F5)"
-              onClick={() => handleActivityClick("debug")}
-            />
-
-            <ActivitySeparator />
-
-            {/* DAN-specific */}
-            <ActivityItem
-              icon={<Workflow size={20} />}
-              active={showSidebar && activeSidebarPanel === "workflow"}
-              title="Workflows"
-              onClick={() => handleActivityClick("workflow")}
-            />
-            <ActivityItem
-              icon={<Flame size={20} />}
-              active={showSidebar && activeSidebarPanel === "furnace"}
-              title="Furnace"
-              onClick={() => handleActivityClick("furnace")}
-            />
-          </div>
-
-          <div className="border-t border-gray-200 py-1 flex flex-col items-center shrink-0 bg-white dark:border-gray-800 dark:bg-gray-900">
-            <button
-              title="AI Chat (⌘J)"
-              onClick={() => setShowChatSidebar((v) => !v)}
-              className={`w-full flex items-center justify-center py-2 transition-colors border-l-2 ${
-                showChatSidebar
-                  ? "border-blue-500 bg-blue-50 text-blue-700 dark:border-blue-400 dark:bg-blue-500/10 dark:text-white"
-                  : "border-transparent text-blue-500 hover:bg-blue-50 hover:text-blue-700 dark:text-blue-400 dark:hover:bg-blue-500/5 dark:hover:text-blue-300"
-              }`}
-            >
-              <MessageSquare size={20} />
-            </button>
-            <ActivityItem
-              icon={<Settings size={20} />}
-              active={showSettings}
-              title="Settings (Cmd+,)"
-              onClick={toggleSettings}
-            />
-          </div>
-        </div>
+        <DevelopmentActivityBar
+          electron={electron}
+          showSidebar={showSidebar}
+          activeSidebarPanel={activeSidebarPanel}
+          showChatSidebar={showChatSidebar}
+          showSettings={showSettings}
+          onPanelClick={handleActivityClick}
+          onToggleChat={toggleChatSidebar}
+          onToggleSettings={toggleSettings}
+        />
 
         {/* Main area: sidebar + editor/terminal + chat */}
         <Allotment proportionalLayout={false} onChange={handleRootSplitChange}>
           {showSidebar && (
             <Allotment.Pane preferredSize={sidebarPaneWidth} minSize={150} maxSize={500}>
               <div className="h-full bg-white overflow-hidden dark:bg-gray-900">
-                {sidebarContent}
+                <DevelopmentSidebarSurface
+                  panel={activeSidebarPanel}
+                  electron={electron}
+                />
               </div>
             </Allotment.Pane>
           )}
@@ -959,53 +450,55 @@ export default function CodeMode() {
                 <div className="flex flex-col h-full">
                   <WorkspaceInfo />
                   <CoverageSummaryBar />
-                  <div className="flex items-center justify-end gap-2 border-b border-gray-200 bg-gray-50 px-3 py-1.5 shrink-0 dark:border-[#3c3c3c] dark:bg-[#252526]">
-                    <button
-                      onClick={() => setShowChatSidebar((v) => !v)}
-                      title={showChatSidebar ? "Hide AI chat (⌘J)" : "Show AI chat (⌘J)"}
-                      className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                        showChatSidebar
-                          ? "border-blue-500/30 bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300"
-                          : "border-transparent text-blue-500 hover:bg-blue-50 hover:text-blue-700 dark:text-blue-400 dark:hover:bg-white/5 dark:hover:text-blue-300"
-                      }`}
-                    >
-                      <MessageSquare size={13} />
-                      <span>AI Chat</span>
-                      <span className="text-[10px] text-gray-500">⌘J</span>
-                    </button>
-                  </div>
+                  <DevelopmentModeStatusStrip
+                    electron={electron}
+                    currentBranch={currentBranch}
+                    pinnedRoots={pinnedRoots}
+                  />
                   <Allotment vertical proportionalLayout={false} className="flex-1 min-h-0">
                     <Allotment.Pane>
                       {mergeEditorState ? (
-                        <MergeEditor
-                          cwd={mergeEditorState.cwd}
-                          filePath={mergeEditorState.filePath}
-                          onClose={() => setMergeEditorState(null)}
-                          onResolved={() => {
-                            setMergeEditorState(null);
-                          }}
-                        />
+                        <Suspense fallback={<DeferredSurfaceFallback label="merge editor" />}>
+                          <MergeEditor
+                            cwd={mergeEditorState.cwd}
+                            filePath={mergeEditorState.filePath}
+                            onClose={() => setMergeEditorState(null)}
+                            onResolved={() => {
+                              setMergeEditorState(null);
+                            }}
+                          />
+                        </Suspense>
                       ) : showMultiFileReview && multiFileEditProps ? (
-                        <MultiFileEdit
-                          {...multiFileEditProps}
-                          onApplyAllAndTest={handleApplyAllAndTest}
-                        />
+                        <Suspense fallback={<DeferredSurfaceFallback label="review workspace" />}>
+                          <MultiFileEdit
+                            {...multiFileEditProps}
+                            onApplyAllAndTest={handleApplyAllAndTest}
+                          />
+                        </Suspense>
                       ) : showKeybindings ? (
-                        <KeybindingsPanel />
+                        <Suspense fallback={<DeferredSurfaceFallback label="keybindings" />}>
+                          <KeybindingsPanel />
+                        </Suspense>
                       ) : showSettings ? (
-                        <SettingsPanel />
+                        <Suspense fallback={<DeferredSurfaceFallback label="settings" />}>
+                          <SettingsPanel />
+                        </Suspense>
                       ) : showDiff ? (
-                        <DiffView />
+                        <Suspense fallback={<DeferredSurfaceFallback label="diff" />}>
+                          <DiffView />
+                        </Suspense>
                       ) : splitFilePath ? (
                         <Allotment>
                           <Allotment.Pane>
                             <MonacoTabs />
                           </Allotment.Pane>
                           <Allotment.Pane>
-                            <SplitEditor
-                              filePath={splitFilePath}
-                              onClose={() => useCodeStore.getState().setSplitFilePath(null)}
-                            />
+                            <Suspense fallback={<DeferredSurfaceFallback label="split editor" />}>
+                              <SplitEditor
+                                filePath={splitFilePath}
+                                onClose={() => useCodeStore.getState().setSplitFilePath(null)}
+                              />
+                            </Suspense>
                           </Allotment.Pane>
                         </Allotment>
                       ) : (
@@ -1016,12 +509,12 @@ export default function CodeMode() {
                     {showTerminal && (
                       <Allotment.Pane preferredSize={200} minSize={100}>
                         <div className="h-full flex flex-col">
-                          <BottomPanelTabs activeTab={bottomTab} onTabChange={setBottomTab} />
+                          <DevelopmentBottomPanelTabs
+                            activeTab={bottomTab}
+                            onTabChange={setBottomTab}
+                          />
                           <div className="flex-1 min-h-0">
-                            {bottomTab === "terminal" && <TerminalPanel />}
-                            {bottomTab === "problems" && <ProblemsPanel />}
-                            {bottomTab === "output" && <OutputPanel />}
-                            {bottomTab === "debugConsole" && <DebugConsole />}
+                            <DevelopmentBottomPanelSurface activeTab={bottomTab} />
                           </div>
                         </div>
                       </Allotment.Pane>
@@ -1034,29 +527,8 @@ export default function CodeMode() {
                 <Allotment.Pane preferredSize={chatPaneWidth} minSize={250} maxSize={500}>
                   <ModeChatSidebar
                     mode="development"
-                    onClose={() => setShowChatSidebar(false)}
-                    contextProvider={() => {
-                      const state = useCodeStore.getState();
-                      const activeFile = state.openFiles.find((f) => f.path === state.activeFilePath);
-                      const lines: string[] = ["[Workspace Context]"];
-                      if (state.currentBranch) {
-                        lines.push(`Git branch: ${state.currentBranch}`);
-                      }
-                      if (activeFile) {
-                        const lineCount = activeFile.content.split("\n").length;
-                        lines.push(`Active file: ${activeFile.path} (${activeFile.language}, ${lineCount} lines)`);
-                      }
-                      if (state.openFiles.length > 0) {
-                        lines.push(`Open files: ${state.openFiles.map((f) => f.path.split("/").pop()).join(", ")}`);
-                      }
-                      if (state.pinnedRoots.length > 0) {
-                        lines.push(`Workspace roots: ${state.pinnedRoots.join(", ")}`);
-                      }
-                      if (activeFile) {
-                        lines.push("", "[Active File Content (first 200 lines)]", activeFile.content.split("\n").slice(0, 200).join("\n"));
-                      }
-                      return lines.join("\n");
-                    }}
+                    onClose={closeChatSidebar}
+                    contextProvider={developmentModeChatContext}
                   />
                 </Allotment.Pane>
               )}
@@ -1065,7 +537,7 @@ export default function CodeMode() {
         </Allotment>
       </div>
 
-      <StatusBar />
+      <DevelopmentStatusBar />
 
       {projectDetectionToast && (
         <ProjectDetectionToast
@@ -1079,89 +551,107 @@ export default function CodeMode() {
       )}
 
       {showFeatureTour && (
-        <FeatureTour onComplete={handleFeatureTourComplete} />
+        <Suspense fallback={null}>
+          <FeatureTour onComplete={handleFeatureTourComplete} />
+        </Suspense>
       )}
 
       {quickOpenVisible && (
-        <QuickOpen onClose={() => setQuickOpenVisible(false)} />
+        <Suspense fallback={null}>
+          <QuickOpen onClose={() => setQuickOpenVisible(false)} />
+        </Suspense>
       )}
 
       {commandPaletteVisible && (
-        <CommandPalette onClose={() => setCommandPaletteVisible(false)} />
+        <Suspense fallback={null}>
+          <CommandPalette onClose={() => setCommandPaletteVisible(false)} />
+        </Suspense>
       )}
 
       {symbolSearchVisible && (
-        <SymbolSearch onClose={() => setSymbolSearchVisible(false)} />
+        <Suspense fallback={null}>
+          <SymbolSearch onClose={() => setSymbolSearchVisible(false)} />
+        </Suspense>
       )}
 
       {pendingWriteConfirmation && (
-        <WriteConfirmDialog
-          filePath={pendingWriteConfirmation.filePath}
-          onCancel={() => setPendingWriteConfirmation(null)}
-          onAllow={async () => {
-            const { filePath, content } = pendingWriteConfirmation;
-            addAllowedExternalPath(filePath);
-            const ok = await nativeFs.writeFile(filePath, content);
-            if (ok) markFileSaved(filePath);
-            setPendingWriteConfirmation(null);
-          }}
-          onPin={async () => {
-            const { filePath, content } = pendingWriteConfirmation;
-            const parentDir = filePath.split("/").slice(0, -1).join("/");
-            addPinnedRoot(parentDir);
-            const ok = await nativeFs.writeFile(filePath, content);
-            if (ok) markFileSaved(filePath);
-            setPendingWriteConfirmation(null);
-          }}
-        />
+        <Suspense fallback={null}>
+          <WriteConfirmDialog
+            filePath={pendingWriteConfirmation.filePath}
+            onCancel={() => setPendingWriteConfirmation(null)}
+            onAllow={async () => {
+              const { filePath, content } = pendingWriteConfirmation;
+              addAllowedExternalPath(filePath);
+              const ok = await nativeFs.writeFile(filePath, content);
+              if (ok) markFileSaved(filePath);
+              setPendingWriteConfirmation(null);
+            }}
+            onPin={async () => {
+              const { filePath, content } = pendingWriteConfirmation;
+              const parentDir = filePath.split("/").slice(0, -1).join("/");
+              addPinnedRoot(parentDir);
+              const ok = await nativeFs.writeFile(filePath, content);
+              if (ok) markFileSaved(filePath);
+              setPendingWriteConfirmation(null);
+            }}
+          />
+        </Suspense>
       )}
 
       {zenModeFilePath && (
-        <ZenMode
-          filePath={zenModeFilePath}
-          onExit={() => useCodeStore.getState().setZenModeFilePath(null)}
-        />
+        <Suspense fallback={null}>
+          <ZenMode
+            filePath={zenModeFilePath}
+            onExit={() => useCodeStore.getState().setZenModeFilePath(null)}
+          />
+        </Suspense>
       )}
 
       {showCodebaseQA && (
-        <CodebaseQA onClose={() => setShowCodebaseQA(false)} />
+        <Suspense fallback={null}>
+          <CodebaseQA onClose={() => setShowCodebaseQA(false)} />
+        </Suspense>
       )}
 
       {callHierarchy && (
-        <CallHierarchy
-          filePath={callHierarchy.filePath}
-          line={callHierarchy.line}
-          character={callHierarchy.character}
-          onClose={() => setCallHierarchy(null)}
-          onNavigate={async (uri, line, character) => {
-            const state = useCodeStore.getState();
-            const isOpen = state.openFiles.some((f) => f.path === uri);
-            if (isOpen) {
-              state.setActiveFile(uri);
-            } else {
-              const content = await nativeFs.readFile(uri);
-              if (content !== null) state.openFile(uri, content);
-            }
-            setTimeout(() => {
-              window.dispatchEvent(
-                new CustomEvent("editor:goToLine", {
-                  detail: { lineNumber: line, column: character },
-                }),
-              );
-            }, 100);
-          }}
-          style={{ top: 120, left: "50%", transform: "translateX(-50%)" }}
-        />
+        <Suspense fallback={null}>
+          <CallHierarchy
+            filePath={callHierarchy.filePath}
+            line={callHierarchy.line}
+            character={callHierarchy.character}
+            onClose={() => setCallHierarchy(null)}
+            onNavigate={async (uri, line, character) => {
+              const state = useCodeStore.getState();
+              const isOpen = state.openFiles.some((file) => file.path === uri);
+              if (isOpen) {
+                state.setActiveFile(uri);
+              } else {
+                const content = await nativeFs.readFile(uri);
+                if (content !== null) state.openFile(uri, content);
+              }
+              setTimeout(() => {
+                window.dispatchEvent(
+                  new CustomEvent("editor:goToLine", {
+                    detail: { lineNumber: line, column: character },
+                  }),
+                );
+              }, 100);
+            }}
+            style={{ top: 120, left: "50%", transform: "translateX(-50%)" }}
+          />
+        </Suspense>
       )}
 
       {rebaseState && (
-        <InteractiveRebase
-          cwd={rebaseState.cwd}
-          onClose={() => setRebaseState(null)}
-          onComplete={() => {
-            setRebaseState(null);
-          }}
-        />
+        <Suspense fallback={null}>
+          <InteractiveRebase
+            cwd={rebaseState.cwd}
+            onClose={() => setRebaseState(null)}
+            onComplete={() => {
+              setRebaseState(null);
+            }}
+          />
+        </Suspense>
       )}
     </div>
   );
