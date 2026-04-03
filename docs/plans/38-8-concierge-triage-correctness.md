@@ -1,12 +1,12 @@
 # 38-8: Concierge Triage & Dispatch Correctness
 
 **Parent:** [38-review-hardening](38-review-hardening.md)
-**Status:** completed, including the 2026-03-21 follow-up tightening scope *(synced 2026-03-25)*
+**Status:** completed, including the later 2026-04-03 follow-up tightening *(synced 2026-04-03)*
 **Goal:** Fix correctness bugs and quality gaps in the concierge triage pipeline and tier executor dispatch identified in the 2026-03-19 concierge triage review.
 
 ## Context
 
-- The triage LLM is configured with `max_tokens=60` for a response requiring 13 JSON fields — this almost certainly causes frequent truncation, falling back to the heuristic path with 0.50-0.58 confidence.
+- Originally, the triage LLM was configured with `max_tokens=60` for a response requiring 13 JSON fields — this almost certainly caused frequent truncation, falling back to the heuristic path with 0.50-0.58 confidence.
 - The `Session` model's `child_execution` field is `Literal["parallel", "serial"]` but the dispatcher assigns `"mixed"`, creating a type mismatch that Pydantic may silently accept or reject depending on validation mode.
 - `asyncio.run()` is called from within background tasks on the event loop in two locations.
 - The plan decomposition stub splits on `" and "`, tier-2 synthesis is mechanical concatenation, and several other dispatch correctness gaps exist.
@@ -14,9 +14,9 @@
 ## Tasks
 
 ### 1. Increase triage `max_tokens` (P1 — highest impact)
-- [x] 1-1. Increase `runtime.py:409` `max_tokens` from `60` to at least `256` (a minimal valid 13-field JSON response is ~100-150 tokens). *(fixed 2026-03-19: changed to 256)*
-- [x] 1-2. Verify that the higher token budget does not meaningfully increase triage latency (the response is still short JSON). *(2026-03-19: verified by analysis — `max_tokens` is an upper bound, not a generation target. The model stops at natural EOS after ~100-150 tokens of JSON; raising the cap from 60 to 256 prevents truncation without changing output length or latency. All triage tests use mocked providers, confirming no pipeline-level regression.)*
-- [x] 1-3. Add a regression test confirming triage JSON can be parsed at the new limit. *(2026-03-19: added a `Concierge._triage_llm_complete()` regression that asserts `max_tokens=256` is used and the returned JSON still parses through the real triage path)*
+- [x] 1-1. Increase `runtime.py:409` `max_tokens` from `60` to at least `256` (a minimal valid 13-field JSON response is ~100-150 tokens). *(fixed 2026-03-19: changed to 256; bumped to 512 on 2026-04-03 after the later review follow-up; raised again to 1024 on 2026-04-03 once we decided triage should have a normal worker-sized completion ceiling rather than a classifier-tight budget.)*
+- [x] 1-2. Verify that the higher token budget does not meaningfully increase triage latency (the response is still short JSON). *(2026-03-19: verified by analysis — `max_tokens` is an upper bound, not a generation target. The model stops at natural EOS after ~100-150 tokens of JSON; raising the cap from 60 to 256 prevents truncation without changing output length or latency. 2026-04-03 follow-up: the same argument still applies at 512 and 1024; the ceiling is intentionally generous because the classifier now also sees richer task/anaphora context and occasionally needs more room for entities/rationale.)*
+- [x] 1-3. Add a regression test confirming triage JSON can be parsed at the new limit. *(2026-03-19: added a `Concierge._triage_llm_complete()` regression; updated 2026-04-03 so it now asserts `max_tokens=1024` is used through the real triage path.)*
 
 ### 2. Fix `child_execution` literal type mismatch
 - [x] 2-1. Expand `Session.child_execution` to `Literal["parallel", "serial", "mixed"]` in `session.py:102`. *(fixed 2026-03-19)*
@@ -67,7 +67,7 @@
 
 ## Decisions
 
-- `max_tokens=256` is a safe starting point — the JSON response is compact; 256 tokens is ~3x the minimum needed.
+- `max_tokens=1024` is the current triage cap. The JSON response is still usually much shorter, but the higher ceiling gives the classifier room for richer context, entities, and rationale without adding a second triage call or forcing the prompt back into cramped classifier-only assumptions.
 - Plan decomposition: LLM call with string-split fallback, not pure LLM. Keep it cheap.
 - Synthesis: gate by autonomy level. Never force LLM synthesis on `careful` mode.
 - State race: asyncio.Lock is sufficient since the concierge is single-process async.
@@ -77,6 +77,14 @@
 - Added focused regressions for widened triage context, filtered child-route inheritance, and loop-safe async bridging in `tests/test_concierge/test_triage.py`, `tests/test_concierge/test_tiered_dispatch.py`, and `tests/test_concierge/test_unified_queue.py`.
 - `tests/test_concierge/test_unified_queue.py` now also covers the widened triage token budget through the real `Concierge._triage_llm_complete()` path and a same-surface concurrent dispatch/state-persistence scenario.
 - `tests/test_concierge/test_tiered_dispatch.py` now also covers LLM-backed tier-2 decomposition, decomposition fallback when providers are unavailable, autonomy-gated LLM synthesis, synthesis fallback on provider failure, and interrupted terminal events preserving non-completed session status.
+
+### 2026-04-03 review follow-up sync
+
+- Narrowed lexical over-match in `triage_scenarios.py` so bare freshness/file nouns do not steal routing from the LLM path.
+- Expanded triage prompt context again with current task state plus recent assistant snippets for pronoun-heavy turns.
+- Gated workflow edit/run post-processing on route confidence so confident semantic routes from both LLM and embedding stages are trusted.
+- Added a low-confidence clarification stop in `tiered_dispatch.py`, then narrowed it so only action-like execution routes pause; plain low-confidence `ask/general` turns still answer normally.
+- Revalidated the focused follow-up slices in `tests/test_concierge/test_triage.py`, `tests/test_concierge/test_tiered_dispatch.py`, `tests/test_concierge/test_pending_actions.py`, and `tests/test_concierge/test_unified_queue.py`.
 
 ## Follow-Up Tightening Scope (2026-03-21)
 

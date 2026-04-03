@@ -39,7 +39,9 @@ A bare `Worker(id="w1", name="w1")` is valid — it passes inputs through. In th
 - Worker defaults are now stable and tested: bare Workers default to `input -> result`, model-backed or hint-backed Workers default to `text`, and `control_flow` Workers seed gate-style ports.
 - Shared systems remain reference-first. Instruction, provider, retry, toolset, and authority refs resolve through `graph.worker_resources` at runtime instead of being copied onto each Worker.
 - The first-class composition surface is now live: `input_mappings`, `output_mappings`, `parallelism`, `merge_strategy`, `spawn_policy`, and `validation_rules` all round-trip through Worker authoring/runtime without hiding inside metadata.
-- The heavier composite-contract copy is still intentionally deferred. The current runtime uses the new Worker composition fields plus `boundary_contract` and retained specialized executors rather than copying every legacy composite field onto `Worker` up front.
+- The heavier composite-contract copy is now live on the Worker model and authoring surfaces too: `external_input_schema`, `external_output_schema`, `control_state_schema`, `local_state`, `compaction_rule`, `failure_policy`, `projections`, and `boundary_contract` all serialize cleanly and round-trip through `wf.worker(...)` / `wf.worker_scope(...)`.
+- Boundary-validator insertion now accepts Worker composites directly, so composite Worker contracts can participate in the same validator-helper path as the older composite compatibility nodes.
+- The only remaining open exit gate in this plan is the unchanged full-suite run. The focused Worker/model/runtime suites are green, and the repo-wide gate has now progressed much further through unrelated blockers: it moved past the old `/analytics` drift, scheduler/profile/provider-runtime drift, prep-timeout test flakiness, semantic-runtime aborts, provider fallback recursion, module-boundary/watchpoint drift, stale notification defaults, stale parameter-decision logger expectations, single-key provider backward-compat drift, the router import-order compatibility bug, stale build-from-intent mutation-id/schema expectations, stale parser/introspection tests that still assumed older mutation-id or node-serialization contracts, and stale chat integration/prompt tests that still assumed fixed router globals or always-on mutation-tool wording, reaching `6632 passed` before the next unrelated suite blocker. Any remaining blocker there should be treated as repo-wide suite debt rather than a missing Worker model field.
 
 ## Tasks
 
@@ -89,7 +91,7 @@ A bare `Worker(id="w1", name="w1")` is valid — it passes inputs through. In th
   - [x] 4-2. `gate_mode: Literal["if_else", "while"] = "if_else"`
   - [x] 4-3. `max_iterations: int = 10`
   - [x] 4-4. `feedback_selector: FeedbackSelector | None = None`
-- [ ] 8. Define `Worker(NodeBase)` model in `model.py`
+- [x] 8. Define `Worker(NodeBase)` model in `model.py`
   - [x] 5-1. `node_type: Literal["worker"] = "worker"`
   - [x] 5-2. **Identity fields:**
     - `role: str = ""` — natural language role label (optional, for readability and preset loading)
@@ -112,7 +114,7 @@ A bare `Worker(id="w1", name="w1")` is valid — it passes inputs through. In th
     - `parallelism: int = 1` — max concurrent sub-graph branches
     - `merge_strategy: MergeStrategy = MergeStrategy.APPEND` — fan-in strategy
     - `spawn_policy: SpawnPolicy | None = None` — for LEAD/DIRECTOR authority
-  - [ ] 5-5. **Composite-node contract** (one copy, not seven):
+  - [x] 5-5. **Composite-node contract** (one copy, not seven):
     - `external_input_schema: dict | None = None`
     - `external_output_schema: dict | None = None`
     - `control_state_schema: dict = {}`
@@ -183,6 +185,7 @@ A bare `Worker(id="w1", name="w1")` is valid — it passes inputs through. In th
 - `src/dan/worker/` stays self-contained: downstream code imports from `dan.worker`, not deep internal paths.
 - The key discipline is unchanged: Worker stores what it is and what it may access; shared systems store the heavy details; runtime resolves the references when needed.
 - `sub_workers` is the single Worker-side concept for named child participants, even when legacy runtime families still keep their own specialized protocol semantics.
-- The Worker model now carries the small, honest composition contract directly: input/output port mappings, bounded parallelism, merge policy, spawn caps, and first-class validator rules. The larger legacy composite-state copy still remains out of scope for now.
+- The Worker model now carries both the small composition contract and the heavier composite-contract surface directly: input/output port mappings, bounded parallelism, merge policy, spawn caps, validator rules, external input/output schemas, control-state schema, local state, compaction/failure policy, projections, and boundary contract.
+- `12-5` is now a pure validation gate, not a model-surface gap. The full-suite blockers cleared so far were all repo-wide drift outside Worker semantics: stale `/analytics` event-count expectations, bridged-Worker object-id cache reuse, runtime lint fallback being too broad for plain legacy graphs, env precedence weakening explicit LLM concurrency caps, manual gateway overrides being discarded by the scheduler, user-profile domain storage drift, prep-timeout tests that depended on live triage heuristics, an in-process sentence-transformer probe that could abort the interpreter, provider fallback recursion in `llm_surface`, a shared domain-map boundary violation, stale notification defaults, stale parameter-decision logger expectations, and direct `ProviderRegistry.resolve(...)` no longer honoring single-key default-provider fallback for strict-prefix models.
 - Detailed landed-slice history moved to `docs/changelog.md`; this plan now focuses on the still-open model gaps and the current lightweight-vs-heavy composition boundary.
 - `tests/test_worker/test_model.py` now carries an explicit variant round-trip matrix for LLM, tool, code, composite, gate, and validator-shaped Workers. The test locks the JSON surface itself, not just one representative “reviewer” example, so the canonical Worker model can change deliberately instead of drifting silently across capability families.

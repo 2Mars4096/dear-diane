@@ -9,6 +9,8 @@
 - The scheduler handoff gate is live: lint runs before publication, can auto-fix or retry supported producers, and now cleanly skips fully disabled edge configs instead of emitting fake lint telemetry.
 - `DataEdge.lint` is the typed runtime/model surface, with legacy `metadata["lint"]` preserved for compatibility and round-trip safety.
 - Worker-first autogen is live in both runtime fallback and optional build/compile-time decoration, including schema-derived structural rules, description/ref-based semantic config, and role/instruction-derived intent config.
+- Generated configs without a structural contract now start in conservative warning/canary mode with no deterministic structural autofix, instead of promoting purely heuristic semantic/intent guesses straight to blocking errors.
+- Retry-with-feedback is now intentionally narrower too: the scheduler only re-invokes LLM-capable producers (`llm_operator` or Workers with `model` / meaningful `llm_hints`) instead of treating every Worker as a sensible retry target.
 - Complex workflows can now optionally refine that deterministic intent statement during graph construction through an injected `lint_intent_refiner(base_intent, context)` callback; failures fall back conservatively to the deterministic intent text instead of blocking graph builds.
 - Editor and analytics surfaces are already wired: lint is editable on edges, visible in run logs/chat/notifications, and rolled into telemetry summaries.
 
@@ -129,6 +131,7 @@ The linter never imports from `dan.engine`. The engine imports from `dan.linter`
 ## Notes
 
 - Autogen remains conservative. A generated config should never be stricter than the explicit contract metadata can justify; manual override still wins.
+- In practice that now means semantic/intent-only autogen defaults to warning severity unless a structural contract is also present or a caller overrides the config explicitly.
 - The key bridge back to 46 is resolved Worker metadata. Autogen uses referenced instruction/context/provider bundles when available instead of only looking at inline strings.
 - Runtime backend absence degrades conservatively: semantic or intent tiers skip when their injected backends are unavailable instead of turning backend absence into a false handoff failure.
 - The rollout harness at `tests/eval/worker_lint_benchmark.py` now covers both deterministic and optional live-provider cases, so this plan is benchmarked as well as unit-tested.

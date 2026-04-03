@@ -1,7 +1,7 @@
 # 46-2: Worker Executor & Auto-Detection
 
 **Parent:** [46-universal-worker-primitive](46-universal-worker-primitive.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Build a universal `WorkerExecutor` for Worker-native compute behaviors that auto-detects execution mode from the Worker's configuration, prefers script/code paths over LLM API calls, and reuses existing executor internals, while allowing specialized control/runtime executors to remain first-class where that is clearer and more stable.
 
 ## Design: Auto-Detection, Not Mode Flags
@@ -52,6 +52,7 @@ The execution model must be explicit:
 - Ordered `ExecutionMode` detection is live, including the conservative staged `code -> llm/tool` path and model-less LLM execution when `llm_hints` plus shared defaults imply LLM mode.
 - Shared instruction, memory-policy, provider, retry, toolset, and authority refs are resolved at execution time from `graph.worker_resources`, and authority/lock checks are enforced before privileged tool use, memory writes, or delegation.
 - The hot simple-compute path is now lighter too: no-shared-resource Workers use a cached effective-config fast path, static LLM Workers reuse a fully resolved legacy `LLMOperator` template instead of rebuilding it per call, and the code/tool/llm/specialized compatibility projections now reuse cached legacy templates instead of rebuilding full Pydantic node models on every run.
+- `WorkerExecutor` no longer hard-pulls the LLM/OpenAI stack just to import the Worker runtime surface. `LLMExecutor` is now loaded lazily when no explicit LLM executor is injected, which keeps code/tool-only Worker paths more portable and easier to test in isolation.
 - The executor test matrix now covers graph-default resolution and `inherit_defaults` behavior, direct resolution of default/bundle/ref memory policies, real Worker `LLM_WITH_TOOLS` tool-loop execution through `LLMExecutor`, first-class validator rules, `body_graph` input/output mappings, `sub_workers` merge behavior, and failure propagation for script, direct-tool, and LLM timeout paths.
 - A deterministic dispatch benchmark now exists at `tests/eval/worker_dispatch_benchmark.py` and currently passes the strict local `--max-overhead-ratio 1.25` gate for `code_only`, `tool_only`, `llm_only`, `code -> tool -> llm`, `body_graph` input/output mapping, and sub-worker merge/orchestration cases. The harness now measures legacy and Worker runs in an interleaved pairwise order so dispatch ratios are not biased by two separate timing phases inside one Python process.
 - When both `body_graph` and `sub_workers` are present, the current runtime treats `body_graph` as the executable surface; named `sub_workers` are composition assets for that surface rather than an automatic second execution phase.
@@ -149,6 +150,7 @@ The execution model must be explicit:
 
 - `ToolRegistry` still comes through `ExecutionContext`; Worker only carries tool ids and toolset refs, not embedded tool definitions.
 - `run_subgraph` remains the honest composite/orchestration seam. Worker uses it for `body_graph` and named `sub_workers` instead of inventing a second runtime substrate.
-- The remaining `46-2` tail is not about whether Worker can express composition at all; it is about how much more of the heavier orchestration/composite behavior should move from compatibility delegation into a cleaner Worker-native runtime over time.
+- The remaining executor-unification tail is follow-up work, not missing scope for this plan. Heavier orchestration/composite families can keep using compatibility delegation until there is a concrete reason to collapse more of that behavior into a cleaner Worker-native runtime.
 - The clean boundary is unchanged: Worker-native compute and contract handling live here; branch/loop/team scheduler semantics may still live in specialized runtime code even when authoring surfaces present them cohesively.
+- Review follow-up hardening is also in place: the old `id(node)` cache aliasing bug is fixed with stable Worker fingerprints, and code/tool-only imports no longer need the optional LLM dependency chain unless a default `LLMExecutor` is actually requested.
 - Detailed per-slice runtime history now lives in `docs/changelog.md`; this plan tracks the remaining executor-unification tail, not every landed dispatch improvement.

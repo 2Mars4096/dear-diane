@@ -474,6 +474,11 @@ Useful fields:
 | `merge_strategy` | `str` | Sub-worker fan-in policy (`append`, `last_write_wins`, `reducer`; `reducer` currently expects `metadata["merge_reducer"]`) |
 | `spawn_policy` | `dict` | Additional delegation caps such as `max_spawns_per_node` |
 | `validation_rules` | `list[dict]` | First-class validator rules for Worker-shaped validation |
+| `external_input_schema` / `external_output_schema` | `dict \| None` | Composite Worker contract seen from outside the owned body |
+| `control_state_schema` | `dict` | Shape of Worker-owned coordination state for composite/gated scopes |
+| `local_state` | `dict` | Persisted local composite state contract (`NodeLocalState`) |
+| `compaction_rule` / `failure_policy` | `dict` | Composite-history summarization and bounded-failure policy |
+| `projections` | `list[dict]` | Context projections exported from a composite Worker boundary |
 
 Graph-level shared refs for Workers:
 
@@ -487,6 +492,7 @@ Workflow-generation rollout note:
 - `wf.llm(...)`, `wf.tool(...)`, and `wf.code(...)` remain stable public convenience methods, but simple compute aliases are now internally normalized through the Worker contract surface before projecting back to legacy node types for compatibility. That means new Worker-first contract fixes can benefit both direct `wf.worker(...)` authoring and the classic compute aliases without changing their user-facing signatures.
 - `wf.worker(..., control_flow={...})` is the lightweight Worker-facing routing surface. At runtime it still delegates to the specialized `gate` executor rather than pretending branch/while semantics are generic LLM/tool behavior.
 - `wf.worker(..., validation_rules=[...])` is now the first-class Worker-facing validator surface. Runtime still delegates through the retained validator executor where that is the honest compatibility path.
+- `wf.worker(..., external_input_schema=..., external_output_schema=..., control_state_schema=..., local_state=..., compaction_rule=..., failure_policy=..., projections=...)` is now the first-class composite-contract surface for Worker-owned scopes. Those fields round-trip through the builder/decompiler and can participate in boundary validation, while retained specialized scheduler semantics still stay explicit where that is clearer.
 
 ---
 
@@ -569,7 +575,7 @@ wf.edge(
 
 `enabled` defaults to `True`. Set it to `False` if you want to keep a resolved lint contract attached to an edge but temporarily disable enforcement without deleting the config.
 
-When `lint_autogen` is enabled and no explicit `lint=` is supplied, the builder/compiler can conservatively auto-generate `DataEdge.lint` from the source/target contracts and mirror it into legacy metadata. That autogen currently understands schema `required`, `maxLength`, numeric `minimum` / `maximum`, and string `pattern` constraints. Tier 2 semantic lint also supports `min_keyword_ratio` for partial keyword coverage, configurable entity matching (`exact`, `fuzzy`, or `embedding`), lightweight `expected_language` checks, conservative contradiction detection via `contradiction_reference_text`, and `confidence_aggregation` (`min` or `mean`) for Tier 3 escalation. If `reference_text` is omitted but `topic_keywords` are present, the semantic similarity path uses those keywords as the fallback reference text. Language mismatches are warning-only diagnostics, and contradiction detection intentionally only catches obvious same-subject numeric / negation / polarity conflicts. Deterministic structural autofix now supports `fill_defaults`, `truncate`, `clamp`, and `coerce`, with iterative re-lint so composed cases like string-number coercion followed by range clamp can settle in one lint pass. Model-backed retry loops are bounded by both `max_retries` and optional `retry_budget_ms` across the whole handoff retry cycle. Explicit `lint=` always wins.
+When `lint_autogen` is enabled and no explicit `lint=` is supplied, the builder/compiler can conservatively auto-generate `DataEdge.lint` from the source/target contracts and mirror it into legacy metadata. That autogen currently understands schema `required`, `maxLength`, numeric `minimum` / `maximum`, and string `pattern` constraints. Tier 2 semantic lint also supports `min_keyword_ratio` for partial keyword coverage, configurable entity matching (`exact`, `fuzzy`, or `embedding`), lightweight `expected_language` checks, conservative contradiction detection via `contradiction_reference_text`, and `confidence_aggregation` (`min` or `mean`) for Tier 3 escalation. If `reference_text` is omitted but `topic_keywords` are present, the semantic similarity path uses those keywords as the fallback reference text. Language mismatches are warning-only diagnostics, and contradiction detection intentionally only catches obvious same-subject numeric / negation / polarity conflicts. Generated lint with no structural contract now defaults to `warning` severity and no deterministic structural autofix, so heuristic semantic/intent autogen starts in canary mode unless you promote it explicitly. Deterministic structural autofix now supports `fill_defaults`, `truncate`, `clamp`, and `coerce`, with iterative re-lint so composed cases like string-number coercion followed by range clamp can settle in one lint pass. Model-backed retry loops are bounded by both `max_retries` and optional `retry_budget_ms` across the whole handoff retry cycle, and retry-with-feedback only re-invokes LLM-capable producers (`llm_operator` or Workers with `model` / meaningful `llm_hints`). Explicit `lint=` always wins.
 
 ### Control and Context Edges
 

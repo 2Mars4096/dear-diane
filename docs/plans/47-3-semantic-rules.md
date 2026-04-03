@@ -82,6 +82,7 @@ If no embedder is provided and semantic rules are configured, the engine skips T
 ## Notes
 
 - `KeywordPresenceRule` does not require an embedder — it is pure string matching. This makes it the cheapest semantic rule and a good default when no embedding model is available.
+- When semantic/intent config is only auto-generated from descriptions/instructions and there is no structural contract to justify a blocking gate, that generated lint now defaults to warning severity. Explicit lint config can still promote semantic checks to `error`.
 - `min_keyword_ratio` now controls how strict keyword coverage should be. Missing some keywords is acceptable when the configured ratio is satisfied; below that threshold the rule emits one diagnostic with matched/missing metadata instead of pretending every missing keyword is equally fatal.
 - Tier 2 confidence is now aggregated across whichever semantic sub-rules are configured. `confidence_aggregation="min"` is the stricter default; `mean` allows one weaker semantic signal to be balanced by stronger others before Tier 3 escalation.
 - `LanguageDetectionRule` stays warning-only even when the overall lint severity is `error`, because language drift is a useful semantic signal but not automatically a contract-breaking handoff by itself.
