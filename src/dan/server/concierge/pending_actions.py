@@ -45,6 +45,13 @@ def _append_pending_note(base_text: str, note: str) -> str:
     return f"{base}\n[{suffix}]"
 
 
+def _pending_requires_triage(pending: PendingAction) -> bool:
+    metadata = getattr(pending, "metadata", None)
+    if not isinstance(metadata, dict):
+        return False
+    return bool(metadata.get("requires_triage"))
+
+
 def _build_attachment_prompt_context(
     pending: PendingAction,
     *,
@@ -70,9 +77,14 @@ def _build_attachment_prompt_context(
     elif step == "superseding_instruction":
         lines.append(f"Current user instruction: {reply}")
     if requires_triage:
-        lines.append(
-            "Use the latest user instruction as authoritative for this project/task and do not replay the superseded pending text.",
-        )
+        if step == "superseding_instruction":
+            lines.append(
+                "Use the latest user instruction as authoritative for this project/task and do not replay the superseded pending text.",
+            )
+        else:
+            lines.append(
+                "Re-run triage using the pending text plus the user's clarification. The clarification resolves the ambiguity; do not skip triage.",
+            )
     else:
         lines.append(
             "Apply the attached reply to the pending request for this project/task and do not treat the pending text as a new queued user turn.",
@@ -179,6 +191,7 @@ def resolve_pending_reply(
         )
 
     if not pending.options:
+        requires_triage = _pending_requires_triage(pending)
         effective_text = _append_pending_note(
             pending.original_text,
             f"User clarification: {reply}",
@@ -189,6 +202,7 @@ def resolve_pending_reply(
             reply=reply,
             effective_text=effective_text,
             resolved_value=reply,
+            requires_triage=requires_triage,
         )
         metadata["clarification_answer"] = reply
         return PendingReplyResolution(
@@ -197,12 +211,14 @@ def resolve_pending_reply(
             replay_text=effective_text,
             resolved_value=reply,
             metadata=metadata,
+            requires_triage=requires_triage,
         )
 
     if reply_lower.isdigit():
         idx = int(reply_lower) - 1
         if 0 <= idx < len(pending.options):
             option = pending.options[idx]
+            requires_triage = _pending_requires_triage(pending)
             effective_text = _append_pending_note(
                 pending.original_text,
                 f"User selected option: {option}",
@@ -213,6 +229,7 @@ def resolve_pending_reply(
                 reply=reply,
                 effective_text=effective_text,
                 resolved_value=option,
+                requires_triage=requires_triage,
             )
             metadata.update({
                 "selected_option": idx,
@@ -224,12 +241,14 @@ def resolve_pending_reply(
                 replay_text=effective_text,
                 resolved_value=option,
                 metadata=metadata,
+                requires_triage=requires_triage,
             )
 
     for idx, option in enumerate(pending.options):
         option_lower = option.lower()
         basename = option_lower.rsplit("/", 1)[-1]
         if reply_lower and (reply_lower in option_lower or reply_lower in basename):
+            requires_triage = _pending_requires_triage(pending)
             effective_text = _append_pending_note(
                 pending.original_text,
                 f"User selected option: {option}",
@@ -240,6 +259,7 @@ def resolve_pending_reply(
                 reply=reply,
                 effective_text=effective_text,
                 resolved_value=option,
+                requires_triage=requires_triage,
             )
             metadata.update({
                 "selected_option": idx,
@@ -251,6 +271,7 @@ def resolve_pending_reply(
                 replay_text=effective_text,
                 resolved_value=option,
                 metadata=metadata,
+                requires_triage=requires_triage,
             )
 
     if _looks_like_superseding_instruction(reply_lower):

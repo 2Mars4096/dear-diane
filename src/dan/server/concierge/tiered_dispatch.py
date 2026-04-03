@@ -12,6 +12,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _PROGRESS_DETAIL_MAX_LEN = 160
+_LOW_CONFIDENCE_CLARIFY_THRESHOLD = float(
+    os.environ.get("DAN_TRIAGE_CLARIFY_THRESHOLD", "0.6")
+)
 
 
 def _user_task_progress_detail(triage: Any, msg: SurfaceMessage) -> str | None:
@@ -31,6 +34,74 @@ def _user_task_progress_detail(triage: Any, msg: SurfaceMessage) -> str | None:
     if len(text) > _PROGRESS_DETAIL_MAX_LEN:
         return f"{text[: _PROGRESS_DETAIL_MAX_LEN - 1].rstrip()}…"
     return text
+
+
+def _needs_low_confidence_clarification(triage: Any) -> bool:
+    if bool(getattr(triage, "is_social", False)):
+        return False
+    try:
+        confidence = float(getattr(triage, "confidence", 0.0))
+    except (TypeError, ValueError):
+        return False
+    if confidence >= _LOW_CONFIDENCE_CLARIFY_THRESHOLD:
+        return False
+
+    intent = str(getattr(triage, "intent", "") or "").strip().lower()
+    route = getattr(triage, "route", None)
+    route_mode = str(getattr(route, "mode", "") or "").strip().lower()
+    route_target = str(getattr(route, "target", "") or "").strip().lower()
+    raw_hints = getattr(route, "action_hints", None) if route is not None else None
+    action_hints = [
+        str(item or "").strip()
+        for item in list(raw_hints or [])
+        if str(item or "").strip()
+    ]
+
+    # Only pause when low-confidence triage is steering execution.
+    if intent == "ask" and route_mode in {"", "ask"} and route_target in {"", "general"} and not action_hints:
+        return False
+    return True
+
+
+def _low_confidence_clarification_text(triage: Any, context: Any) -> str:
+    route = getattr(triage, "route", None)
+    target = str(getattr(route, "target", "") or "").strip().lower()
+    raw_hints = getattr(route, "action_hints", None) if route is not None else None
+    hints = {
+        str(item or "").strip()
+        for item in list(raw_hints or [])
+        if str(item or "").strip()
+    }
+    prefix = ""
+    project = getattr(context, "project", None) if context is not None else None
+    project_label = str(getattr(project, "label", "") or "").strip()
+    if project_label:
+        from .identity import format_prefix
+
+        prefix = f"{format_prefix(project_label)} "
+
+    if target == "workflow" or {"workflow_edit", "workflow_run"} & hints:
+        body = (
+            "I’m not fully sure whether you want to edit the workflow, run it, or ask about it. "
+            "What should I do?"
+        )
+    elif target == "file":
+        if {"read_file", "write_file"} <= hints:
+            body = (
+                "I’m not fully sure whether you want me to read a file or change one. "
+                "Which file should I work on, and what should I do with it?"
+            )
+        elif "write_file" in hints:
+            body = "I’m not fully sure which file you want changed. Which file should I update, and what change do you want?"
+        else:
+            body = "I’m not fully sure which file you want me to inspect. Which file should I read?"
+    elif target == "web" or "search_web" in hints:
+        body = "I’m not fully sure what you want looked up. What should I search for on the web?"
+    elif target == "run" or "run_control" in hints:
+        body = "I’m not fully sure which run or session action you want. What exactly should I start or inspect?"
+    else:
+        body = "I’m not fully sure what action you want me to take. Please clarify the task in one sentence."
+    return f"{prefix}{body}".strip()
 
 
 _USER_TURN_METADATA_KEYS = frozenset({
@@ -266,7 +337,8 @@ class ContextGatherer:
             concierge._resolve_context, msg,
         )
 
-        if any(n == "memory" for n in triage.context_needs):
+        memory_requested = any(n == "memory" for n in triage.context_needs)
+        if memory_requested:
             tasks["memory"] = lambda: asyncio.to_thread(
                 concierge._retrieve_memory_context, msg.text,
             )
@@ -311,9 +383,10 @@ class ContextGatherer:
         project_id = str(getattr(project, "project_id", "") or "").strip() or None
 
         memory = results.get("memory", "")
+        memory_timed_out = isinstance(memory, asyncio.TimeoutError)
         if isinstance(memory, Exception):
             memory = ""
-        if project_id and any(n == "memory" for n in triage.context_needs):
+        if project_id and memory_requested and not memory_timed_out:
             try:
                 memory = await asyncio.to_thread(
                     concierge._retrieve_memory_context,
@@ -330,7 +403,8 @@ class ContextGatherer:
             auto_read = {}
 
         domain_block = results.get("domain", "")
-        if project_id and domain_needs and hasattr(concierge, "_retrieve_domain_expertise"):
+        domain_timed_out = isinstance(domain_block, asyncio.TimeoutError)
+        if project_id and domain_needs and hasattr(concierge, "_retrieve_domain_expertise") and not domain_timed_out:
             try:
                 domain_block = await asyncio.to_thread(
                     concierge._retrieve_domain_expertise,
@@ -502,6 +576,16 @@ class TieredDispatcher:
         else:
             session.child_execution = "parallel"
 
+        clarification_event = self._maybe_request_low_confidence_clarification(
+            session,
+            triage_context,
+        )
+        if clarification_event is not None:
+            yield clarification_event
+            await self._on_any_session_complete(session)
+            await self._on_root_session_complete(session)
+            return
+
         if triage.tier == 0:
             executor = self._executors.get(0)
             if executor:
@@ -583,6 +667,83 @@ class TieredDispatcher:
             detail,
             force=force,
         )
+
+    def _maybe_request_low_confidence_clarification(
+        self,
+        session: Any,
+        context: Any,
+    ) -> Any | None:
+        triage = getattr(session, "triage", None)
+        if triage is None or not _needs_low_confidence_clarification(triage):
+            return None
+
+        msg = getattr(session, "msg", None)
+        project = getattr(context, "project", None) if context is not None else None
+        if msg is None or project is None:
+            return None
+        metadata = getattr(msg, "metadata", None)
+        if isinstance(metadata, dict) and metadata.get("workflow_schedule_followup_bridge"):
+            if str(getattr(triage, "intent", "") or "").strip().lower() == "agent":
+                return None
+            route = getattr(triage, "route", None)
+            route_target = str(getattr(route, "target", "") or "").strip().lower()
+            raw_hints = getattr(route, "action_hints", None) if route is not None else None
+            route_hints = {
+                str(item or "").strip()
+                for item in list(raw_hints or [])
+                if str(item or "").strip()
+            }
+            if route_target == "workflow" or {"workflow_edit", "workflow_run"} & route_hints:
+                return None
+
+        project_store = getattr(self._concierge, "project_store", None)
+        if project_store is None:
+            return None
+
+        from .models import PendingAction
+        from .session import SessionResult
+
+        clarification_text = _low_confidence_clarification_text(triage, context)
+        try:
+            confidence = float(getattr(triage, "confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        route = getattr(triage, "route", None)
+        pending = PendingAction(
+            kind="clarify",
+            intent=str(getattr(triage, "intent", "ask") or "ask"),
+            original_text=str(getattr(msg, "text", "") or ""),
+            metadata={
+                "requires_triage": True,
+                "clarification_source": "triage_low_confidence",
+                "triage_confidence": confidence,
+                "route_source": str(getattr(triage, "route_source", "") or ""),
+                "route_target": str(getattr(route, "target", "") or ""),
+            },
+        )
+        project.pending_action = pending
+        try:
+            project_store.set_pending_action(project.project_id, pending, msg.external_id)
+        except Exception:
+            logger.debug("Failed to persist low-confidence clarification", exc_info=True)
+        session.context = context
+        self._session_manager.update_state(session.id, "running")
+        self._session_manager.update_state(session.id, "completed")
+        self._session_manager.set_result(
+            session.id,
+            SessionResult(
+                content=clarification_text,
+                metadata={
+                    "completion_status": "clarification",
+                    "clarification_source": "triage_low_confidence",
+                    "triage_confidence": confidence,
+                    "route_source": str(getattr(triage, "route_source", "") or ""),
+                    "route_target": str(getattr(route, "target", "") or ""),
+                    "pending_action_kind": "clarify",
+                },
+            ),
+        )
+        return self._concierge._complete_event(content=clarification_text)
 
     async def _do_triage(self, msg: SurfaceMessage) -> tuple[Any, Any]:
         """Run triage LLM call. Returns (TriageResult, ResolvedContext)."""
@@ -798,7 +959,7 @@ class TieredDispatcher:
                 if (
                     result.error == "cancelled"
                     or state_value == "cancelled"
-                    or completion_status in {"interrupted", "partial", "cancelled"}
+                    or completion_status in {"interrupted", "partial", "cancelled", "clarification"}
                 ):
                     task_status_override = "paused"
                 elif result.error or state_value == "failed":

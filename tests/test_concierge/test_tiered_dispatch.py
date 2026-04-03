@@ -1165,6 +1165,181 @@ async def test_clarify_resume_persists_attached_reply_metadata(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_low_confidence_triage_requests_clarification_and_retriages_reply(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+    triage_calls: list[str] = []
+    original_text = "do it"
+    clarification_reply = "update README.md to fix the typo"
+    replay_text = f"{original_text}\n[User clarification: {clarification_reply}]"
+
+    async def triage_fn(text: str, *args: Any, **kwargs: Any) -> TriageResult:
+        triage_calls.append(text)
+        if text == replay_text:
+            return TriageResult(
+                tier=1,
+                intent="agent",
+                confidence=0.91,
+                goal="Update README",
+                deliverable="Update README",
+                route=RouteDecision(
+                    mode=RouteMode.AGENT,
+                    target="file",
+                    action_hints=["write_file"],
+                ),
+            )
+        return TriageResult(
+            tier=1,
+            intent="agent",
+            confidence=0.55,
+            goal="Do the task",
+            deliverable="Do the task",
+            route=RouteDecision(
+                mode=RouteMode.AGENT,
+                target="file",
+                action_hints=["write_file"],
+            ),
+        )
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses[replay_text] = "Updated README."
+
+    first_events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(surface="cli", external_id="cli-user", text=original_text)
+        )
+    ]
+
+    first_final = next(
+        event for event in reversed(first_events) if isinstance(event, ChatCompleteEvent)
+    )
+    assert "Which file should I update" in first_final.content
+    assert concierge.chat_manager.call_log == []
+
+    pending_project = concierge.project_store.get_pending_project("cli-user")
+    assert pending_project is not None
+    assert pending_project.pending_action is not None
+    assert pending_project.pending_action.metadata["requires_triage"] is True
+    current_task = concierge.project_store.get_current_task(
+        pending_project.project_id,
+        "cli-user",
+    )
+    assert current_task is not None
+    assert current_task.status == "paused"
+
+    second_events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="cli",
+                external_id="cli-user",
+                text=clarification_reply,
+            )
+        )
+    ]
+
+    second_final = next(
+        event for event in reversed(second_events) if isinstance(event, ChatCompleteEvent)
+    )
+    assert second_final.content.endswith("Updated README.")
+    assert triage_calls == [original_text, replay_text]
+    assert concierge.chat_manager.call_log == [replay_text]
+    assert concierge.project_store.get_pending_project("cli-user") is None
+
+    project = concierge.project_store.list_projects("cli-user")[0]
+    task = project.tasks[-1]
+    user_turn = next(turn for turn in reversed(task.turns) if turn.role == "user")
+    assert user_turn.content == clarification_reply
+    assert user_turn.metadata["pending_requires_triage"] is True
+    assert user_turn.metadata["pending_route_step"] == "clarification_answer"
+    assert user_turn.metadata["pending_effective_text"] == replay_text
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_clarification_still_pauses_when_pending_action_persist_fails(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=1,
+            intent="agent",
+            confidence=0.55,
+            goal="Do the task",
+            deliverable="Do the task",
+            route=RouteDecision(
+                mode=RouteMode.AGENT,
+                target="file",
+                action_hints=["write_file"],
+            ),
+        )
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+
+    original_set_pending_action = concierge.project_store.set_pending_action
+
+    def _broken_set_pending_action(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("disk write failed")
+
+    concierge.project_store.set_pending_action = _broken_set_pending_action  # type: ignore[assignment]
+    try:
+        events = [
+            event
+            async for event in concierge.process(
+                SurfaceMessage(surface="cli", external_id="cli-user", text="do it")
+            )
+        ]
+    finally:
+        concierge.project_store.set_pending_action = original_set_pending_action  # type: ignore[assignment]
+
+    final = next(
+        event for event in reversed(events) if isinstance(event, ChatCompleteEvent)
+    )
+    assert "Which file should I update" in final.content
+    assert concierge.chat_manager.call_log == []
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_plain_ask_does_not_force_clarification(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=1,
+            intent="ask",
+            confidence=0.55,
+            goal="Explain the task",
+            deliverable="Explanation",
+        )
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses["What does this task mean?"] = "It means you should review the report."
+
+    events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="cli",
+                external_id="cli-user",
+                text="What does this task mean?",
+            )
+        )
+    ]
+
+    final_event = next(
+        event for event in reversed(events) if isinstance(event, ChatCompleteEvent)
+    )
+    assert final_event.content.endswith("It means you should review the report.")
+    assert concierge.chat_manager.call_log == ["What does this task mean?"]
+    assert concierge.project_store.get_pending_project("cli-user") is None
+
+
+@pytest.mark.asyncio
 async def test_clarify_choice_attaches_selected_option_without_stale_user_turn(tmp_path: Path) -> None:
     concierge = _make_concierge(tmp_path)
 
@@ -2219,6 +2394,39 @@ async def test_context_gatherer_refreshes_memory_with_project_id() -> None:
     context = await gatherer.gather(msg, triage, _FakeConcierge())
     assert context.project.project_id == "proj-1"
     assert msg.metadata["memory_context"] == "scoped memory"
+
+
+@pytest.mark.asyncio
+async def test_context_gatherer_skips_project_refresh_after_memory_timeout(monkeypatch) -> None:
+    gatherer = ContextGatherer()
+    msg = SurfaceMessage(surface="cli", external_id="cli-user", text="where are my papers?")
+    triage = SimpleNamespace(context_needs=["memory"])
+    calls: list[str | None] = []
+
+    class _FakeConcierge:
+        def _resolve_context(self, incoming: SurfaceMessage) -> Any:
+            return SimpleNamespace(project=SimpleNamespace(project_id="proj-1"))
+
+        def _retrieve_memory_context(
+            self,
+            message: str,
+            *,
+            project_id: str | None = None,
+            **_: Any,
+        ) -> str:
+            calls.append(project_id)
+            time.sleep(2.0)
+            return "slow scoped memory" if project_id == "proj-1" else "slow unscoped memory"
+
+    monkeypatch.setenv("DAN_CONCIERGE_PREP_TIMEOUT", "0.05")
+    started = time.monotonic()
+    context = await gatherer.gather(msg, triage, _FakeConcierge())
+    elapsed = time.monotonic() - started
+
+    assert context.project.project_id == "proj-1"
+    assert elapsed < 1.0
+    assert calls == [None]
+    assert "memory_context" not in msg.metadata
 
 
 @pytest.mark.asyncio
