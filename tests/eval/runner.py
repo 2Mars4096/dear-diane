@@ -732,6 +732,11 @@ class EvalRunner:
                     for issue in (resp.get("run_readiness_issues") or [])
                     if str(issue).strip()
                 ],
+                run_readiness_failure_mode=(
+                    str(resp.get("run_readiness_failure_mode"))
+                    if resp.get("run_readiness_failure_mode")
+                    else None
+                ),
             )
         except Exception:
             return ValidationResult(
@@ -1241,7 +1246,7 @@ def _determine_status(
         return "failed", "validation_error"
 
     if validation and not validation.run_ready:
-        return "failed", "not_run_ready"
+        return "failed", validation.run_readiness_failure_mode or "not_run_ready"
 
     if execution and execution.status != "completed":
         if execution.status == "timeout":

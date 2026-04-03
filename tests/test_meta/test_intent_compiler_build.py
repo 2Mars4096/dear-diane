@@ -21,6 +21,7 @@ from dan.meta.intent_schema import (
     StageType,
     WorkflowIntent,
 )
+from dan.worker.model import Worker
 from dan.validation.graph import validate_graph
 
 
@@ -190,6 +191,26 @@ class TestBuildGraphSingleStage:
         node_types = {n.node_type for n in graph.nodes}
         assert "gate" in node_types
         assert "code_operator" in node_types
+        _assert_valid_graph(graph)
+
+    def test_build_graph_prefers_workers_for_simple_compute_when_enabled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("DAN_WORKER_GENERATION", "enabled")
+        intent = _make_intent([
+            StageIntent(name="research", stage_type=StageType.transform, description="Research the topic"),
+            StageIntent(name="search", stage_type=StageType.tool_call, config={"tool_id": "web_search"}),
+            StageIntent(name="compute", stage_type=StageType.code_execution, config={"code": "result = 2 + 2"}),
+        ])
+
+        graph = self.compiler.build_graph(intent)
+
+        assert [node.node_type for node in graph.nodes] == ["worker", "worker", "worker"]
+        assert all(isinstance(node, Worker) for node in graph.nodes)
+        assert graph.nodes[0].role == "processor"
+        assert graph.nodes[1].tool_ids == ["web_search"]
+        assert graph.nodes[2].code == "result = 2 + 2"
         _assert_valid_graph(graph)
 
 

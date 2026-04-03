@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from dan.models.node_taxonomy import RUNTIME_NODE_TYPES
+from dan.models.node_taxonomy import RUNTIME_NODE_TYPES, worker_generation_uses_workers
 
 __all__ = [
     "ArtifactKind",
@@ -213,7 +213,7 @@ class WorkflowSpecNode(BaseModel):
             raise ValueError("node_type must not be empty")
         if node_type not in RUNTIME_NODE_TYPES:
             raise ValueError(f"Unknown runtime node_type: {self.node_type!r}")
-        if infer_execution_family(node_type) != self.execution_family:
+        if infer_execution_family(node_type, config=self.config) != self.execution_family:
             raise ValueError(
                 f"node_type {node_type!r} is not compatible with execution_family "
                 f"{self.execution_family.value!r}"
@@ -231,14 +231,22 @@ class WorkflowSpecNode(BaseModel):
             raise ValueError(
                 f"tool_operator node {self.node_id!r} must declare grounding.tool_id"
             )
+        if node_type == "worker" and self.execution_family == ExecutionFamily.tool and not grounding.tool_id:
+            raise ValueError(
+                f"worker node {self.node_id!r} with tool execution must declare grounding.tool_id"
+            )
         if node_type == "code_operator" and not grounding.operation_type:
             raise ValueError(
                 f"code_operator node {self.node_id!r} must declare grounding.operation_type"
             )
+        if node_type == "worker" and self.execution_family == ExecutionFamily.code and not grounding.operation_type:
+            raise ValueError(
+                f"worker node {self.node_id!r} with code execution must declare grounding.operation_type"
+            )
         if declared_actions & external_action_verbs:
-            if node_type == "llm_operator" and not grounding.tool_id:
+            if node_type in {"llm_operator", "worker"} and self.execution_family == ExecutionFamily.llm and not grounding.tool_id:
                 raise ValueError(
-                    f"llm_operator node {self.node_id!r} declares external actions but has no grounding.tool_id"
+                    f"{node_type} node {self.node_id!r} declares external actions but has no grounding.tool_id"
                 )
             if not grounding.tool_id and not grounding.data_sources and not grounding.requires_external_data:
                 raise ValueError(
@@ -391,9 +399,47 @@ for _control_node_type in (
     _FAMILY_BY_RUNTIME_NODE_TYPE.setdefault(_control_node_type, ExecutionFamily.control_flow)
 
 
-def infer_execution_family(node_type: str) -> ExecutionFamily:
+def _infer_worker_execution_family(config: dict[str, Any] | None) -> ExecutionFamily:
+    payload = dict(config or {})
+    llm_hints = payload.get("llm_hints")
+    llm_hint_dict = llm_hints if isinstance(llm_hints, dict) else {}
+    tool_ids = [
+        str(item).strip()
+        for item in payload.get("tool_ids", []) or []
+        if str(item).strip()
+    ]
+    if not tool_ids:
+        tool_id = str(payload.get("tool_id") or payload.get("tool_name") or "").strip()
+        if tool_id:
+            tool_ids = [tool_id]
+
+    has_code = bool(str(payload.get("code") or "").strip())
+    has_llm = bool(
+        str(payload.get("model") or "").strip()
+        or str(payload.get("prompt_template", payload.get("prompt", "")) or "").strip()
+        or str(payload.get("system_prompt") or "").strip()
+        or llm_hint_dict
+    )
+    has_tool = bool(tool_ids)
+
+    if has_code and not has_llm and not has_tool:
+        return ExecutionFamily.code
+    if has_tool and not has_llm and not has_code:
+        return ExecutionFamily.tool
+    if has_llm or has_tool or has_code:
+        return ExecutionFamily.llm if has_llm else (ExecutionFamily.tool if has_tool else ExecutionFamily.code)
+    return ExecutionFamily.llm
+
+
+def infer_execution_family(
+    node_type: str,
+    *,
+    config: dict[str, Any] | None = None,
+) -> ExecutionFamily:
     """Infer the execution family for a runtime node type."""
 
+    if node_type == "worker":
+        return _infer_worker_execution_family(config)
     return _FAMILY_BY_RUNTIME_NODE_TYPE.get(node_type, ExecutionFamily.control_flow)
 
 
@@ -505,6 +551,8 @@ def _assert_acyclic(nodes: list[WorkflowSpecNode]) -> None:
 def _workflow_spec_node_from_stage(stage: Any) -> WorkflowSpecNode:
     node_type = _runtime_node_type_for_stage(stage)
     config = dict(getattr(stage, "config", {}) or {})
+    if node_type == "worker":
+        config = _worker_stage_config(stage, config)
     grounding = NodeGrounding(
         tool_id=_stage_tool_id(stage, node_type=node_type),
         operation_type=_stage_operation_type(stage, node_type=node_type),
@@ -517,7 +565,7 @@ def _workflow_spec_node_from_stage(stage: Any) -> WorkflowSpecNode:
         node_id=str(getattr(stage, "name", "") or "").strip(),
         purpose=str(getattr(stage, "description", "") or getattr(stage, "name", "") or "").strip(),
         node_type=node_type,
-        execution_family=infer_execution_family(node_type),
+        execution_family=infer_execution_family(node_type, config=config),
         inputs=[str(item).strip() for item in getattr(stage, "inputs", []) or [] if str(item).strip()],
         outputs=[str(item).strip() for item in getattr(stage, "outputs", []) or [] if str(item).strip()],
         dependencies=_stage_dependencies(stage),
@@ -566,6 +614,17 @@ def _normalize_node_dependencies_from_intent(
 
 def _runtime_node_type_for_stage(stage: Any) -> str:
     stage_type = str(getattr(getattr(stage, "stage_type", None), "value", None) or getattr(stage, "stage_type", "") or "").strip()
+    if worker_generation_uses_workers():
+        return {
+            "tool_call": "worker",
+            "code_execution": "worker",
+            "fan_out": "for_each",
+            "conditional": "gate",
+            "loop": "while_loop",
+            "review_loop": "while_loop",
+            "human_approval": "human",
+            "rag_retrieval": "rag_operator",
+        }.get(stage_type, "worker")
     return {
         "tool_call": "tool_operator",
         "code_execution": "code_operator",
@@ -578,9 +637,43 @@ def _runtime_node_type_for_stage(stage: Any) -> str:
     }.get(stage_type, "llm_operator")
 
 
+def _worker_stage_config(stage: Any, config: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(config)
+    stage_type = str(getattr(getattr(stage, "stage_type", None), "value", None) or getattr(stage, "stage_type", "") or "").strip()
+    description = str(getattr(stage, "description", "") or getattr(stage, "name", "") or "").strip()
+    payload.setdefault("description", description)
+    payload.setdefault(
+        "role",
+        {
+            "tool_call": "tool_runner",
+            "code_execution": "script",
+        }.get(stage_type, "processor"),
+    )
+
+    if stage_type == "tool_call":
+        tool_id = str(
+            payload.get("tool_id")
+            or payload.get("tool")
+            or payload.get("tool_name")
+            or ""
+        ).strip()
+        if tool_id:
+            payload.setdefault("tool_ids", [tool_id])
+    elif stage_type == "code_execution":
+        payload.setdefault("language", str(payload.get("language") or "python").strip() or "python")
+    else:
+        llm_hints = dict(payload.get("llm_hints") or {})
+        llm_hints.setdefault("prompt_template", description or f"Process: {getattr(stage, 'name', '')}")
+        task_tier = payload.get("task_tier") or payload.get("model_tier")
+        if task_tier is not None and "task_tier" not in llm_hints:
+            llm_hints["task_tier"] = task_tier
+        payload["llm_hints"] = llm_hints
+    return payload
+
+
 def _stage_tool_id(stage: Any, *, node_type: str) -> str | None:
     config = dict(getattr(stage, "config", {}) or {})
-    if node_type in {"tool_operator", "rag_operator", "llm_operator"}:
+    if node_type in {"tool_operator", "rag_operator", "llm_operator", "worker"}:
         tool_id = (
             config.get("tool_id")
             or config.get("tool")
@@ -592,9 +685,12 @@ def _stage_tool_id(stage: Any, *, node_type: str) -> str | None:
 
 
 def _stage_operation_type(stage: Any, *, node_type: str) -> str | None:
-    if node_type != "code_operator":
+    if node_type not in {"code_operator", "worker"}:
         return None
     config = dict(getattr(stage, "config", {}) or {})
+    stage_type = str(getattr(getattr(stage, "stage_type", None), "value", None) or getattr(stage, "stage_type", "") or "").strip()
+    if node_type == "worker" and stage_type != "code_execution":
+        return None
     return str(
         config.get("operation_type")
         or getattr(getattr(stage, "stage_type", None), "value", None)

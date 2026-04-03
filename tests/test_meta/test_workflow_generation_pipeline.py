@@ -516,6 +516,79 @@ async def test_direct_pipeline_handles_eval_review_loop_prompt_and_roundtrips() 
 
 
 @pytest.mark.asyncio
+async def test_direct_worker_generation_pipeline_passes_contract_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DAN_WORKER_GENERATION", "enabled")
+    goal = (
+        "search the web for papers on agent memory, summarize the findings, "
+        "compute a confidence score, and publish a short briefing"
+    )
+    extracted = {
+        "goal": goal,
+        "stages": [
+            {
+                "name": "search",
+                "stage_type": "tool_call",
+                "description": "Search the web for relevant agent memory papers",
+                "config": {"tool_id": "web_search"},
+            },
+            {
+                "name": "summarize",
+                "stage_type": "transform",
+                "description": "Summarize the gathered findings into a briefing",
+            },
+            {
+                "name": "score",
+                "stage_type": "code_execution",
+                "description": "Compute a confidence score for the briefing",
+                "config": {"code": "result = {'score': 0.92}"},
+            },
+        ],
+        "global_inputs": ["topic"],
+        "global_outputs": ["briefing"],
+    }
+
+    intent, graph = await _run_direct_pipeline(
+        goal,
+        extracted,
+        domain="literature_review",
+        user_text=goal,
+    )
+
+    compute_nodes = [
+        node for node in graph["nodes"]
+        if node["id"] in {"search", "summarize", "score"}
+    ]
+    assert [node["node_type"] for node in compute_nodes] == ["worker", "worker", "worker"]
+    assert compute_nodes[0]["tool_ids"] == ["web_search"]
+    assert compute_nodes[1]["role"] == "processor"
+    assert compute_nodes[2]["code"] == "result = {'score': 0.92}"
+    assert all(
+        node["node_type"] in {"worker", "gate", "for_each", "while_loop", "goal_loop", "validator"}
+        for node in graph["nodes"]
+    )
+
+    rebuilt = _roundtrip_through_builder(graph)
+    assert _graph_signature(rebuilt) == _graph_signature(Graph.model_validate(graph))
+
+    report = validate_workflow_build_contract(
+        rebuilt.model_dump(mode="json"),
+        workflow_id="worker-generation-contract-gate",
+        apply_repairs=False,
+    )
+    assert report.validated is True
+    assert report.run_ready is True
+    assert report.errors == []
+    assert report.run_readiness_issues == []
+    assert [stage.stage_type for stage in intent.stages[:3]] == [
+        StageType.tool_call,
+        StageType.transform,
+        StageType.code_execution,
+    ]
+
+
+@pytest.mark.asyncio
 async def test_compiled_pipeline_handles_eval_conditional_prompt_and_roundtrips() -> None:
     goal = _eval_prompt_text("t1-09")
     extracted = {

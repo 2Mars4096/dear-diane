@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
+from dan.models.node_taxonomy import worker_generation_uses_workers
 from dan.meta.intent_schema import StageIntent, StageType, WorkflowIntent
 
 if TYPE_CHECKING:
@@ -165,6 +166,66 @@ def _tool_builder_kwargs(stage: StageIntent, tool_id: str) -> dict[str, Any]:
     if tool_config:
         kwargs["tool_config"] = tool_config
 
+    return kwargs
+
+
+def _worker_role_for_stage(stage: StageIntent) -> str:
+    return {
+        StageType.tool_call: "tool_runner",
+        StageType.code_execution: "script",
+    }.get(stage.stage_type, "processor")
+
+
+def _worker_llm_kwargs(stage: StageIntent, *, prompt: str) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "role": _worker_role_for_stage(stage),
+        "description": stage.description or stage.name,
+        "llm": {"prompt_template": prompt},
+    }
+    task_tier = stage.config.get("task_tier") or stage.config.get("model_tier")
+    if stage.config.get("model"):
+        kwargs["model"] = stage.config["model"]
+    if task_tier is not None:
+        kwargs["llm"]["task_tier"] = str(task_tier)
+    if stage.config.get("system_prompt"):
+        kwargs["llm"]["system_prompt"] = str(stage.config["system_prompt"])
+    if stage.config.get("temperature") is not None:
+        kwargs["llm"]["temperature"] = stage.config["temperature"]
+    if stage.config.get("input_ports") is not None:
+        kwargs["input_ports"] = stage.config["input_ports"]
+    if stage.config.get("output_ports") is not None:
+        kwargs["output_ports"] = stage.config["output_ports"]
+    return kwargs
+
+
+def _worker_tool_kwargs(stage: StageIntent, tool_id: str) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "role": _worker_role_for_stage(stage),
+        "description": stage.description or stage.name,
+        "tool_ids": [tool_id],
+    }
+    builder_kwargs = _tool_builder_kwargs(stage, tool_id)
+    if builder_kwargs.get("tool_config") is not None:
+        kwargs["tool_config"] = builder_kwargs["tool_config"]
+    if builder_kwargs.get("input_ports") is not None:
+        kwargs["input_ports"] = builder_kwargs["input_ports"]
+    if builder_kwargs.get("output_ports") is not None:
+        kwargs["output_ports"] = builder_kwargs["output_ports"]
+    return kwargs
+
+
+def _worker_code_kwargs(stage: StageIntent, *, code: str) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "role": _worker_role_for_stage(stage),
+        "description": stage.description or stage.name,
+        "code": code,
+    }
+    if stage.config.get("language") is not None:
+        kwargs["language"] = stage.config["language"]
+    if stage.config.get("input_ports") is not None:
+        kwargs["input_ports"] = stage.config["input_ports"]
+    if stage.config.get("output_ports") is not None:
+        kwargs["output_ports"] = stage.config["output_ports"]
     return kwargs
 
 
@@ -556,7 +617,10 @@ class IntentCompiler:
     ) -> tuple[str, str, list[str]]:
         var = _var_name(stage.name)
         prompt = _escape(stage.description or f"Process: {stage.name}")
-        lines = [f'{var} = wf.llm("{stage.name}", prompt="{prompt}")']
+        if worker_generation_uses_workers():
+            lines = [f'{var} = wf.worker("{stage.name}", {", ".join(f"{k}={repr(v)}" for k, v in _worker_llm_kwargs(stage, prompt=prompt).items())})']
+        else:
+            lines = [f'{var} = wf.llm("{stage.name}", prompt="{prompt}")']
         return var, var, lines
 
     def _compile_review_loop(
@@ -594,15 +658,36 @@ class IntentCompiler:
         body_output_ports = stage.config.get("body_output_ports")
 
         if body_code:
-            body_args = [f'code="{_escape(body_code)}"']
-            if body_input_ports is None:
-                body_input_ports = [{"name": "item"}, {"name": "index"}]
-            body_args.append(f"input_ports={repr(body_input_ports)}")
-            if body_output_ports is not None:
-                body_args.append(f"output_ports={repr(body_output_ports)}")
-            body_line = f'    {proc_var} = body.code("{proc_id}", {", ".join(body_args)})'
+            if worker_generation_uses_workers():
+                if body_input_ports is None:
+                    body_input_ports = [{"name": "item"}, {"name": "index"}]
+                worker_kwargs = _worker_code_kwargs(
+                    StageIntent(
+                        name=proc_id,
+                        stage_type=StageType.code_execution,
+                        description=stage.description or stage.name,
+                        config={
+                            "code": body_code,
+                            "input_ports": body_input_ports,
+                            "output_ports": body_output_ports,
+                        },
+                    ),
+                    code=body_code,
+                )
+                body_line = f'    {proc_var} = body.worker("{proc_id}", {", ".join(f"{k}={repr(v)}" for k, v in worker_kwargs.items())})'
+            else:
+                body_args = [f'code="{_escape(body_code)}"']
+                if body_input_ports is None:
+                    body_input_ports = [{"name": "item"}, {"name": "index"}]
+                body_args.append(f"input_ports={repr(body_input_ports)}")
+                if body_output_ports is not None:
+                    body_args.append(f"output_ports={repr(body_output_ports)}")
+                body_line = f'    {proc_var} = body.code("{proc_id}", {", ".join(body_args)})'
         else:
-            body_line = f'    {proc_var} = body.llm("{proc_id}", prompt="{proc_prompt}")'
+            if worker_generation_uses_workers():
+                body_line = f'    {proc_var} = body.worker("{proc_id}", {", ".join(f"{k}={repr(v)}" for k, v in _worker_llm_kwargs(stage, prompt=proc_prompt).items())})'
+            else:
+                body_line = f'    {proc_var} = body.llm("{proc_id}", prompt="{proc_prompt}")'
 
         lines = [
             f'with wf.for_each("{stage.name}", parallelism={parallelism}) as body:',
@@ -625,7 +710,11 @@ class IntentCompiler:
 
         lines = [
             f'{retrieve_var} = wf.rag("{retrieve_id}", collection="{_escape(collection)}")',
-            f'{answer_var} = wf.llm("{answer_id}", prompt="{answer_prompt}")',
+            (
+                f'{answer_var} = wf.worker("{answer_id}", {", ".join(f"{k}={repr(v)}" for k, v in _worker_llm_kwargs(stage, prompt=answer_prompt).items())})'
+                if worker_generation_uses_workers()
+                else f'{answer_var} = wf.llm("{answer_id}", prompt="{answer_prompt}")'
+            ),
             f"{retrieve_var} >> {answer_var}",
         ]
         return retrieve_var, answer_var, lines
@@ -640,12 +729,19 @@ class IntentCompiler:
         )
         if not tool_id or tool_id == "llm_operator":
             prompt = _escape(stage.description or f"Process: {stage.name}")
-            lines = [f'{var} = wf.llm("{stage.name}", prompt="{prompt}")']
+            if worker_generation_uses_workers():
+                lines = [f'{var} = wf.worker("{stage.name}", {", ".join(f"{k}={repr(v)}" for k, v in _worker_llm_kwargs(stage, prompt=prompt).items())})']
+            else:
+                lines = [f'{var} = wf.llm("{stage.name}", prompt="{prompt}")']
             return var, var, lines
-        args = [f'tool_id="{_escape(tool_id)}"']
-        for key, value in _tool_builder_kwargs(stage, tool_id).items():
-            args.append(f"{key}={repr(value)}")
-        lines = [f'{var} = wf.tool("{stage.name}", {", ".join(args)})']
+        if worker_generation_uses_workers():
+            worker_kwargs = _worker_tool_kwargs(stage, tool_id)
+            lines = [f'{var} = wf.worker("{stage.name}", {", ".join(f"{k}={repr(v)}" for k, v in worker_kwargs.items())})']
+        else:
+            args = [f'tool_id="{_escape(tool_id)}"']
+            for key, value in _tool_builder_kwargs(stage, tool_id).items():
+                args.append(f"{key}={repr(value)}")
+            lines = [f'{var} = wf.tool("{stage.name}", {", ".join(args)})']
         return var, var, lines
 
     def _compile_code_execution(
@@ -655,13 +751,17 @@ class IntentCompiler:
         code = str(stage.config.get("code") or "").strip()
         if not code:
             raise MissingCodeStageError(stage.name, stage.description or stage.name)
-        escaped_code = _escape(code)
-        args = [f'code="{escaped_code}"']
-        if stage.config.get("input_ports") is not None:
-            args.append(f"input_ports={repr(stage.config['input_ports'])}")
-        if stage.config.get("output_ports") is not None:
-            args.append(f"output_ports={repr(stage.config['output_ports'])}")
-        lines = [f'{var} = wf.code("{stage.name}", {", ".join(args)})']
+        if worker_generation_uses_workers():
+            worker_kwargs = _worker_code_kwargs(stage, code=code)
+            lines = [f'{var} = wf.worker("{stage.name}", {", ".join(f"{k}={repr(v)}" for k, v in worker_kwargs.items())})']
+        else:
+            escaped_code = _escape(code)
+            args = [f'code="{escaped_code}"']
+            if stage.config.get("input_ports") is not None:
+                args.append(f"input_ports={repr(stage.config['input_ports'])}")
+            if stage.config.get("output_ports") is not None:
+                args.append(f"output_ports={repr(stage.config['output_ports'])}")
+            lines = [f'{var} = wf.code("{stage.name}", {", ".join(args)})']
         return var, var, lines
 
     def _compile_human_approval(
@@ -816,7 +916,10 @@ class IntentCompiler:
         self, stage: StageIntent, wf: Any,
     ) -> tuple[NodeRef, NodeRef]:
         prompt = stage.description or f"Process: {stage.name}"
-        ref = wf.llm(stage.name, prompt=prompt)
+        if worker_generation_uses_workers():
+            ref = wf.worker(stage.name, **_worker_llm_kwargs(stage, prompt=prompt))
+        else:
+            ref = wf.llm(stage.name, prompt=prompt)
         return ref, ref
 
     def _build_review_loop(
@@ -847,15 +950,34 @@ class IntentCompiler:
             if body_code:
                 if body_input_ports is None:
                     body_input_ports = [{"name": "item"}, {"name": "index"}]
-                body_kwargs: dict[str, Any] = {
-                    "code": body_code,
-                    "input_ports": body_input_ports,
-                }
-                if body_output_ports is not None:
-                    body_kwargs["output_ports"] = body_output_ports
-                body.code(f"{stage.name}_proc", **body_kwargs)
+                if worker_generation_uses_workers():
+                    body_kwargs = _worker_code_kwargs(
+                        StageIntent(
+                            name=f"{stage.name}_proc",
+                            stage_type=StageType.code_execution,
+                            description=stage.description or stage.name,
+                            config={
+                                "code": body_code,
+                                "input_ports": body_input_ports,
+                                "output_ports": body_output_ports,
+                            },
+                        ),
+                        code=body_code,
+                    )
+                    body.worker(f"{stage.name}_proc", **body_kwargs)
+                else:
+                    body_kwargs = {
+                        "code": body_code,
+                        "input_ports": body_input_ports,
+                    }
+                    if body_output_ports is not None:
+                        body_kwargs["output_ports"] = body_output_ports
+                    body.code(f"{stage.name}_proc", **body_kwargs)
             else:
-                body.llm(f"{stage.name}_proc", prompt=proc_prompt)
+                if worker_generation_uses_workers():
+                    body.worker(f"{stage.name}_proc", **_worker_llm_kwargs(stage, prompt=proc_prompt))
+                else:
+                    body.llm(f"{stage.name}_proc", prompt=proc_prompt)
         ref = NR(stage.name, "for_each", wf)
         return ref, ref
 
@@ -870,7 +992,10 @@ class IntentCompiler:
             or "Answer the question using the retrieved context."
         )
         retrieve_ref = wf.rag(retrieve_id, collection=collection)
-        answer_ref = wf.llm(answer_id, prompt=answer_prompt)
+        if worker_generation_uses_workers():
+            answer_ref = wf.worker(answer_id, **_worker_llm_kwargs(stage, prompt=answer_prompt))
+        else:
+            answer_ref = wf.llm(answer_id, prompt=answer_prompt)
         retrieve_ref >> answer_ref
         return retrieve_ref, answer_ref
 
@@ -883,9 +1008,15 @@ class IntentCompiler:
         )
         if not tool_id or tool_id == "llm_operator":
             prompt = stage.description or f"Process: {stage.name}"
-            ref = wf.llm(stage.name, prompt=prompt)
+            if worker_generation_uses_workers():
+                ref = wf.worker(stage.name, **_worker_llm_kwargs(stage, prompt=prompt))
+            else:
+                ref = wf.llm(stage.name, prompt=prompt)
             return ref, ref
-        ref = wf.tool(stage.name, tool_id=tool_id, **_tool_builder_kwargs(stage, tool_id))
+        if worker_generation_uses_workers():
+            ref = wf.worker(stage.name, **_worker_tool_kwargs(stage, tool_id))
+        else:
+            ref = wf.tool(stage.name, tool_id=tool_id, **_tool_builder_kwargs(stage, tool_id))
         return ref, ref
 
     def _build_code_execution(
@@ -894,12 +1025,15 @@ class IntentCompiler:
         code = str(stage.config.get("code") or "").strip()
         if not code:
             raise MissingCodeStageError(stage.name, stage.description or stage.name)
-        kwargs: dict[str, Any] = {"code": code}
-        if stage.config.get("input_ports") is not None:
-            kwargs["input_ports"] = stage.config["input_ports"]
-        if stage.config.get("output_ports") is not None:
-            kwargs["output_ports"] = stage.config["output_ports"]
-        ref = wf.code(stage.name, **kwargs)
+        if worker_generation_uses_workers():
+            ref = wf.worker(stage.name, **_worker_code_kwargs(stage, code=code))
+        else:
+            kwargs: dict[str, Any] = {"code": code}
+            if stage.config.get("input_ports") is not None:
+                kwargs["input_ports"] = stage.config["input_ports"]
+            if stage.config.get("output_ports") is not None:
+                kwargs["output_ports"] = stage.config["output_ports"]
+            ref = wf.code(stage.name, **kwargs)
         return ref, ref
 
     def _build_human_approval(

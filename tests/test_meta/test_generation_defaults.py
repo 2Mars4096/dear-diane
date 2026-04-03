@@ -252,6 +252,113 @@ def test_robust_profile_enriches_flat_compiled_graph() -> None:
     assert reviewer_nodes[0]["prompt_template"].startswith("Review the following content")
 
 
+def test_robust_profile_enriches_worker_graph_end_to_end() -> None:
+    graph = {
+        "nodes": [
+            {
+                "id": "fetch",
+                "node_type": "worker",
+                "role": "tool_runner",
+                "tool_ids": ["web_search"],
+                "metadata": {"tool_config": {"query": "supply chain resilience"}},
+            },
+            {
+                "id": "draft",
+                "node_type": "worker",
+                "role": "processor",
+                "model": "claude-sonnet-4-6",
+                "llm_hints": {"prompt_template": "Write a first draft of the article"},
+            },
+            {
+                "id": "revise",
+                "node_type": "worker",
+                "role": "processor",
+                "model": "claude-sonnet-4-6",
+                "llm_hints": {"prompt_template": "Refine the draft article"},
+            },
+            {
+                "id": "summarize",
+                "node_type": "worker",
+                "role": "processor",
+                "model": "claude-sonnet-4-6",
+                "llm_hints": {"prompt_template": "Summarize the refined article"},
+            },
+            {
+                "id": "final",
+                "node_type": "worker",
+                "role": "processor",
+                "model": "claude-sonnet-4-6",
+                "llm_hints": {"prompt_template": "Write the final article for publication"},
+            },
+        ],
+        "edges": [
+            {
+                "source_node_id": "fetch",
+                "source_port": "result",
+                "target_node_id": "draft",
+                "target_port": "input",
+            },
+            {
+                "source_node_id": "draft",
+                "source_port": "text",
+                "target_node_id": "revise",
+                "target_port": "input",
+            },
+            {
+                "source_node_id": "revise",
+                "source_port": "text",
+                "target_node_id": "summarize",
+                "target_port": "input",
+            },
+            {
+                "source_node_id": "summarize",
+                "source_port": "text",
+                "target_node_id": "final",
+                "target_port": "input",
+            },
+        ],
+    }
+
+    enricher = DefaultsEnricher(
+        GenerationDefaults.from_profile(DefaultProfile.robust)
+    )
+    enriched = enricher.enrich(deepcopy(graph))
+
+    fetch_node = next(node for node in enriched["nodes"] if node["id"] == "fetch")
+    llm_nodes = [
+        node
+        for node in enriched["nodes"]
+        if node["node_type"] == "worker" and node["id"] in {"draft", "revise", "summarize", "final"}
+    ]
+    validator_nodes = [
+        node for node in enriched["nodes"] if node["node_type"] == "validator"
+    ]
+    reviewer_nodes = [
+        node
+        for node in enriched["nodes"]
+        if node["node_type"] == "worker" and node["id"].startswith("auto_reviewer_")
+    ]
+
+    assert fetch_node["retry_policy"]["max_retries"] == 3
+    assert [node["llm_hints"]["task_tier"] for node in llm_nodes] == [
+        "routine",
+        "reasoning",
+        "reasoning",
+        "critical",
+    ]
+    assert len(validator_nodes) == 1
+    assert len(reviewer_nodes) == 1
+    assert reviewer_nodes[0]["role"] == "reviewer"
+    assert any(
+        edge["target_node_id"] == validator_nodes[0]["id"]
+        for edge in enriched["edges"]
+    )
+    assert any(
+        edge["target_node_id"] == reviewer_nodes[0]["id"]
+        for edge in enriched["edges"]
+    )
+
+
 class TestDefaultProfile:
     def test_minimal_disables_all(self):
         d = GenerationDefaults.from_profile(DefaultProfile.minimal)

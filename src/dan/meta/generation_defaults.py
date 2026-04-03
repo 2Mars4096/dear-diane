@@ -129,6 +129,49 @@ _EXTERNAL_TOOLS = frozenset({
 })
 
 
+def _worker_llm_hints(node: dict[str, Any]) -> dict[str, Any]:
+    payload = DefaultsEnricher._node_payload(node)
+    raw = payload.get("llm_hints")
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _worker_tool_ids(node: dict[str, Any]) -> list[str]:
+    payload = DefaultsEnricher._node_payload(node)
+    tool_ids = [
+        str(item).strip()
+        for item in payload.get("tool_ids", []) or []
+        if str(item).strip()
+    ]
+    if tool_ids:
+        return tool_ids
+    tool_id = str(payload.get("tool_id") or payload.get("tool_name") or "").strip()
+    return [tool_id] if tool_id else []
+
+
+def _is_worker_llm_node(node: dict[str, Any]) -> bool:
+    if node.get("node_type") != "worker":
+        return False
+    payload = DefaultsEnricher._node_payload(node)
+    hints = _worker_llm_hints(node)
+    return bool(
+        str(payload.get("model") or "").strip()
+        or str(payload.get("prompt_template", payload.get("prompt", "")) or "").strip()
+        or str(payload.get("system_prompt") or "").strip()
+        or hints
+    )
+
+
+def _is_worker_tool_node(node: dict[str, Any]) -> bool:
+    return node.get("node_type") == "worker" and bool(_worker_tool_ids(node))
+
+
+def _is_worker_code_node(node: dict[str, Any]) -> bool:
+    if node.get("node_type") != "worker":
+        return False
+    payload = DefaultsEnricher._node_payload(node)
+    return bool(str(payload.get("code") or "").strip())
+
+
 def normalize_task_tier(value: Any) -> str | None:
     """Normalize legacy generation tier labels to runtime task tiers."""
     if value is None:
@@ -236,7 +279,7 @@ class DefaultsEnricher:
             "base_delay": rc.llm_base_delay,
         }
         for node in nodes:
-            if node.get("node_type") == "llm_operator":
+            if node.get("node_type") == "llm_operator" or _is_worker_llm_node(node):
                 payload = self._node_payload(node)
                 if "retry_policy" not in payload:
                     self._set_node_value(node, "retry_policy", dict(policy))
@@ -249,9 +292,13 @@ class DefaultsEnricher:
             "base_delay": rc.tool_base_delay,
         }
         for node in nodes:
-            if node.get("node_type") == "tool_operator":
-                tool_id = str(self._get_node_value(node, "tool_id", ""))
-                if tool_id in _EXTERNAL_TOOLS:
+            if node.get("node_type") == "tool_operator" or _is_worker_tool_node(node):
+                tool_ids = (
+                    [str(self._get_node_value(node, "tool_id", ""))]
+                    if node.get("node_type") == "tool_operator"
+                    else _worker_tool_ids(node)
+                )
+                if any(tool_id in _EXTERNAL_TOOLS for tool_id in tool_ids):
                     payload = self._node_payload(node)
                     if "retry_policy" not in payload:
                         self._set_node_value(node, "retry_policy", dict(policy))
@@ -283,22 +330,39 @@ class DefaultsEnricher:
                     else inferred_legacy_tier
                 )
 
-            if not payload.get("model_tier"):
-                self._set_node_value(node, "model_tier", legacy_tier)
-            if task_tier and not payload.get("task_tier"):
-                self._set_node_value(node, "task_tier", task_tier)
-            if task_tier and not payload.get("model_policy"):
-                self._set_node_value(node, "model_policy", {"strategy": "tier"})
-            if task_tier and not payload.get("model"):
-                self._set_node_value(
-                    node,
-                    "model",
-                    resolve_default_llm_model(tier=task_tier),
-                )
+            if node.get("node_type") == "worker":
+                llm_hints = _worker_llm_hints(node)
+                if task_tier and "task_tier" not in llm_hints:
+                    llm_hints["task_tier"] = task_tier
+                if llm_hints:
+                    self._set_node_value(node, "llm_hints", llm_hints)
+                if task_tier and not payload.get("model"):
+                    self._set_node_value(
+                        node,
+                        "model",
+                        resolve_default_llm_model(tier=task_tier),
+                    )
+            else:
+                if not payload.get("model_tier"):
+                    self._set_node_value(node, "model_tier", legacy_tier)
+                if task_tier and not payload.get("task_tier"):
+                    self._set_node_value(node, "task_tier", task_tier)
+                if task_tier and not payload.get("model_policy"):
+                    self._set_node_value(node, "model_policy", {"strategy": "tier"})
+                if task_tier and not payload.get("model"):
+                    self._set_node_value(
+                        node,
+                        "model",
+                        resolve_default_llm_model(tier=task_tier),
+                    )
 
     @staticmethod
     def _llm_nodes(nodes: list[dict]) -> list[dict]:
-        return [n for n in nodes if n.get("node_type") == "llm_operator"]
+        return [
+            n
+            for n in nodes
+            if n.get("node_type") == "llm_operator" or _is_worker_llm_node(n)
+        ]
 
     def _ensure_validation_gate(self, graph_dict: dict[str, Any]) -> None:
         """If no validator node exists before the terminal node, insert one."""
@@ -329,7 +393,13 @@ class DefaultsEnricher:
 
         for tid in terminal_ids:
             terminal_node = next((n for n in nodes if n.get("id") == tid), None)
-            if terminal_node is None or terminal_node.get("node_type") != "llm_operator":
+            if terminal_node is None:
+                continue
+            terminal_is_llm = (
+                terminal_node.get("node_type") == "llm_operator"
+                or _is_worker_llm_node(terminal_node)
+            )
+            if not terminal_is_llm:
                 continue
 
             incoming = [e for e in data_edges if e["target_node_id"] == tid]
@@ -356,7 +426,7 @@ class DefaultsEnricher:
                 "source_node_id": val_id,
                 "source_port": "valid",
                 "target_node_id": tid,
-                "target_port": "text",
+                "target_port": "input" if terminal_node.get("node_type") == "worker" else "text",
             })
             break
 
@@ -373,9 +443,14 @@ class DefaultsEnricher:
 
         content_node = None
         for n in reversed(nodes):
-            if n.get("node_type") != "llm_operator":
+            if not (
+                n.get("node_type") == "llm_operator"
+                or _is_worker_llm_node(n)
+            ):
                 continue
             prompt = str(self._get_node_value(n, "prompt_template", "")).lower()
+            if not prompt and n.get("node_type") == "worker":
+                prompt = str(_worker_llm_hints(n).get("prompt_template", "")).lower()
             if any(kw in prompt for kw in _CONTENT_KEYWORDS):
                 content_node = n
                 break
@@ -405,10 +480,15 @@ class DefaultsEnricher:
     def has_content_workflow(nodes: list[dict]) -> bool:
         """Check if any LLM node's prompt suggests long-form content."""
         for node in nodes:
-            if node.get("node_type") != "llm_operator":
+            if not (
+                node.get("node_type") == "llm_operator"
+                or _is_worker_llm_node(node)
+            ):
                 continue
             payload = node.get("config", {}) if isinstance(node.get("config"), dict) else node
             prompt = str(payload.get("prompt_template", "")).lower()
+            if not prompt and node.get("node_type") == "worker":
+                prompt = str(_worker_llm_hints(node).get("prompt_template", "")).lower()
             if any(kw in prompt for kw in _CONTENT_KEYWORDS):
                 return True
         return False
@@ -457,6 +537,40 @@ class DefaultsEnricher:
         rev_id: str,
         content_node: dict[str, Any],
     ) -> dict[str, Any]:
+        if content_node.get("node_type") == "worker":
+            reviewer_task_tier = normalize_task_tier(
+                self._get_node_value(content_node, "task_tier")
+                or _worker_llm_hints(content_node).get("task_tier")
+                or self._get_node_value(content_node, "model_tier")
+            )
+            reviewer_model = str(
+                self._get_node_value(
+                    content_node,
+                    "model",
+                    resolve_default_llm_model(tier=reviewer_task_tier or "routine"),
+                )
+            )
+            llm_hints = {
+                "prompt_template": (
+                    "Review the following content for quality, accuracy, and completeness. "
+                    "Provide a quality score (1-10) and specific feedback."
+                ),
+                "system_prompt": "",
+                "temperature": 0.3,
+            }
+            if reviewer_task_tier is not None:
+                llm_hints["task_tier"] = reviewer_task_tier
+            return {
+                "id": rev_id,
+                "name": f"review_{content_node.get('id')}",
+                "description": f"Review content from {content_node.get('id')}",
+                "node_type": "worker",
+                "role": "reviewer",
+                "instruction": "Review the provided content carefully.",
+                "model": reviewer_model,
+                "llm_hints": llm_hints,
+            }
+
         reviewer_task_tier = normalize_task_tier(
             self._get_node_value(content_node, "task_tier")
             or self._get_node_value(content_node, "model_tier")

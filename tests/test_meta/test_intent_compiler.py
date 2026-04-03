@@ -198,6 +198,22 @@ class TestIntentCompiler:
         with pytest.raises(MissingCodeStageError, match="has no runnable code"):
             compiler.compile(intent)
 
+    def test_compile_prefers_worker_codegen_when_enabled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.setenv("DAN_WORKER_GENERATION", "enabled")
+        compiler = IntentCompiler()
+        intent = _make_intent([
+            _make_stage("search", StageType.tool_call, config={"tool_id": "web_search"}),
+            _make_stage("summarize", StageType.transform, description="Summarize the findings"),
+        ])
+
+        code = compiler.compile(intent)
+
+        assert 'wf.worker("search"' in code
+        assert 'wf.worker("summarize"' in code
+
 
 # ---------------------------------------------------------------------------
 # Domain preferences

@@ -19,7 +19,12 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
 from pydantic import BaseModel, Field
 
-from dan.models.node_taxonomy import GENERATE_SPEC_NODE_TYPES
+from dan.models.node_taxonomy import (
+    GENERATE_SPEC_NODE_TYPES,
+    preferred_generate_spec_node_types,
+    resolve_worker_generation_mode,
+    worker_generation_uses_workers,
+)
 from dan.meta.discovery import DiscoveryResult, DiscoveryService
 from dan.meta.goal_contract import render_goal_contract_section
 from dan.meta.tool_catalog import render_tool_catalog_markdown
@@ -120,9 +125,6 @@ __all__ = [
     "WorkflowPlanner",
     "validate_codegen_output",
 ]
-
-_GENERATE_SPEC_NODE_TYPES_LITERAL = '"|"'.join(GENERATE_SPEC_NODE_TYPES)
-
 
 # ---------------------------------------------------------------------------
 # Codegen result
@@ -600,15 +602,37 @@ Output:
 Goal: "Build a RAG QA system for internal docs"
 Similar workflows: none
 Output:
-{"action": "GENERATE", "description": "RAG-based question answering pipeline", "spec": {"nodes": [{"node_type": "tool_operator", "name": "load_docs", "config": {"tool_id": "file_read"}}, {"node_type": "llm_operator", "name": "retriever", "config": {"system_prompt": "Retrieve relevant passages for the question"}}, {"node_type": "llm_operator", "name": "answerer", "config": {"system_prompt": "Answer the question using retrieved passages"}}], "edges": [{"source": "load_docs", "target": "retriever"}, {"source": "retriever", "target": "answerer"}]}}
+__GENERATE_SPEC_EXAMPLE__
 
 Output ONLY a single valid JSON object. No markdown, no explanation."""
 
     def build_system_prompt(self) -> str:
         """Return the base planning system prompt."""
-        system_prompt = self.SYSTEM_TEMPLATE.replace(
-            "__GENERATE_SPEC_NODE_TYPES__",
-            _GENERATE_SPEC_NODE_TYPES_LITERAL,
+        generate_types_literal = '"|"'.join(preferred_generate_spec_node_types())
+        if worker_generation_uses_workers():
+            generate_example = (
+                '{"action": "GENERATE", "description": "RAG-based question answering pipeline", '
+                '"spec": {"nodes": [{"node_type": "worker", "name": "load_docs", "config": {"role": "tool_runner", '
+                '"description": "Load internal docs", "tool_id": "file_read"}}, {"node_type": "worker", "name": "retriever", '
+                '"config": {"role": "retriever", "description": "Retrieve relevant passages for the question", '
+                '"prompt": "Retrieve relevant passages for the question"}}, {"node_type": "worker", "name": "answerer", '
+                '"config": {"role": "answerer", "description": "Answer the question using retrieved passages", '
+                '"prompt": "Answer the question using retrieved passages"}}], "edges": [{"source": "load_docs", '
+                '"target": "retriever"}, {"source": "retriever", "target": "answerer"}]}}'
+            )
+        else:
+            generate_example = (
+                '{"action": "GENERATE", "description": "RAG-based question answering pipeline", '
+                '"spec": {"nodes": [{"node_type": "tool_operator", "name": "load_docs", "config": {"tool_id": "file_read"}}, '
+                '{"node_type": "llm_operator", "name": "retriever", "config": {"system_prompt": "Retrieve relevant passages '
+                'for the question"}}, {"node_type": "llm_operator", "name": "answerer", "config": {"system_prompt": '
+                '"Answer the question using retrieved passages"}}], "edges": [{"source": "load_docs", "target": "retriever"}, '
+                '{"source": "retriever", "target": "answerer"}]}}'
+            )
+        system_prompt = (
+            self.SYSTEM_TEMPLATE
+            .replace("__GENERATE_SPEC_NODE_TYPES__", generate_types_literal)
+            .replace("__GENERATE_SPEC_EXAMPLE__", generate_example)
         )
         if not workflow_generation_contract_enabled():
             return system_prompt
@@ -2140,10 +2164,35 @@ class WorkflowPlanner:
         def _slug(text: str) -> str:
             return re.sub(r"[^a-z0-9_]+", "_", text.lower()).strip("_") or "node"
 
-        def _default_source_port(node_type: str) -> str | None:
+        def _worker_tool_ids(config: dict[str, Any]) -> list[str]:
+            tool_ids = [
+                str(item).strip()
+                for item in config.get("tool_ids", []) or []
+                if str(item).strip()
+            ]
+            if tool_ids:
+                return tool_ids
+            tool_id = str(config.get("tool_id", config.get("tool_name", "")) or "").strip()
+            return [tool_id] if tool_id else []
+
+        def _worker_has_llm(config: dict[str, Any]) -> bool:
+            hints = config.get("llm_hints")
+            hint_dict = hints if isinstance(hints, dict) else {}
+            return bool(
+                str(config.get("model", "")).strip()
+                or str(config.get("prompt_template", config.get("prompt", ""))).strip()
+                or str(config.get("system_prompt", "")).strip()
+                or hint_dict
+            )
+
+        def _default_source_port(node_type: str, config: dict[str, Any]) -> str | None:
             if node_type == "llm_operator":
                 return "text"
             if node_type in {"tool_operator", "code_operator"}:
+                return "result"
+            if node_type == "worker":
+                if _worker_has_llm(config):
+                    return "text"
                 return "result"
             if node_type == "gate":
                 return None
@@ -2151,6 +2200,7 @@ class WorkflowPlanner:
 
         node_id_by_name: dict[str, str] = {}
         node_type_by_id: dict[str, str] = {}
+        node_config_by_id: dict[str, dict[str, Any]] = {}
         compiled_nodes: list[dict[str, Any]] = []
         for idx, node in enumerate(raw_nodes):
             if not isinstance(node, dict):
@@ -2163,6 +2213,8 @@ class WorkflowPlanner:
                 raise ValueError("Node config must be an object")
 
             base: dict[str, Any] = {"id": node_id, "name": name, "node_type": node_type}
+            input_ports = config.get("input_ports")
+            output_ports = config.get("output_ports")
             if node_type == "llm_operator":
                 task_tier = normalize_task_tier(
                     config.get("task_tier", config.get("model_tier"))
@@ -2183,23 +2235,95 @@ class WorkflowPlanner:
                     base["model_policy"] = model_policy
                 elif task_tier is not None:
                     base["model_policy"] = {"strategy": "tier"}
+                if input_ports is not None:
+                    base["input_ports"] = input_ports
+                if output_ports is not None:
+                    base["output_ports"] = output_ports
+            elif node_type == "worker":
+                task_tier = normalize_task_tier(
+                    config.get("task_tier", config.get("model_tier"))
+                )
+                llm_hints = dict(config.get("llm_hints") or {})
+                prompt_template = str(
+                    llm_hints.get(
+                        "prompt_template",
+                        config.get("prompt_template", config.get("prompt", "")),
+                    )
+                    or ""
+                ).strip()
+                system_prompt = str(
+                    llm_hints.get("system_prompt", config.get("system_prompt", "")) or ""
+                ).strip()
+                tool_ids = _worker_tool_ids(config)
+                base.update({
+                    "description": str(config.get("description") or spec.get("description", "") or name).strip(),
+                    "role": str(config.get("role") or "").strip(),
+                    "instruction": str(config.get("instruction") or "").strip(),
+                    "persona": str(config.get("persona") or "").strip(),
+                    "authority": str(config.get("authority") or "leaf").strip() or "leaf",
+                    "tool_ids": tool_ids,
+                    "code": str(config.get("code") or "").rstrip(),
+                    "language": str(config.get("language") or "python").strip() or "python",
+                })
+                if input_ports is not None:
+                    base["input_ports"] = input_ports
+                if output_ports is not None:
+                    base["output_ports"] = output_ports
+                if tool_ids:
+                    tool_config = config.get("tool_config", {})
+                    if isinstance(tool_config, dict) and tool_config:
+                        metadata = dict(base.get("metadata") or {})
+                        metadata["tool_config"] = dict(tool_config)
+                        base["metadata"] = metadata
+                if _worker_has_llm(config):
+                    model = str(
+                        config.get(
+                            "model",
+                            resolve_default_llm_model(tier=task_tier or "routine"),
+                        )
+                    ).strip()
+                    base["model"] = model
+                    llm_hints.update({
+                        "prompt_template": prompt_template,
+                        "system_prompt": system_prompt,
+                        "temperature": llm_hints.get("temperature", config.get("temperature", 0.3)),
+                    })
+                    if config.get("max_tokens") is not None and "max_tokens" not in llm_hints:
+                        llm_hints["max_tokens"] = config["max_tokens"]
+                    if config.get("output_schema") is not None and "output_json_schema" not in llm_hints:
+                        llm_hints["output_json_schema"] = config["output_schema"]
+                    if task_tier is not None and "task_tier" not in llm_hints:
+                        llm_hints["task_tier"] = task_tier
+                    base["llm_hints"] = llm_hints
             elif node_type == "tool_operator":
                 base.update({
                     "tool_id": config.get("tool_id", config.get("tool_name", "run_python")),
                     "tool_config": config.get("tool_config", {}),
                 })
+                if input_ports is not None:
+                    base["input_ports"] = input_ports
+                if output_ports is not None:
+                    base["output_ports"] = output_ports
             elif node_type == "code_operator":
                 base.update({
                     "code": config.get("code", ""),
                     "language": config.get("language", "python"),
                     "sandbox_config": config.get("sandbox_config", {}),
                 })
+                if input_ports is not None:
+                    base["input_ports"] = input_ports
+                if output_ports is not None:
+                    base["output_ports"] = output_ports
             elif node_type == "gate":
                 base.update({
                     "condition": config.get("condition", "True"),
                     "gate_mode": config.get("gate_mode", "if_else"),
                     "max_iterations": config.get("max_iterations", 10),
                 })
+                if input_ports is not None:
+                    base["input_ports"] = input_ports
+                if output_ports is not None:
+                    base["output_ports"] = output_ports
             else:
                 raise ValueError(
                     "Unsupported generated node_type: "
@@ -2210,6 +2334,7 @@ class WorkflowPlanner:
             compiled_nodes.append(base)
             node_id_by_name[name] = node_id
             node_type_by_id[node_id] = node_type
+            node_config_by_id[node_id] = config
 
         compiled_edges: list[dict[str, Any]] = []
         for idx, edge in enumerate(raw_edges):
@@ -2224,7 +2349,10 @@ class WorkflowPlanner:
             source_port = edge.get("source_port")
             if not source_port:
                 source_node_type = node_type_by_id.get(source_id, "")
-                source_port = _default_source_port(source_node_type)
+                source_port = _default_source_port(
+                    source_node_type,
+                    node_config_by_id.get(source_id, {}),
+                )
                 if source_port is None:
                     raise ValueError(
                         f"Edges from generated node type '{source_node_type}' "

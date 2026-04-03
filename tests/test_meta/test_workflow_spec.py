@@ -9,6 +9,7 @@ from dan.meta.workflow_spec import (
     DataSourceKind,
     DataSourceSpec,
     ExecutionFamily,
+    infer_execution_family,
     NodeWorkerHints,
     NodeGrounding,
     ScheduleIntent,
@@ -58,6 +59,16 @@ def test_workflow_spec_rejects_misgrounded_nodes() -> None:
             "llm_operator",
             ExecutionFamily.llm,
             grounding=NodeGrounding(declared_actions=["search"]),
+        )
+
+    with pytest.raises(ValueError, match="tool execution must declare grounding.tool_id"):
+        WorkflowSpecNode(
+            node_id="worker_tool",
+            purpose="Fetch data",
+            node_type="worker",
+            execution_family=ExecutionFamily.tool,
+            config={"tool_ids": ["web_search"]},
+            grounding=NodeGrounding(),
         )
 
 
@@ -338,3 +349,50 @@ def test_workflow_spec_from_intent_does_not_mark_plain_drafting_as_external_io()
     assert spec.nodes[0].node_type == "llm_operator"
     assert spec.nodes[0].grounding.tool_id is None
     assert spec.nodes[0].grounding.declared_actions == []
+
+
+def test_workflow_spec_from_intent_prefers_worker_compute_nodes_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DAN_WORKER_GENERATION", "enabled")
+    intent = WorkflowIntent(
+        goal="Search, summarize, and compute",
+        stages=[
+            StageIntent(
+                name="search",
+                description="Search the web for earnings commentary",
+                stage_type=StageType.tool_call,
+                config={"tool_id": "web_search"},
+            ),
+            StageIntent(
+                name="summarize",
+                description="Summarize the findings",
+                stage_type=StageType.transform,
+            ),
+            StageIntent(
+                name="compute",
+                description="Compute the aggregate score",
+                stage_type=StageType.code_execution,
+                config={"code": "result = 2 + 2"},
+            ),
+        ],
+    )
+
+    spec = workflow_spec_from_intent(intent, workflow_id="worker-generate")
+
+    assert [node.node_type for node in spec.nodes] == ["worker", "worker", "worker"]
+    assert [node.execution_family for node in spec.nodes] == [
+        ExecutionFamily.tool,
+        ExecutionFamily.llm,
+        ExecutionFamily.code,
+    ]
+    assert spec.nodes[0].config["tool_ids"] == ["web_search"]
+    assert spec.nodes[1].config["role"] == "processor"
+    assert spec.nodes[1].config["llm_hints"]["prompt_template"] == "Summarize the findings"
+    assert spec.nodes[2].grounding.operation_type == "code_execution"
+
+
+def test_infer_execution_family_handles_worker_configs() -> None:
+    assert infer_execution_family("worker", config={"model": "gpt-5-mini"}) == ExecutionFamily.llm
+    assert infer_execution_family("worker", config={"tool_ids": ["web_search"]}) == ExecutionFamily.tool
+    assert infer_execution_family("worker", config={"code": "result = 2 + 2"}) == ExecutionFamily.code

@@ -238,6 +238,44 @@ def test_boundary_linker_stitches_adjacent_sections() -> None:
     assert linked.diagnostics == []
 
 
+def test_candidate_graph_materializes_worker_node_plans() -> None:
+    spec = WorkflowSpec(
+        workflow_id="worker-candidate",
+        goal="Fetch and summarize",
+        global_inputs=["url"],
+        nodes=[
+            _node(
+                "fetch",
+                "worker",
+                ExecutionFamily.tool,
+                grounding=NodeGrounding(tool_id="web_fetch"),
+                config={"role": "tool_runner", "tool_ids": ["web_fetch"]},
+            ),
+            _node(
+                "summarize",
+                "worker",
+                ExecutionFamily.llm,
+                dependencies=["fetch"],
+                config={
+                    "role": "processor",
+                    "model": "gpt-5-mini",
+                    "llm_hints": {"prompt_template": "Summarize {input}"},
+                },
+            ),
+        ],
+    )
+    sections = _sections(spec)
+    artifacts = assemble_sections(spec, sections, _accepted_plans(spec))
+
+    linked = link_sections_into_candidate_graph(spec, artifacts, workflow_id="worker-candidate")
+
+    assert linked.status == "accepted"
+    assert linked.candidate_graph is not None
+    node_types = {node["id"]: node["node_type"] for node in linked.candidate_graph["nodes"]}
+    assert node_types["fetch"] == "worker"
+    assert node_types["summarize"] == "worker"
+
+
 def test_boundary_linker_reports_missing_source_output() -> None:
     spec = WorkflowSpec(
         goal="Summarize and publish",

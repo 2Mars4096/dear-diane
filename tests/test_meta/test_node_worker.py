@@ -236,3 +236,63 @@ def test_node_worker_classifies_gate_as_control_flow() -> None:
     assert result.accepted is True
     assert result.plan is not None
     assert result.plan.executor_kind == NodeExecutorKind.control_flow
+
+
+def test_node_worker_builds_worker_tool_plan_with_reachable_inputs() -> None:
+    spec = WorkflowSpec(
+        goal="Fetch a page through a Worker",
+        global_inputs=["url"],
+        nodes=[
+            _spec_node(
+                "fetch_page",
+                "worker",
+                ExecutionFamily.tool,
+                inputs=["url"],
+                outputs=["result"],
+                grounding=NodeGrounding(tool_id="web_fetch"),
+                config={
+                    "role": "tool_runner",
+                    "tool_ids": ["web_fetch"],
+                    "tool_config": {"url": "https://example.com"},
+                },
+            )
+        ],
+    )
+
+    result = build_node_plans(spec)[0]
+
+    assert result.accepted is True
+    assert result.plan is not None
+    assert result.plan.executor_kind == NodeExecutorKind.tool
+    assert result.plan.node_type == "worker"
+    assert result.plan.executor_config["tool_id"] == "web_fetch"
+    assert result.plan.executor_config["tool_ids"] == ["web_fetch"]
+
+
+def test_node_worker_builds_worker_llm_plan_with_text_output() -> None:
+    spec = WorkflowSpec(
+        goal="Summarize through a Worker",
+        global_inputs=["page_text"],
+        nodes=[
+            _spec_node(
+                "summarize",
+                "worker",
+                ExecutionFamily.llm,
+                inputs=["page_text"],
+                grounding=NodeGrounding(),
+                config={
+                    "role": "processor",
+                    "model": "gpt-5-mini",
+                    "llm_hints": {"prompt_template": "Summarize {input}"},
+                },
+            )
+        ],
+    )
+
+    result = build_node_plans(spec)[0]
+
+    assert result.accepted is True
+    assert result.plan is not None
+    assert result.plan.executor_kind == NodeExecutorKind.llm
+    assert [port.name for port in result.plan.output_ports] == ["text"]
+    assert result.plan.executor_config["prompt_template"] == "Summarize {input}"
