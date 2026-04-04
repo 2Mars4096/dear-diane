@@ -29,23 +29,49 @@ export function createThreadPersistenceCoordinator<T>(args: {
     }
   > = {};
 
-  let pendingPersist: PendingPersist<T> | null = null;
-  let persistTimer: ReturnType<typeof setTimeout> | null = null;
+  const pendingPersists: Record<string, PendingPersist<T>> = {};
+  const persistTimers: Record<string, ReturnType<typeof setTimeout>> = {};
 
   const keyFor = (workflowId: string, threadId: string) =>
     `${workflowId}::${threadId}`;
 
   const clearPendingIfSuperseded = (workflowId: string, threadId: string) => {
-    if (
-      pendingPersist &&
-      pendingPersist.workflowId === workflowId &&
-      pendingPersist.threadId === threadId
-    ) {
-      pendingPersist = null;
-      if (persistTimer) {
-        clearTimeout(persistTimer);
-        persistTimer = null;
-      }
+    const key = keyFor(workflowId, threadId);
+    delete pendingPersists[key];
+    const timer = persistTimers[key];
+    if (timer) {
+      clearTimeout(timer);
+      delete persistTimers[key];
+    }
+  };
+
+  const flushScheduledKey = async (
+    key: string,
+    fallback?: PendingPersist<T>,
+  ): Promise<void> => {
+    const timer = persistTimers[key];
+    if (timer) {
+      clearTimeout(timer);
+      delete persistTimers[key];
+    }
+    const pending = pendingPersists[key];
+    delete pendingPersists[key];
+    if (pending) {
+      await persistNow(
+        pending.workflowId,
+        pending.threadId,
+        pending.value,
+        pending.options,
+      );
+      return;
+    }
+    if (fallback) {
+      await persistNow(
+        fallback.workflowId,
+        fallback.threadId,
+        fallback.value,
+        fallback.options,
+      );
     }
   };
 
@@ -99,12 +125,13 @@ export function createThreadPersistenceCoordinator<T>(args: {
     delayMs = 5000,
     options?: ThreadPersistOptions,
   ): void => {
-    pendingPersist = { workflowId, threadId, value, options };
-    if (persistTimer) return;
-    persistTimer = setTimeout(() => {
-      persistTimer = null;
-      const pending = pendingPersist;
-      pendingPersist = null;
+    const key = keyFor(workflowId, threadId);
+    pendingPersists[key] = { workflowId, threadId, value, options };
+    if (persistTimers[key]) return;
+    persistTimers[key] = setTimeout(() => {
+      delete persistTimers[key];
+      const pending = pendingPersists[key];
+      delete pendingPersists[key];
       if (!pending) return;
       void persistNow(
         pending.workflowId,
@@ -118,22 +145,21 @@ export function createThreadPersistenceCoordinator<T>(args: {
   const flushPending = async (
     fallback?: PendingPersist<T>,
   ): Promise<void> => {
-    if (persistTimer) {
-      clearTimeout(persistTimer);
-      persistTimer = null;
+    const preferredKey = fallback
+      ? keyFor(fallback.workflowId, fallback.threadId)
+      : null;
+    if (preferredKey) {
+      await flushScheduledKey(preferredKey, fallback);
     }
-    const pending = pendingPersist;
-    pendingPersist = null;
-    if (pending) {
-      await persistNow(
-        pending.workflowId,
-        pending.threadId,
-        pending.value,
-        pending.options,
-      );
-      return;
+    for (const key of Object.keys(pendingPersists)) {
+      if (key === preferredKey) continue;
+      await flushScheduledKey(key);
     }
-    if (fallback) {
+    if (
+      fallback &&
+      !preferredKey &&
+      !persistLatest[keyFor(fallback.workflowId, fallback.threadId)]
+    ) {
       await persistNow(
         fallback.workflowId,
         fallback.threadId,
@@ -151,11 +177,15 @@ export function createThreadPersistenceCoordinator<T>(args: {
   };
 
   const dispose = (): void => {
-    if (persistTimer) {
-      clearTimeout(persistTimer);
-      persistTimer = null;
+    for (const timer of Object.values(persistTimers)) {
+      clearTimeout(timer);
     }
-    pendingPersist = null;
+    for (const key of Object.keys(persistTimers)) {
+      delete persistTimers[key];
+    }
+    for (const key of Object.keys(pendingPersists)) {
+      delete pendingPersists[key];
+    }
   };
 
   return {
