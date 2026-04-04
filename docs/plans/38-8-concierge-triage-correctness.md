@@ -1,7 +1,7 @@
 # 38-8: Concierge Triage & Dispatch Correctness
 
 **Parent:** [38-review-hardening](38-review-hardening.md)
-**Status:** completed, including the later 2026-04-03 follow-up tightening *(synced 2026-04-03)*
+**Status:** completed, including the later 2026-04-04 follow-up tightening *(synced 2026-04-04)*
 **Goal:** Fix correctness bugs and quality gaps in the concierge triage pipeline and tier executor dispatch identified in the 2026-03-19 concierge triage review.
 
 ## Context
@@ -91,6 +91,13 @@
 - Tightened low-confidence clarification persistence so the pause only activates after `project_store.set_pending_action(...)` succeeds; persistence failures now fall through to normal execution instead of returning an unresolvable clarification.
 - Taught `ConcurrentDispatcher._drain_project_queue()` to stop draining same-project queued turns while a project-scoped pending action is active, then resume after the clarification reply clears that pending state.
 - Added focused regressions for both the persist-failure fallback path and the queued-follow-up ordering path in `tests/test_concierge/test_tiered_dispatch.py`.
+
+### 2026-04-04 scope ownership follow-up
+
+- Split concierge scope resolution into a side-effect-free `_resolve_context()` peek path plus delayed `_materialize_context(...)`, so dispatcher queueing, triage, and context gather no longer create projects/tasks just by looking.
+- Social turns and plain ask/general turns now stay ephemeral unless the turn explicitly binds to a project or triage marks it as project-bearing; unrelated factual asks no longer attach themselves to the last active project.
+- Removed the duplicate intake `progress_ack`, made broken registry chat commands fail closed instead of degrading into normal routing, and restored turn telemetry intent/project/task population from the real bound context.
+- Revalidated the broader concierge ownership slices in `tests/test_concierge/test_tiered_dispatch.py`, `tests/test_concierge/test_fast_commands.py`, and `tests/test_concierge/test_unified_queue.py`.
 
 ## Follow-Up Tightening Scope (2026-03-21)
 

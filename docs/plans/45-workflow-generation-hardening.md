@@ -1,6 +1,6 @@
 # 45: Workflow Generation Hardening
 
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Turn workflow generation into a narrower, faster, and more measurable system by adding a direct builder surface, stronger generation contracts, a speed-first minimal path experiment, and a meta-builder evaluation harness before any broader rollout.
 
 ## Problem
@@ -42,7 +42,7 @@ Out of scope:
 | [45-1](45-1-direct-builder-surface.md) | Direct Builder Surface | Add a narrow first-class surface that talks directly to workflow generation without concierge routing | P1 | not-started |
 | [45-2](45-2-generation-contract-and-validation-hardening.md) | Generation Contract and Validation Hardening | Add stronger semantic/mechanical validation and remove misleading advisory gates | P1 | not-started |
 | [45-3](45-3-speed-first-minimal-build-path.md) | Speed-First Minimal Build Path | Define and benchmark a smaller, faster graph-generation lane for common workflows | P1 | not-started |
-| [45-4](45-4-meta-workflow-builder-eval-harness.md) | Meta Workflow Builder Eval Harness | Use a workflow-that-generates-workflows path as an eval harness with explicit contracts | P2 | not-started |
+| [45-4](45-4-meta-workflow-builder-eval-harness.md) | Meta Workflow Builder Eval Harness | Use a workflow-that-generates-workflows path as an eval harness with explicit contracts | P2 | in-progress |
 | [45-5](45-5-benchmark-and-rollout-gates.md) | Benchmark and Rollout Gates | Define the worktree benchmark loop and the criteria for merging any of this back to `main` | P1 | not-started |
 
 ## Dependencies / Sequencing
@@ -89,3 +89,4 @@ Rationale:
 - This plan builds directly on the intent/compiler/codegen/diagnosis lineage from [24-reliable-generation](24-reliable-generation.md), [32-workflow-optimization](32-workflow-optimization.md), [33-9-build-path-trustworthiness](33-9-build-path-trustworthiness.md), and [44-structured-workflow-generation](44-structured-workflow-generation.md).
 - The currently proposed backlog items "meta workflow builder", "node-generation context enrichment", and "speed-first graph-generation rebuild track" are intentionally folded into this plan rather than left as disconnected bullets.
 - The current structured `node_worker.py` is deterministic; any future "node-generation context enrichment" work belongs to the meta-builder or another explicit prompt-driven worker track, not the current deterministic node-plan layer.
+- A first 45-4 live harness is now landed in `tests/eval/workflow_result_similarity_benchmark.py`: it builds 10 long-form reference workflows, asks DAN build mode to generate comparable workflows, runs both, and compares outputs with deterministic similarity metrics plus an optional LLM judge.
