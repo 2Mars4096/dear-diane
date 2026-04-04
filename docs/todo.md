@@ -32,6 +32,12 @@
   - [ ] [48-4-scheduling-workflow-binding-and-timezones](plans/48-4-scheduling-workflow-binding-and-timezones.md)
   - [ ] [48-5-generated-workflow-first-run-policy](plans/48-5-generated-workflow-first-run-policy.md)
   - [ ] [48-6-latency-reduction-and-acceptance-harness](plans/48-6-latency-reduction-and-acceptance-harness.md)
+- [ ] [49-concierge-service-hardening](plans/49-concierge-service-hardening.md) — concierge-only hardening pass that treats the concierge as an always-available intake/supervision layer, introduces a first-class task registry above session trees, makes background dispatch non-blocking, binds clarification/retry/status semantics to explicit task ownership, and defines the backend contract for future task cards and a dispatcher-manager dashboard without touching frontend UI yet
+  - [ ] [49-1-task-registry-and-lifecycle](plans/49-1-task-registry-and-lifecycle.md)
+  - [ ] [49-2-background-dispatch-and-concierge-availability](plans/49-2-background-dispatch-and-concierge-availability.md)
+  - [ ] [49-3-clarification-pause-resume-and-task-ownership](plans/49-3-clarification-pause-resume-and-task-ownership.md)
+  - [ ] [49-4-status-attention-and-notification-contract](plans/49-4-status-attention-and-notification-contract.md)
+  - [ ] [49-5-dispatcher-observability-and-dashboard-backend-contract](plans/49-5-dispatcher-observability-and-dashboard-backend-contract.md)
 - [x] Chat-started run failure observability — `Save distilled workflow` / other chat-initiated runs now surface the real failure message from `run_failed`/`node_failed`, `View full logs` hydrates the persisted event stream into `LogPanel`, and history replay no longer hides `errors`-map failures behind truncated raw JSON
 - [x] Server-backed DAN equity-workflow build stall triage — workflow-generation codegen/diagnosis now enforce the remaining generation budget, mutation-preview repair calls are separately capped, and clean `build`-mode replay again reaches terminal events instead of burning past the budget in silence
 - [x] [12-13-workflow-authoring-triage-stability](plans/12-13-workflow-authoring-triage-stability.md) — concierge/triage routing for workflow-authoring turns is now stabilized end-to-end: lexical and embedding coverage, thread-context-aware continuation routing, JSON-mode + repair for LLM triage, stronger intent-extraction prompting/retry, route-source audit metadata, and repeated-trial stability regressions are landed.
