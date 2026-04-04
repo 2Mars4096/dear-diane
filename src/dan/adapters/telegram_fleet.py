@@ -39,6 +39,10 @@ from dan.adapters.telegram_router import MessageRouter, RoutableBot
 
 logger = logging.getLogger(__name__)
 _FLEET_LOCK_FILE = Path.home() / ".dan" / "telegram" / "fleet.lock"
+_TELEGRAM_STREAM_MISSING_TERMINAL_FALLBACK = (
+    "The response stream ended before a final answer was produced. "
+    "Please ask me to continue from the latest progress."
+)
 
 
 class FleetAlreadyRunningError(RuntimeError):
@@ -867,6 +871,7 @@ class BotFleet:
         complete_content = ""
         delivered_poll_count = 0
         failed_poll_count = 0
+        saw_terminal_event = False
 
         stream_start = time.monotonic()
         progress_count = 0
@@ -1047,10 +1052,12 @@ class BotFleet:
                                 lane_key=lane_key,
                             )
                         continue
+                    saw_terminal_event = True
                     complete_content = event.get("content", "") or ""
                     break
 
                 elif evt_type == "chat_error":
+                    saw_terminal_event = True
                     error_message = str(
                         event.get("error", "") or "",
                     ).strip()
@@ -1089,6 +1096,8 @@ class BotFleet:
                 if streamed_full
                 else friendly_error
             )
+        elif not saw_terminal_event:
+            full = _format_interrupted_stream_reply(streamed_full)
         else:
             full = streamed_full
 
@@ -1228,6 +1237,7 @@ class BotFleet:
         assert bot.adapter is not None
 
         stream_events: list[dict[str, Any]] = []
+        saw_terminal_event = False
         try:
             from dan.cli.adapter import _is_progress_ack_event
             async for event in self._iter_chat_stream_events(channel_id):
@@ -1244,6 +1254,7 @@ class BotFleet:
                     "chat_interrupted",
                     "chat_error",
                 ):
+                    saw_terminal_event = True
                     break
         except Exception as exc:
             logger.error("WS stream error: %s", exc)
@@ -1253,6 +1264,8 @@ class BotFleet:
         full_reply, _mutation, file_paths, poll_requests = _consume_chat_stream_events(
             stream_events,
         )
+        if not saw_terminal_event:
+            full_reply = _format_interrupted_stream_reply(full_reply)
 
         if full_reply:
             clean = _format_for_telegram(full_reply)
@@ -1437,18 +1450,26 @@ class BotFleet:
 
         sanitized = re.sub(r"[^A-Za-z0-9]", "", thread_key)[-16:] or "fleet"
         wf_id = f"_fleet_{sanitized}"
-        try:
-            resp = await self._http.get(f"/api/graphs/{wf_id}")
-            if resp.status_code == 404:
-                await self._http.post(
-                    "/api/graphs",
-                    json={
-                        "graph_id": wf_id,
-                        "data": {"nodes": [], "edges": []},
-                    },
+        if self._http is None:
+            raise RuntimeError("Telegram fleet HTTP client is not available")
+
+        resp = await self._http.get(f"/api/graphs/{wf_id}")
+        if resp.status_code == 404:
+            create_resp = await self._http.post(
+                "/api/graphs",
+                json={
+                    "graph_id": wf_id,
+                    "data": {"nodes": [], "edges": []},
+                },
+            )
+            if create_resp.status_code not in (200, 409):
+                raise RuntimeError(
+                    f"Unable to initialize workflow '{wf_id}' for Telegram conversation",
                 )
-        except Exception:
-            pass
+        elif resp.status_code != 200:
+            raise RuntimeError(
+                f"Unable to load workflow '{wf_id}' for Telegram conversation",
+            )
         self._conversation_workflows[thread_key] = wf_id
         return wf_id
 
@@ -1725,6 +1746,15 @@ def _format_telegram_stream_error(error_message: str) -> str:
     if not message:
         return "I hit an error while processing your message. Please try again."
     return f"I hit an error: {message}"
+
+
+def _format_interrupted_stream_reply(partial_reply: str) -> str:
+    partial = str(partial_reply or "").strip()
+    if not partial:
+        return _TELEGRAM_STREAM_MISSING_TERMINAL_FALLBACK
+    return (
+        f"{partial}\n\n{_TELEGRAM_STREAM_MISSING_TERMINAL_FALLBACK}"
+    )
 
 
 def _strip_prefix_and_html(text: str) -> str:
