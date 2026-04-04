@@ -300,7 +300,7 @@ class TestTelegramStreamErrorFormatting:
 
 
 class TestTelegramFleetLaneBehavior:
-    def test_non_reply_uses_shared_lane_until_parallel_fork_is_needed(self):
+    def test_private_non_reply_stays_on_shared_lane_even_when_parallel(self):
         from dan.adapters.telegram_config import TelegramFleetConfig
         from dan.adapters.telegram_fleet import (
             BotFleet,
@@ -326,7 +326,7 @@ class TestTelegramFleetLaneBehavior:
             "dan",
             fork_for_parallel=fleet._conversation_has_active_dispatch(conversation_key),
         )
-        assert lane2 == f"{conversation_key}:m11"
+        assert lane2 == conversation_key
 
         fleet._mark_conversation_dispatch_finished(conversation_key)
         ctx3 = MessageContext(chat_id=111, message_id=12, chat_type="private")
@@ -353,6 +353,21 @@ class TestTelegramFleetLaneBehavior:
             fork_for_parallel=True,
         )
         assert lane == "111:main:dan:m99"
+
+    def test_group_non_reply_can_still_fork_parallel_lane(self):
+        from dan.adapters.telegram_fleet import _conversation_lane_key
+
+        ctx = MessageContext(
+            chat_id=-1001,
+            message_id=13,
+            chat_type="group",
+        )
+        lane = _conversation_lane_key(
+            ctx,
+            "dan",
+            fork_for_parallel=True,
+        )
+        assert lane == "-1001:main:dan:m13"
 
     @pytest.mark.asyncio
     async def test_forked_lane_keeps_broad_follow_up_continuity(self):

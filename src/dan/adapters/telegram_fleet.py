@@ -1327,6 +1327,19 @@ class BotFleet:
         queued_started_at: float | None = None
         queue_hint_count = 0
 
+        def _queue_hint_event(*, hint_count: int) -> dict[str, Any] | None:
+            if queue_position is None or queued_started_at is None:
+                return None
+            return {
+                "type": "chat_complete",
+                "content": self._format_queue_hint(
+                    queue_position,
+                    time.monotonic() - queued_started_at,
+                    hint_count=hint_count,
+                ),
+                "detected_mode": "progress_ack",
+            }
+
         def _handle_queue_redirect(event: dict[str, Any]) -> str:
             nonlocal queue_position, queued_started_at, queue_hint_count
             queue_position = max(int(event.get("queue_position", 0) or 0), 1)
@@ -1356,6 +1369,10 @@ class BotFleet:
                             continue
                         if event.get("type") == "chat_queued":
                             redirected = _handle_queue_redirect(event)
+                            hint_event = _queue_hint_event(hint_count=queue_hint_count)
+                            if hint_event is not None:
+                                yield hint_event
+                                queue_hint_count += 1
                             if redirected and redirected not in seen_channels:
                                 next_channel = redirected
                                 break
@@ -1402,6 +1419,10 @@ class BotFleet:
                         continue
                     if event.get("type") == "chat_queued":
                         redirected = _handle_queue_redirect(event)
+                        hint_event = _queue_hint_event(hint_count=queue_hint_count)
+                        if hint_event is not None:
+                            yield hint_event
+                            queue_hint_count += 1
                         if redirected and redirected not in seen_channels:
                             next_channel = redirected
                             break
@@ -1668,6 +1689,8 @@ def _conversation_lane_key(
     conversation_key = _conversation_thread_key(ctx, bot_name)
     if reply_lane_key:
         return reply_lane_key
+    if str(getattr(ctx, "chat_type", "") or "").lower() == "private":
+        return conversation_key
     if not fork_for_parallel or ctx.message_id is None:
         return conversation_key
     return f"{conversation_key}:m{ctx.message_id}"
