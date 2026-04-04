@@ -319,3 +319,55 @@ def test_graph_mutator_worker_builder_gate_workerizes_extended_compute_aliases(
     assert nodes["merge"]["node_type"] == "worker"
     assert nodes["merge"]["role"] == "reduce"
     assert nodes["merge"]["metadata"]["reduce_expression"] == "append"
+
+
+def test_graph_mutator_worker_builder_repairs_missing_named_input_source_port(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DAN_WORKER_BUILDER", "enabled")
+    mutator = GraphMutator()
+    plan = MutationPlan(
+        operations=[
+            {
+                "op": "add_node",
+                "id": "receive-watchlist",
+                "node_type": "input",
+                "name": "Receive Watchlist",
+            },
+            {
+                "op": "add_node",
+                "id": "load-watchlist",
+                "node_type": "tool_operator",
+                "name": "Load Watchlist",
+                "config": {"tool_id": "file_read"},
+            },
+            {
+                "op": "add_edge",
+                "source_id": "receive-watchlist",
+                "source_port": "watchlist_path",
+                "target_id": "load-watchlist",
+                "target_port": "path",
+            },
+        ],
+        description="Repair missing named input source port",
+    )
+
+    result = mutator.dry_run(_empty_graph(), plan)
+
+    assert result.success, result.errors
+    assert result.new_graph is not None
+    Graph.model_validate(result.new_graph)
+
+    nodes = {node["id"]: node for node in result.new_graph["nodes"]}
+    assert nodes["receive-watchlist"]["node_type"] == "worker"
+    assert nodes["receive-watchlist"]["metadata"]["input_variables"] == [
+        {"name": "watchlist_path", "type": "string", "default": ""},
+    ]
+    assert [port["name"] for port in nodes["receive-watchlist"]["output_ports"]] == [
+        "input",
+        "watchlist_path",
+    ]
+    assert any(
+        "Auto-added input variable/output port 'watchlist_path'" in message
+        for message in result.diagnostics
+    )

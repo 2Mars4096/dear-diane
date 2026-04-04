@@ -42,6 +42,8 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
+_INPUT_VARIABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 _WORKER_MUTATOR_LEGACY_COMPUTE_TYPES: frozenset[str] = frozenset({
     "llm_operator",
     "tool_operator",
@@ -412,6 +414,84 @@ def _workerize_mutation_node_config(
         return "worker", worker_config
 
     return node_type, config
+
+
+def _node_is_input_like(node: dict[str, Any] | None) -> bool:
+    if not isinstance(node, dict):
+        return False
+    node_type = str(node.get("node_type") or "").strip()
+    if node_type == "input":
+        return True
+    if node_type != "worker":
+        return False
+    metadata = node.get("metadata")
+    return isinstance(metadata, dict) and "input_variables" in metadata
+
+
+def _ensure_input_variable_output_port(
+    node: dict[str, Any],
+    *,
+    port_name: str,
+    node_id: str,
+) -> str | None:
+    """Add a missing named output port for an input-like node when unambiguous."""
+    if not _node_is_input_like(node):
+        return None
+
+    normalized_port = str(port_name or "").strip()
+    if (
+        not normalized_port
+        or normalized_port == "input"
+        or not _INPUT_VARIABLE_NAME_RE.fullmatch(normalized_port)
+    ):
+        return None
+
+    output_ports = node.setdefault("output_ports", [])
+    existing_output_names = {
+        str(port.get("name") or "").strip()
+        for port in output_ports
+        if isinstance(port, dict)
+    }
+    if normalized_port in existing_output_names:
+        return None
+
+    if str(node.get("node_type") or "").strip() == "input":
+        variables = node.setdefault("variables", [])
+    else:
+        metadata = node.setdefault("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+            node["metadata"] = metadata
+        variables = metadata.setdefault("input_variables", [])
+
+    existing_variable_names = set()
+    if isinstance(variables, list):
+        for item in variables:
+            if isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+            else:
+                name = str(item or "").strip()
+            if name:
+                existing_variable_names.add(name)
+    else:
+        variables = []
+        if str(node.get("node_type") or "").strip() == "input":
+            node["variables"] = variables
+        else:
+            node.setdefault("metadata", {})["input_variables"] = variables
+
+    if normalized_port not in existing_variable_names:
+        variables.append({
+            "name": normalized_port,
+            "type": "string",
+            "default": "",
+        })
+
+    output_ports.append({"name": normalized_port, "schema": {}})
+    return (
+        f"Auto-added input variable/output port '{normalized_port}' on input node "
+        f"'{node_id}' because a later edge referenced it."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1631,7 +1711,7 @@ class GraphMutator:
         source_ports = [p["name"] for p in source_node.get("output_ports", [])]
         resolved_source_port = op.source_port
         if resolved_source_port not in source_ports:
-            if source_node.get("node_type") == "input" and resolved_source_port == "input":
+            if _node_is_input_like(source_node) and resolved_source_port == "input":
                 # Backward-compat: older graphs may have input variables as
                 # output ports but no aggregate "input" output.
                 source_node.setdefault("output_ports", []).append(
@@ -1649,33 +1729,44 @@ class GraphMutator:
                     op.source_id,
                 )
             else:
-                alias_map = {
-                    "for_each": {"item": "results"},
-                    "parallel_subagents": {"item": "results"},
-                    "orchestrator": {"item": "results"},
-                    "if_else": {"branch": "true"},
-                }
-                node_type = str(source_node.get("node_type") or "")
-                aliased_port = alias_map.get(node_type, {}).get(resolved_source_port)
-                if aliased_port and aliased_port in source_ports:
+                repair_message = _ensure_input_variable_output_port(
+                    source_node,
+                    port_name=resolved_source_port,
+                    node_id=op.source_id,
+                )
+                if repair_message is not None:
+                    source_ports = [p["name"] for p in source_node.get("output_ports", [])]
                     if diagnostics is not None:
-                        diagnostics.append(
-                            f"Normalized source port '{resolved_source_port}' to '{aliased_port}' "
-                            f"for {node_type} node '{op.source_id}'."
-                        )
-                    logger.debug(
-                        "Normalized source port '%s' to '%s' for %s node '%s'",
-                        resolved_source_port,
-                        aliased_port,
-                        node_type,
-                        op.source_id,
-                    )
-                    resolved_source_port = aliased_port
+                        diagnostics.append(repair_message)
+                    logger.debug("%s", repair_message)
                 else:
-                    return (
-                        f"Source node '{op.source_id}' has no output port '{op.source_port}' "
-                        f"(available: {source_ports})"
-                    )
+                    alias_map = {
+                        "for_each": {"item": "results"},
+                        "parallel_subagents": {"item": "results"},
+                        "orchestrator": {"item": "results"},
+                        "if_else": {"branch": "true"},
+                    }
+                    node_type = str(source_node.get("node_type") or "")
+                    aliased_port = alias_map.get(node_type, {}).get(resolved_source_port)
+                    if aliased_port and aliased_port in source_ports:
+                        if diagnostics is not None:
+                            diagnostics.append(
+                                f"Normalized source port '{resolved_source_port}' to '{aliased_port}' "
+                                f"for {node_type} node '{op.source_id}'."
+                            )
+                        logger.debug(
+                            "Normalized source port '%s' to '%s' for %s node '%s'",
+                            resolved_source_port,
+                            aliased_port,
+                            node_type,
+                            op.source_id,
+                        )
+                        resolved_source_port = aliased_port
+                    else:
+                        return (
+                            f"Source node '{op.source_id}' has no output port '{op.source_port}' "
+                            f"(available: {source_ports})"
+                        )
 
         target_ports = [p["name"] for p in target_node.get("input_ports", [])]
         if op.target_port not in target_ports:

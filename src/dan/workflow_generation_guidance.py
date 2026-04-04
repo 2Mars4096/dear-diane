@@ -169,6 +169,7 @@ def render_workflow_generation_contract_detail() -> str:
 - Use exact runtime node types, input ports, output ports, tool manifests, and schema-supported mutation operations.
 - Do not invent pseudo-operations such as `dry_run`, `validate`, `inspect`, `repair`, or `connect`.
 - Prompt and query templates use single-brace `{variable}` placeholders matching real input port names. Do not introduce new `{{variable}}` placeholders.
+- `input` nodes expose named source ports only when `config.variables` declares them. If later edges use ports like `watchlist_path`, declare those variables on the input node first instead of assuming they exist.
 
 3. Handle control-flow bodies correctly.
 - After adding control-flow or composite nodes in graph-mutation mode, define the body with `replace_body_graph`.
@@ -267,6 +268,7 @@ def _surface_rules(surface: WorkflowGenerationSurface) -> list[str]:
         ]
     mutation_rules = [
         "- Use only schema-supported mutation ops such as `add_node`, `edit_node`, `add_edge`, and `replace_body_graph`. Never invent pseudo-ops such as `dry_run`, `validate`, `inspect`, `repair`, or `connect`.",
+        "- If an `input` node will feed named ports such as `watchlist_path` or `topic`, declare them in `config.variables`; otherwise only the aggregate `input` port is guaranteed.",
         "- After adding `for_each`, `while_loop`, `composite`, or similar body-owning nodes, define the body with `replace_body_graph`.",
         "- `for_each` exposes top-level ports `items` and `results`; loop-local values like `item` and `index` belong on body entry nodes.",
         "- Inside `replace_body_graph`, edges may reference only nodes that exist inside that body graph; never wire body edges back to the enclosing loop/composite node id.",
