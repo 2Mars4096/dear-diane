@@ -459,6 +459,21 @@ class TestFastCommandSkipsPrep:
         assert memory_kernel.get("fact:domain:paper_rendering") is not None
 
     @pytest.mark.asyncio
+    async def test_timezone_command_dispatches_and_updates_profile(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DAN_PROFILE_PATH", str(tmp_path / "profile.json"))
+        profile = UserProfile()
+        c = _build_concierge(
+            tmp_path,
+            user_profile=profile,
+        )
+
+        events = await _collect(c, _make_msg("/timezone set America/New_York"))
+
+        assert len(events) == 1
+        assert "America/New_York" in events[0].content
+        assert profile.preferred_timezone == "America/New_York"
+
+    @pytest.mark.asyncio
     async def test_search_command_runs_direct_grounded_search(self, tmp_path, monkeypatch):
         async def _fake_handle_web_search(args, ctx):
             assert args["query"] == "latest dan"

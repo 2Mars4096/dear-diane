@@ -1287,6 +1287,12 @@ class Concierge:
             resolved_project_id = str(metadata.get("resolved_project_id") or "").strip() or None
             resolved_task_id = str(metadata.get("resolved_task_id") or "").strip() or None
             default_workflow_id = self._resolve_default_workflow_id(msg)
+            active_projects = self.project_store.list_active(msg.external_id)
+            project_workflow_ids = (
+                list(active_projects[0].linked_workflow_ids or [])
+                if active_projects
+                else []
+            )
             trigger_context = TriggerContext(
                 source_surface=msg.surface or "schedule",
                 project_id=resolved_project_id,
@@ -1309,6 +1315,10 @@ class Concierge:
                     default_trigger_context=trigger_context,
                     default_delivery_target=delivery_target,
                     default_workflow_id=default_workflow_id,
+                    graph_store=getattr(self.chat_manager, "_graph_store", None),
+                    project_workflow_ids=project_workflow_ids,
+                    expected_workflow_revision=str(metadata.get("client_graph_revision") or "").strip() or None,
+                    default_timezone=str(getattr(self.user_profile, "preferred_timezone", "") or "").strip() or None,
                 ),
             )
 
@@ -1330,6 +1340,14 @@ class Concierge:
                     self.user_profile,
                     memory_kernel=self.memory_kernel,
                     behavior_store=self._behavior_store,
+                ),
+            )
+
+        if descriptor.name == "/timezone":
+            return await self._coerce_fast_command_result(
+                handler(
+                    msg.text,
+                    self.user_profile,
                 ),
             )
 

@@ -17,11 +17,42 @@ import tempfile
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Awaitable, Callable, Literal, Sequence
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field
+from dan.server.workflow_identity import (
+    resolve_workflow_reference,
+    workflow_resolution_context_from_session,
+)
 
 logger = logging.getLogger(__name__)
+
+_TIMEZONE_ALIAS_MAP: dict[str, str] = {
+    "utc": "UTC",
+    "gmt": "UTC",
+    "z": "UTC",
+    "hong kong": "Asia/Hong_Kong",
+    "hk": "Asia/Hong_Kong",
+    "hongkong": "Asia/Hong_Kong",
+    "tokyo": "Asia/Tokyo",
+    "japan": "Asia/Tokyo",
+    "singapore": "Asia/Singapore",
+    "london": "Europe/London",
+    "uk": "Europe/London",
+    "new york": "America/New_York",
+    "nyc": "America/New_York",
+    "eastern": "America/New_York",
+    "et": "America/New_York",
+    "los angeles": "America/Los_Angeles",
+    "la": "America/Los_Angeles",
+    "pacific": "America/Los_Angeles",
+    "pt": "America/Los_Angeles",
+    "san francisco": "America/Los_Angeles",
+    "chicago": "America/Chicago",
+    "central": "America/Chicago",
+    "ct": "America/Chicago",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +274,9 @@ class ScheduleEntry(BaseModel):
     delivery_target: DeliveryTarget = Field(default_factory=DeliveryTarget)
     on_missed: Literal["run_once", "skip"] = "run_once"
     workflow_id: str | None = None
+    workflow_display_name: str | None = None
+    workflow_revision: str | None = None
+    workflow_resolution_source: str | None = None
     workflow_inputs: dict[str, Any] = Field(default_factory=dict)
     workflow_run_policy: dict[str, Any] | None = None
 
@@ -266,6 +300,145 @@ def _dispatch_result_is_inflight_workflow(result: str) -> bool:
     """
     text = (result or "").strip()
     return text.startswith("Started workflow `") and " as run `" in text
+
+
+def _normalize_timezone_name(raw: str | None) -> str | None:
+    value = str(raw or "").strip()
+    if not value:
+        return None
+    if value.upper() == "UTC":
+        return "UTC"
+    try:
+        ZoneInfo(value)
+        return value
+    except ZoneInfoNotFoundError:
+        pass
+
+    alias_key = re.sub(r"[_\-/]+", " ", value.lower()).strip()
+    canonical = _TIMEZONE_ALIAS_MAP.get(alias_key)
+    if canonical is None and alias_key.endswith(" time"):
+        canonical = _TIMEZONE_ALIAS_MAP.get(alias_key[:-5].strip())
+    if canonical is None:
+        return None
+    try:
+        ZoneInfo(canonical)
+    except ZoneInfoNotFoundError:
+        return None
+    return canonical
+
+
+def _zoneinfo_for_timezone(name: str | None) -> ZoneInfo:
+    normalized = _normalize_timezone_name(name) or "UTC"
+    if normalized == "UTC":
+        return ZoneInfo("UTC")
+    return ZoneInfo(normalized)
+
+
+def _workspace_default_timezone() -> str:
+    for candidate in (
+        os.environ.get("DAN_DEFAULT_TIMEZONE"),
+        os.environ.get("TZ"),
+    ):
+        normalized = _normalize_timezone_name(candidate)
+        if normalized:
+            return normalized
+    return "UTC"
+
+
+def _resolve_schedule_timezone(
+    *,
+    explicit_timezone: str | None,
+    preferred_timezone: str | None,
+    workspace_timezone: str | None = None,
+) -> tuple[str, str]:
+    """Resolve timezone precedence for schedule creation."""
+    if explicit_timezone:
+        normalized = _normalize_timezone_name(explicit_timezone)
+        if normalized is None:
+            raise ValueError(
+                "Could not resolve timezone "
+                f"`{explicit_timezone}`. Use an IANA zone like `Asia/Hong_Kong`."
+            )
+        return normalized, "explicit"
+
+    if preferred_timezone:
+        normalized = _normalize_timezone_name(preferred_timezone)
+        if normalized:
+            return normalized, "user_preference"
+
+    workspace = _normalize_timezone_name(workspace_timezone) or _workspace_default_timezone()
+    if workspace:
+        return workspace, "workspace_default"
+    return "UTC", "utc_fallback"
+
+
+def _extract_schedule_timezone_option(
+    raw_text: str,
+) -> tuple[str, str | None, str | None]:
+    """Strip ``--timezone`` from a schedule command payload."""
+    try:
+        tokens = shlex.split(raw_text)
+    except ValueError as exc:
+        return raw_text, None, f"Invalid schedule command: {exc}"
+
+    filtered: list[str] = []
+    explicit_timezone: str | None = None
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--timezone":
+            index += 1
+            if index >= len(tokens):
+                return raw_text, None, "Missing value after `--timezone`."
+            explicit_timezone = tokens[index].strip()
+            index += 1
+            continue
+        if token.startswith("--timezone="):
+            explicit_timezone = token.split("=", 1)[1].strip()
+            index += 1
+            continue
+        filtered.append(token)
+        index += 1
+    return shlex.join(filtered), explicit_timezone, None
+
+
+def _extract_trigger_timezone(trigger: str) -> tuple[str, str | None]:
+    """Extract a trailing timezone clause from a human-readable trigger."""
+    cleaned = str(trigger or "").strip()
+    if not cleaned:
+        return cleaned, None
+
+    patterns = (
+        re.compile(r"^(?P<trigger>.+?)\s+(?P<zone>[A-Za-z]+(?:/[A-Za-z0-9_+-]+)+)$"),
+        re.compile(r"^(?P<trigger>.+?)\s+(?P<zone>[A-Za-z][A-Za-z/_ -]+?)\s+time$", re.IGNORECASE),
+        re.compile(r"^(?P<trigger>.+?)\s+(?P<zone>UTC|GMT)$", re.IGNORECASE),
+    )
+    for pattern in patterns:
+        match = pattern.match(cleaned)
+        if not match:
+            continue
+        trigger_part = str(match.group("trigger") or "").strip()
+        zone_part = str(match.group("zone") or "").strip()
+        if not trigger_part:
+            continue
+        normalized = _normalize_timezone_name(zone_part)
+        if normalized is None:
+            continue
+        return trigger_part, normalized
+    return cleaned, None
+
+
+def _format_schedule_timestamp(next_run: datetime | None, timezone_name: str) -> str:
+    if next_run is None:
+        return "unknown"
+    utc_value = next_run.astimezone(timezone.utc)
+    if timezone_name == "UTC":
+        return utc_value.strftime("%Y-%m-%d %H:%M UTC")
+    local_value = utc_value.astimezone(_zoneinfo_for_timezone(timezone_name))
+    return (
+        f"{local_value.strftime('%Y-%m-%d %H:%M')} {timezone_name} "
+        f"({utc_value.strftime('%Y-%m-%d %H:%M UTC')})"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -360,24 +533,36 @@ def parse_trigger(trigger: str) -> str:
     return cleaned
 
 
-def compute_next_run(cron_expr: str, after: datetime) -> datetime:
+def compute_next_run(
+    cron_expr: str,
+    after: datetime,
+    *,
+    schedule_timezone: str = "UTC",
+) -> datetime:
     """Compute the next run time after *after* using *cron_expr*.
 
     Uses ``croniter`` if available; otherwise provides a simple interval-only
     fallback for ``*/N`` minute/hour patterns.
     """
+    zone = _zoneinfo_for_timezone(schedule_timezone)
+    base = after.astimezone(timezone.utc) if after.tzinfo else after.replace(tzinfo=timezone.utc)
+    local_after = base.astimezone(zone)
     if HAS_CRONITER:
-        utc_after = after.astimezone(timezone.utc) if after.tzinfo else after.replace(tzinfo=timezone.utc)
-        cron = _croniter(cron_expr, utc_after)
+        cron = _croniter(cron_expr, local_after)
         next_dt: datetime = cron.get_next(datetime)
         if next_dt.tzinfo is None:
-            next_dt = next_dt.replace(tzinfo=timezone.utc)
-        return next_dt
+            next_dt = next_dt.replace(tzinfo=zone)
+        return next_dt.astimezone(timezone.utc)
 
-    return _fallback_next_run(cron_expr, after)
+    return _fallback_next_run(cron_expr, local_after, schedule_timezone=schedule_timezone)
 
 
-def _fallback_next_run(cron_expr: str, after: datetime) -> datetime:
+def _fallback_next_run(
+    cron_expr: str,
+    after: datetime,
+    *,
+    schedule_timezone: str = "UTC",
+) -> datetime:
     """Best-effort next-run for common cron patterns without croniter."""
     parts = cron_expr.strip().split()
     if len(parts) != 5:
@@ -389,7 +574,7 @@ def _fallback_next_run(cron_expr: str, after: datetime) -> datetime:
     minute_f, hour_f, dom_f, _mon_f, _dow_f = parts
 
     if after.tzinfo is None:
-        after = after.replace(tzinfo=timezone.utc)
+        after = after.replace(tzinfo=_zoneinfo_for_timezone(schedule_timezone))
 
     # */N minute intervals
     m = re.match(r"^\*/(\d+)$", minute_f)
@@ -398,7 +583,7 @@ def _fallback_next_run(cron_expr: str, after: datetime) -> datetime:
         delta = timedelta(minutes=interval)
         candidate = after + delta
         candidate = candidate.replace(second=0, microsecond=0)
-        return candidate
+        return candidate.astimezone(timezone.utc)
 
     # 0 */N hour intervals
     m_h = re.match(r"^\*/(\d+)$", hour_f)
@@ -407,7 +592,7 @@ def _fallback_next_run(cron_expr: str, after: datetime) -> datetime:
         delta = timedelta(hours=interval)
         candidate = after + delta
         candidate = candidate.replace(minute=0, second=0, microsecond=0)
-        return candidate
+        return candidate.astimezone(timezone.utc)
 
     # Fixed time daily: M H * * *
     if minute_f.isdigit() and hour_f.isdigit() and dom_f == "*":
@@ -418,7 +603,7 @@ def _fallback_next_run(cron_expr: str, after: datetime) -> datetime:
         )
         if candidate <= after:
             candidate += timedelta(days=1)
-        return candidate
+        return candidate.astimezone(timezone.utc)
 
     raise ValueError(
         f"Cannot parse cron expression '{cron_expr}' without croniter. "
@@ -743,7 +928,11 @@ class TaskScheduler:
             if entry.next_run is None:
                 try:
                     cron_expr = parse_trigger(entry.trigger)
-                    entry.next_run = compute_next_run(cron_expr, now)
+                    entry.next_run = compute_next_run(
+                        cron_expr,
+                        now,
+                        schedule_timezone=entry.timezone,
+                    )
                     self._store.update(entry)
                 except Exception:
                     logger.warning("Cannot compute next_run for %s", entry.name)
@@ -798,7 +987,11 @@ class TaskScheduler:
             entry.last_run = now
             try:
                 cron_expr = parse_trigger(entry.trigger)
-                entry.next_run = compute_next_run(cron_expr, now)
+                entry.next_run = compute_next_run(
+                    cron_expr,
+                    now,
+                    schedule_timezone=entry.timezone,
+                )
             except Exception:
                 entry.next_run = None
             self._store.update(entry)
@@ -826,7 +1019,11 @@ class TaskScheduler:
                 else:
                     try:
                         cron_expr = parse_trigger(entry.trigger)
-                        entry.next_run = compute_next_run(cron_expr, now)
+                        entry.next_run = compute_next_run(
+                            cron_expr,
+                            now,
+                            schedule_timezone=entry.timezone,
+                        )
                         self._store.update(entry)
                     except Exception:
                         pass
@@ -845,7 +1042,7 @@ _NL_DO_FREQ_RE = re.compile(
     re.IGNORECASE,
 )
 _NL_RUN_AT_RE = re.compile(
-    r"^(?:run|do|check|send)\s+(.+?)\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)$",
+    r"^(?:run|do|check|send)\s+(.+?)\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)(?:\s+(.+?))?$",
     re.IGNORECASE,
 )
 _NL_EVERY_N_RE = re.compile(
@@ -882,6 +1079,9 @@ def parse_nl_schedule(text: str) -> tuple[str, str] | None:
     if m:
         action = m.group(1).strip()
         trigger = f"daily at {m.group(2).strip()}"
+        zone = str(m.group(3) or "").strip()
+        if zone:
+            trigger += f" {zone}"
         return action, trigger
 
     m = _NL_DO_FREQ_RE.match(text)
@@ -1137,6 +1337,10 @@ def handle_schedule_command(
     default_trigger_context: TriggerContext | None = None,
     default_delivery_target: DeliveryTarget | None = None,
     default_workflow_id: str | None = None,
+    graph_store: Any | None = None,
+    project_workflow_ids: Sequence[str] | None = None,
+    expected_workflow_revision: str | None = None,
+    default_timezone: str | None = None,
 ) -> str:
     """Dispatch ``/schedule`` subcommands.
 
@@ -1156,6 +1360,7 @@ def handle_schedule_command(
             store,
             trigger_context=default_trigger_context,
             delivery_target=default_delivery_target,
+            default_timezone=default_timezone,
         )
     if sub == "workflow":
         return _cmd_workflow(
@@ -1164,6 +1369,10 @@ def handle_schedule_command(
             trigger_context=default_trigger_context,
             delivery_target=default_delivery_target,
             default_workflow_id=default_workflow_id,
+            graph_store=graph_store,
+            project_workflow_ids=project_workflow_ids,
+            expected_workflow_revision=expected_workflow_revision,
+            default_timezone=default_timezone,
         )
     if sub == "list":
         return _cmd_list(store)
@@ -1184,12 +1393,13 @@ def handle_schedule_command(
             store,
             trigger_context=default_trigger_context,
             delivery_target=default_delivery_target,
+            default_timezone=default_timezone,
         )
 
     return (
         "Usage: /schedule <add|workflow|list|remove|pause|resume|history> [args]\n"
-        "  add \"<action>\" <trigger>\n"
-        "  workflow <workflow_id|current> <trigger> [--input key=value ...] [--profile <name>]\n"
+        "  add \"<action>\" <trigger> [--timezone <IANA>]\n"
+        "  workflow <workflow_id|current> <trigger> [--input key=value ...] [--profile <name>] [--timezone <IANA>]\n"
         "  list\n"
         "  remove <id|name>\n"
         "  pause <id|name>\n"
@@ -1204,13 +1414,27 @@ def _cmd_add(
     *,
     trigger_context: TriggerContext | None = None,
     delivery_target: DeliveryTarget | None = None,
+    default_timezone: str | None = None,
 ) -> str:
     if not text:
         return 'Usage: /schedule add "<action>" <trigger>'
 
-    action, trigger = parse_schedule_add(text)
+    stripped_text, option_timezone, option_error = _extract_schedule_timezone_option(text)
+    if option_error:
+        return option_error
+
+    action, trigger = parse_schedule_add(stripped_text)
     if not action or not trigger:
         return 'Usage: /schedule add "<action>" <trigger>'
+
+    trigger, inline_timezone = _extract_trigger_timezone(trigger)
+    try:
+        schedule_timezone, timezone_source = _resolve_schedule_timezone(
+            explicit_timezone=option_timezone or inline_timezone,
+            preferred_timezone=default_timezone,
+        )
+    except ValueError as exc:
+        return str(exc)
 
     try:
         cron_expr = parse_trigger(trigger)
@@ -1219,7 +1443,7 @@ def _cmd_add(
 
     now = datetime.now(timezone.utc)
     try:
-        next_run = compute_next_run(cron_expr, now)
+        next_run = compute_next_run(cron_expr, now, schedule_timezone=schedule_timezone)
     except Exception:
         next_run = None
 
@@ -1228,17 +1452,23 @@ def _cmd_add(
         trigger=trigger,
         action=action,
         next_run=next_run,
+        timezone=schedule_timezone,
         trigger_context=trigger_context or TriggerContext(),
         delivery_target=delivery_target or DeliveryTarget(),
     )
     store.add(entry)
-    next_str = next_run.strftime("%Y-%m-%d %H:%M UTC") if next_run else "unknown"
-    return (
+    next_str = _format_schedule_timestamp(next_run, schedule_timezone)
+    summary = (
         f"Scheduled: **{action}**\n"
         f"Trigger: `{trigger}` → `{cron_expr}`\n"
         f"Next run: {next_str}\n"
         f"ID: `{entry.id}`"
     )
+    if schedule_timezone != "UTC":
+        summary += f"\nTimezone: `{schedule_timezone}`"
+    elif timezone_source != "utc_fallback":
+        summary += f"\nTimezone: `{schedule_timezone}`"
+    return summary
 
 
 def _cmd_workflow(
@@ -1248,12 +1478,16 @@ def _cmd_workflow(
     trigger_context: TriggerContext | None = None,
     delivery_target: DeliveryTarget | None = None,
     default_workflow_id: str | None = None,
+    graph_store: Any | None = None,
+    project_workflow_ids: Sequence[str] | None = None,
+    expected_workflow_revision: str | None = None,
+    default_timezone: str | None = None,
 ) -> str:
     raw = str(text or "").strip()
     if not raw:
         return (
             "Usage: /schedule workflow <workflow_id|current> <trigger> "
-            "[--input key=value ...] [--profile <name>]"
+            "[--input key=value ...] [--profile <name>] [--timezone <IANA>]"
         )
 
     try:
@@ -1263,26 +1497,76 @@ def _cmd_workflow(
     if len(tokens) < 2:
         return (
             "Usage: /schedule workflow <workflow_id|current> <trigger> "
-            "[--input key=value ...] [--profile <name>]"
+            "[--input key=value ...] [--profile <name>] [--timezone <IANA>]"
         )
+
+    option_start = len(tokens)
+    for idx, token in enumerate(tokens[1:], start=1):
+        if (
+            token in {"--input", "--profile", "--timezone"}
+            or token.startswith("--input=")
+            or token.startswith("--profile=")
+            or token.startswith("--timezone=")
+        ):
+            option_start = idx
+            break
 
     workflow_ref = tokens[0].strip()
     trigger_tokens: list[str] = []
     workflow_inputs: dict[str, Any] = {}
     workflow_run_policy: dict[str, Any] | None = None
+    explicit_timezone: str | None = None
     index = 1
+    resolution = None
+
+    if graph_store is not None and option_start > 1:
+        pre_option_tokens = tokens[:option_start]
+        for split_index in range(len(pre_option_tokens) - 1, 0, -1):
+            workflow_candidate = " ".join(pre_option_tokens[:split_index]).strip()
+            trigger_candidate = " ".join(pre_option_tokens[split_index:]).strip()
+            trigger_candidate, _inline_timezone = _extract_trigger_timezone(trigger_candidate)
+            if not workflow_candidate or not trigger_candidate:
+                continue
+            try:
+                parse_trigger(trigger_candidate)
+            except Exception:
+                continue
+            candidate_resolution = resolve_workflow_reference(
+                graph_store,
+                workflow_candidate,
+                context=workflow_resolution_context_from_session(
+                    current_workflow_id=default_workflow_id,
+                    project_workflow_ids=project_workflow_ids,
+                    expected_revision=expected_workflow_revision,
+                    allow_scratch=False,
+                ),
+            )
+            if not candidate_resolution.resolved or not candidate_resolution.graph_id:
+                continue
+            workflow_ref = workflow_candidate
+            resolution = candidate_resolution
+            trigger_tokens = pre_option_tokens[split_index:]
+            index = option_start
+            break
+
     while index < len(tokens):
         token = tokens[index]
-        if token in {"--input", "--profile"} or token.startswith("--input=") or token.startswith("--profile="):
+        if (
+            token in {"--input", "--profile", "--timezone"}
+            or token.startswith("--input=")
+            or token.startswith("--profile=")
+            or token.startswith("--timezone=")
+        ):
             break
-        trigger_tokens.append(token)
+        if resolution is None:
+            trigger_tokens.append(token)
         index += 1
 
     trigger = " ".join(trigger_tokens).strip()
     if not trigger:
         return (
             "Usage: /schedule workflow <workflow_id|current> <trigger> "
-            "[--input key=value ...] [--profile <name>]"
+            "[--input key=value ...] [--profile <name>] [--timezone <IANA>]"
         )
 
     while index < len(tokens):
@@ -1296,6 +1580,17 @@ def _cmd_workflow(
             error = _apply_workflow_input_assignment(workflow_inputs, assignment)
             if error:
                 return error
+            continue
+        if token == "--timezone":
+            index += 1
+            if index >= len(tokens):
+                return "Missing value after `--timezone`."
+            explicit_timezone = tokens[index].strip()
+            index += 1
+            continue
+        if token.startswith("--timezone="):
+            explicit_timezone = token.split("=", 1)[1].strip()
+            index += 1
             continue
         if token.startswith("--input="):
             index += 1
@@ -1321,8 +1616,60 @@ def _cmd_workflow(
             return "Run profile cannot be empty."
         workflow_run_policy = {"profile": profile}
 
-    workflow_id = workflow_ref
-    if workflow_ref.lower() in {"current", "this"}:
+    trigger, inline_timezone = _extract_trigger_timezone(trigger)
+    try:
+        schedule_timezone, timezone_source = _resolve_schedule_timezone(
+            explicit_timezone=explicit_timezone or inline_timezone,
+            preferred_timezone=default_timezone,
+        )
+    except ValueError as exc:
+        return str(exc)
+
+    workflow_id = (
+        resolution.graph_id
+        if resolution is not None and resolution.graph_id
+        else workflow_ref
+    )
+    if graph_store is not None and resolution is None:
+        resolution = resolve_workflow_reference(
+            graph_store,
+            workflow_ref,
+            context=workflow_resolution_context_from_session(
+                current_workflow_id=default_workflow_id,
+                project_workflow_ids=project_workflow_ids,
+                expected_revision=expected_workflow_revision,
+                allow_scratch=False,
+            ),
+        )
+        if not resolution.resolved or not resolution.graph_id:
+            normalized_ref = workflow_ref.lower()
+            project_fallback_ids = [
+                str(item or "").strip()
+                for item in (project_workflow_ids or [])
+                if str(item or "").strip()
+            ]
+            default_workflow_ref = str(default_workflow_id or "").strip()
+            project_fallback_id = (
+                project_fallback_ids[0] if len(project_fallback_ids) == 1 else ""
+            )
+            if (
+                normalized_ref in {"current", "this"}
+                and project_fallback_id
+                and (
+                    not default_workflow_ref
+                    or project_fallback_id == default_workflow_ref
+                )
+            ):
+                workflow_id = project_fallback_id
+                resolution = None
+            else:
+                return (
+                    resolution.resolution_message
+                    or "No current workflow is available. Use `/schedule workflow <workflow_id> <trigger>`."
+                )
+        else:
+            workflow_id = resolution.graph_id
+    elif workflow_ref.lower() in {"current", "this"}:
         workflow_id = str(default_workflow_id or "").strip()
         if not workflow_id:
             return "No current workflow is available. Use `/schedule workflow <workflow_id> <trigger>`."
@@ -1337,7 +1684,7 @@ def _cmd_workflow(
 
     now = datetime.now(timezone.utc)
     try:
-        next_run = compute_next_run(cron_expr, now)
+        next_run = compute_next_run(cron_expr, now, schedule_timezone=schedule_timezone)
     except Exception:
         next_run = None
 
@@ -1346,20 +1693,36 @@ def _cmd_workflow(
         trigger=trigger,
         action=f"run workflow {workflow_id}",
         next_run=next_run,
+        timezone=schedule_timezone,
         trigger_context=trigger_context or TriggerContext(),
         delivery_target=delivery_target or DeliveryTarget(),
         workflow_id=workflow_id,
+        workflow_display_name=(
+            resolution.display_name if resolution is not None else workflow_id
+        ),
+        workflow_revision=resolution.revision if resolution is not None else None,
+        workflow_resolution_source=(
+            resolution.resolution_source if resolution is not None else None
+        ),
         workflow_inputs=workflow_inputs,
         workflow_run_policy=workflow_run_policy,
     )
     store.add(entry)
-    next_str = next_run.strftime("%Y-%m-%d %H:%M UTC") if next_run else "unknown"
+    next_str = _format_schedule_timestamp(next_run, schedule_timezone)
     summary = (
         f"Scheduled workflow: **{workflow_id}**\n"
         f"Trigger: `{trigger}` → `{cron_expr}`\n"
         f"Next run: {next_str}\n"
         f"ID: `{entry.id}`"
     )
+    if resolution is not None and resolution.display_name and resolution.display_name != workflow_id:
+        summary += f"\nResolved workflow name: `{resolution.display_name}`"
+    if resolution is not None and resolution.revision:
+        summary += f"\nWorkflow revision: `{resolution.revision}`"
+    if schedule_timezone != "UTC" or timezone_source != "utc_fallback":
+        summary += f"\nTimezone: `{schedule_timezone}`"
+    if resolution is not None and resolution.resolution_message:
+        summary = f"{resolution.resolution_message}\n{summary}"
     if workflow_inputs:
         summary += f"\nInputs: {', '.join(sorted(workflow_inputs))}"
     if workflow_run_policy and workflow_run_policy.get("profile"):
@@ -1409,12 +1772,12 @@ def _cmd_list(store: ScheduleStore) -> str:
         return "No scheduled tasks."
 
     lines = ["**Scheduled Tasks**\n"]
-    lines.append(f"{'Name':<25} {'Trigger':<20} {'Next Run':<22} {'Status'}")
+    lines.append(f"{'Name':<25} {'Trigger':<20} {'Next Run':<38} {'Status'}")
     lines.append("-" * 80)
     for e in entries:
-        next_str = e.next_run.strftime("%Y-%m-%d %H:%M UTC") if e.next_run else "—"
+        next_str = _format_schedule_timestamp(e.next_run, e.timezone) if e.next_run else "—"
         status = "enabled" if e.enabled else "paused"
-        lines.append(f"{e.name:<25} {e.trigger:<20} {next_str:<22} {status}")
+        lines.append(f"{e.name:<25} {e.trigger:<20} {next_str:<38} {status}")
     return "\n".join(lines)
 
 
@@ -1448,11 +1811,15 @@ def _cmd_resume(id_or_name: str, store: ScheduleStore) -> str:
     now = datetime.now(timezone.utc)
     try:
         cron_expr = parse_trigger(entry.trigger)
-        entry.next_run = compute_next_run(cron_expr, now)
+        entry.next_run = compute_next_run(
+            cron_expr,
+            now,
+            schedule_timezone=entry.timezone,
+        )
     except Exception:
         pass
     store.update(entry)
-    next_str = entry.next_run.strftime("%Y-%m-%d %H:%M UTC") if entry.next_run else "unknown"
+    next_str = _format_schedule_timestamp(entry.next_run, entry.timezone)
     return f"Resumed: **{entry.name}** — next run: {next_str}"
 
 

@@ -66,6 +66,7 @@ class RecentWorkflow(BaseModel):
 class UserProfile(BaseModel):
     user_id: str = "local"
     display_name: str = ""
+    preferred_timezone: str = ""
     preferred_models: dict[str, str] = Field(default_factory=dict)
     # e.g. {"drafting": "claude-sonnet-4-6", "review": "gpt-4o", "coding": "claude-sonnet-4-6"}
     preferred_output_format: str = ""  # "markdown", "json", "latex", or empty

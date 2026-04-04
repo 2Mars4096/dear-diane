@@ -151,6 +151,15 @@ class TestComputeNextRun:
         result = compute_next_run("*/5 * * * *", base)
         assert result.tzinfo is not None
 
+    def test_daily_fixed_respects_schedule_timezone(self):
+        base = datetime(2026, 3, 10, 11, 0, tzinfo=timezone.utc)
+        result = compute_next_run(
+            "0 20 * * *",
+            base,
+            schedule_timezone="Asia/Hong_Kong",
+        )
+        assert result == datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)
+
 
 # =========================================================================
 # Models
@@ -878,6 +887,16 @@ class TestScheduleCommand:
         assert "Scheduled" in result
         assert "morning check" in result
 
+    def test_add_with_inline_timezone_phrase(self, store):
+        result = handle_schedule_command(
+            '/schedule add "evening check" daily at 8pm Hong Kong time',
+            store,
+        )
+
+        assert "Timezone: `Asia/Hong_Kong`" in result
+        entry = store.list_all()[0]
+        assert entry.timezone == "Asia/Hong_Kong"
+
     def test_add_missing_args(self, store):
         result = handle_schedule_command("/schedule add", store)
         assert "Usage" in result
@@ -917,6 +936,34 @@ class TestScheduleCommand:
             "max_items": 25,
         }
         assert entry.workflow_run_policy == {"profile": "long_running"}
+
+    def test_workflow_command_accepts_timezone_option(self, store):
+        result = handle_schedule_command(
+            "/schedule workflow equity-report daily at 9am --timezone Asia/Hong_Kong",
+            store,
+        )
+        assert "Timezone: `Asia/Hong_Kong`" in result
+        entry = store.list_all()[0]
+        assert entry.timezone == "Asia/Hong_Kong"
+
+    def test_workflow_command_uses_saved_timezone_preference(self, store):
+        result = handle_schedule_command(
+            "/schedule workflow equity-report daily at 9am",
+            store,
+            default_timezone="America/New_York",
+        )
+
+        assert "Timezone: `America/New_York`" in result
+        entry = store.list_all()[0]
+        assert entry.timezone == "America/New_York"
+
+    def test_schedule_command_rejects_unknown_timezone(self, store):
+        result = handle_schedule_command(
+            '/schedule add "morning check" daily at 9am --timezone Mars/Olympus',
+            store,
+        )
+
+        assert "Could not resolve timezone" in result
 
     def test_workflow_command_requires_current_context_when_requested(self, store):
         result = handle_schedule_command(

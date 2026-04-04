@@ -522,12 +522,12 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         subcommands={
             "add": SubcommandDescriptor(
                 name="add",
-                args_schema='"<action>" <cron_or_interval>',
+                args_schema='"<action>" <cron_or_interval> [--timezone <IANA>]',
                 help_text="Add a new scheduled task",
             ),
             "workflow": SubcommandDescriptor(
                 name="workflow",
-                args_schema="<workflow_id|current> <cron_or_interval> [--input key=value ...] [--profile <name>]",
+                args_schema="<workflow_id|current> <cron_or_interval> [--input key=value ...] [--profile <name>] [--timezone <IANA>]",
                 help_text="Schedule a specific workflow run",
             ),
             "list": SubcommandDescriptor(name="list", help_text="List all schedules"),
@@ -641,6 +641,31 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
             "clear": SubcommandDescriptor(
                 name="clear",
                 help_text="Clear all saved common domains",
+            ),
+        },
+    ))
+    registry.register(CommandDescriptor(
+        name="/timezone",
+        aliases=["/tz"],
+        kind="chat",
+        surfaces=["all"],
+        args_schema="<show|set|clear> [IANA timezone]",
+        help_text="Inspect and edit the saved default timezone for scheduling",
+        group="session",
+        handler="dan.server.concierge.timezone_preferences.handle_timezone_command",
+        subcommands={
+            "show": SubcommandDescriptor(
+                name="show",
+                help_text="Show the saved timezone preference and schedule fallback chain",
+            ),
+            "set": SubcommandDescriptor(
+                name="set",
+                args_schema="<IANA timezone>",
+                help_text="Save the default timezone used for new schedules",
+            ),
+            "clear": SubcommandDescriptor(
+                name="clear",
+                help_text="Clear the saved timezone preference",
             ),
         },
     ))
