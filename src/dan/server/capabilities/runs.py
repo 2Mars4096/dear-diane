@@ -7,6 +7,10 @@ from typing import Any
 
 from dan.server.capability_registry import CapabilityContext, CapabilityResult
 from dan.server.capabilities._helpers import _truncate
+from dan.server.workflow_identity import (
+    resolve_workflow_reference,
+    workflow_resolution_context_from_session,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +92,23 @@ async def handle_start_run(
         return CapabilityResult(success=False, message="Run manager not available.")
     if ctx.graph_store is None:
         return CapabilityResult(success=False, message="Graph store not available.")
-    graph_id = str(args.get("workflow_id", "")).strip() or ctx.workflow_id
-    if not graph_id:
+    requested_graph_id = str(args.get("workflow_id", "")).strip() or ctx.workflow_id
+    if not requested_graph_id:
         return CapabilityResult(success=False, message="workflow_id is required or set current workflow context.")
+    resolution = resolve_workflow_reference(
+        ctx.graph_store,
+        requested_graph_id,
+        context=workflow_resolution_context_from_session(
+            current_workflow_id=ctx.workflow_id,
+            allow_scratch=True,
+        ),
+    )
+    if not resolution.resolved or not resolution.graph_id:
+        return CapabilityResult(
+            success=False,
+            message=resolution.resolution_message or f"Workflow `{requested_graph_id}` not found.",
+        )
+    graph_id = resolution.graph_id
     graph_dict = ctx.graph_store.get_graph(graph_id)
     if graph_dict is None:
         return CapabilityResult(success=False, message=f"Workflow '{graph_id}' not found.")

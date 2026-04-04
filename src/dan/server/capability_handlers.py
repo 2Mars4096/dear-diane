@@ -21,6 +21,10 @@ from dan.server.capability_registry import (
     ChatCapabilityRegistry,
     build_tool_schema,
 )
+from dan.server.workflow_identity import (
+    resolve_workflow_reference,
+    workflow_resolution_context_from_session,
+)
 
 # ── Re-export shared helpers for backward compatibility ────────────
 from dan.server.capabilities._helpers import (  # noqa: F401
@@ -618,40 +622,51 @@ def _resolve_graph_delete_target(
     requested = str(requested_graph_id or "").strip()
     if not requested:
         return None, None
-
-    try:
-        graphs = graph_store.list_graphs()
-    except Exception:
-        return requested, None
-
-    requested_lower = requested.lower()
-    exact_id = next(
-        (
+    if hasattr(graph_store, "list_graphs") and not hasattr(graph_store, "get_graph"):
+        try:
+            graphs = graph_store.list_graphs()
+        except Exception:
+            return requested, None
+        requested_lower = requested.lower()
+        exact_id = next(
+            (
+                str(graph.get("graph_id") or "").strip()
+                for graph in graphs
+                if str(graph.get("graph_id") or "").strip() == requested
+            ),
+            None,
+        )
+        if exact_id:
+            return exact_id, None
+        name_matches = [
             str(graph.get("graph_id") or "").strip()
             for graph in graphs
-            if str(graph.get("graph_id") or "").strip() == requested
+            if str(graph.get("name") or "").strip().lower() == requested_lower
+            and str(graph.get("graph_id") or "").strip()
+        ]
+        if len(name_matches) == 1:
+            resolved = name_matches[0]
+            return resolved, f"Matched workflow name `{requested}` to graph ID `{resolved}`."
+        if len(name_matches) > 1:
+            sample = ", ".join(f"`{match}`" for match in name_matches[:5])
+            return None, (
+                f"Workflow name `{requested}` matches multiple graph IDs: {sample}. "
+                "Use an exact `graph_id`."
+            )
+        return requested, None
+    if not hasattr(graph_store, "list_graphs") or not hasattr(graph_store, "get_graph"):
+        return requested, None
+    resolution = resolve_workflow_reference(
+        graph_store,
+        requested,
+        context=workflow_resolution_context_from_session(
+            current_workflow_id=None,
+            allow_scratch=False,
         ),
-        None,
     )
-    if exact_id:
-        return exact_id, None
-
-    name_matches = [
-        str(graph.get("graph_id") or "").strip()
-        for graph in graphs
-        if str(graph.get("name") or "").strip().lower() == requested_lower
-        and str(graph.get("graph_id") or "").strip()
-    ]
-    if len(name_matches) == 1:
-        resolved = name_matches[0]
-        return resolved, f"Matched workflow name `{requested}` to graph ID `{resolved}`."
-    if len(name_matches) > 1:
-        sample = ", ".join(f"`{match}`" for match in name_matches[:5])
-        return None, (
-            f"Workflow name `{requested}` matches multiple graph IDs: {sample}. "
-            "Use an exact `graph_id`."
-        )
-    return requested, None
+    if not resolution.resolved:
+        return None, resolution.resolution_message
+    return resolution.graph_id, resolution.resolution_message
 
 
 async def handle_delete_graph(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
