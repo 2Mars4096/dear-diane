@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Any, Callable
 
 
@@ -12,6 +13,10 @@ class WorkflowGenerationAcceptanceResult:
 
     accepted_graph: dict[str, Any] | None = None
     errors: tuple[Any, ...] = ()
+
+
+def first_generated_run_policy_enabled() -> bool:
+    return str(os.environ.get("DAN_FIRST_RUN_POLICY", "disabled") or "disabled").strip().lower() == "enabled"
 
 
 def collect_validation_errors(validation: Any) -> list[Any]:
@@ -64,6 +69,7 @@ def accept_candidate_graph(
     failure_fix_needed: bool,
     pattern: str,
     defer_success_recording: bool = False,
+    first_generated_run: bool = True,
 ) -> WorkflowGenerationAcceptanceResult:
     """Validate, quality-check, and record one candidate workflow graph."""
 
@@ -88,6 +94,42 @@ def accept_candidate_graph(
             return WorkflowGenerationAcceptanceResult(
                 accepted_graph=validation.graph.model_dump(mode="json"),
             )
+        if first_generated_run and first_generated_run_policy_enabled():
+            from dan.chat_events import ChatNoticeEvent
+
+            accepted_graph = validation.graph.model_dump(mode="json")
+            fit_check(graph_dict)
+            warning_message = str(
+                getattr(quality_error, "message", "") or
+                "First-run policy softened a heuristic workflow-quality gate."
+            ).strip()
+            emit_event(
+                ChatNoticeEvent(
+                    content=(
+                        "First-run policy softened a heuristic gate for this generated workflow: "
+                        f"{warning_message}"
+                    ),
+                    level="warning",
+                )
+            )
+            record_gen_outcome(
+                "first_run_policy_softened",
+                success=True,
+                error_type=(
+                    getattr(getattr(quality_error, "error_type", None), "value", None)
+                    or "quality_warning"
+                ),
+                pattern=pattern,
+            )
+            if not defer_success_recording:
+                record_gen_outcome(
+                    success_method,
+                    success=True,
+                    pattern=pattern,
+                )
+            return WorkflowGenerationAcceptanceResult(
+                accepted_graph=accepted_graph,
+            )
         errors = [quality_error]
     else:
         errors = collect_validation_errors(validation)
@@ -111,4 +153,5 @@ __all__ = [
     "collect_validation_errors",
     "WorkflowGenerationAcceptanceResult",
     "accept_candidate_graph",
+    "first_generated_run_policy_enabled",
 ]

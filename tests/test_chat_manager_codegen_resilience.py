@@ -231,8 +231,12 @@ def _call_workflow_acceptance_helper(
     validation_result: Any,
     quality_report: Any,
     quality_threshold: int = 50,
+    emitted_events: list[Any] | None = None,
+    recorded_outcomes: list[dict[str, Any]] | None = None,
+    first_generated_run: bool = True,
 ) -> Any:
-    emitted_events: list[Any] = []
+    emitted = emitted_events if emitted_events is not None else []
+    outcomes = recorded_outcomes if recorded_outcomes is not None else []
 
     def _quality_error_for_graph(_graph: dict[str, Any]) -> Any | None:
         if quality_report.overall_score >= quality_threshold:
@@ -248,14 +252,17 @@ def _call_workflow_acceptance_helper(
         build_validation_event=lambda validation: SimpleNamespace(
             success=getattr(validation, "success", False),
         ),
-        emit_event=emitted_events.append,
+        emit_event=emitted.append,
         quality_error_for_graph=_quality_error_for_graph,
         fit_check=lambda _graph: None,
-        record_gen_outcome=lambda *args, **kwargs: None,
+        record_gen_outcome=lambda method, **kwargs: outcomes.append(
+            {"method": method, **kwargs}
+        ),
         success_method="codegen",
         failure_method="codegen",
         failure_fix_needed=True,
         pattern="wf-test",
+        first_generated_run=first_generated_run,
     )
 
 
@@ -311,6 +318,73 @@ def test_workflow_generation_acceptance_helper_rejects_low_quality_graph() -> No
     assert result.accepted_graph is None
     assert result.errors
     assert result.errors[0].message == "Quality score 10 below threshold 50"
+
+
+def test_workflow_generation_acceptance_helper_softens_low_quality_on_first_generated_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DAN_FIRST_RUN_POLICY", "enabled")
+    helper = _load_workflow_acceptance_helper()
+    graph_dict = {"nodes": [{"id": "n1"}], "edges": []}
+    validation_result = SimpleNamespace(
+        success=True,
+        run_ready=True,
+        errors=[],
+        graph=SimpleNamespace(model_dump=lambda mode="json": graph_dict),
+        contract_report=None,
+    )
+    quality_report = SimpleNamespace(
+        overall_score=10,
+        concerns=["underspecified graph"],
+    )
+    emitted_events: list[Any] = []
+    recorded_outcomes: list[dict[str, Any]] = []
+
+    result = _call_workflow_acceptance_helper(
+        helper,
+        graph_dict=graph_dict,
+        validation_result=validation_result,
+        quality_report=quality_report,
+        quality_threshold=50,
+        emitted_events=emitted_events,
+        recorded_outcomes=recorded_outcomes,
+    )
+
+    assert result.accepted_graph == graph_dict
+    assert result.errors == ()
+    assert any("softened a heuristic gate" in str(getattr(event, "content", "")).lower() for event in emitted_events)
+    assert any(item["method"] == "first_run_policy_softened" for item in recorded_outcomes)
+
+
+def test_workflow_generation_acceptance_helper_reverts_after_first_generated_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DAN_FIRST_RUN_POLICY", "enabled")
+    helper = _load_workflow_acceptance_helper()
+    graph_dict = {"nodes": [{"id": "n1"}], "edges": []}
+    validation_result = SimpleNamespace(
+        success=True,
+        run_ready=True,
+        errors=[],
+        graph=SimpleNamespace(model_dump=lambda mode="json": graph_dict),
+        contract_report=None,
+    )
+    quality_report = SimpleNamespace(
+        overall_score=10,
+        concerns=["underspecified graph"],
+    )
+
+    result = _call_workflow_acceptance_helper(
+        helper,
+        graph_dict=graph_dict,
+        validation_result=validation_result,
+        quality_report=quality_report,
+        quality_threshold=50,
+        first_generated_run=False,
+    )
+
+    assert result.accepted_graph is None
+    assert result.errors
 
 
 def test_workflow_generation_acceptance_helper_reports_validation_failure() -> None:
