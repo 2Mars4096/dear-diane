@@ -864,20 +864,29 @@ async def init_background(state: AppState, app: FastAPI) -> None:
             if state.run_manager is None or state.graph_store is None:
                 raise RuntimeError("Workflow scheduling is unavailable.")
 
-            graph = state.graph_store.load_as_model(scheduled_workflow_id)
-            if graph is None:
+            graph_dict = state.graph_store.get_graph(scheduled_workflow_id)
+            if graph_dict is None:
                 raise RuntimeError(
                     f"Workflow '{scheduled_workflow_id}' not found."
                 )
-            if not getattr(graph, "nodes", None):
-                raise RuntimeError(
-                    f"Workflow '{scheduled_workflow_id}' has no nodes to run."
+            from dan.server.workflow_guards import (
+                WorkflowContractError,
+                ensure_workflow_run_ready,
+            )
+
+            try:
+                guarded = ensure_workflow_run_ready(
+                    graph_dict,
+                    workflow_id=scheduled_workflow_id,
+                    action="schedule_execution",
                 )
+            except WorkflowContractError as exc:
+                raise RuntimeError(str(exc)) from exc
 
             inputs = getattr(entry, "workflow_inputs", None) or None
             run_policy = getattr(entry, "workflow_run_policy", None) or None
             record = await state.run_manager.start_run(
-                graph,
+                guarded.graph,
                 graph_id=scheduled_workflow_id,
                 inputs=inputs,
                 run_policy=run_policy,

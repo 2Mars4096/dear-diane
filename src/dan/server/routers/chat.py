@@ -669,8 +669,25 @@ async def _handle_run_command(
             "message_id": uuid.uuid4().hex[:12],
         }
 
+    from dan.server.workflow_guards import WorkflowContractError, ensure_workflow_run_ready
+
+    try:
+        guarded = ensure_workflow_run_ready(
+            result.graph,
+            workflow_id=req.workflow_id,
+        )
+    except WorkflowContractError as exc:
+        return {
+            "type": "run_error",
+            "error": {
+                "message": str(exc),
+                "run_readiness_failure_mode": exc.failure_mode,
+            },
+            "message_id": uuid.uuid4().hex[:12],
+        }
+
     record = await rm.start_run(
-        result.graph, graph_id=req.workflow_id, inputs=run_cmd.get("inputs"),
+        guarded.graph, graph_id=req.workflow_id, inputs=run_cmd.get("inputs"),
     )
 
     _reap_stale_chat_streams()

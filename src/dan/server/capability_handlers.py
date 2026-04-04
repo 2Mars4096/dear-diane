@@ -857,11 +857,14 @@ def _apply_mutation_plan_via_graph_store(
     workflow_id: str,
     mutation_plan: dict[str, Any],
 ) -> CapabilityResult:
-    from dan.models.graph import Graph
     from dan.server.chat_manager import compute_graph_revision
     from dan.server.graph_mutator import GraphMutator, MutationPlan
     from dan.server.mutation_metrics import mutation_metrics
-    from dan.validation.graph import validate_graph
+    from dan.server.workflow_guards import (
+        WorkflowContractError,
+        collect_workflow_contract_messages,
+        ensure_workflow_apply_ready,
+    )
 
     if graph_store is None:
         return CapabilityResult(
@@ -908,45 +911,33 @@ def _apply_mutation_plan_via_graph_store(
             error_type="stale_plan" if result.stale_plan else "apply_failed",
         )
 
-    strict_validation = (
-        os.environ.get("DAN_STRICT_MUTATION_VALIDATION", "true").lower() == "true"
-    )
-    warnings: list[str] = []
-    if strict_validation:
-        try:
-            graph = Graph.model_validate(result.new_graph)
-        except Exception as exc:
-            mutation_metrics.record_apply(False)
-            mutation_metrics.record_validation(False)
-            return CapabilityResult(
-                success=False,
-                message=f"Graph parse error after apply: {exc}",
-                error_type="validation_failed",
-            )
+    try:
+        guarded = ensure_workflow_apply_ready(result.new_graph, workflow_id=workflow_id)
+    except WorkflowContractError as exc:
+        mutation_metrics.record_apply(False)
+        mutation_metrics.record_validation(False)
+        errors = collect_workflow_contract_messages(
+            exc.report,
+            default_message=str(exc),
+        )
+        return CapabilityResult(
+            success=False,
+            message=str(exc),
+            data={
+                "errors": [{"message": msg} for msg in errors],
+                "warnings": list(getattr(exc.report, "warnings", []) or []),
+                "run_readiness_failure_mode": exc.failure_mode,
+            },
+            output_preview=str(exc),
+            error_type="validation_failed",
+        )
 
-        raw_errors = validate_graph(graph)
-        fatal: list[str] = []
-        for msg in raw_errors:
-            lower = msg.lower()
-            if any(token in lower for token in ("warning", "deprecated", "untyped")):
-                warnings.append(msg)
-            else:
-                fatal.append(msg)
-        mutation_metrics.record_validation(len(fatal) == 0)
-        if fatal:
-            mutation_metrics.record_apply(False)
-            return CapabilityResult(
-                success=False,
-                message=fatal[0],
-                data={"errors": [{"message": msg} for msg in fatal]},
-                output_preview=fatal[0],
-                error_type="validation_failed",
-            )
-
+    mutation_metrics.record_validation(True)
     mutation_metrics.record_apply(True)
-    saved_graph = graph_store.save_graph(workflow_id, result.new_graph)
+    saved_graph = graph_store.save_graph(workflow_id, guarded.graph_dict)
     new_revision = compute_graph_revision(saved_graph)
     text = "Applied the workflow preview successfully."
+    warnings = list(getattr(guarded.report, "warnings", []) or [])
     if warnings:
         text += f" Validation warnings: {warnings[0]}"
     return CapabilityResult(

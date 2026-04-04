@@ -404,6 +404,78 @@ class TestApplyLastMutationCapabilityRegistration:
         assert any(node["id"] == "n2" for node in saved_graphs[0]["nodes"])
 
     @pytest.mark.asyncio
+    async def test_apply_last_mutation_rejects_non_run_ready_result(self):
+        mutation_plan = {
+            "description": "Add an unsupported web-search LLM node",
+            "operations": [
+                {
+                    "op": "add_node",
+                    "id": "web-summary",
+                    "node_type": "llm_operator",
+                    "name": "Web Summary",
+                    "config": {
+                        "model": "test-model",
+                        "prompt_template": "Search the web for {input} and summarize the results.",
+                        "input_ports": [{"name": "input", "schema": {}}],
+                        "output_ports": [{"name": "text", "schema": {}}],
+                    },
+                }
+            ],
+        }
+        thread = SimpleNamespace(
+            messages=[
+                SimpleNamespace(
+                    id="mut-invalid",
+                    mutation_plan=mutation_plan,
+                    dry_run_result={"success": True},
+                    mutation_status="proposed",
+                )
+            ],
+            updated_at=None,
+        )
+        chat_store = SimpleNamespace(
+            get_thread=lambda workflow_id, thread_id: thread,
+            save_thread=lambda thread_obj: None,
+            get_thread_meta=lambda workflow_id, thread_id: {
+                "latest_mutation_preview": {
+                    "message_id": "mut-invalid",
+                    "mutation_plan": mutation_plan,
+                    "dry_run_result": {"success": True},
+                }
+            },
+            set_thread_meta=lambda workflow_id, thread_id, meta: None,
+        )
+        graph_store = SimpleNamespace(
+            get_graph=lambda workflow_id: {
+                "version": "dan_graph_v1",
+                "metadata": {"name": "test"},
+                "nodes": [],
+                "edges": [],
+                "sub_graphs": {},
+                "entry_points": [],
+                "exit_points": [],
+                "shared_context": [],
+                "artifact_refs": [],
+                "hyperedges": [],
+            },
+            save_graph=lambda workflow_id, graph: graph,
+        )
+
+        result = await handle_apply_last_mutation(
+            {},
+            CapabilityContext(
+                workflow_id="wf1",
+                graph_store=graph_store,
+                thread_id="thread-1",
+                chat_manager=SimpleNamespace(_chat_store=chat_store),
+            ),
+        )
+
+        assert result.success is False
+        assert result.error_type == "validation_failed"
+        assert "not run-ready" in result.message.lower()
+
+    @pytest.mark.asyncio
     async def test_web_search_handler_returns_results(self):
         from unittest.mock import AsyncMock, patch
 

@@ -7,6 +7,11 @@ from typing import Any
 
 from dan.server.capability_registry import CapabilityContext, CapabilityResult
 from dan.server.capabilities._helpers import _truncate
+from dan.server.workflow_guards import (
+    WorkflowContractError,
+    collect_workflow_contract_messages,
+    ensure_workflow_run_ready,
+)
 from dan.server.workflow_identity import (
     resolve_workflow_reference,
     workflow_resolution_context_from_session,
@@ -108,24 +113,40 @@ async def handle_start_run(
             success=False,
             message=resolution.resolution_message or f"Workflow `{requested_graph_id}` not found.",
         )
+    if resolution.stale:
+        return CapabilityResult(
+            success=False,
+            message=resolution.resolution_message or "Workflow revision changed; refresh and try again.",
+            error_type="stale_workflow",
+        )
     graph_id = resolution.graph_id
     graph_dict = ctx.graph_store.get_graph(graph_id)
     if graph_dict is None:
         return CapabilityResult(success=False, message=f"Workflow '{graph_id}' not found.")
-    if not graph_dict.get("nodes"):
-        return CapabilityResult(success=False, message="Workflow has no nodes — nothing to run. Try asking me directly instead.")
-    from dan.models.graph import Graph
     try:
-        graph = Graph.model_validate(graph_dict)
-    except Exception as exc:
-        return CapabilityResult(success=False, message=f"Invalid graph: {exc}")
+        guarded = ensure_workflow_run_ready(graph_dict, workflow_id=graph_id)
+    except WorkflowContractError as exc:
+        errors = collect_workflow_contract_messages(
+            exc.report,
+            default_message=str(exc),
+        )
+        return CapabilityResult(
+            success=False,
+            message=str(exc),
+            data={
+                "errors": [{"message": msg} for msg in errors],
+                "warnings": list(getattr(exc.report, "warnings", []) or []),
+                "run_readiness_failure_mode": exc.failure_mode,
+            },
+            error_type="validation_failed",
+        )
     inputs = args.get("inputs")
     run_id = args.get("run_id")
     session_id = args.get("session_id")
     run_policy = args.get("run_policy")
     try:
         record = await ctx.run_manager.start_run(
-            graph,
+            guarded.graph,
             graph_id=graph_id,
             inputs=inputs,
             run_id=run_id,

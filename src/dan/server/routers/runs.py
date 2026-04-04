@@ -13,6 +13,10 @@ from pydantic import BaseModel
 from dan.server.routers.dependencies import get_graph_store, get_run_manager
 from dan.server.run_manager import RunStatus
 from dan.server.scoped_run import ScopedRunRequest
+from dan.server.workflow_guards import (
+    WorkflowContractError,
+    ensure_workflow_run_ready,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,11 +67,15 @@ class PendingOverlayRequest(BaseModel):
 async def start_run(req: RunRequest):
     rm = get_run_manager()
     gs = get_graph_store()
-    graph = gs.load_as_model(req.graph_id)
-    if graph is None:
+    graph_dict = gs.get_graph(req.graph_id)
+    if graph_dict is None:
         raise HTTPException(status_code=404, detail=f"Graph '{req.graph_id}' not found")
+    try:
+        guarded = ensure_workflow_run_ready(graph_dict, workflow_id=req.graph_id)
+    except WorkflowContractError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     record = await rm.start_run(
-        graph, graph_id=req.graph_id, inputs=req.inputs, run_id=req.run_id,
+        guarded.graph, graph_id=req.graph_id, inputs=req.inputs, run_id=req.run_id,
         session_id=req.session_id,
         run_policy=req.run_policy,
     )
@@ -90,11 +98,15 @@ async def start_run(req: RunRequest):
 async def resume_run(run_id: str, req: ResumeRequest):
     rm = get_run_manager()
     gs = get_graph_store()
-    graph = gs.load_as_model(req.graph_id)
-    if graph is None:
+    graph_dict = gs.get_graph(req.graph_id)
+    if graph_dict is None:
         raise HTTPException(status_code=404, detail=f"Graph '{req.graph_id}' not found")
+    try:
+        guarded = ensure_workflow_run_ready(graph_dict, workflow_id=req.graph_id)
+    except WorkflowContractError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     record = await rm.resume_run(
-        graph, graph_id=req.graph_id, run_id=run_id,
+        guarded.graph, graph_id=req.graph_id, run_id=run_id,
         session_id=req.session_id,
         run_policy=req.run_policy,
     )
@@ -393,9 +405,16 @@ async def start_scoped_run(req: ScopedRunRequest):
     )
     if result.error:
         raise HTTPException(status_code=422, detail=result.error.model_dump())
+    try:
+        guarded = ensure_workflow_run_ready(
+            result.graph,
+            workflow_id=req.workflow_id,
+        )
+    except WorkflowContractError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     record = await rm.start_run(
-        result.graph, graph_id=req.workflow_id, inputs=req.inputs,
+        guarded.graph, graph_id=req.workflow_id, inputs=req.inputs,
     )
     return ScopedRunResponse(
         run_id=record.run_id,

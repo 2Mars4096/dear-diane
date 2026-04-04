@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable, Literal, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field
+from dan.server.workflow_guards import WorkflowContractError, ensure_workflow_run_ready
 from dan.server.workflow_identity import (
     resolve_workflow_reference,
     workflow_resolution_context_from_session,
@@ -1676,6 +1677,23 @@ def _cmd_workflow(
 
     if not workflow_id:
         return "Workflow ID is required."
+    if resolution is not None and resolution.stale:
+        return (
+            resolution.resolution_message
+            or f"Workflow `{workflow_id}` changed since the last known revision. Refresh and try again."
+        )
+    if graph_store is not None:
+        graph_dict = graph_store.get_graph(workflow_id)
+        if graph_dict is None:
+            return f"Workflow `{workflow_id}` was not found in the current catalog."
+        try:
+            ensure_workflow_run_ready(
+                graph_dict,
+                workflow_id=workflow_id,
+                action="schedule",
+            )
+        except WorkflowContractError as exc:
+            return str(exc)
 
     try:
         cron_expr = parse_trigger(trigger)

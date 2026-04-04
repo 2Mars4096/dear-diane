@@ -195,8 +195,11 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
     from dan.server.chat_manager import compute_graph_revision
     from dan.server.graph_mutator import GraphMutator, MutationPlan
     from dan.server.mutation_metrics import mutation_metrics
-    from dan.models.graph import Graph
-    from dan.validation.graph import validate_graph
+    from dan.server.workflow_guards import (
+        WorkflowContractError,
+        collect_workflow_contract_messages,
+        ensure_workflow_apply_ready,
+    )
 
     gs = get_graph_store()
     data = gs.get_graph(graph_id)
@@ -242,92 +245,53 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
             )
         return resp
 
-    if _STRICT_MUTATION_VALIDATION:
-        try:
-            graph = Graph.model_validate(result.new_graph)
-        except Exception as exc:
-            mutation_metrics.record_apply(False)
-            mutation_metrics.record_validation(False)
-            return {
-                "success": False,
-                "errors": [{"message": f"Graph parse error: {exc}"}],
-                "stale_plan": False,
-            }
-
-        raw_errors = validate_graph(graph)
-        warnings: list[str] = []
-        fatal: list[str] = []
-        for msg in raw_errors:
-            lower = msg.lower()
-            if any(p in lower for p in ("warning", "deprecated", "untyped")):
-                warnings.append(msg)
-            else:
-                fatal.append(msg)
-
-        mutation_metrics.record_validation(len(fatal) == 0)
-
-        if fatal:
-            mutation_metrics.record_apply(False)
-            return {
-                "success": False,
-                "new_graph": None,
-                "errors": [{"message": msg} for msg in fatal],
-                "stale_plan": False,
-            }
-
-        mutation_metrics.record_apply(True)
-        saved_graph = gs.save_graph(graph_id, result.new_graph)
-        new_revision = compute_graph_revision(saved_graph)
-
-        if req.idempotency_key:
-            _applied_mutation_keys.add((graph_id, req.idempotency_key))
-            if len(_applied_mutation_keys) > _MAX_IDEMPOTENCY_KEYS:
-                _applied_mutation_keys.pop()
-
-        from dan.server.app import _run_manager
-        if req.source == "optimization" and _run_manager is not None:
-            _run_manager.emit_optimization_applied(graph_id, {
-                "graph_id": graph_id,
-                "operations": len(plan.operations),
-                "description": plan.description or "",
-            })
-
+    try:
+        guarded = ensure_workflow_apply_ready(result.new_graph, workflow_id=graph_id)
+    except WorkflowContractError as exc:
+        mutation_metrics.record_apply(False)
+        mutation_metrics.record_validation(False)
         return {
-            "success": True,
-            "new_graph": saved_graph,
-            "graph_revision": new_revision,
-            "errors": [],
-            "warnings": warnings,
-            "diagnostics": result.diagnostics,
+            "success": False,
+            "new_graph": None,
+            "errors": [
+                {"message": msg}
+                for msg in collect_workflow_contract_messages(
+                    exc.report,
+                    default_message=str(exc),
+                )
+            ],
+            "warnings": list(getattr(exc.report, "warnings", []) or []),
             "stale_plan": False,
+            "run_readiness_failure_mode": exc.failure_mode,
         }
-    else:
-        mutation_metrics.record_apply(True)
-        saved_graph = gs.save_graph(graph_id, result.new_graph)
-        new_revision = compute_graph_revision(saved_graph)
 
-        if req.idempotency_key:
-            _applied_mutation_keys.add((graph_id, req.idempotency_key))
-            if len(_applied_mutation_keys) > _MAX_IDEMPOTENCY_KEYS:
-                _applied_mutation_keys.pop()
+    mutation_metrics.record_validation(True)
+    mutation_metrics.record_apply(True)
+    saved_graph = gs.save_graph(graph_id, guarded.graph_dict)
+    new_revision = compute_graph_revision(saved_graph)
 
-        from dan.server.app import _run_manager
-        if req.source == "optimization" and _run_manager is not None:
-            _run_manager.emit_optimization_applied(graph_id, {
-                "graph_id": graph_id,
-                "operations": len(plan.operations),
-                "description": plan.description or "",
-            })
+    if req.idempotency_key:
+        _applied_mutation_keys.add((graph_id, req.idempotency_key))
+        if len(_applied_mutation_keys) > _MAX_IDEMPOTENCY_KEYS:
+            _applied_mutation_keys.pop()
 
-        return {
-            "success": True,
-            "new_graph": saved_graph,
-            "graph_revision": new_revision,
-            "errors": [],
-            "warnings": [],
-            "diagnostics": result.diagnostics,
-            "stale_plan": False,
-        }
+    from dan.server.app import _run_manager
+    if req.source == "optimization" and _run_manager is not None:
+        _run_manager.emit_optimization_applied(graph_id, {
+            "graph_id": graph_id,
+            "operations": len(plan.operations),
+            "description": plan.description or "",
+        })
+
+    return {
+        "success": True,
+        "new_graph": saved_graph,
+        "graph_revision": new_revision,
+        "errors": [],
+        "warnings": list(getattr(guarded.report, "warnings", []) or []),
+        "diagnostics": result.diagnostics,
+        "stale_plan": False,
+    }
 
 
 # ------------------------------------------------------------------
