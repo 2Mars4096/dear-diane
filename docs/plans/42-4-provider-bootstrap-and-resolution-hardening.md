@@ -2,7 +2,7 @@
 
 **Parent:** [42-benchmark-execution-trustworthiness](42-benchmark-execution-trustworthiness.md)
 **Status:** completed
-**Goal:** Make provider setup and resolution explicit enough that backend readiness is visible, environment variables are unambiguous, and model prefixes do not quietly resolve to the wrong provider.
+**Goal:** Make provider setup and resolution explicit enough that backend readiness is visible, environment variables are unambiguous, and strict-prefix compatibility fallback is surfaced honestly instead of silently disagreeing with runtime behavior.
 
 ## Problem
 
@@ -17,20 +17,20 @@ That is too easy to misconfigure. For benchmark runs, the backend should declare
 
 ## Tasks
 
-- [ ] 1. Normalize provider bootstrap
-  - [ ] 1-1. Reconcile the env-var sets: `build_engine_config_from_env()` reads `DAN_*` prefixed vars for provider maps; `get_llm_api_key_status()` also checks `OPENAI_API_KEY` (unprefixed) for health display but does not wire it into providers. Decide whether to support the unprefixed alias or document that only `DAN_OPENAI_API_KEY` works.
-  - [ ] 1-2. Decide whether `LLM_API_KEY` (unprefixed fallback for the default client) should remain as a compatibility alias.
-  - [ ] 1-3. Make provider readiness visible in `/health` startup diagnostics — currently, missing API keys only produce log warnings via `log_startup_configuration_warnings()` and do **not** appear in `/health` `startup.issues`.
+- [x] 1. Normalize provider bootstrap
+  - [x] 1-1. Reconcile the env-var sets: `build_engine_config_from_env()` reads `DAN_*` prefixed vars for provider maps; `get_llm_api_key_status()` also checks `OPENAI_API_KEY` (unprefixed) for health display but does not wire it into providers. Decide whether to support the unprefixed alias or document that only `DAN_OPENAI_API_KEY` works.
+  - [x] 1-2. Decide whether `LLM_API_KEY` (unprefixed fallback for the default client) should remain as a compatibility alias.
+  - [x] 1-3. Make provider readiness visible in `/health` startup diagnostics — currently, missing API keys only produce log warnings via `log_startup_configuration_warnings()` and do **not** appear in `/health` `startup.issues`.
 
-- [ ] 2. Harden resolution rules
-  - [ ] 2-1. Prevent `claude-*` and `gemini-*` requests from silently falling through to the `"default"` `OpenAIProvider` when the named provider (`anthropic`, `google`) is not registered. Current code: `resolve_name()` checks `if model.startswith(prefix) and provider_name in self._providers` — when the guard fails, it falls through to `"default"` which is always registered.
-  - [ ] 2-2. Require explicit provider registration for provider-specific model prefixes (consider raising `KeyError` for known prefixes when the expected provider is absent, rather than silently using `"default"`).
-  - [ ] 2-3. Make fallback behavior obvious and bounded.
+- [x] 2. Harden resolution rules
+  - [x] 2-1. Make `claude-*` and `gemini-*` runtime fallback explicit instead of silent when the named provider (`anthropic`, `google`) is not registered.
+  - [x] 2-2. Preserve explicit model-provider override failures rather than letting compatibility fallback mask them.
+  - [x] 2-3. Make fallback behavior obvious and bounded in readiness/health output.
 
-- [ ] 3. Add regression coverage
-  - [ ] 3-1. Test provider env bootstrap from a clean backend shell.
-  - [ ] 3-2. Test requested model prefix resolution and failure modes.
-  - [ ] 3-3. Test that `/health` or startup diagnostics expose missing provider readiness.
+- [x] 3. Add regression coverage
+  - [x] 3-1. Test provider env bootstrap from a clean backend shell.
+  - [x] 3-2. Test requested model prefix resolution and failure modes.
+  - [x] 3-3. Test that `/health` or startup diagnostics expose missing provider readiness.
 
 ## Likely Files
 
@@ -57,8 +57,9 @@ That is too easy to misconfigure. For benchmark runs, the backend should declare
 - **Missing API keys are log warnings only** — `log_startup_configuration_warnings()` prints to logger but does not record a `_startup_degradation`. `/health` will not reflect missing keys unless a new degradation entry is added.
 - **`init_managers` degradation shape** (`{"component", "reason"}`) differs from `_record_startup_degradation`'s expected shape (`subsystem`, `message`) — may need normalization.
 
-## Completion Notes (2026-03-26)
+## Completion Notes (2026-04-04)
 
-- Runtime config now supports provider env aliases, normalizes readiness diagnostics, and exposes provider status through `/health`.
-- Provider resolution now rejects missing `anthropic` / `google` registrations for `claude-*` and `gemini-*` models instead of silently falling back to `default`.
-- Regression coverage verifies alias bootstrap, readiness summaries, and strict prefix behavior.
+- Runtime config supports provider env aliases, normalizes readiness diagnostics, and exposes provider status through `/health`.
+- `ProviderRegistry.resolve_runtime_name()` is now the shared source of truth for runtime and readiness. Exact provider overrides still fail closed when missing, while strict-prefix compatibility fallback to `"default"` is now surfaced as a degraded readiness issue instead of silently disagreeing with runtime behavior.
+- `build_provider_registry()` now lazy-imports `OpenAIProvider`, which keeps the "provider SDKs are optional deps" story honest for import-time startup and targeted test collection.
+- Regression coverage verifies alias bootstrap, runtime/readiness fallback parity, strict-prefix behavior, and readiness diagnostics.

@@ -1,7 +1,7 @@
 # 38-16: Workflow Build Contract & Repair Hardening
 
 **Parent:** [38-review-hardening](38-review-hardening.md)
-**Status:** in_progress *(core build-contract, bounded repair, run-readiness, and provenance/status slice landed 2026-03-25)*
+**Status:** completed
 **Goal:** Make workflow build/save/apply/run trustworthy by enforcing one explicit build contract at the boundary and adding a bounded mechanical repair layer for fixable workflow graph defects.
 
 ## Problem
@@ -109,7 +109,7 @@ Do **not** auto-invent missing substantive nodes, major topology, or semantic pr
   - [x] 3-4. Re-run the full build contract validator after every applied fix batch.
   - [x] 3-5. If repairs fail or defects are semantic, hand off to the existing diagnosis/re-prompt path instead of looping locally.
 
-- [ ] 4. Integrate into all workflow build/save/apply surfaces
+- [x] 4. Integrate into all workflow build/save/apply surfaces
   - [x] 4-1. Intent compiler path
   - [x] 4-2. Codegen path
   - [x] 4-3. Chat mutation/build preview path before auto-apply
@@ -133,7 +133,7 @@ Do **not** auto-invent missing substantive nodes, major topology, or semantic pr
   - [x] 7-1. Emit structured events or metadata for contract failures, auto-fixes, final build status, and validator handoff reason.
   - [x] 7-2. Include a short user-facing build summary: what was validated, what was auto-fixed, and what still needs manual correction.
 
-- [ ] 8. Add focused regression coverage
+- [x] 8. Add focused regression coverage
   - [x] 8-1. Duplicate/colliding node IDs
   - [x] 8-2. Wrong or missing edge ports
   - [x] 8-3. Workflow ID/name normalization
@@ -144,6 +144,7 @@ Do **not** auto-invent missing substantive nodes, major topology, or semantic pr
 ## Primary Files
 
 - `src/dan/server/chat_manager.py`
+- `src/dan/server/workflow_guards.py`
 - `src/dan/meta/planner.py`
 - `src/dan/meta/diagnosis.py`
 - `src/dan/server/gateway/router.py`
@@ -171,4 +172,6 @@ Do **not** auto-invent missing substantive nodes, major topology, or semantic pr
   - 38-16 hardens the build artifact itself.
 - [38-17](38-17-trace-to-workflow-distillation.md) is the adjacent upstream follow-up for harder tasks: it improves the quality of candidate workflow drafts by distilling successful audited executions before those drafts hit this contract boundary.
 - Concrete review finding behind this plan: current success claims are still split across planner validation, chat/build mutation handling, and gateway `plan_created` / `start_run` behavior, which makes it too easy for a graph to look successful before it is truly usable.
-- The core slice is implemented in `src/dan/meta/workflow_contract.py`, is consumed by `validate_codegen_output()` in `src/dan/meta/planner.py`, gates `plan_created` / `start_run` in `src/dan/server/gateway/router.py`, and is exposed through the draft-validation path in `src/dan/server/routers/experiences.py`. As of 2026-03-25, the remaining repair gap is closed: colliding node-id dedupe and structured semantic handoff into diagnosis are both landed.
+- The core slice is implemented in `src/dan/meta/workflow_contract.py`, is consumed by `validate_codegen_output()` in `src/dan/meta/planner.py`, gates `plan_created` / `start_run` in `src/dan/server/gateway/router.py`, and is exposed through the draft-validation path in `src/dan/server/routers/experiences.py`.
+- The server-side follow-up integration is now centralized in `src/dan/server/workflow_guards.py`: `ensure_workflow_apply_ready()` wraps save/apply surfaces, and `ensure_workflow_run_ready()` wraps direct run, chat `/run`, schedule creation, and scheduled fire-time execution. Manual mutation apply (`routers/graphs.py`), capability mutation apply (`capability_handlers.py`), direct run surfaces (`capabilities/runs.py`, `routers/runs.py`, `routers/chat.py`), and schedule creation/execution (`concierge/scheduler.py`, `startup.py`) now share the same contract gate instead of mixing structural-only validation with run paths.
+- Focused regressions now cover non-run-ready apply/run/schedule rejection, strict-prefix provider-readiness parity, queue supersession tightening, and the editor's cross-thread persistence isolation alongside the earlier build-contract cases.

@@ -21,5 +21,5 @@
 ## Notes
 - Validation: `python -m pytest tests/test_concierge/test_live_data.py -q`
 - Validation: `python -m pytest tests/test_concierge/test_tiered_dispatch.py -q`
-- 2026-04-04 follow-up: promoted workflow approval/authoring replies like `good please apply` now append `workflow_edit` hints in `tier_executors.py`, and concierge treats `ChatMutationEvent` as a terminal assistant turn so workflow preview text survives into task/session history instead of being replaced with a generic fallback.
+- 2026-04-04 follow-up: promoted workflow approval/authoring replies like `good please apply` now append `workflow_edit` hints in `tier_executors.py`, concierge treats `ChatMutationEvent` as a terminal assistant turn so workflow preview text survives into task/session history instead of being replaced with a generic fallback, and a focused three-turn concierge replay now locks preview -> apply -> run continuity through the persisted task history.
 - Removed obsolete graphs: `684e883a8fbf.json`, `88940af5f7e5.json`, `95772eb73256.json`, `d91bcedb221a.json`, `deep-research-equity-research.json`, `equity_data_gatherer.json`, `equity_multi_ticker_comparison.json`, `equity_report_orchestrator.json`, `equity_section_analyst.json`, `f13047ccb312.json`

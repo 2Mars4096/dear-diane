@@ -48,3 +48,4 @@
 ## Notes
 - All patches emerged on 2026-03-27 as a chain of fixes during/after the 44-series rollout.
 - Originally mis-numbered as standalone top-level plans 45–50; consolidated here for hierarchy consistency.
+- 2026-04-04 packaged Electron follow-up: desktop backend launch now also seeds `DAN_WORKSPACE_ROOT` and uses that path as child `cwd` via `editor/electron/backendLaunch.ts`, so runtime defaults like `./checkpoints` stay under writable app data instead of falling back to `/checkpoints`.

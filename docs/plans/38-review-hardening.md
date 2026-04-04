@@ -43,7 +43,7 @@ Review documents: `docs/reviews/2026-03-17-*.md` and `docs/reviews/2026-03-19-*.
 | # | Sub-Plan | Scope | Priority | Status |
 |---|----------|-------|----------|--------|
 | [38-15](38-15-lexical-triage-scenario-catalog.md) | Lexical Triage Scenario Catalog | replace ad-hoc regex/keyword routing with named lexical scenarios plus mandatory LLM fallback on ambiguity | P1 | planned |
-| [38-16](38-16-workflow-build-contract-and-repair.md) | Workflow Build Contract & Repair Hardening | unify build-boundary validation, run-readiness checks, and bounded mechanical repair before save/apply/run | P1 | planned |
+| [38-16](38-16-workflow-build-contract-and-repair.md) | Workflow Build Contract & Repair Hardening | unify build-boundary validation, run-readiness checks, and bounded mechanical repair before save/apply/run | P1 | ✅ |
 | [38-17](38-17-trace-to-workflow-distillation.md) | Trace-to-Workflow Distillation | let DAN execute a task first, then generalize the audited action trace into a reusable workflow draft that is compiled and contract-validated | P2 | ✅ |
 
 ## Dependencies / Sequencing
@@ -90,7 +90,7 @@ Follow-up recommended execution order:
 - Execute the five Round 2 sub-plans in parallel tracks.
 - Round 2 was triggered by a second wave of reviews on 2026-03-19 covering general project health, concierge triage, chat dispatch, workflow generation, development mode, and user experience.
 - `38-15` is a follow-up extracted from the 38-8 triage hardening discussion after the original review wave was closed: the current lexical routing layer still needs a smaller, more explicit contract.
-- `38-16` is a follow-up extracted from the workflow-generation trust gap after 38-7/24/33: generation paths exist, but the build artifact still lacks one explicit contract-and-repair boundary.
+- `38-16` closed the workflow-generation trust gap after 38-7/24/33: generation, manual apply, direct run, and schedule surfaces now share one explicit contract-and-repair boundary instead of relying on chat auto-apply alone.
 - `38-17` extends the same reliability track for harder tasks: when one-shot build is not the best seed, distill a successful audited execution trace into a reusable workflow draft and validate it against the same build contract.
 - Together, `38-15`, the 38-8 follow-up scope, `38-16`, and `38-17` form one workflow-reliability track: route the turn correctly, keep the concierge role narrow, enforce the artifact contract before save/apply/run, and learn reusable workflows from successful task traces.
 
