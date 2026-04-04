@@ -66,7 +66,7 @@ def _should_supersede_same_project_queue(msg: SurfaceMessage) -> bool:
         return False
     if text.startswith("/retry"):
         return True
-    if text.isdigit() or text in {"yes", "no", "y", "n", "cancel", "stop"}:
+    if text in {"cancel", "stop"}:
         return True
     if " instead" in text or text.startswith("instead "):
         return True

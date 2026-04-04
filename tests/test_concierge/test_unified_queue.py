@@ -10,7 +10,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from dan.server.chat_manager import ChatCompleteEvent, ChatQueuedEvent
-from dan.server.concierge.dispatcher import ConcurrentDispatcher, _is_bypass_command
+from dan.server.concierge.dispatcher import (
+    ConcurrentDispatcher,
+    _is_bypass_command,
+    _should_supersede_same_project_queue,
+)
 from dan.server.concierge.models import (
     Project,
     ResolvedContext,
@@ -544,6 +548,20 @@ class TestStatusCancelBypass:
 
 
 class TestSameProjectSupersede:
+    def test_short_confirmation_text_does_not_supersede(self) -> None:
+        assert _should_supersede_same_project_queue(_msg("yes")) is False
+        assert _should_supersede_same_project_queue(_msg("no")) is False
+        assert _should_supersede_same_project_queue(_msg("3")) is False
+
+    def test_explicit_rewrite_text_still_supersedes(self) -> None:
+        assert (
+            _should_supersede_same_project_queue(
+                _msg("actually fix the tests instead"),
+            )
+            is True
+        )
+        assert _should_supersede_same_project_queue(_msg("/retry")) is True
+
     @pytest.mark.asyncio
     async def test_superseding_instruction_collapses_stale_same_project_queue(self):
         concierge = FakeConcierge(delay=0.3)
