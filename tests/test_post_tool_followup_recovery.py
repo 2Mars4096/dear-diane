@@ -187,6 +187,14 @@ async def _fake_build_messages(self, *args: Any, **kwargs: Any) -> list[dict[str
     return [{"role": "user", "content": "hello"}]
 
 
+def _recording_build_messages(mode_log: list[str]):
+    async def _inner(self, *args: Any, **kwargs: Any) -> list[dict[str, str]]:
+        mode_log.append(str(kwargs.get("mode") or ""))
+        return [{"role": "user", "content": "hello"}]
+
+    return _inner
+
+
 async def _fake_build_messages_with_prompt_detail(
     self,
     *args: Any,
@@ -904,6 +912,103 @@ async def test_send_message_with_tools_retries_with_auto_tool_choice_when_provid
 
 
 @pytest.mark.asyncio
+async def test_send_message_with_tools_promotes_ask_mode_for_required_file_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_call_log: list[dict[str, Any]] = []
+    build_modes: list[str] = []
+
+    async def _file_write(args: dict[str, Any], context: CapabilityContext) -> CapabilityResult:
+        tool_call_log.append({
+            "tool_name": "file_write",
+            "args": dict(args),
+            "workflow_id": context.workflow_id,
+        })
+        return CapabilityResult(
+            success=True,
+            message="Saved file.",
+            data={"path": args.get("path")},
+        )
+
+    capability_registry = ChatCapabilityRegistry()
+    capability_registry.register(
+        "file_write",
+        build_tool_schema(
+            "file_write",
+            "Write a file.",
+            {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["path", "content"],
+            },
+        ),
+        _file_write,
+        modes=["agent"],
+    )
+
+    provider = _SequenceProvider(
+        [
+            CompletionResult(
+                text="Saving now.",
+                tool_calls=[
+                    _named_tool_call(
+                        "file_write",
+                        {"path": "/tmp/report.md", "content": "# Report"},
+                        "call_write",
+                    )
+                ],
+                usage={"prompt_tokens": 8, "completion_tokens": 3},
+            ),
+            CompletionResult(
+                text="Saved to /tmp/report.md.",
+                tool_calls=[],
+                usage={"prompt_tokens": 4, "completion_tokens": 2},
+            ),
+        ]
+    )
+    provider.supports_exact_tool_choice = True
+    mgr = _make_manager(
+        provider,
+        tool_call_log=[],
+        capability_registry=capability_registry,
+    )
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _recording_build_messages(build_modes))
+    monkeypatch.setattr(chat_manager_module, "_try_persist_audit", lambda **kwargs: None)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Write the report to disk.",
+            history=[],
+            mode="ask",
+            required_action_hints=["write_file"],
+        )
+    )
+
+    assert any(isinstance(event, ChatCompleteEvent) for event in events)
+    assert build_modes == ["agent"]
+    assert provider.requests[0]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "file_write"},
+    }
+    assert "file_write" in [
+        tool["function"]["name"]
+        for tool in provider.requests[0]["tools"]
+    ]
+    assert tool_call_log == [
+        {
+            "tool_name": "file_write",
+            "args": {"path": "/tmp/report.md", "content": "# Report"},
+            "workflow_id": "wf1",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_send_message_with_tools_forces_plan_graph_mutations_for_workflow_edit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -949,6 +1054,56 @@ async def test_send_message_with_tools_forces_plan_graph_mutations_for_workflow_
     assert [
         tool["function"]["name"]
         for tool in first_request["tools"]
+    ] == ["plan_graph_mutations"]
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_promotes_ask_mode_for_workflow_edit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _SequenceProvider(
+        [
+            CompletionResult(
+                text=json.dumps(
+                    {
+                        "description": "Add a new input node",
+                        "operations": [
+                            {"op": "add_node", "node_type": "input", "name": "Input"},
+                        ],
+                    }
+                ),
+                usage={"prompt_tokens": 5, "completion_tokens": 2},
+            ),
+        ]
+    )
+    build_modes: list[str] = []
+    mgr = _make_manager(provider, tool_call_log=[])
+    provider.supports_exact_tool_choice = True
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _recording_build_messages(build_modes))
+    monkeypatch.setattr(chat_manager_module, "_try_persist_audit", lambda **kwargs: None)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Fix the workflow so it builds cleanly.",
+            history=[],
+            mode="ask",
+            allow_mutation_tool=True,
+            required_action_hints=["workflow_edit"],
+        )
+    )
+
+    mutation_events = [event for event in events if getattr(event, "type", "") == "chat_mutation"]
+    assert mutation_events
+    assert build_modes == ["agent"]
+    assert provider.requests[0]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "plan_graph_mutations"},
+    }
+    assert [
+        tool["function"]["name"]
+        for tool in provider.requests[0]["tools"]
     ] == ["plan_graph_mutations"]
 
 

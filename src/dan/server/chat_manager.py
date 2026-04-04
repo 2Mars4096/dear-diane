@@ -50,7 +50,7 @@ from dan.providers import (
 )
 from dan.providers.registry import ProviderRegistry
 from dan.providers.costs import estimate_cost
-from dan.server.capability_registry import CapabilityResult
+from dan.server.capability_registry import CapabilityResult, READ_ONLY_MODES
 from dan.server.graph_mutator import (
     GraphMutator,
     PATTERN_LIBRARY,
@@ -566,6 +566,90 @@ def _capability_registry_mode(mode: str) -> str:
     return "agent" if normalized == "auto" else normalized
 
 
+def _tool_available_in_mode(
+    capability_registry: Any,
+    tool_name: str,
+    mode: str,
+    *,
+    allow_mutation_tool: bool,
+) -> bool:
+    if tool_name == "plan_graph_mutations":
+        return allow_mutation_tool and mode not in READ_ONLY_MODES
+    if capability_registry is None:
+        return False
+    try:
+        return bool(capability_registry.is_available(tool_name, mode))
+    except Exception:
+        logger.debug(
+            "Capability availability check failed for %s in %s mode",
+            tool_name,
+            mode,
+            exc_info=True,
+        )
+        return False
+
+
+def _mode_supports_action_hints(
+    mode: str,
+    required_action_hints: list[str] | None,
+    capability_registry: Any,
+    *,
+    allow_mutation_tool: bool,
+) -> bool:
+    for hint in _dedupe_action_hints(required_action_hints):
+        tool_names = _ACTION_HINT_TOOL_MAP.get(hint)
+        if not tool_names:
+            continue
+        if not any(
+            _tool_available_in_mode(
+                capability_registry,
+                tool_name,
+                mode,
+                allow_mutation_tool=allow_mutation_tool,
+            )
+            for tool_name in tool_names
+        ):
+            return False
+    return True
+
+
+def _resolve_effective_chat_mode(
+    mode: str,
+    required_action_hints: list[str] | None,
+    capability_registry: Any,
+    *,
+    allow_mutation_tool: bool,
+) -> str:
+    requested_mode = _capability_registry_mode(mode)
+    if not required_action_hints:
+        return requested_mode
+
+    ordered_candidates = (
+        requested_mode,
+        "agent",
+        "build",
+        "mutate",
+        "debug",
+        "conversation",
+        "ask",
+        "plan",
+    )
+    seen_modes: set[str] = set()
+    for candidate in ordered_candidates:
+        normalized_candidate = _capability_registry_mode(candidate)
+        if normalized_candidate in seen_modes:
+            continue
+        seen_modes.add(normalized_candidate)
+        if _mode_supports_action_hints(
+            normalized_candidate,
+            required_action_hints,
+            capability_registry,
+            allow_mutation_tool=allow_mutation_tool,
+        ):
+            return normalized_candidate
+    return requested_mode
+
+
 class ChatManager:
     def __init__(
         self,
@@ -1062,7 +1146,23 @@ class ChatManager:
         try:
             effective_model = model_override or self._chat_model
             required_action_hints = _dedupe_action_hints(required_action_hints)
+            requested_mode = _capability_registry_mode(mode)
+            mode = _resolve_effective_chat_mode(
+                mode,
+                required_action_hints,
+                self._capability_registry,
+                allow_mutation_tool=allow_mutation_tool,
+            )
             audit_metadata = dict(audit_metadata or {})
+            audit_metadata.setdefault("requested_mode", requested_mode)
+            audit_metadata.setdefault("effective_mode", mode)
+            if mode != requested_mode:
+                logger.info(
+                    "Promoting chat mode from %s to %s for required action hints %s",
+                    requested_mode,
+                    mode,
+                    required_action_hints,
+                )
             capability_mode = _capability_registry_mode(mode)
             grounding_required = should_require_web_grounding(
                 message,
@@ -1317,8 +1417,6 @@ class ChatManager:
             message_id = uuid.uuid4().hex[:12]
             usage_totals: dict[str, int] = {}
             completion_max_tokens = _completion_max_tokens(effective_model)
-
-            from dan.server.capability_registry import READ_ONLY_MODES
 
             all_tools: list[dict[str, Any]] = []
             if self._capability_registry is not None:
