@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import enum
 import logging
 import os
 import re
@@ -28,6 +29,7 @@ __all__ = [
     "GraphMutator",
     "GraphOperation",
     "MutationPlan",
+    "MutationFailureClass",
     "MutationResult",
     "OperationError",
     "PATTERN_LIBRARY",
@@ -215,10 +217,30 @@ class MutationPlan(BaseModel):
     reasoning: str = ""
 
 
+class MutationFailureClass(str, enum.Enum):
+    """Stable failure codes for dry-run and apply diagnostics."""
+
+    STALE_REVISION = "stale_revision"
+    MISSING_INPUT_VARIABLE_PORT = "missing_input_variable_port"
+    STALE_PORT_ALIAS = "stale_port_alias"
+    DUPLICATE_ADD_NODE = "duplicate_add_node"
+    DUPLICATE_ADD_EDGE = "duplicate_add_edge"
+    REQUIRED_INPUT_DISCONNECT = "required_input_disconnect"
+    AMBIGUOUS_REWIRE = "ambiguous_rewire"
+    GRAPH_SHAPE = "graph_shape"
+    VALIDATION = "validation"
+    COMPILATION = "compilation"
+    APPLY = "apply"
+    UNKNOWN = "unknown"
+
+
 class OperationError(BaseModel):
     op_index: int
     op_type: str
     message: str
+    stage: str = "apply"
+    failure_class: MutationFailureClass = MutationFailureClass.UNKNOWN
+    context: dict[str, Any] = Field(default_factory=dict)
 
 
 class MutationResult(BaseModel):
@@ -229,6 +251,165 @@ class MutationResult(BaseModel):
     stale_plan: bool = False
     validation_warnings: list[str] = Field(default_factory=list)
     diagnostics: list[str] = Field(default_factory=list)
+    stage_timings: list[dict[str, Any]] = Field(default_factory=list)
+
+
+def _trim_failure_value(value: Any, *, max_items: int = 8, max_chars: int = 240) -> Any:
+    """Keep structured failure context compact and prompt-safe."""
+    if isinstance(value, str):
+        text = value.strip()
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 3] + "..."
+    if isinstance(value, dict):
+        trimmed: dict[str, Any] = {}
+        for idx, (key, item) in enumerate(value.items()):
+            if idx >= max_items:
+                trimmed["_truncated"] = True
+                break
+            trimmed[str(key)] = _trim_failure_value(item, max_items=max_items, max_chars=max_chars)
+        return trimmed
+    if isinstance(value, (list, tuple, set)):
+        items = list(value)
+        trimmed_items = [
+            _trim_failure_value(item, max_items=max_items, max_chars=max_chars)
+            for item in items[:max_items]
+        ]
+        if len(items) > max_items:
+            trimmed_items.append("...truncated...")
+        return trimmed_items
+    return value
+
+
+def _error_context_from_op(op: GraphOperation | None) -> dict[str, Any]:
+    if op is None:
+        return {}
+    context: dict[str, Any] = {"op": op.op}
+    if isinstance(op, AddNode):
+        if op.id:
+            context["node_id"] = op.id
+        context["node_type"] = op.node_type
+        if op.name:
+            context["node_name"] = op.name
+        return context
+    if isinstance(op, RemoveNode):
+        return {"op": op.op, "node_id": op.node_id}
+    if isinstance(op, EditNode):
+        return {
+            "op": op.op,
+            "node_id": op.node_id,
+            "update_keys": sorted(str(key) for key in op.updates.keys()),
+        }
+    if isinstance(op, (AddEdge, RemoveEdge)):
+        return {
+            "op": op.op,
+            "source_id": op.source_id,
+            "source_port": op.source_port,
+            "target_id": op.target_id,
+            "target_port": op.target_port,
+        }
+    if isinstance(op, EditEdge):
+        return {
+            "op": op.op,
+            "edge_id": op.edge_id,
+            "update_keys": sorted(str(key) for key in op.updates.keys()),
+        }
+    if isinstance(op, SetNodePosition):
+        return {"op": op.op, "node_id": op.node_id}
+    if isinstance(op, ReplaceSubgraph):
+        return {
+            "op": op.op,
+            "remove_node_ids": list(op.node_ids_to_remove[:8]),
+            "new_node_count": len(op.new_nodes),
+            "new_edge_count": len(op.new_edges),
+        }
+    if isinstance(op, ReplaceBodyGraph):
+        return {
+            "op": op.op,
+            "node_id": op.node_id,
+            "body_op_count": len(op.operations),
+        }
+    if isinstance(op, ExpandPattern):
+        return {"op": op.op, "pattern": op.pattern}
+    if isinstance(op, ApplySkill):
+        return {
+            "op": op.op,
+            "skill": op.skill,
+            "target_nodes": list(op.target_nodes[:8]),
+            "target_tag": op.target_tag,
+        }
+    if isinstance(op, RemoveHyperedge):
+        return {"op": op.op, "hyperedge_id": op.hyperedge_id}
+    if isinstance(op, EditHyperedge):
+        return {
+            "op": op.op,
+            "hyperedge_id": op.hyperedge_id,
+            "update_keys": sorted(str(key) for key in op.updates.keys()),
+        }
+    if isinstance(op, AddHyperedge):
+        hyperedge_id = str(op.hyperedge.get("id") or "").strip()
+        if hyperedge_id:
+            context["hyperedge_id"] = hyperedge_id
+        return context
+    return context
+
+
+def _classify_mutation_failure(
+    *,
+    stage: str,
+    op: GraphOperation | None,
+    message: str,
+) -> MutationFailureClass:
+    normalized = str(message or "").strip().lower()
+    op_type = getattr(op, "op", "")
+
+    if stage == "compilation":
+        return MutationFailureClass.COMPILATION
+    if stage == "concurrency_check" or "plan based on revision" in normalized:
+        return MutationFailureClass.STALE_REVISION
+    if "would disconnect required input port" in normalized:
+        return MutationFailureClass.REQUIRED_INPUT_DISCONNECT
+    if op_type == "add_node" and "already exists" in normalized:
+        return MutationFailureClass.DUPLICATE_ADD_NODE
+    if op_type == "add_edge" and "already exists" in normalized:
+        return MutationFailureClass.DUPLICATE_ADD_EDGE
+    if op_type == "add_edge" and "has no output port" in normalized:
+        if isinstance(op, AddEdge) and _INPUT_VARIABLE_NAME_RE.fullmatch(op.source_port):
+            return MutationFailureClass.MISSING_INPUT_VARIABLE_PORT
+        return MutationFailureClass.STALE_PORT_ALIAS
+    if op_type in {"add_edge", "remove_edge", "edit_edge"} and "has no input port" in normalized:
+        return MutationFailureClass.STALE_PORT_ALIAS
+    if op_type == "remove_edge" and normalized.startswith("no edge from"):
+        return MutationFailureClass.AMBIGUOUS_REWIRE
+    if stage == "validation":
+        return MutationFailureClass.VALIDATION
+    if "not found" in normalized or "missing" in normalized or "dangling" in normalized:
+        return MutationFailureClass.GRAPH_SHAPE
+    if stage == "apply":
+        return MutationFailureClass.APPLY
+    return MutationFailureClass.UNKNOWN
+
+
+def _operation_error(
+    *,
+    op_index: int,
+    op_type: str,
+    message: str,
+    stage: str,
+    op: GraphOperation | None = None,
+    extra_context: dict[str, Any] | None = None,
+) -> OperationError:
+    context = _error_context_from_op(op)
+    if extra_context:
+        context.update(extra_context)
+    return OperationError(
+        op_index=op_index,
+        op_type=op_type,
+        message=message,
+        stage=stage,
+        failure_class=_classify_mutation_failure(stage=stage, op=op, message=message),
+        context=_trim_failure_value(context) if context else {},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1317,17 +1498,23 @@ class GraphMutator:
             and current_revision
             and plan.base_graph_revision != current_revision
         ):
+            message = (
+                f"Plan based on revision '{plan.base_graph_revision}' "
+                f"but current is '{current_revision}'"
+            )
             return MutationResult(
                 success=False,
                 stale_plan=True,
                 errors=[
-                    OperationError(
+                    _operation_error(
                         op_index=-1,
                         op_type="concurrency_check",
-                        message=(
-                            f"Plan based on revision '{plan.base_graph_revision}' "
-                            f"but current is '{current_revision}'"
-                        ),
+                        message=message,
+                        stage="concurrency_check",
+                        extra_context={
+                            "expected_revision": plan.base_graph_revision,
+                            "current_revision": current_revision,
+                        },
                     ),
                 ],
             )
@@ -1353,13 +1540,15 @@ class GraphMutator:
         try:
             graph = Graph.model_validate(result.new_graph)
         except Exception as exc:
+            message = f"Graph parse error: {exc}"
             return MutationResult(
                 success=False,
                 errors=[
-                    OperationError(
+                    _operation_error(
                         op_index=-1,
                         op_type="validation",
-                        message=f"Graph parse error: {exc}",
+                        message=message,
+                        stage="validation",
                     )
                 ],
             )
@@ -1372,7 +1561,12 @@ class GraphMutator:
             return MutationResult(
                 success=False,
                 errors=[
-                    OperationError(op_index=-1, op_type="validation", message=msg)
+                    _operation_error(
+                        op_index=-1,
+                        op_type="validation",
+                        message=msg,
+                        stage="validation",
+                    )
                     for msg in fatal
                 ],
             )
@@ -1503,7 +1697,15 @@ class GraphMutator:
             op = self._resolve_op_aliases(op, alias)
             err = self._apply_op(working, op, diagnostics)
             if err:
-                errors.append(OperationError(op_index=orig_idx, op_type=op.op, message=err))
+                errors.append(
+                    _operation_error(
+                        op_index=orig_idx,
+                        op_type=op.op,
+                        message=err,
+                        stage="apply",
+                        op=op,
+                    )
+                )
             else:
                 applied.append(orig_idx)
                 if op.op in self._STRUCTURAL_OPS:
@@ -1521,7 +1723,12 @@ class GraphMutator:
                 success=False,
                 new_graph=None,
                 errors=[
-                    OperationError(op_index=-1, op_type="validation", message=msg)
+                    _operation_error(
+                        op_index=-1,
+                        op_type="validation",
+                        message=msg,
+                        stage="validation",
+                    )
                     for msg in dangling
                 ],
             )
@@ -1553,7 +1760,15 @@ class GraphMutator:
             snapshot = copy.deepcopy(working)
             err = self._apply_op(working, op, diagnostics)
             if err:
-                errors.append(OperationError(op_index=orig_idx, op_type=op.op, message=err))
+                errors.append(
+                    _operation_error(
+                        op_index=orig_idx,
+                        op_type=op.op,
+                        message=err,
+                        stage="apply",
+                        op=op,
+                    )
+                )
                 working.clear()
                 working.update(snapshot)
             else:

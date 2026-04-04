@@ -6,7 +6,7 @@ import json
 
 from dan.models.graph import Graph
 from dan.server.chat.mutation_parser import normalize_mutation_ops_for_chat
-from dan.server.graph_mutator import GraphMutator, MutationPlan
+from dan.server.graph_mutator import GraphMutator, MutationFailureClass, MutationPlan
 
 
 def _empty_graph() -> dict:
@@ -477,3 +477,80 @@ def test_duplicate_add_edge_with_different_semantics_not_dropped() -> None:
     result = GraphMutator().dry_run(graph, plan)
     assert not result.success
     assert any("already exists" in error.message for error in result.errors)
+    assert result.errors[0].failure_class == MutationFailureClass.DUPLICATE_ADD_EDGE
+
+
+def test_stale_revision_failure_is_typed() -> None:
+    graph = _empty_graph()
+    plan = MutationPlan.model_validate(
+        {
+            "base_graph_revision": "rev-old",
+            "operations": [
+                {"op": "add_node", "id": "a", "node_type": "input", "name": "A"}
+            ],
+        }
+    )
+
+    result = GraphMutator().dry_run(graph, plan, current_revision="rev-new")
+
+    assert not result.success
+    assert result.stale_plan is True
+    assert result.errors[0].stage == "concurrency_check"
+    assert result.errors[0].failure_class == MutationFailureClass.STALE_REVISION
+    assert result.errors[0].context == {
+        "expected_revision": "rev-old",
+        "current_revision": "rev-new",
+    }
+
+
+def test_duplicate_add_node_failure_is_typed() -> None:
+    graph = _empty_graph()
+    graph["nodes"] = [_minimal_input_node("worker", "Worker")]
+    graph["entry_points"] = ["worker"]
+    graph["exit_points"] = ["worker"]
+
+    plan = MutationPlan.model_validate(
+        {
+            "operations": [
+                {"op": "add_node", "id": "worker", "node_type": "input", "name": "Worker"}
+            ]
+        }
+    )
+    result = GraphMutator().dry_run(graph, plan)
+
+    assert not result.success
+    assert result.errors[0].failure_class == MutationFailureClass.DUPLICATE_ADD_NODE
+    assert result.errors[0].context["node_id"] == "worker"
+
+
+def test_remove_missing_edge_is_tagged_as_ambiguous_rewire() -> None:
+    graph = _empty_graph()
+    graph["nodes"] = [
+        _minimal_input_node("source", "Source"),
+        _minimal_input_node("target", "Target"),
+    ]
+    plan = MutationPlan.model_validate(
+        {
+            "operations": [
+                {
+                    "op": "remove_edge",
+                    "source_id": "source",
+                    "source_port": "input",
+                    "target_id": "target",
+                    "target_port": "input",
+                }
+            ]
+        }
+    )
+
+    result = GraphMutator().dry_run(graph, plan)
+
+    assert not result.success
+    assert result.errors[0].failure_class == MutationFailureClass.AMBIGUOUS_REWIRE
+    assert result.errors[0].context == {
+        "op": "remove_edge",
+        "source_id": "source",
+        "source_port": "input",
+        "target_id": "target",
+        "target_port": "input",
+    }

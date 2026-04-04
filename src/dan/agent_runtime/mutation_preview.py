@@ -12,11 +12,13 @@ from dan.agent_runtime.followup import build_assistant_followup_message
 from dan.agent_runtime.graph_summary import serialize_for_prompt
 from dan.graph_mutator import (
     GraphMutator,
+    MutationFailureClass,
     MutationPlan,
     MutationResult,
     OperationError,
     TOOL_PORT_MANIFESTS,
 )
+from dan.server.workflow_latency import workflow_stage_sample, workflow_stage_start_ns
 from dan.workflow_generation_guidance import (
     render_workflow_generation_contract,
     workflow_generation_contract_enabled,
@@ -24,6 +26,9 @@ from dan.workflow_generation_guidance import (
 
 logger = logging.getLogger(__name__)
 _CHAT_NODE_ID_RE = re.compile(r"[^a-z0-9]+")
+_MAX_FAILURE_ERRORS = 5
+_MAX_FAILURE_DIAGNOSTICS = 5
+_MAX_FAILURE_STRING = 240
 _STALE_REPLAN_PROMPT = (
     "The graph has changed since your last plan. "
     "Please re-plan the requested changes against "
@@ -884,9 +889,71 @@ def _build_compilation_error_result(error_message: str) -> MutationResult:
                 op_index=-1,
                 op_type="compilation",
                 message=error_message,
+                stage="compilation",
+                failure_class=MutationFailureClass.COMPILATION,
             )
         ],
     )
+
+
+def _trim_failure_payload_value(value: Any, *, max_chars: int = _MAX_FAILURE_STRING) -> Any:
+    if isinstance(value, str):
+        if len(value) <= max_chars:
+            return value
+        return value[: max_chars - 3] + "..."
+    if isinstance(value, dict):
+        return {
+            str(key): _trim_failure_payload_value(item, max_chars=max_chars)
+            for key, item in list(value.items())[:8]
+        }
+    if isinstance(value, list):
+        trimmed = [
+            _trim_failure_payload_value(item, max_chars=max_chars)
+            for item in value[:8]
+        ]
+        if len(value) > 8:
+            trimmed.append("...truncated...")
+        return trimmed
+    return value
+
+
+def _serialize_operation_error(error: Any) -> dict[str, Any]:
+    if hasattr(error, "model_dump"):
+        payload = dict(error.model_dump(mode="json"))
+    else:
+        payload = {"message": str(error)}
+    if "message" in payload:
+        payload["message"] = _trim_failure_payload_value(str(payload.get("message") or ""))
+    if "context" in payload and isinstance(payload["context"], dict):
+        payload["context"] = _trim_failure_payload_value(payload["context"])
+    return payload
+
+
+def build_mutation_failure_payload(current_dry_result: Any) -> dict[str, Any]:
+    """Build a compact, structured failure summary for repair retries."""
+    raw_errors = list(getattr(current_dry_result, "errors", []) or [])
+    raw_diagnostics = list(getattr(current_dry_result, "diagnostics", []) or [])
+    serialized_errors = [
+        _serialize_operation_error(error)
+        for error in raw_errors[:_MAX_FAILURE_ERRORS]
+    ]
+    diagnostics = [
+        _trim_failure_payload_value(str(line or ""))
+        for line in raw_diagnostics[:_MAX_FAILURE_DIAGNOSTICS]
+    ]
+    primary_error = serialized_errors[0] if serialized_errors else None
+    return {
+        "stale_plan": bool(getattr(current_dry_result, "stale_plan", False)),
+        "error_count": len(raw_errors),
+        "diagnostic_count": len(raw_diagnostics),
+        "primary_failure": primary_error,
+        "errors": serialized_errors,
+        "diagnostics": diagnostics,
+        "truncated": (
+            len(raw_errors) > _MAX_FAILURE_ERRORS
+            or len(raw_diagnostics) > _MAX_FAILURE_DIAGNOSTICS
+        ),
+    }
 
 
 def compile_mutation_preview(
@@ -901,6 +968,7 @@ def compile_mutation_preview(
     dry_run: Callable[[dict[str, Any], Any, str], Any] | None = None,
     make_failed_result: Callable[[str], Any] | None = None,
     mutator_factory: Callable[[], Any] | None = None,
+    record_stage: Callable[[dict[str, Any]], None] | None = None,
     log_repair: Callable[[str], None] | None = None,
     logger_override: logging.Logger | None = None,
     log: logging.Logger | None = None,
@@ -931,7 +999,20 @@ def compile_mutation_preview(
         "reasoning": mutation_payload.get("reasoning", ""),
         "base_graph_revision": base_revision,
     }
+    stage_timings: list[dict[str, Any]] = []
+
+    def _record_stage_sample(stage: str, started_ns: int, **metadata: Any) -> None:
+        sample = workflow_stage_sample(
+            stage,
+            started_ns,
+            metadata={key: value for key, value in metadata.items() if value is not None} or None,
+        )
+        stage_timings.append(sample)
+        if record_stage is not None:
+            record_stage(sample)
+
     try:
+        compile_started_ns = workflow_stage_start_ns()
         try:
             ops, mechanical_repairs = normalize_ops(
                 graph_snapshot,
@@ -961,19 +1042,50 @@ def compile_mutation_preview(
             "base_graph_revision": base_revision,
         }
         plan = validate_plan(plan_payload)
+        _record_stage_sample(
+            "wf_mutate_compile",
+            compile_started_ns,
+            success=True,
+            repair_count=len(mechanical_repairs),
+            operation_count=len(ops),
+        )
     except Exception as exc:
         error_message = f"{type(exc).__name__}: {exc}"
+        _record_stage_sample(
+            "wf_mutate_compile",
+            compile_started_ns,
+            success=False,
+            error=error_message,
+        )
+        failed_result = make_failed_result(error_message)
+        if hasattr(failed_result, "stage_timings"):
+            failed_result.stage_timings = list(stage_timings)
         return CompiledMutationPreview(
             plan_payload=fallback_payload,
             plan=None,
-            dry_result=make_failed_result(error_message),
+            dry_result=failed_result,
         )
 
     try:
+        dryrun_started_ns = workflow_stage_start_ns()
         dry_result = dry_run(graph_snapshot, plan, base_revision)
+        _record_stage_sample(
+            "wf_dryrun",
+            dryrun_started_ns,
+            success=bool(getattr(dry_result, "success", False)),
+            error_count=len(list(getattr(dry_result, "errors", []) or [])),
+        )
     except Exception as exc:
         error_message = f"{type(exc).__name__}: {exc}"
         dry_result = make_failed_result(error_message)
+        _record_stage_sample(
+            "wf_dryrun",
+            dryrun_started_ns,
+            success=False,
+            error=error_message,
+        )
+    if hasattr(dry_result, "stage_timings"):
+        dry_result.stage_timings = list(getattr(dry_result, "stage_timings", []) or []) + stage_timings
     return CompiledMutationPreview(
         plan_payload=plan_payload,
         plan=plan,
@@ -1019,14 +1131,7 @@ def build_mutation_repair_messages(
             "Return ONLY a `plan_graph_mutations` tool call or a JSON object matching that tool."
         )
 
-    error_payload = {
-        "errors": [
-            error.model_dump() if hasattr(error, "model_dump") else str(error)
-            for error in getattr(current_dry_result, "errors", []) or []
-        ],
-        "diagnostics": list(getattr(current_dry_result, "diagnostics", []) or []),
-        "stale_plan": bool(getattr(current_dry_result, "stale_plan", False)),
-    }
+    error_payload = build_mutation_failure_payload(current_dry_result)
     return [
         {"role": "system", "content": system_content},
         {
@@ -1036,7 +1141,7 @@ def build_mutation_repair_messages(
                 f"Current workflow summary:\n{serialize_summary(summary_value)}\n\n"
                 "Current mutation proposal:\n"
                 f"```json\n{json.dumps(current_plan_payload or current_mutation, indent=2)}\n```\n\n"
-                "Compilation or validation failures:\n"
+                "Structured failure context (Compilation or validation failures):\n"
                 f"```json\n{json.dumps(error_payload, indent=2)}\n```\n\n"
                 "Produce a corrected `plan_graph_mutations` call that keeps the same requested "
                 "workflow behavior while fixing only the mechanical issues above."
@@ -1201,6 +1306,7 @@ __all__ = [
     "_coerce_strict_edges",
     "_normalize_generated_mutation_ops",
     "build_auto_apply_followup_messages",
+    "build_mutation_failure_payload",
     "build_mutation_repair_messages",
     "build_stale_replan_messages",
     "compile_mutation_preview",
