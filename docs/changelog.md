@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-04-04
+- [docs] Renumbered the old standalone chat-history housekeeping plan from `48-global-chat-history-discovery.md` into [12-5-1](plans/12-5-1-global-chat-history-discovery.md) so it now sits under the existing conversation-lifecycle plan instead of consuming a new top-level plan number. Synced `docs/todo.md` and `docs/plans/12-5-conversation-lifecycle.md`.
 - [fix] Hardened Telegram fleet reply delivery for interrupted chat streams. `src/dan/adapters/telegram_fleet.py` now surfaces the same "continue from the latest progress" fallback when the Telegram-side WebSocket relay closes before any non-progress terminal event, instead of silently returning no reply, and the fleet now only caches a per-conversation `_fleet_*` workflow id after the backing graph lookup/create path actually succeeds.
 - [test] Added focused Telegram regressions in `tests/test_adapters/test_telegram_fleet.py` for progress-only streams that close without a terminal answer and for failed per-conversation workflow bootstrap caching. Revalidated the full Telegram fleet suite (`44 passed`) plus the related Telegram formatter/error slice (`5 passed`).
 - [docs] Synced `docs/plans/31-32-messaging-lifecycle-and-feedback.md`, `docs/todo.md`, `docs/architecture.md`, and `docs/bugs.md` so the messaging notes now record the narrow Telegram missing-terminal / workflow-bootstrap hardening while keeping the broader long-lived messaging stall explicitly open.

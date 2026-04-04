@@ -1,5 +1,6 @@
-# 48: Global Chat History Discovery
+# 12-5-1: Global Chat History Discovery
 
+**Parent:** [12-5-conversation-lifecycle](12-5-conversation-lifecycle.md)
 **Status:** completed
 **Goal:** Make DAN's full-screen chat history discoverable across workflows so persisted conversations do not appear to disappear after switching workflows or promoting `_scratch` into a named workflow.
 
@@ -16,6 +17,7 @@
 - Cross-workflow history uses a flat list in full-screen mode instead of the per-workflow branch tree to avoid mixing lineage structures from unrelated workflows.
 
 ## Notes
+- Former top-level plan `48-global-chat-history-discovery.md` was renumbered into this subplan on 2026-04-04 because this work is a follow-up on conversation lifecycle/history behavior, not a standalone new phase.
 - Backend: `GET /api/chats` now returns chat thread summaries across all workflows via `ChatStore.list_all_threads()`.
 - Frontend: full-screen `ChatPanel` now uses global history/search, renders workflow labels, and routes thread actions through explicit `{ workflowId, threadId }` targets.
 - Validation: `pytest -q tests/test_server/test_chat_mode.py tests/test_server/test_chat_integration.py -k 'thread_create_list_get or thread_list_all_workflows or search_finds_messages or search_empty_query_returns_empty or lists_threads_across_workflows'` (`5 passed, 41 deselected`) and `cd editor && npm run build` (passed; Vite emitted the existing Node-version warning for Node `20.17.0` vs recommended `20.19+`).

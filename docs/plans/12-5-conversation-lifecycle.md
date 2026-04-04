@@ -68,6 +68,7 @@
 - Stop generation (task 1) and export (task 4) are the highest-impact, lowest-effort items.
 - Message queuing (task 2) is surprisingly complex because queued messages might reference context that changes after the current response applies mutations. The simplest approach: re-resolve mentions when a queued message actually sends. **Deferred.**
 - Thread branching (task 7) is a stretch goal. **Deferred.**
+- 2026-04-04 housekeeping: the old standalone plan `48-global-chat-history-discovery.md` has been folded into [12-5-1](12-5-1-global-chat-history-discovery.md) so the numbering reflects that cross-workflow history discovery is a follow-up on this conversation-lifecycle plan rather than a separate top-level phase.
 - 2026-03-16 follow-up: v1 branch-based turn rewriting now exists via [12-7](12-7-chat-branching-tree.md), but explicit parent/child branch metadata and lineage UI remain deferred.
 - Checkpoints (task 3) extend the existing `pushSnapshot` mechanism from in-memory to persistent. Only auto-checkpoint (3-1) and persistence (3-5) implemented; restore UI deferred.
 - Search scroll-to-message (5-4) and inverted index (5-2) deferred — substring search with thread-open is the MVP.
