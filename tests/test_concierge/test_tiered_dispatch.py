@@ -942,6 +942,142 @@ async def test_tier1_treats_chat_mutation_event_as_terminal_response(
 
 
 @pytest.mark.asyncio
+async def test_workflow_preview_apply_then_run_sequence_preserves_concierge_continuity(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+    project = concierge.project_store.create_project("Watchlist Workflow", "cli-user")
+    project.linked_workflow_ids = ["_scratch"]
+    concierge.project_store.save_project(project)
+    concierge.project_store.add_task(
+        project.project_id,
+        "Build the workflow around watchlist.csv",
+        "cli-user",
+    )
+
+    async def triage_fn(
+        text: str,
+        _context: Any,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> TriageResult:
+        normalized = text.strip().lower()
+        if normalized == "build a watchlist workflow":
+            return TriageResult(
+                tier=1,
+                intent="agent",
+                goal="Build a watchlist workflow",
+                deliverable="Build a watchlist workflow",
+                route=RouteDecision(
+                    mode=RouteMode.AGENT,
+                    target="workflow",
+                    action_hints=["workflow_edit"],
+                ),
+            )
+        return TriageResult(
+            tier=1,
+            intent="ask",
+            goal=text,
+            deliverable=text,
+            route=RouteDecision(
+                mode=RouteMode.ASK,
+                target="general",
+            ),
+        )
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    preview_content = (
+        "Prepared a workflow update preview. Dry-run validation passed. "
+        "These changes are proposed, not applied yet."
+    )
+    apply_content = "Applied the workflow preview successfully."
+    run_content = "Started run run-123."
+
+    concierge.chat_manager._responses["Build a watchlist workflow"] = _mutation_stream(
+        content=preview_content,
+    )
+    concierge.chat_manager._responses["good please apply"] = _complete_stream(
+        apply_content,
+    )
+    concierge.chat_manager._responses["run it"] = _complete_stream(run_content)
+
+    first_events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="cli",
+                external_id="cli-user",
+                text="Build a watchlist workflow",
+                metadata={"mode": "agent"},
+            )
+        )
+    ]
+    second_events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="cli",
+                external_id="cli-user",
+                text="good please apply",
+                metadata={"mode": "ask"},
+            )
+        )
+    ]
+    third_events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="cli",
+                external_id="cli-user",
+                text="run it",
+                metadata={"mode": "ask"},
+            )
+        )
+    ]
+
+    assert any(getattr(event, "type", "") == "chat_mutation" for event in first_events)
+    assert any(
+        getattr(event, "type", "") == "chat_complete" and getattr(event, "content", "") == apply_content
+        for event in second_events
+    )
+    assert any(
+        getattr(event, "type", "") == "chat_complete" and getattr(event, "content", "") == run_content
+        for event in third_events
+    )
+
+    assert len(concierge.chat_manager.calls) == 3
+    build_call, apply_call, run_call = concierge.chat_manager.calls
+
+    assert build_call["message"] == "Build a watchlist workflow"
+    assert apply_call["mode"] == "agent"
+    assert apply_call["allow_mutation_tool"] is True
+    assert "workflow_edit" in apply_call["required_action_hints"]
+    assert any(
+        turn.get("role") == "assistant" and turn.get("content") == preview_content
+        for turn in apply_call["history"]
+    )
+
+    assert run_call["mode"] == "agent"
+    assert "workflow_run" in run_call["required_action_hints"]
+    assert "workflow_edit" not in run_call["required_action_hints"]
+    assert any(
+        turn.get("role") == "assistant" and turn.get("content") == apply_content
+        for turn in run_call["history"]
+    )
+
+    active_project = concierge.project_store.list_active("cli-user")[0]
+    current_task = concierge.project_store.get_current_task(
+        active_project.project_id,
+        "cli-user",
+    )
+    assert current_task is not None
+    contents = [turn.content for turn in current_task.turns]
+    assert preview_content in contents
+    assert apply_content in contents
+    assert run_content in contents
+
+
+@pytest.mark.asyncio
 async def test_tier2_leaf_synthesizes_terminal_response_when_handler_stream_ends_early(
     tmp_path: Path,
 ) -> None:
