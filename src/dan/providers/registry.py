@@ -86,11 +86,9 @@ class ProviderRegistry:
             f"Model overrides: {self._model_overrides}"
         )
 
-    def resolve(self, model: str) -> LLMProvider:
-        """Resolve a model name to its provider.
+    def resolve_runtime_name(self, model: str) -> tuple[str, str | None]:
+        """Resolve the provider name using the same fallback rules as runtime."""
 
-        Raises KeyError if no matching provider is found.
-        """
         if model in self._model_overrides:
             provider_name = self._model_overrides[model]
             if provider_name not in self._providers:
@@ -98,20 +96,22 @@ class ProviderRegistry:
                     f"Model '{model}' is pinned to provider '{provider_name}', "
                     f"but that provider is not registered. Registered providers: {sorted(self._providers)}"
                 )
-            return self._providers[provider_name]
+            return provider_name, None
 
         for prefix, provider_name in self._prefix_patterns:
             if not model.startswith(prefix):
                 continue
             if provider_name in self._providers:
-                return self._providers[provider_name]
+                return provider_name, None
             if provider_name in _STRICT_PREFIX_PROVIDERS:
                 if "default" in self._providers:
-                    logger.debug(
-                        "Falling back to default provider during direct resolve for model %s",
-                        model,
+                    return (
+                        "default",
+                        (
+                            f"Model '{model}' normally requires provider '{provider_name}', "
+                            "but runtime will fall back to the configured `default` provider."
+                        ),
                     )
-                    return self._providers["default"]
                 raise KeyError(
                     f"Model '{model}' requires provider '{provider_name}', "
                     f"but that provider is not registered. Registered providers: {sorted(self._providers)}"
@@ -119,13 +119,23 @@ class ProviderRegistry:
             break
 
         if "default" in self._providers:
-            return self._providers["default"]
+            return "default", None
 
         raise KeyError(
             f"No provider found for model '{model}'. "
             f"Registered providers: {sorted(self._providers)}. "
             f"Model overrides: {self._model_overrides}"
         )
+
+    def resolve(self, model: str) -> LLMProvider:
+        """Resolve a model name to its provider.
+
+        Raises KeyError if no matching provider is found.
+        """
+        provider_name, fallback_message = self.resolve_runtime_name(model)
+        if fallback_message:
+            logger.debug("%s", fallback_message)
+        return self._providers[provider_name]
 
     def has_provider(self, name: str) -> bool:
         return name in self._providers

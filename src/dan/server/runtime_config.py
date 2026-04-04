@@ -292,7 +292,14 @@ def provider_readiness_summary(config: EngineConfig) -> dict[str, Any]:
     resolved_provider = None
     if default_model:
         try:
-            resolved_provider = registry.resolve_name(default_model)
+            resolved_provider, fallback_message = registry.resolve_runtime_name(default_model)
+            if fallback_message:
+                issues.append(
+                    {
+                        "subsystem": "providers",
+                        "message": fallback_message,
+                    }
+                )
         except KeyError as exc:
             issues.append(
                 {

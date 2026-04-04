@@ -6,13 +6,18 @@ import logging
 from typing import TYPE_CHECKING, Protocol
 
 from dan.providers import ProviderConfig
-from dan.providers.openai_provider import OpenAIProvider
 from dan.providers.registry import ProviderRegistry
 
 if TYPE_CHECKING:
     from dan.providers import LLMProvider
 
 logger = logging.getLogger(__name__)
+
+
+def _build_openai_provider(config: ProviderConfig) -> "LLMProvider":
+    from dan.providers.openai_provider import OpenAIProvider
+
+    return OpenAIProvider(config)
 
 
 class ProviderRegistryConfig(Protocol):
@@ -31,7 +36,7 @@ def create_provider(name: str, config: ProviderConfig) -> "LLMProvider | None":
     """
 
     if name in {"default", "openai"}:
-        return OpenAIProvider(config)
+        return _build_openai_provider(config)
 
     if name == "anthropic":
         try:
@@ -57,7 +62,7 @@ def create_provider(name: str, config: ProviderConfig) -> "LLMProvider | None":
             )
             return None
 
-    return OpenAIProvider(config)
+    return _build_openai_provider(config)
 
 
 def build_provider_registry(config: ProviderRegistryConfig) -> ProviderRegistry:
@@ -68,7 +73,7 @@ def build_provider_registry(config: ProviderRegistryConfig) -> ProviderRegistry:
         api_key=config.llm_api_key,
         base_url=config.llm_base_url,
     )
-    registry.register("default", OpenAIProvider(default_config))
+    registry.register("default", _build_openai_provider(default_config))
 
     for name, provider_config in config.providers.items():
         if name == "default":
@@ -81,4 +86,3 @@ def build_provider_registry(config: ProviderRegistryConfig) -> ProviderRegistry:
         registry.set_model_override(model, provider_name)
 
     return registry
-
