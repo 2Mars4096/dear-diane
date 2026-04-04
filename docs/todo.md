@@ -25,6 +25,13 @@
   - [ ] [45-3-speed-first-minimal-build-path](plans/45-3-speed-first-minimal-build-path.md)
   - [ ] [45-4-meta-workflow-builder-eval-harness](plans/45-4-meta-workflow-builder-eval-harness.md)
   - [ ] [45-5-benchmark-and-rollout-gates](plans/45-5-benchmark-and-rollout-gates.md)
+- [ ] [48-workflow-continuity-and-control-plane-hardening](plans/48-workflow-continuity-and-control-plane-hardening.md) — improve build → edit → rerun → schedule continuity by fixing workflow identity resolution, reducing workflow follow-up routing ambiguity, hardening mutation transactions, making scheduling bind to the right workflow/timezone semantics, softening heuristic first-run friction where appropriate, and reducing DAN-owned non-LLM latency
+  - [ ] [48-1-workflow-identity-and-resolution](plans/48-1-workflow-identity-and-resolution.md)
+  - [ ] [48-2-workflow-followup-lane-and-context-pack](plans/48-2-workflow-followup-lane-and-context-pack.md)
+  - [ ] [48-3-mutation-transaction-safety](plans/48-3-mutation-transaction-safety.md)
+  - [ ] [48-4-scheduling-workflow-binding-and-timezones](plans/48-4-scheduling-workflow-binding-and-timezones.md)
+  - [ ] [48-5-generated-workflow-first-run-policy](plans/48-5-generated-workflow-first-run-policy.md)
+  - [ ] [48-6-latency-reduction-and-acceptance-harness](plans/48-6-latency-reduction-and-acceptance-harness.md)
 - [x] Chat-started run failure observability — `Save distilled workflow` / other chat-initiated runs now surface the real failure message from `run_failed`/`node_failed`, `View full logs` hydrates the persisted event stream into `LogPanel`, and history replay no longer hides `errors`-map failures behind truncated raw JSON
 - [x] Server-backed DAN equity-workflow build stall triage — workflow-generation codegen/diagnosis now enforce the remaining generation budget, mutation-preview repair calls are separately capped, and clean `build`-mode replay again reaches terminal events instead of burning past the budget in silence
 - [x] [12-13-workflow-authoring-triage-stability](plans/12-13-workflow-authoring-triage-stability.md) — concierge/triage routing for workflow-authoring turns is now stabilized end-to-end: lexical and embedding coverage, thread-context-aware continuation routing, JSON-mode + repair for LLM triage, stronger intent-extraction prompting/retry, route-source audit metadata, and repeated-trial stability regressions are landed.
