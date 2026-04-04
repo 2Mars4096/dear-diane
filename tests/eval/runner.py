@@ -28,6 +28,7 @@ from tests.eval import (
 from tests.eval.client import DanClient
 from tests.eval.metrics import EvalLogger
 from tests.eval.telemetry_reader import TelemetryReader
+from dan.agent_runtime.graph_summary import compute_graph_revision
 from dan.server.audit import ChatAuditStore
 
 try:
@@ -471,6 +472,7 @@ class EvalRunner:
         records: list[EvalRecord] = []
         history: list[dict] = []
         graph_revision: str | None = None
+        thread_id = f"eval-{fixture.id}"
         turns = [fixture.prompt] + list(fixture.multi_turn_follow_ups or [])
 
         for turn_idx, message in enumerate(turns):
@@ -485,6 +487,7 @@ class EvalRunner:
                     mode=lane,
                     history=history if turn_idx > 0 else None,
                     client_graph_revision=graph_revision,
+                    thread_id=thread_id,
                     surface_context=_eval_surface_context(workflow_contract_variant),
                 )
                 channel_id = resp.get("stream_channel_id", "")
@@ -521,7 +524,7 @@ class EvalRunner:
             audit_data = await self._query_audit(audit_turn_id)
             graph_created, graph_summary, graph_dict = await self._inspect_graph(graph_id)
             if graph_dict:
-                graph_revision = graph_dict.get("metadata", {}).get("updated_at") or graph_dict.get("version")
+                graph_revision = compute_graph_revision(graph_dict)
 
             quality_score_mt: int | None = None
             quality_concerns_mt: list[str] = []

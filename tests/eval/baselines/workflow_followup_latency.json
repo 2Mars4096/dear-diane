@@ -1,0 +1,41 @@
+{
+  "generated_at": "2026-04-04T00:00:00Z",
+  "owner": "48-6",
+  "stages": {
+    "wf_route": {
+      "p50_ms": 250,
+      "p95_ms": 600,
+      "notes": "Obvious workflow follow-up routing and lane activation."
+    },
+    "wf_resolve": {
+      "p50_ms": 250,
+      "p95_ms": 600,
+      "notes": "Workflow identity resolution and stale-reference checks."
+    },
+    "wf_context": {
+      "p50_ms": 250,
+      "p95_ms": 600,
+      "notes": "Workflow context-pack assembly."
+    },
+    "wf_mutate_compile": {
+      "p50_ms": 800,
+      "p95_ms": 1500,
+      "notes": "Mutation normalization and plan validation on a typical medium graph."
+    },
+    "wf_dryrun": {
+      "p50_ms": 800,
+      "p95_ms": 1500,
+      "notes": "Mutation dry-run and validation on a typical medium graph."
+    },
+    "wf_dispatch": {
+      "p50_ms": 200,
+      "p95_ms": 500,
+      "notes": "Run or schedule dispatch after the target workflow is already resolved."
+    }
+  },
+  "scenarios": [
+    "build_edit_rerun_schedule",
+    "bad_edit_repair_rerun",
+    "save_as_continue_schedule"
+  ]
+}
