@@ -390,6 +390,82 @@ async def test_fast_social_turn_skips_triage_llm_call(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_dispatcher_fast_social_turn_does_not_create_project_state(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        raise AssertionError("triage should be bypassed by fast social classifier")
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    dispatcher = ConcurrentDispatcher(concierge, max_concurrent_projects=5)
+
+    events = [
+        event
+        async for event in dispatcher.dispatch(
+            SurfaceMessage(surface="cli", external_id="cli-user", text="thanks!")
+        )
+    ]
+
+    terminal_events = [
+        event
+        for event in events
+        if getattr(event, "type", "") == "chat_complete"
+        and getattr(event, "detected_mode", None) != "progress_ack"
+    ]
+    assert [event.content for event in terminal_events] == ["You're welcome."]
+    assert concierge.project_store.list_projects("cli-user") == []
+
+
+@pytest.mark.asyncio
+async def test_unrelated_general_question_does_not_attach_to_active_project(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+    project = concierge.project_store.create_project("Refactor API", "cli-user")
+    task = concierge.project_store.add_task(project.project_id, "Fix bug", "cli-user")
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=1,
+            intent="ask",
+            goal="Answer the factual question",
+            deliverable="Answer the factual question",
+            route=RouteDecision(
+                mode=RouteMode.ASK,
+                target="general",
+                action_hints=["status_check"],
+            ),
+        )
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses["What is the capital of France?"] = "Paris."
+
+    events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="cli",
+                external_id="cli-user",
+                text="What is the capital of France?",
+            )
+        )
+    ]
+
+    final = next(
+        event for event in reversed(events) if isinstance(event, ChatCompleteEvent)
+    )
+    assert final.content.endswith("Paris.")
+    projects = concierge.project_store.list_projects("cli-user")
+    assert len(projects) == 1
+    refreshed = concierge.project_store.get_project(project.project_id, "cli-user")
+    assert refreshed is not None
+    refreshed_task = next(candidate for candidate in refreshed.tasks if candidate.task_id == task.task_id)
+    assert refreshed_task.turns == []
+
+
+@pytest.mark.asyncio
 async def test_tier1_path_emits_phase_events(tmp_path: Path) -> None:
     concierge = _make_concierge(tmp_path)
 
@@ -421,7 +497,10 @@ async def test_tier1_path_emits_phase_events(tmp_path: Path) -> None:
         if getattr(event, "type", "") == "chat_complete"
         and getattr(event, "detected_mode", None) == "progress_ack"
     ]
-    assert any("Understanding your request" in content for content in progress_messages)
+    understanding_messages = [
+        content for content in progress_messages if "Understanding your request" in content
+    ]
+    assert len(understanding_messages) == 1
     assert any("Gathering relevant context" in content for content in progress_messages)
     # Execution phase uses triage goal as progress detail (not the bare word "Executing").
     assert any("Answer the user directly" in content for content in progress_messages)
@@ -1780,9 +1859,9 @@ async def test_root_assistant_turn_persists_session_tree_metadata(tmp_path: Path
     async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
         return TriageResult(
             tier=1,
-            intent="ask",
-            goal="Answer the user directly",
-            deliverable="Answer the user directly",
+            intent="agent",
+            goal="Handle the request directly",
+            deliverable="Handle the request directly",
         )
 
     _install_dispatcher(concierge, triage_fn=triage_fn)
@@ -2835,6 +2914,9 @@ async def test_telemetry_events_include_autonomy_resolution_metadata(
     assert turn_events
     assert session_complete
     assert dispatch_complete
+    assert turn_events[-1].project_id is not None
+    assert turn_events[-1].task_id is not None
+    assert turn_events[-1].intent == "agent"
     assert turn_events[-1].metadata["concierge_stage"] == "conversation"
     assert turn_events[-1].metadata["session_tier"] == 1
     assert turn_events[-1].metadata["prompt_overlay"] == "concierge_stage:conversation"

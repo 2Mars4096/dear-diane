@@ -516,10 +516,27 @@ class TieredDispatcher:
         else:
             triage, triage_context = await self._do_triage(msg)
 
+        triage_context = self._concierge._materialize_context(
+            msg,
+            triage=triage,
+            base_context=triage_context,
+        )
         turn_preference = None
         msg_metadata = getattr(msg, "metadata", None)
         if isinstance(msg_metadata, dict):
+            if self._concierge._should_persist_context(triage_context):
+                msg.metadata = self._concierge._with_resolved_context_metadata(
+                    msg_metadata,
+                    triage_context,
+                )
+                msg_metadata = msg.metadata
             turn_preference = msg_metadata.get("turn_autonomy_preference")
+        self._concierge._telem_intent = str(getattr(triage, "intent", "") or "").strip() or None
+        self._concierge._last_context = (
+            triage_context
+            if self._concierge._should_persist_context(triage_context)
+            else None
+        )
         project_preference = getattr(
             getattr(triage_context, "project", None),
             "autonomy_preference",
@@ -618,6 +635,11 @@ class TieredDispatcher:
             autonomy_resolution=autonomy_resolution,
         )
         session.context = context
+        self._concierge._last_context = (
+            context
+            if self._concierge._should_persist_context(context)
+            else None
+        )
 
         execution_event = self._phase_event(
             msg.external_id,
@@ -832,7 +854,11 @@ class TieredDispatcher:
                 for t in tree_trace
             ]
 
-            if hasattr(self._concierge, "project_store") and context:
+            if (
+                hasattr(self._concierge, "project_store")
+                and context
+                and self._concierge._should_persist_context(context)
+            ):
                 from .models import TaskTurn
 
                 intent_str = session.triage.intent if session.triage else "ask"

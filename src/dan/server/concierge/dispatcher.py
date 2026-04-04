@@ -365,8 +365,14 @@ class ConcurrentDispatcher:
         while not q.empty():
             queued_msg, channel_id = await q.get()
             if self._project_has_pending_action(project_id, queued_msg.external_id):
-                self._restore_project_queue(
+                restore_project_id = self._pending_queue_project_id(
                     project_id,
+                    queued_msg.external_id,
+                )
+                if restore_project_id != project_id:
+                    self._project_queues.pop(project_id, None)
+                self._restore_project_queue(
+                    restore_project_id,
                     [(queued_msg, channel_id), *self._drain_queue_items(q)],
                 )
                 return
@@ -403,6 +409,15 @@ class ConcurrentDispatcher:
         project_store = getattr(self._concierge, "project_store", None)
         if project_store is None:
             return False
+        if str(project_id).startswith("_ephemeral:"):
+            try:
+                return bool(project_store.list_pending_projects(surface_id))
+            except Exception:
+                logger.debug(
+                    "Failed to inspect pending actions for ephemeral queue drain",
+                    exc_info=True,
+                )
+                return False
         try:
             project = project_store.get_project(project_id, surface_id)
         except Exception:
@@ -412,6 +427,24 @@ class ConcurrentDispatcher:
             )
             return False
         return project is not None and getattr(project, "pending_action", None) is not None
+
+    def _pending_queue_project_id(self, project_id: str, surface_id: str) -> str:
+        if not str(project_id).startswith("_ephemeral:"):
+            return project_id
+        project_store = getattr(self._concierge, "project_store", None)
+        if project_store is None:
+            return project_id
+        try:
+            pending_projects = project_store.list_pending_projects(surface_id)
+        except Exception:
+            logger.debug(
+                "Failed to inspect pending projects while remapping queue drain",
+                exc_info=True,
+            )
+            return project_id
+        if len(pending_projects) == 1:
+            return str(pending_projects[0].project_id or project_id)
+        return project_id
 
     @staticmethod
     def _drain_queue_items(

@@ -196,6 +196,31 @@ class TestFastCommandSkipsPrep:
         assert events[0].content == "registry handled: /registry-test hello"
 
     @pytest.mark.asyncio
+    async def test_registry_chat_command_with_unresolved_handler_fails_closed(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import dan.server.concierge.runtime as runtime_module
+
+        registry = CommandRegistry()
+        registry.register(CommandDescriptor(
+            name="/registry-broken",
+            kind="chat",
+            handler="tests.test_concierge.test_fast_commands.missing_registry_handler",
+            help_text="Broken registry-only test command",
+        ))
+        monkeypatch.setattr(runtime_module, "get_default_registry", lambda: registry)
+
+        c = _build_concierge(tmp_path)
+        events = await _collect(c, _make_msg("/registry-broken hello"))
+
+        assert len(events) == 1
+        assert "unavailable" in events[0].content.lower()
+        c.chat_manager.send_message.assert_not_called()
+        c.chat_manager.send_message_with_tools.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_schedule_workflow_current_uses_linked_project_workflow_without_metadata(
         self,
         tmp_path,
