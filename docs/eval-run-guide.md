@@ -28,6 +28,49 @@ The `PYTHONPATH=src` prefix is a repo-local bootstrap bridge for this checkout b
 
 ## Commands
 
+### Workflow result similarity benchmark (plan 45-4)
+
+```bash
+PYTHONPATH=src:. python -m tests.eval.workflow_result_similarity_benchmark \
+  --env-file .env \
+  --judge off
+```
+
+This harness compares:
+- a hand-authored reference workflow built in-process with canonical `Worker` nodes
+- a DAN-generated workflow created through build mode on the running server
+- the final outputs of both workflows on the same long-form task input
+
+The current fixture catalog contains 10 long-form tasks:
+- equity daily brief
+- incident postmortem
+- product launch brief
+- vendor risk review
+- feedback synthesis
+- literature review digest
+- operations weekly brief
+- policy compliance assessment
+- meeting-to-project-plan
+- hiring interview packet
+
+Each case writes:
+- reference graph summary and validation
+- generated graph summary and validation
+- execution status and primary outputs for both workflows
+- deterministic similarity metrics (`section_coverage`, `keyword_overlap`)
+- optional LLM-judge scores when `--judge auto|required` is enabled
+
+Reports are written under `tests/eval/results/` as `*_workflow_result_similarity_benchmark.json`.
+
+Use `--case <fixture_id>` to run a single fixture while iterating:
+
+```bash
+PYTHONPATH=src:. python -m tests.eval.workflow_result_similarity_benchmark \
+  --case meeting_to_project_plan \
+  --env-file .env \
+  --judge off
+```
+
 ### Worker / Linter rollout benchmark (plans 46/47)
 
 ```bash

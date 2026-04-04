@@ -31,8 +31,8 @@ class DanClient:
         base = self._base_url.replace("http://", "").replace("https://", "")
         return f"{scheme}://{base}{path}"
 
-    async def create_graph(self, graph_id: str) -> dict:
-        body = {"graph_id": graph_id, "data": {"nodes": [], "edges": []}}
+    async def create_graph(self, graph_id: str, data: dict | None = None) -> dict:
+        body = {"graph_id": graph_id, "data": data or {"nodes": [], "edges": []}}
         resp = await self._get_http().post("/api/graphs", json=body)
         resp.raise_for_status()
         return resp.json()
