@@ -16,6 +16,7 @@ import { DebugManager } from "./debugManager";
 import { ExtensionHost } from "./extensionHost";
 import { runCommand, type CommandResult } from "./runCommand";
 import { waitForBackendHealth } from "./backendHealth";
+import { buildBackendLaunchEnv } from "./backendLaunch";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -162,19 +163,21 @@ async function startBackend(): Promise<void> {
 
   const danServe = process.env.DAN_SERVE_CMD;
   const graphsDir = process.env.DAN_GRAPHS_DIR || getPersistentGraphsDir();
-  fs.mkdirSync(graphsDir, { recursive: true });
-  const env = {
-    ...process.env,
-    DAN_GRAPHS_DIR: graphsDir,
-  };
+  const env = buildBackendLaunchEnv({ env: process.env, graphsDir });
+  const backendGraphsDir = env.DAN_GRAPHS_DIR || graphsDir;
+  const workspaceRoot = env.DAN_WORKSPACE_ROOT || path.dirname(backendGraphsDir);
+  fs.mkdirSync(backendGraphsDir, { recursive: true });
+  fs.mkdirSync(workspaceRoot, { recursive: true });
   const danServeParts = danServe?.split(/\s+/).filter(Boolean) ?? [];
 
   const proc = danServe
     ? spawn(danServeParts[0], [...danServeParts.slice(1), "--no-reload"], {
+        cwd: workspaceRoot,
         env,
         stdio: ["ignore", "pipe", "pipe"],
       })
     : spawn(findPython(), ["-m", "dan.server", "--no-reload"], {
+        cwd: workspaceRoot,
         env,
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -183,7 +186,8 @@ async function startBackend(): Promise<void> {
   backendOwnedByUs = true;
   backendReady = false;
 
-  console.log(`Using DAN_GRAPHS_DIR=${graphsDir}`);
+  console.log(`Using DAN_GRAPHS_DIR=${backendGraphsDir}`);
+  console.log(`Using DAN_WORKSPACE_ROOT=${workspaceRoot}`);
   sendBackendStatus();
 
   proc.stdout?.on("data", (d: Buffer) => {
