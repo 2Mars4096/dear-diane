@@ -25,13 +25,13 @@
   - [ ] [45-3-speed-first-minimal-build-path](plans/45-3-speed-first-minimal-build-path.md)
   - [ ] [45-4-meta-workflow-builder-eval-harness](plans/45-4-meta-workflow-builder-eval-harness.md)
   - [ ] [45-5-benchmark-and-rollout-gates](plans/45-5-benchmark-and-rollout-gates.md)
-- [ ] [48-workflow-continuity-and-control-plane-hardening](plans/48-workflow-continuity-and-control-plane-hardening.md) — improve build → edit → rerun → schedule continuity by fixing workflow identity resolution, reducing workflow follow-up routing ambiguity, hardening mutation transactions, making scheduling bind to the right workflow/timezone semantics, softening heuristic first-run friction where appropriate, and reducing DAN-owned non-LLM latency
-  - [ ] [48-1-workflow-identity-and-resolution](plans/48-1-workflow-identity-and-resolution.md)
-  - [ ] [48-2-workflow-followup-lane-and-context-pack](plans/48-2-workflow-followup-lane-and-context-pack.md)
-  - [ ] [48-3-mutation-transaction-safety](plans/48-3-mutation-transaction-safety.md)
-  - [ ] [48-4-scheduling-workflow-binding-and-timezones](plans/48-4-scheduling-workflow-binding-and-timezones.md)
-  - [ ] [48-5-generated-workflow-first-run-policy](plans/48-5-generated-workflow-first-run-policy.md)
-  - [ ] [48-6-latency-reduction-and-acceptance-harness](plans/48-6-latency-reduction-and-acceptance-harness.md)
+- [x] [48-workflow-continuity-and-control-plane-hardening](plans/48-workflow-continuity-and-control-plane-hardening.md) — improve build → edit → rerun → schedule continuity by fixing workflow identity resolution, reducing workflow follow-up routing ambiguity, hardening mutation transactions, making scheduling bind to the right workflow/timezone semantics, softening heuristic first-run friction where appropriate, and reducing DAN-owned non-LLM latency
+  - [x] [48-1-workflow-identity-and-resolution](plans/48-1-workflow-identity-and-resolution.md)
+  - [x] [48-2-workflow-followup-lane-and-context-pack](plans/48-2-workflow-followup-lane-and-context-pack.md)
+  - [x] [48-3-mutation-transaction-safety](plans/48-3-mutation-transaction-safety.md)
+  - [x] [48-4-scheduling-workflow-binding-and-timezones](plans/48-4-scheduling-workflow-binding-and-timezones.md)
+  - [x] [48-5-generated-workflow-first-run-policy](plans/48-5-generated-workflow-first-run-policy.md)
+  - [x] [48-6-latency-reduction-and-acceptance-harness](plans/48-6-latency-reduction-and-acceptance-harness.md)
 - [ ] [49-concierge-service-hardening](plans/49-concierge-service-hardening.md) — concierge-only hardening pass that treats the concierge as an always-available intake/supervision layer, introduces a first-class task registry above session trees, makes background dispatch non-blocking, binds clarification/retry/status semantics to explicit task ownership, and defines the backend contract for future task cards and a dispatcher-manager dashboard without touching frontend UI yet
   - [ ] [49-1-task-registry-and-lifecycle](plans/49-1-task-registry-and-lifecycle.md)
   - [ ] [49-2-background-dispatch-and-concierge-availability](plans/49-2-background-dispatch-and-concierge-availability.md)
@@ -189,6 +189,7 @@
   - [x] Watchlist workflow validation follow-up — `_scratch` now reruns cleanly against the live watchlist CSV and writes populated per-ticker plus aggregate markdown reports
   - [x] Workflow approval follow-up — turns like `good please apply` now stay in workflow-edit mode instead of falling back to Ask/read-only routing
   - [x] Workflow preview apply follow-up — chat now exposes `apply_last_mutation` so a later “apply it” turn can apply the latest proposed workflow preview instead of re-planning or guessing `apply_pending_overlay`
+  - [x] Workflow preview continuity follow-up — concierge now preserves `chat_mutation` previews as terminal assistant turns and promoted approval follow-ups append `workflow_edit` hints, so preview → “good please apply” no longer degrades into generic acknowledgements
   - [x] Rebuild-from-scratch mutator follow-up — remove-then-recreate node IDs like `workflow_input` now dry-run cleanly instead of failing with duplicate-ID errors
   - [x] Workflow build self-repair follow-up — mutation retry loop now uses structured repair context (user request + graph summary + proposed plan + typed errors) and catches compilation exceptions instead of crashing the turn
   - [x] Workflow identity/run-guidance follow-up — build replies now say which current workflow ID was saved, include the workflow name and node preview, and prompt guidance now explicitly says to use `start_run` instead of `http_request` / Furnace endpoints for ordinary workflow execution

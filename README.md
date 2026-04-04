@@ -189,6 +189,8 @@ dan-chat --confirm                        # require approval before mutations
 
 `dan-chat` works without a running server — when the server is unavailable, it automatically falls back to local mode with an in-process ChatManager. Use `--local` to force local mode even if a server is running.
 
+Workflow-aware scheduling is also part of the chat surface now: `/schedule workflow current daily at 8am --timezone Asia/Hong_Kong` binds against the resolved current/linked workflow, and natural follow-ups like `schedule it daily at 8am Hong Kong time` reuse the same scheduler path.
+
 **Chat Commands:**
 Inside the REPL, use slash commands to manage your session:
 - `/model [name]` — view or change the LLM for this chat
@@ -203,6 +205,8 @@ Inside the REPL, use slash commands to manage your session:
 - `/search <query>` — force an explicit grounded web search with fetched excerpts
 - `/memory-delete`, `/memory-forget`, `/memory-confirm`, `/memory-reject` — manage learned memory
 - `/domains [list|known|add|remove|clear]` — inspect or edit saved common domains
+- `/schedule [list|add|remove|pause|resume|workflow]` — manage schedules; `/schedule workflow current ...` targets the resolved current/linked workflow and supports `--timezone`
+- `/timezone [show|set|clear]` — inspect or set the default scheduling timezone used when a schedule does not specify one
 - `/help` — list all commands
 
 ### MCP Server Integration

@@ -1,6 +1,6 @@
 # 48: Workflow Continuity and Control-Plane Hardening
 
-**Status:** not-started
+**Status:** completed
 **Goal:** Make DAN feel sharper and more reliable on build → edit → rerun → schedule workflows by fixing workflow identity continuity, reducing concierge ambiguity, hardening mutation transactions, improving scheduling semantics, and cutting avoidable non-LLM latency.
 
 ## Problem
@@ -40,12 +40,12 @@ Out of scope:
 
 | # | Sub-Plan | Scope | Priority | Status |
 |---|----------|-------|----------|--------|
-| [48-1](48-1-workflow-identity-and-resolution.md) | Workflow Identity and Resolution | One authoritative resolver for workflow identity across chat, run, schedule, delete, and project context | P1 | not-started |
-| [48-2](48-2-workflow-followup-lane-and-context-pack.md) | Workflow Follow-up Lane and Context Pack | Dedicated workflow continuation routing plus compact workflow state injection and fast-path reductions | P1 | not-started |
-| [48-3](48-3-mutation-transaction-safety.md) | Mutation Transaction Safety | Conservative repair and failure semantics for partial graph edits | P1 | not-started |
-| [48-4](48-4-scheduling-workflow-binding-and-timezones.md) | Scheduling Workflow Binding and Timezones | Schedule against resolved workflow identity and support user-facing timezone semantics | P1 | not-started |
-| [48-5](48-5-generated-workflow-first-run-policy.md) | Generated Workflow First-Run Policy | Keep structural safety strict while softening heuristic first-run friction for generated workflows | P2 | not-started |
-| [48-6](48-6-latency-reduction-and-acceptance-harness.md) | Latency Reduction and Acceptance Harness | Measure and reduce non-LLM latency while locking realistic workflow-continuation regressions | P1 | not-started |
+| [48-1](48-1-workflow-identity-and-resolution.md) | Workflow Identity and Resolution | One authoritative resolver for workflow identity across chat, run, schedule, delete, and project context | P1 | completed |
+| [48-2](48-2-workflow-followup-lane-and-context-pack.md) | Workflow Follow-up Lane and Context Pack | Dedicated workflow continuation routing plus compact workflow state injection and fast-path reductions | P1 | completed |
+| [48-3](48-3-mutation-transaction-safety.md) | Mutation Transaction Safety | Conservative repair and failure semantics for partial graph edits | P1 | completed |
+| [48-4](48-4-scheduling-workflow-binding-and-timezones.md) | Scheduling Workflow Binding and Timezones | Schedule against resolved workflow identity and support user-facing timezone semantics | P1 | completed |
+| [48-5](48-5-generated-workflow-first-run-policy.md) | Generated Workflow First-Run Policy | Keep structural safety strict while softening heuristic first-run friction for generated workflows | P2 | completed |
+| [48-6](48-6-latency-reduction-and-acceptance-harness.md) | Latency Reduction and Acceptance Harness | Measure and reduce non-LLM latency while locking realistic workflow-continuation regressions | P1 | completed |
 
 ## Dependencies / Sequencing
 
@@ -88,6 +88,7 @@ Rationale:
 - Structural validation remains strict; heuristic guidance should be introduced conservatively where it helps users recover.
 - Speed work in this phase focuses on DAN-owned stages only: routing, context assembly, mutation compilation, lookup, and scheduling prep.
 - Revision/fingerprint awareness is part of workflow identity; continuity should be explicit about which saved workflow and which revision are being continued.
+- The implementation stayed patch-first: existing scheduler, concierge, capability, and mutation-preview paths were extended rather than replaced with a parallel control plane.
 
 ## Notes
 
@@ -95,3 +96,4 @@ Rationale:
 - The best comparison point is not “is the model smart?” but “does DAN preserve the right workflow object, context, and action lane across turns?”
 - The meta-builder eval harness under plan 45 can remain useful as a benchmark, but it is not the center of this phase.
 - The old standalone chat-history housekeeping plan that previously used the `48` prefix was already renumbered under the conversation-lifecycle hierarchy as `12-5-1`, so this `48` family is intentionally focused on workflow continuity and speed.
+- Completed implementation summary: shared workflow resolver/context pack, workflow-lane stage timing, structured mutation failure attribution, timezone-aware scheduling with `/timezone`, first-run heuristic softening under `DAN_FIRST_RUN_POLICY`, and an eval baseline for workflow follow-up latency.

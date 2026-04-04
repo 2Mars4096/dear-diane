@@ -1,6 +1,6 @@
 # 49: Concierge Service Hardening
 
-**Status:** in-progress
+**Status:** not-started
 **Goal:** Make the concierge an always-available intake and supervision layer by introducing first-class task tracking above session trees, background dispatch that does not monopolize chat, task-scoped clarification/status contracts, and backend observability surfaces for future task-card and dispatcher-dashboard UX.
 
 ## Problem
@@ -25,6 +25,7 @@ In scope:
 - a task-centric status, attention, and notification contract
 - backend snapshot/stream contracts for future task-card and dispatcher-manager dashboard UX
 - focused regressions and acceptance scenarios for multi-task concierge behavior
+- all chat surfaces (editor chat, Telegram adapter, CLI) must converge on the same task lifecycle and ownership contracts; surface-specific rendering (Telegram bubble edits, CLI progress lines, editor panel badges) remains an adapter concern but must consume the same backend task state
 
 Out of scope:
 
@@ -32,6 +33,7 @@ Out of scope:
 - renumbering internal `SessionTier` enums or rewriting the existing tier executor architecture from scratch
 - replacing Worker/linter foundations or reopening plans 46/47 as the home for this work
 - broad workflow-generation hardening already tracked under the 48-series plans
+- restart recovery for in-flight tasks — tasks persisted by 49-1 survive restarts as durable records, but running asyncio tasks do not. On startup, any `ConciergeTask` still in `running` state should be transitioned to `failed` with `reason: process_restart`. Active re-execution or auto-retry of interrupted tasks is deferred to a later phase.
 
 ## Sub-Plans
 
@@ -66,22 +68,29 @@ Rationale:
 
 ## Success Criteria
 
-- the concierge can accept a backgroundable task, acknowledge it immediately, and remain available for new user input
-- non-trivial work is represented as a durable task with stable identity and explicit lifecycle state
-- clarification, retry, and supersession behavior attaches to task ownership rather than loose project/message heuristics
-- `/status` and natural-language status queries can summarize active, paused, completed, and failed tasks coherently
-- the backend exposes a stable task/dispatcher snapshot and event contract suitable for future task cards and a manager dashboard
+- the concierge can accept a backgroundable task, acknowledge it immediately (under 500ms p95 from intake to ack delivery), and remain available for new user input while the task runs
+- non-trivial work is represented as a durable `ConciergeTask` with stable `task_id`, explicit lifecycle state, and at least one linked root-session attempt
+- two unrelated tasks in the same project can coexist without false serialization — only explicit resource/clarification ownership blocks queue drain
+- clarification, retry, and supersession behavior attaches to task ownership; follow-up turns resolve to a specific `task_id` rather than guessing from project-level recency
+- `/status` and natural-language status queries return a task-aware summary showing active, paused, completed, and failed tasks with per-task age and latest-attempt metadata
+- the backend exposes a stable task snapshot and lifecycle-event contract with documented JSON schemas, suitable for future task-card and dispatcher-dashboard UX
 - the existing session tree remains available as an execution trace, but tasks become the primary control-plane object
+- focused multi-task acceptance scenarios cover at least: concurrent background tasks, clarification pause/resume, retry with preserved identity, supersession, and coalesced completion notification
 
 ## Decisions
 
 - **Task is the user-facing control-plane object.** Session trees remain execution traces and execution envelopes.
 - **Concierge stays always-on in product semantics.** This plan does not require renumbering internal tiers; it hardens availability and ownership behavior first.
 - **Task cards and dashboard UX are downstream consumers.** This plan defines their backend contract but does not implement frontend surfaces yet.
-- **Serialization moves down a level.** Project-level blocking should narrow toward task-level ownership and resource policy, not remain the default intake rule.
+- **Serialization moves down a level.** Project-level blocking should narrow toward task-level ownership and resource policy, not remain the default intake rule. The architecture already notes the dispatcher queue key can be extended from `project_id` to `project_id:task_id` as an explicit opt-in (see `docs/architecture.md` queue-identity note).
+- **Task storage starts in-process.** The task registry is an in-memory dict with project-store-backed persistence for durability across restarts. No new database dependency in this phase.
+- **Restart recovery is cold-start cleanup, not auto-retry.** On startup, zombie `running` tasks are marked `failed` with a `process_restart` reason. Auto-retry is a separate future concern.
+- **Surface adapter convergence is a cross-cutting obligation.** Each sub-plan that emits new chat events (`task_ack`, `task_notification`, status summaries) must specify the adapter rendering contract. Adapter-side changes are implementation work inside each sub-plan, not a separate sub-plan.
 
 ## Notes
 
 - This plan is the backend-only continuation of the concierge hardening line that already passed through plans 34, 38-8, and 41-3.
 - The intended future UX is still consistent with the "one concierge, many workers" model, but this plan deliberately starts with backend truth and lifecycle contracts before any visual redesign.
 - The "dispatcher manager dashboard" idea is explicitly preserved here as a backend-contract target so later UI work can consume a deliberate shape instead of reverse-engineering traces, queues, and websocket state.
+- **Existing `TriageResult.resume_task_id`:** The triage model already carries a `resume_task_id` field. Sub-plans (especially 49-3 follow-up classification) should leverage this as the triage-layer handoff for task binding rather than inventing a parallel mechanism.
+- **Existing `Task` model coexistence:** `models.py` has a `Task` dataclass nested inside `Project.tasks[]` with `task_id`, `label`, `status`, `turns`, etc. The new `ConciergeTask` is intentionally separate (concierge-level intake/lifecycle above project tasks). During implementation, `Project.current_task_id` should reference the project-level `Task`, while `ConciergeTask.task_id` references the concierge-level task. Both IDs appear in `ResolvedContext` — ensure naming avoids ambiguity (e.g. `concierge_task_id` vs `project_task_id` in contexts where both are present).
