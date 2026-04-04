@@ -15,6 +15,7 @@ from dan.server.chat_manager import (
     ChatManager,
     ChatCompleteEvent,
     ChatInterruptedEvent,
+    ChatMutationEvent,
     ChatQueuedEvent,
     ChatToolCallResultEvent,
     ChatToolCallStartEvent,
@@ -252,6 +253,26 @@ def _unterminated_tool_stream(
             status="success",
             output_preview=output_preview,
             duration_ms=5,
+        )
+
+    return _stream
+
+
+def _mutation_stream(
+    *,
+    content: str,
+    applied: bool = False,
+) -> Callable[[], AsyncIterator[Any]]:
+    async def _stream() -> AsyncIterator[Any]:
+        yield ChatMutationEvent(
+            message_id="mutation-preview",
+            content=content,
+            mutation_plan={"description": "Build watchlist workflow", "operations": []},
+            dry_run_result={"success": True},
+            token_usage={"prompt_tokens": 12, "completion_tokens": 6},
+            context_window=200000,
+            graph_revision="rev-preview",
+            applied=applied,
         )
 
     return _stream
@@ -863,6 +884,61 @@ async def test_tier1_synthesizes_terminal_response_when_handler_stream_ends_earl
     assert root is not None
     assert root.result is not None
     assert root.result.content == terminal_messages[0]
+
+
+@pytest.mark.asyncio
+async def test_tier1_treats_chat_mutation_event_as_terminal_response(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=1,
+            intent="agent",
+            goal="Build a watchlist workflow",
+            deliverable="Build a watchlist workflow",
+            route=RouteDecision(
+                mode=RouteMode.AGENT,
+                target="workflow",
+                action_hints=["workflow_edit"],
+            ),
+        )
+
+    dispatcher = _install_dispatcher(concierge, triage_fn=triage_fn)
+    preview_content = (
+        "Prepared a workflow update preview. Dry-run validation passed. "
+        "These changes are proposed, not applied yet."
+    )
+    concierge.chat_manager._responses["Build a watchlist workflow"] = _mutation_stream(
+        content=preview_content,
+    )
+
+    events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(surface="cli", external_id="cli-user", text="Build a watchlist workflow")
+        )
+    ]
+
+    mutation_events = [
+        event for event in events if getattr(event, "type", "") == "chat_mutation"
+    ]
+    assert [event.content for event in mutation_events] == [preview_content]
+    terminal_messages = [
+        event.content
+        for event in events
+        if getattr(event, "type", "") == "chat_complete"
+        and getattr(event, "detected_mode", None) != "progress_ack"
+    ]
+    assert terminal_messages == []
+
+    root = dispatcher._session_manager.get_root("cli-user")
+    assert root is not None
+    assert root.result is not None
+    assert root.result.content == preview_content
+    assert root.context is not None
+    assert root.context.task.turns[-1].content == preview_content
 
 
 @pytest.mark.asyncio
@@ -3266,6 +3342,8 @@ def test_extract_chat_params_promotes_ask_mode_for_workflow_apply_followup() -> 
     params = _extract_chat_params(session, "system prompt")
     assert params["mode"] == "agent"
     assert params["allow_mutation_tool"] is True
+    assert "workflow_edit" in params["required_action_hints"]
+    assert "workflow_run" not in params["required_action_hints"]
 
 
 def test_extract_chat_params_keeps_furnace_run_control_when_explicit() -> None:

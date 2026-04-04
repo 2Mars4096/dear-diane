@@ -17,6 +17,7 @@ from dan.chat_events import (
     ChatCompleteEvent,
     ChatErrorEvent,
     ChatInterruptedEvent,
+    ChatMutationEvent,
     ChatStreamEvent,
 )
 from dan.agent_runtime.synthesis import (
@@ -49,6 +50,15 @@ from dan.agent_runtime.synthesis_runtime import (
     plan_decomposition as _plan_decomposition_impl,
     resolve_default_llm_model as _resolve_default_llm_model_impl,
     review_synthesis_gap_reason_with_llm as _review_synthesis_gap_reason_with_llm_impl,
+)
+from dan.server.workflow_identity import (
+    build_workflow_context_pack,
+    resolve_workflow_reference,
+    workflow_resolution_context_from_session,
+)
+from dan.server.workflow_latency import (
+    append_workflow_stage_sample,
+    workflow_stage_start_ns,
 )
 
 from .autonomy import autonomy_max_tool_turns, build_autonomy_announcement
@@ -277,6 +287,26 @@ def _should_prefer_workflow_run_followup(
     if _WORKFLOW_ACTIVITY_RE.search(text) and _WORKFLOW_RUN_RE.search(text):
         return True
     return bool(_WORKFLOW_RUN_RE.search(text) and _ANAPHORA_RE.search(text))
+
+
+def _should_prefer_workflow_edit_followup(
+    message: str,
+    history: list[dict[str, str]],
+) -> bool:
+    text = str(message or "").strip()
+    if not text or not _history_has_workflow_activity(history):
+        return False
+    if _FURNACE_CONTROL_RE.search(text) or _WORKFLOW_RUN_RE.search(text):
+        return False
+    if _WORKFLOW_APPROVAL_RE.search(text):
+        return True
+    if _WORKFLOW_AUTHORING_RE.search(text):
+        return True
+    if _WORKFLOW_ACTIVITY_RE.search(text):
+        return True
+    if _WORKFLOW_CONTINUATION_RE.search(text) and _ANAPHORA_RE.search(text):
+        return True
+    return bool(_WORKFLOW_FOLLOWUP_RE.search(text) and _ANAPHORA_RE.search(text))
 
 
 def _prepend_autonomy_announcement(session: Any, content: str) -> str:
@@ -836,6 +866,15 @@ def _extract_chat_params(
         ]
         if "workflow_run" not in required_action_hints:
             required_action_hints.append("workflow_run")
+    elif (
+        _should_prefer_workflow_edit_followup(message, history)
+        and "workflow_query" not in required_action_hints
+    ):
+        required_action_hints = [
+            hint for hint in required_action_hints if hint != "run_control"
+        ]
+        if "workflow_edit" not in required_action_hints:
+            required_action_hints.append("workflow_edit")
 
     # Furnace/run-control turns should be operational (session lifecycle API calls),
     # not purely narrative summaries.
@@ -985,6 +1024,174 @@ def _extract_text_chat_context_params(
     }
 
 
+def _workflow_lane_requested(session: Any, chat_params: dict[str, Any]) -> bool:
+    hints = {
+        str(item or "").strip()
+        for item in list(chat_params.get("required_action_hints") or [])
+        if str(item or "").strip()
+    }
+    if chat_params.get("mode") in {"build", "mutate"}:
+        return True
+    if {"workflow_build", "workflow_edit", "workflow_run", "workflow_query"} & hints:
+        return True
+    triage = getattr(session, "triage", None)
+    route = getattr(triage, "route", None)
+    route_target = str(getattr(route, "target", "") or "").strip().lower()
+    return route_target in {"workflow", "run"} and "run_control" not in hints
+
+
+def _apply_workflow_continuity_context(
+    concierge: Any,
+    session: Any,
+    chat_params: dict[str, Any],
+) -> ChatCompleteEvent | None:
+    route_started_ns = workflow_stage_start_ns()
+    lane_requested = _workflow_lane_requested(session, chat_params)
+    audit = dict(chat_params.get("audit_metadata") or {})
+    append_workflow_stage_sample(
+        audit,
+        "wf_route",
+        route_started_ns,
+        metadata={"workflow_lane_requested": lane_requested},
+    )
+    chat_params["audit_metadata"] = audit
+
+    if not lane_requested:
+        return None
+
+    chat_manager = getattr(concierge, "chat_manager", None)
+    graph_store = getattr(chat_manager, "_graph_store", None)
+    if graph_store is None:
+        return None
+
+    ctx = getattr(session, "context", None)
+    project = getattr(ctx, "project", None) if ctx else None
+    project_workflow_ids = list(getattr(project, "linked_workflow_ids", None) or [])
+    allow_scratch = bool(
+        chat_params.get("allow_mutation_tool")
+        or chat_params.get("mode") in {"build", "mutate"}
+    )
+    resolve_started_ns = workflow_stage_start_ns()
+    resolution = resolve_workflow_reference(
+        graph_store,
+        "current" if str(chat_params.get("workflow_id") or "").strip() else chat_params.get("workflow_id"),
+        context=workflow_resolution_context_from_session(
+            current_workflow_id=chat_params.get("workflow_id"),
+            project_workflow_ids=project_workflow_ids,
+            expected_revision=chat_params.get("client_graph_revision"),
+            allow_scratch=allow_scratch,
+        ),
+    )
+    append_workflow_stage_sample(
+        audit,
+        "wf_resolve",
+        resolve_started_ns,
+        metadata={
+            "status": resolution.status,
+            "resolved": resolution.resolved,
+            "stale": resolution.stale,
+        },
+    )
+    audit["workflow_lane"] = "continuation"
+    audit["workflow_resolution_status"] = resolution.status
+    audit["workflow_resolution_source"] = resolution.resolution_source
+    if resolution.graph_id:
+        audit["workflow_resolution_id"] = resolution.graph_id
+    if resolution.revision:
+        audit["workflow_resolution_revision"] = resolution.revision
+    chat_params["audit_metadata"] = audit
+
+    if not resolution.resolved or not resolution.graph_id:
+        current_workflow_id = str(chat_params.get("workflow_id") or "").strip()
+        project_fallback_id = (
+            project_workflow_ids[0] if len(project_workflow_ids) == 1 else ""
+        )
+        if (
+            current_workflow_id
+            and project_fallback_id
+            and project_fallback_id == current_workflow_id
+        ):
+            audit["workflow_resolution_status"] = "project_linked_compatibility_fallback"
+            audit["workflow_resolution_source"] = "project_linked_compatibility_fallback"
+            audit["workflow_resolution_id"] = project_fallback_id
+            append_workflow_stage_sample(
+                audit,
+                "wf_context",
+                workflow_stage_start_ns(),
+                metadata={
+                    "success": False,
+                    "fallback": "project_linked_compatibility_fallback",
+                },
+            )
+            chat_params["workflow_id"] = project_fallback_id
+            chat_params["audit_metadata"] = audit
+            return None
+        return _complete_event(
+            resolution.resolution_message
+            or "No current workflow is available for this workflow follow-up.",
+        )
+
+    chat_params["workflow_id"] = resolution.graph_id
+
+    if resolution.stale and resolution.resolution_message:
+        stale_note = (
+            "Workflow revision changed since the client's last seen snapshot. "
+            f"{resolution.resolution_message} Treat any prior preview as stale and continue against the current saved graph."
+        )
+        existing = str(chat_params.get("extra_system_instructions") or "").strip()
+        chat_params["extra_system_instructions"] = (
+            f"{existing}\n\n{stale_note}" if existing else stale_note
+        )
+
+    try:
+        context_started_ns = workflow_stage_start_ns()
+        capability_context = getattr(chat_manager, "_capability_context", None)
+        pack_json, pack = build_workflow_context_pack(
+            graph_store=graph_store,
+            workflow_resolution=resolution,
+            thread_id=chat_params.get("thread_id"),
+            chat_store=getattr(chat_manager, "_chat_store", None),
+            run_manager=getattr(capability_context, "run_manager", None),
+            run_store=getattr(capability_context, "run_store", None),
+            schedule_store=getattr(concierge, "_schedule_store", None),
+        )
+        append_workflow_stage_sample(
+            audit,
+            "wf_context",
+            context_started_ns,
+            metadata={
+                "success": bool(pack_json),
+                "pack_keys": sorted(pack.keys()),
+            },
+        )
+    except Exception:
+        logger.debug("Failed to build workflow context pack", exc_info=True)
+        pack_json = ""
+        pack = {}
+        append_workflow_stage_sample(
+            audit,
+            "wf_context",
+            context_started_ns,
+            metadata={"success": False},
+        )
+
+    if pack_json:
+        pack_block = (
+            "## Workflow Context Pack\n"
+            "Use this resolved workflow state for the current continuation turn.\n"
+            f"```json\n{pack_json}\n```"
+        )
+        existing = str(chat_params.get("extra_system_instructions") or "").strip()
+        chat_params["extra_system_instructions"] = (
+            f"{existing}\n\n{pack_block}" if existing else pack_block
+        )
+        audit["workflow_context_pack_chars"] = len(pack_json)
+        audit["workflow_context_pack_keys"] = sorted(pack.keys())
+        chat_params["audit_metadata"] = audit
+
+    return None
+
+
 def _request_mode(metadata: Any) -> str:
     """Return the effective request mode, preserving explicit build overrides."""
     if not isinstance(metadata, dict):
@@ -1100,6 +1307,29 @@ class SingleShotExecutor:
 
         system_prompt = _build_prompt(session)
         chat_params = _extract_chat_params(session, system_prompt, model_override=model_override)
+        workflow_gate = _apply_workflow_continuity_context(
+            self._concierge,
+            session,
+            chat_params,
+        )
+        if workflow_gate is not None:
+            final_content = _prepend_autonomy_announcement(session, workflow_gate.content)
+            yield workflow_gate.model_copy(update={"content": final_content})
+            from .session import SessionResult as _SR
+            manager.set_result(
+                session.id,
+                _SR(
+                    content=final_content,
+                    metadata={
+                        "completion_status": "clarification",
+                        **dict(chat_params.get("audit_metadata") or {}),
+                    },
+                    token_usage={},
+                    duration_ms=(time.monotonic() - start) * 1000,
+                ),
+            )
+            manager.update_state(session.id, "completed")
+            return
 
         final_content = ""
         token_usage: dict[str, int] = {}
@@ -1117,7 +1347,7 @@ class SingleShotExecutor:
                     token_usage = dict(event.token_usage)
                     yield event.model_copy(update={"content": final_content})
                     break
-                if isinstance(event, ChatCompleteEvent):
+                if isinstance(event, (ChatCompleteEvent, ChatMutationEvent)):
                     saw_terminal = True
                     final_content = _prepend_autonomy_announcement(session, event.content)
                     token_usage = dict(event.token_usage)
@@ -1253,6 +1483,29 @@ class MultiStepExecutor:
 
         system_prompt = _build_prompt(session)
         chat_params = _extract_chat_params(session, system_prompt, model_override=model_override)
+        workflow_gate = _apply_workflow_continuity_context(
+            self._concierge,
+            session,
+            chat_params,
+        )
+        if workflow_gate is not None:
+            final_content = _prepend_autonomy_announcement(session, workflow_gate.content)
+            yield workflow_gate.model_copy(update={"content": final_content})
+            from .session import SessionResult as _SR
+            manager.set_result(
+                session.id,
+                _SR(
+                    content=final_content,
+                    metadata={
+                        "completion_status": "clarification",
+                        **dict(chat_params.get("audit_metadata") or {}),
+                    },
+                    token_usage={},
+                    duration_ms=(time.monotonic() - start) * 1000,
+                ),
+            )
+            manager.update_state(session.id, "completed")
+            return
 
         final_content = ""
         token_usage: dict[str, int] = {}
@@ -1270,7 +1523,7 @@ class MultiStepExecutor:
                     token_usage = dict(event.token_usage)
                     yield event.model_copy(update={"content": final_content})
                     break
-                if isinstance(event, ChatCompleteEvent):
+                if isinstance(event, (ChatCompleteEvent, ChatMutationEvent)):
                     saw_terminal = True
                     final_content = _prepend_autonomy_announcement(session, event.content)
                     token_usage = dict(event.token_usage)
