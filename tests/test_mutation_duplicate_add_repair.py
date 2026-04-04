@@ -27,6 +27,26 @@ def _minimal_input_node(node_id: str = "read_watchlist", name: str = "Read") -> 
     }
 
 
+def _minimal_code_node(
+    node_id: str,
+    name: str,
+    *,
+    input_ports: list[dict] | None = None,
+    output_ports: list[dict] | None = None,
+) -> dict:
+    return {
+        "id": node_id,
+        "name": name,
+        "node_type": "code_operator",
+        "code": "result = input",
+        "input_ports": input_ports or [{"name": "input", "schema": {}, "required": False}],
+        "output_ports": output_ports or [{"name": "result", "schema": {}}],
+        "position": {"x": 0, "y": 0},
+        "ui": {},
+        "metadata": {},
+    }
+
+
 def test_repair_add_node_when_id_exists_in_graph_becomes_edit_node() -> None:
     graph = _empty_graph()
     graph["nodes"] = [_minimal_input_node()]
@@ -181,6 +201,112 @@ def test_remove_edge_then_readd_same_edge_is_not_dropped() -> None:
 
     assert repairs == []
     assert [op["op"] for op in ops] == ["remove_edge", "add_edge"]
+
+
+def test_required_input_disconnect_keeps_original_edge_when_no_replacement_exists() -> None:
+    graph = _empty_graph()
+    graph["nodes"] = [
+        _minimal_code_node(
+            "summarize",
+            "Summarize",
+            output_ports=[{"name": "summary", "schema": {}}],
+        ),
+        _minimal_code_node(
+            "metrics",
+            "Metrics",
+            input_ports=[{"name": "summary", "schema": {}, "required": True}],
+        ),
+    ]
+    graph["edges"] = [
+        {
+            "id": "summarize.summary->metrics.summary",
+            "edge_type": "data",
+            "source_node_id": "summarize",
+            "source_port": "summary",
+            "target_node_id": "metrics",
+            "target_port": "summary",
+        }
+    ]
+    graph["entry_points"] = ["summarize"]
+    graph["exit_points"] = ["metrics"]
+
+    raw_ops = [
+        {
+            "op": "remove_edge",
+            "source_id": "summarize",
+            "source_port": "summary",
+            "target_id": "metrics",
+            "target_port": "summary",
+        }
+    ]
+
+    ops, repairs = normalize_mutation_ops_for_chat(graph, raw_ops)
+
+    assert ops == []
+    assert any("disconnect required input port 'summary' on node 'metrics'" in repair for repair in repairs)
+
+    plan = MutationPlan.model_validate({"operations": ops})
+    result = GraphMutator().dry_run(graph, plan)
+    assert result.success, result.errors
+
+
+def test_required_input_disconnect_not_repaired_when_replacement_edge_exists() -> None:
+    graph = _empty_graph()
+    graph["nodes"] = [
+        _minimal_code_node(
+            "summarize",
+            "Summarize",
+            output_ports=[{"name": "summary", "schema": {}}],
+        ),
+        _minimal_code_node(
+            "rewrite",
+            "Rewrite",
+            output_ports=[{"name": "summary", "schema": {}}],
+        ),
+        _minimal_code_node(
+            "metrics",
+            "Metrics",
+            input_ports=[{"name": "summary", "schema": {}, "required": True}],
+        ),
+    ]
+    graph["edges"] = [
+        {
+            "id": "summarize.summary->metrics.summary",
+            "edge_type": "data",
+            "source_node_id": "summarize",
+            "source_port": "summary",
+            "target_node_id": "metrics",
+            "target_port": "summary",
+        }
+    ]
+    graph["entry_points"] = ["summarize", "rewrite"]
+    graph["exit_points"] = ["metrics"]
+
+    raw_ops = [
+        {
+            "op": "remove_edge",
+            "source_id": "summarize",
+            "source_port": "summary",
+            "target_id": "metrics",
+            "target_port": "summary",
+        },
+        {
+            "op": "add_edge",
+            "source_id": "rewrite",
+            "source_port": "summary",
+            "target_id": "metrics",
+            "target_port": "summary",
+        },
+    ]
+
+    ops, repairs = normalize_mutation_ops_for_chat(graph, raw_ops)
+
+    assert [op["op"] for op in ops] == ["remove_edge", "add_edge"]
+    assert not any("disconnect required input port 'summary' on node 'metrics'" in repair for repair in repairs)
+
+    plan = MutationPlan.model_validate({"operations": ops})
+    result = GraphMutator().dry_run(graph, plan)
+    assert result.success, result.errors
 
 
 def test_repair_duplicate_add_updates_flat_node_fields() -> None:

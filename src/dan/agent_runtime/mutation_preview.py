@@ -640,6 +640,136 @@ def _repair_duplicate_add_edge_operations(
     return repaired, diagnostics
 
 
+def _required_input_targets_with_single_inbound_edge(
+    graph: dict[str, Any],
+) -> dict[tuple[str, str], tuple[str, str, str, str]]:
+    required_targets: set[tuple[str, str]] = set()
+    inbound_edges: dict[tuple[str, str], list[tuple[str, str, str, str]]] = {}
+
+    for node in graph.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("id") or "").strip()
+        if not node_id:
+            continue
+        for port in node.get("input_ports") or []:
+            if not isinstance(port, dict):
+                continue
+            port_name = str(port.get("name") or "").strip()
+            if not port_name:
+                continue
+            if bool(port.get("required", True)):
+                required_targets.add((node_id, port_name))
+
+    for edge in graph.get("edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        key = _edge_key_from_graph_edge(edge)
+        if key is None:
+            continue
+        target = (key[2], key[3])
+        inbound_edges.setdefault(target, []).append(key)
+
+    return {
+        target: edges[0]
+        for target, edges in inbound_edges.items()
+        if target in required_targets and len(edges) == 1
+    }
+
+
+def _edit_op_changes_port_contract(op: dict[str, Any]) -> bool:
+    if str(op.get("op") or "").strip() != "edit_node":
+        return False
+    updates = op.get("updates")
+    if not isinstance(updates, dict):
+        return False
+    if any(key in updates for key in ("input_ports", "output_ports", "node_type")):
+        return True
+    config = updates.get("config")
+    if not isinstance(config, dict):
+        return False
+    return any(
+        key in config
+        for key in ("input_ports", "output_ports", "variables", "tool_id", "tool", "outputs")
+    )
+
+
+def _repair_required_input_disconnects(
+    graph: dict[str, Any],
+    operations: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    diagnostics: list[str] = []
+
+    def walk(
+        ops: list[Any],
+        local_graph: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        required_inbound = _required_input_targets_with_single_inbound_edge(local_graph)
+        removed_nodes: set[str] = set()
+        replacement_targets: set[tuple[str, str]] = set()
+        contract_edited_nodes: set[str] = set()
+
+        for raw in ops:
+            if not isinstance(raw, dict):
+                continue
+            kind = str(raw.get("op") or "").strip()
+            if kind == "remove_node":
+                node_id = str(raw.get("node_id") or "").strip()
+                if node_id:
+                    removed_nodes.add(node_id)
+            elif kind == "add_edge":
+                key = _edge_key_from_op(raw)
+                if key is not None:
+                    replacement_targets.add((key[2], key[3]))
+            elif kind == "edit_node" and _edit_op_changes_port_contract(raw):
+                node_id = str(raw.get("node_id") or "").strip()
+                if node_id:
+                    contract_edited_nodes.add(node_id)
+
+        repaired: list[dict[str, Any]] = []
+        for raw in ops:
+            if not isinstance(raw, dict):
+                continue
+            op = dict(raw)
+            kind = str(op.get("op") or "").strip()
+
+            if kind == "replace_body_graph":
+                inner = op.get("operations")
+                if isinstance(inner, list):
+                    body_graph = _existing_body_graph(local_graph, str(op.get("node_id") or "").strip()) or {}
+                    op["operations"] = walk(inner, body_graph)
+                repaired.append(op)
+                continue
+
+            if kind == "remove_edge":
+                key = _edge_key_from_op(op)
+                if key is not None:
+                    target = (key[2], key[3])
+                    original = required_inbound.get(target)
+                    if (
+                        original == key
+                        and target not in replacement_targets
+                        and key[0] not in removed_nodes
+                        and key[2] not in removed_nodes
+                        and key[2] not in contract_edited_nodes
+                    ):
+                        message = (
+                            f"Kept existing edge '{key[0]}.{key[1]}->{key[2]}.{key[3]}' because removing it "
+                            f"would disconnect required input port '{key[3]}' on node '{key[2]}' without a replacement."
+                        )
+                        diagnostics.append(message)
+                        logger.info("Mutation self-repair: %s", message)
+                        continue
+                repaired.append(op)
+                continue
+
+            repaired.append(op)
+        return repaired
+
+    repaired = walk(operations, graph)
+    return repaired, diagnostics
+
+
 def _repair_duplicate_add_node_operations(
     graph: dict[str, Any],
     operations: list[dict[str, Any]],
@@ -734,6 +864,8 @@ def normalize_mutation_ops_for_chat(
     if graph is not None:
         ops, port_repairs = _repair_stale_source_port_aliases(graph, ops)
         all_repairs.extend(port_repairs)
+        ops, required_input_repairs = _repair_required_input_disconnects(graph, ops)
+        all_repairs.extend(required_input_repairs)
         ops, duplicate_repairs = _repair_duplicate_add_node_operations(graph, ops)
         all_repairs.extend(duplicate_repairs)
         ops, edge_repairs = _repair_duplicate_add_edge_operations(graph, ops)
