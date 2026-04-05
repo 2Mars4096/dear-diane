@@ -120,6 +120,14 @@ _WORKFLOW_QUERY_ANAPHORA_RE = re.compile(
     r"\b(?:what does it do|what is it about|how does it work)\b",
     re.IGNORECASE,
 )
+_WORKFLOW_CATALOG_QUERY_RE = re.compile(
+    r"\b(?:existing|saved|available|all|my)\s+(?:workflows|graphs)\b|"
+    r"\b(?:what|which)\s+(?:workflows|graphs)\s+(?:exist|are available)\b|"
+    r"\b(?:list|show|review|search)\s+(?:the\s+)?(?:(?:saved|existing|available|my|all)\s+)?"
+    r"(?:workflows|graphs)\b|"
+    r"\bworkflow\s+(?:catalog|inventory)\b",
+    re.IGNORECASE,
+)
 _FURNACE_CONTROL_RE = re.compile(
     r"\b(?:furnace|distill(?:ation)?|recipe session|start session)\b",
     re.IGNORECASE,
@@ -357,6 +365,45 @@ def _is_workflow_query_only(route_target: str, action_hints: list[str] | tuple[s
         if str(item or "").strip()
     }
     return route_target == "workflow" and "workflow_query" in hints and hints <= _WORKFLOW_QUERY_SAFE_HINTS
+
+
+def _is_workflow_catalog_query(
+    message: str,
+    action_hints: list[str] | tuple[str, ...],
+) -> bool:
+    hints = {
+        str(item or "").strip()
+        for item in action_hints
+        if str(item or "").strip()
+    }
+    if "workflow_query" not in hints:
+        return False
+    if {"workflow_edit", "workflow_build", "workflow_run", "run_control"} & hints:
+        return False
+    text = str(message or "").strip()
+    if not text:
+        return False
+    return bool(_WORKFLOW_CATALOG_QUERY_RE.search(text))
+
+
+def _workflow_resolution_failure_message(current_workflow_id: str) -> str:
+    current = str(current_workflow_id or "").strip()
+    if current == "_scratch":
+        return (
+            "I can't inspect the previous draft workflow right now because the scratch draft "
+            "isn't available after the restart. Open or save a workflow first, or ask me to "
+            "review the saved workflows instead."
+        )
+    if current:
+        return (
+            f"I can't inspect the current workflow right now because `{current}` isn't available "
+            "in the saved workflow catalog. Open or save it first, or ask me to review the saved "
+            "workflows instead."
+        )
+    return (
+        "I don't have a current workflow available for this follow-up. Open or save a workflow "
+        "first, or ask me to review the saved workflows instead."
+    )
 
 
 def _prepend_autonomy_announcement(session: Any, content: str) -> str:
@@ -992,12 +1039,19 @@ def _extract_chat_params(
         "workflow_build",
         "workflow_run",
     } & set(required_action_hints)):
-        workflow_query_instruction = (
-            "This turn is a workflow-understanding request. Identify the current workflow, "
-            "explain what it does from the resolved workflow context, and answer as a read-only "
-            "workflow query. Do not propose or apply workflow mutations unless the user explicitly "
-            "asks to change the workflow."
-        )
+        if _is_workflow_catalog_query(message, required_action_hints):
+            workflow_query_instruction = (
+                "This turn is a saved-workflow catalog request. Inspect the saved workflow "
+                "inventory or search results, answer in natural language, and do not assume "
+                "there is a current workflow loaded."
+            )
+        else:
+            workflow_query_instruction = (
+                "This turn is a workflow-understanding request. Identify the current workflow, "
+                "explain what it does from the resolved workflow context, and answer as a read-only "
+                "workflow query. Do not propose or apply workflow mutations unless the user explicitly "
+                "asks to change the workflow."
+            )
     if workflow_query_instruction:
         extra_system_sections.append(workflow_query_instruction)
     extra_system_instructions = "\n\n".join(
@@ -1022,6 +1076,7 @@ def _extract_chat_params(
         "surface": surface,
         "extra_system_instructions": extra_system_instructions,
         "required_action_hints": required_action_hints,
+        "workflow_catalog_query": _is_workflow_catalog_query(message, required_action_hints),
         "stream_channel_id": stream_channel_id,
         "memory_project_id": memory_project_id,
         "include_memory_kernel_context": not bool(str(metadata.get("memory_context") or "").strip()),
@@ -1131,6 +1186,11 @@ def _apply_workflow_continuity_context(
     graph_store = getattr(chat_manager, "_graph_store", None)
     if graph_store is None:
         return None
+    if bool(chat_params.get("workflow_catalog_query")):
+        audit["workflow_lane"] = "catalog_query"
+        audit["workflow_resolution_status"] = "skipped_catalog_query"
+        chat_params["audit_metadata"] = audit
+        return None
 
     ctx = getattr(session, "context", None)
     project = getattr(ctx, "project", None) if ctx else None
@@ -1194,10 +1254,7 @@ def _apply_workflow_continuity_context(
             chat_params["workflow_id"] = project_fallback_id
             chat_params["audit_metadata"] = audit
             return None
-        return _complete_event(
-            resolution.resolution_message
-            or "No current workflow is available for this workflow follow-up.",
-        )
+        return _complete_event(_workflow_resolution_failure_message(current_workflow_id))
 
     chat_params["workflow_id"] = resolution.graph_id
 

@@ -28,6 +28,7 @@ from dan.server.concierge.models import (
     SurfaceMessage,
 )
 from dan.server.concierge.dispatcher import ConcurrentDispatcher
+from dan.server.graph_store import GraphStore
 from dan.server.concierge.project_store import ProjectStore
 from dan.server.concierge.runtime import Concierge
 from dan.server.concierge.session import SessionManager, SessionResult, SessionState, SessionTier
@@ -726,6 +727,7 @@ async def test_tier1_workflow_query_only_stays_foreground_and_answers(
     tmp_path: Path,
 ) -> None:
     concierge = _make_concierge(tmp_path)
+    concierge.chat_manager._graph_store = GraphStore(str(tmp_path / "graphs"))
 
     async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
         return TriageResult(
@@ -774,6 +776,56 @@ async def test_tier1_workflow_query_only_stays_foreground_and_answers(
     call = concierge.chat_manager.calls[-1]
     assert call["allow_mutation_tool"] is False
     assert call["required_action_hints"] == ["workflow_query", "search_web"]
+    assert "saved-workflow catalog request" in str(call["extra_system_instructions"]).lower()
+
+
+@pytest.mark.asyncio
+async def test_tier1_missing_current_workflow_returns_natural_language_reply(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+    concierge.chat_manager._graph_store = GraphStore(str(tmp_path / "graphs"))
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=1,
+            intent="agent",
+            goal="Explain this workflow",
+            deliverable="Workflow explanation",
+            route=RouteDecision(
+                mode=RouteMode.AGENT,
+                target="workflow",
+                action_hints=["workflow_query"],
+            ),
+        )
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+
+    events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="editor",
+                external_id="editor-user",
+                text="Explain this workflow",
+                metadata={
+                    "workflow_id": "_scratch",
+                    "mode": "agent",
+                },
+            )
+        )
+    ]
+
+    assert concierge.chat_manager.call_log == []
+    terminal_messages = [
+        event.content
+        for event in events
+        if getattr(event, "type", "") == "chat_complete"
+        and getattr(event, "detected_mode", None) != "progress_ack"
+    ]
+    assert terminal_messages == [
+        "I can't inspect the previous draft workflow right now because the scratch draft isn't available after the restart. Open or save a workflow first, or ask me to review the saved workflows instead."
+    ]
 
 
 @pytest.mark.asyncio
