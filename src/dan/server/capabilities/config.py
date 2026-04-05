@@ -1,12 +1,15 @@
 """Config capability handlers: get_config, set_config."""
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
 from dan.server.capability_registry import CapabilityContext, CapabilityResult
 from dan.server.paths import resolve_workspace_root
+
+logger = logging.getLogger(__name__)
 
 _CONFIGURABLE_PREFIXES = (
     "DAN_SMTP_", "DAN_BRAVE_API_KEY", "DAN_TAVILY_API_KEY", "DAN_SERPER_API_KEY",
@@ -41,6 +44,30 @@ def _update_env_file(key: str, value: str) -> None:
     env_path.write_text("".join(lines))
 
 
+def _connected_mcp_server_names(bridge: Any) -> list[str]:
+    if bridge is None:
+        return []
+
+    try:
+        if hasattr(bridge, "list_servers"):
+            server_statuses = bridge.list_servers()
+            if isinstance(server_statuses, dict):
+                connected_names: list[str] = []
+                for name, status in server_statuses.items():
+                    if getattr(status, "connected", True):
+                        connected_names.append(str(name))
+                return connected_names
+
+        if hasattr(bridge, "get_connected_servers"):
+            connected_servers = bridge.get_connected_servers()
+            if isinstance(connected_servers, dict):
+                return [str(name) for name in connected_servers.keys()]
+    except Exception:
+        logger.debug("Failed to inspect MCP bridge server state in get_config", exc_info=True)
+
+    return []
+
+
 async def handle_get_config(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
     import os
     from urllib.parse import urlparse
@@ -66,9 +93,7 @@ async def handle_get_config(args: dict[str, Any], ctx: CapabilityContext) -> Cap
     telemetry_enabled = os.environ.get("DAN_TELEMETRY", "1") == "1"
     learning_mode = os.environ.get("DAN_LEARNING_MODE", "0") == "1"
 
-    mcp_servers = []
-    if getattr(ctx, "mcp_bridge", None):
-        mcp_servers = list(ctx.mcp_bridge.get_connected_servers().keys())
+    mcp_servers = _connected_mcp_server_names(getattr(ctx, "mcp_bridge", None))
 
     config = {
         "model": current_model,

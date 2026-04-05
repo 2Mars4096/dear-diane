@@ -287,6 +287,10 @@ class MCPBridge:
             )
         return out
 
+    def get_connected_servers(self) -> dict[str, MCPConnection]:
+        """Backward-compatible alias for older callers expecting raw connections."""
+        return dict(self._connections)
+
     def get_server_tools(self, server_name: str) -> list[dict]:
         conn = self._connections.get(server_name)
         if conn is None:
