@@ -1,53 +1,76 @@
-# 46-7: Reusable Universal-Agent Bundle Extraction
+# 46-7: Reusable Worker Bundle Extraction
 
 **Parent:** [46-universal-worker-primitive](46-universal-worker-primitive.md)
-**Status:** not-started
-**Goal:** Extract a DAN-independent universal-agent core that other projects can embed, while DAN keeps its workflow/concierge/runtime specifics behind adapter boundaries.
+**Status:** not-started  
+**Priority:** deferred — no external consumer exists yet. Execute only when there is a concrete embedding need.
+**Goal:** Extract the Worker contract primitive (input → execute → output) as a DAN-independent package that other projects can embed.
+
+## Scope Change
+
+The 46-6 decision that "concierge is the brain, Workers are hands" significantly simplifies this plan. The reusable core is **just the Worker compute contract** — not an entire agent runtime with its own prompt pipeline, memory system, and tool registry.
+
+What gets extracted:
+- Worker model (`WorkerConfig`, `ContextBindings`, `LLMHints`, roles)
+- Worker executor dispatch (mode detection, code/LLM/tool/composite routing)
+- Worker shared-resource resolution (`worker_resources` catalog)
+- Minimal interfaces for model/completion, tool calls, memory access
+
+What stays DAN-specific:
+- Concierge (prompt assembly, triage, queue, task lifecycle)
+- Engine scheduler (graph execution, checkpoints, retries)
+- Capability registry, memory kernel, provider registry
+- All prompt quality and stage overlay content
+
+## Problem: Current Coupling
+
+Worker files still import DAN internals directly:
+
+| Worker file | Imports from | Coupling |
+|---|---|---|
+| `executor.py` | `dan.executors.*` | 9 composed executor instances |
+| `executor.py` | `dan.engine.*` | `ExecutionContext`, checkpoint, retry |
+| `executor.py` | `dan.models.legacy.*` | Legacy node bridge dispatch |
+| `model.py` | `dan.models.context/control_flow/nodes/ports` | Node union, port models |
+| `presets.py` | `dan.models.legacy/control_flow` | Bridge conversion |
+
+Only `roles.py` and `__init__.py` are clean.
 
 ## Dependencies
 
-- **46-6** must land first. The bundle boundary should be extracted from standardized contracts, not from today's mixed queue/prompt/runtime seams.
-- Coordinate with **50-7** because Worker/legacy bridge retirement and globals cleanup reduce DAN-specific coupling in the runtime-core path.
-- Coordinate with **50-5** because concierge runtime narrowing should leave a cleaner adapter surface instead of one giant control-plane sink.
+- **46-6** must land first so the concierge-vs-Worker boundary is settled.
+- Coordinate with **50-7** for Worker bridge retirement — less legacy coupling means less to adapter-wrap.
+- **Trigger:** only start this plan when there is a concrete need to embed Workers outside DAN (a second project, an SDK, a plugin system).
 
 ## Tasks
 
-- [ ] 1. Define the target bundle boundary
-  - [ ] 1-1. Separate the reusable core from DAN-specific adapter/runtime surfaces. Candidate split: universal-agent core, DAN adapter layer, concierge application layer.
-  - [ ] 1-2. Set a dependency ceiling for the reusable core: no imports from `dan.server.*`, `dan.models.legacy`, `dan.executors.*`, or DAN-global tool registries.
-  - [ ] 1-3. Decide the extraction sequence explicitly: first an in-repo clean package with enforced import boundaries, then optional external publication.
-- [ ] 2. Introduce explicit runtime interfaces
-  - [ ] 2-1. Model/completion interface
-  - [ ] 2-2. Tool capability registry interface
-  - [ ] 2-3. Memory client interface
-  - [ ] 2-4. Child-work dispatcher / subgraph runner interface
-  - [ ] 2-5. Event stream and result interface
-- [ ] 3. Carve the reusable core
-  - [ ] 3-1. Move the standardized agent/session/handoff contracts and the minimal core executor/orchestrator logic behind those interfaces.
-  - [ ] 3-2. Keep DAN-specific workflow identity, graph store, capability registry, schedule/run services, and legacy bridge logic in adapter modules.
-  - [ ] 3-3. Remove import-time DAN/provider coupling from the extracted core so importing the core does not drag in unnecessary runtime stacks.
-- [ ] 4. Prove reuse outside DAN
-  - [ ] 4-1. Add a minimal non-DAN fixture or example proving the bundle runs with stub model/tool/memory adapters.
-  - [ ] 4-2. Add import-boundary tests that fail if DAN-specific modules leak back into the reusable core.
-  - [ ] 4-3. Document the embedding contract for outside projects.
-- [ ] 5. Rollout and compatibility
-  - [ ] 5-1. Keep DAN runtime behavior stable while moving DAN onto the adapter-backed core.
-  - [ ] 5-2. Only publish/externalize the bundle after in-repo adapter parity and focused benchmarks are green.
+- [ ] 1. Define bundle boundary
+  - [ ] 1-1. Create `dan/worker/core/` (or similar) with zero imports from `dan.server.*`, `dan.models.legacy`, `dan.executors.*`.
+  - [ ] 1-2. Define interfaces: `CompletionProvider`, `ToolProvider`, `MemoryProvider`, `EventSink`.
+  - [ ] 1-3. Keep DAN-specific executor delegation, legacy bridge, and tool registry binding in `dan/worker/adapters/`.
+- [ ] 2. Sever imports
+  - [ ] 2-1. `executor.py` → import from core interfaces instead of `dan.executors.*` directly.
+  - [ ] 2-2. `model.py` → define minimal port/context types in core instead of importing `dan.models.*`.
+  - [ ] 2-3. `presets.py` → stays in DAN adapter layer (it is inherently a bridge).
+- [ ] 3. Prove it works
+  - [ ] 3-1. Add import-boundary test scanning core for forbidden DAN imports.
+  - [ ] 3-2. Add minimal non-DAN fixture: create a Worker, give it stub adapters, run it, get a result.
+- [ ] 4. Rollout
+  - [ ] 4-1. Keep DAN runtime stable while routing through adapter-backed core.
+  - [ ] 4-2. Verify `worker_resources` catalog resolution still works through the adapter layer.
 
 ## Success Criteria
 
-- the reusable core imports cleanly without DAN server/legacy/executor modules
-- DAN consumes that core through adapters instead of hard-coded runtime imports
-- a non-DAN harness or fixture proves the bundle can run outside this repo
-- import-time weight and DAN-specific coupling are materially reduced from the current `src/dan/worker/*` boundary
+- Worker core imports cleanly without DAN server/legacy/executor modules
+- A non-DAN fixture proves the bundle runs with stub adapters
+- Import-boundary test enforces the ceiling
 
 ## Decisions
 
-- Internal extraction comes before external publication.
-- No "bundle" claim is honest until adapter boundaries are proven by tests.
-- The reusable core should consume interfaces, not DAN globals or legacy compatibility helpers.
+- Internal extraction only. No external publication until there is a real consumer.
+- The reusable core is the Worker compute contract, not an agent runtime. The concierge is not extracted.
+- `LegacyWorkerAdapterExecutor` stays as a DAN adapter, not a core primitive.
 
 ## Notes
 
-- Today `src/dan/worker/executor.py`, `src/dan/worker/model.py`, and `src/dan/worker/presets.py` still import DAN internals directly. This plan exists to reverse that layering rather than publish the current coupling as-is.
-- The likely end state is not "everything becomes Worker." The reusable core should own the universal agent/session/handoff contracts; DAN should own workflow identity, graph/runtime orchestration, and product-specific control-plane behavior.
+- This plan is **deferred** per the review conclusion that there is no external consumer yet. The coupling table and task list are ready for when the need arises.
+- The 46-6 simplification (concierge-first, Workers as compute) made this plan much smaller. The earlier version tried to extract an entire agent runtime; now it just extracts the compute contract.

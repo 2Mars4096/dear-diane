@@ -149,7 +149,9 @@ This approach preserved early backend validation while moving quickly to a pract
 
 The strategic narrowing from here is to prove DAN on long-running tail tasks first, not to broaden into a generic assistant. That means prioritizing one flagship high-trust workflow family, tightening the always-on continuity UX, and building the supervision, aggregation, checkpointing, and cost controls needed for hierarchical swarms to be useful instead of theatrical.
 
-Follow-on priority: standardize the concierge/worker contracts before trying to package them. The new 46-6/46-7 work treats message -> queue -> task -> session -> executor -> result, tool/memory/message connections, and prompt evolution as first-class contracts that must be normalized before DAN can honestly claim to have a reusable universal-agent bundle for other projects.
+Near-term engineering priority: structural consolidation before further broad feature expansion. The current 50-series plan family focuses on callee-owned workflow/run invariants, retiring false facades, narrowing oversized control-plane/runtime modules, pinning down the key scripts, and pruning redundant code without regressing performance. The goal is to make the codebase sharper and more honest at its boundaries before adding more surface area.
+
+Follow-on priority after that subtraction: standardize the concierge/worker contracts before trying to package them. The new 46-6/46-7 work treats message -> queue -> task -> session -> executor -> result, tool/memory/message connections, and prompt evolution as first-class contracts that must be normalized before DAN can honestly claim to have a reusable universal-agent bundle for other projects.
 
 ---
 
