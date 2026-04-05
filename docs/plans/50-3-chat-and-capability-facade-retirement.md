@@ -22,11 +22,14 @@
 - [ ] 3. Retire workflow/domain ownership from `capability_handlers.py`
   - [ ] 3-1. Move graph delete, latest-mutation lookup, mutation apply/save, and apply-last-mutation behavior into `src/dan/server/capabilities/*` modules.
   - [ ] 3-2. Audit import sites across the codebase (`grep -rn "from.*capability_handlers import\|import.*capability_handlers"`) before deciding whether to reduce `capability_handlers.py` to registration/schema wiring only or delete it with re-exports.
-- [ ] 4. Narrow prompt/build assembly to the right owners
-  - [ ] 4-1. Ensure prompt/capability reference assembly is owned by `src/dan/server/chat/prompt_builder.py` or a similarly scoped module, workflow generation stays in `src/dan/server/agent_runtime/workflow_generation.py`, and chat orchestration stays in `src/dan/server/chat/orchestrator.py` — rather than being quietly mixed back into the facade.
-- [ ] 5. Regressions and docs
-  - [ ] 5-1. Revalidate chat workflow generation, mutation preview/apply, capability registration, and workflow delete/apply flows.
-  - [ ] 5-2. Update architecture/docs wording so the surviving files are described honestly.
+- [ ] 4. Fix prompt double-pass in chat router
+  - [ ] 4-1. Fix `src/dan/server/routers/chat.py:495-497`: `attachment_prompt_context` is currently passed into **both** `prompt_context` and `extra_system_instructions`, which means the same attachment context appears twice in the assembled prompt. Remove the duplication — attachment context should be passed through exactly one slot.
+  - [ ] 4-2. Verify that downstream consumers (`messages.py:393-462` which treats `prompt_context` as a `## Context` block, and `tier_executors.py:849-1038` which builds `extra_system_instructions` from stage overlays/attachments/action contexts) receive attachment context through exactly one path after the fix.
+- [ ] 5. Narrow prompt/build assembly to the right owners
+  - [ ] 5-1. Ensure prompt/capability reference assembly is owned by `src/dan/server/chat/prompt_builder.py` or a similarly scoped module, workflow generation stays in `src/dan/server/agent_runtime/workflow_generation.py`, and chat orchestration stays in `src/dan/server/chat/orchestrator.py` — rather than being quietly mixed back into the facade.
+- [ ] 6. Regressions and docs
+  - [ ] 6-1. Revalidate chat workflow generation, mutation preview/apply, capability registration, and workflow delete/apply flows.
+  - [ ] 6-2. Update architecture/docs wording so the surviving files are described honestly.
 
 ## Primary Files
 
@@ -35,6 +38,8 @@
 - `src/dan/server/agent_runtime/`
 - `src/dan/server/capability_handlers.py`
 - `src/dan/server/capabilities/`
+- `src/dan/server/routers/chat.py` (prompt double-pass at lines 495-497)
+- `src/dan/agent_runtime/messages.py` (downstream `prompt_context` / `extra_system_instructions` consumer)
 
 ## Success Criteria
 
@@ -53,3 +58,4 @@
 - This plan treats subtraction as a first-class requirement: moving code is not enough unless the old owner shrinks.
 - The method inventory in task 1 is intentionally front-loaded so the scope of the move is visible before any code changes.
 - At plan start: `chat_manager.py` is 3759 lines; `capability_handlers.py` is 1260 lines. The latter is moderate in size but the question is behavior-vs-registration ratio, not raw line count.
+- **Prompt double-pass (task 4) is a quick win.** The `routers/chat.py:495-497` duplication is a two-line fix that immediately reduces prompt noise. Execute early. The broader prompt-envelope standardization (replacing `prompt_context` vs `extra_system_instructions` with typed slots) is 46-6 scope, not this plan.

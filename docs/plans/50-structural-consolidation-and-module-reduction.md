@@ -54,7 +54,7 @@ Out of scope:
 | `editor/src/components/ChatPanel.tsx` | 5151 | UI, thread, stream, run, persistence, reconnect, and branch state all mixed |
 | `src/dan/engine/scheduler.py` | 4154 | engine bootstrap, execution, lint, retries, telemetry, and mutation hooks intertwined |
 | `src/dan/server/chat_manager.py` | 3759 | compatibility-named facade that still owns workflow orchestration |
-| `src/dan/server/concierge/runtime/__init__.py` | 3624 | orchestration, command adaptation, UX signaling, and scheduler bridging mixed |
+| `src/dan/server/concierge/runtime/__init__.py` | 3999 | orchestration, command adaptation, dispatch-mode policy, UX signaling, and scheduler bridging mixed |
 | `src/dan/builder/builder.py` | 3053 | DSL construction, validation, serialization, and Worker-projection mixed |
 | `editor/src/components/ConfigPanel.tsx` | 2982 | node/edge config editing, schema validation, and form rendering mixed |
 | `src/dan/executors/control_flow.py` | 2859 | branching, looping, routing, and error-handling execution all in one file |
@@ -94,12 +94,12 @@ Recommended order:
          ↓
   46-6 (concierge prompt pipeline cleanup + prompt quality + handoff envelope)
          ↓
+  46-7 (Worker bundle extraction — consumes 46-6 contract outputs)
+         ↓
 50-6 (workflow authoring + backend large-module narrowing)  [if needed]
 50-7 (Worker bridge retirement + AppState cleanup)          [if needed]
 50-8 (frontend sink reduction + pruning sweep)              [if needed]
 ```
-
-46-7 (Worker bundle extraction) is deferred until an external consumer exists.
 
 Rationale:
 
@@ -108,21 +108,31 @@ Rationale:
 - false facade retirement should happen before deep phase extractions, otherwise the same behavior will keep leaking back into the old owners
 - 50-6 must follow 50-3 and 50-5 (not run in parallel) because workflow-generation and graph-mutator splits depend on chat/capability ownership and concierge runtime boundaries being settled first; the sub-plan text already says "coordinate with 50-3" and "coordinate with 50-5"
 - 46-6 (concierge prompt pipeline cleanup) runs right after 50-5 settles the concierge file boundaries. It is the highest-leverage remaining work: better prompts → better agent output
+- 46-7 (Worker bundle extraction) runs right after 46-6 — the extraction forces import-ceiling and adapter-boundary discipline that improves internal boundaries, not just external distribution
 - 50-6, 50-7, 50-8 are marked "[if needed]" — they address real structural debt but can be deferred until the debt actively blocks product work
-- 46-7 is deferred until an external consumer exists for the Worker bundle
 - frontend sink reduction benefits from the backend ownership seams stabilizing first
 
 ## Success Criteria
 
-- the repo has one explicit inventory of key scripts/modules, real owners, and split/pruning guardrails (deliverable: `docs/key-scripts.md` or a dedicated section in `docs/architecture.md`)
+### Launch-critical (50-1 / 50-2 / 50-3 / 50-5 / 46-6 / 46-7)
+
+- the repo has one explicit inventory of key scripts/modules, real owners, and split/pruning guardrails (deliverable: `docs/key-scripts.md`)
 - workflow run/apply invariants are callee-owned rather than reimplemented across callers
 - `chat_manager.py` and `capability_handlers.py` are honest thin boundaries or deleted as behaviorful owners
+- concierge runtime and scheduler no longer mix orchestration, command adaptation, dispatch policy, and daemon authority in the same sink files
+- normal single-shot ask/agent/plan turns execute in the foreground and produce real answers, not ack-only background responses
+- the concierge prompt pipeline uses typed envelopes (`PromptEnvelope`, `TurnExecutionEnvelope`, `ChildHandoffEnvelope`) with explicit slots, not ad-hoc `extra_system_instructions` concatenation
+- Worker core (`dan/worker/core/`) imports cleanly without `dan.server.*`, `dan.models.legacy`, or `dan.executors.*`; DAN-specific coupling lives in `dan/worker/adapters/`
+- targeted pruning removes redundant code in touched areas, and focused validation/perf checks show no material regression
+
+### Continuation / optional debt payoff (50-4 / 50-6 / 50-7 / 50-8)
+
 - `RunManager` owns lifecycle while a separate boundary owns post-run finalization/learning
-- concierge runtime and scheduler no longer mix orchestration, command adaptation, and daemon authority in the same sink files
 - at least two oversized backend files and two oversized frontend files are narrowed by real boundary splits, each losing at least 30% of lines or shedding at least one of its listed responsibilities entirely
 - Worker compatibility bridges are more contained and no longer the default path for the compute families that have native Worker execution
 - globals-backed `AppState` compatibility is removed from the normal dependency surface
-- targeted pruning removes redundant code in touched areas, and focused validation/perf checks show no material regression
+
+These continuation criteria are real debt, but should not block launch. Execute when the debt actively blocks product work.
 
 ## Relationship to 49-Series
 
@@ -134,7 +144,7 @@ The 49 concierge-service hardening plans (49-1 through 49-5) target `concierge/r
 
 - **50-series narrows the files** — 50-1 inventories seams, 50-5 extracts schedule/progress modules, 50-3 retires facades.
 - **46-6 cleans up the concierge prompt pipeline** — slot-based prompt assembly, stage overlay quality, typed handoff envelope, prompt duplication pruning. Runs after 50-2/50-3/50-5 produce cleaner file boundaries.
-- **46-7 is deferred** — Worker bundle extraction waits until there is an external consumer. No speculative architecture.
+- **46-7 follows 46-6** — Worker bundle extraction consumes the 46-6 contract outputs and forces the import-ceiling discipline that cleans up internal boundaries. Runs after 46-6, before the optional 50-6/50-7/50-8 tail.
 
 The earlier framing that tried to "unify two orthogonal paths" is replaced. Workers handle workflow-node execution via `worker_resources` catalogs; the concierge handles chat execution via its prompt pipeline. Two different callers, not two competing architectures.
 
@@ -150,4 +160,4 @@ The earlier framing that tried to "unify two orthogonal paths" is replaced. Work
 
 - This plan is the patch-first response to the latest structural review, which concluded that the repo is still fundamentally coherent but overgrown and drifting at its seams.
 - The 50-series deliberately treats “split long files,” “pin down key scripts,” and “prune unnecessary code” as one connected effort. File size alone is not the problem; mixed ownership is.
-- The essential sequence is **50-2 → 50-3 → 50-5 → 46-6**. This gets the highest-leverage structural and prompt-quality wins. The remaining plans (50-4, 50-6, 50-7, 50-8, 46-7) are real debt but deferrable until they actively block product work. After the essential sequence, new work should be product features and capability expansion, not structural repair.
+- The essential sequence is **50-1 → 50-2 → 50-3 → 50-5 → 46-6 → 46-7**. This gets the highest-leverage structural wins, prompt-quality wins, and clean Worker boundary extraction. 50-4 is worthwhile and can run alongside 50-3/50-5 if bandwidth allows, but it does not block the prompt/wiring standardization path. The remaining plans (50-6, 50-7, 50-8) are real debt but deferrable until they actively block product work.
