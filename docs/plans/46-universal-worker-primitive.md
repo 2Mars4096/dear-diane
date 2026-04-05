@@ -74,7 +74,7 @@ The Worker collapses the agent-like surface: one primary compute model, one prim
 | [46-3](46-3-type-derivation-and-equivalence.md) | Roles, Presets & Equivalence Proof | Define built-in roles; build legacy-type ↔ Worker presets; prove Worker coverage for compute types and compatibility parity for control/runtime types | P0 | completed |
 | [46-4](46-4-builder-dsl-and-authoring.md) | Builder DSL & Authoring Integration | `worker()` builder method; `worker_scope()` for composites; compiler/decompiler round-trip; preserve worker contract metadata through authoring surfaces | P1 | completed |
 | [46-5](46-5-migration-and-compaction.md) | Migration, Deprecation & Compaction | Conversion utilities; gradual migration; worker-first generation surfaces; codebase compaction; clean documentation | P2 | completed |
-| [46-6](46-6-concierge-worker-standardization.md) | Concierge-First Execution Standardization | Make concierge the single execution brain; Workers are dispatched compute. Clean up prompt pipeline, stage overlays, handoff envelopes, prune prompt duplication | P1 | not-started |
+| [46-6](46-6-concierge-worker-standardization.md) | Concierge-First Execution Standardization | Make concierge the single execution brain; Workers are dispatched compute. Clean up prompt pipeline, trust labels, prompt budgets, handoff envelopes, and root/child/Worker prompt contracts | P1 | not-started |
 | [46-7](46-7-reusable-universal-agent-bundle-extraction.md) | Reusable Worker Bundle Extraction | Extract the Worker compute contract as a DAN-independent package (deferred — no external consumer yet) | P2 | not-started |
 
 ## Dependencies / Sequencing
@@ -104,7 +104,8 @@ Strictly serial. The model must exist before the executor, the executor before t
 3. Once Worker-first authoring, generation, and contract metadata are stable, 47 may proceed in a follow-on branch/worktree even if some 46 cleanup remains.
 4. **50-series interleave:** 46-6 depends on 50-1 (inventory) and 50-5 (concierge file narrowing). The practical order: 50-2/50-3/50-5 → 46-6 → remaining 50-series as needed.
 5. **Concierge-first decision:** 46-6 declares the concierge as the single execution brain for DAN chat. Workers are dispatched compute nodes, not a parallel agent runtime. This simplifies 46-7 from "extract an entire agent runtime" to "extract the Worker compute contract" — and makes 46-7 deferrable until there is an actual external consumer.
-6. 46-7 is deferred. Execute only when a concrete embedding need arises (second project, SDK, plugin system).
+6. **Contract reuse rule:** when 46-7 starts, it should reuse the normalized task/evidence/output-contract surface defined by 46-6. Do not invent a second external request shape for the reusable bundle.
+7. 46-7 is deferred. Execute only when a concrete embedding need arises (second project, SDK, plugin system).
 
 ## Success Criteria
 
