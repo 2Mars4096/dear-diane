@@ -50,10 +50,14 @@ class Task(BaseModel):
 
 
 class PendingAction(BaseModel):
+    action_id: str = Field(default_factory=lambda: f"pending_{uuid.uuid4().hex[:12]}")
     kind: Literal["confirm", "clarify"]
     intent: str
     original_text: str
     options: list[str] = Field(default_factory=list)
+    task_id: str | None = None
+    attempt_session_id: str | None = None
+    replay_context: list[TaskTurn] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=_utc_now)
 
@@ -172,3 +176,8 @@ class ResolvedContext(BaseModel):
     is_new_task: bool
     confidence: float
     domain: str | None = None
+    concierge_task_id: str | None = None
+    dispatch_mode: str | None = None
+    follow_up_type: str | None = None
+    follow_up_prompt: str | None = None
+    follow_up_candidates: list[str] = Field(default_factory=list)
