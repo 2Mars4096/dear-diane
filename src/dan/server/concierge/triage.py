@@ -37,7 +37,15 @@ _QUESTION_START_RE = re.compile(
 _ANAPHORA_RE = re.compile(r"\b(?:it|that|this|them|those|these)\b", re.IGNORECASE)
 _PATH_HINT_RE = re.compile(r"(?:~?/|\.{1,2}/|[A-Za-z]:\\)")
 _WRITE_INTENT_RE = re.compile(
-    r"\b(?:write|draft|create|save|update|edit|rewrite|revise|modify|patch|fix|append)\b",
+    r"\b(?:write|draft|create|save|persist|update|edit|rewrite|revise|modify|patch|fix|append|export)\b",
+    re.IGNORECASE,
+)
+_WRITE_OUTPUT_ARTIFACT_RE = re.compile(
+    r"\b(?:outline|proposal|spec(?:ification)?|documentation|summary|artifact|memo|brief|writeup|markdown)\b",
+    re.IGNORECASE,
+)
+_WRITE_DESTINATION_RE = re.compile(
+    r"\b(?:to\s+(?:disk|file|markdown)|write\s+out|save\s+out)\b",
     re.IGNORECASE,
 )
 _READ_INTENT_RE = re.compile(
@@ -266,6 +274,19 @@ _FILE_CONTEXT_MARKERS = (
     ".yaml",
     ".yml",
     ".pdf",
+)
+_WRITE_OUTPUT_ARTIFACT_MARKERS = (
+    "outline",
+    "proposal",
+    "spec",
+    "specification",
+    "documentation",
+    "summary",
+    "artifact",
+    "memo",
+    "brief",
+    "writeup",
+    "markdown",
 )
 
 
@@ -1215,6 +1236,15 @@ def _infer_fallback_action_hints(text: str, context: ResolvedContext) -> list[st
         or any(marker in lower for marker in _FILE_CONTEXT_MARKERS)
         or (has_anaphora and any(marker in context_text for marker in _FILE_CONTEXT_MARKERS))
     )
+    write_output_like = (
+        bool(_WRITE_OUTPUT_ARTIFACT_RE.search(text))
+        or bool(_WRITE_DESTINATION_RE.search(text))
+        or any(marker in lower for marker in _WRITE_OUTPUT_ARTIFACT_MARKERS)
+        or (
+            has_anaphora
+            and any(marker in context_text for marker in _WRITE_OUTPUT_ARTIFACT_MARKERS)
+        )
+    )
     workflow_context_like = bool(_WORKFLOW_ENTITY_RE.search(text)) or (
         has_anaphora and bool(_WORKFLOW_ENTITY_RE.search(context_text))
     )
@@ -1259,7 +1289,13 @@ def _infer_fallback_action_hints(text: str, context: ResolvedContext) -> list[st
 
     if _WEB_INTENT_RE.search(text):
         hints.append("search_web")
-    if _WRITE_INTENT_RE.search(text) and (file_context_like or has_anaphora or "write" in lower or "draft" in lower):
+    if _WRITE_INTENT_RE.search(text) and (
+        file_context_like
+        or write_output_like
+        or has_anaphora
+        or "write" in lower
+        or "draft" in lower
+    ):
         hints.append("write_file")
     if _READ_INTENT_RE.search(text) and (file_context_like or has_anaphora):
         hints.append("read_file")

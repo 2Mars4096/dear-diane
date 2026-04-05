@@ -258,6 +258,13 @@ async def test_triage_uses_workflow_apply_lexical_scenario_with_recent_context()
         ("run it", "workflow_run_followup", "run", ["workflow_run"]),
         ("status of the workflow", "workflow_query_status", "workflow", ["workflow_query"]),
         ("what workflow is this", "workflow_query_identity", "workflow", ["workflow_query"]),
+        ("what does this workflow do", "workflow_query_purpose", "workflow", ["workflow_query"]),
+        (
+            "do you remember what that workflow is about",
+            "workflow_query_purpose",
+            "workflow",
+            ["workflow_query"],
+        ),
     ],
 )
 async def test_triage_uses_workflow_followup_lexical_scenarios_with_recent_context(
@@ -659,6 +666,34 @@ async def test_triage_file_patch_request_does_not_hit_workflow_apply_scenario():
         return "{}"
 
     result = await triage("apply this patch to the file", context, _should_not_run)
+
+    assert result.route_source == "fast_lexical"
+    assert result.scenario_id == "explicit_file_write"
+    assert result.route is not None
+    assert result.route.target == "file"
+    assert result.route.action_hints == ["write_file"]
+    assert llm_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    [
+        "save the outline to disk",
+        "persist documentation",
+        "export the summary to a file",
+    ],
+)
+async def test_triage_output_persistence_requests_route_to_file_write(text: str):
+    context, _project, _task = _make_context(task_label="Deep equity workflow work")
+    llm_calls = 0
+
+    async def _should_not_run(_messages):
+        nonlocal llm_calls
+        llm_calls += 1
+        return "{}"
+
+    result = await triage(text, context, _should_not_run)
 
     assert result.route_source == "fast_lexical"
     assert result.scenario_id == "explicit_file_write"

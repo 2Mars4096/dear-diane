@@ -101,11 +101,36 @@ _WORKFLOW_RUN_RE = re.compile(
     r"\b(?:run|test|execute|launch|start)\b",
     re.IGNORECASE,
 )
+_WORKFLOW_QUERY_STATUS_RE = re.compile(
+    r"\b(?:status|progress|state|how(?:'s| is)\s+it\s+going|what(?:'s| is)\s+the\s+status)\b",
+    re.IGNORECASE,
+)
+_WORKFLOW_QUERY_IDENTITY_RE = re.compile(
+    r"\b(?:what workflow is this|which workflow|workflow (?:name|id)|current workflow)\b",
+    re.IGNORECASE,
+)
+_WORKFLOW_QUERY_PURPOSE_RE = re.compile(
+    r"\b(?:what (?:is|was)\s+(?:this|that|the current)\s+workflow\s+(?:about|for)|"
+    r"what does\s+(?:this|that|the current)\s+workflow\s+do|"
+    r"do you remember what\s+(?:this(?:\s+workflow)?|that(?:\s+workflow)?|the workflow)\s+is\s+about|"
+    r"(?:explain|describe|summarize)\s+(?:this|that|the current)\s+workflow)\b",
+    re.IGNORECASE,
+)
+_WORKFLOW_QUERY_ANAPHORA_RE = re.compile(
+    r"\b(?:what does it do|what is it about|how does it work)\b",
+    re.IGNORECASE,
+)
 _FURNACE_CONTROL_RE = re.compile(
     r"\b(?:furnace|distill(?:ation)?|recipe session|start session)\b",
     re.IGNORECASE,
 )
 _ANAPHORA_RE = re.compile(r"\b(?:it|that|this|those|them)\b", re.IGNORECASE)
+_WORKFLOW_QUERY_SAFE_HINTS = frozenset({
+    "workflow_query",
+    "search_web",
+    "read_file",
+    "status_check",
+})
 _STAGE_PROMPT_OVERLAYS: dict[str, str] = {
     "conversation": (
         "## Concierge stage: conversation\n"
@@ -289,6 +314,22 @@ def _should_prefer_workflow_run_followup(
     return bool(_WORKFLOW_RUN_RE.search(text) and _ANAPHORA_RE.search(text))
 
 
+def _should_prefer_workflow_query_followup(
+    message: str,
+    history: list[dict[str, str]],
+) -> bool:
+    text = str(message or "").strip()
+    if not text or not _history_has_workflow_activity(history):
+        return False
+    if _WORKFLOW_QUERY_IDENTITY_RE.search(text):
+        return True
+    if _WORKFLOW_QUERY_PURPOSE_RE.search(text):
+        return True
+    if _WORKFLOW_QUERY_STATUS_RE.search(text) and _WORKFLOW_ACTIVITY_RE.search(text):
+        return True
+    return bool(_WORKFLOW_QUERY_ANAPHORA_RE.search(text))
+
+
 def _should_prefer_workflow_edit_followup(
     message: str,
     history: list[dict[str, str]],
@@ -307,6 +348,15 @@ def _should_prefer_workflow_edit_followup(
     if _WORKFLOW_CONTINUATION_RE.search(text) and _ANAPHORA_RE.search(text):
         return True
     return bool(_WORKFLOW_FOLLOWUP_RE.search(text) and _ANAPHORA_RE.search(text))
+
+
+def _is_workflow_query_only(route_target: str, action_hints: list[str] | tuple[str, ...]) -> bool:
+    hints = {
+        str(item or "").strip()
+        for item in action_hints
+        if str(item or "").strip()
+    }
+    return route_target == "workflow" and "workflow_query" in hints and hints <= _WORKFLOW_QUERY_SAFE_HINTS
 
 
 def _prepend_autonomy_announcement(session: Any, content: str) -> str:
@@ -774,11 +824,7 @@ def _determine_stage(session: Any) -> str:
 
     action_hints = getattr(route, "action_hints", []) if route else []
     route_target = getattr(route, "target", "") if route else ""
-    workflow_query_only = (
-        route_target == "workflow"
-        and "workflow_query" in action_hints
-        and set(action_hints) <= {"workflow_query"}
-    )
+    workflow_query_only = _is_workflow_query_only(route_target, action_hints)
 
     if (
         mode == "build"
@@ -858,7 +904,15 @@ def _extract_chat_params(
             if hint_text and hint_text not in required_action_hints:
                 required_action_hints.append(hint_text)
 
-    if _should_prefer_workflow_run_followup(message, history):
+    if _should_prefer_workflow_query_followup(message, history):
+        required_action_hints = [
+            hint
+            for hint in required_action_hints
+            if hint not in {"workflow_edit", "workflow_build", "workflow_run", "run_control"}
+        ]
+        if "workflow_query" not in required_action_hints:
+            required_action_hints.append("workflow_query")
+    elif _should_prefer_workflow_run_followup(message, history):
         required_action_hints = [
             hint
             for hint in required_action_hints
@@ -896,18 +950,18 @@ def _extract_chat_params(
     allow_mutation_tool = metadata.get("allow_mutation_tool")
     if not isinstance(allow_mutation_tool, bool):
         route_target = getattr(route, "target", "") if route is not None else ""
-        workflow_query_only = (
-            route_target == "workflow"
-            and "workflow_query" in required_action_hints
-            and set(required_action_hints) <= {"workflow_query"}
-        )
+        workflow_query_only = _is_workflow_query_only(route_target, required_action_hints)
         allow_mutation_tool = (
             "workflow_edit" in required_action_hints
             or "workflow_build" in required_action_hints
             or mode == "build"
             or (route_target == "workflow" and not workflow_query_only)
         )
-        if not allow_mutation_tool and _should_keep_mutation_tool_for_followup(message, history):
+        if (
+            not allow_mutation_tool
+            and "workflow_query" not in required_action_hints
+            and _should_keep_mutation_tool_for_followup(message, history)
+        ):
             allow_mutation_tool = True
 
     stream_channel_id = str(metadata.get("stream_channel_id") or "").strip() or None
@@ -932,6 +986,20 @@ def _extract_chat_params(
         )
     if run_control_instruction:
         extra_system_sections.append(run_control_instruction)
+    workflow_query_instruction = ""
+    if "workflow_query" in required_action_hints and not ({
+        "workflow_edit",
+        "workflow_build",
+        "workflow_run",
+    } & set(required_action_hints)):
+        workflow_query_instruction = (
+            "This turn is a workflow-understanding request. Identify the current workflow, "
+            "explain what it does from the resolved workflow context, and answer as a read-only "
+            "workflow query. Do not propose or apply workflow mutations unless the user explicitly "
+            "asks to change the workflow."
+        )
+    if workflow_query_instruction:
+        extra_system_sections.append(workflow_query_instruction)
     extra_system_instructions = "\n\n".join(
         section.strip()
         for section in extra_system_sections

@@ -2219,6 +2219,12 @@ def test_determine_stage_workflow_query_only_stays_conversation() -> None:
     assert _determine_stage(session) == "conversation"
 
 
+def test_determine_stage_workflow_query_with_search_web_stays_conversation() -> None:
+    route = _FakeRoute(target="workflow", action_hints=["workflow_query", "search_web"])
+    session = _FakeSession(triage=_FakeTriage(route=route))
+    assert _determine_stage(session) == "conversation"
+
+
 def test_determine_stage_file_target() -> None:
     route = _FakeRoute(target="file")
     session = _FakeSession(triage=_FakeTriage(route=route))
@@ -3412,6 +3418,39 @@ def test_extract_chat_params_mutation_tool_false_for_workflow_query_only() -> No
     )
     params = _extract_chat_params(session, "system prompt")
     assert params["allow_mutation_tool"] is False
+
+
+def test_extract_chat_params_mutation_tool_false_for_workflow_query_with_search_web() -> None:
+    route = _FakeRoute(target="workflow", action_hints=["workflow_query", "search_web"])
+    session = _FakeSession(
+        triage=_FakeTriage(intent="agent", route=route),
+        msg=_FakeMsg(metadata={"mode": "agent"}),
+    )
+    params = _extract_chat_params(session, "system prompt")
+    assert params["allow_mutation_tool"] is False
+
+
+def test_extract_chat_params_prefers_workflow_query_followup_over_edit() -> None:
+    session = _FakeSession(
+        triage=_FakeTriage(intent="agent", route=_FakeRoute(target="general")),
+        msg=_FakeMsg(metadata={"mode": "agent"}),
+    )
+    session.msg.text = "what does this workflow do?"
+    session.context = SimpleNamespace(
+        project=SimpleNamespace(linked_workflow_ids=["_scratch"]),
+        task=SimpleNamespace(
+            turns=[
+                SimpleNamespace(role="user", content="Build the workflow around watchlist.csv"),
+                SimpleNamespace(role="assistant", content="Prepared a workflow change preview for the watchlist workflow."),
+            ],
+        ),
+    )
+
+    params = _extract_chat_params(session, "system prompt")
+    assert "workflow_query" in params["required_action_hints"]
+    assert "workflow_edit" not in params["required_action_hints"]
+    assert params["allow_mutation_tool"] is False
+    assert "workflow-understanding request" in params["extra_system_instructions"]
 
 
 def test_extract_chat_params_mutation_tool_true_for_build_mode_no_route() -> None:

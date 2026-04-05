@@ -5,15 +5,33 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
+import re
 from typing import Any, Iterable, Sequence
 
-from dan.agent_runtime.graph_summary import compute_graph_revision
+from dan.agent_runtime.graph_summary import build_graph_summary, compute_graph_revision
 from dan.meta.workflow_contract import normalize_workflow_id
 from dan.models.graph import Graph
 from dan.utils.workflow_interface import derive_workflow_interface
 
 _CURRENT_REFS = frozenset({"", "current", "this"})
 _TOKEN_LIMIT = 600
+_SUMMARY_STEP_LIMIT = 6
+_METADATA_WORD_STOPWORDS = frozenset({
+    "workflow",
+    "graph",
+    "node",
+    "nodes",
+    "step",
+    "steps",
+    "pipeline",
+    "current",
+    "this",
+    "that",
+    "the",
+    "and",
+    "with",
+    "for",
+})
 
 
 @dataclass(frozen=True)
@@ -360,6 +378,7 @@ def build_workflow_context_pack(
             "updated_at": workflow_resolution.updated_at,
             "stale": workflow_resolution.stale,
         },
+        "structure_summary": _build_structure_summary(graph, workflow_resolution.graph_id),
         "required_inputs": required_inputs,
     }
 
@@ -419,6 +438,92 @@ def _latest_mutation_preview(
         "description": str(mutation_plan.get("description") or "").strip() or None,
         "status": "proposed",
         "message_id": preview.get("message_id"),
+    }
+
+
+def _build_structure_summary(graph: Graph, workflow_id: str) -> dict[str, Any]:
+    summary = build_graph_summary(graph, workflow_id)
+    key_steps = _workflow_key_steps(summary)
+    metadata_consistency = _metadata_consistency(summary.name, summary.description, key_steps)
+
+    result: dict[str, Any] = {
+        "node_count": summary.node_count,
+        "edge_count": summary.edge_count,
+        "entry_points": list(summary.entry_points),
+        "exit_points": list(summary.exit_points),
+    }
+    if key_steps:
+        result["key_steps"] = key_steps
+        result["inferred_purpose"] = "Likely flow: " + " -> ".join(key_steps) + "."
+    if metadata_consistency:
+        result["metadata_consistency"] = metadata_consistency
+        if metadata_consistency == "low":
+            result["metadata_note"] = (
+                "Saved workflow name/description may be stale relative to the node structure."
+            )
+    return result
+
+
+def _workflow_key_steps(summary: Any) -> list[str]:
+    steps: list[str] = []
+    seen: set[str] = set()
+    for node in list(getattr(summary, "nodes", []) or []):
+        label = _best_node_label(node)
+        normalized = label.lower()
+        if not label or normalized in seen:
+            continue
+        seen.add(normalized)
+        steps.append(label)
+        if len(steps) >= _SUMMARY_STEP_LIMIT:
+            break
+    return steps
+
+
+def _best_node_label(node: Any) -> str:
+    for candidate in (
+        getattr(node, "description", None),
+        getattr(node, "name", None),
+        getattr(node, "id", None),
+    ):
+        label = _normalize_label(candidate)
+        if label:
+            return label
+    return ""
+
+
+def _normalize_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
+    text = text.replace("_", " ").replace("-", " ")
+    text = re.sub(r"\s+", " ", text).strip(" .,:;")
+    return text[:80]
+
+
+def _metadata_consistency(
+    name: str | None,
+    description: str | None,
+    key_steps: list[str],
+) -> str | None:
+    metadata_words = _semantic_words(f"{name or ''} {description or ''}")
+    step_words = set().union(*(_semantic_words(step) for step in key_steps)) if key_steps else set()
+    if not metadata_words or not step_words:
+        return None
+    overlap_ratio = len(metadata_words & step_words) / min(len(metadata_words), len(step_words))
+    if overlap_ratio < 0.2:
+        return "low"
+    if overlap_ratio < 0.5:
+        return "mixed"
+    return "high"
+
+
+def _semantic_words(text: str) -> set[str]:
+    normalized = _normalize_label(text).lower()
+    return {
+        token
+        for token in normalized.split()
+        if len(token) >= 3 and token not in _METADATA_WORD_STOPWORDS
     }
 
 

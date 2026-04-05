@@ -25,6 +25,13 @@ _WORKFLOW_IDENTITY_RE = re.compile(
     r"\b(?:what workflow is this|which workflow|workflow (?:name|id)|current workflow)\b",
     re.IGNORECASE,
 )
+_WORKFLOW_PURPOSE_RE = re.compile(
+    r"\b(?:what (?:is|was)\s+(?:this|that|the current)\s+workflow\s+(?:about|for)|"
+    r"what does\s+(?:this|that|the current)\s+workflow\s+do|"
+    r"do you remember what\s+(?:this(?:\s+workflow)?|that(?:\s+workflow)?|the workflow)\s+is\s+about|"
+    r"(?:explain|describe|summarize)\s+(?:this|that|the current)\s+workflow)\b",
+    re.IGNORECASE,
+)
 _WORKFLOW_APPLY_RE = re.compile(
     r"\b(?:apply (?:it|that|this)|go ahead and apply|use (?:it|that|this)|make it live)\b",
     re.IGNORECASE,
@@ -243,14 +250,22 @@ DEFAULT_LEXICAL_SCENARIOS: tuple[LexicalScenario, ...] = (
         positive_patterns=(
             re.compile(r"\b(?:write|save|update|edit|patch|rewrite)\b.*\b(?:file|document|draft|report|readme)\b", re.IGNORECASE),
             re.compile(r"\b(?:write|save|update|edit|patch|rewrite)\b.*(?:~?/|\.{1,2}/|[A-Za-z]:\\)", re.IGNORECASE),
+            re.compile(
+                r"\b(?:save|persist|export|write)\b.*\b(?:outline|proposal|spec(?:ification)?|documentation|summary|artifact|memo|brief|writeup|markdown)\b",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                r"\b(?:save|persist|export|write)\b.*\b(?:to\s+(?:disk|file|markdown)|write\s+out|save\s+out)\b",
+                re.IGNORECASE,
+            ),
         ),
         intent="agent",
         target="file",
         action_hints=("write_file",),
         confidence=0.9,
         tier=2,
-        examples=("update this file", "rewrite ./README.md"),
-        anti_examples=("update the workflow", "retry the workflow"),
+        examples=("update this file", "rewrite ./README.md", "save the outline to disk"),
+        anti_examples=("update the workflow", "retry the workflow", "save this workflow"),
     ),
     LexicalScenario(
         id="workflow_authoring_request",
@@ -375,6 +390,23 @@ DEFAULT_LEXICAL_SCENARIOS: tuple[LexicalScenario, ...] = (
         tier=1,
         examples=("what workflow is this", "what is the current workflow id"),
         anti_examples=("what file is this",),
+    ),
+    LexicalScenario(
+        id="workflow_query_purpose",
+        description="Ask what the current workflow does or is about.",
+        positive_patterns=(_WORKFLOW_PURPOSE_RE,),
+        required_context=("workflow_operation_subject_known",),
+        intent="agent",
+        target="workflow",
+        action_hints=("workflow_query",),
+        confidence=0.93,
+        tier=1,
+        examples=(
+            "what does this workflow do",
+            "what is this workflow about",
+            "do you remember what that workflow is about",
+        ),
+        anti_examples=("what does this file do", "what is this project about"),
     ),
 )
 
