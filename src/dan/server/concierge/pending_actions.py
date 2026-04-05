@@ -102,6 +102,7 @@ def _attachment_metadata(
     requires_triage: bool = False,
 ) -> dict[str, Any]:
     metadata: dict[str, Any] = {
+        "pending_action_id": pending.action_id,
         "pending_action_kind": pending.kind,
         "pending_original_text": pending.original_text,
         "pending_intent": pending.intent,
@@ -119,6 +120,10 @@ def _attachment_metadata(
             requires_triage=requires_triage,
         ),
     }
+    if pending.task_id:
+        metadata["pending_task_id"] = pending.task_id
+    if pending.attempt_session_id:
+        metadata["pending_attempt_session_id"] = pending.attempt_session_id
     if resolved_value:
         metadata["pending_resolved_value"] = resolved_value
     return metadata

@@ -493,6 +493,15 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         group="session",
     ))
     registry.register(CommandDescriptor(
+        name="/status",
+        kind="chat",
+        surfaces=["all"],
+        args_schema="[task_id]",
+        help_text="Show tracked concierge tasks and current background work",
+        group="session",
+        handler="dan.server.concierge.runtime.Concierge.handle_status_command",
+    ))
+    registry.register(CommandDescriptor(
         name="/search",
         kind="chat",
         surfaces=["all"],

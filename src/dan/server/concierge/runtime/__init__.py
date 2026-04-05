@@ -22,6 +22,11 @@ if TYPE_CHECKING:
     from ..memory_services import MemoryServices
 
 from dan.chat_events import ChatCompleteEvent, ChatStreamEvent
+from dan.chat_events import (
+    ChatTaskAckEvent,
+    ChatTaskNotificationBatchEvent,
+    ChatTaskNotificationEvent,
+)
 from dan.llm_surface import (
     complete_chat_surface,
     default_llm_model,
@@ -56,6 +61,16 @@ from ..progress import ProgressReporter
 from ..project_store import ProjectStore
 from ..pending_actions import resolve_pending_reply
 from ..resources import ResourceTracker
+from ..followup_classifier import FollowUpResolution, FollowUpType, classify_follow_up
+from ..task_attention import (
+    AttentionReason,
+    TaskAttentionMonitor,
+    build_notification_summary,
+    coalesce_notification_summaries,
+    derive_attention,
+)
+from ..task_registry import ConciergeTask, DispatchMode, TaskRegistry, TaskState
+from ..task_snapshot import build_snapshot
 from ..triage import TriageResult
 
 logger = logging.getLogger(__name__)
@@ -267,6 +282,11 @@ class Concierge:
         self.bot_name = bot_name
         self.auto_summarize_turn_threshold: int = 10
         self._bg_memory_tasks: set[asyncio.Task[None]] = set()
+        self._background_concierge_tasks: dict[str, asyncio.Task[None]] = {}
+        self._background_task_notifications: dict[str, list[ChatTaskNotificationEvent]] = {}
+        self._background_task_channels: dict[str, str] = {}
+        self._task_watch_started = False
+        self._dispatcher: Any = None
         self._interaction_counter: int = 0
         self._default_autonomy_preference = normalize_legacy_autonomy_level(
             autonomy_level or os.environ.get("DAN_CONCIERGE_AUTONOMY", "auto"),
@@ -275,6 +295,12 @@ class Concierge:
         self._volatile_concierge_state_locks: dict[str, asyncio.Lock] = {}
         self._pending_preference_surface: dict[str, list[Any]] = {}
         self._progress_sessions: dict[str, Any] = {}
+        self._task_registry = TaskRegistry(project_store=self.project_store)
+        self._task_attention_monitor = TaskAttentionMonitor(
+            self._task_registry,
+            clear_pending_action=self._clear_timed_out_pending_action,
+            emit_telemetry=self._emit_task_attention_telemetry,
+        )
 
         self._current_surface_id_var: ContextVar[str | None] = ContextVar(
             "concierge_current_surface_id", default=None,
@@ -511,12 +537,16 @@ class Concierge:
         metadata = msg.metadata if isinstance(getattr(msg, "metadata", None), dict) else {}
         resolved_project_id = str(metadata.get("resolved_project_id") or "").strip()
         resolved_task_id = str(metadata.get("resolved_task_id") or "").strip()
+        resolved_concierge_task_id = str(metadata.get("concierge_task_id") or "").strip()
         if resolved_project_id:
-            return self._context_from_project_ids(
+            resolved = self._context_from_project_ids(
                 resolved_project_id,
                 task_id=resolved_task_id,
                 surface_id=msg.external_id,
             )
+            if resolved is not None and resolved_concierge_task_id:
+                resolved.concierge_task_id = resolved_concierge_task_id
+            return resolved
         return None
 
     def _context_from_project_ids(
@@ -1246,6 +1276,9 @@ class Concierge:
                 "stream_channel_id",
                 "resolved_project_id",
                 "resolved_task_id",
+                "concierge_task_id",
+                "concierge_dispatch_mode",
+                "concierge_follow_up_type",
                 "resolved_domain",
             ):
                 if key in msg.metadata:
@@ -1586,6 +1619,10 @@ class Concierge:
         self, msg: SurfaceMessage,
     ) -> ChatCompleteEvent | None:
         from ..triage import fast_classify_text
+
+        if self._is_natural_status_query(msg.text):
+            self._telem_is_fast_command = True
+            return self._complete_event(content=self.handle_status_command(msg))
 
         fast_social = fast_classify_text(msg.text)
         normalized = msg.text.strip().lower()
@@ -1990,6 +2027,7 @@ class Concierge:
 
     async def _process_inner(self, msg: SurfaceMessage) -> AsyncIterator[ChatStreamEvent]:
         self._current_surface_id = msg.external_id
+        await self._ensure_task_watchers()
         state_scope_id = self._concierge_state_scope_key(msg.surface, msg.external_id)
         lock = self._volatile_concierge_state_locks.setdefault(state_scope_id, asyncio.Lock())
         async with lock:
@@ -2049,6 +2087,28 @@ class Concierge:
             state,
             volatile_states=self._volatile_concierge_states,
         )
+
+    async def _emit_task_attention_telemetry(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        await self._emit_telemetry_event(event_type, metadata=payload)
+
+    def _clear_timed_out_pending_action(self, task: ConciergeTask) -> None:
+        project = self.project_store.get_project_any_surface(task.project_id)
+        if project is None or project.pending_action is None:
+            return
+        surface_id = str(project.surface_id or "").strip()
+        if not surface_id:
+            return
+        self.project_store.clear_pending_action(task.project_id, surface_id)
+
+    async def _ensure_task_watchers(self) -> None:
+        if self._task_watch_started:
+            return
+        self._task_watch_started = True
+        await self._task_attention_monitor.start()
 
     # ------------------------------------------------------------------
     # Goal progress
@@ -3164,15 +3224,26 @@ class Concierge:
             ), msg
         if project is None or project.pending_action is None:
             return None
-        task = self.project_store.get_current_task(project.project_id, msg.external_id)
+        pending = project.pending_action
+        task = None
+        pending_project_task_id = str(
+            (pending.metadata or {}).get("project_task_id") or ""
+        ).strip()
+        if pending_project_task_id:
+            for candidate in project.tasks:
+                if candidate.task_id == pending_project_task_id:
+                    task = candidate
+                    break
+        if task is None:
+            task = self.project_store.get_current_task(project.project_id, msg.external_id)
         if task is None:
             return None
         context = ResolvedContext(
             project=project, task=task,
             is_new_project=False, is_new_task=False,
             confidence=1.0, domain=project.domain,
+            concierge_task_id=pending.task_id,
         )
-        pending = project.pending_action
         context = self._populate_resolved_context_domain(context, pending.original_text or msg.text)
         resolution = resolve_pending_reply(pending, msg.text)
         triage = TriageResult(
@@ -3185,12 +3256,30 @@ class Concierge:
         if resolution.action == "cancel":
             self.project_store.clear_pending_action(project.project_id, msg.external_id)
             self.project_store.update_task_status(project.project_id, task.task_id, "paused", msg.external_id)
+            if pending.task_id:
+                self._task_registry.set_pending_action(pending.task_id, None)
+                current = self._task_registry.get(pending.task_id)
+                if current is not None and current.state == TaskState.WAITING_INPUT:
+                    self._task_registry.transition(
+                        pending.task_id,
+                        TaskState.CANCELLED,
+                        metadata={"reason": "pending_reply_cancelled"},
+                    )
             return self._complete_event(
                 content=f"{format_prefix(project.label)} Cancelled.",
             ), context, triage, msg
 
         if resolution.action == "resume":
             self.project_store.clear_pending_action(project.project_id, msg.external_id)
+            if pending.task_id:
+                self._task_registry.set_pending_action(pending.task_id, None)
+                current = self._task_registry.get(pending.task_id)
+                if current is not None and current.state == TaskState.WAITING_INPUT:
+                    self._task_registry.transition(
+                        pending.task_id,
+                        TaskState.RUNNING,
+                        metadata={"reason": "pending_reply_resume"},
+                    )
             replay_metadata = {
                 **pending.metadata,
                 **msg.metadata,
@@ -3260,9 +3349,294 @@ class Concierge:
         enriched = dict(metadata)
         enriched["resolved_project_id"] = context.project.project_id
         enriched["resolved_task_id"] = context.task.task_id
+        if context.concierge_task_id:
+            enriched["concierge_task_id"] = context.concierge_task_id
+        if context.dispatch_mode:
+            enriched["concierge_dispatch_mode"] = context.dispatch_mode
+        if context.follow_up_type:
+            enriched["concierge_follow_up_type"] = context.follow_up_type
         if context.domain:
             enriched["resolved_domain"] = context.domain
         return enriched
+
+    def _is_natural_status_query(self, text: str) -> bool:
+        lower = str(text or "").strip().lower()
+        return lower in {"status", "what's happening", "what's going on"} or lower.startswith("/status")
+
+    def _format_task_age(self, updated_at: datetime) -> str:
+        delta = max(0, int((datetime.now(timezone.utc) - updated_at).total_seconds()))
+        if delta < 60:
+            return f"{delta}s ago"
+        minutes = delta // 60
+        if minutes < 60:
+            return f"{minutes}m ago"
+        hours = minutes // 60
+        if hours < 24:
+            return f"{hours}h ago"
+        days = hours // 24
+        return f"{days}d ago"
+
+    def _status_scope_project_id(self, msg: SurfaceMessage) -> str | None:
+        metadata = msg.metadata if isinstance(getattr(msg, "metadata", None), dict) else {}
+        resolved = str(metadata.get("resolved_project_id") or "").strip() or None
+        if resolved:
+            return resolved
+        active = self.project_store.list_active(msg.external_id)
+        if len(active) == 1:
+            return active[0].project_id
+        return None
+
+    def _format_status_summary(self, msg: SurfaceMessage, *, task_id: str | None = None) -> str:
+        project_id = self._status_scope_project_id(msg)
+        tasks = (
+            self._task_registry.list(project_id, limit=None)
+            if project_id
+            else self._task_registry.list_all(limit=None, creator_surface=msg.surface)
+        )
+        if task_id:
+            target = next((task for task in tasks if task.task_id == task_id), None)
+            if target is None:
+                target = self._task_registry.get(task_id)
+            if target is None:
+                return f"{format_prefix()} Unknown task `{task_id}`."
+            last_progress = str(target.latest_progress_line or "No progress lines yet.")
+            current_attempt = target.current_attempt
+            attempt = current_attempt.session_id if current_attempt is not None else "none"
+            return "\n".join([
+                f"{target.title}",
+                f"State: `{target.state.value}`",
+                f"Dispatch mode: `{target.dispatch_mode.value}`",
+                f"Attempt: `{attempt}`",
+                f"Age: {self._format_task_age(target.updated_at)}",
+                f"Last progress: {last_progress}",
+            ])
+
+        non_terminal = [
+            task for task in tasks
+            if task.state not in {
+                TaskState.COMPLETED,
+                TaskState.FAILED,
+                TaskState.CANCELLED,
+                TaskState.SUPERSEDED,
+            }
+        ]
+        recent_completed = [
+            task for task in tasks
+            if task.state in {TaskState.COMPLETED, TaskState.FAILED}
+            and (datetime.now(timezone.utc) - task.updated_at) <= timedelta(minutes=30)
+        ]
+        if not non_terminal and not recent_completed:
+            return f"{format_prefix()} No tracked concierge tasks."
+        if len(non_terminal) == 1 and not task_id:
+            only = non_terminal[0]
+            return self._format_status_summary(msg, task_id=only.task_id)
+
+        waiting_count = sum(1 for task in non_terminal if task.state == TaskState.WAITING_INPUT)
+        lines = [f"{len(non_terminal)} tasks active, {waiting_count} waiting input"]
+        visible = non_terminal[:10]
+        for task in visible:
+            lines.append(
+                f"• {task.title} — {task.state.value.replace('_', ' ')} ({self._format_task_age(task.updated_at)})"
+            )
+        if len(non_terminal) > len(visible):
+            lines.append(f"+ {len(non_terminal) - len(visible)} more")
+        if recent_completed:
+            lines.append("Recently completed")
+            for task in recent_completed[:5]:
+                lines.append(
+                    f"• {task.title} — {task.state.value.replace('_', ' ')} ({self._format_task_age(task.updated_at)})"
+                )
+            if len(recent_completed) > 5:
+                lines.append(f"+ {len(recent_completed) - 5} more")
+        return "\n".join(lines)
+
+    def handle_status_command(self, msg: SurfaceMessage) -> str:
+        parts = str(msg.text or "").split()
+        task_id = parts[1].strip() if len(parts) > 1 and parts[1].startswith("task_") else None
+        return self._format_status_summary(msg, task_id=task_id)
+
+    def _task_title(self, msg: SurfaceMessage, triage: TriageResult | None, context: ResolvedContext) -> str:
+        for candidate in (
+            getattr(triage, "deliverable", None),
+            getattr(triage, "goal", None),
+            getattr(context.task, "label", None),
+            msg.text.splitlines()[0] if msg.text else "",
+        ):
+            text = str(candidate or "").strip()
+            if text:
+                return text[:120]
+        return "Task"
+
+    def _select_dispatch_mode(
+        self,
+        msg: SurfaceMessage,
+        triage: TriageResult | None,
+        follow_up: FollowUpResolution | None,
+    ) -> DispatchMode:
+        if follow_up is not None and follow_up.follow_up_type == FollowUpType.QUERY_STATUS:
+            return DispatchMode.INLINE
+        if triage is None:
+            return DispatchMode.FOREGROUND
+        if getattr(triage, "is_social", False):
+            return DispatchMode.INLINE
+        intent = str(getattr(triage, "intent", "") or "").strip().lower()
+        route = getattr(triage, "route", None)
+        target = str(getattr(route, "target", "") or "").strip().lower()
+        action_hints = {
+            str(item or "").strip()
+            for item in list(getattr(route, "action_hints", None) or [])
+            if str(item or "").strip()
+        }
+        metadata = msg.metadata if isinstance(getattr(msg, "metadata", None), dict) else {}
+        if msg.text.strip().startswith("/"):
+            return DispatchMode.INLINE
+        if target == "workflow" or target == "run" or intent in {"agent", "plan"}:
+            if "workflow_edit" in action_hints and not metadata.get("skip_confirm"):
+                return DispatchMode.FOREGROUND
+            return DispatchMode.BACKGROUND
+        if action_hints.intersection({"workflow_run", "run_control", "write_file"}):
+            return DispatchMode.BACKGROUND if intent in {"agent", "plan"} else DispatchMode.FOREGROUND
+        if getattr(triage, "tier", 1) == 0:
+            return DispatchMode.INLINE
+        return DispatchMode.FOREGROUND
+
+    def _ensure_concierge_task_binding(
+        self,
+        msg: SurfaceMessage,
+        context: ResolvedContext,
+        triage: TriageResult | None,
+        *,
+        dispatch_mode: DispatchMode,
+        follow_up: FollowUpResolution | None = None,
+    ) -> ConciergeTask | None:
+        if dispatch_mode == DispatchMode.INLINE and not self._should_persist_context(context):
+            return None
+
+        metadata = msg.metadata if isinstance(getattr(msg, "metadata", None), dict) else {}
+        existing_task_id = (
+            str(metadata.get("concierge_task_id") or "").strip()
+            or str(getattr(context, "concierge_task_id", "") or "").strip()
+            or str(getattr(triage, "resume_task_id", "") or "").strip()
+            or str(getattr(follow_up, "task_id", "") or "").strip()
+        )
+
+        task: ConciergeTask | None = None
+        if follow_up is not None:
+            if follow_up.follow_up_type in {FollowUpType.REFINE_TASK, FollowUpType.RETRY_TASK, FollowUpType.ANSWER_CLARIFICATION}:
+                task = self._task_registry.get(existing_task_id) if existing_task_id else None
+            elif follow_up.follow_up_type == FollowUpType.SUPERSEDE_TASK:
+                superseded = self._task_registry.get(existing_task_id) if existing_task_id else None
+                task = self._task_registry.create(
+                    context.project.project_id,
+                    self._task_title(msg, triage, context),
+                    str(getattr(triage, "goal", "") or msg.text or "").strip()[:240],
+                    msg.surface,
+                    dispatch_mode=dispatch_mode,
+                    project_task_id=context.task.task_id,
+                    metadata={"original_text": msg.text},
+                )
+                if superseded is not None:
+                    self._task_registry.supersede(superseded.task_id, task.task_id, reason="superseded_by_follow_up")
+            elif follow_up.follow_up_type == FollowUpType.NEW_TASK:
+                task = None
+
+        if task is None and existing_task_id:
+            task = self._task_registry.get(existing_task_id)
+
+        if task is None and follow_up is not None and follow_up.follow_up_type in {
+            FollowUpType.REFINE_TASK,
+            FollowUpType.RETRY_TASK,
+            FollowUpType.ANSWER_CLARIFICATION,
+        }:
+            task = self._task_registry.find_by_project_task(context.project.project_id, context.task.task_id)
+            if task is not None and task.state in {TaskState.WAITING_INPUT, TaskState.RUNNING}:
+                pass
+            else:
+                task = None
+
+        if task is None:
+            task = self._task_registry.create(
+                context.project.project_id,
+                self._task_title(msg, triage, context),
+                str(getattr(triage, "goal", "") or msg.text or "").strip()[:240],
+                msg.surface,
+                dispatch_mode=dispatch_mode,
+                project_task_id=context.task.task_id,
+                metadata={"original_text": msg.text},
+            )
+        else:
+            self._task_registry.bind_project_task(task.task_id, context.task.task_id)
+
+        context.concierge_task_id = task.task_id
+        context.dispatch_mode = dispatch_mode.value
+        if follow_up is not None:
+            context.follow_up_type = follow_up.follow_up_type.value
+            context.follow_up_candidates = list(follow_up.candidate_task_ids)
+            context.follow_up_prompt = follow_up.prompt
+        msg.metadata = self._with_resolved_context_metadata(metadata, context)
+        return task
+
+    def _queue_task_notifications(
+        self,
+        notifications: list[ChatTaskNotificationEvent],
+    ) -> list[ChatTaskNotificationEvent | ChatTaskNotificationBatchEvent]:
+        grouped = coalesce_notification_summaries([
+            build_notification_summary(self._task_registry.get(evt.task_id))  # type: ignore[arg-type]
+            for evt in notifications
+            if self._task_registry.get(evt.task_id) is not None
+        ])
+        output: list[ChatTaskNotificationEvent | ChatTaskNotificationBatchEvent] = []
+        for item in grouped:
+            if isinstance(item, list):
+                batch_items = [
+                    ChatTaskNotificationEvent(
+                        task_id=summary.task_id,
+                        title=summary.title,
+                        state=summary.state,
+                        attention_reason=summary.attention_reason,
+                        summary_line=summary.summary_line,
+                    )
+                    for summary in item
+                ]
+                output.append(ChatTaskNotificationBatchEvent(notifications=batch_items))
+            elif item is not None:
+                output.append(
+                    ChatTaskNotificationEvent(
+                        task_id=item.task_id,
+                        title=item.title,
+                        state=item.state,
+                        attention_reason=item.attention_reason,
+                        summary_line=item.summary_line,
+                    )
+                )
+        return output
+
+    def _notification_events_for_task(
+        self,
+        task_id: str,
+    ) -> list[ChatTaskNotificationEvent | ChatTaskNotificationBatchEvent]:
+        task = self._task_registry.get(task_id)
+        if task is None:
+            return []
+        summary = build_notification_summary(task)
+        if summary is None:
+            return []
+        self._task_registry.note_notification(task.task_id, attention_reason=summary.attention_reason)
+        event = ChatTaskNotificationEvent(
+            task_id=summary.task_id,
+            title=summary.title,
+            state=summary.state,
+            attention_reason=summary.attention_reason,
+            summary_line=summary.summary_line,
+        )
+        return [event]
+
+    def build_concierge_snapshot(self, *, creator_surface: str | None = None) -> dict[str, Any]:
+        return build_snapshot(
+            self._task_registry,
+            dispatcher=self._dispatcher,
+            creator_surface=creator_surface,
+        ).model_dump(mode="json")
 
     # ------------------------------------------------------------------
     # Utility
@@ -3621,4 +3995,5 @@ def build_concierge(
         max_concurrent_projects=max_concurrent_projects,
         resource_tracker=resource_tracker,
     )
+    concierge._dispatcher = dispatcher
     return concierge, dispatcher

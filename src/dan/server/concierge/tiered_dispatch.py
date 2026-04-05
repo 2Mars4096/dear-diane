@@ -6,6 +6,9 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
+from .followup_classifier import FollowUpType, classify_follow_up
+from .task_registry import DispatchMode, TaskState
+
 if TYPE_CHECKING:
     from .models import SurfaceMessage
 
@@ -137,6 +140,12 @@ _USER_TURN_METADATA_KEYS = frozenset({
     "pending_requires_triage",
     "pending_user_turn_content",
     "pending_effective_text",
+    "pending_action_id",
+    "pending_task_id",
+    "pending_attempt_session_id",
+    "concierge_task_id",
+    "concierge_dispatch_mode",
+    "concierge_follow_up_type",
 })
 
 
@@ -468,7 +477,7 @@ class TieredDispatcher:
         self._concierge = concierge
 
     async def dispatch(self, msg: SurfaceMessage) -> AsyncIterator[Any]:
-        from dan.chat_events import ChatStreamEvent
+        from dan.chat_events import ChatStreamEvent, ChatTaskAckEvent
         from .autonomy import resolve_autonomy
 
         state_scope_id = self._concierge._concierge_state_scope_key(msg.surface, msg.external_id)
@@ -521,6 +530,28 @@ class TieredDispatcher:
             triage=triage,
             base_context=triage_context,
         )
+        follow_up = None
+        if self._concierge._should_persist_context(triage_context):
+            pending_action = getattr(getattr(triage_context, "project", None), "pending_action", None)
+            waiting_task_id = str(getattr(pending_action, "task_id", "") or "").strip() or None
+            follow_up = classify_follow_up(
+                msg.text,
+                triage=triage,
+                tasks=self._concierge._task_registry.list(
+                    triage_context.project.project_id,
+                    limit=None,
+                ),
+                waiting_task_id=waiting_task_id,
+            )
+            triage_context.follow_up_type = follow_up.follow_up_type.value
+            triage_context.follow_up_candidates = list(follow_up.candidate_task_ids)
+            triage_context.follow_up_prompt = follow_up.prompt
+            if follow_up.requires_disambiguation and follow_up.prompt:
+                yield self._concierge._complete_event(content=follow_up.prompt)
+                return
+            if follow_up.follow_up_type == FollowUpType.QUERY_STATUS:
+                yield self._concierge._complete_event(content=self._concierge.handle_status_command(msg))
+                return
         turn_preference = None
         msg_metadata = getattr(msg, "metadata", None)
         if isinstance(msg_metadata, dict):
@@ -531,6 +562,18 @@ class TieredDispatcher:
                 )
                 msg_metadata = msg.metadata
             turn_preference = msg_metadata.get("turn_autonomy_preference")
+        dispatch_mode = self._concierge._select_dispatch_mode(msg, triage, follow_up)
+        triage_context.dispatch_mode = dispatch_mode.value
+        concierge_task = self._concierge._ensure_concierge_task_binding(
+            msg,
+            triage_context,
+            triage,
+            dispatch_mode=dispatch_mode,
+            follow_up=follow_up,
+        )
+        if concierge_task is not None and isinstance(msg_metadata, dict):
+            msg.metadata = self._concierge._with_resolved_context_metadata(msg_metadata, triage_context)
+            msg_metadata = msg.metadata
         self._concierge._telem_intent = str(getattr(triage, "intent", "") or "").strip() or None
         self._concierge._last_context = (
             triage_context
@@ -567,10 +610,28 @@ class TieredDispatcher:
             triage.tier,
             autonomy_resolution=autonomy_resolution,
         )
+        if concierge_task is not None:
+            if follow_up is not None and follow_up.follow_up_type == FollowUpType.RETRY_TASK:
+                if concierge_task.state in {
+                    TaskState.COMPLETED,
+                    TaskState.FAILED,
+                    TaskState.CANCELLED,
+                }:
+                    self._concierge._task_registry.transition(
+                        concierge_task.task_id,
+                        TaskState.QUEUED,
+                        metadata={"reason": "retry"},
+                    )
+            self._concierge._task_registry.bind_project_task(
+                concierge_task.task_id,
+                triage_context.task.task_id,
+            )
+            self._concierge._task_registry.link_attempt(concierge_task.task_id, session.id)
         if isinstance(msg_metadata, dict):
             route_obj = getattr(triage, "route", None)
             msg_metadata["route_target"] = getattr(route_obj, "target", "")
             msg_metadata["route_source"] = str(getattr(triage, "route_source", "") or "")
+            msg_metadata["concierge_dispatch_mode"] = dispatch_mode.value
             if getattr(triage, "scenario_id", None):
                 msg_metadata["scenario_id"] = triage.scenario_id
             if getattr(triage, "scenario_confidence", None) is not None:
@@ -592,21 +653,199 @@ class TieredDispatcher:
             session.child_execution = "mixed"
         else:
             session.child_execution = "parallel"
+        if concierge_task is not None and dispatch_mode == DispatchMode.BACKGROUND:
+            ack = await self._launch_background_dispatch(
+                msg,
+                triage,
+                triage_context,
+                session,
+                concierge_task.task_id,
+            )
+            yield ChatTaskAckEvent(
+                task_id=concierge_task.task_id,
+                title=concierge_task.title,
+                state=ack["state"],
+                dispatch_mode=DispatchMode.BACKGROUND.value,
+                summary=concierge_task.summary,
+                stream_channel_id=ack["stream_channel_id"],
+                queue_position=ack["queue_position"],
+            )
+            return
 
+        if concierge_task is not None:
+            self._concierge._task_registry.mark_task_live(concierge_task.task_id)
+            if concierge_task.state in {TaskState.QUEUED, TaskState.WAITING_INPUT}:
+                self._concierge._task_registry.transition(
+                    concierge_task.task_id,
+                    TaskState.RUNNING,
+                    metadata={"dispatch_mode": dispatch_mode.value},
+                )
+        try:
+            async for event in self._execute_root_session(
+                msg,
+                triage,
+                triage_context,
+                autonomy_resolution,
+                session,
+                background=False,
+            ):
+                yield event
+        finally:
+            if concierge_task is not None:
+                self._concierge._task_registry.mark_task_idle(concierge_task.task_id)
+
+    def _background_project_cap(self) -> int:
+        return max(1, int(os.environ.get("DAN_MAX_BACKGROUND_TASKS", "3") or "3"))
+
+    def _background_global_cap(self) -> int:
+        return max(1, int(os.environ.get("DAN_MAX_GLOBAL_TASKS", "10") or "10"))
+
+    def _running_background_count(self, *, project_id: str | None = None) -> int:
+        count = 0
+        for task in self._concierge._task_registry.list_all(states={TaskState.RUNNING}, limit=None):
+            if task.dispatch_mode != DispatchMode.BACKGROUND:
+                continue
+            if project_id is not None and task.project_id != project_id:
+                continue
+            count += 1
+        return count
+
+    def _queued_background_count(self, *, project_id: str | None = None) -> int:
+        count = 0
+        for task in self._concierge._task_registry.list_all(states={TaskState.QUEUED}, limit=None):
+            if task.dispatch_mode != DispatchMode.BACKGROUND:
+                continue
+            if project_id is not None and task.project_id != project_id:
+                continue
+            count += 1
+        return count
+
+    async def _launch_background_dispatch(
+        self,
+        msg: SurfaceMessage,
+        triage: Any,
+        context: Any,
+        session: Any,
+        concierge_task_id: str,
+    ) -> dict[str, Any]:
+        project_id = context.project.project_id
+        project_running = self._running_background_count(project_id=project_id)
+        global_running = self._running_background_count()
+        queued = (
+            project_running >= self._background_project_cap()
+            or global_running >= self._background_global_cap()
+        )
+        queue_position = 0
+        if queued:
+            self._concierge._task_registry.transition(
+                concierge_task_id,
+                TaskState.QUEUED,
+                metadata={"reason": "background_capacity"},
+            )
+            queue_position = max(1, self._queued_background_count(project_id=project_id))
+        else:
+            self._concierge._task_registry.transition(
+                concierge_task_id,
+                TaskState.RUNNING,
+                metadata={"dispatch_mode": DispatchMode.BACKGROUND.value},
+            )
+        task = asyncio.create_task(
+            self._run_background_session(
+                msg,
+                triage,
+                context,
+                session,
+                concierge_task_id=concierge_task_id,
+                start_queued=queued,
+            )
+        )
+        self._concierge._background_concierge_tasks[concierge_task_id] = task
+        task.add_done_callback(
+            lambda _task, task_id=concierge_task_id: self._concierge._background_concierge_tasks.pop(task_id, None)
+        )
+        return {
+            "state": "queued" if queued else "running",
+            "queue_position": queue_position,
+            "stream_channel_id": self._concierge._background_task_channels.get(concierge_task_id),
+        }
+
+    async def _run_background_session(
+        self,
+        msg: SurfaceMessage,
+        triage: Any,
+        context: Any,
+        session: Any,
+        *,
+        concierge_task_id: str,
+        start_queued: bool,
+    ) -> None:
+        try:
+            if start_queued:
+                while (
+                    self._running_background_count(project_id=context.project.project_id) >= self._background_project_cap()
+                    or self._running_background_count() >= self._background_global_cap()
+                ):
+                    current = self._concierge._task_registry.get(concierge_task_id)
+                    if current is None or current.state in {TaskState.CANCELLED, TaskState.SUPERSEDED, TaskState.FAILED}:
+                        return
+                    await asyncio.sleep(0.1)
+                self._concierge._task_registry.transition(
+                    concierge_task_id,
+                    TaskState.RUNNING,
+                    metadata={"dequeued": True},
+                )
+            self._concierge._task_registry.mark_task_live(concierge_task_id)
+            async for _event in self._execute_root_session(
+                msg,
+                triage,
+                context,
+                session.autonomy_resolution,
+                session,
+                background=True,
+            ):
+                pass
+        finally:
+            self._concierge._task_registry.mark_task_idle(concierge_task_id)
+            for event in self._concierge._notification_events_for_task(concierge_task_id):
+                event_bus = getattr(self._concierge.capability_context, "event_bus", None)
+                if event_bus is not None:
+                    try:
+                        event_bus.broadcast(event.model_dump(mode="json"))
+                    except Exception:
+                        logger.debug("Task notification broadcast failed", exc_info=True)
+
+    async def _execute_root_session(
+        self,
+        msg: SurfaceMessage,
+        triage: Any,
+        triage_context: Any,
+        autonomy_resolution: Any,
+        session: Any,
+        *,
+        background: bool,
+    ) -> AsyncIterator[Any]:
         clarification_event = self._maybe_request_low_confidence_clarification(
             session,
             triage_context,
         )
         if clarification_event is not None:
-            yield clarification_event
+            if not background:
+                yield clarification_event
             await self._on_any_session_complete(session)
             await self._on_root_session_complete(session)
             return
 
         if triage.tier == 0:
             executor = self._executors.get(0)
-            if executor:
-                session.context = triage_context
+            if executor is None:
+                return
+            session.context = triage_context
+            if background and getattr(triage_context, "concierge_task_id", None):
+                self._concierge._task_registry.record_progress(
+                    triage_context.concierge_task_id,
+                    _user_task_progress_detail(triage, msg) or "Executing",
+                )
+            else:
                 execution_event = self._phase_event(
                     msg.external_id,
                     "execution",
@@ -615,25 +854,42 @@ class TieredDispatcher:
                 )
                 if execution_event is not None:
                     yield execution_event
-                async for event in executor.execute(session, self._session_manager):
-                    yield event
-                await self._on_any_session_complete(session)
-                await self._on_root_session_complete(session)
-                return
+            async for event in executor.execute(session, self._session_manager):
+                if background:
+                    self._record_background_event(triage_context, event)
+                    continue
+                yield event
+            await self._on_any_session_complete(session)
+            await self._on_root_session_complete(session)
+            return
 
-        context_event = self._phase_event(
-            msg.external_id,
-            "context",
-            "Gathering relevant context",
-        )
-        if context_event is not None:
-            yield context_event
+        if background and getattr(triage_context, "concierge_task_id", None):
+            self._concierge._task_registry.record_progress(
+                triage_context.concierge_task_id,
+                "Gathering relevant context",
+            )
+        else:
+            context_event = self._phase_event(
+                msg.external_id,
+                "context",
+                "Gathering relevant context",
+            )
+            if context_event is not None:
+                yield context_event
         context = await self._context_gatherer.gather(
             msg,
             triage,
             self._concierge,
             autonomy_resolution=autonomy_resolution,
         )
+        for attr_name in (
+            "concierge_task_id",
+            "dispatch_mode",
+            "follow_up_type",
+            "follow_up_prompt",
+            "follow_up_candidates",
+        ):
+            setattr(context, attr_name, getattr(triage_context, attr_name, None))
         session.context = context
         self._concierge._last_context = (
             context
@@ -641,23 +897,45 @@ class TieredDispatcher:
             else None
         )
 
-        execution_event = self._phase_event(
-            msg.external_id,
-            "execution",
-            "Executing",
-            _user_task_progress_detail(triage, msg),
-        )
-        if execution_event is not None:
-            yield execution_event
+        if background and getattr(context, "concierge_task_id", None):
+            self._concierge._task_registry.record_progress(
+                context.concierge_task_id,
+                _user_task_progress_detail(triage, msg) or "Executing",
+            )
+        else:
+            execution_event = self._phase_event(
+                msg.external_id,
+                "execution",
+                "Executing",
+                _user_task_progress_detail(triage, msg),
+            )
+            if execution_event is not None:
+                yield execution_event
         executor = self._executors.get(triage.tier)
         if executor is None:
             executor = self._executors.get(1)
 
         async for event in executor.execute(session, self._session_manager):
+            if background:
+                self._record_background_event(context, event)
+                continue
             yield event
 
         await self._on_any_session_complete(session)
         await self._on_root_session_complete(session)
+
+    def _record_background_event(self, context: Any, event: Any) -> None:
+        task_id = getattr(context, "concierge_task_id", None)
+        if not task_id:
+            return
+        content = str(getattr(event, "content", "") or "").strip()
+        if not content:
+            return
+        detected_mode = str(getattr(event, "detected_mode", "") or "").strip().lower()
+        if detected_mode == "progress_ack" or getattr(event, "phase_label", None):
+            self._concierge._task_registry.record_progress(task_id, content)
+            return
+        self._concierge._task_registry.record_progress(task_id, content[:200])
 
     def _resolve_pending(self, msg: SurfaceMessage):
         resolve_fn = getattr(self._concierge, "_resolve_pending_follow_up", None)
@@ -735,12 +1013,19 @@ class TieredDispatcher:
             kind="clarify",
             intent=str(getattr(triage, "intent", "ask") or "ask"),
             original_text=str(getattr(msg, "text", "") or ""),
+            task_id=str(getattr(context, "concierge_task_id", "") or "").strip() or None,
+            attempt_session_id=str(getattr(session, "id", "") or "").strip() or None,
+            replay_context=[
+                turn
+                for turn in list(getattr(getattr(context, "task", None), "turns", []) or [])[-3:]
+            ],
             metadata={
                 "requires_triage": True,
                 "clarification_source": "triage_low_confidence",
                 "triage_confidence": confidence,
                 "route_source": str(getattr(triage, "route_source", "") or ""),
                 "route_target": str(getattr(route, "target", "") or ""),
+                "project_task_id": str(getattr(getattr(context, "task", None), "task_id", "") or "").strip() or None,
             },
         )
         try:
@@ -749,6 +1034,17 @@ class TieredDispatcher:
             logger.debug("Failed to persist low-confidence clarification", exc_info=True)
             return None
         project.pending_action = pending
+        concierge_task_id = str(getattr(context, "concierge_task_id", "") or "").strip()
+        if concierge_task_id:
+            self._concierge._task_registry.set_pending_action(concierge_task_id, pending.action_id)
+            try:
+                self._concierge._task_registry.transition(
+                    concierge_task_id,
+                    TaskState.WAITING_INPUT,
+                    metadata={"reason": "triage_low_confidence"},
+                )
+            except ValueError:
+                logger.debug("Concierge task already waiting for input", exc_info=True)
         session.context = context
         self._session_manager.update_state(session.id, "running")
         self._session_manager.update_state(session.id, "completed")
@@ -998,6 +1294,37 @@ class TieredDispatcher:
                     bool(result.content),
                     task_status_override=task_status_override,
                 )
+                concierge_task_id = str(getattr(context, "concierge_task_id", "") or "").strip()
+                if concierge_task_id:
+                    final_state = TaskState.COMPLETED
+                    metadata: dict[str, Any] = {}
+                    if (
+                        getattr(getattr(context, "project", None), "pending_action", None) is not None
+                        and task_status_override == "paused"
+                    ):
+                        final_state = TaskState.WAITING_INPUT
+                        metadata["reason"] = "pending_action"
+                    elif task_status_override == "blocked" or result.error or state_value == "failed":
+                        final_state = TaskState.FAILED
+                        metadata["error"] = result.error or completion_status or "failed"
+                    elif task_status_override == "paused":
+                        final_state = TaskState.CANCELLED
+                        metadata["reason"] = completion_status or "paused"
+                    self._concierge._task_registry.complete_attempt(
+                        concierge_task_id,
+                        session.id,
+                        outcome=final_state.value,
+                        error=str(metadata.get("error") or metadata.get("reason") or "") or None,
+                    )
+                    if final_state != TaskState.WAITING_INPUT:
+                        self._concierge._task_registry.set_pending_action(concierge_task_id, None)
+                    current_task = self._concierge._task_registry.get(concierge_task_id)
+                    if current_task is not None and current_task.state != final_state:
+                        self._concierge._task_registry.transition(
+                            concierge_task_id,
+                            final_state,
+                            metadata=metadata,
+                        )
 
             self._concierge._save_concierge_state(
                 session.msg.external_id if session.msg else "",

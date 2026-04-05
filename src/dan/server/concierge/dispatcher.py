@@ -630,6 +630,43 @@ class ConcurrentDispatcher:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
+    def snapshot_state(self) -> dict[str, Any]:
+        background_running = 0
+        per_project_counts: dict[str, dict[str, Any]] = {}
+        registry = getattr(self._concierge, "_task_registry", None)
+        if registry is not None:
+            for task in registry.list_all(limit=None):
+                project = per_project_counts.setdefault(
+                    task.project_id,
+                    {"active_count": 0, "queue_depth": 0, "oldest_queued_age": None},
+                )
+                if getattr(task, "dispatch_mode", None) is not None and task.dispatch_mode.value == "background":
+                    if task.state.value == "running":
+                        background_running += 1
+                        project["active_count"] += 1
+                    elif task.state.value == "queued":
+                        project["queue_depth"] += 1
+                        age = max(0.0, time.time() - task.updated_at.timestamp())
+                        oldest = project["oldest_queued_age"]
+                        if oldest is None or age > oldest:
+                            project["oldest_queued_age"] = age
+        for project_id, queue in self._project_queues.items():
+            project = per_project_counts.setdefault(
+                project_id,
+                {"active_count": 0, "queue_depth": 0, "oldest_queued_age": None},
+            )
+            project["queue_depth"] += queue.qsize()
+        return {
+            "active_background_slots": background_running,
+            "max_background_slots": int(getattr(self._concierge, "_background_project_cap", lambda: 3)()),
+            "global_active": len(self._active_tasks) + background_running,
+            "global_max": self._max_concurrent,
+            "per_project": [
+                {"project_id": project_id, **values}
+                for project_id, values in sorted(per_project_counts.items())
+            ],
+        }
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------

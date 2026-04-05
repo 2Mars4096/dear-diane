@@ -161,6 +161,31 @@ class ChatQueuedEvent(BaseModel):
     queue_position: int = 0
 
 
+class ChatTaskAckEvent(BaseModel):
+    type: str = "task_ack"
+    task_id: str
+    title: str
+    state: str
+    dispatch_mode: str
+    summary: str = ""
+    stream_channel_id: str | None = None
+    queue_position: int = 0
+
+
+class ChatTaskNotificationEvent(BaseModel):
+    type: str = "task_notification"
+    task_id: str
+    title: str
+    state: str
+    attention_reason: str
+    summary_line: str
+
+
+class ChatTaskNotificationBatchEvent(BaseModel):
+    type: str = "task_notification_batch"
+    notifications: list[ChatTaskNotificationEvent] = Field(default_factory=list)
+
+
 class ChatFileAttachmentEvent(BaseModel):
     type: str = "chat_file_attachment"
     path: str
@@ -222,6 +247,9 @@ ChatStreamEvent = (
     | ChatGraphCreatedEvent
     | ChatGraphQualityEvent
     | ChatQueuedEvent
+    | ChatTaskAckEvent
+    | ChatTaskNotificationEvent
+    | ChatTaskNotificationBatchEvent
     | ChatFileAttachmentEvent
     | ChatPollRequestEvent
     | ChatMultiPartEvent
@@ -246,6 +274,9 @@ __all__ = [
     "ChatNoticeEvent",
     "ChatPollRequestEvent",
     "ChatQueuedEvent",
+    "ChatTaskAckEvent",
+    "ChatTaskNotificationEvent",
+    "ChatTaskNotificationBatchEvent",
     "ChatStreamEvent",
     "ChatTokenEvent",
     "ChatToolCallResultEvent",
