@@ -34,12 +34,21 @@
   - [x] [48-4-scheduling-workflow-binding-and-timezones](plans/48-4-scheduling-workflow-binding-and-timezones.md) — timezone-aware workflow scheduling plus stale/missing/non-run-ready validation at both schedule-create and fire-time execution
   - [x] [48-5-generated-workflow-first-run-policy](plans/48-5-generated-workflow-first-run-policy.md)
   - [x] [48-6-latency-reduction-and-acceptance-harness](plans/48-6-latency-reduction-and-acceptance-harness.md)
-- [x] [49-concierge-service-hardening](plans/49-concierge-service-hardening.md) — concierge-only hardening pass that adds a first-class `ConciergeTask` registry and snapshot/event contract, background `task_ack` dispatch that releases chat immediately, task-aware follow-up/pending-action/status handling, and backend-only observability for future task cards and dispatcher-manager surfaces without touching frontend UI
+- [x] [49-concierge-service-hardening](plans/49-concierge-service-hardening.md) — concierge-only hardening pass that adds a first-class `ConciergeTask` registry and snapshot/event contract, background `task_ack` dispatch that releases chat immediately, task-aware follow-up/pending-action/status handling, read-only workflow-query turns that stay foregrounded so chat answers inline, and backend-only observability for future task cards and dispatcher-manager surfaces without touching frontend UI
   - [x] [49-1-task-registry-and-lifecycle](plans/49-1-task-registry-and-lifecycle.md)
   - [x] [49-2-background-dispatch-and-concierge-availability](plans/49-2-background-dispatch-and-concierge-availability.md)
   - [x] [49-3-clarification-pause-resume-and-task-ownership](plans/49-3-clarification-pause-resume-and-task-ownership.md)
   - [x] [49-4-status-attention-and-notification-contract](plans/49-4-status-attention-and-notification-contract.md)
   - [x] [49-5-dispatcher-observability-and-dashboard-backend-contract](plans/49-5-dispatcher-observability-and-dashboard-backend-contract.md)
+- [ ] [50-structural-consolidation-and-module-reduction](plans/50-structural-consolidation-and-module-reduction.md) — patch-first structural cleanup pass that pins down the key scripts, makes workflow/run invariants callee-owned, retires false facades, splits oversized modules along real boundaries, and prunes redundant code without performance regressions
+  - [ ] [50-1-key-script-inventory-and-refactor-guardrails](plans/50-1-key-script-inventory-and-refactor-guardrails.md)
+  - [ ] [50-2-workflow-invariant-ownership-and-run-launch](plans/50-2-workflow-invariant-ownership-and-run-launch.md)
+  - [ ] [50-3-chat-and-capability-facade-retirement](plans/50-3-chat-and-capability-facade-retirement.md)
+  - [ ] [50-4-run-manager-lifecycle-and-finalization-split](plans/50-4-run-manager-lifecycle-and-finalization-split.md)
+  - [ ] [50-5-concierge-runtime-and-scheduler-boundary-cleanup](plans/50-5-concierge-runtime-and-scheduler-boundary-cleanup.md)
+  - [ ] [50-6-workflow-authoring-and-large-module-narrowing](plans/50-6-workflow-authoring-and-large-module-narrowing.md)
+  - [ ] [50-7-worker-bridge-retirement-and-appstate-cleanup](plans/50-7-worker-bridge-retirement-and-appstate-cleanup.md)
+  - [ ] [50-8-frontend-sink-reduction-and-pruning](plans/50-8-frontend-sink-reduction-and-pruning.md)
 - [x] Chat-started run failure observability — `Save distilled workflow` / other chat-initiated runs now surface the real failure message from `run_failed`/`node_failed`, `View full logs` hydrates the persisted event stream into `LogPanel`, and history replay no longer hides `errors`-map failures behind truncated raw JSON
 - [x] MCP config capability compatibility follow-up — `get_config` now reads connected MCP servers through the current `MCPBridge.list_servers()` API, tolerates legacy bridge shapes, and no longer crashes after restart when config introspection runs before MCP state is fully available
 - [x] Concierge write-intent persistence follow-up — output-persistence phrases like `save the outline to disk`, `persist documentation`, and `export the summary to a file` now route deterministically to `write_file` instead of depending on LLM triage guesswork
