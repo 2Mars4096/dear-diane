@@ -3487,9 +3487,14 @@ class Concierge:
             for item in list(getattr(route, "action_hints", None) or [])
             if str(item or "").strip()
         }
+        workflow_query_only = "workflow_query" in action_hints and action_hints.isdisjoint(
+            {"workflow_run", "run_control", "workflow_edit", "write_file"}
+        )
         metadata = msg.metadata if isinstance(getattr(msg, "metadata", None), dict) else {}
         if msg.text.strip().startswith("/"):
             return DispatchMode.INLINE
+        if target == "workflow" and workflow_query_only:
+            return DispatchMode.FOREGROUND
         if target == "workflow" or target == "run" or intent in {"agent", "plan"}:
             if "workflow_edit" in action_hints and not metadata.get("skip_confirm"):
                 return DispatchMode.FOREGROUND

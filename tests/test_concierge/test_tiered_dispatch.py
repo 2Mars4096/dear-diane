@@ -722,6 +722,61 @@ async def test_tier1_workflow_query_only_keeps_mutation_tool_disabled(
 
 
 @pytest.mark.asyncio
+async def test_tier1_workflow_query_only_stays_foreground_and_answers(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=1,
+            intent="agent",
+            goal="Review existing workflows for daily equity research",
+            deliverable="Say whether a daily equity workflow exists",
+            route=RouteDecision(
+                mode=RouteMode.AGENT,
+                target="workflow",
+                action_hints=["workflow_query", "search_web"],
+            ),
+        )
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses["Review existing workflows for daily equity research"] = (
+        "There is an equity research example, but no canonical daily equity workflow on main."
+    )
+
+    events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="editor",
+                external_id="editor-user",
+                text="Review existing workflows for daily equity research",
+                metadata={
+                    "workflow_id": "_scratch",
+                    "mode": "agent",
+                },
+            )
+        )
+    ]
+
+    assert concierge.chat_manager.call_log == ["Review existing workflows for daily equity research"]
+    assert not any(getattr(event, "type", "") == "task_ack" for event in events)
+    terminal_messages = [
+        event.content
+        for event in events
+        if getattr(event, "type", "") == "chat_complete"
+        and getattr(event, "detected_mode", None) != "progress_ack"
+    ]
+    assert terminal_messages == [
+        "There is an equity research example, but no canonical daily equity workflow on main."
+    ]
+    call = concierge.chat_manager.calls[-1]
+    assert call["allow_mutation_tool"] is False
+    assert call["required_action_hints"] == ["workflow_query", "search_web"]
+
+
+@pytest.mark.asyncio
 async def test_tier2_build_override_skips_decomposition_and_calls_builder_directly(
     tmp_path: Path,
 ) -> None:
