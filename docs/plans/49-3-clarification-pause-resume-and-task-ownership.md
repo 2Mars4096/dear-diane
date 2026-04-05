@@ -1,7 +1,7 @@
 # 49-3: Clarification, Pause/Resume, and Task Ownership
 
 **Parent:** [49-concierge-service-hardening](49-concierge-service-hardening.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Bind clarification, retry, refinement, and supersession behavior to explicit task ownership so follow-up turns stop behaving like loose project-queue messages and start behaving like controlled task actions.
 
 ## Dependencies
@@ -31,25 +31,25 @@ This plan makes task ownership explicit.
 
 ## Tasks
 
-- [ ] 1. Make pending actions task-scoped
-  - [ ] 1-1. Add `task_id` and `attempt_session_id` fields to the pending-action record. Pending-action lookup switches from `get_by_project(project_id)` to `get_by_task(task_id)` as the primary path; project-level fallback remains for backward compat during migration.
-  - [ ] 1-2. When a pending action is created, transition the owning `ConciergeTask` to `waiting_input`. When resolved (answered or expired), transition back to `running`. The task state is the authority — pending-action presence alone is not enough to infer pause. Timeout interaction: when 49-4's stuck-detection sweep finds a `waiting_input` task exceeding `DAN_TASK_WAITING_TIMEOUT_MINUTES`, it should call back into this module to clear the pending action and transition the task to `failed` with `metadata: {reason: "waiting_input_timeout"}`.
-  - [ ] 1-3. Replay context: persist the last assistant message, the pending-action prompt, and up to 3 preceding user/assistant turns (configurable) on the pending-action record. This is the minimum context needed to resume without replaying the full session history. Cap total replay context at 4K tokens.
-- [ ] 2. Define the follow-up classification contract
-  - [ ] 2-1. Add a `FollowUpType` enum: `new_task`, `refine_task`, `supersede_task`, `retry_task`, `answer_clarification`, `query_status`. Classification runs after triage, before dispatch-mode selection. `FollowUpType` is orthogonal to the existing triage `intent` enum (`ask`, `agent`, `plan`): triage `intent` determines execution depth/budget, while `FollowUpType` determines task binding. Both are computed — `intent` by the triage classifier, `FollowUpType` by the follow-up classifier — and both are carried on the dispatch context. When `TriageResult.resume_task_id` is set by the triage layer, use it as the primary task-binding signal (equivalent to resolution priority (a)).
-  - [ ] 2-2. Resolution priority: (a) `TriageResult.resume_task_id` or explicit task reference in message (e.g. "retry task_abc123"); (b) active `waiting_input` task in the same project (unique match only); (c) most-recent non-terminal task if the message clearly continues the same intent — similarity measured by Jaccard coefficient on lowercased word stems (using the same stemming as triage keyword extraction), threshold ≥ 0.4; (d) if none match or multiple match, escalate. "Latest active task" is only used as heuristic (c), never as a silent default.
-  - [ ] 2-3. Escalation produces a disambiguation prompt listing candidate tasks by title, state, and age: "Which task did you mean? (1) {title_a} — running, 2m ago (2) {title_b} — waiting input, 5m ago". The user's reply is re-classified with the explicit reference. If the reply does not match any listed candidate (e.g., the user says something entirely unrelated), treat it as `new_task` rather than re-escalating — avoid infinite disambiguation loops.
-- [ ] 3. Tighten retry, resume, and supersession semantics
-  - [ ] 3-1. Clarification answers resume the paused task instead of just unblocking a project queue
-  - [ ] 3-2. Retry preserves task identity while recording a new execution attempt
-  - [ ] 3-3. Supersede and cancel paths leave explicit audit state on the older task rather than disappearing it from view
-- [ ] 4. Thread task ownership through surface metadata and traces
-  - [ ] 4-1. Preserve task ownership metadata in persisted user/assistant turns and session exports
-  - [ ] 4-2. Ensure status and notification systems can tell whether a follow-up affected an existing task or created a new one
-  - [ ] 4-3. Keep the task-ownership contract surface-neutral so CLI, editor, and adapters can consume the same backend semantics later
-- [ ] 5. Add focused regressions and docs
-  - [ ] 5-1. Cover clarification replay, retry history, supersession, and ambiguous follow-up handling
-  - [ ] 5-2. Document the task-ownership rules and any intentional fallback heuristics
+- [x] 1. Make pending actions task-scoped
+  - [x] 1-1. Add `task_id` and `attempt_session_id` fields to the pending-action record. Pending-action lookup switches from `get_by_project(project_id)` to `get_by_task(task_id)` as the primary path; project-level fallback remains for backward compat during migration.
+  - [x] 1-2. When a pending action is created, transition the owning `ConciergeTask` to `waiting_input`. When resolved (answered or expired), transition back to `running`. The task state is the authority — pending-action presence alone is not enough to infer pause. Timeout interaction: when 49-4's stuck-detection sweep finds a `waiting_input` task exceeding `DAN_TASK_WAITING_TIMEOUT_MINUTES`, it should call back into this module to clear the pending action and transition the task to `failed` with `metadata: {reason: "waiting_input_timeout"}`.
+  - [x] 1-3. Replay context: persist the last assistant message, the pending-action prompt, and up to 3 preceding user/assistant turns (configurable) on the pending-action record. This is the minimum context needed to resume without replaying the full session history. Cap total replay context at 4K tokens.
+- [x] 2. Define the follow-up classification contract
+  - [x] 2-1. Add a `FollowUpType` enum: `new_task`, `refine_task`, `supersede_task`, `retry_task`, `answer_clarification`, `query_status`. Classification runs after triage, before dispatch-mode selection. `FollowUpType` is orthogonal to the existing triage `intent` enum (`ask`, `agent`, `plan`): triage `intent` determines execution depth/budget, while `FollowUpType` determines task binding. Both are computed — `intent` by the triage classifier, `FollowUpType` by the follow-up classifier — and both are carried on the dispatch context. When `TriageResult.resume_task_id` is set by the triage layer, use it as the primary task-binding signal (equivalent to resolution priority (a)).
+  - [x] 2-2. Resolution priority: (a) `TriageResult.resume_task_id` or explicit task reference in message (e.g. "retry task_abc123"); (b) active `waiting_input` task in the same project (unique match only); (c) most-recent non-terminal task if the message clearly continues the same intent — similarity measured by Jaccard coefficient on lowercased word stems (using the same stemming as triage keyword extraction), threshold ≥ 0.4; (d) if none match or multiple match, escalate. "Latest active task" is only used as heuristic (c), never as a silent default.
+  - [x] 2-3. Escalation produces a disambiguation prompt listing candidate tasks by title, state, and age: "Which task did you mean? (1) {title_a} — running, 2m ago (2) {title_b} — waiting input, 5m ago". The user's reply is re-classified with the explicit reference. If the reply does not match any listed candidate (e.g., the user says something entirely unrelated), treat it as `new_task` rather than re-escalating — avoid infinite disambiguation loops.
+- [x] 3. Tighten retry, resume, and supersession semantics
+  - [x] 3-1. Clarification answers resume the paused task instead of just unblocking a project queue
+  - [x] 3-2. Retry preserves task identity while recording a new execution attempt
+  - [x] 3-3. Supersede and cancel paths leave explicit audit state on the older task rather than disappearing it from view
+- [x] 4. Thread task ownership through surface metadata and traces
+  - [x] 4-1. Preserve task ownership metadata in persisted user/assistant turns and session exports
+  - [x] 4-2. Ensure status and notification systems can tell whether a follow-up affected an existing task or created a new one
+  - [x] 4-3. Keep the task-ownership contract surface-neutral so CLI, editor, and adapters can consume the same backend semantics later
+- [x] 5. Add focused regressions and docs
+  - [x] 5-1. Cover clarification replay, retry history, supersession, and ambiguous follow-up handling
+  - [x] 5-2. Document the task-ownership rules and any intentional fallback heuristics
 
 ## Primary Files
 

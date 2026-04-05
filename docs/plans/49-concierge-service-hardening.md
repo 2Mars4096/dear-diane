@@ -1,6 +1,6 @@
 # 49: Concierge Service Hardening
 
-**Status:** not-started
+**Status:** completed
 **Goal:** Make the concierge an always-available intake and supervision layer by introducing first-class task tracking above session trees, background dispatch that does not monopolize chat, task-scoped clarification/status contracts, and backend observability surfaces for future task-card and dispatcher-dashboard UX.
 
 ## Problem
@@ -39,11 +39,11 @@ Out of scope:
 
 | # | Sub-Plan | Scope | Priority | Status |
 |---|----------|-------|----------|--------|
-| [49-1](49-1-task-registry-and-lifecycle.md) | Task Registry and Lifecycle | Add a first-class task model and registry above sessions | P1 | not-started |
-| [49-2](49-2-background-dispatch-and-concierge-availability.md) | Background Dispatch and Concierge Availability | Make the concierge acknowledge and dispatch backgroundable work without blocking new input | P1 | not-started |
-| [49-3](49-3-clarification-pause-resume-and-task-ownership.md) | Clarification, Pause/Resume, and Task Ownership | Bind follow-up turns and pending actions to explicit tasks | P1 | not-started |
-| [49-4](49-4-status-attention-and-notification-contract.md) | Status, Attention, and Notification Contract | Define task-aware status summaries, attention rules, and notification semantics | P1 | not-started |
-| [49-5](49-5-dispatcher-observability-and-dashboard-backend-contract.md) | Dispatcher Observability and Dashboard Backend Contract | Expose backend snapshot/stream contracts for manager-style inspection and future dashboard UX | P2 | not-started |
+| [49-1](49-1-task-registry-and-lifecycle.md) | Task Registry and Lifecycle | Add a first-class task model and registry above sessions | P1 | completed |
+| [49-2](49-2-background-dispatch-and-concierge-availability.md) | Background Dispatch and Concierge Availability | Make the concierge acknowledge and dispatch backgroundable work without blocking new input | P1 | completed |
+| [49-3](49-3-clarification-pause-resume-and-task-ownership.md) | Clarification, Pause/Resume, and Task Ownership | Bind follow-up turns and pending actions to explicit tasks | P1 | completed |
+| [49-4](49-4-status-attention-and-notification-contract.md) | Status, Attention, and Notification Contract | Define task-aware status summaries, attention rules, and notification semantics | P1 | completed |
+| [49-5](49-5-dispatcher-observability-and-dashboard-backend-contract.md) | Dispatcher Observability and Dashboard Backend Contract | Expose backend snapshot/stream contracts for manager-style inspection and future dashboard UX | P2 | completed |
 
 ## Dependencies / Sequencing
 
@@ -77,6 +77,42 @@ Rationale:
 - the existing session tree remains available as an execution trace, but tasks become the primary control-plane object
 - focused multi-task acceptance scenarios cover at least: concurrent background tasks, clarification pause/resume, retry with preserved identity, supersession, and coalesced completion notification
 
+## Consolidated Outcome
+
+The 49 tranche landed as a backend-only concierge control-plane hardening pass. The product contract is now:
+
+- concierge intake stays available while backgroundable work moves onto a durable `ConciergeTask`
+- task identity is explicit and additive (`concierge_task_id`), without colliding with existing project-task IDs
+- clarification, retry, supersession, and natural-language status follow-ups resolve against task ownership instead of loose project recency
+- `/status`, notifications, and snapshot/event consumers now read from task state rather than inferring from stream presence
+
+Delivered code surfaces:
+
+- `task_registry.py`: durable concierge task model, state machine, attempt history, startup recovery, and task event log
+- `task_attention.py`: derived attention reasons, notification summaries/coalescing, and waiting/stuck sweeps
+- `task_snapshot.py`: task/dispatcher snapshot schema plus replayable lifecycle-event projection
+- `followup_classifier.py`: task-bound follow-up classification and disambiguation prompt generation
+- `tiered_dispatch.py`: background `task_ack`, detached execution, task progress recording, and task-state completion wiring
+- `runtime/__init__.py`: task binding, dispatch-mode selection, task-aware `/status`, and snapshot/notification plumbing
+- `chat_events.py` / `dispatcher.py`: chat event shapes and dispatcher snapshot hook for future manager/dashboard consumers
+
+Focused validation landed with:
+
+- `tests/test_concierge/test_task_registry.py`
+- `tests/test_concierge/test_task_snapshot_consistency.py`
+- `tests/test_concierge/test_task_ownership.py`
+- `tests/test_concierge/test_task_status_notification.py`
+- `tests/test_concierge/test_background_dispatch.py`
+
+## Deferreds
+
+Intentionally deferred beyond 49:
+
+- frontend task cards, task rail, and dispatcher-manager dashboard UI
+- cross-surface notification forwarding and presence-aware delivery
+- automatic retry/restart of interrupted background tasks after process restart
+- larger structural narrowing of concierge/runtime modules, which now belongs to the 50-series consolidation plans
+
 ## Decisions
 
 - **Task is the user-facing control-plane object.** Session trees remain execution traces and execution envelopes.
@@ -92,5 +128,6 @@ Rationale:
 - This plan is the backend-only continuation of the concierge hardening line that already passed through plans 34, 38-8, and 41-3.
 - The intended future UX is still consistent with the "one concierge, many workers" model, but this plan deliberately starts with backend truth and lifecycle contracts before any visual redesign.
 - The "dispatcher manager dashboard" idea is explicitly preserved here as a backend-contract target so later UI work can consume a deliberate shape instead of reverse-engineering traces, queues, and websocket state.
+- Landed implementation summary: `task_registry.py` / `task_snapshot.py` / `task_attention.py` now define the concierge task truth, `followup_classifier.py` and richer `PendingAction` metadata bind retry/refine/clarification semantics to explicit task IDs, `tiered_dispatch.py` issues `task_ack` and detached background execution, `runtime/__init__.py` provides task-aware `/status` and notification plumbing, and `dispatcher.py` exposes a snapshot-oriented summary hook for future dashboard consumers. This parent file is the consolidated landing record for the 49-1 through 49-5 family.
 - **Existing `TriageResult.resume_task_id`:** The triage model already carries a `resume_task_id` field. Sub-plans (especially 49-3 follow-up classification) should leverage this as the triage-layer handoff for task binding rather than inventing a parallel mechanism.
 - **Existing `Task` model coexistence:** `models.py` has a `Task` dataclass nested inside `Project.tasks[]` with `task_id`, `label`, `status`, `turns`, etc. The new `ConciergeTask` is intentionally separate (concierge-level intake/lifecycle above project tasks). During implementation, `Project.current_task_id` should reference the project-level `Task`, while `ConciergeTask.task_id` references the concierge-level task. Both IDs appear in `ResolvedContext` — ensure naming avoids ambiguity (e.g. `concierge_task_id` vs `project_task_id` in contexts where both are present).

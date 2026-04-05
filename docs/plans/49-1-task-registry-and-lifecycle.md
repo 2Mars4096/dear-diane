@@ -1,7 +1,7 @@
 # 49-1: Task Registry and Lifecycle
 
 **Parent:** [49-concierge-service-hardening](49-concierge-service-hardening.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Introduce a first-class concierge task model and registry above root sessions so long-running, background, paused, retried, or superseded work has stable identity and explicit lifecycle state.
 
 ## Dependencies
@@ -31,26 +31,26 @@ This plan creates that missing control-plane layer.
 
 ## Tasks
 
-- [ ] 1. Define the concierge task model
-  - [ ] 1-1. Add a `ConciergeTask` dataclass with fields: `task_id` (prefixed UUID, e.g. `task_<uuid4_short>`), `project_id`, `title` (human-facing, ≤120 chars), `summary` (one-line intent), `state` (enum), `created_at`, `updated_at`, `creator_surface` (cli/editor/telegram), `root_session_attempts` (list of `{session_id, started_at, outcome}`), `pending_action_id` (nullable, links to active clarification/confirmation), `superseded_by` (nullable `task_id`)
-  - [ ] 1-2. Define the canonical task state enum: `queued`, `running`, `waiting_input`, `completed`, `failed`, `cancelled`, `superseded`. Define the legal state transition graph (e.g. `queued→running→completed|failed|cancelled`, `running→waiting_input→running`, `*→superseded`). Illegal transitions raise `ValueError`.
-  - [ ] 1-3. Separate task state from session state so tasks can outlive one root-session attempt. A `ConciergeTask` holds a list of attempt records; each attempt links to a root `session_id` and records its outcome (`completed`, `failed`, `cancelled`).
-- [ ] 2. Add a task registry layer
-  - [ ] 2-1. Create `TaskRegistry` with operations: `create(project_id, title, summary, surface) → ConciergeTask`, `get(task_id)`, `list(project_id, states=None, limit=20)`, `transition(task_id, new_state, metadata=None)`, `link_attempt(task_id, session_id)`, `supersede(old_task_id, new_task_id)`
-  - [ ] 2-2. Storage: in-memory dict keyed by `task_id`, with project-store-backed JSON persistence. Persistence format: a single `tasks.json` file per project under `~/.dan/projects/{project_id}/tasks.json` containing the full task list (not one file per task). Load on first access per project; write-through on state transitions. Single-file format keeps atomic writes simple and avoids directory-scan overhead for the expected task counts (≤100 retained per project).
-  - [ ] 2-3. Pruning: retain all non-terminal tasks plus the last 50 completed/failed/cancelled tasks per project (configurable via `DAN_TASK_RETENTION_COUNT`). Prune on `create()` when count exceeds threshold. Superseded tasks count toward the retention limit but are never pruned while their successor is non-terminal.
-  - [ ] 2-4. Startup recovery: on first `TaskRegistry` load for a project, scan for zombie tasks — any `ConciergeTask` in `running` or `queued` state with no live asyncio task. Transition zombies to `failed` with `metadata: {reason: "process_restart", recovered_at: <ISO8601>}`. Log a warning per recovered task. This ensures the registry is consistent after unclean shutdowns without requiring auto-retry infrastructure.
-- [ ] 3. Integrate task creation into concierge intake
-  - [ ] 3-1. Ephemeral (taskless) turns: social chatter, factual ask/general, fast-command responses, `/help`, `/status` queries. Tracked (task-creating) turns: anything that creates a root session, triggers a workflow run/build/edit/schedule, or enters the solver/goal loop. The boundary aligns with the existing `_resolve_context()` vs `_materialize_context(...)` split — materializing context implies a task.
-  - [ ] 3-2. Thread `task_id` through: `ConcurrentDispatcher` queue entries (as `SurfaceMessage.metadata["concierge_task_id"]`), `Concierge.handle_message(...)` context, root session creation metadata, pending-action records, and assistant-turn metadata. Use `resolved_context.task_id` as the canonical carrier. When `TriageResult.resume_task_id` is set, bind the turn to that existing `ConciergeTask` instead of creating a new one.
-  - [ ] 3-3. Preserve compatibility: existing stream/channel/progress behavior continues unchanged; `task_id` is additive metadata. Surfaces that do not yet consume `task_id` ignore it.
-- [ ] 4. Make task provenance observable
-  - [ ] 4-1. Include `task_id`, task state, and latest attempt metadata in persisted turn metadata and exported traces
-  - [ ] 4-2. Extend telemetry so task lifecycle events can be aggregated separately from raw session completion events
-  - [ ] 4-3. Draft the 49-5 snapshot field shapes early: define which `ConciergeTask` fields are public (suitable for dashboard/task-card rendering) vs internal (session IDs, attempt details). Coordinate with 49-5 so event vocabulary and snapshot schemas align with the model shipped here.
-- [ ] 5. Add focused regressions and docs
-  - [ ] 5-1. Cover creation, state transitions, retry/supersede history, and retention behavior
-  - [ ] 5-2. Document the task-vs-session boundary clearly in concierge docs and tests
+- [x] 1. Define the concierge task model
+  - [x] 1-1. Add a `ConciergeTask` dataclass with fields: `task_id` (prefixed UUID, e.g. `task_<uuid4_short>`), `project_id`, `title` (human-facing, ≤120 chars), `summary` (one-line intent), `state` (enum), `created_at`, `updated_at`, `creator_surface` (cli/editor/telegram), `root_session_attempts` (list of `{session_id, started_at, outcome}`), `pending_action_id` (nullable, links to active clarification/confirmation), `superseded_by` (nullable `task_id`)
+  - [x] 1-2. Define the canonical task state enum: `queued`, `running`, `waiting_input`, `completed`, `failed`, `cancelled`, `superseded`. Define the legal state transition graph (e.g. `queued→running→completed|failed|cancelled`, `running→waiting_input→running`, `*→superseded`). Illegal transitions raise `ValueError`.
+  - [x] 1-3. Separate task state from session state so tasks can outlive one root-session attempt. A `ConciergeTask` holds a list of attempt records; each attempt links to a root `session_id` and records its outcome (`completed`, `failed`, `cancelled`).
+- [x] 2. Add a task registry layer
+  - [x] 2-1. Create `TaskRegistry` with operations: `create(project_id, title, summary, surface) → ConciergeTask`, `get(task_id)`, `list(project_id, states=None, limit=20)`, `transition(task_id, new_state, metadata=None)`, `link_attempt(task_id, session_id)`, `supersede(old_task_id, new_task_id)`
+  - [x] 2-2. Storage: in-memory dict keyed by `task_id`, with project-store-backed JSON persistence. Persistence format: a single `tasks.json` file per project under `~/.dan/projects/{project_id}/tasks.json` containing the full task list (not one file per task). Load on first access per project; write-through on state transitions. Single-file format keeps atomic writes simple and avoids directory-scan overhead for the expected task counts (≤100 retained per project).
+  - [x] 2-3. Pruning: retain all non-terminal tasks plus the last 50 completed/failed/cancelled tasks per project (configurable via `DAN_TASK_RETENTION_COUNT`). Prune on `create()` when count exceeds threshold. Superseded tasks count toward the retention limit but are never pruned while their successor is non-terminal.
+  - [x] 2-4. Startup recovery: on first `TaskRegistry` load for a project, scan for zombie tasks — any `ConciergeTask` in `running` or `queued` state with no live asyncio task. Transition zombies to `failed` with `metadata: {reason: "process_restart", recovered_at: <ISO8601>}`. Log a warning per recovered task. This ensures the registry is consistent after unclean shutdowns without requiring auto-retry infrastructure.
+- [x] 3. Integrate task creation into concierge intake
+  - [x] 3-1. Ephemeral (taskless) turns: social chatter, factual ask/general, fast-command responses, `/help`, `/status` queries. Tracked (task-creating) turns: anything that creates a root session, triggers a workflow run/build/edit/schedule, or enters the solver/goal loop. The boundary aligns with the existing `_resolve_context()` vs `_materialize_context(...)` split — materializing context implies a task.
+  - [x] 3-2. Thread `task_id` through: `ConcurrentDispatcher` queue entries (as `SurfaceMessage.metadata["concierge_task_id"]`), `Concierge.handle_message(...)` context, root session creation metadata, pending-action records, and assistant-turn metadata. Use `resolved_context.task_id` as the canonical carrier. When `TriageResult.resume_task_id` is set, bind the turn to that existing `ConciergeTask` instead of creating a new one.
+  - [x] 3-3. Preserve compatibility: existing stream/channel/progress behavior continues unchanged; `task_id` is additive metadata. Surfaces that do not yet consume `task_id` ignore it.
+- [x] 4. Make task provenance observable
+  - [x] 4-1. Include `task_id`, task state, and latest attempt metadata in persisted turn metadata and exported traces
+  - [x] 4-2. Extend telemetry so task lifecycle events can be aggregated separately from raw session completion events
+  - [x] 4-3. Draft the 49-5 snapshot field shapes early: define which `ConciergeTask` fields are public (suitable for dashboard/task-card rendering) vs internal (session IDs, attempt details). Coordinate with 49-5 so event vocabulary and snapshot schemas align with the model shipped here.
+- [x] 5. Add focused regressions and docs
+  - [x] 5-1. Cover creation, state transitions, retry/supersede history, and retention behavior
+  - [x] 5-2. Document the task-vs-session boundary clearly in concierge docs and tests
 
 ## Primary Files
 

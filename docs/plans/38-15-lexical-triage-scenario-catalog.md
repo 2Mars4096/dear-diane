@@ -122,3 +122,4 @@ Workflow follow-up scenarios should only win when the required workflow context 
 - Workflow-specific follow-up language is the primary target. Generic regex cleanup is only valuable if it reduces workflow build/query/run misroutes.
 - Landed in `triage_scenarios.py`, `triage.py`, `tiered_dispatch.py`, `session.py`, and `tests/test_concierge/test_triage.py`.
 - This plan should stay small. The point is to define a trusted catalog for the known workflow follow-up seams, not to encode every possible user utterance lexically.
+- 2026-04-04 follow-up: the catalog now also includes `workflow_query_purpose` so prompts like `what does this workflow do` / `what is this workflow about` resolve deterministically as workflow-query turns instead of falling through to generic heuristics or workflow-edit follow-up logic.

@@ -149,6 +149,8 @@ This approach preserved early backend validation while moving quickly to a pract
 
 The strategic narrowing from here is to prove DAN on long-running tail tasks first, not to broaden into a generic assistant. That means prioritizing one flagship high-trust workflow family, tightening the always-on continuity UX, and building the supervision, aggregation, checkpointing, and cost controls needed for hierarchical swarms to be useful instead of theatrical.
 
+Follow-on priority: standardize the concierge/worker contracts before trying to package them. The new 46-6/46-7 work treats message -> queue -> task -> session -> executor -> result, tool/memory/message connections, and prompt evolution as first-class contracts that must be normalized before DAN can honestly claim to have a reusable universal-agent bundle for other projects.
+
 ---
 
 ## 5. Design Decisions

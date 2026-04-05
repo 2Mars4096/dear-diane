@@ -74,6 +74,8 @@ The Worker collapses the agent-like surface: one primary compute model, one prim
 | [46-3](46-3-type-derivation-and-equivalence.md) | Roles, Presets & Equivalence Proof | Define built-in roles; build legacy-type ↔ Worker presets; prove Worker coverage for compute types and compatibility parity for control/runtime types | P0 | completed |
 | [46-4](46-4-builder-dsl-and-authoring.md) | Builder DSL & Authoring Integration | `worker()` builder method; `worker_scope()` for composites; compiler/decompiler round-trip; preserve worker contract metadata through authoring surfaces | P1 | completed |
 | [46-5](46-5-migration-and-compaction.md) | Migration, Deprecation & Compaction | Conversion utilities; gradual migration; worker-first generation surfaces; codebase compaction; clean documentation | P2 | completed |
+| [46-6](46-6-concierge-worker-standardization.md) | Concierge/Worker Standardization | Standardize the turn -> queue -> task -> session -> executor -> result path, including handoff envelopes, capability connections, and prompt evolution | P1 | not-started |
+| [46-7](46-7-reusable-universal-agent-bundle-extraction.md) | Reusable Universal-Agent Bundle Extraction | Extract a DAN-independent universal-agent core with adapter-based DAN integration and a proof that other projects can embed it cleanly | P1 | not-started |
 
 ## Dependencies / Sequencing
 
@@ -87,15 +89,21 @@ The Worker collapses the agent-like surface: one primary compute model, one prim
 46-4 (Builder & Authoring)
   ↓
 46-5 (Migration & Compaction)
+  ↓
+46-6 (Concierge/Worker Standardization)
+  ↓
+46-7 (Reusable Universal-Agent Bundle Extraction)
 ```
 
-Strictly serial. The model must exist before the executor, the executor before the equivalence proof, the proof before builder integration, and the proof before any migration.
+Strictly serial. The model must exist before the executor, the executor before the equivalence proof, the proof before builder integration, the Worker-first migration before connection/prompt standardization, and the standardized runtime contracts before any reusable-bundle extraction.
 
 ## Implementation Lane
 
 1. Execute plan 46 in a dedicated worktree separate from unrelated feature work.
 2. Treat the real gate into plan 47 as stabilization of the Worker-first contract surface, not literal completion of every 46-5 rollout/compaction tail item.
 3. Once Worker-first authoring, generation, and contract metadata are stable, 47 may proceed in a follow-on branch/worktree even if some 46 cleanup remains.
+4. After the Worker-first surface is stable, standardize the concierge/root/child/worker execution contracts and prompt lifecycle before claiming the Worker is a reusable standalone bundle.
+5. Only after those contracts are standardized should the reusable universal-agent core be extracted from DAN-specific adapters.
 
 ## Success Criteria
 
@@ -105,10 +113,12 @@ Strictly serial. The model must exist before the executor, the executor before t
 - All existing tests pass unchanged after adding `Worker` to the `Node` union
 - At least one full workflow runs identically when expressed with Workers
 - The `src/dan/worker/` module is self-contained and clean
+- the concierge/root/child/worker path has one documented and standardized contract for queueing, handoff, capability access, and prompt evolution
 - Built-in roles cover the common cases; custom roles are trivial to define
 - Worker-native graphs preserve enough contract metadata (`description`, `role`, `persona`, port descriptions/schemas, boundary schemas) for downstream lint-config generation without per-type special-casing
 - Workers can reference shared instruction, memory, tool, provider, and retry bundles through explicit fields that are easy to resolve at runtime
 - Async/parallel behavior is explicit: workers run concurrently when dependencies and locks allow; downstream publication remains blocked on the tiered lint gate and any required resource locks
+- a DAN-independent universal-agent core can be embedded by a non-DAN harness through adapter interfaces instead of importing DAN server/runtime internals directly
 
 ## Key Design Principles
 
@@ -138,4 +148,5 @@ Strictly serial. The model must exist before the executor, the executor before t
 - `src/dan/worker/` is now the stable home for the Worker model, executor, roles, and presets, and the runtime node union plus builder/compiler/decompiler paths all understand canonical `worker` nodes.
 - The current architecture boundary is explicit: Worker is the compute/contract primitive; pure scheduler semantics such as loop progression, fork/join, and turn-taking can stay specialized while still exposing Worker-friendly contracts and Workerized inner compute nodes.
 - The current rollout state is also explicit in code: generation can prefer Worker-first simple compute stages via `DAN_WORKER_GENERATION`, and the public Python builder can opt a broader compute-like alias bucket (`llm` / `tool` / `code` / `input_node` / `reduce` / `rag` / `reflection` / `human` / `human_in_the_loop` / `vote` / `ensemble`) into canonical `worker` emission via `workflow(..., canonical_workers=True)` or `DAN_WORKER_BUILDER=canary|enabled`. Worker execution also resolves shared instruction, memory-policy, provider, retry, toolset, and authority refs from `graph.worker_resources` at runtime rather than forcing those heavier systems into the Worker model. The first-class Worker composition contract is now complete too, including external input/output schemas, control-state schema, local state, compaction/failure policy, projections, and boundary contract. Legacy compatibility lives behind `src/dan/models/legacy.py`, and `src/dan/worker/presets.py` names the bridged vs explicitly non-bridged runtime families.
+- What is still not honest to claim today: that the Worker/universal-agent layer is already a reusable standalone bundle. The current runtime path still mixes concierge sessions, prompt overlays, DAN capability wiring, and Worker/legacy projections. Plans 46-6 and 46-7 exist to standardize those contracts first and then extract the reusable core instead of exporting DAN-specific coupling.
 - Detailed implementation history now lives in `docs/changelog.md`. This plan tracks the current design boundary and the remaining migration/compaction tail, not every landed slice chronologically.
