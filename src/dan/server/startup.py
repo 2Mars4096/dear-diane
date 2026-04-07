@@ -9,6 +9,7 @@ globals live here.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -20,6 +21,8 @@ from dan.server.app_state import AppState
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+from fastapi import FastAPI
+
 logger = logging.getLogger(__name__)
 _API_KEY_PLACEHOLDERS = frozenset({"your-api-key-here", "changeme", "replace-me"})
 _PRIMARY_LLM_KEY_ENV_VARS = (
@@ -30,6 +33,25 @@ _PRIMARY_LLM_KEY_ENV_VARS = (
     "DAN_ANTHROPIC_API_KEY",
     "DAN_GOOGLE_API_KEY",
 )
+
+
+def _skip_adapter_autostart_for_current_process(app: Any | None = None) -> bool:
+    """Keep API/ASGI tests from inheriting desktop adapter autostart state."""
+    if os.environ.get("DAN_ENABLE_ADAPTER_AUTOSTART", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return False
+    return "PYTEST_CURRENT_TEST" in os.environ and isinstance(app, FastAPI)
+
+
+def _isolated_memory_kernel_base_dir(state: AppState) -> str | None:
+    """Avoid loading a developer's persistent memory index during pytest startup."""
+    if "PYTEST_CURRENT_TEST" not in os.environ:
+        return None
+    return str(Path(state.graphs_dir) / "_memory_kernel")
 
 
 # ---------------------------------------------------------------------------
@@ -528,6 +550,7 @@ async def init_managers(state: AppState) -> None:
         )
 
         state.memory_kernel = MemoryKernel(
+            base_dir=_isolated_memory_kernel_base_dir(state),
             dual_write_adapter=DualWriteAdapter(
                 conversation_memory=state.conversation_memory,
                 user_profile=state.user_profile,
@@ -871,44 +894,27 @@ async def init_background(state: AppState, app: FastAPI) -> None:
                 )
             from dan.server.workflow_guards import (
                 WorkflowContractError,
-                ensure_workflow_run_ready,
             )
 
             try:
-                guarded = ensure_workflow_run_ready(
+                handle = await state.run_manager.launch_run(
                     graph_dict,
-                    workflow_id=scheduled_workflow_id,
-                    action="schedule_execution",
+                    graph_id=scheduled_workflow_id,
+                    inputs=getattr(entry, "workflow_inputs", None) or None,
+                    run_policy=getattr(entry, "workflow_run_policy", None) or None,
+                    bus=getattr(state.capability_context, "event_bus", None),
+                    surface_id=(
+                        delivery_target.conversation_key
+                        or delivery_target.user_id
+                        or trigger_context.thread_key
+                    ),
+                    guard_action="schedule_execution",
                 )
             except WorkflowContractError as exc:
                 raise RuntimeError(str(exc)) from exc
 
             inputs = getattr(entry, "workflow_inputs", None) or None
-            run_policy = getattr(entry, "workflow_run_policy", None) or None
-            record = await state.run_manager.start_run(
-                guarded.graph,
-                graph_id=scheduled_workflow_id,
-                inputs=inputs,
-                run_policy=run_policy,
-            )
-
-            event_bus = getattr(state.capability_context, "event_bus", None)
-            if event_bus is not None:
-                from dan.server.run_relay import relay_run_events_to_bus
-
-                asyncio.create_task(
-                    relay_run_events_to_bus(
-                        rm=state.run_manager,
-                        run_id=record.run_id,
-                        workflow_name=scheduled_workflow_id,
-                        surface_id=(
-                            delivery_target.conversation_key
-                            or delivery_target.user_id
-                            or trigger_context.thread_key
-                        ),
-                        bus=event_bus,
-                    )
-                )
+            record = handle.record
 
             input_keys = sorted((inputs or {}).keys())
             if input_keys:
@@ -1154,6 +1160,10 @@ _WHATSAPP_WEB_DB_PATH = Path.home() / ".dan" / "whatsapp-web" / "session.sqlite3
 
 async def init_adapters(app: FastAPI) -> None:
     """Restore adapters that have auto_start=True in their config."""
+    if _skip_adapter_autostart_for_current_process(app):
+        logger.info("Skipping adapter autostart under pytest-style test execution")
+        return
+
     adapters_to_start: list[tuple[str, dict[str, Any]]] = []
 
     previously_running: set[str] = set()

@@ -74,8 +74,8 @@ def _get_lock(session_id: str) -> asyncio.Lock:
     return _session_locks[session_id]
 
 
-def _require_furnace() -> None:
-    if not is_furnace_enabled():
+def _require_furnace(request: Request | None = None) -> None:
+    if not is_furnace_enabled(request):
         raise HTTPException(status_code=403, detail="Furnace API is disabled (set DAN_FURNACE_API_ENABLED=1)")
 
 
@@ -515,10 +515,10 @@ def _schedule_session_worker(
 
 
 @router.post("/api/furnace/sessions")
-async def create_session(body: CreateSessionRequest):
+async def create_session(body: CreateSessionRequest, request: Request):
     """Create a new furnace training session with ingredient ledger."""
-    _require_furnace()
-    store = get_furnace_session_store()
+    _require_furnace(request)
+    store = get_furnace_session_store(request)
     provided = body.model_fields_set
 
     parent_session = None
@@ -636,10 +636,10 @@ async def create_session(body: CreateSessionRequest):
 
 
 @router.post("/api/furnace/sessions/{session_id}/sources")
-async def add_sources(session_id: str, body: AddSourcesRequest):
+async def add_sources(session_id: str, body: AddSourcesRequest, request: Request):
     """Add papers/sources to an existing session."""
-    _require_furnace()
-    store = get_furnace_session_store()
+    _require_furnace(request)
+    store = get_furnace_session_store(request)
     session = store.load(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
@@ -720,8 +720,8 @@ async def add_sources(session_id: str, body: AddSourcesRequest):
 @router.post("/api/furnace/sessions/{session_id}/start")
 async def start_session(session_id: str, request: Request):
     """Trigger the furnace distillation pipeline for a session."""
-    _require_furnace()
-    store = get_furnace_session_store()
+    _require_furnace(request)
+    store = get_furnace_session_store(request)
     if _get_active_task(session_id) is not None:
         return {"session_id": session_id, "status": "already_running"}
 
@@ -757,10 +757,10 @@ async def start_session(session_id: str, request: Request):
 
 
 @router.post("/api/furnace/sessions/{session_id}/pause")
-async def pause_session(session_id: str):
+async def pause_session(session_id: str, request: Request):
     """Pause an active session."""
-    _require_furnace()
-    store = get_furnace_session_store()
+    _require_furnace(request)
+    store = get_furnace_session_store(request)
     ok = store.pause_session(session_id)
     if not ok:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found or not active")
@@ -771,8 +771,8 @@ async def pause_session(session_id: str):
 @router.post("/api/furnace/sessions/{session_id}/resume")
 async def resume_session(session_id: str, request: Request):
     """Resume a paused/failed session."""
-    _require_furnace()
-    store = get_furnace_session_store()
+    _require_furnace(request)
+    store = get_furnace_session_store(request)
     if _get_active_task(session_id) is not None:
         return {"session_id": session_id, "status": "already_running"}
 
@@ -805,10 +805,10 @@ async def resume_session(session_id: str, request: Request):
 
 
 @router.post("/api/furnace/sessions/{session_id}/cancel")
-async def cancel_session(session_id: str):
+async def cancel_session(session_id: str, request: Request):
     """Cancel / fail a session."""
-    _require_furnace()
-    store = get_furnace_session_store()
+    _require_furnace(request)
+    store = get_furnace_session_store(request)
     session = _reconcile_stale_session_state(store, store.load(session_id))
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
@@ -853,10 +853,10 @@ async def cancel_session(session_id: str):
 
 
 @router.delete("/api/furnace/sessions/{session_id}")
-async def delete_session(session_id: str, delete_artifacts: bool = True):
+async def delete_session(session_id: str, request: Request, delete_artifacts: bool = True):
     """Delete a furnace session and optionally its persisted artifacts."""
-    _require_furnace()
-    store = get_furnace_session_store()
+    _require_furnace(request)
+    store = get_furnace_session_store(request)
     session = _reconcile_stale_session_state(store, store.load(session_id))
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
@@ -900,23 +900,24 @@ async def delete_session(session_id: str, delete_artifacts: bool = True):
 
 @router.get("/api/furnace/sessions")
 async def list_sessions(
+    request: Request,
     corpus_id: str | None = None,
     recipe_id: str | None = None,
     status: str | None = None,
 ):
     """List furnace sessions with optional filters."""
-    _require_furnace()
-    store = get_furnace_session_store()
+    _require_furnace(request)
+    store = get_furnace_session_store(request)
     sessions = store.list_sessions(corpus_id=corpus_id, recipe_id=recipe_id, status=status)
     sessions = [_reconcile_stale_session_state(store, session) for session in sessions]
     return {"sessions": [_session_to_summary(s) for s in sessions]}
 
 
 @router.get("/api/furnace/sessions/{session_id}")
-async def get_session(session_id: str):
+async def get_session(session_id: str, request: Request):
     """Get full session detail including progress and source queue."""
-    _require_furnace()
-    store = get_furnace_session_store()
+    _require_furnace(request)
+    store = get_furnace_session_store(request)
     session = _reconcile_stale_session_state(store, store.load(session_id))
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
@@ -924,10 +925,10 @@ async def get_session(session_id: str):
 
 
 @router.get("/api/furnace/sessions/{session_id}/recipe")
-async def get_recipe(session_id: str):
+async def get_recipe(session_id: str, request: Request):
     """Return compiled recipe.md and skill.md artifacts for a session."""
-    _require_furnace()
-    store = get_furnace_session_store()
+    _require_furnace(request)
+    store = get_furnace_session_store(request)
     session = _reconcile_stale_session_state(store, store.load(session_id))
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
@@ -967,10 +968,10 @@ _COST_PER_PHASE_LLM = 0.05
 
 
 @router.get("/api/furnace/sessions/{session_id}/estimate")
-async def cost_estimate(session_id: str):
+async def cost_estimate(session_id: str, request: Request):
     """Pre-run cost estimate based on source count and estimated pages."""
-    _require_furnace()
-    store = get_furnace_session_store()
+    _require_furnace(request)
+    store = get_furnace_session_store(request)
     session = store.load(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
@@ -998,10 +999,10 @@ async def cost_estimate(session_id: str):
 
 
 @router.post("/api/furnace/sessions/{session_id}/budget")
-async def set_budget(session_id: str, body: SetBudgetRequest):
+async def set_budget(session_id: str, body: SetBudgetRequest, request: Request):
     """Set or update the budget ceiling for a session."""
-    _require_furnace()
-    store = get_furnace_session_store()
+    _require_furnace(request)
+    store = get_furnace_session_store(request)
     session = store.load(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
@@ -1014,10 +1015,14 @@ async def set_budget(session_id: str, body: SetBudgetRequest):
 
 
 @router.post("/api/furnace/sessions/{session_id}/tags")
-async def update_session_tags(session_id: str, body: UpdateSessionTagsRequest):
+async def update_session_tags(
+    session_id: str,
+    body: UpdateSessionTagsRequest,
+    request: Request,
+):
     """Add, remove, or replace user-defined tags on a session."""
-    _require_furnace()
-    store = get_furnace_session_store()
+    _require_furnace(request)
+    store = get_furnace_session_store(request)
     session = store.load(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
@@ -1049,8 +1054,8 @@ async def update_session_tags(session_id: str, body: UpdateSessionTagsRequest):
 @router.get("/api/furnace/sessions/{session_id}/events")
 async def session_events(session_id: str, request: Request):
     """Server-Sent Events stream for real-time session progress."""
-    _require_furnace()
-    store = get_furnace_session_store()
+    _require_furnace(request)
+    store = get_furnace_session_store(request)
     session = store.load(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")

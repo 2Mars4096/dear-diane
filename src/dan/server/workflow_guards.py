@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from dan.agent_runtime.graph_summary import compute_graph_revision
 from dan.meta.workflow_contract import (
     WorkflowBuildContractReport,
     classify_run_readiness_issues,
@@ -22,6 +23,21 @@ class WorkflowGuardResult:
     graph_dict: dict[str, Any]
     report: WorkflowBuildContractReport
     failure_mode: str | None = None
+
+
+@dataclass(frozen=True)
+class WorkflowApplySaveResult:
+    workflow_id: str
+    graph: Graph
+    graph_dict: dict[str, Any]
+    saved_graph: dict[str, Any]
+    graph_revision: str
+    report: WorkflowBuildContractReport
+    failure_mode: str | None = None
+
+    @property
+    def warnings(self) -> list[str]:
+        return list(getattr(self.report, "warnings", []) or [])
 
 
 class WorkflowContractError(ValueError):
@@ -136,12 +152,12 @@ def ensure_workflow_contract(
 
 
 def ensure_workflow_apply_ready(
-    graph_dict: dict[str, Any],
+    graph_or_dict: Graph | dict[str, Any],
     *,
     workflow_id: str,
 ) -> WorkflowGuardResult:
     return ensure_workflow_contract(
-        graph_dict,
+        graph_or_dict,
         workflow_id=workflow_id,
         action="apply",
         apply_repairs=True,
@@ -159,4 +175,26 @@ def ensure_workflow_run_ready(
         workflow_id=workflow_id,
         action=action,
         apply_repairs=False,
+    )
+
+
+def ensure_workflow_apply_ready_and_save(
+    graph_store: Any,
+    graph_or_dict: Graph | dict[str, Any],
+    *,
+    workflow_id: str,
+) -> WorkflowApplySaveResult:
+    guarded = ensure_workflow_apply_ready(
+        graph_or_dict,
+        workflow_id=workflow_id,
+    )
+    saved_graph = graph_store.save_graph(workflow_id, guarded.graph_dict)
+    return WorkflowApplySaveResult(
+        workflow_id=workflow_id,
+        graph=guarded.graph,
+        graph_dict=guarded.graph_dict,
+        saved_graph=saved_graph,
+        graph_revision=compute_graph_revision(saved_graph),
+        report=guarded.report,
+        failure_mode=guarded.failure_mode,
     )

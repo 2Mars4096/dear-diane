@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import ast
 import asyncio
+import importlib
 import logging
 import os
 import tempfile
@@ -14,12 +15,22 @@ from typing import Any, Awaitable, Callable
 
 from dan.providers import CompletionResult, get_model_behavior
 from dan.meta.workflow_contract import workflow_build_provenance
-from dan.server.agent_runtime.workflow_generation_acceptance import (
-    accept_candidate_graph,
-    collect_validation_errors,
+from dan.server.agent_runtime.workflow_generation_acceptance import collect_validation_errors
+from dan.server.agent_runtime.workflow_generation.intent import intent_tool_choice
+from dan.server.agent_runtime.workflow_generation.recovery import (
+    automatic_recovery_failure_lines,
+    build_automatic_recovery_context,
+    diagnosis_attempt_payload,
+    sandbox_failure_error,
 )
-from dan.server.agent_runtime.workflow_generation_codegen import (
-    request_builder_code,
+from dan.server.agent_runtime.workflow_generation.structured import (
+    cleanup_structured_smoke_paths,
+    infer_schedule_intent,
+    structured_execution_smoke_inputs,
+    structured_execution_smoke_mode,
+    structured_execution_smoke_timeout,
+    structured_generation_eligibility,
+    structured_generation_mode,
 )
 from dan.server.chat.events import (
     ChatCodeGeneratedEvent,
@@ -39,18 +50,9 @@ from dan.server.chat.helpers import (
 logger = logging.getLogger(__name__)
 
 
-def _intent_tool_choice(provider: Any, model: str) -> str | dict[str, Any]:
-    """Prefer deterministic tool-calling for intent extraction when supported."""
-
-    behavior = get_model_behavior(provider, model)
-    if behavior.supports_exact_tool_choice:
-        return {
-            "type": "function",
-            "function": {"name": "emit_workflow_intent"},
-        }
-    if behavior.supports_required_tool_choice:
-        return "required"
-    return "auto"
+def _public_api(name: str) -> Any:
+    package = importlib.import_module(__package__)
+    return getattr(package, name)
 
 
 class WorkflowGenerationRuntime:
@@ -299,6 +301,8 @@ class WorkflowGenerationRuntime:
         except (ValueError, TypeError):
             _quality_threshold_override = -1
         provider = resolve_provider(pii_session_key=workflow_id, model=_model)
+        request_builder_code_fn = _public_api("request_builder_code")
+        accept_candidate_graph_fn = _public_api("accept_candidate_graph")
 
         def _quality_error_for_graph(
             graph_dict: dict,
@@ -345,217 +349,6 @@ class WorkflowGenerationRuntime:
             )
             return [quality_error] if quality_error is not None else []
 
-        def _structured_generation_mode() -> str:
-            mode = str(
-                os.environ.get("DAN_STRUCTURED_GENERATION", "disabled") or "disabled"
-            ).strip().lower()
-            if mode not in {"disabled", "canary", "enabled"}:
-                return "disabled"
-            return mode
-
-        def _structured_generation_max_dependencies() -> int:
-            raw = str(
-                os.environ.get("DAN_STRUCTURED_MAX_DEPENDENCIES_PER_NODE", "1") or "1"
-            ).strip()
-            try:
-                return max(1, int(raw))
-            except ValueError:
-                return 1
-
-        def _structured_execution_smoke_mode() -> str:
-            raw = str(
-                os.environ.get("DAN_STRUCTURED_EXECUTION_SMOKE", "auto") or "auto"
-            ).strip().lower()
-            if raw not in {"disabled", "auto", "required"}:
-                return "auto"
-            return raw
-
-        def _structured_execution_smoke_timeout() -> float:
-            raw = str(
-                os.environ.get("DAN_STRUCTURED_EXECUTION_SMOKE_TIMEOUT", "20") or "20"
-            ).strip()
-            try:
-                return max(1.0, float(raw))
-            except ValueError:
-                return 20.0
-
-        def _infer_schedule_intent(text: str) -> Any | None:
-            from dan.meta.workflow_spec import ScheduleIntent
-
-            lower = str(text or "").lower()
-            trigger: str | None = None
-            if any(token in lower for token in ("daily", "every day", "each day")):
-                trigger = "daily"
-            elif any(
-                token in lower
-                for token in (
-                    "weekly",
-                    "every monday",
-                    "every tuesday",
-                    "every wednesday",
-                    "every thursday",
-                    "every friday",
-                    "every saturday",
-                    "every sunday",
-                )
-            ):
-                trigger = "weekly"
-            elif any(token in lower for token in ("monthly", "every month", "each month")):
-                trigger = "monthly"
-            if trigger is None:
-                return None
-            delivery_target = None
-            if "email" in lower:
-                delivery_target = "email"
-            elif "slack" in lower:
-                delivery_target = "slack"
-            elif "notify" in lower:
-                delivery_target = "notification"
-            return ScheduleIntent(
-                trigger=trigger,
-                delivery_target=delivery_target,
-                notes=["Inferred from the original workflow-authoring prompt."],
-            )
-
-        def _structured_generation_eligibility(spec: Any) -> tuple[bool, str]:
-            max_dependencies = _structured_generation_max_dependencies()
-            dependency_heavy_nodes = [
-                node.node_id
-                for node in getattr(spec, "nodes", []) or []
-                if len(getattr(node, "dependencies", []) or []) > max_dependencies
-            ]
-            if dependency_heavy_nodes:
-                return (
-                    False,
-                    "Structured generation skipped because some nodes exceed the configured "
-                    f"dependency cap ({max_dependencies}): {', '.join(dependency_heavy_nodes[:5])}",
-                )
-            unsupported_types = {
-                node.node_id: node.node_type
-                for node in getattr(spec, "nodes", []) or []
-                if node.node_type
-                not in {
-                    "llm_operator",
-                    "tool_operator",
-                    "code_operator",
-                    "gate",
-                    "for_each",
-                    "rag_operator",
-                    "human",
-                }
-            }
-            if unsupported_types:
-                preview = ", ".join(
-                    f"{node_id}:{node_type}"
-                    for node_id, node_type in list(unsupported_types.items())[:5]
-                )
-                return (
-                    False,
-                    "Structured generation skipped because the candidate intent contains "
-                    f"unsupported runtime node types for the staged linker: {preview}",
-                )
-            return True, ""
-
-        def _structured_execution_smoke_inputs(
-            spec: Any,
-            candidate_graph: dict[str, Any],
-        ) -> tuple[dict[str, Any] | None, list[str], str | None]:
-            def _iter_graph_nodes(graph_dict: dict[str, Any]) -> list[dict[str, Any]]:
-                discovered: list[dict[str, Any]] = list(graph_dict.get("nodes", []) or [])
-                for sub_graph in dict(graph_dict.get("sub_graphs", {}) or {}).values():
-                    if isinstance(sub_graph, dict):
-                        discovered.extend(_iter_graph_nodes(sub_graph))
-                return discovered
-
-            nodes = _iter_graph_nodes(candidate_graph)
-            node_types = {
-                str(node.get("node_type") or "").strip()
-                for node in nodes
-                if str(node.get("node_type") or "").strip()
-            }
-            tool_ids = {
-                str(node.get("tool_id") or "").strip()
-                for node in nodes
-                    if str(node.get("node_type") or "").strip() == "tool_operator"
-                    and str(node.get("tool_id") or "").strip()
-            }
-            if "code_operator" in node_types:
-                return (
-                    None,
-                    [],
-                    "Structured execution smoke skipped because the candidate contains generated code operators.",
-                )
-            if node_types & {"llm_operator", "human", "rag_operator"}:
-                return (
-                    None,
-                    [],
-                    "Structured execution smoke skipped because the candidate requires model-backed or human execution.",
-                )
-            unsafe_tools = {
-                tool_id
-                for tool_id in tool_ids
-                if tool_id not in {"file_read", "csv_read"}
-            }
-            if unsafe_tools:
-                preview = ", ".join(sorted(list(unsafe_tools))[:5])
-                return (
-                    None,
-                    [],
-                    "Structured execution smoke skipped because the candidate uses external or side-effecting tools: "
-                    f"{preview}",
-                )
-
-            inputs: dict[str, Any] = {}
-            cleanup_paths: list[str] = []
-            for name in list(getattr(spec, "global_inputs", []) or []):
-                lowered = str(name or "").strip().lower()
-                if not lowered:
-                    continue
-                if any(token in lowered for token in ("folder", "directory", "_dir")):
-                    return (
-                        None,
-                        cleanup_paths,
-                        f"Structured execution smoke skipped because global input {name!r} needs a directory fixture.",
-                    )
-                if any(token in lowered for token in ("csv",)):
-                    fd, path = tempfile.mkstemp(
-                        prefix="dan-structured-smoke-",
-                        suffix=".csv",
-                    )
-                    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                        handle.write("name,value\nsample,1\n")
-                    inputs[name] = path
-                    cleanup_paths.append(path)
-                    continue
-                if any(token in lowered for token in ("path", "file")):
-                    fd, path = tempfile.mkstemp(
-                        prefix="dan-structured-smoke-",
-                        suffix=".txt",
-                    )
-                    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                        handle.write("sample fixture content\n")
-                    inputs[name] = path
-                    cleanup_paths.append(path)
-                    continue
-                if any(token in lowered for token in ("records", "rows", "items", "entries", "symbols", "watchlist")):
-                    inputs[name] = [{"value": "sample"}]
-                    continue
-                if any(token in lowered for token in ("count", "limit", "max", "top")):
-                    inputs[name] = 1
-                    continue
-                if any(token in lowered for token in ("enabled", "notify", "send")):
-                    inputs[name] = True
-                    continue
-                inputs[name] = f"sample value for {name}"
-            return inputs, cleanup_paths, None
-
-        def _cleanup_structured_smoke_paths(paths: list[str]) -> None:
-            for path in paths:
-                try:
-                    os.unlink(path)
-                except OSError:
-                    logger.debug("Structured smoke cleanup skipped for %s", path, exc_info=True)
-
         async def _attempt_structured_generation(
             extracted_intent: WorkflowIntent,
         ) -> tuple[dict[str, Any] | None, list[str], bool]:
@@ -572,10 +365,10 @@ class WorkflowGenerationRuntime:
                 extracted_intent,
                 workflow_id=workflow_id,
                 candidate_workspace_id=candidate_workspace_id,
-                schedule=_infer_schedule_intent(user_message),
+                schedule=infer_schedule_intent(user_message),
                 notes=["Generated by the structured workflow runtime."],
             )
-            eligible, ineligible_reason = _structured_generation_eligibility(spec)
+            eligible, ineligible_reason = structured_generation_eligibility(spec)
             if not eligible:
                 return None, [ineligible_reason], False
 
@@ -692,13 +485,13 @@ class WorkflowGenerationRuntime:
                 )
                 return None, errors, True
 
-            smoke_mode = _structured_execution_smoke_mode()
+            smoke_mode = structured_execution_smoke_mode()
             smoke_inputs, smoke_cleanup_paths, smoke_skip_reason = (
-                _structured_execution_smoke_inputs(spec, link_result.candidate_graph)
+                structured_execution_smoke_inputs(spec, link_result.candidate_graph)
             )
             if smoke_mode != "disabled":
                 if run_candidate_smoke is None:
-                    _cleanup_structured_smoke_paths(smoke_cleanup_paths)
+                    cleanup_structured_smoke_paths(smoke_cleanup_paths)
                     if smoke_mode == "required":
                         errors = [
                             "Structured execution smoke is required but no smoke runner is configured."
@@ -713,7 +506,7 @@ class WorkflowGenerationRuntime:
                         )
                         return None, errors, True
                 elif smoke_inputs is None:
-                    _cleanup_structured_smoke_paths(smoke_cleanup_paths)
+                    cleanup_structured_smoke_paths(smoke_cleanup_paths)
                     if smoke_mode == "required":
                         errors = [
                             smoke_skip_reason
@@ -742,12 +535,12 @@ class WorkflowGenerationRuntime:
                                 link_result.candidate_graph,
                                 workflow_id=workflow_id,
                                 inputs=smoke_inputs,
-                                timeout_seconds=_structured_execution_smoke_timeout(),
+                                timeout_seconds=structured_execution_smoke_timeout(),
                             ),
                             stage_label="structured execution smoke",
                         )
                     finally:
-                        _cleanup_structured_smoke_paths(smoke_cleanup_paths)
+                        cleanup_structured_smoke_paths(smoke_cleanup_paths)
                     smoke_skipped = bool(
                         isinstance(smoke_result, dict)
                         and smoke_result.get("skipped", False)
@@ -824,7 +617,7 @@ class WorkflowGenerationRuntime:
                         )
                     )
 
-            acceptance = accept_candidate_graph(
+            acceptance = accept_candidate_graph_fn(
                 link_result.candidate_graph,
                 validate_graph=validate_codegen_output,
                 build_validation_event=_validation_event,
@@ -851,136 +644,6 @@ class WorkflowGenerationRuntime:
             ] or ["Structured generation failed acceptance."]
             return None, errors, True
 
-        def _sandbox_failure_error(codegen_result: Any) -> GenerationError:
-            err_msg = ""
-            err_type = GenerationErrorType.no_output
-            if codegen_result is not None:
-                err_msg = (
-                    getattr(codegen_result, "error_message", None) or ""
-                ).strip()
-                raw_type = str(
-                    getattr(codegen_result, "error_type", "") or ""
-                ).strip().lower()
-                try:
-                    err_type = GenerationErrorType(raw_type)
-                except ValueError:
-                    if "import" in raw_type:
-                        err_type = GenerationErrorType.import_error
-                    elif "name" in raw_type:
-                        err_type = GenerationErrorType.name_error
-                    elif raw_type:
-                        err_type = GenerationErrorType.runtime_error
-            return GenerationError(
-                stage=GenerationStage.sandbox,
-                error_type=err_type,
-                message=err_msg or "Builder code produced no graph output",
-                source_line=getattr(codegen_result, "error_line", None),
-                recoverable=True,
-            )
-
-        def _diagnosis_attempt_summary(diag_result: Any) -> str:
-            attempts = list(getattr(diag_result, "attempts", []) or [])
-            if not attempts:
-                return "Diagnosis exhausted without a successful repair attempt."
-            lines: list[str] = []
-            for attempt in attempts[:4]:
-                strategy = getattr(getattr(attempt, "strategy_used", None), "value", None)
-                strategy = strategy or str(getattr(attempt, "strategy_used", "") or "unknown")
-                result = str(getattr(attempt, "result", "") or "failed")
-                corrections = ", ".join(
-                    str(item).strip()
-                    for item in (getattr(attempt, "corrections_applied", None) or [])
-                    if str(item).strip()
-                )
-                learning = "; ".join(
-                    str(item).strip()
-                    for item in (getattr(attempt, "learning_points", None) or [])
-                    if str(item).strip()
-                )
-                line = f"- attempt {getattr(attempt, 'attempt_number', '?')}: strategy={strategy}, result={result}"
-                if corrections:
-                    line += f", corrections={corrections}"
-                if learning:
-                    line += f", learnings={learning}"
-                lines.append(line)
-            return "\n".join(lines)
-
-        def _diagnosis_attempt_payload(diag_result: Any) -> list[dict[str, Any]]:
-            payload: list[dict[str, Any]] = []
-            for attempt in list(getattr(diag_result, "attempts", []) or []):
-                strategy = getattr(attempt, "strategy_used", None)
-                if hasattr(strategy, "value"):
-                    strategy = getattr(strategy, "value")
-                payload.append(
-                    {
-                        "kind": str(strategy or "unknown"),
-                        "outcome": str(getattr(attempt, "result", "") or "failed"),
-                        "cause": "diagnosis_repair",
-                        "corrections_applied": [
-                            str(item).strip()
-                            for item in (getattr(attempt, "corrections_applied", None) or [])
-                            if str(item).strip()
-                        ],
-                        "learning_points": [
-                            str(item).strip()
-                            for item in (getattr(attempt, "learning_points", None) or [])
-                            if str(item).strip()
-                        ],
-                    }
-                )
-            return payload
-
-        def _automatic_recovery_failure_lines(
-            *,
-            codegen_errors: list[Any],
-            diag_result: Any,
-        ) -> list[str]:
-            return [
-                str(getattr(err, "message", err) or "").strip()
-                for err in (
-                    list(getattr(diag_result, "final_errors", []) or [])
-                    or codegen_errors
-                )
-                if str(getattr(err, "message", err) or "").strip()
-            ]
-
-        def _build_automatic_recovery_context(
-            *,
-            codegen_errors: list[Any],
-            diag_result: Any,
-            prior_code: str,
-        ) -> str:
-            failure_lines = _automatic_recovery_failure_lines(
-                codegen_errors=codegen_errors,
-                diag_result=diag_result,
-            )
-            recovery_summary = [
-                "Automatic recovery handoff:",
-                "- Previous generation exhausted codegen, sandbox validation, and bounded diagnosis.",
-            ]
-            if failure_lines:
-                recovery_summary.append("- Primary failures:")
-                recovery_summary.extend(f"  - {line}" for line in failure_lines[:5])
-            diagnosis_summary = _diagnosis_attempt_summary(diag_result)
-            if diagnosis_summary:
-                recovery_summary.append("- Diagnosis attempts:")
-                recovery_summary.extend(diagnosis_summary.splitlines())
-            build_summary = str(_last_build_provenance.get("build_summary") or "").strip()
-            if build_summary:
-                recovery_summary.append(f"- Build/readiness summary: {build_summary}")
-            failure_bucket = str(_last_build_provenance.get("failure_bucket") or "").strip()
-            if failure_bucket:
-                recovery_summary.append(f"- Failure bucket: {failure_bucket}")
-            if prior_code.strip():
-                recovery_summary.append("- Previous builder code (repair the smallest necessary part, do not restart from scratch unless required):")
-                recovery_summary.append("```python")
-                recovery_summary.append(prior_code[:6000])
-                recovery_summary.append("```")
-            recovery_summary.append(
-                "- Return executable Python builder code only. Fix the smallest issue set needed to produce a runnable workflow."
-            )
-            return "\n".join(recovery_summary)
-
         detected_domain: str | None = None
         try:
             from dan.server.concierge.domain_learning import detect_domain
@@ -999,10 +662,10 @@ class WorkflowGenerationRuntime:
             {"role": "system", "content": build_intent_extraction_system_prompt()},
             {"role": "user", "content": user_message},
         ]
-        intent_tool_choice: str | dict[str, Any] = _intent_tool_choice(provider, _model)
+        intent_tool_choice_value: str | dict[str, Any] = intent_tool_choice(provider, _model)
         for attempt in range(_intent_extraction_max_retries + 1):
             try:
-                request_tool_choice = intent_tool_choice
+                request_tool_choice = intent_tool_choice_value
                 while True:
                     try:
                         intent_result = await provider.complete(
@@ -1012,7 +675,7 @@ class WorkflowGenerationRuntime:
                             tools=[intent_tool],
                             tool_choice=request_tool_choice,
                         )
-                        intent_tool_choice = request_tool_choice
+                        intent_tool_choice_value = request_tool_choice
                         break
                     except Exception as exc:
                         if (
@@ -1131,7 +794,7 @@ class WorkflowGenerationRuntime:
                 patterns=None,
             )
 
-        structured_mode = _structured_generation_mode()
+        structured_mode = structured_generation_mode()
         if intent is not None and structured_mode != "disabled":
             _emit_progress("structured generation")
             try:
@@ -1234,7 +897,7 @@ class WorkflowGenerationRuntime:
                         graph_dict = exec_deterministic_builder_code(builder_code)
 
                 if graph_dict is not None:
-                    acceptance = accept_candidate_graph(
+                    acceptance = accept_candidate_graph_fn(
                         graph_dict,
                         validate_graph=validate_codegen_output,
                         build_validation_event=_validation_event,
@@ -1306,7 +969,7 @@ class WorkflowGenerationRuntime:
         _emit_progress("codegen in progress")
 
         codegen_errors: list[Any] = []
-        codegen_request = await request_builder_code(
+        codegen_request = await request_builder_code_fn(
             provider=provider,
             model=_model,
             user_message=user_message,
@@ -1423,7 +1086,7 @@ class WorkflowGenerationRuntime:
                         path_taken="codegen",
                     )
                 if graph_dict is not None:
-                    acceptance = accept_candidate_graph(
+                    acceptance = accept_candidate_graph_fn(
                         graph_dict,
                         validate_graph=validate_codegen_output,
                         build_validation_event=_validation_event,
@@ -1447,7 +1110,7 @@ class WorkflowGenerationRuntime:
                         return acceptance.accepted_graph, events
                     codegen_errors = list(acceptance.errors)
                 else:
-                    sandbox_error = _sandbox_failure_error(sandbox_codegen)
+                    sandbox_error = sandbox_failure_error(sandbox_codegen)
                     retries_used["sandbox"] += 1
                     err_msg = sandbox_error.message
                     is_timeout = (
@@ -1506,7 +1169,7 @@ class WorkflowGenerationRuntime:
                                     path_taken="codegen",
                                 )
                             if graph_dict is not None:
-                                acceptance = accept_candidate_graph(
+                                acceptance = accept_candidate_graph_fn(
                                     graph_dict,
                                     validate_graph=validate_codegen_output,
                                     build_validation_event=_validation_event,
@@ -1530,7 +1193,7 @@ class WorkflowGenerationRuntime:
                                     return acceptance.accepted_graph, events
                                 codegen_errors = list(acceptance.errors)
                             else:
-                                sandbox_error = _sandbox_failure_error(sandbox_codegen)
+                                sandbox_error = sandbox_failure_error(sandbox_codegen)
                                 codegen_errors = [sandbox_error]
                                 record_gen_outcome(
                                     "codegen",
@@ -1628,7 +1291,7 @@ class WorkflowGenerationRuntime:
                         path_taken="diagnosis",
                     )
                 if diag_result.success and diag_result.final_graph:
-                    acceptance = accept_candidate_graph(
+                    acceptance = accept_candidate_graph_fn(
                         diag_result.final_graph,
                         validate_graph=validate_codegen_output,
                         build_validation_event=_validation_event,
@@ -1672,7 +1335,7 @@ class WorkflowGenerationRuntime:
                 if not diag_result.success and not _deadline_exceeded():
                     fallback_chain.append("automatic_recovery")
                     retries_used["automatic_recovery"] += 1
-                    failure_lines = _automatic_recovery_failure_lines(
+                    failure_lines = automatic_recovery_failure_lines(
                         codegen_errors=codegen_errors,
                         diag_result=diag_result,
                     )
@@ -1692,7 +1355,7 @@ class WorkflowGenerationRuntime:
                         "message": "Automatic generation recovery in progress.",
                         "failure_summary": "; ".join(failure_lines[:3])
                         or "Workflow generation exhausted diagnosis repair.",
-                        "attempted_fixes": _diagnosis_attempt_payload(diag_result),
+                        "attempted_fixes": diagnosis_attempt_payload(diag_result),
                         "attempt_index": retries_used["automatic_recovery"],
                         "max_attempts": 1,
                         "recovery_budget_remaining": max(
@@ -1710,10 +1373,11 @@ class WorkflowGenerationRuntime:
                             level="info",
                         )
                     )
-                    recovery_context = _build_automatic_recovery_context(
+                    recovery_context = build_automatic_recovery_context(
                         codegen_errors=codegen_errors,
                         diag_result=diag_result,
                         prior_code=diag_result.final_code or builder_code,
+                        last_build_provenance=_last_build_provenance,
                     )
                     recovery_hint = get_generation_stats_hint()
                     if recovery_context:
@@ -1722,7 +1386,7 @@ class WorkflowGenerationRuntime:
                             if recovery_hint
                             else recovery_context
                         )
-                    recovery_request = await request_builder_code(
+                    recovery_request = await request_builder_code_fn(
                         provider=provider,
                         model=_model,
                         user_message=user_message,
@@ -1809,7 +1473,7 @@ class WorkflowGenerationRuntime:
                                     path_taken="automatic_recovery",
                                 )
                             if graph_dict is not None:
-                                acceptance = accept_candidate_graph(
+                                acceptance = accept_candidate_graph_fn(
                                     graph_dict,
                                     validate_graph=validate_codegen_output,
                                     build_validation_event=_validation_event,
@@ -1848,7 +1512,7 @@ class WorkflowGenerationRuntime:
                                     return acceptance.accepted_graph, events
                                 recovery_errors = list(acceptance.errors)
                             else:
-                                sandbox_error = _sandbox_failure_error(sandbox_codegen)
+                                sandbox_error = sandbox_failure_error(sandbox_codegen)
                                 retries_used["sandbox"] += 1
                                 recovery_errors = [sandbox_error]
                                 record_gen_outcome(

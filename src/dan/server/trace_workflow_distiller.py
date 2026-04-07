@@ -445,15 +445,20 @@ def _build_stage_sequence(
     )
 
     for idx, action in enumerate(actions):
-        if action.action_kind == "write" and prev_output and not has_transform_like and idx > 0:
+        if (
+            action.action_kind == "write"
+            and prev_output
+            and not has_transform_like
+            and idx > 0
+            and _write_action_needs_content_generation(action)
+        ):
             synth_name = _unique_stage_name("prepare_output", stage_names)
             synth_output = f"{synth_name}_output"
             stages.append(
                 StageIntent(
                     name=synth_name,
                     description=(
-                        f"Synthesize the requested deliverable for: "
-                        f"{_generalize_goal(user_goal)}"
+                        "Prepare the final deliverable content from the gathered results."
                     ),
                     stage_type=StageType.transform,
                     inputs=[prev_output],
@@ -479,6 +484,9 @@ def _build_stage_sequence(
             config["tool_id"] = action.generalized_tool_name
             if action.generalized_args:
                 config["generalized_args"] = action.generalized_args
+            input_ports = _build_tool_call_input_ports(action)
+            if input_ports:
+                config["input_ports"] = input_ports
         elif action.stage_type == StageType.code_execution:
             config.update(
                 _build_code_execution_stage_config(
@@ -502,6 +510,18 @@ def _build_stage_sequence(
         prev_output = output_name
 
     return stages
+
+
+def _build_tool_call_input_ports(action: TraceWorkflowAction) -> list[dict[str, Any]]:
+    if action.generalized_tool_name != "file_write":
+        return []
+    if action.generalized_args.get("content") in (None, "", [], {}):
+        return [{"name": "content", "required": True}]
+    return []
+
+
+def _write_action_needs_content_generation(action: TraceWorkflowAction) -> bool:
+    return action.generalized_args.get("content") in (None, "", [], {})
 
 
 def _build_code_execution_stage_config(

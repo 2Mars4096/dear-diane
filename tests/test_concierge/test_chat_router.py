@@ -197,3 +197,38 @@ async def test_chat_message_non_concierge_prefers_session_id_for_chat_manager_th
 
     assert manager.calls
     assert manager.calls[0]["thread_id"] == "lane-1"
+
+
+@pytest.mark.asyncio
+async def test_chat_message_non_concierge_passes_attachment_context_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _FakeChatManager()
+    graph_store = _FakeGraphStore()
+    chat_router._chat_streams.clear()
+
+    monkeypatch.setattr(chat_router, "get_chat_manager", lambda: manager)
+    monkeypatch.setattr(chat_router, "get_graph_store", lambda: graph_store)
+    monkeypatch.setattr(chat_router, "get_concierge", lambda: None)
+    monkeypatch.setattr(chat_router, "get_dispatcher", lambda: None)
+
+    req = chat_router.ChatMessageRequest(
+        workflow_id="wf-1",
+        message="Build from the attachment",
+        mode="build",
+        attachment_path="/tmp/spec.pdf",
+    )
+
+    response = await chat_router.chat_message(req, concierge=False)
+    channel_id = response["stream_channel_id"]
+
+    queue = chat_router._chat_streams[channel_id][0]
+    while True:
+        item = await asyncio.wait_for(queue.get(), timeout=1.0)
+        if item is None:
+            break
+
+    assert manager.calls
+    call = manager.calls[0]
+    assert "Primary attached file path" in call["prompt_context"]
+    assert "extra_system_instructions" not in call

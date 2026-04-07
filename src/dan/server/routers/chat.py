@@ -12,7 +12,7 @@ from contextlib import suppress
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field, model_validator
 
 from dan.server.chat_manager import (
@@ -58,6 +58,15 @@ _CHAT_STREAM_MISSING_TERMINAL_FALLBACK = (
     "The response stream ended before a final answer was produced. "
     "Please ask me to continue from the latest progress."
 )
+
+
+def _resolve_service(getter: Any, connection: Any | None):
+    if connection is None:
+        return getter()
+    return getter(connection)
+
+
+_RUN_MANAGER_MISSING = object()
 
 
 # ------------------------------------------------------------------
@@ -335,8 +344,12 @@ def _reap_stale_chat_streams() -> None:
 
 
 @router.post("/api/chat/{channel_id}/stop")
-async def stop_chat_stream(channel_id: str, req: StopRequest | None = None):
-    cm = get_chat_manager()
+async def stop_chat_stream(
+    channel_id: str,
+    request: Request,
+    req: StopRequest | None = None,
+):
+    cm = get_chat_manager(request)
     if not channel_id.startswith("chat-"):
         raise HTTPException(status_code=404, detail="Stream not found or already finished")
     found = cm.cancel_stream(channel_id)
@@ -351,13 +364,17 @@ class InjectMessageRequest(BaseModel):
 
 
 @router.post("/api/chat/{channel_id}/inject")
-async def inject_chat_message(channel_id: str, req: InjectMessageRequest):
+async def inject_chat_message(
+    channel_id: str,
+    request: Request,
+    req: InjectMessageRequest,
+):
     """Inject a user message into an active chat stream.
 
     The message will be picked up at the next tool-loop breakpoint and
     appended to the LLM context so the assistant sees it in its next turn.
     """
-    cm = get_chat_manager()
+    cm = get_chat_manager(request)
     if not channel_id.startswith("chat-"):
         raise HTTPException(status_code=404, detail="Stream not found or already finished")
     found = cm.inject_message(channel_id, req.content, req.inject_id)
@@ -372,15 +389,35 @@ async def inject_chat_message(channel_id: str, req: InjectMessageRequest):
 
 
 @router.post("/api/chat/message")
-async def chat_message(req: ChatMessageRequest, concierge: bool = True):
-    cm = get_chat_manager()
-    gs = get_graph_store()
+async def chat_message(
+    request: Request = None,
+    req: ChatMessageRequest | None = None,
+    concierge: bool = True,
+):
+    if req is None and isinstance(request, ChatMessageRequest):
+        req = request
+        request = None
+    if req is None:
+        raise TypeError("req is required")
+
+    cm = _resolve_service(get_chat_manager, request)
+    gs = _resolve_service(get_graph_store, request)
+    run_manager: Any = _RUN_MANAGER_MISSING
+
+    def _optional_run_manager() -> Any | None:
+        nonlocal run_manager
+        if run_manager is _RUN_MANAGER_MISSING:
+            try:
+                run_manager = _resolve_service(get_run_manager, request)
+            except HTTPException:
+                run_manager = None
+        return run_manager
 
     _reap_stale_chat_streams()
 
     run_cmd = parse_run_command(req.message)
     if run_cmd is not None:
-        return await _handle_run_command(req, run_cmd)
+        return await _handle_run_command(req, run_cmd, request=request)
 
     stream_channel_id = f"chat-{uuid.uuid4().hex[:10]}"
     queue = ReconnectableChatStream(
@@ -396,9 +433,8 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
         for m in req.mentions
     ] if req.mentions else []
 
-    _concierge = get_concierge()
-    _dispatcher = get_dispatcher()
-    from dan.server.app import _run_manager
+    _concierge = _resolve_service(get_concierge, request)
+    _dispatcher = _resolve_service(get_dispatcher, request)
 
     async def _produce():
         terminal_event_emitted = False
@@ -437,19 +473,25 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
             detected_mode: str | None = None
             if normalized_mode == "auto":
                 recent_run_failed = False
-                if _run_manager is not None:
-                    runs = _run_manager.list_runs()
-                    recent_run_failed = recent_run_failed_for_workflow(runs, req.workflow_id)
+                rm = _optional_run_manager()
+                if rm is not None:
+                    recent_run_failed = recent_run_failed_for_workflow(
+                        rm.list_runs(),
+                        req.workflow_id,
+                    )
                 detected_mode = detect_chat_mode(
                     req.message, recent_run_failed,
                 )
                 normalized_mode = detected_mode
 
             debug_ctx = ""
-            if normalized_mode == "debug" and _run_manager is not None:
-                debug_ctx = build_debug_context(
-                    _run_manager.list_runs(), req.workflow_id,
-                )
+            if normalized_mode == "debug":
+                rm = _optional_run_manager()
+                if rm is not None:
+                    debug_ctx = build_debug_context(
+                        rm.list_runs(),
+                        req.workflow_id,
+                    )
 
             if concierge and (_dispatcher is not None or _concierge is not None):
                 from dan.server.concierge import SurfaceMessage
@@ -494,7 +536,6 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                     extra_kwargs["stream_channel_id"] = stream_channel_id
                 if attachment_prompt_context:
                     extra_kwargs["prompt_context"] = attachment_prompt_context
-                    extra_kwargs["extra_system_instructions"] = attachment_prompt_context
                 if surface_context:
                     extra_kwargs["surface_context"] = surface_context
                 event_stream = send(
@@ -560,8 +601,11 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                 if (
                     run_stream_id
                     and run_stream_id.startswith("run-")
-                    and _run_manager is not None
                 ):
+                    rm = _optional_run_manager()
+                    if rm is None:
+                        await _put_chat_stream_event(stream_channel_id, queue, payload)
+                        continue
                     run_id = run_stream_id[4:]
                     _reap_stale_chat_streams()
                     run_queue = ReconnectableChatStream(
@@ -569,13 +613,13 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                     )
 
                     async def _pipe_tool_run_events() -> None:
-                        rq = _run_manager.subscribe(run_id)
+                        rq = rm.subscribe(run_id)
                         try:
                             while True:
                                 try:
                                     evt = await asyncio.wait_for(rq.get(), timeout=30.0)
                                 except asyncio.TimeoutError:
-                                    if _run_manager.run_is_settled_for_stream(run_id):
+                                    if rm.run_is_settled_for_stream(run_id):
                                         break
                                     continue
                                 etype = evt.get("event_type", "")
@@ -583,7 +627,7 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                                     snap = evt.get("snapshot", {})
                                     if (
                                         snap.get("status") in ("completed", "failed", "cancelled")
-                                        and _run_manager.run_is_settled_for_stream(run_id)
+                                        and rm.run_is_settled_for_stream(run_id)
                                     ):
                                         for buf in evt.get("buffered_events", []):
                                             blk = map_run_event_to_chat_block(buf, "full", None)
@@ -611,7 +655,7 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                         except Exception:
                             logger.debug("Run event pipe error for %s", run_id, exc_info=True)
                         finally:
-                            _run_manager.unsubscribe(run_id, rq)
+                            rm.unsubscribe(run_id, rq)
                             await _put_chat_stream_event(run_stream_id, run_queue, None)
 
                     pipe_task = asyncio.create_task(_pipe_tool_run_events())
@@ -647,10 +691,13 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
 
 
 async def _handle_run_command(
-    req: ChatMessageRequest, run_cmd: dict[str, Any],
+    req: ChatMessageRequest,
+    run_cmd: dict[str, Any],
+    *,
+    request: Request | None,
 ) -> dict[str, Any]:
-    rm = get_run_manager()
-    gs = get_graph_store()
+    rm = _resolve_service(get_run_manager, request)
+    gs = _resolve_service(get_graph_store, request)
     graph = gs.load_as_model(req.workflow_id)
     if graph is None:
         raise HTTPException(status_code=404, detail=f"Graph '{req.workflow_id}' not found")
@@ -764,9 +811,9 @@ async def _handle_run_command(
 
 
 @router.post("/api/chat/editor/complete")
-async def editor_inline_complete(req: EditorCompletionRequest):
-    cm = get_chat_manager()
-    gs = get_graph_store()
+async def editor_inline_complete(request: Request, req: EditorCompletionRequest):
+    cm = get_chat_manager(request)
+    gs = get_graph_store(request)
 
     if gs.get_graph("_scratch") is None:
         gs.save_graph("_scratch", {"nodes": [], "edges": []})
@@ -881,29 +928,33 @@ async def chat_events_ws(websocket: WebSocket, channel_id: str):
 
 
 @router.get("/api/chats/search")
-async def search_chat_threads(q: str = "", workflow_id: str | None = None):
+async def search_chat_threads(
+    request: Request,
+    q: str = "",
+    workflow_id: str | None = None,
+):
     if not q.strip():
         return {"results": []}
-    cs = get_chat_store()
+    cs = get_chat_store(request)
     results = cs.search_threads(q.strip(), workflow_id=workflow_id)
     return {"results": results}
 
 
 @router.get("/api/chats")
-async def list_all_chat_threads():
-    cs = get_chat_store()
+async def list_all_chat_threads(request: Request):
+    cs = get_chat_store(request)
     return {"threads": cs.list_all_threads()}
 
 
 @router.get("/api/chats/{workflow_id}")
-async def list_chat_threads(workflow_id: str):
-    cs = get_chat_store()
+async def list_chat_threads(workflow_id: str, request: Request):
+    cs = get_chat_store(request)
     return {"threads": cs.list_threads(workflow_id)}
 
 
 @router.get("/api/chats/{workflow_id}/{thread_id}")
-async def get_chat_thread(workflow_id: str, thread_id: str):
-    cs = get_chat_store()
+async def get_chat_thread(workflow_id: str, thread_id: str, request: Request):
+    cs = get_chat_store(request)
     thread = cs.get_thread(workflow_id, thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
@@ -911,8 +962,12 @@ async def get_chat_thread(workflow_id: str, thread_id: str):
 
 
 @router.post("/api/chats/{workflow_id}")
-async def create_chat_thread(workflow_id: str, body: dict[str, Any] | None = None):
-    cs = get_chat_store()
+async def create_chat_thread(
+    workflow_id: str,
+    request: Request,
+    body: dict[str, Any] | None = None,
+):
+    cs = get_chat_store(request)
     b = body or {}
     title = b.get("title", "")
     thread = cs.create_thread(workflow_id, title=title)
@@ -941,9 +996,14 @@ async def create_chat_thread(workflow_id: str, body: dict[str, Any] | None = Non
 
 
 @router.put("/api/chats/{workflow_id}/{thread_id}")
-async def update_chat_thread(workflow_id: str, thread_id: str, body: dict[str, Any]):
-    cs = get_chat_store()
-    cm = get_chat_manager()
+async def update_chat_thread(
+    workflow_id: str,
+    thread_id: str,
+    request: Request,
+    body: dict[str, Any],
+):
+    cs = get_chat_store(request)
+    cm = get_chat_manager(request)
 
     thread = cs.get_thread(workflow_id, thread_id)
     if thread is None:
@@ -1009,16 +1069,21 @@ async def update_chat_thread(workflow_id: str, thread_id: str, body: dict[str, A
 
 
 @router.delete("/api/chats/{workflow_id}/{thread_id}")
-async def delete_chat_thread(workflow_id: str, thread_id: str):
-    cs = get_chat_store()
+async def delete_chat_thread(workflow_id: str, thread_id: str, request: Request):
+    cs = get_chat_store(request)
     if not cs.delete_thread(workflow_id, thread_id):
         raise HTTPException(status_code=404, detail="Thread not found")
     return {"status": "deleted"}
 
 
 @router.get("/api/chats/{workflow_id}/{thread_id}/export")
-async def export_chat_thread(workflow_id: str, thread_id: str, format: str = "md"):
-    cs = get_chat_store()
+async def export_chat_thread(
+    workflow_id: str,
+    thread_id: str,
+    request: Request,
+    format: str = "md",
+):
+    cs = get_chat_store(request)
     if format == "json":
         data = cs.export_thread_json(workflow_id, thread_id)
         if data is None:
@@ -1031,8 +1096,13 @@ async def export_chat_thread(workflow_id: str, thread_id: str, format: str = "md
 
 
 @router.post("/api/chats/{workflow_id}/{thread_id}/pin")
-async def pin_chat_thread(workflow_id: str, thread_id: str, body: dict[str, Any] | None = None):
-    cs = get_chat_store()
+async def pin_chat_thread(
+    workflow_id: str,
+    thread_id: str,
+    request: Request,
+    body: dict[str, Any] | None = None,
+):
+    cs = get_chat_store(request)
     pinned = (body or {}).get("pinned", True)
     if not cs.set_pinned(workflow_id, thread_id, pinned):
         raise HTTPException(status_code=404, detail="Thread not found")
@@ -1040,8 +1110,13 @@ async def pin_chat_thread(workflow_id: str, thread_id: str, body: dict[str, Any]
 
 
 @router.post("/api/chats/{workflow_id}/{thread_id}/checkpoint")
-async def save_chat_checkpoint(workflow_id: str, thread_id: str, body: dict[str, Any]):
-    cs = get_chat_store()
+async def save_chat_checkpoint(
+    workflow_id: str,
+    thread_id: str,
+    request: Request,
+    body: dict[str, Any],
+):
+    cs = get_chat_store(request)
     message_id = body.get("message_id", "")
     graph_snapshot = body.get("graph_snapshot")
     if not graph_snapshot:

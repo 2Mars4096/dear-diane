@@ -7,7 +7,7 @@ import asyncio
 import logging
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from dan.server.routers.dependencies import get_graph_store, get_run_manager
@@ -15,7 +15,6 @@ from dan.server.run_manager import RunStatus
 from dan.server.scoped_run import ScopedRunRequest
 from dan.server.workflow_guards import (
     WorkflowContractError,
-    ensure_workflow_run_ready,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,58 +63,53 @@ class PendingOverlayRequest(BaseModel):
 
 
 @router.post("/api/runs")
-async def start_run(req: RunRequest):
-    rm = get_run_manager()
-    gs = get_graph_store()
+async def start_run(req: RunRequest, request: Request):
+    rm = get_run_manager(request)
+    gs = get_graph_store(request)
     graph_dict = gs.get_graph(req.graph_id)
     if graph_dict is None:
         raise HTTPException(status_code=404, detail=f"Graph '{req.graph_id}' not found")
     try:
-        guarded = ensure_workflow_run_ready(graph_dict, workflow_id=req.graph_id)
+        from dan.server.gateway.router import _event_bus
+
+        handle = await rm.launch_run(
+            graph_dict,
+            graph_id=req.graph_id,
+            inputs=req.inputs,
+            run_id=req.run_id,
+            session_id=req.session_id,
+            run_policy=req.run_policy,
+            bus=_event_bus,
+        )
     except WorkflowContractError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    record = await rm.start_run(
-        guarded.graph, graph_id=req.graph_id, inputs=req.inputs, run_id=req.run_id,
-        session_id=req.session_id,
-        run_policy=req.run_policy,
-    )
-    from dan.server.gateway.router import _event_bus
-    if _event_bus is not None:
-        from dan.server.run_relay import relay_run_events_to_bus
-        asyncio.create_task(
-            relay_run_events_to_bus(
-                rm=rm,
-                run_id=record.run_id,
-                workflow_name=req.graph_id,
-                surface_id=None,
-                bus=_event_bus,
-            )
-        )
+    record = handle.record
     return {"run_id": record.run_id, "status": record.status.value}
 
 
 @router.post("/api/runs/{run_id}/resume")
-async def resume_run(run_id: str, req: ResumeRequest):
-    rm = get_run_manager()
-    gs = get_graph_store()
+async def resume_run(run_id: str, req: ResumeRequest, request: Request):
+    rm = get_run_manager(request)
+    gs = get_graph_store(request)
     graph_dict = gs.get_graph(req.graph_id)
     if graph_dict is None:
         raise HTTPException(status_code=404, detail=f"Graph '{req.graph_id}' not found")
     try:
-        guarded = ensure_workflow_run_ready(graph_dict, workflow_id=req.graph_id)
+        record = await rm.resume_run(
+            graph_dict,
+            graph_id=req.graph_id,
+            run_id=run_id,
+            session_id=req.session_id,
+            run_policy=req.run_policy,
+        )
     except WorkflowContractError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    record = await rm.resume_run(
-        guarded.graph, graph_id=req.graph_id, run_id=run_id,
-        session_id=req.session_id,
-        run_policy=req.run_policy,
-    )
     return {"run_id": record.run_id, "status": record.status.value}
 
 
 @router.get("/api/runs/compare")
-async def compare_runs(run_a: str, run_b: str):
-    rm = get_run_manager()
+async def compare_runs(run_a: str, run_b: str, request: Request):
+    rm = get_run_manager(request)
     rec_a = rm.get_run(run_a)
     rec_b = rm.get_run(run_b)
     if rec_a is None:
@@ -177,8 +171,8 @@ async def compare_runs(run_a: str, run_b: str):
 
 
 @router.get("/api/runs/{run_id}")
-async def get_run(run_id: str):
-    rm = get_run_manager()
+async def get_run(run_id: str, request: Request):
+    rm = get_run_manager(request)
     record = rm.get_run(run_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
@@ -187,6 +181,7 @@ async def get_run(run_id: str):
 
 @router.get("/api/runs")
 async def list_runs(
+    request: Request,
     workflow_id: str | None = None,
     status: str | None = None,
     after: float | None = None,
@@ -194,7 +189,7 @@ async def list_runs(
     limit: int = 100,
     offset: int = 0,
 ):
-    rm = get_run_manager()
+    rm = get_run_manager(request)
     runs = rm.list_runs()
     if workflow_id:
         runs = [r for r in runs if r.get("graph_id") == workflow_id]
@@ -210,11 +205,12 @@ async def list_runs(
 
 @router.get("/api/runs/{run_id}/events")
 async def get_run_events(
+    request: Request,
     run_id: str,
     node_id: str | None = None,
     event_type: str | None = None,
 ):
-    rm = get_run_manager()
+    rm = get_run_manager(request)
     record = rm.get_run(run_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
@@ -230,8 +226,8 @@ async def get_run_events(
 
 
 @router.post("/api/runs/{run_id}/human-input")
-async def submit_human_input(run_id: str, body: dict):
-    rm = get_run_manager()
+async def submit_human_input(run_id: str, body: dict, request: Request):
+    rm = get_run_manager(request)
     request_id = body.get("request_id")
     response = body.get("response", {})
     if not request_id:
@@ -253,15 +249,15 @@ async def submit_human_input(run_id: str, body: dict):
 
 
 @router.get("/api/runs/{run_id}/checkpoints")
-async def list_run_checkpoints(run_id: str):
-    rm = get_run_manager()
+async def list_run_checkpoints(run_id: str, request: Request):
+    rm = get_run_manager(request)
     info = await rm.get_checkpoint_info(run_id)
     if info is None:
         raise HTTPException(status_code=404, detail=f"No checkpoint found for run '{run_id}'")
 
     staleness_info: dict[str, Any] = {}
     record = rm.get_run(run_id)
-    gs = get_graph_store()
+    gs = get_graph_store(request)
     if record is not None and info.get("graph_revision"):
         graph = gs.load_as_model(record.graph_id)
         if graph is not None:
@@ -296,8 +292,8 @@ async def list_run_checkpoints(run_id: str):
 
 
 @router.get("/api/runs/{run_id}/checkpoints/{checkpoint_id}")
-async def get_checkpoint_detail(run_id: str, checkpoint_id: str):
-    rm = get_run_manager()
+async def get_checkpoint_detail(run_id: str, checkpoint_id: str, request: Request):
+    rm = get_run_manager(request)
     info = await rm.get_checkpoint_info(run_id)
     if info is None:
         raise HTTPException(status_code=404, detail=f"No checkpoint found for run '{run_id}'")
@@ -321,9 +317,9 @@ async def get_checkpoint_detail(run_id: str, checkpoint_id: str):
 
 
 @router.post("/api/runs/{run_id}/rerun")
-async def rerun_from_checkpoint(run_id: str, req: RerunRequest):
-    rm = get_run_manager()
-    gs = get_graph_store()
+async def rerun_from_checkpoint(run_id: str, req: RerunRequest, request: Request):
+    rm = get_run_manager(request)
+    gs = get_graph_store(request)
     graph = gs.load_as_model(req.graph_id)
     if graph is None:
         raise HTTPException(status_code=404, detail=f"Graph '{req.graph_id}' not found")
@@ -344,6 +340,8 @@ async def rerun_from_checkpoint(run_id: str, req: RerunRequest):
             session_id=req.session_id,
             run_policy=req.run_policy,
         )
+    except WorkflowContractError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
@@ -358,8 +356,8 @@ async def rerun_from_checkpoint(run_id: str, req: RerunRequest):
 
 
 @router.post("/api/runs/{run_id}/overlay")
-async def apply_pending_overlay(run_id: str, req: PendingOverlayRequest):
-    rm = get_run_manager()
+async def apply_pending_overlay(run_id: str, req: PendingOverlayRequest, request: Request):
+    rm = get_run_manager(request)
     record = rm.get_run(run_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
@@ -391,11 +389,11 @@ async def apply_pending_overlay(run_id: str, req: PendingOverlayRequest):
 
 
 @router.post("/api/runs/scoped")
-async def start_scoped_run(req: ScopedRunRequest):
+async def start_scoped_run(req: ScopedRunRequest, request: Request):
     from dan.server.scoped_run import ScopedRunResponse, build_scoped_graph
 
-    rm = get_run_manager()
-    gs = get_graph_store()
+    rm = get_run_manager(request)
+    gs = get_graph_store(request)
     graph = gs.load_as_model(req.workflow_id)
     if graph is None:
         raise HTTPException(status_code=404, detail=f"Graph '{req.workflow_id}' not found")
@@ -406,16 +404,13 @@ async def start_scoped_run(req: ScopedRunRequest):
     if result.error:
         raise HTTPException(status_code=422, detail=result.error.model_dump())
     try:
-        guarded = ensure_workflow_run_ready(
+        record = await rm.start_run(
             result.graph,
-            workflow_id=req.workflow_id,
+            graph_id=req.workflow_id,
+            inputs=req.inputs,
         )
     except WorkflowContractError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    record = await rm.start_run(
-        guarded.graph, graph_id=req.workflow_id, inputs=req.inputs,
-    )
     return ScopedRunResponse(
         run_id=record.run_id,
         status=record.status.value,
@@ -430,8 +425,8 @@ async def start_scoped_run(req: ScopedRunRequest):
 
 
 @router.get("/api/runs/{run_id}/token-breakdown")
-async def token_breakdown(run_id: str):
-    rm = get_run_manager()
+async def token_breakdown(run_id: str, request: Request):
+    rm = get_run_manager(request)
     record = rm.get_run(run_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
@@ -468,8 +463,8 @@ async def token_breakdown(run_id: str):
 
 
 @router.get("/api/runs/{run_id}/optimization-report")
-async def optimization_report(run_id: str):
-    rm = get_run_manager()
+async def optimization_report(run_id: str, request: Request):
+    rm = get_run_manager(request)
     record = rm.get_run(run_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
@@ -501,8 +496,8 @@ async def optimization_report(run_id: str):
 
 
 @router.get("/api/runs/{run_id}/optimization-mutations")
-async def optimization_mutations(run_id: str):
-    rm = get_run_manager()
+async def optimization_mutations(run_id: str, request: Request):
+    rm = get_run_manager(request)
     record = rm.get_run(run_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
@@ -565,7 +560,7 @@ async def optimization_mutations(run_id: str):
 
 @router.websocket("/api/runs/{run_id}/events")
 async def run_events_ws(websocket: WebSocket, run_id: str):
-    rm = get_run_manager()
+    rm = get_run_manager(websocket)
     await websocket.accept()
 
     queue = rm.subscribe(run_id)

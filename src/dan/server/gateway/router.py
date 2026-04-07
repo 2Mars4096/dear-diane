@@ -35,6 +35,7 @@ _activity_tracker: ActivityTracker | None = None
 _event_bus: GlobalEventBus | None = None
 _workspace: Path | None = None
 _graph_store: Any = None
+_meta_controller_factory: Any | None = None
 _relay_tasks: set[asyncio.Task] = set()
 
 
@@ -42,14 +43,17 @@ def init_gateway(
     run_manager: RunManager,
     workspace: Path,
     graph_store: Any = None,
+    *,
+    build_meta_controller: Any | None = None,
 ) -> None:
     """Initialize gateway with server dependencies. Called during lifespan."""
-    global _run_manager, _activity_tracker, _event_bus, _workspace, _graph_store
+    global _run_manager, _activity_tracker, _event_bus, _workspace, _graph_store, _meta_controller_factory
     _run_manager = run_manager
     _activity_tracker = ActivityTracker(run_manager)
     _event_bus = GlobalEventBus()
     _workspace = workspace
     _graph_store = graph_store
+    _meta_controller_factory = build_meta_controller
 
 
 def _require_rm() -> RunManager:
@@ -93,15 +97,17 @@ async def _dispatch_text(
     from dan.meta.workflow_contract import validate_workflow_build_contract
     from pydantic import ValidationError
 
-    try:
-        from dan.server.app import _build_meta_controller
-    except ImportError:
-        raise HTTPException(
-            503,
-            "MetaController not available (text dispatch requires server initialization)",
-        ) from None
+    build_meta_controller = _meta_controller_factory
+    if not callable(build_meta_controller):
+        try:
+            from dan.server.app import _build_meta_controller as build_meta_controller
+        except ImportError:
+            raise HTTPException(
+                503,
+                "MetaController not available (text dispatch requires server initialization)",
+            ) from None
 
-    _, planner, _ = _build_meta_controller()
+    _, planner, _ = build_meta_controller()
     if planner is None:
         raise HTTPException(503, "WorkflowPlanner not configured")
 

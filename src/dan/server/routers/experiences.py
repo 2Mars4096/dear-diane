@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from dan.server.routers.dependencies import (
     get_graph_store,
@@ -116,11 +116,12 @@ def _resolve_trace_promotion_workflow_id(
     *,
     requested_workflow_id: str,
     overwrite: bool,
+    request: Request | None = None,
 ) -> tuple[str, bool]:
     from dan.server.graph_store import _validate_graph_id
     from dan.server.trace_workflow_distiller import suggest_trace_workflow_id
 
-    graph_store = get_graph_store()
+    graph_store = get_graph_store(request) if request is not None else get_graph_store()
     explicit = requested_workflow_id.strip()
     if explicit:
         _validate_graph_id(explicit)
@@ -142,9 +143,9 @@ def _resolve_trace_promotion_workflow_id(
 
 
 @router.get("/api/experiences")
-async def list_experiences():
+async def list_experiences(request: Request):
     try:
-        store = get_experience_store()
+        store = get_experience_store(request)
         experiences = await store.list_experiences()
         return {"experiences": [e.model_dump() for e in experiences]}
     except Exception as exc:
@@ -153,9 +154,9 @@ async def list_experiences():
 
 
 @router.get("/api/experiences/{workflow_id}")
-async def get_experience(workflow_id: str):
+async def get_experience(workflow_id: str, request: Request):
     validate_path_segment(workflow_id, "workflow_id")
-    store = get_experience_store()
+    store = get_experience_store(request)
     exp = await store.load_experience(workflow_id)
     if exp is None:
         raise HTTPException(status_code=404, detail=f"No experience for '{workflow_id}'")
@@ -166,14 +167,14 @@ _experience_index_bootstrap_done = False
 
 
 @router.post("/api/experiences/search")
-async def search_experiences(body: dict[str, Any]):
+async def search_experiences(body: dict[str, Any], request: Request):
     global _experience_index_bootstrap_done
     query = str(body.get("query", "")).strip()
     top_k = int(body.get("top_k", 5))
     if not query:
         raise HTTPException(status_code=422, detail="query is required")
-    index = get_experience_index()
-    store = get_experience_store(with_index=True)
+    index = get_experience_index(request)
+    store = get_experience_store(request, with_index=True)
 
     if not _experience_index_bootstrap_done:
         for exp in await store.list_experiences():
@@ -227,7 +228,7 @@ async def distill_trace_draft(body: dict[str, Any]):
 
 
 @router.post("/api/experiences/trace-draft/promote")
-async def promote_trace_draft(body: dict[str, Any]):
+async def promote_trace_draft(body: dict[str, Any], request: Request = None):
     turn_id = str(body.get("turn_id", "")).strip()
     requested_workflow_id = str(body.get("workflow_id", "")).strip()
     overwrite = bool(body.get("overwrite", False))
@@ -265,6 +266,7 @@ async def promote_trace_draft(body: dict[str, Any]):
             draft,
             requested_workflow_id=requested_workflow_id,
             overwrite=overwrite,
+            request=request,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -295,7 +297,7 @@ async def promote_trace_draft(body: dict[str, Any]):
         )
         return response
 
-    graph_store = get_graph_store()
+    graph_store = get_graph_store(request) if request is not None else get_graph_store()
     graph_to_save = prepare_trace_workflow_graph_for_promotion(
         report.graph_dict,
         draft,
@@ -327,7 +329,7 @@ async def promote_trace_draft(body: dict[str, Any]):
 
 
 @router.post("/api/experiences/{workflow_id}/refresh")
-async def refresh_experience(workflow_id: str):
+async def refresh_experience(workflow_id: str, request: Request):
     validate_path_segment(workflow_id, "workflow_id")
     from dan.engine.experience import (
         consolidate_experience,
@@ -336,12 +338,12 @@ async def refresh_experience(workflow_id: str):
     from dan.engine.error_memory import PrincipleStore
     from dan.models.graph import Graph
 
-    rm = get_run_manager()
-    gs = get_graph_store()
+    rm = get_run_manager(request)
+    gs = get_graph_store(request)
     try:
-        store = get_experience_store(with_index=True)
+        store = get_experience_store(request, with_index=True)
     except HTTPException:
-        store = get_experience_store(with_index=False)
+        store = get_experience_store(request, with_index=False)
     graph_data = gs.get_graph(workflow_id)
     if graph_data is None:
         raise HTTPException(status_code=404, detail=f"Graph '{workflow_id}' not found")
@@ -358,7 +360,7 @@ async def refresh_experience(workflow_id: str):
 
     principles: list[dict[str, Any]] = []
     try:
-        ps = PrincipleStore(get_memory_store())
+        ps = PrincipleStore(get_memory_store(request))
         principles = [p.model_dump() for p in await ps.load_principles(workflow_id)]
     except Exception:
         logger.debug("Failed to load principles for experience refresh", exc_info=True)
@@ -369,9 +371,9 @@ async def refresh_experience(workflow_id: str):
 
 
 @router.delete("/api/experiences/{workflow_id}")
-async def delete_experience(workflow_id: str):
+async def delete_experience(workflow_id: str, request: Request):
     validate_path_segment(workflow_id, "workflow_id")
-    store = get_experience_store()
+    store = get_experience_store(request)
     deleted = await store.delete_experience(workflow_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Experience not found")

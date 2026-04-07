@@ -6,6 +6,7 @@ Part of the workflow generation quality evaluation system (Phase 33).
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -14,7 +15,13 @@ from pathlib import Path
 class TelemetryReader:
     def __init__(self, db_path: str | Path | None = None):
         if db_path is None:
-            db_path = Path.home() / ".dan" / "telemetry.db"
+            configured = os.environ.get("DAN_TELEMETRY_DB")
+            if configured:
+                db_path = Path(configured)
+            elif os.environ.get("PYTEST_CURRENT_TEST"):
+                db_path = Path("/tmp") / "dan-telemetry" / "telemetry.db"
+            else:
+                db_path = Path.home() / ".dan" / "telemetry.db"
         self._path = Path(db_path)
         self._conn: sqlite3.Connection | None = None
 

@@ -1,6 +1,11 @@
+from types import SimpleNamespace
+
 from dan.models.graph import Graph, GraphMetadata
+from dan.models.nodes import CodeOperator
+from dan.models.ports import OutputPort
 from dan.models.ports import InputPort
 from dan.server.scoped_run import build_scoped_graph, map_run_event_to_chat_block
+from dan.server.workflow_guards import ensure_workflow_apply_ready_and_save
 from dan.worker.model import Worker
 
 
@@ -108,3 +113,38 @@ def test_map_run_event_to_chat_block_surfaces_run_failed_errors_map() -> None:
     assert block is not None
     assert block["summary"] == "Run failed: Missing required input 'watchlist_path'"
     assert block["detail"]["error"] == "Missing required input 'watchlist_path'"
+
+
+def test_ensure_workflow_apply_ready_and_save_returns_saved_graph_metadata() -> None:
+    graph = Graph(
+        metadata=GraphMetadata(name="guard-test"),
+        nodes=[
+            CodeOperator(
+                id="emit",
+                name="emit",
+                code="result = 'ok'",
+                output_ports=[OutputPort(name="result")],
+            )
+        ],
+        edges=[],
+        entry_points=["emit"],
+        exit_points=["emit"],
+    )
+    saved: dict[str, object] = {}
+
+    def save_graph(workflow_id: str, graph_dict: dict) -> dict:
+        saved["workflow_id"] = workflow_id
+        saved["graph_dict"] = graph_dict
+        return graph_dict
+
+    result = ensure_workflow_apply_ready_and_save(
+        SimpleNamespace(save_graph=save_graph),
+        graph.model_dump(mode="json"),
+        workflow_id="wf-apply",
+    )
+
+    assert saved["workflow_id"] == "wf-apply"
+    assert saved["graph_dict"] == result.saved_graph
+    assert result.workflow_id == "wf-apply"
+    assert result.graph_revision
+    assert result.warnings == []

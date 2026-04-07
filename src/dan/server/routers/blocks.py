@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from dan.server.paths import resolve_workspace_root
 from dan.server.routers.dependencies import get_graph_store, get_block_registry
@@ -24,8 +24,8 @@ def _cleanup_export_dir(path: str) -> None:
 
 
 @router.get("/api/blocks")
-async def list_blocks():
-    registry = get_block_registry()
+async def list_blocks(request: Request):
+    registry = get_block_registry(request)
     registry.scan()
     blocks = registry.list_blocks()
     return [
@@ -44,8 +44,8 @@ async def list_blocks():
 
 
 @router.get("/api/blocks/{name}")
-async def get_block_info(name: str):
-    registry = get_block_registry()
+async def get_block_info(name: str, request: Request):
+    registry = get_block_registry(request)
     block = registry.get_block(name)
     if block is None:
         raise HTTPException(status_code=404, detail=f"Block '{name}' not found")
@@ -66,7 +66,7 @@ async def get_block_info(name: str):
 
 
 @router.post("/api/blocks/import")
-async def import_block_endpoint(body: dict[str, Any]):
+async def import_block_endpoint(request: Request, body: dict[str, Any]):
     from dan.blocks import import_block
 
     workspace_root = resolve_workspace_root()
@@ -79,7 +79,7 @@ async def import_block_endpoint(body: dict[str, Any]):
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    registry = get_block_registry()
+    registry = get_block_registry(request)
     registry.scan()
 
     return {
@@ -92,11 +92,16 @@ async def import_block_endpoint(body: dict[str, Any]):
 
 
 @router.post("/api/blocks/export/{graph_id}")
-async def export_block_endpoint(graph_id: str, name: str = "", version: str = "0.1.0"):
+async def export_block_endpoint(
+    graph_id: str,
+    request: Request,
+    name: str = "",
+    version: str = "0.1.0",
+):
     from dan.models.graph import Graph
     from dan.blocks import export_workflow_block, pack_block
 
-    gs = get_graph_store()
+    gs = get_graph_store(request)
     graph_data = gs.get_graph(graph_id)
     if graph_data is None:
         raise HTTPException(status_code=404, detail="Graph not found")
@@ -129,13 +134,14 @@ async def export_block_endpoint(graph_id: str, name: str = "", version: str = "0
 async def export_composite_block_endpoint(
     graph_id: str,
     node_id: str,
+    request: Request,
     name: str = "",
     version: str = "0.1.0",
 ):
     from dan.models.graph import Graph
     from dan.blocks import export_composite_block, pack_block
 
-    gs = get_graph_store()
+    gs = get_graph_store(request)
     graph_data = gs.get_graph(graph_id)
     if graph_data is None:
         raise HTTPException(status_code=404, detail="Graph not found")
@@ -165,8 +171,8 @@ async def export_composite_block_endpoint(
 
 
 @router.delete("/api/blocks/{name}/{version}")
-async def remove_block(name: str, version: str):
-    registry = get_block_registry()
+async def remove_block(name: str, version: str, request: Request):
+    registry = get_block_registry(request)
     removed = registry.remove_block(name, version)
     if not removed:
         raise HTTPException(status_code=404, detail=f"Block '{name}@{version}' not found")

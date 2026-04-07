@@ -17,8 +17,10 @@ from dan.chat_events import (
 )
 
 from .command_registry import get_default_registry
+from .dispatch_state import background_project_cap, count_background_tasks
 from .identity import format_prefix
 from .models import ResolvedContext, SurfaceMessage
+from .task_registry import TaskState
 
 logger = logging.getLogger(__name__)
 
@@ -631,7 +633,6 @@ class ConcurrentDispatcher:
         task.add_done_callback(self._background_tasks.discard)
 
     def snapshot_state(self) -> dict[str, Any]:
-        background_running = 0
         per_project_counts: dict[str, dict[str, Any]] = {}
         registry = getattr(self._concierge, "_task_registry", None)
         if registry is not None:
@@ -642,7 +643,6 @@ class ConcurrentDispatcher:
                 )
                 if getattr(task, "dispatch_mode", None) is not None and task.dispatch_mode.value == "background":
                     if task.state.value == "running":
-                        background_running += 1
                         project["active_count"] += 1
                     elif task.state.value == "queued":
                         project["queue_depth"] += 1
@@ -656,9 +656,14 @@ class ConcurrentDispatcher:
                 {"active_count": 0, "queue_depth": 0, "oldest_queued_age": None},
             )
             project["queue_depth"] += queue.qsize()
+        background_running = (
+            count_background_tasks(registry, states={TaskState.RUNNING})
+            if registry is not None
+            else 0
+        )
         return {
             "active_background_slots": background_running,
-            "max_background_slots": int(getattr(self._concierge, "_background_project_cap", lambda: 3)()),
+            "max_background_slots": background_project_cap(),
             "global_active": len(self._active_tasks) + background_running,
             "global_max": self._max_concurrent,
             "per_project": [

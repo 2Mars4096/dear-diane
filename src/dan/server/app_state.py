@@ -63,6 +63,7 @@ class AppState:
     meta_subscribers: dict[str, list[asyncio.Queue]] = field(
         default_factory=lambda: defaultdict(list),
     )
+    build_meta_controller: Any = None
 
     # -- Background tasks ----------------------------------------------------
     background_tasks: list[asyncio.Task] = field(default_factory=list)
@@ -99,6 +100,27 @@ class AppState:
 
     # -- Accessor guards -----------------------------------------------------
 
+    def require_graph_store(self) -> GraphStore:
+        if self.graph_store is None:
+            raise HTTPException(
+                status_code=503, detail="Graph store not initialised"
+            )
+        return self.graph_store
+
+    def require_chat_store(self) -> ChatStore:
+        if self.chat_store is None:
+            raise HTTPException(
+                status_code=503, detail="Chat store not initialised"
+            )
+        return self.chat_store
+
+    def require_test_case_store(self) -> TestCaseStore:
+        if self.test_case_store is None:
+            raise HTTPException(
+                status_code=503, detail="Test case store not initialised"
+            )
+        return self.test_case_store
+
     def require_run_manager(self) -> RunManager:
         if self.run_manager is None:
             raise HTTPException(
@@ -126,3 +148,17 @@ class AppState:
                 status_code=503, detail="Block registry not initialised"
             )
         return self.block_registry
+
+    def require_engine_config(self) -> Any:
+        if self.engine_config is None:
+            raise HTTPException(
+                status_code=503, detail="Engine config not initialised"
+            )
+        return self.engine_config
+
+    def require_furnace_session_store(self) -> Any:
+        if self.furnace_session_store is None:
+            raise HTTPException(
+                status_code=503, detail="Furnace not initialised"
+            )
+        return self.furnace_session_store

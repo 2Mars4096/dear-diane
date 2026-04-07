@@ -28,12 +28,15 @@ from pydantic import BaseModel, Field
 if TYPE_CHECKING:
     from dan.agent_runtime import AgentEvent, AgentRequest, AgentResult, AgentRuntime
 
+from dan.agent_runtime import AgentEvent, AgentRequest, AgentResult, AgentRuntime
+
 try:
     import tiktoken
     _tiktoken_available = True
 except ImportError:
     _tiktoken_available = False
 
+from dan.meta.intent_schema import WorkflowIntent
 from dan.models.graph import Graph
 from dan.llm_surface import (
     complete_chat_surface,
@@ -48,6 +51,7 @@ from dan.providers import (
     StreamChunk,
     get_model_behavior,
 )
+from dan.prompt_contracts import PromptEnvelope, TurnExecutionEnvelope
 from dan.providers.registry import ProviderRegistry
 from dan.providers.costs import estimate_cost
 from dan.server.capability_registry import CapabilityResult, READ_ONLY_MODES
@@ -145,6 +149,21 @@ from dan.server.chat.helpers import (  # noqa: F401
     recent_run_failed_for_workflow,
     detect_chat_mode,
     build_debug_context,
+    _capability_registry_mode,
+    _tool_available_in_mode,
+    _mode_supports_action_hints,
+    _resolve_effective_chat_mode,
+)
+from dan.server.chat.mutation_previews import (
+    clear_latest_mutation_preview as _clear_latest_mutation_preview,
+    has_latest_mutation_preview as _has_latest_mutation_preview,
+    persist_latest_mutation_preview as _persist_latest_mutation_preview,
+)
+from dan.server.chat.prompt_builder import (
+    build_chat_messages as _build_chat_messages_impl,
+)
+from dan.server.chat.workflow_smoke import (
+    run_candidate_execution_smoke as _run_candidate_execution_smoke_impl,
 )
 from dan.server.search_models import parse_search_result_set
 from dan.chat_prompts import (  # noqa: F401
@@ -463,74 +482,6 @@ def _persist_citation_summary(
         logger.debug("Failed to persist citation summary", exc_info=True)
 
 
-def _persist_latest_mutation_preview(
-    chat_store: Any,
-    workflow_id: str,
-    thread_id: str | None,
-    *,
-    message_id: str,
-    mutation_plan: dict[str, Any],
-    dry_run_result: dict[str, Any],
-) -> None:
-    if chat_store is None or not thread_id:
-        return
-    try:
-        meta = chat_store.get_thread_meta(workflow_id, thread_id)
-        if not isinstance(meta, dict):
-            meta = {}
-        meta["latest_mutation_preview"] = {
-            "message_id": message_id,
-            "mutation_plan": mutation_plan,
-            "dry_run_result": dry_run_result,
-        }
-        chat_store.set_thread_meta(workflow_id, thread_id, meta)
-    except Exception:
-        logger.debug("Failed to persist latest mutation preview", exc_info=True)
-
-
-def _clear_latest_mutation_preview(
-    chat_store: Any,
-    workflow_id: str,
-    thread_id: str | None,
-) -> None:
-    if chat_store is None or not thread_id:
-        return
-    try:
-        meta = chat_store.get_thread_meta(workflow_id, thread_id)
-        if not isinstance(meta, dict) or "latest_mutation_preview" not in meta:
-            return
-        meta.pop("latest_mutation_preview", None)
-        chat_store.set_thread_meta(workflow_id, thread_id, meta)
-    except Exception:
-        logger.debug("Failed to clear latest mutation preview", exc_info=True)
-
-
-def _has_latest_mutation_preview(
-    chat_store: Any,
-    workflow_id: str,
-    thread_id: str | None,
-) -> bool:
-    if chat_store is None or not thread_id:
-        return False
-    try:
-        thread = chat_store.get_thread(workflow_id, thread_id)
-    except Exception:
-        thread = None
-    if thread is not None:
-        for msg in reversed(getattr(thread, "messages", []) or []):
-            mutation_plan = getattr(msg, "mutation_plan", None)
-            if not isinstance(mutation_plan, dict) or not mutation_plan:
-                continue
-            if getattr(msg, "mutation_status", None) in (None, "proposed"):
-                return True
-    try:
-        meta = chat_store.get_thread_meta(workflow_id, thread_id)
-    except Exception:
-        meta = {}
-    preview = meta.get("latest_mutation_preview") if isinstance(meta, dict) else None
-    return isinstance(preview, dict) and isinstance(preview.get("mutation_plan"), dict)
-
-
 def _citation_warning_text(verifications: list[Any]) -> str | None:
     flagged = [item for item in verifications if not getattr(item, "verified", True)]
     if not flagged:
@@ -560,96 +511,6 @@ def _progress_ack_event(
         detected_mode="progress_ack",
         phase_label=phase_label or None,
     )
-def _capability_registry_mode(mode: str) -> str:
-    """Resolve user-facing chat modes to capability-registry buckets."""
-    normalized = normalize_chat_mode(mode)
-    return "agent" if normalized == "auto" else normalized
-
-
-def _tool_available_in_mode(
-    capability_registry: Any,
-    tool_name: str,
-    mode: str,
-    *,
-    allow_mutation_tool: bool,
-) -> bool:
-    if tool_name == "plan_graph_mutations":
-        return allow_mutation_tool and mode not in READ_ONLY_MODES
-    if capability_registry is None:
-        return False
-    try:
-        return bool(capability_registry.is_available(tool_name, mode))
-    except Exception:
-        logger.debug(
-            "Capability availability check failed for %s in %s mode",
-            tool_name,
-            mode,
-            exc_info=True,
-        )
-        return False
-
-
-def _mode_supports_action_hints(
-    mode: str,
-    required_action_hints: list[str] | None,
-    capability_registry: Any,
-    *,
-    allow_mutation_tool: bool,
-) -> bool:
-    for hint in _dedupe_action_hints(required_action_hints):
-        tool_names = _ACTION_HINT_TOOL_MAP.get(hint)
-        if not tool_names:
-            continue
-        if not any(
-            _tool_available_in_mode(
-                capability_registry,
-                tool_name,
-                mode,
-                allow_mutation_tool=allow_mutation_tool,
-            )
-            for tool_name in tool_names
-        ):
-            return False
-    return True
-
-
-def _resolve_effective_chat_mode(
-    mode: str,
-    required_action_hints: list[str] | None,
-    capability_registry: Any,
-    *,
-    allow_mutation_tool: bool,
-) -> str:
-    requested_mode = _capability_registry_mode(mode)
-    if not required_action_hints:
-        return requested_mode
-
-    ordered_candidates = (
-        requested_mode,
-        "agent",
-        "build",
-        "mutate",
-        "debug",
-        "conversation",
-        "ask",
-        "plan",
-    )
-    seen_modes: set[str] = set()
-    for candidate in ordered_candidates:
-        normalized_candidate = _capability_registry_mode(candidate)
-        if normalized_candidate in seen_modes:
-            continue
-        seen_modes.add(normalized_candidate)
-        if _mode_supports_action_hints(
-            normalized_candidate,
-            required_action_hints,
-            capability_registry,
-            allow_mutation_tool=allow_mutation_tool,
-        ):
-            return normalized_candidate
-    return requested_mode
-
-
 class ChatManager:
     def __init__(
         self,
@@ -1058,6 +919,8 @@ class ChatManager:
         client_graph_revision: str | None = None,
         mode: str = "agent",
         cancel_event: asyncio.Event | None = None,
+        prompt_envelope: PromptEnvelope | None = None,
+        turn_execution_envelope: TurnExecutionEnvelope | None = None,
         debug_context: str = "",
         prompt_context: str = "",
         mentions: list[Any] | None = None,
@@ -1086,6 +949,14 @@ class ChatManager:
                 client_graph_revision=client_graph_revision,
                 mode=mode,
                 cancel_event=cancel_event,
+                prompt_envelope=(
+                    prompt_envelope
+                    or (
+                        turn_execution_envelope.prompt_envelope
+                        if turn_execution_envelope is not None
+                        else None
+                    )
+                ),
                 debug_context=debug_context,
                 prompt_context=prompt_context,
                 mentions=mentions,
@@ -1115,6 +986,8 @@ class ChatManager:
         client_graph_revision: str | None = None,
         mode: str = "agent",
         cancel_event: asyncio.Event | None = None,
+        prompt_envelope: PromptEnvelope | None = None,
+        turn_execution_envelope: TurnExecutionEnvelope | None = None,
         debug_context: str = "",
         prompt_context: str = "",
         mentions: list[Any] | None = None,
@@ -1145,6 +1018,8 @@ class ChatManager:
         contract_override_ctx.__enter__()
         try:
             effective_model = model_override or self._chat_model
+            if prompt_envelope is None and turn_execution_envelope is not None:
+                prompt_envelope = turn_execution_envelope.prompt_envelope
             required_action_hints = _dedupe_action_hints(required_action_hints)
             requested_mode = _capability_registry_mode(mode)
             mode = _resolve_effective_chat_mode(
@@ -1386,6 +1261,7 @@ class ChatManager:
             prompt_metadata: dict[str, Any] = {}
             messages = await self._build_messages(
                 summary, message, history, mode=mode, debug_context=debug_context,
+                prompt_envelope=prompt_envelope,
                 prompt_context=prompt_context,
                 mentions=mentions, workflow_id=workflow_id, graph_dict=graph_dict,
                 surface_context=surface_context,
@@ -1711,6 +1587,7 @@ class ChatManager:
                         history,
                         mode=mode,
                         debug_context=debug_context,
+                        prompt_envelope=prompt_envelope,
                         prompt_context=prompt_context,
                         mentions=mentions,
                         surface_context=surface_context,
@@ -2171,6 +2048,7 @@ class ChatManager:
                                 message,
                                 history,
                                 mode=mode,
+                                prompt_envelope=prompt_envelope,
                                 prompt_context=prompt_context,
                                 surface_context=surface_context,
                                 surface=surface,
@@ -3214,6 +3092,7 @@ class ChatManager:
         user_message: str,
         history: list[dict[str, str]],
         mode: str = "agent",
+        prompt_envelope: PromptEnvelope | None = None,
         debug_context: str = "",
         prompt_context: str = "",
         mentions: list[Any] | None = None,
@@ -3231,155 +3110,19 @@ class ChatManager:
         model: str | None = None,
         autonomy_resolution: Any | None = None,
     ) -> list[dict[str, str]]:
-        effective_model = model or self._chat_model
-        graph_is_empty = summary.node_count == 0 and summary.edge_count == 0
-        prompt_profile = resolve_agent_profile(
-            mode=mode,
-            allow_mutation_tool=allow_mutation_tool,
-            graph_is_empty=graph_is_empty,
-            required_action_hints=required_action_hints,
-        )
-        graph_text = (
-            EMPTY_GRAPH_SUMMARY_PLACEHOLDER
-            if graph_is_empty
-            else serialize_for_prompt(summary)
-        )
-
-        async def _resolve_hint_flags(
-            prompt_user_message: str,
-            prompt_workflow_id: str,
-            prompt_model: str,
-        ) -> dict[str, bool]:
-            research_hint_enabled = await self._should_inject_research_prompt_hint(
-                prompt_user_message,
-                workflow_id=prompt_workflow_id,
-                model=prompt_model,
-            )
-            exploration_hint_enabled = False
-            if not research_hint_enabled:
-                exploration_hint_enabled = await self._should_inject_exploration_prompt_hint(
-                    prompt_user_message,
-                    workflow_id=prompt_workflow_id,
-                    model=prompt_model,
-                )
-            return {
-                "research_specializer": research_hint_enabled,
-                "exploration_specializer": exploration_hint_enabled,
-            }
-
-        async def _resolve_prompt_modules(
-            profile: Any,
-            hint_flags: dict[str, bool],
-            prompt_graph_is_empty: bool,
-            prompt_user_message: str,
-            prompt_workflow_id: str,
-            prompt_tools_available: bool,
-            prompt_allow_mutation_tool: bool,
-            prompt_required_action_hints: tuple[str, ...],
-            prompt_memory_project_id: str | None,
-            prompt_autonomy_resolution: Any | None,
-        ) -> PromptModuleResolution:
-            prompt_context_obj = PromptContext(
-                mode=profile.normalized_mode,
-                surface=surface or "server",
-                model=effective_model,
-                user_message=prompt_user_message,
-                workflow_id=prompt_workflow_id,
-                autonomy_resolution=prompt_autonomy_resolution,
-                tools_available=prompt_tools_available,
-                allow_mutation_tool=prompt_allow_mutation_tool,
-                required_action_hints=prompt_required_action_hints,
-                graph_is_empty=prompt_graph_is_empty,
-                project_metadata={
-                    "memory_project_id": prompt_memory_project_id,
-                    "agent_profile": profile.profile.value,
-                    "requested_mode": profile.requested_mode,
-                },
-                precomputed_hint_flags=hint_flags,
-            )
-            resolved_modules, prompt_details = await DEFAULT_PROMPT_MODULE_RESOLVER.resolve(
-                prompt_context_obj,
-            )
-            workflow_guidance_surface = next(
-                (
-                    str(module.metadata.get("workflow_guidance_surface") or "").strip()
-                    for module in resolved_modules
-                    if str(module.metadata.get("workflow_guidance_surface") or "").strip()
-                ),
-                "",
-            )
-            return PromptModuleResolution(
-                module_ids=tuple(module.module_id for module in resolved_modules),
-                module_hints="\n\n".join(
-                    module.content.strip()
-                    for module in resolved_modules
-                    if module.content.strip()
-                ),
-                workflow_guidance_surface=workflow_guidance_surface,
-                supports_load_prompt_detail=any(bool(module.detail_id) for module in resolved_modules),
-                prompt_details=prompt_details,
-            )
-
-        def _build_capability_reference(
-            prompt_supports_load_prompt_detail: bool,
-            profile: Any,
-        ) -> str:
-            capability_entries: list[ToolReferenceEntry] | None = None
-            if self._capability_registry is not None:
-                capability_entries = []
-                for tool_meta in self._capability_registry.describe_tools(profile.normalized_mode):
-                    tool_name = str(tool_meta.get("name") or "").strip()
-                    if not tool_name:
-                        continue
-                    if tool_name == "load_prompt_detail" and not prompt_supports_load_prompt_detail:
-                        continue
-                    capability_entries.append(
-                        ToolReferenceEntry(
-                            name=tool_name,
-                            category=str(tool_meta.get("category") or "other"),
-                        )
-                    )
-            return generate_capability_reference(
-                capability_entries,
-                include_mutation_tool=(
-                    allow_mutation_tool
-                    and profile.normalized_mode not in {"ask", "plan", "conversation"}
-                ),
-            )
-
-        def _resolve_mentions(prompt_model: str) -> MentionResolution:
-            if not (mentions and self._mention_resolver and workflow_id):
-                return MentionResolution()
-            try:
-                resolved_mentions = self._mention_resolver.resolve_all(
-                    mentions,
-                    workflow_id,
-                    graph_dict,
-                    model=prompt_model,
-                )
-            except Exception as exc:
-                logger.warning("Mention resolution failed: %s", exc)
-                return MentionResolution()
-            if not resolved_mentions:
-                return MentionResolution()
-
-            from dan.server.mention_resolver import pack_context
-
-            return MentionResolution(
-                resolved_mentions=resolved_mentions,
-                mention_packer=pack_context,
-            )
-
-        built_messages = await build_runtime_messages(
-            graph_text=graph_text,
-            graph_is_empty=graph_is_empty,
+        return await _build_chat_messages_impl(
+            manager=self,
+            summary=summary,
             user_message=user_message,
             history=history,
-            prompt_profile=prompt_profile,
-            prompt_context=prompt_context,
+            mode=mode,
+            prompt_envelope=prompt_envelope,
             debug_context=debug_context,
+            prompt_context=prompt_context,
+            mentions=mentions,
             surface_context=surface_context,
             workflow_id=workflow_id,
+            graph_dict=graph_dict,
             surface=surface,
             extra_system_instructions=extra_system_instructions,
             memory_project_id=memory_project_id,
@@ -3387,31 +3130,11 @@ class ChatManager:
             tools_available=tools_available,
             allow_mutation_tool=allow_mutation_tool,
             required_action_hints=required_action_hints,
-            model=effective_model,
+            prompt_metadata_sink=prompt_metadata_sink,
+            model=model,
             autonomy_resolution=autonomy_resolution,
             max_context_ratio=_MAX_CONTEXT_RATIO,
-            resolve_hint_flags=_resolve_hint_flags,
-            resolve_prompt_modules=_resolve_prompt_modules,
-            build_capability_reference=_build_capability_reference,
-            resolve_behavior_prompt=self._resolve_behavior_prompt,
-            run_preflight_context=self._run_preflight_hooks,
-            build_user_context_block=self._compose_user_context_block,
-            build_mcp_tools_block=self._compose_mcp_tools_block,
-            build_memory_context=lambda prompt_user_message, project_id: self._compose_memory_kernel_context(
-                prompt_user_message,
-                project_id=project_id,
-            ),
-            build_recent_context_message=self._compose_recent_context_message,
-            resolve_mentions=_resolve_mentions,
-            unified_system_prompt=UNIFIED_SYSTEM_PROMPT,
-            context_window=_get_context_window(effective_model),
-            logger_override=logger,
         )
-        if workflow_id and built_messages.prompt_details:
-            self.set_prompt_details(workflow_id, built_messages.prompt_details)
-        if prompt_metadata_sink is not None:
-            prompt_metadata_sink.update(built_messages.prompt_metadata)
-        return built_messages.messages
 
     async def _should_inject_research_prompt_hint(
         self,
@@ -3607,97 +3330,13 @@ class ChatManager:
         inputs: dict[str, Any],
         timeout_seconds: float = 20.0,
     ) -> dict[str, Any]:
-        """Run a bounded one-shot smoke on a structured candidate when runtime support exists."""
-
-        run_manager = getattr(self._capability_context, "run_manager", None)
-        if run_manager is None:
-            return {
-                "success": False,
-                "skipped": True,
-                "reason": "RunManager is unavailable for structured execution smoke.",
-            }
-
-        try:
-            graph = Graph.model_validate(graph_dict)
-        except Exception as exc:
-            return {
-                "success": False,
-                "errors": [f"Structured execution smoke could not load the candidate graph: {exc}"],
-            }
-
-        structured_generation = dict(
-            ((graph_dict.get("metadata") or {}).get("structured_generation") or {})
+        return await _run_candidate_execution_smoke_impl(
+            capability_context=self._capability_context,
+            graph_dict=graph_dict,
+            workflow_id=workflow_id,
+            inputs=inputs,
+            timeout_seconds=timeout_seconds,
         )
-        candidate_workspace_id = str(
-            structured_generation.get("candidate_workspace_id") or ""
-        ).strip()
-        smoke_graph_id = (
-            f"{workflow_id}::candidate-smoke::{candidate_workspace_id}"
-            if candidate_workspace_id
-            else f"{workflow_id}::candidate-smoke"
-        )
-        record = await run_manager.start_run(
-            graph,
-            graph_id=smoke_graph_id,
-            inputs=dict(inputs or {}),
-            goal_context={
-                "source": "structured_execution_smoke",
-                "workflow_id": workflow_id,
-                "candidate_workspace_id": candidate_workspace_id or None,
-            },
-            run_policy={
-                "profile": "structured_smoke",
-                "max_duration": max(float(timeout_seconds), 1.0),
-            },
-        )
-        task = getattr(run_manager, "_tasks", {}).get(record.run_id)
-        if task is None:
-            return {
-                "success": False,
-                "run_id": record.run_id,
-                "errors": ["Structured execution smoke started without a tracked task."],
-            }
-
-        try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=max(float(timeout_seconds), 1.0))
-        except asyncio.TimeoutError:
-            task.cancel()
-            return {
-                "success": False,
-                "run_id": record.run_id,
-                "errors": [
-                    f"Structured execution smoke timed out after {timeout_seconds:.0f}s."
-                ],
-            }
-
-        status = getattr(record.status, "value", str(record.status))
-        result = getattr(record, "result", None)
-        if status != "completed" or result is None or not getattr(result, "success", False):
-            snapshot = record.snapshot()
-            errors = [
-                str(item).strip()
-                for item in (
-                    list((snapshot.get("errors") or {}).values())
-                    if isinstance(snapshot.get("errors"), dict)
-                    else [snapshot.get("error") or ""]
-                )
-                if str(item).strip()
-            ] or [
-                f"Structured execution smoke ended with status {status}."
-            ]
-            return {
-                "success": False,
-                "run_id": record.run_id,
-                "status": status,
-                "errors": errors,
-            }
-
-        return {
-            "success": True,
-            "run_id": record.run_id,
-            "status": status,
-            "outputs": dict(getattr(result, "outputs", {}) or {}),
-        }
 
     # ------------------------------------------------------------------
     # Generation stats (29-6 §5)

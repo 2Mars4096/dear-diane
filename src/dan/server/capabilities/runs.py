@@ -10,7 +10,6 @@ from dan.server.capabilities._helpers import _truncate
 from dan.server.workflow_guards import (
     WorkflowContractError,
     collect_workflow_contract_messages,
-    ensure_workflow_run_ready,
 )
 from dan.server.workflow_identity import (
     resolve_workflow_reference,
@@ -123,8 +122,21 @@ async def handle_start_run(
     graph_dict = ctx.graph_store.get_graph(graph_id)
     if graph_dict is None:
         return CapabilityResult(success=False, message=f"Workflow '{graph_id}' not found.")
+    inputs = args.get("inputs")
+    run_id = args.get("run_id")
+    session_id = args.get("session_id")
+    run_policy = args.get("run_policy")
     try:
-        guarded = ensure_workflow_run_ready(graph_dict, workflow_id=graph_id)
+        handle = await ctx.run_manager.launch_run(
+            graph_dict,
+            graph_id=graph_id,
+            inputs=inputs,
+            run_id=run_id,
+            session_id=session_id,
+            run_policy=run_policy,
+            bus=ctx.event_bus,
+        )
+        record = handle.record
     except WorkflowContractError as exc:
         errors = collect_workflow_contract_messages(
             exc.report,
@@ -140,31 +152,6 @@ async def handle_start_run(
             },
             error_type="validation_failed",
         )
-    inputs = args.get("inputs")
-    run_id = args.get("run_id")
-    session_id = args.get("session_id")
-    run_policy = args.get("run_policy")
-    try:
-        record = await ctx.run_manager.start_run(
-            guarded.graph,
-            graph_id=graph_id,
-            inputs=inputs,
-            run_id=run_id,
-            session_id=session_id,
-            run_policy=run_policy,
-        )
-        if ctx.event_bus is not None:
-            from dan.server.run_relay import relay_run_events_to_bus
-            import asyncio
-            asyncio.create_task(
-                relay_run_events_to_bus(
-                    rm=ctx.run_manager,
-                    run_id=record.run_id,
-                    workflow_name=graph_id,
-                    surface_id=None,
-                    bus=ctx.event_bus,
-                )
-            )
     except Exception as exc:
         logger.exception("start_run failed")
         return CapabilityResult(success=False, message=f"Start run failed: {exc}")
@@ -331,6 +318,21 @@ async def handle_resume_run(
             session_id=session_id,
             run_policy=run_policy,
         )
+    except WorkflowContractError as exc:
+        errors = collect_workflow_contract_messages(
+            exc.report,
+            default_message=str(exc),
+        )
+        return CapabilityResult(
+            success=False,
+            message=str(exc),
+            data={
+                "errors": [{"message": msg} for msg in errors],
+                "warnings": list(getattr(exc.report, "warnings", []) or []),
+                "run_readiness_failure_mode": exc.failure_mode,
+            },
+            error_type="validation_failed",
+        )
     except Exception as exc:
         logger.exception("resume_run failed")
         return CapabilityResult(success=False, message=f"Resume failed: {exc}")
@@ -481,6 +483,21 @@ async def handle_rerun_from_checkpoint(
             scope=scope,
             session_id=session_id,
             run_policy=run_policy,
+        )
+    except WorkflowContractError as exc:
+        errors = collect_workflow_contract_messages(
+            exc.report,
+            default_message=str(exc),
+        )
+        return CapabilityResult(
+            success=False,
+            message=str(exc),
+            data={
+                "errors": [{"message": msg} for msg in errors],
+                "warnings": list(getattr(exc.report, "warnings", []) or []),
+                "run_readiness_failure_mode": exc.failure_mode,
+            },
+            error_type="validation_failed",
         )
     except ValueError as exc:
         return CapabilityResult(success=False, message=f"Invalid scope or checkpoint: {exc}")

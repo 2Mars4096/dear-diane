@@ -9,6 +9,8 @@ from typing import Any, AsyncIterator, Callable
 
 import pytest
 
+from dan.agent_runtime.messages import build_system_content
+from dan.prompt_contracts import PromptEnvelope, PromptSlot
 from dan.server.concierge.autonomy import AutonomyResolution
 from dan.server.capability_registry import CapabilityContext
 from dan.server.chat_manager import (
@@ -936,8 +938,12 @@ def test_build_child_session_drops_workflow_route_hints_for_non_workflow_subtask
     assert child.msg.metadata["parent_thread_id"] == "thread-42"
     assert child.msg.metadata["tiered_child_session_id"] == child.id
     assert child.task_context["handoff"]["parent_thread_id"] == "thread-42"
+    assert "definition_of_done" in child.task_context["handoff"]
+    assert "expected_return_shape" in child.task_context["handoff"]
     assert child.msg.metadata["tiered_handoff"]["constraints"]["read_only_parent_context"] is True
     assert child.msg.metadata["tiered_handoff"]["return_channel"]["parent_session_id"] == session.id
+    assert "definition_of_done" in child.msg.metadata["tiered_handoff"]
+    assert "expected_return_shape" in child.msg.metadata["tiered_handoff"]
     assert "request_history" not in child.msg.metadata
     assert "mutable" not in child.task_context["parent_context"]
     child.msg.metadata["surface_context"]["mentioned_files"][0]["path"] = "changed"
@@ -2496,10 +2502,56 @@ def test_extract_chat_params_includes_stage_overlay_and_audit_metadata() -> None
 
     assert "## Concierge stage: workflow_build" in params["extra_system_instructions"]
     assert "canonical node kinds" not in params["extra_system_instructions"]
+    assert params["prompt_envelope"].stage_overlay.trust_label == "authoritative"
+    assert "## Concierge stage: workflow_build" in params["prompt_envelope"].stage_overlay.content
+    assert params["turn_execution_envelope"].prompt_envelope is params["prompt_envelope"]
+    assert params["turn_execution_envelope"].session_id == session.id
+    assert params["turn_execution_envelope"].capability_surface["mode"] == "build"
     assert params["audit_metadata"]["concierge_stage"] == "workflow_build"
     assert params["audit_metadata"]["concierge_prompt_overlay"] == "concierge_stage:workflow_build"
     assert params["audit_metadata"]["route_source"] == "fast_lexical"
     assert params["audit_metadata"]["scenario_id"] == "workflow_followup_apply"
+
+
+def test_build_system_content_uses_prompt_envelope_labels() -> None:
+    envelope = PromptEnvelope(
+        stage_overlay=PromptSlot(
+            content="## Concierge stage: direct_task\nPrefer concrete actions.",
+            trust_label="authoritative",
+        ),
+        turn_constraints=PromptSlot(
+            content="Return a concise answer with exact status.",
+            trust_label="authoritative",
+        ),
+    )
+
+    content = build_system_content(
+        prompt_template=(
+            "System prompt.\n"
+            "{current_date}\n"
+            "{capability_reference}\n"
+            "{module_hints}\n"
+            "{context_block}\n"
+            "{workflow_block}"
+        ),
+        preflight_context="Today is Sunday, 2026-04-05.",
+        capability_reference="",
+        module_hints="",
+        context_block="## Context\nsession policy",
+        workflow_block="## Current Workflow\nempty",
+        tools_available=True,
+        user_context_block="User preference hints:\n- Preferred output format: bullets",
+        mcp_block="filesystem",
+        memory_context="Relevant context from memory:\n- [FACT] Prior run failed on auth.",
+        prompt_envelope=envelope,
+        extra_system_instructions="this should not be used when envelope exists",
+    )
+
+    assert "## Concierge stage: direct_task" in content
+    assert "Trust label: user-preference" in content
+    assert "Trust label: retrieved" in content
+    assert "Trust label: authoritative" in content
+    assert "this should not be used when envelope exists" not in content
 
 
 def test_should_decompose_aggressive_single_subtask() -> None:

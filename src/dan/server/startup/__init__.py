@@ -22,6 +22,8 @@ from dan.server.paths import resolve_graphs_dir, resolve_workspace_root
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+from fastapi import FastAPI
+
 logger = logging.getLogger(__name__)
 _API_KEY_PLACEHOLDERS = frozenset({"your-api-key-here", "changeme", "replace-me"})
 _PRIMARY_LLM_KEY_ENV_VARS = (
@@ -32,6 +34,25 @@ _PRIMARY_LLM_KEY_ENV_VARS = (
     "DAN_ANTHROPIC_API_KEY",
     "DAN_GOOGLE_API_KEY",
 )
+
+
+def _skip_adapter_autostart_for_current_process(app: Any | None = None) -> bool:
+    """Keep API/ASGI tests from inheriting desktop adapter autostart state."""
+    if os.environ.get("DAN_ENABLE_ADAPTER_AUTOSTART", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return False
+    return "PYTEST_CURRENT_TEST" in os.environ and isinstance(app, FastAPI)
+
+
+def _isolated_memory_kernel_base_dir(state: AppState) -> str | None:
+    """Avoid loading a developer's persistent memory index during pytest startup."""
+    if "PYTEST_CURRENT_TEST" not in os.environ:
+        return None
+    return str(Path(state.graphs_dir) / "_memory_kernel")
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +534,7 @@ async def init_managers(state: AppState) -> None:
         from dan.server.concierge.feature_gates import engine_feature_enabled
 
         state.memory_kernel = MemoryKernel(
+            base_dir=_isolated_memory_kernel_base_dir(state),
             dual_write_adapter=DualWriteAdapter(
                 conversation_memory=state.conversation_memory,
                 user_profile=state.user_profile,
@@ -632,12 +654,20 @@ async def init_integrations(state: AppState, app: FastAPI) -> None:
     from dan.server.gateway.router import init_gateway
     from dan.server.gateway.router import router as gateway_router
 
+    def _build_meta_controller_from_state() -> tuple[Any, Any, Any]:
+        from dan.server.app import _build_meta_controller as _app_build_meta_controller
+
+        return _app_build_meta_controller()
+
+    state.build_meta_controller = _build_meta_controller_from_state
+
     workspace_root = resolve_workspace_root()
     workspace_root_path = Path(workspace_root)
     init_gateway(
         run_manager=state.run_manager,
         workspace=workspace_root_path,
         graph_store=state.graph_store,
+        build_meta_controller=state.build_meta_controller,
     )
     app.include_router(gateway_router)
 
@@ -863,44 +893,27 @@ async def init_background(state: AppState, app: FastAPI) -> None:
                 )
             from dan.server.workflow_guards import (
                 WorkflowContractError,
-                ensure_workflow_run_ready,
             )
 
             try:
-                guarded = ensure_workflow_run_ready(
+                handle = await state.run_manager.launch_run(
                     graph_dict,
-                    workflow_id=scheduled_workflow_id,
-                    action="schedule_execution",
+                    graph_id=scheduled_workflow_id,
+                    inputs=getattr(entry, "workflow_inputs", None) or None,
+                    run_policy=getattr(entry, "workflow_run_policy", None) or None,
+                    bus=getattr(state.capability_context, "event_bus", None),
+                    surface_id=(
+                        delivery_target.conversation_key
+                        or delivery_target.user_id
+                        or trigger_context.thread_key
+                    ),
+                    guard_action="schedule_execution",
                 )
             except WorkflowContractError as exc:
                 raise RuntimeError(str(exc)) from exc
 
             inputs = getattr(entry, "workflow_inputs", None) or None
-            run_policy = getattr(entry, "workflow_run_policy", None) or None
-            record = await state.run_manager.start_run(
-                guarded.graph,
-                graph_id=scheduled_workflow_id,
-                inputs=inputs,
-                run_policy=run_policy,
-            )
-
-            event_bus = getattr(state.capability_context, "event_bus", None)
-            if event_bus is not None:
-                from dan.server.run_relay import relay_run_events_to_bus
-
-                asyncio.create_task(
-                    relay_run_events_to_bus(
-                        rm=state.run_manager,
-                        run_id=record.run_id,
-                        workflow_name=scheduled_workflow_id,
-                        surface_id=(
-                            delivery_target.conversation_key
-                            or delivery_target.user_id
-                            or trigger_context.thread_key
-                        ),
-                        bus=event_bus,
-                    )
-                )
+            record = handle.record
 
             input_keys = sorted((inputs or {}).keys())
             if input_keys:
@@ -1149,6 +1162,10 @@ _WECHAT_OFFICIAL_ACCOUNT_CONFIG_PATH = (
 
 async def init_adapters(app: FastAPI) -> None:
     """Restore adapters that have auto_start=True in their config."""
+    if _skip_adapter_autostart_for_current_process(app):
+        logger.info("Skipping adapter autostart under pytest-style test execution")
+        return
+
     adapters_to_start: list[tuple[str, dict[str, Any]]] = []
 
     previously_running: set[str] = set()

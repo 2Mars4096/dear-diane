@@ -7,9 +7,10 @@ import logging
 from collections import defaultdict
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 
 from dan.server.routers.dependencies import (
+    get_build_meta_controller,
     get_graph_store,
     get_run_manager,
     get_experience_index,
@@ -26,9 +27,8 @@ _meta_tasks: dict[str, asyncio.Task[Any]] = {}
 _meta_subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
 
 
-def _build_meta_controller():
-    from dan.server.app import _build_meta_controller as _app_build_meta_controller
-    return _app_build_meta_controller()
+def _build_meta_controller(connection: Any | None = None):
+    return get_build_meta_controller(connection)()
 
 
 # ------------------------------------------------------------------
@@ -37,20 +37,23 @@ def _build_meta_controller():
 
 
 @router.get("/api/meta/discover")
-async def meta_discover(goal: str = "", top_k: int = 5):
-    rm = get_run_manager()
+async def meta_discover(request: Request, goal: str = "", top_k: int = 5):
+    rm = get_run_manager(request)
     from dan.meta.discovery import DiscoveryService
     from dan.server.skill_library import SKILL_LIBRARY
 
     try:
-        exp_index = get_experience_index()
+        exp_index = get_experience_index(request)
     except HTTPException:
         exp_index = None
-    gs = get_graph_store()
+    gs = get_graph_store(request)
     svc = DiscoveryService(
         tool_registry=rm.tool_registry,
         experience_index=exp_index,
-        experience_store=get_experience_store(with_index=exp_index is not None),
+        experience_store=get_experience_store(
+            request,
+            with_index=exp_index is not None,
+        ),
         graph_store=gs,
         skill_library=SKILL_LIBRARY,
     )
@@ -67,12 +70,12 @@ async def meta_discover(goal: str = "", top_k: int = 5):
 
 
 @router.post("/api/meta/plan")
-async def meta_plan(body: dict[str, Any]):
+async def meta_plan(request: Request, body: dict[str, Any]):
     goal = str(body.get("goal", "")).strip()
     error_context = body.get("error_context")
     if not goal:
         raise HTTPException(status_code=422, detail="goal is required")
-    _, planner, _ = _build_meta_controller()
+    _, planner, _ = _build_meta_controller(request)
     output = await planner.plan(goal, error_context)
     return {
         "goal": goal,
@@ -82,8 +85,8 @@ async def meta_plan(body: dict[str, Any]):
 
 
 @router.post("/api/meta/validate-plan")
-async def meta_validate_plan(body: dict[str, Any]):
-    _, planner, _ = _build_meta_controller()
+async def meta_validate_plan(request: Request, body: dict[str, Any]):
+    _, planner, _ = _build_meta_controller(request)
     plan_data = body.get("plan", body)
     if not isinstance(plan_data, dict):
         raise HTTPException(status_code=422, detail="plan must be an object")
@@ -105,7 +108,7 @@ async def meta_validate_plan(body: dict[str, Any]):
 
 
 @router.post("/api/meta/run")
-async def meta_run(body: dict[str, Any]):
+async def meta_run(request: Request, body: dict[str, Any]):
     from dan.meta.controller import MetaControllerConfig
 
     goal = str(body.get("goal", "")).strip()
@@ -113,7 +116,7 @@ async def meta_run(body: dict[str, Any]):
         raise HTTPException(status_code=422, detail="goal is required")
 
     config = MetaControllerConfig.model_validate(body.get("config", {}))
-    controller, _, _ = _build_meta_controller()
+    controller, _, _ = _build_meta_controller(request)
     session = await controller.create_session(goal, config)
 
     async def _runner() -> None:
@@ -132,16 +135,16 @@ async def meta_run(body: dict[str, Any]):
 
 
 @router.get("/api/meta/sessions")
-async def list_meta_sessions():
-    _, _, store = _build_meta_controller()
+async def list_meta_sessions(request: Request):
+    _, _, store = _build_meta_controller(request)
     sessions = await store.list_sessions()
     return {"sessions": [s.model_dump() for s in sessions]}
 
 
 @router.get("/api/meta/sessions/{session_id}")
-async def get_meta_session(session_id: str):
+async def get_meta_session(request: Request, session_id: str):
     validate_path_segment(session_id, "session_id")
-    _, _, store = _build_meta_controller()
+    _, _, store = _build_meta_controller(request)
     session = await store.load(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -152,9 +155,9 @@ async def get_meta_session(session_id: str):
 
 
 @router.get("/api/meta/sessions/{session_id}/events")
-async def get_meta_session_events(session_id: str, limit: int = 200):
+async def get_meta_session_events(request: Request, session_id: str, limit: int = 200):
     validate_path_segment(session_id, "session_id")
-    _, _, store = _build_meta_controller()
+    _, _, store = _build_meta_controller(request)
     session = await store.load(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -163,9 +166,9 @@ async def get_meta_session_events(session_id: str, limit: int = 200):
 
 
 @router.post("/api/meta/sessions/{session_id}/pause")
-async def pause_meta_session(session_id: str):
+async def pause_meta_session(request: Request, session_id: str):
     validate_path_segment(session_id, "session_id")
-    _, _, store = _build_meta_controller()
+    _, _, store = _build_meta_controller(request)
     session = await store.load(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -179,14 +182,18 @@ async def pause_meta_session(session_id: str):
 
 
 @router.post("/api/meta/sessions/{session_id}/resume")
-async def resume_meta_session(session_id: str, body: dict[str, Any] | None = None):
+async def resume_meta_session(
+    request: Request,
+    session_id: str,
+    body: dict[str, Any] | None = None,
+):
     validate_path_segment(session_id, "session_id")
     if session_id in _meta_tasks and not _meta_tasks[session_id].done():
         return {"session_id": session_id, "status": "already_running"}
 
     from dan.meta.controller import HumanOverride
 
-    controller, _, _ = _build_meta_controller()
+    controller, _, _ = _build_meta_controller(request)
     override = None
     if body and body.get("override") is not None:
         override = HumanOverride.model_validate(body["override"])
@@ -203,13 +210,13 @@ async def resume_meta_session(session_id: str, body: dict[str, Any] | None = Non
 
 
 @router.delete("/api/meta/sessions/{session_id}")
-async def delete_meta_session(session_id: str):
+async def delete_meta_session(request: Request, session_id: str):
     validate_path_segment(session_id, "session_id")
     task = _meta_tasks.pop(session_id, None)
     if task is not None and not task.done():
         task.cancel()
 
-    _, _, store = _build_meta_controller()
+    _, _, store = _build_meta_controller(request)
     deleted = await store.delete(session_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Session not found")

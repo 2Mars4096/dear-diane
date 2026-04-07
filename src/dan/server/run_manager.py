@@ -12,8 +12,9 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
+from dan.engine.checkpoint import RerunScope
 from dan.engine.events import EngineEvent, EventType
 from dan.engine.executor import EngineConfig, ExecutorRegistry
 from dan.engine.runtime_policy import RunPhase, RunPolicy
@@ -21,122 +22,11 @@ from dan.engine.scheduler import Engine, RunResult
 from dan.executor_defaults import register_default_executors
 from dan.executors.tool import ToolRegistry
 from dan.models.graph import Graph
-from dan.models.ports import InputPort, OutputPort
 from dan.providers.costs import estimate_cost
+from dan.server.run_finalization import RunFinalizer
 from dan.server.run_store import RunStore
-from dan.worker.model import Worker
 
 logger = logging.getLogger(__name__)
-
-
-def _coerce_event_data(event: dict[str, Any]) -> dict[str, Any]:
-    data = event.get("data")
-    if isinstance(data, dict):
-        return data
-    return {}
-
-
-def _json_schema_for_runtime_value(value: Any) -> dict[str, Any]:
-    if isinstance(value, bool):
-        return {"type": "boolean"}
-    if isinstance(value, int) and not isinstance(value, bool):
-        return {"type": "integer"}
-    if isinstance(value, float):
-        return {"type": "number"}
-    if isinstance(value, str):
-        return {"type": "string"}
-    if isinstance(value, list):
-        return {"type": "array"}
-    if isinstance(value, dict):
-        return {"type": "object"}
-    return {}
-
-
-def _empty_lint_summary() -> dict[str, Any]:
-    return {
-        "lint_total_count": 0,
-        "lint_passed_count": 0,
-        "lint_auto_fixed_count": 0,
-        "lint_failed_count": 0,
-        "lint_blocked_count": 0,
-        "lint_warning_count": 0,
-        "had_lint_activity": False,
-        "had_lint_blocks": False,
-        "had_lint_autofix": False,
-        "lint_state": "none",
-    }
-
-
-def _finalize_lint_summary(summary: dict[str, Any]) -> dict[str, Any]:
-    summary["lint_total_count"] = (
-        summary["lint_passed_count"]
-        + summary["lint_auto_fixed_count"]
-        + summary["lint_failed_count"]
-    )
-    summary["had_lint_activity"] = summary["lint_total_count"] > 0
-    summary["had_lint_blocks"] = summary["lint_blocked_count"] > 0
-    summary["had_lint_autofix"] = summary["lint_auto_fixed_count"] > 0
-
-    if summary["had_lint_blocks"] and summary["had_lint_autofix"]:
-        summary["lint_state"] = "blocked+auto_fixed"
-    elif summary["had_lint_blocks"]:
-        summary["lint_state"] = "blocked"
-    elif summary["had_lint_autofix"]:
-        summary["lint_state"] = "auto_fixed"
-    elif summary["lint_warning_count"] > 0:
-        summary["lint_state"] = "warning"
-    elif summary["lint_passed_count"] > 0:
-        summary["lint_state"] = "passed"
-    else:
-        summary["lint_state"] = "none"
-    return summary
-
-
-def _summarize_lint_events(
-    events: list[dict[str, Any]],
-) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
-    overall = _empty_lint_summary()
-    per_node: dict[str, dict[str, Any]] = {}
-
-    for event in events:
-        event_type = event.get("event_type")
-        if event_type not in {"lint_passed", "lint_failed", "lint_auto_fixed"}:
-            continue
-
-        node_id = event.get("node_id")
-        node_summary = None
-        if isinstance(node_id, str) and node_id:
-            node_summary = per_node.setdefault(node_id, _empty_lint_summary())
-
-        data = _coerce_event_data(event)
-        is_blocking_failure = (
-            event_type == "lint_failed"
-            and (
-                data.get("handoff_committed") is False
-                or data.get("severity") == "error"
-            )
-        )
-
-        targets = [overall]
-        if node_summary is not None:
-            targets.append(node_summary)
-
-        for target in targets:
-            if event_type == "lint_passed":
-                target["lint_passed_count"] += 1
-            elif event_type == "lint_auto_fixed":
-                target["lint_auto_fixed_count"] += 1
-            else:
-                target["lint_failed_count"] += 1
-                if is_blocking_failure:
-                    target["lint_blocked_count"] += 1
-                else:
-                    target["lint_warning_count"] += 1
-
-    _finalize_lint_summary(overall)
-    for node_id, summary in list(per_node.items()):
-        per_node[node_id] = _finalize_lint_summary(summary)
-    return overall, per_node
 
 
 class RunStatus(str, Enum):
@@ -268,6 +158,12 @@ class RunRecord:
         return rec
 
 
+@dataclass(frozen=True)
+class RunLaunchHandle:
+    record: RunRecord
+    relay_task: asyncio.Task[None] | None = None
+
+
 class RunManager:
     """Manages background engine runs and fans out events to subscribers."""
 
@@ -305,12 +201,19 @@ class RunManager:
         self._rule_lifecycle_manager = None
         self._experience_index = None
         self._experience_store = None
-
-    async def _safe_async(self, coro):
-        try:
-            await coro
-        except Exception:
-            logger.warning("Background task failed", exc_info=True)
+        self._finalizer = RunFinalizer(
+            config=self._config,
+            run_store=self._run_store,
+            telemetry_store=self._telemetry_store,
+            memory_kernel=self._memory_kernel,
+            get_run=self.get_run,
+            emit_learning_event=self._emit_learning_event,
+            launch_reflection_run=self._launch_reflection_run,
+            get_error_memory_index=self._get_error_memory_index,
+            get_principle_store=self._get_principle_store,
+            get_rule_lifecycle_manager=self._get_rule_lifecycle_manager,
+            get_experience_store=self._get_experience_store,
+        )
 
     @property
     def engine_config(self) -> EngineConfig:
@@ -331,6 +234,17 @@ class RunManager:
     @property
     def run_store(self) -> RunStore | None:
         return self._run_store
+
+    # Compatibility shims for tests and callers that still reach the
+    # post-run helpers directly after the RunFinalizer extraction.
+    def _persist_reflection_principles(self, record: RunRecord) -> None:
+        self._finalizer._persist_reflection_principles(record)
+
+    def _track_rule_effectiveness(self, record: RunRecord) -> None:
+        self._finalizer._track_rule_effectiveness(record)
+
+    async def _emit_workflow_telemetry(self, record: RunRecord) -> None:
+        await self._finalizer._emit_workflow_telemetry(record)
 
     def _make_engine(self, **kwargs: Any) -> Engine:
         return Engine(
@@ -495,6 +409,62 @@ class RunManager:
         except Exception:
             logger.debug("Failed to build ErrorContextProvider", exc_info=True)
             return None
+
+    def _coerce_launch_graph(
+        self,
+        graph: Graph | dict[str, Any],
+        *,
+        graph_id: str,
+        enforce_run_readiness: bool,
+        guard_action: Literal["run", "schedule", "schedule_execution"],
+    ) -> Graph:
+        if enforce_run_readiness:
+            from dan.server.workflow_guards import ensure_workflow_run_ready
+
+            guarded = ensure_workflow_run_ready(
+                graph,
+                workflow_id=graph_id,
+                action=guard_action,
+            )
+            return guarded.graph
+        if isinstance(graph, Graph):
+            return graph
+        return Graph.model_validate(graph)
+
+    def _start_run_relay(
+        self,
+        *,
+        run_id: str,
+        workflow_name: str,
+        surface_id: str | None,
+        bus: Any,
+    ) -> asyncio.Task[None]:
+        from dan.server.run_relay import relay_run_events_to_bus
+
+        return asyncio.create_task(
+            relay_run_events_to_bus(
+                rm=self,
+                run_id=run_id,
+                workflow_name=workflow_name,
+                surface_id=surface_id,
+                bus=bus,
+            )
+        )
+
+    async def _launch_reflection_run(
+        self,
+        graph: Graph,
+        graph_id: str,
+        inputs: dict[str, Any],
+        run_id: str,
+    ) -> RunRecord:
+        return await self.start_run(
+            graph,
+            graph_id=graph_id,
+            inputs=inputs,
+            run_id=run_id,
+            enforce_run_readiness=False,
+        )
 
     def get_run(self, run_id: str) -> RunRecord | None:
         return self._runs.get(run_id)
@@ -949,7 +919,7 @@ class RunManager:
     async def approve_and_start(
         self,
         run_id: str,
-        graph: Graph,
+        graph: Graph | dict[str, Any],
         graph_id: str,
         inputs: dict[str, Any] | None = None,
         run_policy: RunPolicy | dict[str, Any] | None = None,
@@ -966,20 +936,67 @@ class RunManager:
             run_policy=run_policy,
         )
 
-    # ------------------------------------------------------------------
-    # Run lifecycle
-    # ------------------------------------------------------------------
-
-    async def start_run(
+    async def launch_run(
         self,
-        graph: Graph,
+        graph: Graph | dict[str, Any],
+        *,
         graph_id: str,
         inputs: dict[str, Any] | None = None,
         run_id: str | None = None,
         session_id: str | None = None,
         goal_context: dict[str, Any] | None = None,
         run_policy: RunPolicy | dict[str, Any] | None = None,
+        relay: bool = True,
+        bus: Any | None = None,
+        surface_id: str | None = None,
+        workflow_name: str | None = None,
+        enforce_run_readiness: bool = True,
+        guard_action: Literal["run", "schedule", "schedule_execution"] = "run",
+    ) -> RunLaunchHandle:
+        record = await self.start_run(
+            graph,
+            graph_id=graph_id,
+            inputs=inputs,
+            run_id=run_id,
+            session_id=session_id,
+            goal_context=goal_context,
+            run_policy=run_policy,
+            enforce_run_readiness=enforce_run_readiness,
+            guard_action=guard_action,
+        )
+        relay_task = None
+        if relay and bus is not None:
+            relay_task = self._start_run_relay(
+                run_id=record.run_id,
+                workflow_name=workflow_name or graph_id,
+                surface_id=surface_id,
+                bus=bus,
+            )
+        return RunLaunchHandle(record=record, relay_task=relay_task)
+
+    # ------------------------------------------------------------------
+    # Run lifecycle
+    # ------------------------------------------------------------------
+
+    async def start_run(
+        self,
+        graph: Graph | dict[str, Any],
+        graph_id: str,
+        inputs: dict[str, Any] | None = None,
+        run_id: str | None = None,
+        session_id: str | None = None,
+        goal_context: dict[str, Any] | None = None,
+        run_policy: RunPolicy | dict[str, Any] | None = None,
+        *,
+        enforce_run_readiness: bool = True,
+        guard_action: Literal["run", "schedule", "schedule_execution"] = "run",
     ) -> RunRecord:
+        prepared_graph = self._coerce_launch_graph(
+            graph,
+            graph_id=graph_id,
+            enforce_run_readiness=enforce_run_readiness,
+            guard_action=guard_action,
+        )
         existing = self._runs.get(run_id) if run_id else None
         record = RunRecord(
             run_id=run_id or f"run-{int(time.time() * 1000)}",
@@ -996,7 +1013,7 @@ class RunManager:
         task = asyncio.create_task(
             self._run_task(
                 record,
-                graph,
+                prepared_graph,
                 inputs,
                 session_id=session_id,
                 run_policy=run_policy,
@@ -1008,12 +1025,21 @@ class RunManager:
 
     async def resume_run(
         self,
-        graph: Graph,
+        graph: Graph | dict[str, Any],
         graph_id: str,
         run_id: str,
         session_id: str | None = None,
         run_policy: RunPolicy | dict[str, Any] | None = None,
+        *,
+        enforce_run_readiness: bool = True,
+        guard_action: Literal["run", "schedule", "schedule_execution"] = "run",
     ) -> RunRecord:
+        prepared_graph = self._coerce_launch_graph(
+            graph,
+            graph_id=graph_id,
+            enforce_run_readiness=enforce_run_readiness,
+            guard_action=guard_action,
+        )
         record = RunRecord(
             run_id=run_id,
             graph_id=graph_id,
@@ -1024,7 +1050,7 @@ class RunManager:
         task = asyncio.create_task(
             self._resume_task(
                 record,
-                graph,
+                prepared_graph,
                 session_id=session_id,
                 run_policy=run_policy,
             ),
@@ -1107,7 +1133,7 @@ class RunManager:
 
     async def rerun_from_checkpoint(
         self,
-        graph: Graph,
+        graph: Graph | dict[str, Any],
         graph_id: str,
         source_run_id: str,
         scope: "RerunScope",
@@ -1116,6 +1142,8 @@ class RunManager:
         *,
         carry_runtime_lineage: bool = False,
         automatic_recovery: dict[str, Any] | None = None,
+        enforce_run_readiness: bool = True,
+        guard_action: Literal["run", "schedule", "schedule_execution"] = "run",
     ) -> RunRecord:
         """Start a partial rerun from a checkpoint.
 
@@ -1128,7 +1156,6 @@ class RunManager:
         """
         from dan.engine.checkpoint import (
             CheckpointData,
-            RerunScope,
             check_checkpoint_staleness,
             compute_downstream_nodes,
             compute_subgraph_node_ids,
@@ -1138,6 +1165,13 @@ class RunManager:
         engine = self._make_engine()
         if engine.checkpoint_store is None:
             raise ValueError("No checkpoint store configured")
+
+        prepared_graph = self._coerce_launch_graph(
+            graph,
+            graph_id=graph_id,
+            enforce_run_readiness=enforce_run_readiness,
+            guard_action=guard_action,
+        )
 
         checkpoint = await engine.checkpoint_store.load(source_run_id)
         if checkpoint is None:
@@ -1149,14 +1183,14 @@ class RunManager:
         # -- Staleness check -----------------------------------------------
         staleness = check_checkpoint_staleness(
             cd.graph_revision,
-            graph,
+            prepared_graph,
             cd.completed_node_ids,
         )
         if staleness.stale:
             raise RuntimeError(staleness.message)
 
         # -- Determine nodes to rerun vs skip ------------------------------
-        all_node_ids = {n.id for n in graph.nodes}
+        all_node_ids = {n.id for n in prepared_graph.nodes}
         nodes_to_rerun: set[str] = set()
 
         if scope.scope_type == "downstream_of":
@@ -1165,7 +1199,7 @@ class RunManager:
             if scope.target_node_id not in all_node_ids:
                 raise ValueError(f"Target node '{scope.target_node_id}' not in graph")
             nodes_to_rerun = compute_downstream_nodes(
-                scope.target_node_id, graph, include_target=True,
+                scope.target_node_id, prepared_graph, include_target=True,
             )
 
         elif scope.scope_type == "single_node":
@@ -1178,7 +1212,7 @@ class RunManager:
         elif scope.scope_type == "subgraph":
             if not scope.sub_graph_key:
                 raise ValueError("subgraph scope requires sub_graph_key")
-            nodes_to_rerun = compute_subgraph_node_ids(graph, scope.sub_graph_key)
+            nodes_to_rerun = compute_subgraph_node_ids(prepared_graph, scope.sub_graph_key)
             if not nodes_to_rerun:
                 raise ValueError(f"Sub-graph '{scope.sub_graph_key}' not found or empty")
 
@@ -1203,7 +1237,7 @@ class RunManager:
 
         task = asyncio.create_task(
             self._rerun_task(
-                record, graph, checkpoint, cd,
+                record, prepared_graph, checkpoint, cd,
                 nodes_to_skip=nodes_to_skip,
                 nodes_to_rerun=nodes_to_rerun,
                 source_run_id=source_run_id,
@@ -1330,8 +1364,8 @@ class RunManager:
         if recent_run is not None:
             self._emit_learning_event(recent_run, "optimization_applied", data)
 
-    async def _enrich_and_persist(self, record: RunRecord, graph: Graph | None = None) -> None:
-        """Extract usage metrics from RunResult and persist to RunStore."""
+    async def _persist_terminal_record(self, record: RunRecord, graph: Graph | None = None) -> None:
+        """Persist lifecycle-owned terminal state, then hand off post-run finalization."""
         record.finished_at = time.time()
         record.elapsed_seconds = round(record.finished_at - record.started_at, 2)
         if record.result and record.result.metadata:
@@ -1354,581 +1388,10 @@ class RunManager:
                         )
                         if cost is not None:
                             record.total_cost = (record.total_cost or 0.0) + cost
-        # -- 31-20: Telemetry bridge --
-        if self._telemetry_store is not None:
-            await self._emit_workflow_telemetry(record)
 
         if self._run_store is not None:
             self._run_store.save_summary(record.graph_id, record.run_id, record.snapshot())
-
-        # -- 17-1: Index errors into error memory RAG --------------------------
-        if (
-            getattr(self._config, "error_memory_enabled", False)
-            and record.result
-            and record.result.errors
-        ):
-            self._index_run_errors(record)
-
-        # -- 17-2: Schedule reflection if trigger is active --------------------
-        if record.run_id and not record.run_id.startswith("reflection-"):
-            trigger = getattr(self._config, "reflection_trigger", "disabled")
-            if trigger == "on_failure" and record.status == RunStatus.FAILED:
-                self._schedule_reflection_background(record)
-            elif trigger == "on_every_run" and record.status in (
-                RunStatus.COMPLETED, RunStatus.FAILED
-            ):
-                self._schedule_reflection_background(record)
-
-        # -- 17-2: Persist reflection principles if this was a reflection run --
-        if record.run_id and record.run_id.startswith("reflection-"):
-            self._persist_reflection_principles(record)
-
-        # -- 17-3: Track rule effectiveness ------------------------------------
-        if getattr(self._config, "self_evolving_rules_enabled", False):
-            self._track_rule_effectiveness(record)
-
-        # -- 19-1: Incremental experience consolidation -----------------------
-        await self._maybe_consolidate_experience(record, graph)
-
-        # -- 29-6: Post-run learning via fan-out (29-5 §5-2) ----------------
-        if self._memory_kernel is not None:
-            try:
-                from dan.engine.run_learner import RunLearner
-
-                learner = RunLearner(self._memory_kernel)
-                await learner.extract_run_learnings_async(
-                    run_result=record.snapshot(),
-                    workflow=graph.model_dump() if graph else None,
-                    goal_context=getattr(record, "goal_context", None),
-                )
-            except Exception:
-                logger.debug("Post-run learning failed", exc_info=True)
-
-        # -- 29-6 §8: Model outcome tracking -----------------------------------
-        if os.environ.get("DAN_MODEL_LEARNING", "0") == "1" and self._memory_kernel:
-            try:
-                from dan.engine.outcome_trackers import ModelOutcomeTracker
-
-                tracker = ModelOutcomeTracker(self._memory_kernel)
-                for node_id, usage in record.node_usage.items():
-                    node_meta = (record.result.metadata or {}).get(node_id, {}) if record.result else {}
-                    node_model = node_meta.get("model") or self._config.default_model
-                    node_type = node_meta.get("node_type", "llm")
-                    quality = 1.0 if (record.result and record.result.success) else 0.0
-                    node_cost = estimate_cost(
-                        node_model,
-                        usage.get("prompt_tokens", 0),
-                        usage.get("completion_tokens", 0),
-                    ) or 0.0
-                    latency = float(usage.get("latency_ms", 0))
-                    tracker.record(
-                        node_id=node_id,
-                        node_type=node_type,
-                        task_description=node_meta.get("task_description", ""),
-                        model=node_model,
-                        quality_score=quality,
-                        cost=node_cost,
-                        latency_ms=latency,
-                    )
-            except Exception:
-                logger.debug("Model outcome tracking failed", exc_info=True)
-
-        # -- 29-6 §10: Topology outcome tracking --------------------------------
-        if os.environ.get("DAN_TOPOLOGY_LEARNING", "0") == "1" and self._memory_kernel and graph:
-            try:
-                from dan.engine.outcome_trackers import TopologyOutcomeTracker
-
-                topo_tracker = TopologyOutcomeTracker(self._memory_kernel)
-                graph_dict = graph.model_dump() if hasattr(graph, "model_dump") else {}
-                sig = TopologyOutcomeTracker.compute_signature(graph_dict)
-                first_failure_node = None
-                first_failure_type = None
-                if record.result and record.result.errors:
-                    for nid, msg in record.result.errors.items():
-                        first_failure_node = nid
-                        lower = str(msg).lower()
-                        if "timeout" in lower:
-                            first_failure_type = "timeout"
-                        elif "validat" in lower or "schema" in lower:
-                            first_failure_type = "validation"
-                        else:
-                            first_failure_type = "error"
-                        break
-                topo_tracker.record(
-                    topology_signature=sig,
-                    outcome=bool(record.result and record.result.success),
-                    failure_node=first_failure_node,
-                    failure_type=first_failure_type,
-                )
-            except Exception:
-                logger.debug("Topology outcome tracking failed", exc_info=True)
-
-    def _index_run_errors(self, record: RunRecord) -> None:
-        """Extract and index errors from a completed run (17-1)."""
-        index = self._get_error_memory_index()
-        if index is None:
-            return
-        try:
-            from dan.engine.error_memory import extract_error_records
-
-            snapshot = record.snapshot()
-            events = list(record.events)
-            errors = extract_error_records(snapshot, events)
-            if errors:
-                import asyncio
-                try:
-                    asyncio.get_running_loop().create_task(
-                        self._safe_async(index.index_errors(record.graph_id, errors))
-                    )
-                except RuntimeError:
-                    logger.debug("No running loop for error indexing", exc_info=True)
-                logger.debug(
-                    "Indexed %d error records for run %s",
-                    len(errors), record.run_id,
-                )
-                self._emit_learning_event(record, "error_memory_indexed", {
-                    "error_count": len(errors),
-                    "tier": "error_memory",
-                })
-        except Exception:
-            logger.debug("Error indexing failed for run %s", record.run_id, exc_info=True)
-
-    def _persist_reflection_principles(self, record: RunRecord) -> None:
-        """Extract principles from a completed reflection run and persist (17-2)."""
-        ps = self._get_principle_store()
-        if ps is None:
-            return
-        try:
-            if not (record.result and record.result.metadata):
-                return
-            from dan.engine.error_memory import CausalPrinciple
-
-            all_principles: list[CausalPrinciple] = []
-            for _node_id, node_meta in record.result.metadata.items():
-                if not isinstance(node_meta, dict):
-                    continue
-                raw_principles = node_meta.get("principles")
-                if not isinstance(raw_principles, list):
-                    continue
-                for p in raw_principles:
-                    if not isinstance(p, dict) or not p.get("condition"):
-                        continue
-                    try:
-                        all_principles.append(CausalPrinciple.model_validate(p))
-                    except Exception:
-                        all_principles.append(CausalPrinciple(
-                            condition=str(p.get("condition", "")),
-                            action=str(p.get("action", "")),
-                            reason=str(p.get("reason", "")),
-                            confidence=float(p.get("confidence", 0.5)),
-                            tags=p.get("tags") if isinstance(p.get("tags"), list) else [],
-                            workflow_id=record.graph_id,
-                        ))
-            if not all_principles:
-                return
-
-            origin_record: RunRecord | None = None
-            if record.run_id and record.run_id.startswith("reflection-"):
-                origin_run_id = record.run_id[len("reflection-"):]
-                origin_record = self._runs.get(origin_run_id)
-
-            import asyncio
-            try:
-                asyncio.get_running_loop().create_task(
-                    self._safe_async(ps.store_principles(record.graph_id, all_principles))
-                )
-            except RuntimeError:
-                logger.debug("No running loop for principle storage", exc_info=True)
-            logger.debug(
-                "Persisted %d reflection principles for run %s",
-                len(all_principles), record.run_id,
-            )
-
-            try:
-                asyncio.get_running_loop().create_task(
-                    self._safe_async(ps.compact(record.graph_id))
-                )
-            except RuntimeError:
-                logger.debug("No running loop for principle compaction", exc_info=True)
-
-            reflection_event = {
-                "reflection_run_id": record.run_id,
-                "principle_count": len(all_principles),
-                "tier": "reflection",
-            }
-            self._emit_learning_event(record, "reflection_completed", reflection_event)
-            if origin_record is not None:
-                self._emit_learning_event(origin_record, "reflection_completed", reflection_event)
-
-            # -- 17-3: Generate rules/mutations from newly persisted principles ----
-            rlm = self._get_rule_lifecycle_manager()
-            if rlm is not None:
-                for principle in all_principles:
-                    try:
-                        repair_level = getattr(principle, "repair_level", "prompt_fix")
-                        if repair_level == "parameter_fix":
-                            mutation = rlm.create_mutation(principle, record.graph_id)
-                            if mutation is not None:
-                                rule_event = {
-                                    "rule_id": mutation.mutation_id,
-                                    "hyperedge_type": "parameter_mutation",
-                                    "principle_id": mutation.source_principle_id,
-                                    "tier": "rules",
-                                }
-                                self._emit_learning_event(record, "rule_generated", rule_event)
-                                if origin_record is not None:
-                                    self._emit_learning_event(origin_record, "rule_generated", rule_event)
-                        else:
-                            rule = rlm.create_rule(principle, record.graph_id)
-                            if rule is not None:
-                                rule_event = {
-                                    "rule_id": rule.rule_id,
-                                    "hyperedge_type": rule.hyperedge.hyperedge_type,
-                                    "principle_id": rule.source_principle_id,
-                                    "tier": "rules",
-                                }
-                                self._emit_learning_event(record, "rule_generated", rule_event)
-                                if origin_record is not None:
-                                    self._emit_learning_event(origin_record, "rule_generated", rule_event)
-                    except Exception:
-                        logger.debug(
-                            "Rule generation failed for principle %s",
-                            getattr(principle, "id", "?"),
-                            exc_info=True,
-                        )
-        except Exception:
-            logger.debug(
-                "Principle persistence failed for %s", record.run_id,
-                exc_info=True,
-            )
-
-    def _schedule_reflection_background(self, record: RunRecord) -> None:
-        """Schedule a background reflection run (17-2)."""
-        try:
-            import asyncio
-
-            reflection_run_id = f"reflection-{record.run_id}"
-            if reflection_run_id in self._runs:
-                return
-
-            self._emit_learning_event(record, "reflection_started", {
-                "source_run_id": record.run_id,
-                "reflection_run_id": reflection_run_id,
-                "tier": "reflection",
-            })
-
-            from dan.models.graph import Graph
-
-            errors_data = []
-            if record.result and record.result.errors:
-                for nid, msg in record.result.errors.items():
-                    errors_data.append({
-                        "node_id": nid,
-                        "error": msg,
-                        "node_type": record.node_statuses.get(nid, ""),
-                    })
-
-            inputs = {
-                "run_id": record.run_id,
-                "run_errors": errors_data,
-                "run_events": record.events[-100:],
-                "node_statuses": dict(record.node_statuses),
-                "runtime_repair_lineage": (
-                    dict((record.result.metadata or {}).get("repair_lineage", {}))
-                    if record.result and isinstance(record.result.metadata, dict)
-                    else {}
-                ),
-                "runtime_repair_summaries": (
-                    {
-                        node_id: dict(node_meta.get("runtime_repair_summary", {}))
-                        for node_id, node_meta in (record.result.metadata or {}).items()
-                        if isinstance(node_meta, dict) and node_meta.get("runtime_repair_summary")
-                    }
-                    if record.result and isinstance(record.result.metadata, dict)
-                    else {}
-                ),
-            }
-
-            reflection_input_ports = [
-                InputPort(
-                    name=key,
-                    required=False,
-                    json_schema=_json_schema_for_runtime_value(value),
-                )
-                for key, value in inputs.items()
-            ]
-
-            reflection_node = Worker(
-                id="reflection-auto",
-                name="Auto Reflection",
-                description="Internal post-run reflection helper.",
-                role="reflection",
-                input_ports=reflection_input_ports,
-                output_ports=[
-                    OutputPort(name="principles", json_schema={"type": "array"}),
-                    OutputPort(name="principle_count", json_schema={"type": "integer"}),
-                    OutputPort(name="source", json_schema={"type": "string"}),
-                    OutputPort(name="text", json_schema={"type": "string"}),
-                ],
-                metadata={
-                    "reflection_source": "last_run",
-                    "scoped_helper": "auto_reflection",
-                },
-            )
-
-            graph = Graph(
-                nodes=[reflection_node],
-                entry_points=["reflection-auto"],
-                exit_points=["reflection-auto"],
-            )
-
-            async def _do_reflection():
-                try:
-                    await self.start_run(
-                        graph,
-                        graph_id=record.graph_id,
-                        inputs=inputs,
-                        run_id=reflection_run_id,
-                    )
-                except Exception:
-                    logger.debug(
-                        "Reflection run failed for %s", record.run_id,
-                        exc_info=True,
-                    )
-
-            try:
-                asyncio.get_running_loop().create_task(
-                    self._safe_async(_do_reflection())
-                )
-            except RuntimeError:
-                logger.debug("No running loop for reflection scheduling", exc_info=True)
-        except Exception:
-            logger.debug(
-                "Failed to schedule reflection for %s", record.run_id,
-                exc_info=True,
-            )
-
-    def _track_rule_effectiveness(self, record: RunRecord) -> None:
-        """Update effectiveness counters for generated rules (17-3)."""
-        manager = self._get_rule_lifecycle_manager()
-        if manager is None:
-            return
-        try:
-            active_rules = manager.list_rules(record.graph_id, status="active")
-            if not active_rules:
-                return
-
-            current_errors = set()
-            if record.result and record.result.errors:
-                for nid in record.result.errors:
-                    current_errors.add(nid)
-
-            for rule in active_rules:
-                manager.record_application(record.graph_id, rule.rule_id)
-
-                he = rule.hyperedge
-                target_nodes = set(he.attach_to) if he.attach_to else set()
-                if not target_nodes:
-                    continue
-
-                error_in_targets = bool(target_nodes & current_errors)
-                manager.record_outcome(
-                    record.graph_id, rule.rule_id,
-                    error_recurred=error_in_targets,
-                )
-
-                updated = manager._load_one(record.graph_id, rule.rule_id)
-                r = updated if updated is not None else rule
-                self._emit_learning_event(record, "rule_effectiveness_update", {
-                    "rule_id": rule.rule_id,
-                    "apply_count": r.apply_count,
-                    "effectiveness_score": r.effectiveness_score,
-                    "error_recurred": error_in_targets,
-                    "tier": "rules",
-                })
-
-            pruned = manager.prune_ineffective(record.graph_id)
-            for rule_id in pruned:
-                self._emit_learning_event(record, "rule_pruned", {
-                    "rule_id": rule_id,
-                    "reason": "ineffective",
-                    "tier": "rules",
-                })
-
-            all_rules = manager.list_rules(record.graph_id)
-            for rule in all_rules:
-                if rule.status == "expired":
-                    if rule.expires_at and abs(time.time() - rule.expires_at) < 60:
-                        self._emit_learning_event(record, "rule_expired", {
-                            "rule_id": rule.rule_id,
-                            "reason": "ttl_expired",
-                            "tier": "rules",
-                        })
-        except Exception:
-            logger.debug(
-                "Rule effectiveness tracking failed for %s",
-                record.run_id, exc_info=True,
-            )
-
-    async def _load_principle_dicts(self, workflow_id: str) -> list[dict[str, Any]]:
-        """Load persisted principles for a workflow as plain dicts."""
-        ps = self._get_principle_store()
-        if ps is None:
-            return []
-        try:
-            principles = await ps.load_principles(workflow_id)
-            return [p.model_dump() for p in principles]
-        except Exception:
-            logger.debug("Failed to load principles for %s", workflow_id, exc_info=True)
-            return []
-
-    async def _maybe_consolidate_experience(
-        self,
-        record: RunRecord,
-        graph: Graph | None = None,
-    ) -> None:
-        """Incrementally consolidate workflow experience based on configured triggers."""
-        if record.run_id.startswith("reflection-"):
-            return
-        store = self._get_experience_store()
-        if store is None:
-            return
-
-        interval = max(1, int(getattr(self._config, "experience_consolidation_interval", 5)))
-        try:
-            from dan.engine.experience import (
-                consolidate_experience,
-                extract_experience_from_graph,
-            )
-
-            workflow_id = record.graph_id
-            exp = await store.load_experience(workflow_id)
-            if exp is None:
-                if graph is None:
-                    return
-                exp = extract_experience_from_graph(graph).model_copy(
-                    update={"workflow_id": workflow_id},
-                )
-
-            current_success = bool(record.result and record.result.success)
-            existing_failure_count = max(exp.run_count - exp.success_count, 0)
-            needs_full_refresh = False
-            if current_success and exp.success_count == 0:
-                needs_full_refresh = True
-            if (not current_success) and existing_failure_count == 0:
-                needs_full_refresh = True
-            if (exp.run_count + 1) % interval == 0:
-                needs_full_refresh = True
-
-            if record.run_id in exp.processed_run_ids:
-                return
-
-            snapshots: list[dict[str, Any]] = []
-            if needs_full_refresh and self._run_store is not None:
-                summaries = self._run_store.list_summaries(
-                    workflow_id=workflow_id,
-                    limit=10000,
-                )
-                snapshots = [s for s in summaries if isinstance(s, dict)]
-            if not snapshots:
-                snapshots = [record.snapshot()]
-
-            principle_dicts = (
-                await self._load_principle_dicts(workflow_id)
-                if needs_full_refresh
-                else []
-            )
-            updated = consolidate_experience(exp, snapshots, principle_dicts)
-            await store.save_experience(updated)
-            self._emit_learning_event(record, "experience_consolidated", {
-                "workflow_id": workflow_id,
-                "run_count": updated.run_count,
-                "success_count": updated.success_count,
-                "tier": "experience",
-            })
-            self._emit_learning_event(record, "experience_indexed", {
-                "workflow_id": workflow_id,
-                "tier": "experience",
-            })
-        except Exception:
-            logger.debug(
-                "Experience consolidation failed for run %s",
-                record.run_id,
-                exc_info=True,
-            )
-
-    def _emit_rule_generated(self, record: RunRecord, rule_id: str, hyperedge_type: str, principle_id: str) -> None:
-        """Emit RULE_GENERATED event after a new rule is created."""
-        self._emit_learning_event(record, "rule_generated", {
-            "rule_id": rule_id,
-            "hyperedge_type": hyperedge_type,
-            "principle_id": principle_id,
-            "tier": "rules",
-        })
-
-    async def _emit_workflow_telemetry(self, record: RunRecord) -> None:
-        """Emit telemetry events for a completed workflow run (31-20)."""
-        try:
-            from dan.server.telemetry import TelemetryEvent
-
-            project_id = (record.goal_context or {}).get("project_id")
-            parent_event_id = (record.goal_context or {}).get("turn_event_id")
-            lint_summary, per_node_lint = _summarize_lint_events(record.events)
-
-            for node_id, usage in record.node_usage.items():
-                node_model = None
-                if record.result and record.result.metadata:
-                    node_meta = record.result.metadata.get(node_id, {})
-                    if isinstance(node_meta, dict):
-                        node_model = node_meta.get("model")
-                pt = usage.get("prompt_tokens", 0)
-                ct = usage.get("completion_tokens", 0)
-                tt = usage.get("total_tokens", 0)
-                node_cost = 0.0
-                if node_model:
-                    c = estimate_cost(node_model, pt, ct)
-                    if c is not None:
-                        node_cost = c
-                node_metadata = dict(per_node_lint.get(node_id, _empty_lint_summary()))
-                await self._telemetry_store.record(TelemetryEvent(
-                    event_type="workflow_node",
-                    project_id=project_id,
-                    parent_event_id=parent_event_id,
-                    run_id=record.run_id,
-                    graph_id=record.graph_id,
-                    model=node_model or record.model,
-                    node_id=node_id,
-                    prompt_tokens=pt,
-                    completion_tokens=ct,
-                    total_tokens=tt,
-                    estimated_cost=node_cost,
-                    duration_ms=0.0,
-                    success=record.status.value == "completed",
-                    metadata=node_metadata,
-                ))
-
-            run_metadata = {
-                "node_count": len(record.node_usage),
-                "error": record.error,
-                **lint_summary,
-            }
-            await self._telemetry_store.record(TelemetryEvent(
-                event_type="workflow_run",
-                project_id=project_id,
-                parent_event_id=parent_event_id,
-                run_id=record.run_id,
-                graph_id=record.graph_id,
-                model=record.model,
-                prompt_tokens=record.total_prompt_tokens,
-                completion_tokens=record.total_completion_tokens,
-                total_tokens=record.total_tokens,
-                estimated_cost=record.total_cost or 0.0,
-                duration_ms=(record.elapsed_seconds or 0) * 1000,
-                success=record.status.value == "completed",
-                metadata=run_metadata,
-            ))
-        except Exception:
-            logger.debug("Workflow telemetry failed", exc_info=True)
+        await self._finalizer.finalize(record, graph=graph)
 
     async def _run_task(
         self,
@@ -1978,7 +1441,7 @@ class RunManager:
         finally:
             engine._active_run_states.pop(record.run_id, None)
             self._engines.pop(record.run_id, None)
-            await self._enrich_and_persist(record, graph=graph)
+            await self._persist_terminal_record(record, graph=graph)
 
     async def _resume_task(
         self,
@@ -2022,7 +1485,7 @@ class RunManager:
             )
         finally:
             self._engines.pop(record.run_id, None)
-            await self._enrich_and_persist(record, graph=graph)
+            await self._persist_terminal_record(record, graph=graph)
 
     async def _rerun_task(
         self,
@@ -2152,4 +1615,4 @@ class RunManager:
             )
         finally:
             self._engines.pop(record.run_id, None)
-            await self._enrich_and_persist(record, graph=graph)
+            await self._persist_terminal_record(record, graph=graph)

@@ -237,6 +237,8 @@ class ChatAuditStore:
 
     def __init__(self, base_dir: str | Path | None = None) -> None:
         default_base_dir = os.environ.get("DAN_AUDIT_DIR")
+        if base_dir is None and not default_base_dir and os.environ.get("PYTEST_CURRENT_TEST"):
+            default_base_dir = str(Path("/tmp") / "dan-audit")
         self._base = Path(
             base_dir
             or default_base_dir

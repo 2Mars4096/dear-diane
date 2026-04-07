@@ -43,6 +43,8 @@ def _default_telemetry_db_path() -> str:
     configured = str(os.environ.get("DAN_TELEMETRY_DB", "") or "").strip()
     if configured:
         return configured
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return str(Path("/tmp") / "dan-telemetry" / "telemetry.db")
     return str(Path.home() / ".dan" / "telemetry.db")
 
 EventType = Literal[

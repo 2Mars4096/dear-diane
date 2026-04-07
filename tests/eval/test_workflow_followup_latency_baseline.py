@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from dan.server.workflow_latency import WF_STAGE_NAMES
+from dan.workflow_latency import WF_STAGE_NAMES
 
 
 def test_workflow_followup_latency_baseline_covers_all_workflow_stages() -> None:

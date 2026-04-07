@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -29,10 +30,15 @@ def _normalize_search_text(text: str) -> str:
 class ProjectStore:
     def __init__(self, base_dir: str | Path | None = None) -> None:
         default_base_dir = os.environ.get("DAN_PROJECT_STORE_DIR")
+        if default_base_dir:
+            resolved_base_dir = Path(default_base_dir)
+        elif os.environ.get("PYTEST_CURRENT_TEST"):
+            resolved_base_dir = Path(tempfile.gettempdir()) / "dan-project-store"
+        else:
+            resolved_base_dir = Path.home() / ".dan" / "projects"
         self.base_dir = Path(
             base_dir
-            or default_base_dir
-            or (Path.home() / ".dan" / "projects")
+            or resolved_base_dir
         )
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._journal_compact_every = max(

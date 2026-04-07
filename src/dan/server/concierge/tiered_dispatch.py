@@ -6,11 +6,20 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
+from .dispatch_state import (
+    background_global_cap,
+    background_project_cap,
+    background_queue_position,
+    can_start_background_task,
+    count_background_tasks,
+)
 from .followup_classifier import FollowUpType, classify_follow_up
 from .task_registry import DispatchMode, TaskState
 
 if TYPE_CHECKING:
     from .models import SurfaceMessage
+
+from .models import SurfaceMessage
 
 logger = logging.getLogger(__name__)
 
@@ -694,32 +703,6 @@ class TieredDispatcher:
             if concierge_task is not None:
                 self._concierge._task_registry.mark_task_idle(concierge_task.task_id)
 
-    def _background_project_cap(self) -> int:
-        return max(1, int(os.environ.get("DAN_MAX_BACKGROUND_TASKS", "3") or "3"))
-
-    def _background_global_cap(self) -> int:
-        return max(1, int(os.environ.get("DAN_MAX_GLOBAL_TASKS", "10") or "10"))
-
-    def _running_background_count(self, *, project_id: str | None = None) -> int:
-        count = 0
-        for task in self._concierge._task_registry.list_all(states={TaskState.RUNNING}, limit=None):
-            if task.dispatch_mode != DispatchMode.BACKGROUND:
-                continue
-            if project_id is not None and task.project_id != project_id:
-                continue
-            count += 1
-        return count
-
-    def _queued_background_count(self, *, project_id: str | None = None) -> int:
-        count = 0
-        for task in self._concierge._task_registry.list_all(states={TaskState.QUEUED}, limit=None):
-            if task.dispatch_mode != DispatchMode.BACKGROUND:
-                continue
-            if project_id is not None and task.project_id != project_id:
-                continue
-            count += 1
-        return count
-
     async def _launch_background_dispatch(
         self,
         msg: SurfaceMessage,
@@ -729,22 +712,37 @@ class TieredDispatcher:
         concierge_task_id: str,
     ) -> dict[str, Any]:
         project_id = context.project.project_id
-        project_running = self._running_background_count(project_id=project_id)
-        global_running = self._running_background_count()
+        registry = self._concierge._task_registry
+        project_running = count_background_tasks(
+            registry,
+            states={TaskState.RUNNING},
+            project_id=project_id,
+        )
+        global_running = count_background_tasks(
+            registry,
+            states={TaskState.RUNNING},
+        )
         queued = (
-            project_running >= self._background_project_cap()
-            or global_running >= self._background_global_cap()
+            project_running >= background_project_cap()
+            or global_running >= background_global_cap()
         )
         queue_position = 0
         if queued:
-            self._concierge._task_registry.transition(
+            registry.transition(
                 concierge_task_id,
                 TaskState.QUEUED,
                 metadata={"reason": "background_capacity"},
             )
-            queue_position = max(1, self._queued_background_count(project_id=project_id))
+            queue_position = max(
+                1,
+                background_queue_position(
+                    registry,
+                    concierge_task_id,
+                    project_id=project_id,
+                ),
+            )
         else:
-            self._concierge._task_registry.transition(
+            registry.transition(
                 concierge_task_id,
                 TaskState.RUNNING,
                 metadata={"dispatch_mode": DispatchMode.BACKGROUND.value},
@@ -781,15 +779,19 @@ class TieredDispatcher:
     ) -> None:
         try:
             if start_queued:
-                while (
-                    self._running_background_count(project_id=context.project.project_id) >= self._background_project_cap()
-                    or self._running_background_count() >= self._background_global_cap()
+                registry = self._concierge._task_registry
+                while not can_start_background_task(
+                    registry,
+                    concierge_task_id,
+                    project_id=context.project.project_id,
+                    project_cap=background_project_cap(),
+                    global_cap=background_global_cap(),
                 ):
-                    current = self._concierge._task_registry.get(concierge_task_id)
+                    current = registry.get(concierge_task_id)
                     if current is None or current.state in {TaskState.CANCELLED, TaskState.SUPERSEDED, TaskState.FAILED}:
                         return
                     await asyncio.sleep(0.1)
-                self._concierge._task_registry.transition(
+                registry.transition(
                     concierge_task_id,
                     TaskState.RUNNING,
                     metadata={"dequeued": True},

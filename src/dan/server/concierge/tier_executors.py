@@ -20,6 +20,13 @@ from dan.chat_events import (
     ChatMutationEvent,
     ChatStreamEvent,
 )
+from dan.prompt_contracts import (
+    ChildHandoffContext,
+    ChildHandoffEnvelope,
+    PromptEnvelope,
+    PromptSlot,
+    TurnExecutionEnvelope,
+)
 from dan.agent_runtime.synthesis import (
     SynthesisGapReview,
     collect_followup_signals as _collect_followup_signals_impl,
@@ -56,7 +63,7 @@ from dan.server.workflow_identity import (
     resolve_workflow_reference,
     workflow_resolution_context_from_session,
 )
-from dan.server.workflow_latency import (
+from dan.workflow_latency import (
     append_workflow_stage_sample,
     workflow_stage_start_ns,
 )
@@ -142,34 +149,45 @@ _WORKFLOW_QUERY_SAFE_HINTS = frozenset({
 _STAGE_PROMPT_OVERLAYS: dict[str, str] = {
     "conversation": (
         "## Concierge stage: conversation\n"
-        "Act as a concise generalist. Answer directly, avoid unnecessary orchestration, "
-        "and do not assume workflow editing unless the request is explicit."
+        "Answer the user's actual question first and keep the path lightweight.\n"
+        "Give a direct, concrete response when the turn does not require workflow changes.\n"
+        "Do not drift into workflow editing, speculative planning, or verbose orchestration unless the user explicitly asks for it."
     ),
     "conversation_plan": (
         "## Concierge stage: conversation_plan\n"
-        "Act as an orchestrator. Clarify scope, decompose carefully, state assumptions, "
-        "and decide whether the request should remain conversational or become workflow work."
+        "Act as the orchestrator for a planning turn.\n"
+        "Clarify the scope, decompose only when it improves execution quality, and surface the key assumptions that drive the plan.\n"
+        "Decide explicitly whether the request should stay conversational or move onto the workflow path."
     ),
     "conversation_debug": (
         "## Concierge stage: conversation_debug\n"
-        "Act as a debugger. Focus on failures, validation gaps, and the shortest reliable path to diagnosis."
+        "Act as a debugger focused on evidence and reliable next steps.\n"
+        "Prioritize concrete failures, validation gaps, and the shortest trustworthy path to diagnosis or repair.\n"
+        "Do not bury the answer in generic debugging advice."
     ),
     "workflow_build": (
         "## Concierge stage: workflow_build\n"
-        "Act as a workflow authoring surface. Keep workflow identity explicit and route the task through "
-        "the standard DAN workflow-edit/build path instead of inventing a separate local workflow doctrine."
+        "Act as DAN's workflow authoring surface for this turn.\n"
+        "Keep workflow identity explicit, use the standard workflow build/edit path, and distinguish read-only workflow questions from real mutation work.\n"
+        "Good output is concrete, operational, and aligned to the current workflow rather than a separate local workflow doctrine."
     ),
     "file_review": (
         "## Concierge stage: file_review\n"
-        "Act as an execution-focused reviewer. Inspect the file/task directly and summarize concrete findings."
+        "Act as an execution-focused reviewer.\n"
+        "Inspect the relevant file or task directly, summarize concrete findings, and highlight only the most material risks or actions.\n"
+        "Prefer evidence over speculation."
     ),
     "direct_task": (
         "## Concierge stage: direct_task\n"
-        "Act as a practical executor. Prefer concrete actions and concise results over meta-planning."
+        "Act as a practical executor for a single task turn.\n"
+        "Prefer concrete actions, tool use, and concise results over meta-planning.\n"
+        "If something is already known or already done, say so plainly and move to the next useful action."
     ),
     "experience_fallback": (
         "## Concierge stage: experience_fallback\n"
-        "Act as a lightweight retrieval/synthesis surface. Reuse relevant prior work without over-committing to mutation."
+        "Act as a lightweight retrieval and synthesis surface.\n"
+        "Reuse relevant prior work when it actually helps, but label it as supporting context rather than fresh proof.\n"
+        "Do not over-commit to workflow mutation when a synthesized answer is sufficient."
     ),
 }
 _CHILD_METADATA_KEYS = frozenset({
@@ -544,6 +562,55 @@ def _append_unique_string(target: list[str], value: Any, *, limit: int) -> None:
         del target[limit:]
 
 
+def _task_id_for_session(session: Any) -> str | None:
+    ctx = getattr(session, "context", None)
+    task_obj = getattr(ctx, "task", None) if ctx is not None else None
+    return str(getattr(task_obj, "task_id", "") or "").strip() or None
+
+
+def _dispatch_mode_for_session(session: Any) -> str | None:
+    msg = getattr(session, "msg", None)
+    metadata = getattr(msg, "metadata", None) if msg is not None else None
+    if isinstance(metadata, dict):
+        explicit = str(metadata.get("concierge_dispatch_mode") or "").strip()
+        if explicit:
+            return explicit
+    ctx = getattr(session, "context", None)
+    return str(getattr(ctx, "dispatch_mode", "") or "").strip() or None
+
+
+def _default_child_definition_of_done(task_desc: str) -> str:
+    task_text = str(task_desc or "").strip()
+    if not task_text:
+        return ""
+    return (
+        f"Finish the delegated task '{task_text}' and return the concrete result the parent "
+        "session needs for synthesis."
+    )
+
+
+def _default_child_return_shape(task_desc: str) -> str:
+    task_text = str(task_desc or "").strip()
+    if not task_text:
+        return ""
+    return (
+        "Provide a concise summary of the work completed for "
+        f"'{task_text}', including concrete findings or actions taken and any unresolved blockers."
+    )
+
+
+def _sync_prompt_contract_compat(chat_params: dict[str, Any]) -> None:
+    prompt_envelope = chat_params.get("prompt_envelope")
+    if not isinstance(prompt_envelope, PromptEnvelope):
+        return
+    prompt_context, extra_system_instructions = prompt_envelope.to_legacy_fields()
+    chat_params["prompt_context"] = prompt_context
+    chat_params["extra_system_instructions"] = extra_system_instructions
+    execution_envelope = chat_params.get("turn_execution_envelope")
+    if isinstance(execution_envelope, TurnExecutionEnvelope):
+        execution_envelope.prompt_envelope = prompt_envelope
+
+
 def _build_child_metadata_seed(parent_metadata: dict[str, Any]) -> dict[str, Any]:
     child_metadata: dict[str, Any] = {}
     for key in _CHILD_METADATA_KEYS:
@@ -592,14 +659,17 @@ def _extract_child_file_refs(parent_metadata: dict[str, Any], context: Any) -> l
     return file_refs[:_CHILD_HANDOFF_FILE_LIMIT]
 
 
-def _build_child_handoff_context(session: Any, parent_metadata: dict[str, Any]) -> dict[str, Any]:
-    handoff_context: dict[str, Any] = {}
+def _build_child_handoff_context(
+    session: Any,
+    parent_metadata: dict[str, Any],
+) -> ChildHandoffContext:
+    handoff_context = ChildHandoffContext()
     recent_turns = _string_list(
         parent_metadata.get("autonomy_recent_turns"),
         limit=_CHILD_HANDOFF_RECENT_TURN_LIMIT,
     )
     if recent_turns:
-        handoff_context["recent_turns"] = recent_turns
+        handoff_context.recent_turns = recent_turns
     for target_key, source_key, limit in (
         ("task_snapshot", "autonomy_task_snapshot", 2000),
         ("repo_snapshot", "autonomy_repo_snapshot", 2000),
@@ -608,11 +678,11 @@ def _build_child_handoff_context(session: Any, parent_metadata: dict[str, Any]) 
     ):
         trimmed = _trim_text(parent_metadata.get(source_key), limit=limit)
         if trimmed:
-            handoff_context[target_key] = trimmed
+            setattr(handoff_context, target_key, trimmed)
 
     file_refs = _extract_child_file_refs(parent_metadata, getattr(session, "context", None))
     if file_refs:
-        handoff_context["file_refs"] = file_refs
+        handoff_context.file_refs = file_refs
 
     auto_read_content = parent_metadata.get("auto_read_content")
     if isinstance(auto_read_content, dict):
@@ -623,7 +693,7 @@ def _build_child_handoff_context(session: Any, parent_metadata: dict[str, Any]) 
             if path_text and content_text:
                 snippets[path_text] = content_text
         if snippets:
-            handoff_context["file_snippets"] = snippets
+            handoff_context.file_snippets = snippets
 
     return handoff_context
 
@@ -668,82 +738,7 @@ def _copy_context_for_child(parent_context: Any) -> Any:
 
 
 def _render_handoff_prompt_block(handoff: Any) -> str:
-    if not isinstance(handoff, dict):
-        return ""
-
-    lines: list[str] = []
-    goal = handoff.get("goal")
-    if isinstance(goal, dict):
-        parent_task = _trim_text(goal.get("parent_task"), limit=400)
-        delegated_task = _trim_text(goal.get("delegated_task"), limit=400)
-        route_target = _trim_text(goal.get("route_target"), limit=120)
-        action_hints = _string_list(goal.get("action_hints"))
-        if parent_task:
-            lines.append(f"Parent task: {parent_task}")
-        if delegated_task:
-            lines.append(f"Delegated task: {delegated_task}")
-        if route_target:
-            lines.append(f"Route target: {route_target}")
-        if action_hints:
-            lines.append("Action hints: " + ", ".join(action_hints[:6]))
-
-    context = handoff.get("context")
-    if isinstance(context, dict):
-        recent_turns = _string_list(context.get("recent_turns"), limit=_CHILD_HANDOFF_RECENT_TURN_LIMIT)
-        if recent_turns:
-            lines.append("Recent task turns:")
-            lines.extend(recent_turns)
-        task_snapshot = _trim_text(context.get("task_snapshot"), limit=2000)
-        if task_snapshot:
-            lines.append(f"Task snapshot:\n{task_snapshot}")
-        repo_snapshot = _trim_text(context.get("repo_snapshot"), limit=2000)
-        if repo_snapshot:
-            lines.append(f"Repo snapshot:\n{repo_snapshot}")
-        memory_context = _trim_text(context.get("memory_context"), limit=4000)
-        if memory_context:
-            lines.append(f"Relevant memory:\n{memory_context}")
-        domain_expertise = _trim_text(context.get("domain_expertise"), limit=4000)
-        if domain_expertise:
-            lines.append(f"Relevant domain expertise:\n{domain_expertise}")
-        file_refs = _string_list(context.get("file_refs"), limit=_CHILD_HANDOFF_FILE_LIMIT)
-        if file_refs:
-            lines.append("Related files: " + ", ".join(file_refs))
-        file_snippets = context.get("file_snippets")
-        if isinstance(file_snippets, dict) and file_snippets:
-            snippets: list[str] = []
-            for path, content in list(file_snippets.items())[:_CHILD_HANDOFF_SNIPPET_LIMIT]:
-                text = _trim_text(content, limit=2000)
-                if text:
-                    snippets.append(f"[{path}]\n{text}")
-            if snippets:
-                lines.append("Relevant file content:\n" + "\n\n".join(snippets))
-
-    constraints = handoff.get("constraints")
-    if isinstance(constraints, dict):
-        constraint_bits: list[str] = []
-        if constraints.get("read_only_parent_context") is True:
-            constraint_bits.append("parent context is read-only")
-        if constraints.get("copy_on_write_metadata") is True:
-            constraint_bits.append("child metadata is isolated")
-        if constraints.get("allow_mutation_tool") is not None:
-            constraint_bits.append(
-                "allow_mutation_tool="
-                + ("true" if constraints.get("allow_mutation_tool") else "false")
-            )
-        if constraint_bits:
-            lines.append("Constraints: " + ", ".join(constraint_bits))
-
-    return_channel = handoff.get("return_channel")
-    if isinstance(return_channel, dict):
-        return_kind = _trim_text(return_channel.get("kind"), limit=120)
-        parent_session_id = _trim_text(return_channel.get("parent_session_id"), limit=120)
-        if return_kind or parent_session_id:
-            pieces = [piece for piece in [return_kind, parent_session_id] if piece]
-            lines.append("Return channel: " + " -> ".join(pieces))
-
-    if not lines:
-        return ""
-    return "Child handoff:\n" + "\n".join(lines)
+    return ChildHandoffEnvelope.from_payload(handoff).render_prompt_block()
 
 
 def _mark_session_cancelled(
@@ -1022,17 +1017,25 @@ def _extract_chat_params(
         if str(item or "").strip()
     ]
     autonomy_resolution = getattr(session, "autonomy_resolution", None)
-    prompt_context = system_prompt
-    extra_system_sections = [stage_overlay]
+    prompt_envelope = PromptEnvelope(
+        system_policy=PromptSlot(
+            content=system_prompt,
+            trust_label="authoritative",
+        ),
+        stage_overlay=PromptSlot(
+            content=stage_overlay,
+            trust_label="authoritative",
+        ),
+    )
     if attachment_prompt_context:
-        extra_system_sections.append(attachment_prompt_context)
+        prompt_envelope.attachment_context.append(attachment_prompt_context)
     if prefetched_action_contexts:
-        extra_system_sections.append(
+        prompt_envelope.prefetched_action_context.append(
             "Actions already completed during routing:\n"
             + "\n".join(f"- {item}" for item in prefetched_action_contexts)
         )
     if run_control_instruction:
-        extra_system_sections.append(run_control_instruction)
+        prompt_envelope.turn_constraints.append(run_control_instruction)
     workflow_query_instruction = ""
     if "workflow_query" in required_action_hints and not ({
         "workflow_edit",
@@ -1053,11 +1056,24 @@ def _extract_chat_params(
                 "asks to change the workflow."
             )
     if workflow_query_instruction:
-        extra_system_sections.append(workflow_query_instruction)
-    extra_system_instructions = "\n\n".join(
-        section.strip()
-        for section in extra_system_sections
-        if section and section.strip()
+        prompt_envelope.response_mode.append(workflow_query_instruction)
+
+    dispatch_mode = _dispatch_mode_for_session(session)
+    turn_execution_envelope = TurnExecutionEnvelope(
+        prompt_envelope=prompt_envelope,
+        dispatch_mode=dispatch_mode,
+        task_id=_task_id_for_session(session),
+        session_id=str(getattr(session, "id", "") or "").strip() or None,
+        capability_surface={
+            "mode": mode,
+            "allow_mutation_tool": allow_mutation_tool,
+            "required_action_hints": list(required_action_hints),
+            "surface": surface,
+            "stream_channel_id": stream_channel_id,
+            "max_tool_turns": autonomy_max_tool_turns(
+                getattr(autonomy_resolution, "effective_level", None),
+            ),
+        },
     )
 
     result = {
@@ -1069,22 +1085,23 @@ def _extract_chat_params(
         "mode": mode,
         "cancel_event": cancel_event,
         "debug_context": debug_context,
-        "prompt_context": prompt_context,
+        "prompt_context": system_prompt,
+        "prompt_envelope": prompt_envelope,
+        "turn_execution_envelope": turn_execution_envelope,
         "mentions": mentions,
         "surface_context": surface_context,
         "allow_mutation_tool": allow_mutation_tool,
         "surface": surface,
-        "extra_system_instructions": extra_system_instructions,
+        "extra_system_instructions": "",
         "required_action_hints": required_action_hints,
         "workflow_catalog_query": _is_workflow_catalog_query(message, required_action_hints),
         "stream_channel_id": stream_channel_id,
         "memory_project_id": memory_project_id,
         "include_memory_kernel_context": not bool(str(metadata.get("memory_context") or "").strip()),
-        "max_tool_turns": autonomy_max_tool_turns(
-            getattr(autonomy_resolution, "effective_level", None),
-        ),
+        "max_tool_turns": turn_execution_envelope.capability_surface["max_tool_turns"],
         "autonomy_resolution": autonomy_resolution,
     }
+    _sync_prompt_contract_compat(result)
     audit = result.get("audit_metadata") or {}
     audit["concierge_stage"] = stage
     audit["concierge_prompt_overlay"] = stage_overlay_id
@@ -1137,6 +1154,8 @@ def _extract_text_chat_context_params(
         "thread_id": base.get("thread_id"),
         "client_graph_revision": base.get("client_graph_revision"),
         "cancel_event": base.get("cancel_event"),
+        "prompt_envelope": base.get("prompt_envelope"),
+        "turn_execution_envelope": base.get("turn_execution_envelope"),
         "surface_context": base.get("surface_context"),
         "surface": base.get("surface"),
         "extra_system_instructions": base.get("extra_system_instructions", ""),
@@ -1263,10 +1282,15 @@ def _apply_workflow_continuity_context(
             "Workflow revision changed since the client's last seen snapshot. "
             f"{resolution.resolution_message} Treat any prior preview as stale and continue against the current saved graph."
         )
-        existing = str(chat_params.get("extra_system_instructions") or "").strip()
-        chat_params["extra_system_instructions"] = (
-            f"{existing}\n\n{stale_note}" if existing else stale_note
-        )
+        prompt_envelope = chat_params.get("prompt_envelope")
+        if isinstance(prompt_envelope, PromptEnvelope):
+            prompt_envelope.append_to_slot("turn_constraints", stale_note)
+            _sync_prompt_contract_compat(chat_params)
+        else:
+            existing = str(chat_params.get("extra_system_instructions") or "").strip()
+            chat_params["extra_system_instructions"] = (
+                f"{existing}\n\n{stale_note}" if existing else stale_note
+            )
 
     try:
         context_started_ns = workflow_stage_start_ns()
@@ -1306,10 +1330,15 @@ def _apply_workflow_continuity_context(
             "Use this resolved workflow state for the current continuation turn.\n"
             f"```json\n{pack_json}\n```"
         )
-        existing = str(chat_params.get("extra_system_instructions") or "").strip()
-        chat_params["extra_system_instructions"] = (
-            f"{existing}\n\n{pack_block}" if existing else pack_block
-        )
+        prompt_envelope = chat_params.get("prompt_envelope")
+        if isinstance(prompt_envelope, PromptEnvelope):
+            prompt_envelope.append_to_slot("workflow_context_pack", pack_block)
+            _sync_prompt_contract_compat(chat_params)
+        else:
+            existing = str(chat_params.get("extra_system_instructions") or "").strip()
+            chat_params["extra_system_instructions"] = (
+                f"{existing}\n\n{pack_block}" if existing else pack_block
+            )
         audit["workflow_context_pack_chars"] = len(pack_json)
         audit["workflow_context_pack_keys"] = sorted(pack.keys())
         chat_params["audit_metadata"] = audit
@@ -1326,6 +1355,111 @@ def _request_mode(metadata: Any) -> str:
         return requested_mode
     mode = str(metadata.get("mode") or "").strip()
     return mode or "agent"
+
+
+async def _execute_chat_turn(
+    concierge: Any,
+    session: Any,
+    manager: Any,
+    *,
+    start: float,
+    failure_label: str,
+) -> AsyncIterator[ChatStreamEvent]:
+    if _cancel_requested(session):
+        _mark_session_cancelled(manager, session, start=start)
+        yield _interrupted_event()
+        return
+
+    model_override = _resolve_session_model_override(concierge, session)
+    system_prompt = _build_prompt(session)
+    chat_params = _extract_chat_params(session, system_prompt, model_override=model_override)
+    workflow_gate = _apply_workflow_continuity_context(
+        concierge,
+        session,
+        chat_params,
+    )
+    if workflow_gate is not None:
+        final_content = _prepend_autonomy_announcement(session, workflow_gate.content)
+        yield workflow_gate.model_copy(update={"content": final_content})
+        from .session import SessionResult as _SR
+
+        manager.set_result(
+            session.id,
+            _SR(
+                content=final_content,
+                metadata={
+                    "completion_status": "clarification",
+                    **dict(chat_params.get("audit_metadata") or {}),
+                },
+                token_usage={},
+                duration_ms=(time.monotonic() - start) * 1000,
+            ),
+        )
+        manager.update_state(session.id, "completed")
+        return
+
+    final_content = ""
+    token_usage: dict[str, int] = {}
+    saw_terminal = False
+    interrupted = False
+
+    try:
+        async for event in concierge.chat_manager.send_message_with_tools(
+            **chat_params,
+        ):
+            if isinstance(event, ChatInterruptedEvent):
+                saw_terminal = True
+                interrupted = True
+                final_content = _prepend_autonomy_announcement(session, event.content)
+                token_usage = dict(event.token_usage)
+                yield event.model_copy(update={"content": final_content})
+                break
+            if isinstance(event, (ChatCompleteEvent, ChatMutationEvent)):
+                saw_terminal = True
+                final_content = _prepend_autonomy_announcement(session, event.content)
+                token_usage = dict(event.token_usage)
+                yield event.model_copy(update={"content": final_content})
+                continue
+            yield event
+    except Exception as exc:
+        from dan.providers import LLMAuthenticationError
+
+        if isinstance(exc, LLMAuthenticationError):
+            final_content = str(exc)
+            saw_terminal = True
+            yield ChatCompleteEvent(
+                message_id=uuid.uuid4().hex[:12],
+                content=final_content,
+                token_usage={},
+                context_window=0,
+                graph_revision="",
+            )
+        else:
+            logger.exception("%s execution failed for session %s", failure_label, session.id)
+
+    if interrupted or _cancel_requested(session):
+        _mark_session_cancelled(manager, session, start=start, content=final_content)
+        if not saw_terminal:
+            yield _interrupted_event(final_content)
+        return
+
+    if not saw_terminal:
+        synthesized = _synthesize_missing_terminal_event(session)
+        final_content = _prepend_autonomy_announcement(session, synthesized.content)
+        yield synthesized.model_copy(update={"content": final_content})
+
+    from .session import SessionResult as _SR
+
+    manager.set_result(
+        session.id,
+        _SR(
+            content=final_content,
+            metadata=_chat_result_metadata(chat_params, concierge.chat_manager),
+            token_usage=token_usage,
+            duration_ms=(time.monotonic() - start) * 1000,
+        ),
+    )
+    manager.update_state(session.id, "completed")
 
 
 # ---------------------------------------------------------------------------
@@ -1427,95 +1561,14 @@ class SingleShotExecutor:
             return
 
         manager.update_state(session.id, "running")
-
-        model_override = _resolve_session_model_override(self._concierge, session)
-
-        system_prompt = _build_prompt(session)
-        chat_params = _extract_chat_params(session, system_prompt, model_override=model_override)
-        workflow_gate = _apply_workflow_continuity_context(
+        async for event in _execute_chat_turn(
             self._concierge,
             session,
-            chat_params,
-        )
-        if workflow_gate is not None:
-            final_content = _prepend_autonomy_announcement(session, workflow_gate.content)
-            yield workflow_gate.model_copy(update={"content": final_content})
-            from .session import SessionResult as _SR
-            manager.set_result(
-                session.id,
-                _SR(
-                    content=final_content,
-                    metadata={
-                        "completion_status": "clarification",
-                        **dict(chat_params.get("audit_metadata") or {}),
-                    },
-                    token_usage={},
-                    duration_ms=(time.monotonic() - start) * 1000,
-                ),
-            )
-            manager.update_state(session.id, "completed")
-            return
-
-        final_content = ""
-        token_usage: dict[str, int] = {}
-        saw_terminal = False
-        interrupted = False
-
-        try:
-            async for event in self._concierge.chat_manager.send_message_with_tools(
-                **chat_params,
-            ):
-                if isinstance(event, ChatInterruptedEvent):
-                    saw_terminal = True
-                    interrupted = True
-                    final_content = _prepend_autonomy_announcement(session, event.content)
-                    token_usage = dict(event.token_usage)
-                    yield event.model_copy(update={"content": final_content})
-                    break
-                if isinstance(event, (ChatCompleteEvent, ChatMutationEvent)):
-                    saw_terminal = True
-                    final_content = _prepend_autonomy_announcement(session, event.content)
-                    token_usage = dict(event.token_usage)
-                    yield event.model_copy(update={"content": final_content})
-                    continue
-                yield event
-        except Exception as exc:
-            from dan.providers import LLMAuthenticationError
-            if isinstance(exc, LLMAuthenticationError):
-                final_content = str(exc)
-                saw_terminal = True
-                yield ChatCompleteEvent(
-                    message_id=uuid.uuid4().hex[:12],
-                    content=final_content,
-                    token_usage={},
-                    context_window=0,
-                    graph_revision="",
-                )
-            else:
-                logger.exception("SingleShot execution failed for session %s", session.id)
-
-        if interrupted or _cancel_requested(session):
-            _mark_session_cancelled(manager, session, start=start, content=final_content)
-            if not saw_terminal:
-                yield _interrupted_event(final_content)
-            return
-
-        if not saw_terminal:
-            synthesized = _synthesize_missing_terminal_event(session)
-            final_content = _prepend_autonomy_announcement(session, synthesized.content)
-            yield synthesized.model_copy(update={"content": final_content})
-
-        from .session import SessionResult as _SR
-        manager.set_result(
-            session.id,
-            _SR(
-                content=final_content,
-                metadata=_chat_result_metadata(chat_params, self._concierge.chat_manager),
-                token_usage=token_usage,
-                duration_ms=(time.monotonic() - start) * 1000,
-            ),
-        )
-        manager.update_state(session.id, "completed")
+            manager,
+            start=start,
+            failure_label="SingleShot",
+        ):
+            yield event
 
 
 # ---------------------------------------------------------------------------
@@ -1599,99 +1652,14 @@ class MultiStepExecutor:
     async def _execute_directly(
         self, session: Any, manager: Any, start: float
     ) -> AsyncIterator[ChatStreamEvent]:
-        if _cancel_requested(session):
-            _mark_session_cancelled(manager, session, start=start)
-            yield _interrupted_event()
-            return
-
-        model_override = _resolve_session_model_override(self._concierge, session)
-
-        system_prompt = _build_prompt(session)
-        chat_params = _extract_chat_params(session, system_prompt, model_override=model_override)
-        workflow_gate = _apply_workflow_continuity_context(
+        async for event in _execute_chat_turn(
             self._concierge,
             session,
-            chat_params,
-        )
-        if workflow_gate is not None:
-            final_content = _prepend_autonomy_announcement(session, workflow_gate.content)
-            yield workflow_gate.model_copy(update={"content": final_content})
-            from .session import SessionResult as _SR
-            manager.set_result(
-                session.id,
-                _SR(
-                    content=final_content,
-                    metadata={
-                        "completion_status": "clarification",
-                        **dict(chat_params.get("audit_metadata") or {}),
-                    },
-                    token_usage={},
-                    duration_ms=(time.monotonic() - start) * 1000,
-                ),
-            )
-            manager.update_state(session.id, "completed")
-            return
-
-        final_content = ""
-        token_usage: dict[str, int] = {}
-        saw_terminal = False
-        interrupted = False
-
-        try:
-            async for event in self._concierge.chat_manager.send_message_with_tools(
-                **chat_params,
-            ):
-                if isinstance(event, ChatInterruptedEvent):
-                    saw_terminal = True
-                    interrupted = True
-                    final_content = _prepend_autonomy_announcement(session, event.content)
-                    token_usage = dict(event.token_usage)
-                    yield event.model_copy(update={"content": final_content})
-                    break
-                if isinstance(event, (ChatCompleteEvent, ChatMutationEvent)):
-                    saw_terminal = True
-                    final_content = _prepend_autonomy_announcement(session, event.content)
-                    token_usage = dict(event.token_usage)
-                    yield event.model_copy(update={"content": final_content})
-                    continue
-                yield event
-        except Exception as exc:
-            from dan.providers import LLMAuthenticationError
-            if isinstance(exc, LLMAuthenticationError):
-                final_content = str(exc)
-                saw_terminal = True
-                yield ChatCompleteEvent(
-                    message_id=uuid.uuid4().hex[:12],
-                    content=final_content,
-                    token_usage={},
-                    context_window=0,
-                    graph_revision="",
-                )
-            else:
-                logger.exception("MultiStep direct execution failed for session %s", session.id)
-
-        if interrupted or _cancel_requested(session):
-            _mark_session_cancelled(manager, session, start=start, content=final_content)
-            if not saw_terminal:
-                yield _interrupted_event(final_content)
-            return
-
-        if not saw_terminal:
-            synthesized = _synthesize_missing_terminal_event(session)
-            final_content = _prepend_autonomy_announcement(session, synthesized.content)
-            yield synthesized.model_copy(update={"content": final_content})
-
-        from .session import SessionResult as _SR
-        manager.set_result(
-            session.id,
-            _SR(
-                content=final_content,
-                metadata=_chat_result_metadata(chat_params, self._concierge.chat_manager),
-                token_usage=token_usage,
-                duration_ms=(time.monotonic() - start) * 1000,
-            ),
-        )
-        manager.update_state(session.id, "completed")
+            manager,
+            start=start,
+            failure_label="MultiStep direct",
+        ):
+            yield event
 
     # -- decompose and execute ---------------------------------------------
 
@@ -1969,6 +1937,7 @@ class MultiStepExecutor:
             task_context={},
         )
         child_lane_id = f"tiered-child-{child.id}"
+        parent_handoff_context = _build_child_handoff_context(session, parent_metadata)
         child_plan = _plan_child_session_impl(
             task_desc=task_desc,
             parent_session_id=session.id,
@@ -1980,10 +1949,36 @@ class MultiStepExecutor:
             parent_action_hints=getattr(parent_route, "action_hints", None) or [],
             parent_message_session_id=getattr(parent_msg, "session_id", None),
             parent_message_thread_id=parent_metadata.get("thread_id"),
-            parent_handoff_context=_build_child_handoff_context(session, parent_metadata),
+            parent_handoff_context=parent_handoff_context.to_dict(),
             child_session_id=child.id,
             child_thread_id=child_lane_id,
         )
+        child_handoff = ChildHandoffEnvelope(
+            parent_task=str(getattr(session, "task", "") or "").strip(),
+            delegated_task=task_desc,
+            route_target=str(child_plan.route_target or "").strip(),
+            action_hints=list(child_plan.action_hints),
+            parent_thread_id=str(child_plan.parent_thread_id or "").strip(),
+            definition_of_done=_default_child_definition_of_done(task_desc),
+            expected_return_shape=_default_child_return_shape(task_desc),
+            context=parent_handoff_context,
+            constraints=dict(child_plan.handoff.get("constraints") or {}),
+            return_channel=dict(child_plan.handoff.get("return_channel") or {}),
+        )
+        handoff_payload = {
+            **copy.deepcopy(child_plan.handoff),
+            **child_handoff.to_dict(),
+        }
+        child_task_context = {
+            **dict(child_plan.task_context),
+            "parent_context": child_handoff.context.to_dict(),
+            "handoff": handoff_payload,
+        }
+        child_metadata_patch = {
+            **dict(child_plan.metadata_patch),
+            "tiered_handoff": handoff_payload,
+            "tiered_handoff_packet": handoff_payload,
+        }
         child_route = parent_route
         if parent_route is not None:
             planned_hints = list(child_plan.action_hints)
@@ -2001,13 +1996,13 @@ class MultiStepExecutor:
                     child_route = parent_route
 
         child.tier = child_plan.child_tier
-        child.task_context = child_plan.task_context
+        child.task_context = child_task_context
 
         if parent_msg is not None:
             child_metadata = _build_child_metadata_seed(parent_metadata)
             child_metadata = {
                 **child_metadata,
-                **child_plan.metadata_patch,
+                **child_metadata_patch,
                 "thread_id": child_lane_id,
             }
             child.msg = parent_msg.model_copy(
@@ -2024,7 +2019,7 @@ class MultiStepExecutor:
                 external_id="",
                 text=task_desc,
                 session_id=child_lane_id,
-                metadata=dict(child_plan.metadata_patch),
+                metadata=dict(child_metadata_patch),
             )
 
         child.context = _copy_context_for_child(session.context)

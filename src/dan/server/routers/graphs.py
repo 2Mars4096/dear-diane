@@ -8,7 +8,7 @@ import tempfile
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from dan.migration.gate_migration import maybe_migrate_graph_dict
@@ -48,19 +48,19 @@ class ApplyMutationRequest(BaseModel):
 
 
 @router.get("/api/graphs")
-async def list_graphs():
-    gs = get_graph_store()
+async def list_graphs(request: Request):
+    gs = get_graph_store(request)
     graphs = gs.list_graphs()
     last_opened = gs.get_last_opened()
     return {"graphs": graphs, "last_opened": last_opened}
 
 
 @router.post("/api/graphs")
-async def create_graph(req: CreateGraphRequest):
+async def create_graph(req: CreateGraphRequest, request: Request):
     from dan.server.graph_store import _validate_graph_id
     from dan.server.chat_manager import compute_graph_revision
 
-    gs = get_graph_store()
+    gs = get_graph_store(request)
     try:
         _validate_graph_id(req.graph_id)
     except ValueError as e:
@@ -79,11 +79,11 @@ _layout_on_load = os.environ.get("DAN_LAYOUT_ON_LOAD", "").lower() in ("1", "tru
 
 
 @router.get("/api/graphs/{graph_id}")
-async def get_graph(graph_id: str, layout: bool = False):
+async def get_graph(graph_id: str, request: Request, layout: bool = False):
     from dan.server.graph_store import _validate_graph_id
     from dan.server.chat_manager import compute_graph_revision
 
-    gs = get_graph_store()
+    gs = get_graph_store(request)
     try:
         _validate_graph_id(graph_id)
     except ValueError as e:
@@ -106,11 +106,11 @@ async def get_graph(graph_id: str, layout: bool = False):
 
 
 @router.put("/api/graphs/{graph_id}")
-async def update_graph(graph_id: str, body: dict[str, Any]):
+async def update_graph(graph_id: str, body: dict[str, Any], request: Request):
     from dan.server.graph_store import GraphSaveValidationError, _validate_graph_id
     from dan.server.chat_manager import compute_graph_revision
 
-    gs = get_graph_store()
+    gs = get_graph_store(request)
     try:
         _validate_graph_id(graph_id)
     except ValueError as e:
@@ -127,11 +127,11 @@ async def update_graph(graph_id: str, body: dict[str, Any]):
 
 
 @router.post("/api/graphs/{graph_id}/save-as")
-async def save_graph_as(graph_id: str, req: SaveAsGraphRequest):
+async def save_graph_as(graph_id: str, req: SaveAsGraphRequest, request: Request):
     from dan.server.graph_store import GraphSaveValidationError, _validate_graph_id
     from dan.server.chat_manager import compute_graph_revision
 
-    gs = get_graph_store()
+    gs = get_graph_store(request)
     try:
         _validate_graph_id(graph_id)
     except ValueError as e:
@@ -167,10 +167,10 @@ async def save_graph_as(graph_id: str, req: SaveAsGraphRequest):
 
 
 @router.delete("/api/graphs/{graph_id}")
-async def delete_graph(graph_id: str):
+async def delete_graph(graph_id: str, request: Request):
     from dan.server.graph_store import _validate_graph_id
 
-    gs = get_graph_store()
+    gs = get_graph_store(request)
     try:
         _validate_graph_id(graph_id)
     except ValueError as e:
@@ -191,17 +191,17 @@ _STRICT_MUTATION_VALIDATION = os.environ.get("DAN_STRICT_MUTATION_VALIDATION", "
 
 
 @router.post("/api/graphs/{graph_id}/apply-mutation")
-async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
+async def apply_mutation(graph_id: str, req: ApplyMutationRequest, request: Request):
     from dan.server.chat_manager import compute_graph_revision
     from dan.server.graph_mutator import GraphMutator, MutationPlan
     from dan.server.mutation_metrics import mutation_metrics
     from dan.server.workflow_guards import (
         WorkflowContractError,
         collect_workflow_contract_messages,
-        ensure_workflow_apply_ready,
+        ensure_workflow_apply_ready_and_save,
     )
 
-    gs = get_graph_store()
+    gs = get_graph_store(request)
     data = gs.get_graph(graph_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
@@ -246,7 +246,11 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
         return resp
 
     try:
-        guarded = ensure_workflow_apply_ready(result.new_graph, workflow_id=graph_id)
+        saved = ensure_workflow_apply_ready_and_save(
+            gs,
+            result.new_graph,
+            workflow_id=graph_id,
+        )
     except WorkflowContractError as exc:
         mutation_metrics.record_apply(False)
         mutation_metrics.record_validation(False)
@@ -267,17 +271,15 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
 
     mutation_metrics.record_validation(True)
     mutation_metrics.record_apply(True)
-    saved_graph = gs.save_graph(graph_id, guarded.graph_dict)
-    new_revision = compute_graph_revision(saved_graph)
 
     if req.idempotency_key:
         _applied_mutation_keys.add((graph_id, req.idempotency_key))
         if len(_applied_mutation_keys) > _MAX_IDEMPOTENCY_KEYS:
             _applied_mutation_keys.pop()
 
-    from dan.server.app import _run_manager
-    if req.source == "optimization" and _run_manager is not None:
-        _run_manager.emit_optimization_applied(graph_id, {
+    if req.source == "optimization":
+        rm = get_run_manager(request)
+        rm.emit_optimization_applied(graph_id, {
             "graph_id": graph_id,
             "operations": len(plan.operations),
             "description": plan.description or "",
@@ -285,10 +287,10 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
 
     return {
         "success": True,
-        "new_graph": saved_graph,
-        "graph_revision": new_revision,
+        "new_graph": saved.saved_graph,
+        "graph_revision": saved.graph_revision,
         "errors": [],
-        "warnings": list(getattr(guarded.report, "warnings", []) or []),
+        "warnings": saved.warnings,
         "diagnostics": result.diagnostics,
         "stale_plan": False,
     }
@@ -300,7 +302,7 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
 
 
 @router.post("/api/graphs/{graph_id}/validate")
-async def validate_graph_endpoint(graph_id: str):
+async def validate_graph_endpoint(graph_id: str, request: Request):
     from dan.models.graph import Graph
     from dan.meta.workflow_contract import (
         classify_run_readiness_issues,
@@ -308,7 +310,7 @@ async def validate_graph_endpoint(graph_id: str):
     )
     from dan.validation.graph import validate_graph
 
-    gs = get_graph_store()
+    gs = get_graph_store(request)
     data = gs.get_graph(graph_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
@@ -370,10 +372,10 @@ async def validate_graph_endpoint(graph_id: str):
 
 
 @router.post("/api/graphs/{graph_id}/nodes/{node_id}/add-boundary-validators")
-async def add_boundary_validators(graph_id: str, node_id: str):
+async def add_boundary_validators(graph_id: str, node_id: str, request: Request):
     from dan.models.graph import Graph
 
-    gs = get_graph_store()
+    gs = get_graph_store(request)
     data = gs.get_graph(graph_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
@@ -400,10 +402,10 @@ async def add_boundary_validators(graph_id: str, node_id: str):
 
 
 @router.get("/api/graphs/{graph_id}/nodes/{node_id}/inputs")
-async def get_node_inputs(graph_id: str, node_id: str, run_id: str | None = None):
+async def get_node_inputs(graph_id: str, node_id: str, request: Request, run_id: str | None = None):
     from dan.models.graph import Graph
 
-    gs = get_graph_store()
+    gs = get_graph_store(request)
     data = gs.get_graph(graph_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
@@ -422,7 +424,7 @@ async def get_node_inputs(graph_id: str, node_id: str, run_id: str | None = None
 
     runtime_values: dict[str, Any] = {}
     if run_id:
-        rm = get_run_manager()
+        rm = get_run_manager(request)
         record = rm.get_run(run_id)
         if record is not None and rm.run_store is not None:
             source_node_ids = {v["source_node_id"] for v in variables if v.get("source_node_id")}
@@ -456,10 +458,10 @@ async def get_node_inputs(graph_id: str, node_id: str, run_id: str | None = None
 
 
 @router.get("/api/graphs/{graph_id}/export/markdown")
-async def export_graph_markdown(graph_id: str):
+async def export_graph_markdown(graph_id: str, request: Request):
     from dan.loader.decompiler import decompile_to_markdown
 
-    gs = get_graph_store()
+    gs = get_graph_store(request)
     graph = gs.load_as_model(graph_id)
     if graph is None:
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
@@ -484,10 +486,10 @@ async def export_graph_markdown(graph_id: str):
 
 
 @router.get("/api/graphs/{graph_id}/export/python")
-async def export_graph_python(graph_id: str):
+async def export_graph_python(graph_id: str, request: Request):
     from dan.builder.decompiler import decompile as decompile_to_python
 
-    gs = get_graph_store()
+    gs = get_graph_store(request)
     graph = gs.load_as_model(graph_id)
     if graph is None:
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")

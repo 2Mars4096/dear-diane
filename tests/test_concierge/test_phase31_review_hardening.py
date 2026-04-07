@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import get_type_hints
 
 import pytest
 
@@ -12,15 +13,20 @@ from dan.cli.chat import (
     _progress_ack_text,
 )
 from dan.server.app_state import AppState
-from dan.server.chat_manager import _friendly_chat_error
+from dan.server.chat_manager import ChatManager, _friendly_chat_error
 from dan.cli import adapter as adapter_module
 from dan.engine.learning_tiers import SqliteBackend
 from dan.server.concierge.dispatcher import _is_bypass_command
 from dan.server.concierge.models import SurfaceMessage
+from dan.server.concierge.runtime import Concierge, build_concierge
+from dan.server.concierge.tiered_dispatch import TieredDispatcher
+from dan.server.run_finalization import RunFinalizer
+from dan.server.run_manager import RunManager
 from dan.server.startup import (
     _record_startup_degradation,
     get_llm_api_key_status,
     get_startup_degradation_summary,
+    lifespan,
     log_startup_configuration_warnings,
     log_startup_degradation_summary,
 )
@@ -191,6 +197,17 @@ def test_startup_warnings_skip_missing_key_when_provider_key_configured(
 
     messages = [record.message for record in caplog.records]
     assert not any("DAN_LLM_API_KEY is missing" in message for message in messages)
+
+
+def test_split_module_type_hints_resolve() -> None:
+    assert "return" in get_type_hints(ChatManager._parse_intent_from_result)
+    assert get_type_hints(ChatManager.run_agent_turn)["request"].__name__ == "AgentRequest"
+    assert get_type_hints(RunManager.rerun_from_checkpoint)["scope"].__name__ == "RerunScope"
+    assert "project_store_base_dir" in get_type_hints(build_concierge)
+    assert get_type_hints(TieredDispatcher.dispatch)["msg"].__name__ == "SurfaceMessage"
+    assert "app" in get_type_hints(lifespan)
+    assert "record" in get_type_hints(RunFinalizer.finalize)
+    assert "learning_bundle" in get_type_hints(Concierge.__init__)
 
 
 def test_sqlite_backend_rejects_adversarial_json_filter_key(tmp_path: Path) -> None:

@@ -14,12 +14,17 @@ import uuid
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 if TYPE_CHECKING:
     from ..dispatcher import ConcurrentDispatcher
     from ..learning_bundle import ConciergeLearningBundle
     from ..memory_services import MemoryServices
+
+from ..dispatcher import ConcurrentDispatcher
+from ..learning_bundle import ConciergeLearningBundle
+from ..memory_services import MemoryServices
 
 from dan.chat_events import ChatCompleteEvent, ChatStreamEvent
 from dan.chat_events import (
@@ -72,6 +77,21 @@ from ..task_attention import (
 from ..task_registry import ConciergeTask, DispatchMode, TaskRegistry, TaskState
 from ..task_snapshot import build_snapshot
 from ..triage import TriageResult
+from ..schedule_surface import (
+    apply_embedded_workflow_schedule_followup,
+    build_schedule_command_kwargs,
+    coerce_workflow_schedule_followup_message,
+)
+from . import context_resolution as _context_resolution
+from .dispatch_policy import select_dispatch_mode
+from .progress_ux import (
+    build_reassurance_message,
+    ensure_progress_session,
+    format_progress_status,
+    is_messaging_surface,
+    make_phase_event,
+    set_progress_phase,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,47 +104,6 @@ _BLOCKER_RE = re.compile(
 )
 _FILE_PATH_RE = re.compile(r"(?:^|[\s\"'])(/[\w./-]+|[\w./-]+\.\w{1,6})(?=[\"'\s,;)]|$)")
 _SENTENCE_END_RE = re.compile(r"[.!?]")
-_WORKFLOW_SCHEDULE_EXPLICIT_RE = re.compile(
-    r"\b(?:schedule|automate|automation|automated|recurring|cron)\b",
-    re.IGNORECASE,
-)
-_WORKFLOW_SCHEDULE_SUBJECT_RE = re.compile(
-    r"\b(?:workflow|graph|pipeline|execution|exeuction|it|that|this)\b",
-    re.IGNORECASE,
-)
-_WORKFLOW_SCHEDULE_TRIGGER_RE = re.compile(
-    r"\b(?:daily|weekly|monthly|weekdays|every\s+\d+\s+(?:hours?|minutes?|days?|h|m|d)|"
-    r"at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm))\b",
-    re.IGNORECASE,
-)
-_WORKFLOW_SCHEDULE_MULTI_ACTION_RE = re.compile(
-    r"\b(?:delete|remove|increase|decrease|edit|fix|patch|change|update|add|build|rebuild)\b",
-    re.IGNORECASE,
-)
-_CONTEXT_CONTINUATION_RE = re.compile(
-    r"\b(?:continue|resume|also|then|next|retry|redo|again|fix|update|edit|patch|apply|run|test|"
-    r"check|review|open|show|summarize|that|this|it|them|those|these)\b",
-    re.IGNORECASE,
-)
-_CONTEXT_TOKEN_RE = re.compile(r"[a-z0-9]+")
-_CONTEXT_LABEL_STOPWORDS = frozenset(
-    {
-        "task",
-        "project",
-        "workflow",
-        "report",
-        "draft",
-        "file",
-        "files",
-        "readme",
-        "notes",
-        "plan",
-        "chat",
-        "current",
-        "conversation",
-    }
-)
-_EPHEMERAL_PROJECT_PREFIX = "_ephemeral:"
 
 
 def _run_coroutine_sync(
@@ -249,8 +228,8 @@ class Concierge:
         tool_registry: Any = None,
         engine: Any = None,
         telemetry_store: Any = None,
-        learning_bundle: "ConciergeLearningBundle | None" = None,
-        memory_services: "MemoryServices | None" = None,
+        learning_bundle: ConciergeLearningBundle | None = None,
+        memory_services: MemoryServices | None = None,
     ) -> None:
         self.project_store = project_store
         self.chat_manager = chat_manager
@@ -499,331 +478,6 @@ class Concierge:
         return result.text
 
     # ------------------------------------------------------------------
-    # Context resolution
-    # ------------------------------------------------------------------
-
-    def _resolve_context(self, msg: SurfaceMessage) -> ResolvedContext:
-        direct = self._resolve_direct_context_reference(msg)
-        if direct is not None:
-            return direct
-
-        pending = self._peek_pending_context(msg)
-        if pending is not None:
-            return pending
-
-        active = self._peek_active_context(msg)
-        if active is not None:
-            return active
-
-        return self._ephemeral_context(msg)
-
-    def _resolve_direct_context_reference(
-        self,
-        msg: SurfaceMessage,
-    ) -> ResolvedContext | None:
-        trigger_context = msg.metadata.get("trigger_context")
-        if isinstance(trigger_context, dict):
-            project_id = str(trigger_context.get("project_id") or "").strip()
-            task_id = str(trigger_context.get("task_id") or "").strip()
-            if project_id:
-                resolved = self._context_from_project_ids(
-                    project_id,
-                    task_id=task_id,
-                    surface_id=msg.external_id,
-                )
-                if resolved is not None:
-                    return resolved
-
-        metadata = msg.metadata if isinstance(getattr(msg, "metadata", None), dict) else {}
-        resolved_project_id = str(metadata.get("resolved_project_id") or "").strip()
-        resolved_task_id = str(metadata.get("resolved_task_id") or "").strip()
-        resolved_concierge_task_id = str(metadata.get("concierge_task_id") or "").strip()
-        if resolved_project_id:
-            resolved = self._context_from_project_ids(
-                resolved_project_id,
-                task_id=resolved_task_id,
-                surface_id=msg.external_id,
-            )
-            if resolved is not None and resolved_concierge_task_id:
-                resolved.concierge_task_id = resolved_concierge_task_id
-            return resolved
-        return None
-
-    def _context_from_project_ids(
-        self,
-        project_id: str,
-        *,
-        task_id: str = "",
-        surface_id: str,
-    ) -> ResolvedContext | None:
-        if not project_id:
-            return None
-        project = self.project_store.get_project(project_id, surface_id)
-        if project is None:
-            project = self.project_store.get_project_any_surface(project_id)
-        if project is None:
-            return None
-
-        task = None
-        if task_id:
-            for candidate in project.tasks:
-                if candidate.task_id == task_id:
-                    task = candidate
-                    break
-        if task is None:
-            task = self.project_store.get_current_task(project.project_id, surface_id)
-            if task is None:
-                task = self.project_store.get_current_task_any_surface(project.project_id)
-        if task is None and project.tasks:
-            task = project.tasks[-1]
-        if task is None:
-            return None
-
-        return ResolvedContext(
-            project=project,
-            task=task,
-            is_new_project=False,
-            is_new_task=False,
-            confidence=1.0,
-            domain=project.domain,
-        )
-
-    def _peek_pending_context(self, msg: SurfaceMessage) -> ResolvedContext | None:
-        pending_projects = self.project_store.list_pending_projects(msg.external_id)
-        if not pending_projects:
-            return None
-        if len(pending_projects) == 1:
-            project = pending_projects[0]
-        else:
-            lower = str(getattr(msg, "text", "") or "").lower()
-            project = next(
-                (
-                    candidate
-                    for candidate in pending_projects
-                    if candidate.label and candidate.label.lower() in lower
-                ),
-                None,
-            )
-            if project is None:
-                return None
-        return self._existing_project_context(
-            project,
-            surface_id=msg.external_id,
-            confidence=1.0,
-        )
-
-    def _peek_active_context(self, msg: SurfaceMessage) -> ResolvedContext | None:
-        active_projects = self.project_store.list_active(msg.external_id)
-        if not active_projects:
-            return None
-
-        lower = str(getattr(msg, "text", "") or "").strip().lower()
-        if not lower:
-            return None
-
-        label_matches: list[tuple[Project, Task]] = []
-        continuation_candidates: list[tuple[Project, Task]] = []
-        for project in active_projects:
-            task = self._current_task_or_placeholder(project, msg.external_id, msg.text)
-            if self._message_mentions_context_label(lower, project, task):
-                label_matches.append((project, task))
-            elif self._message_has_continuation_cue(lower):
-                continuation_candidates.append((project, task))
-
-        if label_matches:
-            project, task = label_matches[0]
-            return ResolvedContext(
-                project=project,
-                task=task,
-                is_new_project=False,
-                is_new_task=False,
-                confidence=0.95,
-                domain=project.domain,
-            )
-
-        if len(active_projects) == 1 and len(continuation_candidates) == 1:
-            project, task = continuation_candidates[0]
-            return ResolvedContext(
-                project=project,
-                task=task,
-                is_new_project=False,
-                is_new_task=False,
-                confidence=0.85,
-                domain=project.domain,
-            )
-
-        return None
-
-    def _existing_project_context(
-        self,
-        project: Project,
-        *,
-        surface_id: str,
-        confidence: float,
-    ) -> ResolvedContext:
-        return ResolvedContext(
-            project=project,
-            task=self._current_task_or_placeholder(project, surface_id, project.label),
-            is_new_project=False,
-            is_new_task=False,
-            confidence=confidence,
-            domain=project.domain,
-        )
-
-    def _current_task_or_placeholder(
-        self,
-        project: Project,
-        surface_id: str,
-        fallback_text: str,
-    ) -> Task:
-        task = self.project_store.get_current_task(project.project_id, surface_id)
-        if task is None:
-            task = self.project_store.get_current_task_any_surface(project.project_id)
-        if task is None and project.tasks:
-            task = project.tasks[-1]
-        if task is not None:
-            return task
-        label = self._context_label(fallback_text, default="task")
-        return Task(task_id=f"{_EPHEMERAL_PROJECT_PREFIX}task:{project.project_id}", label=label)
-
-    def _ephemeral_context(self, msg: SurfaceMessage) -> ResolvedContext:
-        project = Project(
-            project_id=f"{_EPHEMERAL_PROJECT_PREFIX}{msg.surface}:{msg.external_id}",
-            surface_id=msg.external_id,
-            label="Current conversation",
-        )
-        task = Task(
-            task_id=f"{_EPHEMERAL_PROJECT_PREFIX}task:{msg.surface}:{msg.external_id}",
-            label=self._context_label(msg.text, default="chat"),
-        )
-        return ResolvedContext(
-            project=project,
-            task=task,
-            is_new_project=True,
-            is_new_task=True,
-            confidence=0.0,
-        )
-
-    def _message_has_continuation_cue(self, lower_text: str) -> bool:
-        return bool(_CONTEXT_CONTINUATION_RE.search(lower_text))
-
-    def _message_mentions_context_label(
-        self,
-        lower_text: str,
-        project: Project,
-        task: Task | None,
-    ) -> bool:
-        message_tokens = self._context_label_tokens(lower_text)
-        for label in (getattr(project, "label", ""), getattr(task, "label", "") if task is not None else ""):
-            label_text = str(label or "").strip().lower()
-            if not label_text:
-                continue
-            if label_text in lower_text:
-                return True
-            label_tokens = self._context_label_tokens(label_text)
-            if label_tokens and message_tokens.intersection(label_tokens):
-                return True
-        return False
-
-    def _context_label_tokens(self, text: str) -> set[str]:
-        return {
-            token
-            for token in _CONTEXT_TOKEN_RE.findall(str(text or "").lower())
-            if len(token) >= 4 and token not in _CONTEXT_LABEL_STOPWORDS
-        }
-
-    def _context_label(self, text: str, *, default: str) -> str:
-        return str(text or "").strip()[:60].replace("\n", " ") or default
-
-    def _is_ephemeral_context(self, context: ResolvedContext | None) -> bool:
-        if context is None:
-            return True
-        project_id = str(getattr(getattr(context, "project", None), "project_id", "") or "")
-        return project_id.startswith(_EPHEMERAL_PROJECT_PREFIX)
-
-    def _should_persist_context(self, context: ResolvedContext | None) -> bool:
-        return not self._is_ephemeral_context(context)
-
-    def _should_materialize_project_turn(
-        self,
-        msg: SurfaceMessage,
-        triage: TriageResult | None,
-    ) -> bool:
-        metadata = msg.metadata if isinstance(getattr(msg, "metadata", None), dict) else {}
-        if metadata.get("resolved_project_id") or metadata.get("trigger_context"):
-            return True
-        if triage is None:
-            return False
-        if bool(getattr(triage, "is_social", False)):
-            return False
-        if bool(getattr(triage, "is_resume", False)):
-            return True
-        intent = str(getattr(triage, "intent", "") or "").strip().lower()
-        if intent in {"agent", "plan"}:
-            return True
-        route = getattr(triage, "route", None)
-        target = str(getattr(route, "target", "") or "").strip().lower()
-        if target in {"file", "workflow", "run", "memory"}:
-            return True
-        hints = {
-            str(item or "").strip()
-            for item in list(getattr(route, "action_hints", None) or [])
-            if str(item or "").strip()
-        }
-        return bool(
-            hints.intersection(
-                {"read_file", "write_file", "workflow_edit", "workflow_run", "run_control"}
-            )
-        )
-
-    def _materialize_context(
-        self,
-        msg: SurfaceMessage,
-        *,
-        triage: TriageResult | None = None,
-        base_context: ResolvedContext | None = None,
-    ) -> ResolvedContext:
-        context = base_context or self._resolve_context(msg)
-        if self._should_persist_context(context):
-            materialized = self._context_from_project_ids(
-                context.project.project_id,
-                task_id=context.task.task_id,
-                surface_id=msg.external_id,
-            )
-            if materialized is not None:
-                return materialized
-            task = self.project_store.add_task(
-                context.project.project_id,
-                self._context_label(context.task.label or msg.text, default="task"),
-                msg.external_id,
-            )
-            project = self.project_store.get_project(context.project.project_id, msg.external_id) or context.project
-            return ResolvedContext(
-                project=project,
-                task=task,
-                is_new_project=False,
-                is_new_task=True,
-                confidence=max(0.8, float(getattr(context, "confidence", 0.0) or 0.0)),
-                domain=project.domain,
-            )
-
-        if not self._should_materialize_project_turn(msg, triage):
-            return context
-
-        label = self._context_label(msg.text, default="project")
-        project = self.project_store.create_project(label, msg.external_id)
-        task = self.project_store.add_task(project.project_id, label, msg.external_id)
-        project = self.project_store.get_project(project.project_id, msg.external_id) or project
-        return ResolvedContext(
-            project=project,
-            task=task,
-            is_new_project=True,
-            is_new_task=True,
-            confidence=1.0,
-            domain=project.domain,
-        )
-
-    # ------------------------------------------------------------------
     # Telemetry
     # ------------------------------------------------------------------
 
@@ -945,183 +599,6 @@ class Concierge:
         if pending and (lower in _PREF_CONFIRM_WORDS or lower.startswith("reject")):
             return True
         return False
-
-    def _resolve_default_workflow_id(self, msg: SurfaceMessage) -> str | None:
-        metadata = (
-            msg.metadata
-            if isinstance(getattr(msg, "metadata", None), dict)
-            else {}
-        )
-        workflow_id = str(metadata.get("workflow_id") or "").strip()
-        if workflow_id:
-            return workflow_id
-
-        active_projects = self.project_store.list_active(msg.external_id)
-        if active_projects:
-            linked = list(active_projects[0].linked_workflow_ids or [])
-            if linked:
-                workflow_id = str(linked[-1] or "").strip()
-                if workflow_id:
-                    return workflow_id
-
-        workflow_id = str(
-            getattr(self.capability_context, "workflow_id", "") or ""
-        ).strip()
-        return workflow_id or None
-
-    def _infer_workflow_schedule_trigger(self, text: str) -> str | None:
-        from ..scheduler import parse_nl_schedule
-
-        stripped = str(text or "").strip()
-        if not stripped:
-            return None
-
-        parsed = parse_nl_schedule(stripped)
-        if parsed is not None:
-            _action, trigger = parsed
-            return str(trigger or "").strip() or None
-
-        lower = stripped.lower()
-        trigger_match = _WORKFLOW_SCHEDULE_TRIGGER_RE.search(lower)
-        if trigger_match is None:
-            return None
-
-        if "weekdays" in lower:
-            time_match = re.search(r"\bweekdays\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b", lower)
-            if time_match:
-                return f"weekdays at {time_match.group(1)}"
-            return "weekdays at 9am"
-        if "daily" in lower:
-            time_match = re.search(r"\bdaily\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b", lower)
-            if time_match:
-                return f"daily at {time_match.group(1)}"
-            return "every day at 9am"
-        if "weekly" in lower:
-            return "every 7d"
-        if "monthly" in lower:
-            return "every 30d"
-
-        every_match = re.search(
-            r"\bevery\s+\d+\s+(?:hours?|minutes?|days?|h|m|d)\b",
-            lower,
-        )
-        if every_match:
-            return every_match.group(0)
-
-        time_match = re.search(r"\bat\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b", lower)
-        if time_match:
-            return f"daily at {time_match.group(1)}"
-        return None
-
-    def _coerce_workflow_schedule_followup_message(
-        self,
-        msg: SurfaceMessage,
-    ) -> SurfaceMessage | None:
-        if self._schedule_store is None:
-            return None
-
-        text = str(getattr(msg, "text", "") or "").strip()
-        if not text or text.startswith("/"):
-            return None
-        if _WORKFLOW_SCHEDULE_MULTI_ACTION_RE.search(text) and "." in text:
-            return None
-        if _WORKFLOW_SCHEDULE_MULTI_ACTION_RE.search(text) and "," in text:
-            return None
-
-        default_workflow_id = self._resolve_default_workflow_id(msg)
-        if not default_workflow_id:
-            return None
-
-        trigger = self._infer_workflow_schedule_trigger(text)
-        if not trigger:
-            return None
-
-        has_explicit_schedule = bool(_WORKFLOW_SCHEDULE_EXPLICIT_RE.search(text))
-        has_subject_reference = bool(_WORKFLOW_SCHEDULE_SUBJECT_RE.search(text))
-        has_run_phrase = bool(
-            re.search(r"\b(?:run|execute|launch|start)\b", text, re.IGNORECASE)
-        )
-        if not (
-            (has_explicit_schedule and has_subject_reference)
-            or (has_subject_reference and has_run_phrase)
-        ):
-            return None
-
-        metadata = dict(msg.metadata or {})
-        metadata["workflow_schedule_followup_bridge"] = True
-        metadata["workflow_schedule_original_text"] = text
-        return msg.model_copy(
-            update={
-                "text": f"/schedule workflow current {trigger}",
-                "metadata": metadata,
-            }
-        )
-
-    async def _apply_embedded_workflow_schedule_followup(
-        self,
-        msg: SurfaceMessage,
-    ) -> SurfaceMessage:
-        if self._schedule_store is None:
-            return msg
-
-        text = str(getattr(msg, "text", "") or "").strip()
-        if not text or text.startswith("/"):
-            return msg
-
-        clauses = [
-            re.sub(r"\s+", " ", part).strip(" ,.;")
-            for part in re.split(r"[.!?]\s+|,\s*", text)
-            if str(part or "").strip(" ,.;")
-        ]
-        if len(clauses) < 2:
-            return msg
-
-        registry = get_default_registry()
-        descriptor = registry.get("/schedule")
-        if descriptor is None or descriptor.kind != "chat":
-            return msg
-
-        for index, clause in enumerate(clauses):
-            clause_msg = msg.model_copy(update={"text": clause})
-            bridged_schedule_msg = self._coerce_workflow_schedule_followup_message(clause_msg)
-            if bridged_schedule_msg is None:
-                continue
-
-            schedule_result = await self._dispatch_registry_fast_command(
-                bridged_schedule_msg,
-                descriptor,
-                registry,
-            )
-            if schedule_result is None:
-                continue
-
-            remaining_clauses = [item for idx, item in enumerate(clauses) if idx != index]
-            remaining_text = ". ".join(
-                item.strip()
-                for item in remaining_clauses
-                if str(item or "").strip()
-            ).strip()
-            if not remaining_text:
-                return msg
-
-            metadata = dict(msg.metadata or {})
-            prefetched_actions = list(metadata.get("prefilled_action_contexts") or [])
-            schedule_note = str(getattr(schedule_result, "content", "") or "").strip()
-            if schedule_note:
-                prefetched_actions.append(
-                    f"Workflow scheduling was already completed during routing: {schedule_note}"
-                )
-            metadata["prefilled_action_contexts"] = _dedupe_keep_order(prefetched_actions)
-            metadata["workflow_schedule_followup_bridge"] = True
-            metadata["workflow_schedule_original_text"] = text
-            return msg.model_copy(
-                update={
-                    "text": remaining_text,
-                    "metadata": metadata,
-                }
-            )
-
-        return msg
 
     async def _coerce_fast_command_result(self, result: Any) -> ChatCompleteEvent | None:
         if asyncio.iscoroutine(result) or asyncio.isfuture(result):
@@ -1310,49 +787,17 @@ class Concierge:
         if descriptor.name == "/schedule":
             if self._schedule_store is None:
                 return self._complete_event(content="Scheduling is unavailable.")
-            from ..scheduler import DeliveryTarget, TriggerContext
-
-            metadata = (
-                msg.metadata
-                if isinstance(getattr(msg, "metadata", None), dict)
-                else {}
-            )
-            resolved_project_id = str(metadata.get("resolved_project_id") or "").strip() or None
-            resolved_task_id = str(metadata.get("resolved_task_id") or "").strip() or None
-            default_workflow_id = self._resolve_default_workflow_id(msg)
-            active_projects = self.project_store.list_active(msg.external_id)
-            project_workflow_ids = (
-                list(active_projects[0].linked_workflow_ids or [])
-                if active_projects
-                else []
-            )
-            trigger_context = TriggerContext(
-                source_surface=msg.surface or "schedule",
-                project_id=resolved_project_id,
-                task_id=resolved_task_id,
-                user_id=msg.external_id or None,
-                thread_key=msg.session_id or msg.external_id or None,
-            )
-            delivery_target = DeliveryTarget(
-                surface=msg.surface or "cli",
-                conversation_key=msg.external_id or None,
-                user_id=msg.external_id or None,
-                project_id=resolved_project_id,
-                thread_key=msg.session_id or msg.external_id or None,
+            handler_kwargs = build_schedule_command_kwargs(
+                msg,
+                schedule_store=self._schedule_store,
+                schedule_history_store=self._schedule_history_store,
+                project_store=self.project_store,
+                capability_context=self.capability_context,
+                chat_manager=self.chat_manager,
+                user_profile=self.user_profile,
             )
             return await self._coerce_fast_command_result(
-                handler(
-                    msg.text,
-                    self._schedule_store,
-                    self._schedule_history_store,
-                    default_trigger_context=trigger_context,
-                    default_delivery_target=delivery_target,
-                    default_workflow_id=default_workflow_id,
-                    graph_store=getattr(self.chat_manager, "_graph_store", None),
-                    project_workflow_ids=project_workflow_ids,
-                    expected_workflow_revision=str(metadata.get("client_graph_revision") or "").strip() or None,
-                    default_timezone=str(getattr(self.user_profile, "preferred_timezone", "") or "").strip() or None,
-                ),
+                handler(**handler_kwargs),
             )
 
         if descriptor.name == "/plan":
@@ -1635,7 +1080,12 @@ class Concierge:
             return self._complete_event(content=fast_social.social_response or "")
 
         if not self._is_fast_command(msg.text):
-            bridged_schedule_msg = self._coerce_workflow_schedule_followup_message(msg)
+            bridged_schedule_msg = coerce_workflow_schedule_followup_message(
+                msg,
+                schedule_store=self._schedule_store,
+                project_store=self.project_store,
+                capability_context=self.capability_context,
+            )
             if bridged_schedule_msg is None:
                 return None
             registry = get_default_registry()
@@ -1710,36 +1160,18 @@ class Concierge:
 
     @staticmethod
     def _is_messaging_surface(msg: SurfaceMessage) -> bool:
-        surface = str(getattr(msg, "surface", "") or "").split(":", 1)[0]
-        return surface in {"telegram", "whatsapp", "whatsapp-web", "email"}
+        return is_messaging_surface(msg)
 
     @staticmethod
     def _format_elapsed_seconds(elapsed_seconds: float) -> str:
-        seconds = max(1, int(round(elapsed_seconds)))
-        if seconds < 60:
-            return f"{seconds}s elapsed"
-        minutes, seconds = divmod(seconds, 60)
-        if minutes < 60:
-            if seconds == 0:
-                return f"{minutes}m elapsed"
-            return f"{minutes}m {seconds}s elapsed"
-        hours, minutes = divmod(minutes, 60)
-        if minutes == 0 and seconds == 0:
-            return f"{hours}h elapsed"
-        if seconds == 0:
-            return f"{hours}h {minutes}m elapsed"
-        return f"{hours}h {minutes}m {seconds}s elapsed"
+        from .progress_ux import format_elapsed_seconds
+
+        return format_elapsed_seconds(elapsed_seconds)
 
     def _format_progress_status(
         self, prefix: str, label: str, elapsed_seconds: float,
     ) -> str:
-        clean_label = label.strip().rstrip(".!?")
-        if elapsed_seconds > 0:
-            return (
-                f"{prefix} — {clean_label} "
-                f"({self._format_elapsed_seconds(elapsed_seconds)})"
-            )
-        return f"{prefix} — {clean_label}"
+        return format_progress_status(prefix, label, elapsed_seconds)
 
     def _set_progress_phase(
         self,
@@ -1748,27 +1180,13 @@ class Concierge:
         name: str,
         detail: str | None = None,
     ) -> bool:
-        session = self._progress_sessions.get(external_id)
-        if session is None:
-            return False
-        current = session.get_current_phase()
-        created_phase = False
-        if current is None or current.id != phase_id:
-            if current is not None and current.status == "active":
-                summary = current.summary or (
-                    current.sub_steps[-1] if current.sub_steps else current.name
-                )
-                session.complete_phase(current.id, summary)
-            session.start_phase(phase_id, name)
-            created_phase = True
-        if detail:
-            if created_phase:
-                phase = session.get_current_phase()
-                if phase is not None:
-                    phase.sub_steps.append(detail)
-                    return created_phase
-            session.update_phase(phase_id, detail)
-        return created_phase
+        return set_progress_phase(
+            self._progress_sessions,
+            external_id,
+            phase_id,
+            name,
+            detail,
+        )
 
     def _make_phase_event(
         self,
@@ -1779,98 +1197,33 @@ class Concierge:
         *,
         force: bool = False,
     ) -> ChatCompleteEvent | None:
-        created_phase = self._set_progress_phase(external_id, phase_id, name, detail)
-        session = self._progress_sessions.get(external_id)
-        if session is None:
-            return None
-        if getattr(session, "verbosity", "minimal") == "minimal":
-            return None
-        now = time.monotonic()
-        last_phase_event_time = float(
-            getattr(session, "_last_phase_event_time", 0.0) or 0.0,
-        )
-        if (
-            not force
-            and not created_phase
-            and now - last_phase_event_time < self._MIN_PHASE_EVENT_INTERVAL
-        ):
-            return None
-        session._last_phase_event_time = now
-        label = detail or name
-        elapsed_seconds = session.elapsed_total()
-        return ChatCompleteEvent(
-            message_id=uuid.uuid4().hex[:12],
-            content=self._format_progress_status("Working on it", label, elapsed_seconds),
-            token_usage={},
-            context_window=0,
-            graph_revision="",
-            detected_mode="progress_ack",
-            phase_label=label,
+        return make_phase_event(
+            self._progress_sessions,
+            external_id,
+            phase_id,
+            name,
+            detail,
+            force=force,
+            min_phase_interval=self._MIN_PHASE_EVENT_INTERVAL,
         )
 
     def _create_progress_renderer(self, surface: str, msg: Any) -> Any | None:
-        try:
-            from ..progress_ux import CLIProgressRenderer
-        except ImportError:
-            return None
-        if surface == "cli":
-            return CLIProgressRenderer()
-        return None
+        del msg
+        from .progress_ux import create_progress_renderer
+
+        return create_progress_renderer(surface)
 
     def _ensure_progress_session(self, msg: SurfaceMessage) -> None:
-        if msg.external_id in self._progress_sessions:
-            return
-        try:
-            from ..progress_ux import (
-                ProgressSession,
-                get_user_verbosity_override,
-                resolve_verbosity,
-            )
-            surface = msg.surface or "cli"
-            verbosity = (
-                get_user_verbosity_override(msg.external_id)
-                or resolve_verbosity(surface)
-            )
-            progress_session = ProgressSession(surface=surface, verbosity=verbosity)
-            renderer = self._create_progress_renderer(surface, msg)
-            if renderer is not None:
-                progress_session.renderer = renderer
-            self._progress_sessions[msg.external_id] = progress_session
-            self._set_progress_phase(
-                msg.external_id, "intake", "Understanding your request",
-            )
-        except Exception:
-            logger.debug("Progress session init failed", exc_info=True)
+        ensure_progress_session(self._progress_sessions, msg)
 
     def _build_reassurance_message(
         self, msg: SurfaceMessage, reassurance_count: int,
     ) -> str:
-        progress_session = self._progress_sessions.get(msg.external_id)
-        elapsed_seconds = (
-            progress_session.elapsed_total()
-            if progress_session is not None
-            else 0.0
+        return build_reassurance_message(
+            self._progress_sessions,
+            msg,
+            reassurance_count,
         )
-        prefix = "Working on it" if reassurance_count == 0 else "Still working"
-        if progress_session is not None:
-            phase = progress_session.get_current_phase()
-            if phase is not None:
-                latest = (
-                    phase.sub_steps[-1]
-                    if phase.sub_steps
-                    else (phase.summary or phase.name)
-                ).strip().rstrip(".!?")
-                if latest:
-                    return self._format_progress_status(prefix, latest, elapsed_seconds)
-
-        _ACTIVITY_LABELS = [
-            "Gathering relevant context",
-            "Researching your request",
-            "Analyzing information",
-            "Pulling things together",
-        ]
-        idx = min(reassurance_count, len(_ACTIVITY_LABELS) - 1)
-        return self._format_progress_status(prefix, _ACTIVITY_LABELS[idx], elapsed_seconds)
 
     # ------------------------------------------------------------------
     # Core processing
@@ -2045,7 +1398,13 @@ class Concierge:
             self._telem_session_id = str(msg.external_id or "").strip() or None
             self._telem_surface = str(msg.surface or "").strip() or None
             try:
-                msg = await self._apply_embedded_workflow_schedule_followup(msg)
+                msg = await apply_embedded_workflow_schedule_followup(
+                    msg,
+                    schedule_store=self._schedule_store,
+                    project_store=self.project_store,
+                    capability_context=self.capability_context,
+                    dispatch_fast_command=self._dispatch_registry_fast_command,
+                )
                 fast_event = await self._try_fast_command(msg)
                 if fast_event is not None:
                     yield fast_event
@@ -3473,37 +2832,7 @@ class Concierge:
         triage: TriageResult | None,
         follow_up: FollowUpResolution | None,
     ) -> DispatchMode:
-        if follow_up is not None and follow_up.follow_up_type == FollowUpType.QUERY_STATUS:
-            return DispatchMode.INLINE
-        if triage is None:
-            return DispatchMode.FOREGROUND
-        if getattr(triage, "is_social", False):
-            return DispatchMode.INLINE
-        intent = str(getattr(triage, "intent", "") or "").strip().lower()
-        route = getattr(triage, "route", None)
-        target = str(getattr(route, "target", "") or "").strip().lower()
-        action_hints = {
-            str(item or "").strip()
-            for item in list(getattr(route, "action_hints", None) or [])
-            if str(item or "").strip()
-        }
-        workflow_query_only = "workflow_query" in action_hints and action_hints.isdisjoint(
-            {"workflow_run", "run_control", "workflow_edit", "write_file"}
-        )
-        metadata = msg.metadata if isinstance(getattr(msg, "metadata", None), dict) else {}
-        if msg.text.strip().startswith("/"):
-            return DispatchMode.INLINE
-        if target == "workflow" and workflow_query_only:
-            return DispatchMode.FOREGROUND
-        if target == "workflow" or target == "run" or intent in {"agent", "plan"}:
-            if "workflow_edit" in action_hints and not metadata.get("skip_confirm"):
-                return DispatchMode.FOREGROUND
-            return DispatchMode.BACKGROUND
-        if action_hints.intersection({"workflow_run", "run_control", "write_file"}):
-            return DispatchMode.BACKGROUND if intent in {"agent", "plan"} else DispatchMode.FOREGROUND
-        if getattr(triage, "tier", 1) == 0:
-            return DispatchMode.INLINE
-        return DispatchMode.FOREGROUND
+        return select_dispatch_mode(msg, triage, follow_up)
 
     def _ensure_concierge_task_binding(
         self,
@@ -3933,6 +3262,28 @@ class Concierge:
             graph_revision="",
             stream_channel_id=stream_channel_id,
         )
+
+
+for _name in (
+    "_resolve_context",
+    "_resolve_direct_context_reference",
+    "_context_from_project_ids",
+    "_peek_pending_context",
+    "_peek_active_context",
+    "_existing_project_context",
+    "_current_task_or_placeholder",
+    "_ephemeral_context",
+    "_message_has_continuation_cue",
+    "_message_mentions_context_label",
+    "_context_label_tokens",
+    "_context_label",
+    "_is_ephemeral_context",
+    "_should_persist_context",
+    "_should_materialize_project_turn",
+    "_materialize_context",
+):
+    setattr(Concierge, _name, getattr(_context_resolution, _name))
+del _name
 
 
 # ------------------------------------------------------------------

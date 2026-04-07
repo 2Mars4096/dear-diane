@@ -7,7 +7,7 @@ import os
 import logging
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ _rag_indexer: "Any | None" = None
 _rag_lock = asyncio.Lock()
 
 
-async def _get_indexer():
+async def _get_indexer(connection: Any | None = None):
     global _rag_indexer
     if _rag_indexer is not None:
         return _rag_indexer
@@ -36,7 +36,7 @@ async def _get_indexer():
         from dan.rag.stores import VectorStoreConfig, VectorStoreFactory
         from dan.server.routers.dependencies import get_engine_config
 
-        config = get_engine_config()
+        config = get_engine_config(connection)
         model = config.default_embedding_model
 
         registry = build_embedding_registry(config)
@@ -79,15 +79,15 @@ class RAGAddDocsRequest(BaseModel):
 
 
 @router.get("/api/rag/collections")
-async def list_rag_collections():
-    indexer = await _get_indexer()
+async def list_rag_collections(request: Request):
+    indexer = await _get_indexer(request)
     names = await indexer.list_indices()
     return {"collections": names}
 
 
 @router.post("/api/rag/collections")
-async def create_rag_collection(req: RAGCreateRequest):
-    indexer = await _get_indexer()
+async def create_rag_collection(request: Request, req: RAGCreateRequest):
+    indexer = await _get_indexer(request)
     stats = await indexer.create_index(
         name=req.name,
         documents=req.documents,
@@ -98,14 +98,14 @@ async def create_rag_collection(req: RAGCreateRequest):
 
 
 @router.get("/api/rag/collections/{name}/stats")
-async def rag_collection_stats(name: str):
-    indexer = await _get_indexer()
+async def rag_collection_stats(name: str, request: Request):
+    indexer = await _get_indexer(request)
     return await indexer.get_index_stats(name)
 
 
 @router.post("/api/rag/collections/{name}/documents")
-async def add_rag_documents(name: str, req: RAGAddDocsRequest):
-    indexer = await _get_indexer()
+async def add_rag_documents(name: str, request: Request, req: RAGAddDocsRequest):
+    indexer = await _get_indexer(request)
     chunks_added = await indexer.add_documents(
         name=name,
         documents=req.documents,
@@ -116,7 +116,7 @@ async def add_rag_documents(name: str, req: RAGAddDocsRequest):
 
 
 @router.delete("/api/rag/collections/{name}")
-async def delete_rag_collection(name: str):
-    indexer = await _get_indexer()
+async def delete_rag_collection(name: str, request: Request):
+    indexer = await _get_indexer(request)
     await indexer.delete_index(name)
     return {"name": name, "status": "deleted"}

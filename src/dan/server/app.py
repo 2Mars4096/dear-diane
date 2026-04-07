@@ -244,7 +244,18 @@ def _build_meta_controller():
         temperature: float,
     ) -> str:
         model_name = model or fallback_model
-        # Prefer llm_core gateway when startup mirrored it (retries, timeout, telemetry).
+        if _chat_manager is not None:
+            provider = resolve_llm_provider(_chat_manager, model=model_name)
+            result = await provider.complete(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                model=model_name,
+                temperature=temperature,
+            )
+            return result.text
+        # Fall back to the mirrored llm_core gateway only when no public chat-manager seam exists.
         if _model_gateway is not None:
             result = await _model_gateway.complete(
                 [
@@ -255,11 +266,8 @@ def _build_meta_controller():
                 temperature=temperature,
             )
             return result.text
-        if _chat_manager is not None:
-            provider = resolve_llm_provider(_chat_manager, model=model_name)
-        else:
-            assert provider_registry is not None
-            provider = provider_registry.resolve(model_name)
+        assert provider_registry is not None
+        provider = provider_registry.resolve(model_name)
         result = await provider.complete(
             messages=[
                 {"role": "system", "content": system_prompt},

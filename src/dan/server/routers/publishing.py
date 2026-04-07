@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from dan.server.routers.dependencies import (
     get_graph_store,
@@ -21,12 +21,16 @@ router = APIRouter()
 
 
 @router.post("/api/graphs/{graph_id}/publish")
-async def publish_graph(graph_id: str, body: dict[str, Any] | None = None):
+async def publish_graph(
+    graph_id: str,
+    request: Request,
+    body: dict[str, Any] | None = None,
+):
     from dan.models.graph import Graph
 
-    registry = get_publish_registry()
-    gs = get_graph_store()
-    graphs_dir = get_graphs_dir()
+    registry = get_publish_registry(request)
+    gs = get_graph_store(request)
+    graphs_dir = get_graphs_dir(request)
 
     graph_data = gs.get_graph(graph_id)
     if graph_data is None:
@@ -54,12 +58,12 @@ async def publish_graph(graph_id: str, body: dict[str, Any] | None = None):
 
 
 @router.post("/api/graphs/{graph_id}/unpublish")
-async def unpublish_graph(graph_id: str):
+async def unpublish_graph(graph_id: str, request: Request):
     from dan.models.graph import Graph
 
-    registry = get_publish_registry()
-    gs = get_graph_store()
-    graphs_dir = get_graphs_dir()
+    registry = get_publish_registry(request)
+    gs = get_graph_store(request)
+    graphs_dir = get_graphs_dir(request)
 
     graph_data = gs.get_graph(graph_id)
     if graph_data is None:
@@ -84,11 +88,11 @@ async def unpublish_graph(graph_id: str):
 
 
 @router.get("/api/graphs/{graph_id}/mcp-config")
-async def get_mcp_config(graph_id: str):
+async def get_mcp_config(graph_id: str, request: Request):
     from dan.models.graph import Graph
 
-    gs = get_graph_store()
-    graphs_dir = get_graphs_dir()
+    gs = get_graph_store(request)
+    graphs_dir = get_graphs_dir(request)
 
     graph_data = gs.get_graph(graph_id)
     if graph_data is None:
@@ -110,12 +114,12 @@ async def get_mcp_config(graph_id: str):
 
 
 @router.get("/api/graphs/{graph_id}/publish-status")
-async def publish_status(graph_id: str):
+async def publish_status(graph_id: str, request: Request):
     from dan.models.graph import Graph
 
-    registry = get_publish_registry()
-    gs = get_graph_store()
-    graphs_dir = get_graphs_dir()
+    registry = get_publish_registry(request)
+    gs = get_graph_store(request)
+    graphs_dir = get_graphs_dir(request)
 
     graph_data = gs.get_graph(graph_id)
     if graph_data is None:
