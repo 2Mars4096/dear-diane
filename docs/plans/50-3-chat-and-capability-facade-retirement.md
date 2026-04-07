@@ -1,7 +1,7 @@
 # 50-3: Chat and Capability Facade Retirement
 
 **Parent:** [50-structural-consolidation-and-module-reduction](50-structural-consolidation-and-module-reduction.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Make `chat_manager.py` and `capability_handlers.py` honest thin boundaries by moving remaining workflow/domain behavior into the modules that already claim to own it.
 
 ## Dependencies
@@ -11,25 +11,25 @@
 
 ## Tasks
 
-- [ ] 1. Freeze new behavior in the facades
-  - [ ] 1-1. Inventory the remaining behaviorful branches in `chat_manager.py`: at minimum `_build_workflow_from_intent`, `_auto_apply_mutation`, `_smoke_test_run`, mode-promotion logic, prompt/capability-reference assembly, and any workflow-save/delete paths still owned by this file.
-  - [ ] 1-2. Inventory the remaining behaviorful branches in `capability_handlers.py`: at minimum graph delete, latest-mutation lookup, mutation apply/save, `apply_last_mutation`, and any schema/registration logic that embeds domain decisions.
-  - [ ] 1-3. Mark the destination boundary for each branch before moving code.
-- [ ] 2. Retire workflow/domain ownership from `chat_manager.py`
-  - [ ] 2-1. Move workflow build/apply/save/smoke branches into `src/dan/server/chat/*` (for chat-orchestration concerns) and `src/dan/server/agent_runtime/*` (for workflow-generation/build concerns).
-  - [ ] 2-2. Keep `chat_manager.py` as a delegator/import shim only while live callers migrate.
-  - [ ] 2-3. Delete dead branches and helper glue from the old owner as each move lands.
-- [ ] 3. Retire workflow/domain ownership from `capability_handlers.py`
-  - [ ] 3-1. Move graph delete, latest-mutation lookup, mutation apply/save, and apply-last-mutation behavior into `src/dan/server/capabilities/*` modules.
-  - [ ] 3-2. Audit import sites across the codebase (`grep -rn "from.*capability_handlers import\|import.*capability_handlers"`) before deciding whether to reduce `capability_handlers.py` to registration/schema wiring only or delete it with re-exports.
-- [ ] 4. Fix prompt double-pass in chat router
-  - [ ] 4-1. Fix `src/dan/server/routers/chat.py:495-497`: `attachment_prompt_context` is currently passed into **both** `prompt_context` and `extra_system_instructions`, which means the same attachment context appears twice in the assembled prompt. Remove the duplication — attachment context should be passed through exactly one slot.
-  - [ ] 4-2. Verify that downstream consumers (`messages.py:393-462` which treats `prompt_context` as a `## Context` block, and `tier_executors.py:849-1038` which builds `extra_system_instructions` from stage overlays/attachments/action contexts) receive attachment context through exactly one path after the fix.
-- [ ] 5. Narrow prompt/build assembly to the right owners
-  - [ ] 5-1. Ensure prompt/capability reference assembly is owned by `src/dan/server/chat/prompt_builder.py` or a similarly scoped module, workflow generation stays in `src/dan/server/agent_runtime/workflow_generation.py`, and chat orchestration stays in `src/dan/server/chat/orchestrator.py` — rather than being quietly mixed back into the facade.
-- [ ] 6. Regressions and docs
-  - [ ] 6-1. Revalidate chat workflow generation, mutation preview/apply, capability registration, and workflow delete/apply flows.
-  - [ ] 6-2. Update architecture/docs wording so the surviving files are described honestly.
+- [x] 1. Freeze new behavior in the facades
+  - [x] 1-1. Inventory the remaining behaviorful branches in `chat_manager.py`: at minimum `_build_workflow_from_intent`, `_auto_apply_mutation`, `_smoke_test_run`, mode-promotion logic, prompt/capability-reference assembly, and any workflow-save/delete paths still owned by this file.
+  - [x] 1-2. Inventory the remaining behaviorful branches in `capability_handlers.py`: at minimum graph delete, latest-mutation lookup, mutation apply/save, `apply_last_mutation`, and any schema/registration logic that embeds domain decisions.
+  - [x] 1-3. Mark the destination boundary for each branch before moving code.
+- [x] 2. Retire workflow/domain ownership from `chat_manager.py`
+  - [x] 2-1. Move workflow build/apply/save/smoke branches into `src/dan/server/chat/*` (for chat-orchestration concerns) and `src/dan/server/agent_runtime/*` (for workflow-generation/build concerns).
+  - [x] 2-2. Keep `chat_manager.py` as a delegator/import shim only while live callers migrate.
+  - [x] 2-3. Delete dead branches and helper glue from the old owner as each move lands.
+- [x] 3. Retire workflow/domain ownership from `capability_handlers.py`
+  - [x] 3-1. Move graph delete, latest-mutation lookup, mutation apply/save, and apply-last-mutation behavior into `src/dan/server/capabilities/*` modules.
+  - [x] 3-2. Audit import sites across the codebase (`grep -rn "from.*capability_handlers import\|import.*capability_handlers"`) before deciding whether to reduce `capability_handlers.py` to registration/schema wiring only or delete it with re-exports.
+- [x] 4. Fix prompt double-pass in chat router
+  - [x] 4-1. Fix `src/dan/server/routers/chat.py:495-497`: `attachment_prompt_context` is currently passed into **both** `prompt_context` and `extra_system_instructions`, which means the same attachment context appears twice in the assembled prompt. Remove the duplication — attachment context should be passed through exactly one slot.
+  - [x] 4-2. Verify that downstream consumers (`messages.py:393-462` which treats `prompt_context` as a `## Context` block, and `tier_executors.py:849-1038` which builds `extra_system_instructions` from stage overlays/attachments/action contexts) receive attachment context through exactly one path after the fix.
+- [x] 5. Narrow prompt/build assembly to the right owners
+  - [x] 5-1. Ensure prompt/capability reference assembly is owned by `src/dan/server/chat/prompt_builder.py` or a similarly scoped module, workflow generation stays in `src/dan/server/agent_runtime/workflow_generation.py`, and chat orchestration stays in `src/dan/server/chat/orchestrator.py` — rather than being quietly mixed back into the facade.
+- [x] 6. Regressions and docs
+  - [x] 6-1. Revalidate chat workflow generation, mutation preview/apply, capability registration, and workflow delete/apply flows.
+  - [x] 6-2. Update architecture/docs wording so the surviving files are described honestly.
 
 ## Primary Files
 

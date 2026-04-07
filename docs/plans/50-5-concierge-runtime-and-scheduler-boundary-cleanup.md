@@ -1,7 +1,7 @@
 # 50-5: Concierge Runtime and Scheduler Boundary Cleanup
 
 **Parent:** [50-structural-consolidation-and-module-reduction](50-structural-consolidation-and-module-reduction.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Narrow concierge orchestration, fast-command/schedule adaptation, and scheduler authority into clearer neighboring boundaries instead of one expanding control-plane sink.
 
 ## Dependencies
@@ -12,30 +12,30 @@
 
 ## Tasks
 
-- [ ] 1. Narrow dispatch-mode policy
-  - [ ] 1-1. Fix `_select_dispatch_mode()` (runtime/__init__.py:3470-3501): the current policy returns `BACKGROUND` whenever `route.target` is `workflow`/`run` or `intent` is `agent`/`plan`, which backgrounds normal single-shot turns that should execute in the foreground. This causes `tiered_dispatch.py:656-673` to emit `ChatTaskAckEvent` and return immediately instead of executing the root session, producing ack-only responses like "Working on it — Understanding your request…" instead of real answers.
-  - [ ] 1-2. New dispatch-mode policy: `INLINE` for fast commands/status/social; `FOREGROUND` for normal single-shot ask/agent/plan turns; `BACKGROUND` only for explicit long-running work gated by concrete signals (`workflow_run`, real run-control operations, explicit background/autonomy markers, intentionally detached large mutations) — not by broad categories like "intent is plan" or "route target is workflow" alone.
-  - [ ] 1-3. Verify fix against the `test_tiered_dispatch.py` failure cluster: `test_tier1_forwards_request_metadata_and_action_hints`, `test_tier2_build_override_skips_decomposition_and_calls_builder_directly`, `test_tier1_synthesizes_terminal_response_when_handler_stream_ends_early`, `test_low_confidence_triage_requests_clarification_and_retriages_reply`, `test_single_shot_plan_mode_uses_reasoning_model`, and others where `call_log == []` because work was backgrounded.
-- [ ] 2. Consolidate queue/task/session ownership
-  - [ ] 2-1. Choose one authoritative queue model. Currently there are two overlapping systems: dispatcher-level queueing (`dispatcher.py` `_project_queues` + `_global_queue`) and background task queueing (`tiered_dispatch.py:656-673` launch path + `697-721` capacity checks). Decide whether dispatcher queueing is the only real queue and task registry only tracks state, or task registry owns the queue lease and dispatcher becomes a thin ingress adapter.
-  - [ ] 2-2. Resolve the split-brain execution/control models: `Task`/`Project` in `models.py`, `ConciergeTask` in `task_registry.py`, and `Session`/`SessionManager` in `session.py` all carry overlapping authority. Document one authoritative answer for: what the user-facing unit of work is, what the queue serializes on, what the session traces, what gets persisted as truth, and what IDs are canonical in logs/prompts/follow-up resolution.
-  - [ ] 2-3. Reduce repeated context resolution/materialization so the same turn is not re-resolved by multiple layers without a clear boundary change.
-- [ ] 3. Narrow `runtime/__init__.py`
-  - [ ] 3-1. Separate orchestration from fast-command adaptation, reassurance/progress signaling, and schedule-follow-up rewriting. Candidate extraction targets: `runtime/schedule_commands.py` (schedule-follow-up rewriting, schedule-related turn adaptation), `runtime/progress_ux.py` (reassurance/progress signaling, queued-hint delivery), `runtime/dispatch_policy.py` (dispatch-mode selection, extracted from the 3999-line monolith).
-  - [ ] 3-2. Keep `process()` / `_process_inner()` focused on orchestration, state progression, and high-level dispatcher handoff.
-  - [ ] 3-3. Target scope after narrowing: `runtime/__init__.py` (currently 3999 lines) should own orchestration and state progression only, shedding at least dispatch-mode policy, schedule-follow-up rewriting, and progress/reassurance signaling responsibilities. The file should lose at least 30% of its current lines.
-- [ ] 4. Extract schedule-command semantics out of the scheduler daemon boundary
-  - [ ] 4-1. Move workflow resolution, timezone/default interpretation, and user-facing schedule command normalization closer to the command surface. Note: 48-4 already shipped timezone preference management and `/timezone` / `/tz` commands; this task moves the remaining schedule-command semantics (workflow resolution, trigger parsing, natural-language schedule rewriting) that are still embedded in the daemon file.
-  - [ ] 4-2. Keep lease/authority, fire-time execution, and daemon concerns grouped together.
-- [ ] 5. Remove duplicated bridging logic
-  - [ ] 5-1. Delete embedded schedule special-cases from runtime once the neighboring helper/module owns them.
-  - [ ] 5-2. Remove duplicate delivery fallback or workflow-resolution glue from the wrong owner.
-- [ ] 6. Clarify file/module ownership
-  - [ ] 6-1. Introduce only the minimum new modules needed inside `src/dan/server/concierge/runtime/` or `concierge/` to reflect real boundaries. Candidate names: `runtime/schedule_commands.py`, `runtime/progress_ux.py`, `runtime/dispatch_policy.py`, `concierge/schedule_surface.py`.
-  - [ ] 6-2. Ensure naming matches actual responsibility.
-- [ ] 7. Regressions
-  - [ ] 7-1. Revalidate fast commands, workflow schedule follow-ups, timezone/default behavior, delivery fallback, and fire-time execution.
-  - [ ] 7-2. Confirm the full `test_tiered_dispatch.py` suite passes with the narrowed dispatch-mode policy — the ack-only failure cluster should be resolved.
+- [x] 1. Narrow dispatch-mode policy
+  - [x] 1-1. Fix `_select_dispatch_mode()` (runtime/__init__.py:3470-3501): the current policy returns `BACKGROUND` whenever `route.target` is `workflow`/`run` or `intent` is `agent`/`plan`, which backgrounds normal single-shot turns that should execute in the foreground. This causes `tiered_dispatch.py:656-673` to emit `ChatTaskAckEvent` and return immediately instead of executing the root session, producing ack-only responses like "Working on it — Understanding your request…" instead of real answers.
+  - [x] 1-2. New dispatch-mode policy: `INLINE` for fast commands/status/social; `FOREGROUND` for normal single-shot ask/agent/plan turns; `BACKGROUND` only for explicit long-running work gated by concrete signals (`workflow_run`, real run-control operations, explicit background/autonomy markers, intentionally detached large mutations) — not by broad categories like "intent is plan" or "route target is workflow" alone.
+  - [x] 1-3. Verify fix against the `test_tiered_dispatch.py` failure cluster: `test_tier1_forwards_request_metadata_and_action_hints`, `test_tier2_build_override_skips_decomposition_and_calls_builder_directly`, `test_tier1_synthesizes_terminal_response_when_handler_stream_ends_early`, `test_low_confidence_triage_requests_clarification_and_retriages_reply`, `test_single_shot_plan_mode_uses_reasoning_model`, and others where `call_log == []` because work was backgrounded.
+- [x] 2. Consolidate queue/task/session ownership
+  - [x] 2-1. Choose one authoritative queue model. Currently there are two overlapping systems: dispatcher-level queueing (`dispatcher.py` `_project_queues` + `_global_queue`) and background task queueing (`tiered_dispatch.py:656-673` launch path + `697-721` capacity checks). Decide whether dispatcher queueing is the only real queue and task registry only tracks state, or task registry owns the queue lease and dispatcher becomes a thin ingress adapter.
+  - [x] 2-2. Resolve the split-brain execution/control models: `Task`/`Project` in `models.py`, `ConciergeTask` in `task_registry.py`, and `Session`/`SessionManager` in `session.py` all carry overlapping authority. Document one authoritative answer for: what the user-facing unit of work is, what the queue serializes on, what the session traces, what gets persisted as truth, and what IDs are canonical in logs/prompts/follow-up resolution.
+  - [x] 2-3. Reduce repeated context resolution/materialization so the same turn is not re-resolved by multiple layers without a clear boundary change.
+- [x] 3. Narrow `runtime/__init__.py`
+  - [x] 3-1. Separate orchestration from fast-command adaptation, reassurance/progress signaling, and schedule-follow-up rewriting. Candidate extraction targets: `runtime/schedule_commands.py` (schedule-follow-up rewriting, schedule-related turn adaptation), `runtime/progress_ux.py` (reassurance/progress signaling, queued-hint delivery), `runtime/dispatch_policy.py` (dispatch-mode selection, extracted from the 3999-line monolith).
+  - [x] 3-2. Keep `process()` / `_process_inner()` focused on orchestration, state progression, and high-level dispatcher handoff.
+  - [x] 3-3. Target scope after narrowing: `runtime/__init__.py` (currently 3999 lines) should own orchestration and state progression only, shedding at least dispatch-mode policy, schedule-follow-up rewriting, and progress/reassurance signaling responsibilities. The file should lose at least 30% of its current lines.
+- [x] 4. Extract schedule-command semantics out of the scheduler daemon boundary
+  - [x] 4-1. Move workflow resolution, timezone/default interpretation, and user-facing schedule command normalization closer to the command surface. Note: 48-4 already shipped timezone preference management and `/timezone` / `/tz` commands; this task moves the remaining schedule-command semantics (workflow resolution, trigger parsing, natural-language schedule rewriting) that are still embedded in the daemon file.
+  - [x] 4-2. Keep lease/authority, fire-time execution, and daemon concerns grouped together.
+- [x] 5. Remove duplicated bridging logic
+  - [x] 5-1. Delete embedded schedule special-cases from runtime once the neighboring helper/module owns them.
+  - [x] 5-2. Remove duplicate delivery fallback or workflow-resolution glue from the wrong owner.
+- [x] 6. Clarify file/module ownership
+  - [x] 6-1. Introduce only the minimum new modules needed inside `src/dan/server/concierge/runtime/` or `concierge/` to reflect real boundaries. Candidate names: `runtime/schedule_commands.py`, `runtime/progress_ux.py`, `runtime/dispatch_policy.py`, `concierge/schedule_surface.py`.
+  - [x] 6-2. Ensure naming matches actual responsibility.
+- [x] 7. Regressions
+  - [x] 7-1. Revalidate fast commands, workflow schedule follow-ups, timezone/default behavior, delivery fallback, and fire-time execution.
+  - [x] 7-2. Confirm the full `test_tiered_dispatch.py` suite passes with the narrowed dispatch-mode policy — the ack-only failure cluster should be resolved.
 
 ## Primary Files
 

@@ -1,7 +1,7 @@
 # 46-7: Reusable Worker Bundle Extraction
 
 **Parent:** [46-universal-worker-primitive](46-universal-worker-primitive.md)
-**Status:** not-started  
+**Status:** completed
 **Priority:** active — sequenced after 46-6.
 **Goal:** Extract the Worker contract primitive (input → execute → output) as a DAN-independent package that other projects can embed, while consuming the normalized task/evidence/output-contract surface defined by 46-6 instead of inventing a second request shape.
 
@@ -56,24 +56,24 @@ Only `roles.py` and `__init__.py` are clean.
 
 ## Tasks
 
-- [ ] 1. Define bundle boundary
-  - [ ] 1-1. Create `dan/worker/core/` (or similar) with zero imports from `dan.server.*`, `dan.models.legacy`, `dan.executors.*`.
-  - [ ] 1-2. Define interfaces: `CompletionProvider`, `ToolProvider`, `MemoryProvider`, `EventSink`.
-  - [ ] 1-3. Define a caller-facing `ExecutionRequest` / `WorkRequest` contract that carries at least: task, constraints, evidence/context blocks, trust labels, and output contract. This should be the externalized form of the 46-6 minimum contract, not a new DAN-only shape.
-  - [ ] 1-4. Keep DAN-specific executor delegation, legacy bridge, and tool registry binding in `dan/worker/adapters/`.
-- [ ] 2. Sever imports
-  - [ ] 2-1. `executor.py` → import from core interfaces instead of `dan.executors.*` directly.
-  - [ ] 2-2. `model.py` → define minimal port/context types in core instead of importing `dan.models.*`.
-  - [ ] 2-3. `presets.py` → stays in DAN adapter layer (it is inherently a bridge).
-  - [ ] 2-4. Keep prompt-slot assembly out of the core. The bundle may accept normalized evidence and output-contract fields, but it must not pull in concierge stage overlays, chat prompt modules, or DAN-specific truncation logic.
-- [ ] 3. Prove it works
-  - [ ] 3-1. Add import-boundary test scanning core for forbidden DAN imports.
-  - [ ] 3-2. Add minimal non-DAN fixture: create a Worker, give it stub adapters, run it, get a result.
-  - [ ] 3-3. Add one fixture proving the same `ExecutionRequest` shape can be built from a DAN 46-6-style handoff (`definition_of_done`, `expected_return_shape`, trust-labeled evidence blocks) and from a non-DAN harness without changing the core bundle API.
-- [ ] 4. Rollout
-  - [ ] 4-1. Keep DAN runtime stable while routing through adapter-backed core.
-  - [ ] 4-2. Verify `worker_resources` catalog resolution still works through the adapter layer.
-  - [ ] 4-3. Document the adapter boundary clearly: DAN concierge still owns prompt wording and prompt budgets; the reusable bundle owns only execution against the normalized request contract.
+- [x] 1. Define bundle boundary
+  - [x] 1-1. Create `dan/worker/core/` (or similar) with zero imports from `dan.server.*`, `dan.models.legacy`, `dan.executors.*`.
+  - [x] 1-2. Define interfaces: `CompletionProvider`, `ToolProvider`, `MemoryProvider`, `EventSink`.
+  - [x] 1-3. Define a caller-facing `ExecutionRequest` / `WorkRequest` contract that carries at least: task, constraints, evidence/context blocks, trust labels, and output contract. This should be the externalized form of the 46-6 minimum contract, not a new DAN-only shape.
+  - [x] 1-4. Keep DAN-specific executor delegation, legacy bridge, and tool registry binding in `dan/worker/adapters/`.
+- [x] 2. Sever imports
+  - [x] 2-1. `executor.py` → import from core interfaces instead of `dan.executors.*` directly.
+  - [x] 2-2. `model.py` → define minimal port/context types in core instead of importing `dan.models.*`.
+  - [x] 2-3. `presets.py` → stays in DAN adapter layer (it is inherently a bridge).
+  - [x] 2-4. Keep prompt-slot assembly out of the core. The bundle may accept normalized evidence and output-contract fields, but it must not pull in concierge stage overlays, chat prompt modules, or DAN-specific truncation logic.
+- [x] 3. Prove it works
+  - [x] 3-1. Add import-boundary test scanning core for forbidden DAN imports.
+  - [x] 3-2. Add minimal non-DAN fixture: create a Worker, give it stub adapters, run it, get a result.
+  - [x] 3-3. Add one fixture proving the same `ExecutionRequest` shape can be built from a DAN 46-6-style handoff (`definition_of_done`, `expected_return_shape`, trust-labeled evidence blocks) and from a non-DAN harness without changing the core bundle API.
+- [x] 4. Rollout
+  - [x] 4-1. Keep DAN runtime stable while routing through adapter-backed core.
+  - [x] 4-2. Verify `worker_resources` catalog resolution still works through the adapter layer.
+  - [x] 4-3. Document the adapter boundary clearly: DAN concierge still owns prompt wording and prompt budgets; the reusable bundle owns only execution against the normalized request contract.
 
 ## Success Criteria
 

@@ -1,6 +1,6 @@
 # 50: Structural Consolidation and Module Reduction
 
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Tighten architectural ownership, make shared invariants callee-owned, split the largest behaviorful modules along real boundaries, and prune redundant code without hurting performance.
 
 ## Problem
@@ -71,13 +71,13 @@ Out of scope:
 
 | # | Sub-Plan | Scope | Priority | Status |
 |---|----------|-------|----------|--------|
-| [50-1](50-1-key-script-inventory-and-refactor-guardrails.md) | Key Script Inventory and Refactor Guardrails | Pin down the real owners, key scripts, split budgets, and pruning/perf rules | P1 | not-started |
-| [50-2](50-2-workflow-invariant-ownership-and-run-launch.md) | Workflow Invariant Ownership and Run Launch | Make run/apply invariants callee-owned and consolidate run launch/relay | P1 | not-started |
-| [50-3](50-3-chat-and-capability-facade-retirement.md) | Chat and Capability Facade Retirement | Remove workflow/domain ownership from `chat_manager.py` and `capability_handlers.py` | P1 | not-started |
-| [50-4](50-4-run-manager-lifecycle-and-finalization-split.md) | Run Manager Lifecycle and Finalization Split | Separate lifecycle authority from reflection/learning/telemetry finalization | P1 | not-started |
-| [50-5](50-5-concierge-runtime-and-scheduler-boundary-cleanup.md) | Concierge Runtime and Scheduler Boundary Cleanup | Narrow orchestration vs fast-command/schedule semantics vs scheduler authority | P1 | not-started |
+| [50-1](50-1-key-script-inventory-and-refactor-guardrails.md) | Key Script Inventory and Refactor Guardrails | Pin down the real owners, key scripts, split budgets, and pruning/perf rules | P1 | completed |
+| [50-2](50-2-workflow-invariant-ownership-and-run-launch.md) | Workflow Invariant Ownership and Run Launch | Make run/apply invariants callee-owned and consolidate run launch/relay | P1 | completed |
+| [50-3](50-3-chat-and-capability-facade-retirement.md) | Chat and Capability Facade Retirement | Remove workflow/domain ownership from `chat_manager.py` and `capability_handlers.py` | P1 | completed |
+| [50-4](50-4-run-manager-lifecycle-and-finalization-split.md) | Run Manager Lifecycle and Finalization Split | Separate lifecycle authority from reflection/learning/telemetry finalization | P1 | completed |
+| [50-5](50-5-concierge-runtime-and-scheduler-boundary-cleanup.md) | Concierge Runtime and Scheduler Boundary Cleanup | Narrow orchestration vs fast-command/schedule semantics vs scheduler authority | P1 | completed |
 | [50-6](50-6-workflow-authoring-and-large-module-narrowing.md) | Workflow Authoring and Large-Module Narrowing | Split workflow generation, graph mutator, and one secondary backend giant | P1 | not-started |
-| [50-7](50-7-worker-bridge-retirement-and-appstate-cleanup.md) | Worker Bridge Retirement and AppState Cleanup | Remove runtime-core bridge defaults and finish typed service access | P2 | not-started |
+| [50-7](50-7-worker-bridge-retirement-and-appstate-cleanup.md) | Worker Bridge Retirement and AppState Cleanup | Remove runtime-core bridge defaults and finish typed service access | P2 | in-progress |
 | [50-8](50-8-frontend-sink-reduction-and-pruning.md) | Frontend Sink Reduction and Pruning | Narrow oversized editor/chat state owners and prune redundant code | P2 | not-started |
 
 ## Dependencies / Sequencing
@@ -161,3 +161,4 @@ The earlier framing that tried to "unify two orthogonal paths" is replaced. Work
 - This plan is the patch-first response to the latest structural review, which concluded that the repo is still fundamentally coherent but overgrown and drifting at its seams.
 - The 50-series deliberately treats “split long files,” “pin down key scripts,” and “prune unnecessary code” as one connected effort. File size alone is not the problem; mixed ownership is.
 - The essential sequence is **50-1 → 50-2 → 50-3 → 50-5 → 46-6 → 46-7**. This gets the highest-leverage structural wins, prompt-quality wins, and clean Worker boundary extraction. 50-4 is worthwhile and can run alongside 50-3/50-5 if bandwidth allows, but it does not block the prompt/wiring standardization path. The remaining plans (50-6, 50-7, 50-8) are real debt but deferrable until they actively block product work.
+- 50-1 is now landed via generated inventory deliverables: `scripts/inventory.py` produces `docs/key-scripts.md`, which now owns the live hotspot counts, prompt-carrier counts, worker import-boundary violations, legacy-bridge inventory, ownership map, validation basket, and pruning guardrails for the remaining 50/46 work.

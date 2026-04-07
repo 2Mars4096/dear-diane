@@ -1,7 +1,7 @@
 # 50-2: Workflow Invariant Ownership and Run Launch
 
 **Parent:** [50-structural-consolidation-and-module-reduction](50-structural-consolidation-and-module-reduction.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Make workflow apply/run invariants and run-launch behavior authoritative at the callee boundary instead of reimplemented across callers.
 
 ## Dependencies
@@ -10,22 +10,22 @@
 
 ## Tasks
 
-- [ ] 1. Make run-readiness callee-owned
-  - [ ] 1-1. Update `RunManager.start_run()` and `resume_run()` to enforce the shared run-readiness contract by default.
-  - [ ] 1-2. Add a narrowly scoped explicit bypass only for synthetic/reflection/test paths that truly require it.
-  - [ ] 1-3. Remove or simplify caller-side guard duplication once the callee owns the invariant.
-- [ ] 2. Consolidate authoritative run launch
-  - [ ] 2-1. Create one authoritative launch helper on `RunManager` — expected shape: `launch(workflow_id, *, relay=True, bus=None) -> RunHandle` — that starts a run and optionally attaches relay/bus plumbing in one call.
-  - [ ] 2-2. Move repeated relay glue out of routes/gateway/startup helpers so launch behavior stays consistent.
-- [ ] 3. Consolidate apply-ready mutation save
-  - [ ] 3-1. Create one shared flow that applies the stronger apply-readiness check, saves the graph, and returns consistent revision/result metadata.
-  - [ ] 3-2. Route router, capability, and chat auto-apply paths through that shared flow.
-- [ ] 4. Tighten workflow reference ownership
-  - [ ] 4-1. Use the shared workflow-identity resolution/stale-revision model from `workflow_identity.py` (shipped in 48-1) by default for user-facing workflow references.
-  - [ ] 4-2. Leave raw exact-ID APIs intentionally minimal only where that lower-level contract is explicit.
-- [ ] 5. Regressions and compatibility cleanup
-  - [ ] 5-1. Add focused coverage for guarded run start, relay hookup, apply-ready mutation save, and stale-resolution behavior across all major surfaces.
-  - [ ] 5-2. Delete superseded caller-side guard/launch helpers in the same PR that lands the callee-owned replacement — not deferred to a later patch series.
+- [x] 1. Make run-readiness callee-owned
+  - [x] 1-1. Update `RunManager.start_run()` and `resume_run()` to enforce the shared run-readiness contract by default.
+  - [x] 1-2. Add a narrowly scoped explicit bypass only for synthetic/reflection/test paths that truly require it.
+  - [x] 1-3. Remove or simplify caller-side guard duplication once the callee owns the invariant.
+- [x] 2. Consolidate authoritative run launch
+  - [x] 2-1. Create one authoritative launch helper on `RunManager` — expected shape: `launch(workflow_id, *, relay=True, bus=None) -> RunHandle` — that starts a run and optionally attaches relay/bus plumbing in one call.
+  - [x] 2-2. Move repeated relay glue out of routes/gateway/startup helpers so launch behavior stays consistent.
+- [x] 3. Consolidate apply-ready mutation save
+  - [x] 3-1. Create one shared flow that applies the stronger apply-readiness check, saves the graph, and returns consistent revision/result metadata.
+  - [x] 3-2. Route router, capability, and chat auto-apply paths through that shared flow.
+- [x] 4. Tighten workflow reference ownership
+  - [x] 4-1. Use the shared workflow-identity resolution/stale-revision model from `workflow_identity.py` (shipped in 48-1) by default for user-facing workflow references.
+  - [x] 4-2. Leave raw exact-ID APIs intentionally minimal only where that lower-level contract is explicit.
+- [x] 5. Regressions and compatibility cleanup
+  - [x] 5-1. Add focused coverage for guarded run start, relay hookup, apply-ready mutation save, and stale-resolution behavior across all major surfaces.
+  - [x] 5-2. Delete superseded caller-side guard/launch helpers in the same PR that lands the callee-owned replacement — not deferred to a later patch series.
 
 ## Primary Files
 
