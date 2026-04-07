@@ -20,7 +20,9 @@ This document covers every step from company formation to product launch. Phases
 **Steps:**
 
 - [ ] **Choose company name** — check availability at [wyoming.gov/business](https://wyoming.gov/business)
-  - Consider: "DAN Labs LLC", "Deep Agent Network LLC", or a brand name TBD
+  - **Decision: Liberate AI LLC**
+  - Motto: "Let Intelligence Bear Every Routine And Tedious Effort"
+  - Chinese brand: 利博 (Lìbó) / tagline: 释繁归简
   - Verify the name doesn't conflict with existing trademarks (USPTO TESS search)
 - [ ] **File Articles of Organization** — $100, online at Wyoming Secretary of State
   - Processing: 1–3 business days
