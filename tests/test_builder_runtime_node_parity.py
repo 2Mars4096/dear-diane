@@ -5,7 +5,7 @@ from dan.builder.decompiler import decompile
 
 
 def test_builder_supports_input_node_with_aggregate_output() -> None:
-    wf = workflow("input_parity")
+    wf = workflow("input_parity", canonical_workers=False)
     workflow_inputs = wf.input_node(
         "workflow_inputs",
         variables=[{"name": "topic", "type": "string", "description": "Research topic"}],
@@ -26,7 +26,7 @@ def test_builder_supports_input_node_with_aggregate_output() -> None:
 
 
 def test_builder_supports_rag_node_and_decompiles_to_rag_api() -> None:
-    wf = workflow("rag_parity")
+    wf = workflow("rag_parity", canonical_workers=False)
     retriever = wf.rag(
         "retrieve",
         collection="papers",
@@ -57,7 +57,7 @@ def test_builder_supports_rag_node_and_decompiles_to_rag_api() -> None:
 
 
 def test_builder_supports_human_node_and_decompiles_to_human_api() -> None:
-    wf = workflow("human_parity")
+    wf = workflow("human_parity", canonical_workers=False)
     reviewer = wf.human(
         "review",
         prompt="Review the draft",
@@ -81,7 +81,7 @@ def test_builder_supports_human_node_and_decompiles_to_human_api() -> None:
 
 
 def test_builder_supports_human_alias_helpers() -> None:
-    wf = workflow("human_aliases")
+    wf = workflow("human_aliases", canonical_workers=False)
     approval = wf.approval("approve", prompt="Approve this draft")
     form = wf.form(
         "intake_form",
@@ -108,7 +108,7 @@ def test_builder_supports_human_alias_helpers() -> None:
 
 
 def test_builder_supports_vote_node_and_decompiles_to_vote_api() -> None:
-    wf = workflow("vote_parity")
+    wf = workflow("vote_parity", canonical_workers=False)
     chooser = wf.vote(
         "choose_best",
         prompt="Pick the best answer",
@@ -132,7 +132,7 @@ def test_builder_supports_vote_node_and_decompiles_to_vote_api() -> None:
 
 
 def test_builder_supports_ensemble_alias() -> None:
-    wf = workflow("ensemble_alias")
+    wf = workflow("ensemble_alias", canonical_workers=False)
     chooser = wf.ensemble(
         "choose_best",
         prompt="Pick the best answer",

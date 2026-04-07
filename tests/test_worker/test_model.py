@@ -334,6 +334,47 @@ def test_worker_with_llm_hints_but_no_explicit_model_defaults_to_text_output() -
     assert [port.name for port in worker.output_ports] == ["text"]
 
 
+def test_worker_flat_llm_fields_round_trip_into_llm_hints_and_compat_properties() -> None:
+    worker = Worker(
+        id="draft",
+        name="Draft",
+        model="test-model",
+        prompt_template="Draft {input}",
+        system_prompt="Stay concise.",
+        temperature=0.2,
+        max_tokens=128,
+        output_json_schema={"type": "object"},
+        tools=[{"type": "function", "function": {"name": "lookup"}}],
+        max_tool_rounds=4,
+        task_tier="routine",
+    )
+
+    assert worker.llm_hints is not None
+    assert worker.llm_hints.prompt_template == "Draft {input}"
+    assert worker.prompt_template == "Draft {input}"
+    assert worker.system_prompt == "Stay concise."
+    assert worker.temperature == 0.2
+    assert worker.max_tokens == 128
+    assert worker.output_json_schema == {"type": "object"}
+    assert worker.tools == [{"type": "function", "function": {"name": "lookup"}}]
+    assert worker.max_tool_rounds == 4
+    assert worker.task_tier == "routine"
+    assert [port.name for port in worker.output_ports] == ["text"]
+
+
+def test_worker_flat_tool_fields_round_trip_into_tool_compat_properties() -> None:
+    worker = Worker(
+        id="fetch",
+        name="Fetch",
+        tool_id="web_search",
+        tool_config={"query": "{input}", "limit": 3},
+    )
+
+    assert worker.tool_ids == ["web_search"]
+    assert worker.tool_id == "web_search"
+    assert worker.tool_config == {"query": "{input}", "limit": 3}
+
+
 def test_worker_with_control_flow_defaults_to_gate_ports() -> None:
     worker = Worker(
         id="route",

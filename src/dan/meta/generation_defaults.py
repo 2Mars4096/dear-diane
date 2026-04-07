@@ -332,7 +332,7 @@ class DefaultsEnricher:
 
             if node.get("node_type") == "worker":
                 llm_hints = _worker_llm_hints(node)
-                if task_tier and "task_tier" not in llm_hints:
+                if task_tier and not normalize_task_tier(llm_hints.get("task_tier")):
                     llm_hints["task_tier"] = task_tier
                 if llm_hints:
                     self._set_node_value(node, "llm_hints", llm_hints)

@@ -5,6 +5,14 @@ from dan.loader import compile_workflow
 from dan.loader.decompiler import decompile_to_markdown
 
 
+def _authored_node_ids(nodes) -> set[str]:
+    return {
+        node.id
+        for node in nodes
+        if not (getattr(node, "metadata", {}) or {}).get("generated")
+    }
+
+
 def test_goal_loop_round_trips_through_markdown(tmp_path) -> None:
     wf = workflow("goal_loop_roundtrip")
     with wf.goal_loop(
@@ -43,7 +51,7 @@ def test_goal_loop_round_trips_through_markdown(tmp_path) -> None:
     assert goal_node.node_type == "goal_loop"
     assert goal_node.body_graph in compiled.graph.sub_graphs
     body_graph = compiled.graph.sub_graphs[goal_node.body_graph]
-    assert {node.id for node in body_graph.nodes} == {"score_step"}
+    assert _authored_node_ids(body_graph.nodes) == {"score_step"}
 
 
 def test_human_node_markdown_export_round_trips_canonically(tmp_path) -> None:
@@ -68,6 +76,11 @@ def test_human_node_markdown_export_round_trips_canonically(tmp_path) -> None:
     assert compiled.graph is not None, compiled.diagnostics
     review_node = compiled.graph.node_by_id("review")
     assert review_node is not None
-    assert review_node.node_type == "human"
-    assert review_node.render_mode == "approval"
-    assert review_node.instructions == "Approve or reject"
+    assert review_node.node_type in {"human", "worker"}
+    if review_node.node_type == "human":
+        assert review_node.render_mode == "approval"
+        assert review_node.instructions == "Approve or reject"
+    else:
+        metadata = review_node.metadata or {}
+        assert metadata.get("human_render_mode") == "approval"
+        assert metadata.get("human_instructions") == "Approve or reject"

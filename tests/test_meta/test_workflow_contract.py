@@ -183,6 +183,25 @@ def test_workflow_contract_rejects_placeholder_code_nodes_as_not_run_ready() -> 
     assert any("placeholder" in issue.lower() for issue in report.run_readiness_issues)
 
 
+def test_workflow_contract_rejects_placeholder_worker_code_nodes_as_not_run_ready() -> None:
+    wf = workflow("placeholder_worker_contract", canonical_workers=True)
+    wf.code(
+        "compute",
+        code='result = {"status": "placeholder", "task": "compute metrics"}',
+    )
+    graph_dict = wf.build().model_dump(mode="json")
+
+    report = validate_workflow_build_contract(
+        graph_dict,
+        workflow_id="placeholder-worker-contract",
+        apply_repairs=True,
+    )
+
+    assert report.validated is True
+    assert report.run_ready is False
+    assert any("placeholder" in issue.lower() for issue in report.run_readiness_issues)
+
+
 def test_workflow_contract_rejects_foreach_without_iterable_source() -> None:
     wf = workflow("ungrounded_foreach")
     with wf.for_each("process_items") as body:
@@ -221,6 +240,47 @@ def test_workflow_contract_rejects_toolless_llm_external_action_prompts() -> Non
     assert report.run_ready is False
     assert any(
         "llm node 'save_report' has no tools" in issue.lower()
+        for issue in report.run_readiness_issues
+    )
+
+
+def test_workflow_contract_rejects_toolless_worker_llm_external_action_prompts() -> None:
+    wf = workflow("toolless_worker_external_action", canonical_workers=True)
+    wf.llm(
+        "save_report",
+        prompt="Save the final report to dated file paths for archival and access",
+    )
+    graph_dict = wf.build().model_dump(mode="json")
+
+    report = validate_workflow_build_contract(
+        graph_dict,
+        workflow_id="toolless-worker-external-action",
+        apply_repairs=True,
+    )
+
+    assert report.validated is True
+    assert report.run_ready is False
+    assert any(
+        "llm node 'save_report' has no tools" in issue.lower()
+        for issue in report.run_readiness_issues
+    )
+
+
+def test_workflow_contract_rejects_worker_tool_without_required_arguments() -> None:
+    wf = workflow("missing_worker_tool_arg", canonical_workers=True)
+    wf.tool("read_file", tool_id="file_read")
+    graph_dict = wf.build().model_dump(mode="json")
+
+    report = validate_workflow_build_contract(
+        graph_dict,
+        workflow_id="missing-worker-tool-arg",
+        apply_repairs=True,
+    )
+
+    assert report.validated is True
+    assert report.run_ready is False
+    assert any(
+        "missing required argument 'path'" in issue.lower()
         for issue in report.run_readiness_issues
     )
 

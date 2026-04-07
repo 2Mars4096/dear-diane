@@ -22,6 +22,109 @@ from dan.meta.workflow_contract import validate_workflow_build_contract
 from dan.models.graph import Graph
 
 
+def _worker_tool_ids(node: dict[str, Any]) -> list[str]:
+    tool_ids = [
+        str(item).strip()
+        for item in (node.get("tool_ids") or [])
+        if str(item).strip()
+    ]
+    if tool_ids:
+        return tool_ids
+    tool_id = str(node.get("tool_id") or "").strip()
+    return [tool_id] if tool_id else []
+
+
+def _semantic_node_type(node: dict[str, Any]) -> str:
+    node_type = str(node.get("node_type") or "")
+    if node_type != "worker":
+        return node_type
+    metadata = dict(node.get("metadata") or {})
+    if node.get("validation_rules"):
+        return "validator"
+    if node.get("control_flow"):
+        return "gate"
+    if any(
+        key in metadata
+        for key in (
+            "human_prompt",
+            "human_timeout_seconds",
+            "human_default_action",
+            "human_input_schema",
+            "human_output_schema",
+            "human_render_mode",
+            "human_options",
+            "human_instructions",
+            "human_render_target",
+        )
+    ):
+        return "human"
+    if any(
+        key in metadata
+        for key in (
+            "reflection_prompt",
+            "reflection_model",
+            "reflection_source",
+            "reflection_output_format",
+        )
+    ):
+        return "reflection"
+    if any(
+        key in metadata
+        for key in (
+            "vote_candidates",
+            "vote_prompt_template",
+            "vote_strategy",
+            "vote_config",
+        )
+    ):
+        return "vote"
+    if any(
+        key in metadata
+        for key in (
+            "rag_collection",
+            "rag_top_k",
+            "rag_query_template",
+        )
+    ):
+        return "rag_operator"
+    if str(node.get("code") or "").strip():
+        return "code_operator"
+    if _worker_tool_ids(node):
+        return "tool_operator"
+    if node.get("model") is not None or node.get("llm_hints") is not None:
+        return "llm_operator"
+    return "worker"
+
+
+def _node_tool_config(node: dict[str, Any]) -> dict[str, Any]:
+    tool_config = node.get("tool_config")
+    if isinstance(tool_config, dict):
+        return tool_config
+    metadata = node.get("metadata") or {}
+    return dict(metadata.get("tool_config") or {})
+
+
+def _node_code(node: dict[str, Any]) -> str:
+    return str(node.get("code") or "")
+
+
+def _node_task_tier(node: dict[str, Any]) -> str | None:
+    if _semantic_node_type(node) != "llm_operator":
+        return None
+    if node.get("node_type") == "worker":
+        llm_hints = node.get("llm_hints") or {}
+        return llm_hints.get("task_tier")
+    return node.get("task_tier")
+
+
+def _has_tiered_model_selection(node: dict[str, Any]) -> bool:
+    if _semantic_node_type(node) != "llm_operator":
+        return False
+    if node.get("node_type") == "worker":
+        return bool(str(node.get("model") or "").strip())
+    return node.get("model_policy") == {"strategy": "tier"}
+
+
 def _make_planner() -> WorkflowPlanner:
     discovery = AsyncMock()
     discovery.discover_all = AsyncMock(
@@ -244,18 +347,18 @@ async def test_direct_pipeline_expands_multistep_prompt_and_applies_model_tierin
         StageType.transform,
         StageType.transform,
     ]
-    llm_nodes = [node for node in graph["nodes"] if node["node_type"] == "llm_operator"]
-    assert [node["task_tier"] for node in llm_nodes] == [
+    llm_nodes = [node for node in graph["nodes"] if _semantic_node_type(node) == "llm_operator"]
+    assert [_node_task_tier(node) for node in llm_nodes] == [
         "routine",
         "reasoning",
         "reasoning",
         "critical",
     ]
-    assert all(node["model_policy"] == {"strategy": "tier"} for node in llm_nodes)
-    tool_nodes = [node for node in graph["nodes"] if node["node_type"] == "tool_operator"]
+    assert all(_has_tiered_model_selection(node) for node in llm_nodes)
+    tool_nodes = [node for node in graph["nodes"] if _semantic_node_type(node) == "tool_operator"]
     assert len(tool_nodes) == 1
-    assert tool_nodes[0]["tool_id"] == "web_search"
-    assert tool_nodes[0].get("tool_config", {}).get("query")
+    assert _worker_tool_ids(tool_nodes[0]) == ["web_search"]
+    assert (tool_nodes[0].get("tool_config", {}) or tool_nodes[0].get("metadata", {}).get("tool_config", {})).get("query")
 
 
 @pytest.mark.asyncio
@@ -284,12 +387,12 @@ async def test_direct_pipeline_repairs_numeric_batch_prompt_into_run_ready_fanou
         StageType.fan_out,
         StageType.code_execution,
     ]
-    assert [(node["id"], node["node_type"]) for node in graph["nodes"]] == [
+    assert [(node["id"], _semantic_node_type(node)) for node in graph["nodes"]] == [
         ("seed_items", "code_operator"),
         ("triple_each", "for_each"),
         ("sum_results", "code_operator"),
     ]
-    code_nodes = [node["code"] for node in graph["nodes"] if node["node_type"] == "code_operator"]
+    code_nodes = [node["code"] for node in graph["nodes"] if _semantic_node_type(node) == "code_operator"]
     assert code_nodes[0] == "result = [1, 2, 3]"
     assert 'entry["result"]' in code_nodes[1]
     assert all('"status": "placeholder"' not in code for code in code_nodes)
@@ -318,7 +421,7 @@ async def test_compiled_pipeline_handles_conditional_prompt_end_to_end() -> None
     assert conditional_stage.conditional is not None
     assert conditional_stage.conditional.condition == "7 > 5"
     assert result["code_generated"] is True
-    node_types = {node["id"]: node["node_type"] for node in graph["nodes"]}
+    node_types = {node["id"]: _semantic_node_type(node) for node in graph["nodes"]}
     assert node_types["if_7_is_bigger_than_5_say_big_gate"] == "gate"
     assert node_types["if_7_is_bigger_than_5_say_big_then"] == "llm_operator"
     assert node_types["if_7_is_bigger_than_5_say_big_else"] == "llm_operator"
@@ -374,19 +477,19 @@ async def test_compiled_pipeline_handles_tool_code_transform_prompt_end_to_end()
     ]
     assert result["code_generated"] is True
 
-    node_types = {node["id"]: node["node_type"] for node in graph["nodes"]}
+    node_types = {node["id"]: _semantic_node_type(node) for node in graph["nodes"]}
     assert node_types["gather_news"] == "tool_operator"
     assert node_types["count_articles"] == "code_operator"
     assert node_types["draft_briefing"] == "llm_operator"
 
     tool_node = next(node for node in graph["nodes"] if node["id"] == "gather_news")
-    assert tool_node["tool_id"] == "web_search"
-    query = str(tool_node.get("tool_config", {}).get("query") or "")
+    assert _worker_tool_ids(tool_node) == ["web_search"]
+    query = str(_node_tool_config(tool_node).get("query") or "")
     assert "news" in query.lower()
     assert "company" in query.lower()
 
     code_node = next(node for node in graph["nodes"] if node["id"] == "count_articles")
-    assert "article_count" in code_node["code"]
+    assert "article_count" in _node_code(code_node)
     assert all(node["node_type"] != "input" for node in graph["nodes"])
 
 
@@ -458,10 +561,10 @@ async def test_direct_pipeline_handles_eval_tool_heavy_prompt_end_to_end() -> No
         StageType.tool_call,
         StageType.transform,
     ]
-    tool_nodes = [node for node in graph["nodes"] if node["node_type"] == "tool_operator"]
-    assert [node["tool_id"] for node in tool_nodes] == ["web_search", "web_fetch"]
-    assert any(node["node_type"] == "llm_operator" for node in graph["nodes"])
-    assert any(node["node_type"] == "validator" for node in graph["nodes"])
+    tool_nodes = [node for node in graph["nodes"] if _semantic_node_type(node) == "tool_operator"]
+    assert [_worker_tool_ids(node)[0] for node in tool_nodes] == ["web_search", "web_fetch"]
+    assert any(_semantic_node_type(node) == "llm_operator" for node in graph["nodes"])
+    assert any(_semantic_node_type(node) == "validator" for node in graph["nodes"])
 
     rebuilt = _roundtrip_through_builder(graph)
     rebuilt_signature = _graph_signature(rebuilt)
@@ -611,7 +714,7 @@ async def test_compiled_pipeline_handles_eval_conditional_prompt_and_roundtrips(
 
     assert result["code_generated"] is True
     assert any(stage.stage_type == StageType.conditional for stage in intent.stages)
-    node_types = {node["id"]: node["node_type"] for node in graph["nodes"]}
+    node_types = {node["id"]: _semantic_node_type(node) for node in graph["nodes"]}
     assert any(node_type == "gate" for node_type in node_types.values())
     assert any(node_type == "llm_operator" for node_type in node_types.values())
 

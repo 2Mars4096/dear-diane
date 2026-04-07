@@ -838,7 +838,19 @@ def _describe_llm_external_action_issue(
     *,
     graph_label: str,
 ) -> str | None:
-    if getattr(node, "node_type", "") != "llm_operator":
+    node_type = getattr(node, "node_type", "")
+    if node_type == "llm_operator":
+        uses_llm_surface = True
+    elif node_type == "worker":
+        uses_llm_surface = bool(
+            getattr(node, "model", None) is not None
+            or getattr(node, "llm_hints", None) is not None
+        )
+        if getattr(node, "code", "") or list(getattr(node, "tool_ids", []) or []):
+            return None
+    else:
+        return None
+    if not uses_llm_surface:
         return None
     if list(getattr(node, "tools", []) or []):
         return None
@@ -899,9 +911,19 @@ def _check_graph_run_readiness(
         return issues
     connected_inputs = _connected_input_ports(graph)
     for node in graph.nodes:
-        if getattr(node, "node_type", "") != "code_operator":
-            if getattr(node, "node_type", "") == "tool_operator":
-                required_args = _required_tool_args(getattr(node, "tool_id", ""))
+        node_type = getattr(node, "node_type", "")
+        is_worker = node_type == "worker"
+        is_code_like = node_type == "code_operator" or (
+            is_worker and bool(getattr(node, "code", ""))
+        )
+        is_tool_like = node_type == "tool_operator" or (
+            is_worker and bool(getattr(node, "tool_ids", []) or [])
+        )
+
+        if not is_code_like:
+            if is_tool_like:
+                tool_id = str(getattr(node, "tool_id", "") or "").strip()
+                required_args = _required_tool_args(tool_id)
                 tool_config = getattr(node, "tool_config", {}) or {}
                 available_args = {
                     key
@@ -912,7 +934,7 @@ def _check_graph_run_readiness(
                 missing_args = sorted(required_args - available_args)
                 for arg_name in missing_args:
                     issues.append(
-                        f"{graph_label} tool node '{node.id}' ({node.tool_id}) is missing required argument "
+                        f"{graph_label} tool node '{node.id}' ({tool_id}) is missing required argument "
                         f"'{arg_name}'; provide it via tool_config or an incoming edge."
                     )
             foreach_issue = _describe_foreach_readiness_issue(

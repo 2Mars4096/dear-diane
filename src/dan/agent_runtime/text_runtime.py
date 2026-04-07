@@ -20,6 +20,7 @@ from dan.chat_events import (
 )
 from dan.llm_surface import stream_chat_surface
 from dan.models.graph import Graph
+from dan.prompt_contracts import PromptEnvelope
 from dan.providers.costs import estimate_cost
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ async def stream_text_response(
     client_graph_revision: str | None = None,
     mode: str = "agent",
     cancel_event: asyncio.Event | None = None,
+    prompt_envelope: PromptEnvelope | None = None,
     debug_context: str = "",
     prompt_context: str = "",
     mentions: list[Any] | None = None,
@@ -95,6 +97,7 @@ async def stream_text_response(
             message,
             history,
             mode=mode,
+            prompt_envelope=prompt_envelope,
             debug_context=debug_context,
             prompt_context=prompt_context,
             mentions=mentions,

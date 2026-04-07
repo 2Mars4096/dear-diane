@@ -35,6 +35,8 @@ from dan.models.legacy import (
 )
 from dan.models.node_taxonomy import MARKDOWN_DECOMPILER_SUPPORTED_NODE_TYPES
 from dan.models.nodes import NodeBase
+from dan.worker.model import Worker, llm_hints_configured
+from dan.worker.presets import worker_to_legacy
 
 _SUPPORTED_NODE_TYPES = MARKDOWN_DECOMPILER_SUPPORTED_NODE_TYPES
 
@@ -49,6 +51,41 @@ _SCHEMA_TO_TYPE: dict[str, str] = {
 
 _COMPILER_DEFAULT_INPUT_SCHEMA: dict[str, Any] = {"type": "object"}
 _COMPILER_DEFAULT_OUTPUT_SCHEMA: dict[str, Any] = {"type": "string"}
+
+
+def _is_generated_loader_input(node: NodeBase) -> bool:
+    """Recognize the compiler's synthetic workflow input shim across builder modes."""
+    if node.node_type == "input":
+        return True
+    if isinstance(node, Worker):
+        return node.id == "workflow_inputs" and bool((node.metadata or {}).get("generated"))
+    return False
+
+
+def _simple_worker_markdown_type(node: Worker) -> str | None:
+    """Lower simple Worker leaves into existing markdown agent types when possible."""
+    if node.body_graph or node.sub_workers or node.control_flow is not None or node.validation_rules:
+        return None
+    if node.code:
+        if node.tool_ids or node.model or llm_hints_configured(node.llm_hints):
+            return None
+        return "code"
+    if node.tool_ids:
+        if len(node.tool_ids) != 1 or node.model or llm_hints_configured(node.llm_hints):
+            return None
+        return "tool"
+    if node.model or llm_hints_configured(node.llm_hints):
+        return "llm"
+    return None
+
+
+def _markdown_export_node(node: NodeBase) -> NodeBase:
+    """Project Worker leaves onto existing markdown-supported legacy node types when possible."""
+    if isinstance(node, Worker):
+        legacy = worker_to_legacy(node)
+        if legacy is not None and legacy.node_type in _SUPPORTED_NODE_TYPES and legacy.node_type != "input":
+            return legacy
+    return node
 
 
 def decompile_to_markdown(
@@ -79,7 +116,9 @@ class _DecompileContext:
         self._warn_lossy_runtime_exports()
 
         for node in self.graph.nodes:
-            if node.node_type in ("input", "gate", "for_each", "parallel_subagents", "orchestrator"):
+            if _is_generated_loader_input(node):
+                continue
+            if node.node_type in ("gate", "for_each", "parallel_subagents", "orchestrator"):
                 continue
             self._write_agent_file(node)
 
@@ -119,7 +158,9 @@ class _DecompileContext:
 
     def _assign_filenames(self) -> None:
         for node in self.graph.nodes:
-            if node.node_type in ("input", "gate", "for_each", "parallel_subagents", "orchestrator"):
+            if _is_generated_loader_input(node):
+                continue
+            if node.node_type in ("gate", "for_each", "parallel_subagents", "orchestrator"):
                 continue
             self._allocate_filename(node.id)
 
@@ -193,7 +234,7 @@ class _DecompileContext:
 
     def _write_subgraph_node_files(self, sub_graph: Graph, written: set[str]) -> None:
         for sn in sub_graph.nodes:
-            if sn.node_type == "input" or sn.id in written:
+            if _is_generated_loader_input(sn) or sn.id in written:
                 continue
             written.add(sn.id)
             self._allocate_filename(sn.id)
@@ -249,20 +290,21 @@ class _DecompileContext:
 
     def _render_agent(self, node: NodeBase) -> str:
         parts: list[str] = []
+        export_node = _markdown_export_node(node)
 
-        fm = self._build_frontmatter(node)
+        fm = self._build_frontmatter(export_node)
         if fm:
             parts.append("---")
             parts.append(yaml.dump(fm, default_flow_style=False, sort_keys=False).rstrip())
             parts.append("---")
             parts.append("")
 
-        ports_block = self._render_ports(node)
+        ports_block = self._render_ports(export_node)
         if ports_block:
             parts.append(ports_block)
             parts.append("")
 
-        body = self._render_body(node)
+        body = self._render_body(export_node)
         if body:
             parts.append(body)
             parts.append("")
@@ -272,7 +314,37 @@ class _DecompileContext:
     def _build_frontmatter(self, node: NodeBase) -> dict[str, Any]:
         fm: dict[str, Any] = {}
 
-        if isinstance(node, LLMOperator):
+        if isinstance(node, Worker):
+            worker_kind = _simple_worker_markdown_type(node)
+            if worker_kind == "llm":
+                fm["type"] = "llm"
+                if node.model:
+                    fm["model"] = node.model
+                hints = node.llm_hints
+                if hints is not None:
+                    if hints.temperature != 0.7:
+                        fm["temperature"] = hints.temperature
+                    if hints.max_tokens is not None:
+                        fm["max_tokens"] = hints.max_tokens
+                    if hints.output_json_schema:
+                        fm["output_schema"] = hints.output_json_schema
+            elif worker_kind == "tool":
+                fm["type"] = "tool"
+                fm["tool_id"] = node.tool_ids[0]
+                tool_config = (node.metadata or {}).get("tool_config")
+                if isinstance(tool_config, dict) and tool_config:
+                    fm["tool_config"] = dict(tool_config)
+            elif worker_kind == "code":
+                fm["type"] = "code"
+                if node.language != "python":
+                    fm["language"] = node.language
+            else:
+                fm["type"] = node.node_type
+                self.diagnostics.append(Diagnostic(
+                    level="warning",
+                    message=f"Unsupported node type '{node.node_type}' for '{node.id}'; emitting stub",
+                ))
+        elif isinstance(node, LLMOperator):
             fm["type"] = "llm"
             if node.model:
                 fm["model"] = node.model
@@ -438,7 +510,39 @@ class _DecompileContext:
     def _render_body(self, node: NodeBase) -> str:
         parts: list[str] = []
 
-        if isinstance(node, LLMOperator):
+        if isinstance(node, Worker):
+            worker_kind = _simple_worker_markdown_type(node)
+            if worker_kind == "llm":
+                hints = node.llm_hints
+                if hints is not None and hints.system_prompt:
+                    parts.append("## System")
+                    parts.append("")
+                    parts.append(hints.system_prompt)
+                    parts.append("")
+                prompt = ""
+                if hints is not None and hints.prompt_template:
+                    prompt = hints.prompt_template
+                elif node.instruction:
+                    prompt = node.instruction
+                if prompt:
+                    parts.append(prompt)
+            elif worker_kind == "code":
+                lang = node.language or "python"
+                parts.append(f"```{lang}")
+                parts.append(node.code)
+                parts.append("```")
+            elif worker_kind == "tool":
+                tool_id = node.tool_ids[0]
+                parts.append(f"Tool `{tool_id}`.")
+                tool_config = (node.metadata or {}).get("tool_config")
+                if isinstance(tool_config, dict) and tool_config:
+                    parts.append("")
+                    parts.append("```json")
+                    parts.append(json.dumps(dict(tool_config), indent=2, default=str))
+                    parts.append("```")
+            elif node.node_type not in _SUPPORTED_NODE_TYPES:
+                parts.append(f"<!-- UNSUPPORTED: node_type \"{node.node_type}\" — manual conversion needed -->")
+        elif isinstance(node, LLMOperator):
             if node.system_prompt:
                 parts.append("## System")
                 parts.append("")
@@ -660,6 +764,7 @@ def _build_flow_lines(
     skip_nodes = gate_ids | {
         n.id for n in graph.nodes if n.node_type in ("input", "for_each", "parallel_subagents", "orchestrator")
     }
+    skip_nodes.update(n.id for n in graph.nodes if _is_generated_loader_input(n))
     visited: set[str] = set()
 
     chain_heads = [

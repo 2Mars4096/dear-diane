@@ -287,7 +287,8 @@ def test_workflow_spec_from_intent_projects_stage_metadata() -> None:
     assert spec.schedule is not None
     assert spec.schedule.trigger == "weekly"
     assert [node.node_id for node in spec.nodes] == ["collect", "draft"]
-    assert spec.nodes[0].node_type == "tool_operator"
+    assert spec.nodes[0].node_type in {"tool_operator", "worker"}
+    assert spec.nodes[0].execution_family == ExecutionFamily.tool
     assert spec.nodes[0].grounding.tool_id == "web_search"
     assert spec.nodes[0].section_label == "research"
     assert spec.nodes[0].config["tool_id"] == "web_search"
@@ -296,7 +297,8 @@ def test_workflow_spec_from_intent_projects_stage_metadata() -> None:
         failure_risk=WorkflowRiskLevel.high,
         expected_side_effects=["network_io"],
     )
-    assert spec.nodes[1].node_type == "llm_operator"
+    assert spec.nodes[1].node_type in {"llm_operator", "worker"}
+    assert spec.nodes[1].execution_family == ExecutionFamily.llm
     assert spec.nodes[1].dependencies == ["collect"]
     assert spec.nodes[1].chapter_label == "report"
     assert [artifact.name for artifact in spec.expected_inputs] == ["watchlist"]
@@ -323,7 +325,8 @@ def test_workflow_spec_from_intent_preserves_grounded_llm_tool_ids() -> None:
 
     spec = workflow_spec_from_intent(intent, workflow_id="grounded-llm")
 
-    assert spec.nodes[0].node_type == "llm_operator"
+    assert spec.nodes[0].node_type in {"llm_operator", "worker"}
+    assert spec.nodes[0].execution_family == ExecutionFamily.llm
     assert spec.nodes[0].grounding.tool_id == "web_search"
     assert spec.nodes[0].grounding.declared_actions == ["search"]
 
@@ -346,7 +349,8 @@ def test_workflow_spec_from_intent_does_not_mark_plain_drafting_as_external_io()
 
     spec = workflow_spec_from_intent(intent, workflow_id="plain-draft")
 
-    assert spec.nodes[0].node_type == "llm_operator"
+    assert spec.nodes[0].node_type in {"llm_operator", "worker"}
+    assert spec.nodes[0].execution_family == ExecutionFamily.llm
     assert spec.nodes[0].grounding.tool_id is None
     assert spec.nodes[0].grounding.declared_actions == []
 

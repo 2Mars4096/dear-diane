@@ -23,6 +23,20 @@ from dan.builder.compiler import (
     _PendingSubGraph,
     compile_graph,
 )
+from dan.builder._aliases import (
+    legacy_compute_pending_from_worker,
+    worker_pending_alias,
+)
+from dan.builder._scopes import (
+    _AgentTeamContext,
+    _OrchestratorContext,
+    _ParallelSubagentsContext,
+    _ValidatedCompositeRef,
+    _WorkerScopeContext,
+    auto_rules,
+    first_composite_input_port,
+    first_composite_output_port,
+)
 from dan.builder.refs import NodeRef, PortRef
 from dan.models.context import (
     ArtifactRef,
@@ -113,6 +127,38 @@ class WorkflowBuilder:
     def _emit_canonical_worker_alias(self) -> bool:
         return bool(self._canonical_workers)
 
+    def _legacy_compute_pending_from_worker(
+        self,
+        node_id: str,
+        *,
+        expected_node_type: str,
+        worker_kwargs: dict[str, Any],
+        explicit_input_ports: list[Any],
+        explicit_output_ports: list[Any],
+    ) -> _PendingNode:
+        return legacy_compute_pending_from_worker(
+            node_id,
+            expected_node_type=expected_node_type,
+            worker_kwargs=worker_kwargs,
+            explicit_input_ports=explicit_input_ports,
+            explicit_output_ports=explicit_output_ports,
+        )
+
+    def _worker_pending_alias(
+        self,
+        node_id: str,
+        *,
+        worker_kwargs: dict[str, Any],
+        explicit_input_ports: list[Any],
+        explicit_output_ports: list[Any],
+    ) -> _PendingNode:
+        return worker_pending_alias(
+            node_id,
+            worker_kwargs=worker_kwargs,
+            explicit_input_ports=explicit_input_ports,
+            explicit_output_ports=explicit_output_ports,
+        )
+
     # ── Virtual entry refs for sub-graph scopes ────────────────────
 
     @property
@@ -141,206 +187,6 @@ class WorkflowBuilder:
 
     # ── Node creation methods ──────────────────────────────────────
 
-    def _legacy_compute_pending_from_worker(
-        self,
-        node_id: str,
-        *,
-        expected_node_type: str,
-        worker_kwargs: dict[str, Any],
-        explicit_input_ports: list[Any],
-        explicit_output_ports: list[Any],
-    ) -> _PendingNode:
-        """Project a Worker-shaped alias payload back to the legacy compute pending node.
-
-        This keeps public builder aliases stable while forcing their config
-        through the Worker contract surface first.
-        """
-
-        from dan.models.legacy import (
-            CodeOperator,
-            HumanInTheLoopNode,
-            HumanNode,
-            InputNode,
-            LLMOperator,
-            RAGOperator,
-            ReduceNode,
-            ReflectionNode,
-            RouterNode,
-            ToolOperator,
-            ValidatorNode,
-            VoteNode,
-        )
-        from dan.worker.model import Worker
-        from dan.worker.presets import worker_to_legacy
-
-        copied_input_ports = [port.model_copy(deep=True) for port in explicit_input_ports]
-        copied_output_ports = [port.model_copy(deep=True) for port in explicit_output_ports]
-        materialized_worker_kwargs = dict(worker_kwargs)
-        metadata = dict(materialized_worker_kwargs.get("metadata") or {})
-        if "tool_config" in materialized_worker_kwargs:
-            metadata["tool_config"] = dict(materialized_worker_kwargs.pop("tool_config") or {})
-        if metadata:
-            materialized_worker_kwargs["metadata"] = metadata
-        worker = Worker(
-            id=node_id,
-            name=str(materialized_worker_kwargs.get("name") or node_id),
-            description=str(materialized_worker_kwargs.get("description") or ""),
-            input_ports=[port.model_copy(deep=True) for port in copied_input_ports],
-            output_ports=[port.model_copy(deep=True) for port in copied_output_ports],
-            **{k: v for k, v in materialized_worker_kwargs.items() if k not in {"name", "description"}},
-        )
-        legacy = worker_to_legacy(worker)
-        if legacy is None or legacy.node_type != expected_node_type:
-            raise BuildError([
-                f"Could not project Worker alias {node_id!r} to legacy node type {expected_node_type!r}",
-            ])
-
-        kwargs: dict[str, Any] = {
-            "name": legacy.name,
-            "description": legacy.description,
-        }
-        if isinstance(legacy, LLMOperator):
-            kwargs.update({
-                "model": legacy.model,
-                "prompt_template": legacy.prompt_template,
-                "system_prompt": legacy.system_prompt,
-                "temperature": legacy.temperature,
-            })
-            if legacy.max_tokens is not None:
-                kwargs["max_tokens"] = legacy.max_tokens
-            if legacy.output_json_schema is not None:
-                kwargs["output_json_schema"] = legacy.output_json_schema
-        elif isinstance(legacy, ToolOperator):
-            kwargs.update({
-                "tool_id": legacy.tool_id,
-                "tool_config": dict(legacy.tool_config),
-            })
-        elif isinstance(legacy, RAGOperator):
-            kwargs.update({
-                "collection": legacy.collection,
-                "top_k": legacy.top_k,
-                "query_template": legacy.query_template,
-                "include_metadata": legacy.include_metadata,
-                "rerank": legacy.rerank,
-            })
-            if legacy.similarity_threshold is not None:
-                kwargs["similarity_threshold"] = legacy.similarity_threshold
-            if legacy.embedding_model:
-                kwargs["embedding_model"] = legacy.embedding_model
-            if legacy.vector_store_config:
-                kwargs["vector_store_config"] = dict(legacy.vector_store_config)
-        elif isinstance(legacy, HumanNode):
-            kwargs.update({
-                "prompt": legacy.prompt,
-                "render_mode": legacy.render_mode,
-                "instructions": legacy.instructions,
-                "render_target": legacy.render_target,
-            })
-            if legacy.timeout_seconds is not None:
-                kwargs["timeout_seconds"] = legacy.timeout_seconds
-            if legacy.default_action is not None:
-                kwargs["default_action"] = legacy.default_action
-            if legacy.input_schema is not None:
-                kwargs["input_schema"] = legacy.input_schema
-            if legacy.output_schema is not None:
-                kwargs["output_schema"] = legacy.output_schema
-            if legacy.options is not None:
-                kwargs["options"] = list(legacy.options)
-        elif isinstance(legacy, VoteNode):
-            kwargs.update({
-                "candidates": list(legacy.candidates),
-                "num_votes": legacy.num_votes,
-                "prompt_template": legacy.prompt_template,
-                "system_prompt": legacy.system_prompt,
-                "temperature": legacy.temperature,
-                "vote_strategy": legacy.vote_strategy,
-                "parallelism": legacy.parallelism,
-            })
-            if legacy.output_json_schema is not None:
-                kwargs["output_json_schema"] = legacy.output_json_schema
-            if legacy.vote_config is not None:
-                kwargs["vote_config"] = legacy.vote_config
-            if legacy.task_tier is not None:
-                kwargs["task_tier"] = legacy.task_tier
-            if legacy.timeout_seconds is not None:
-                kwargs["timeout_seconds"] = legacy.timeout_seconds
-        elif isinstance(legacy, InputNode):
-            kwargs["variables"] = list(legacy.variables)
-        elif isinstance(legacy, ReduceNode):
-            kwargs["reducer"] = legacy.reducer
-        elif isinstance(legacy, RouterNode):
-            kwargs.update({
-                "model": legacy.model,
-                "route_descriptions": dict(legacy.route_descriptions),
-            })
-            if legacy.task_tier is not None:
-                kwargs["task_tier"] = legacy.task_tier
-        elif isinstance(legacy, ValidatorNode):
-            kwargs.update({
-                "validation_rules": list(legacy.validation_rules),
-                "on_failure": legacy.on_failure,
-                "strict_mode": legacy.strict_mode,
-            })
-        elif isinstance(legacy, ReflectionNode):
-            kwargs.update({
-                "reflection_prompt": legacy.reflection_prompt,
-                "source": legacy.source,
-                "source_config": dict(legacy.source_config),
-                "output_format": legacy.output_format,
-                "max_principles": legacy.max_principles,
-                "min_confidence": legacy.min_confidence,
-                "dedup_strategy": legacy.dedup_strategy,
-            })
-            if legacy.reflection_model is not None:
-                kwargs["reflection_model"] = legacy.reflection_model
-            if legacy.task_tier is not None:
-                kwargs["task_tier"] = legacy.task_tier
-        elif isinstance(legacy, CodeOperator):
-            kwargs.update({
-                "code": legacy.code,
-                "language": legacy.language,
-            })
-            if legacy.read_set:
-                kwargs["read_set"] = legacy.read_set
-            if legacy.write_set:
-                kwargs["write_set"] = legacy.write_set
-        else:
-            raise BuildError([
-                f"Unsupported legacy projection type {type(legacy).__name__!r} for alias {node_id!r}",
-            ])
-
-        return _PendingNode(
-            id=node_id,
-            node_type=expected_node_type,
-            kwargs=kwargs,
-            explicit_input_ports=copied_input_ports,
-            explicit_output_ports=copied_output_ports,
-        )
-
-    def _worker_pending_alias(
-        self,
-        node_id: str,
-        *,
-        worker_kwargs: dict[str, Any],
-        explicit_input_ports: list[Any],
-        explicit_output_ports: list[Any],
-    ) -> _PendingNode:
-        """Materialize a simple compute alias directly as a Worker pending node."""
-
-        materialized_kwargs = dict(worker_kwargs)
-        metadata = dict(materialized_kwargs.get("metadata") or {})
-        if "tool_config" in materialized_kwargs:
-            metadata["tool_config"] = dict(materialized_kwargs.pop("tool_config") or {})
-        if metadata:
-            materialized_kwargs["metadata"] = metadata
-        return _PendingNode(
-            id=node_id,
-            node_type="worker",
-            kwargs=materialized_kwargs,
-            explicit_input_ports=[port.model_copy(deep=True) for port in explicit_input_ports],
-            explicit_output_ports=[port.model_copy(deep=True) for port in explicit_output_ports],
-        )
-
     def llm(
         self,
         node_id: str,
@@ -363,6 +209,8 @@ class WorkflowBuilder:
         explicit_output_ports = [OutputPort(**p) for p in output_ports] if output_ports is not None else []
         if output_ports is None and not explicit_output_ports:
             explicit_output_ports = [OutputPort(name="text")]
+        default_input = explicit_input_ports[0].name if len(explicit_input_ports) == 1 else None
+        default_output = explicit_output_ports[0].name if len(explicit_output_ports) == 1 else "text"
         worker_kwargs: dict[str, Any] = {
             "name": name or node_id,
             "description": description,
@@ -385,7 +233,13 @@ class WorkflowBuilder:
                 explicit_input_ports=explicit_input_ports,
                 explicit_output_ports=explicit_output_ports,
             )
-            ref = NodeRef(node_id, "worker", self, _default_output="text")
+            ref = NodeRef(
+                node_id,
+                "worker",
+                self,
+                _default_input=default_input,
+                _default_output=default_output,
+            )
         else:
             pn = self._legacy_compute_pending_from_worker(
                 node_id,
@@ -394,7 +248,13 @@ class WorkflowBuilder:
                 explicit_input_ports=explicit_input_ports,
                 explicit_output_ports=explicit_output_ports,
             )
-            ref = NodeRef(node_id, "llm_operator", self)
+            ref = NodeRef(
+                node_id,
+                "llm_operator",
+                self,
+                _default_input=default_input,
+                _default_output=default_output,
+            )
         self._add_node(pn)
         return ref
 
@@ -421,6 +281,8 @@ class WorkflowBuilder:
         explicit_output_ports = [OutputPort(**p) for p in (output_ports or [])]
         if not explicit_output_ports:
             explicit_output_ports = [OutputPort(name="result")]
+        default_input = explicit_input_ports[0].name if len(explicit_input_ports) == 1 else None
+        default_output = explicit_output_ports[0].name if len(explicit_output_ports) == 1 else "result"
         worker_kwargs: dict[str, Any] = {
             "name": name or node_id,
             "description": description,
@@ -434,7 +296,13 @@ class WorkflowBuilder:
                 explicit_input_ports=explicit_input_ports,
                 explicit_output_ports=explicit_output_ports,
             )
-            ref = NodeRef(node_id, "worker", self, _default_output="result")
+            ref = NodeRef(
+                node_id,
+                "worker",
+                self,
+                _default_input=default_input,
+                _default_output=default_output,
+            )
         else:
             pn = self._legacy_compute_pending_from_worker(
                 node_id,
@@ -443,7 +311,13 @@ class WorkflowBuilder:
                 explicit_input_ports=explicit_input_ports,
                 explicit_output_ports=explicit_output_ports,
             )
-            ref = NodeRef(node_id, "tool_operator", self)
+            ref = NodeRef(
+                node_id,
+                "tool_operator",
+                self,
+                _default_input=default_input,
+                _default_output=default_output,
+            )
         self._add_node(pn)
         return ref
 
@@ -467,6 +341,8 @@ class WorkflowBuilder:
         explicit_output_ports = [OutputPort(**p) for p in (output_ports or [])]
         if not explicit_output_ports:
             explicit_output_ports = [OutputPort(name="result")]
+        default_input = explicit_input_ports[0].name if len(explicit_input_ports) == 1 else None
+        default_output = explicit_output_ports[0].name if len(explicit_output_ports) == 1 else "result"
         worker_kwargs: dict[str, Any] = {
             "name": name or node_id,
             "description": description,
@@ -484,7 +360,13 @@ class WorkflowBuilder:
                 explicit_input_ports=explicit_input_ports,
                 explicit_output_ports=explicit_output_ports,
             )
-            ref = NodeRef(node_id, "worker", self, _default_output="result")
+            ref = NodeRef(
+                node_id,
+                "worker",
+                self,
+                _default_input=default_input,
+                _default_output=default_output,
+            )
         else:
             pn = self._legacy_compute_pending_from_worker(
                 node_id,
@@ -493,7 +375,13 @@ class WorkflowBuilder:
                 explicit_input_ports=explicit_input_ports,
                 explicit_output_ports=explicit_output_ports,
             )
-            ref = NodeRef(node_id, "code_operator", self)
+            ref = NodeRef(
+                node_id,
+                "code_operator",
+                self,
+                _default_input=default_input,
+                _default_output=default_output,
+            )
         self._add_node(pn)
         return ref
 
@@ -607,15 +495,26 @@ class WorkflowBuilder:
         if write_set is not None:
             kwargs["write_set"] = write_set
 
+        explicit_input_ports = [InputPort(**p) for p in (input_ports or [])]
+        explicit_output_ports = [OutputPort(**p) for p in (output_ports or [])]
+        default_input = explicit_input_ports[0].name if len(explicit_input_ports) == 1 else None
+        default_output = explicit_output_ports[0].name if len(explicit_output_ports) == 1 else None
+
         pn = _PendingNode(
             id=node_id,
             node_type="worker",
             kwargs=kwargs,
-            explicit_input_ports=[InputPort(**p) for p in (input_ports or [])],
-            explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
+            explicit_input_ports=explicit_input_ports,
+            explicit_output_ports=explicit_output_ports,
         )
         self._add_node(pn)
-        return NodeRef(node_id, "worker", self)
+        return NodeRef(
+            node_id,
+            "worker",
+            self,
+            _default_input=default_input,
+            _default_output=default_output,
+        )
 
     @contextmanager
     def worker_scope(
@@ -2229,12 +2128,11 @@ class WorkflowBuilder:
         has_entry = bool(entry_schema or entry_rules)
         has_exit = bool(exit_schema or exit_rules)
 
-        pn = next(n for n in self._nodes if n.id == node_id)
-        composite_in = self._first_composite_input_port(input_ports, input_mappings)
-        composite_out = self._first_composite_output_port(output_ports, output_mappings)
+        composite_in = first_composite_input_port(input_ports, input_mappings)
+        composite_out = first_composite_output_port(output_ports, output_mappings)
 
         if has_entry:
-            e_rules = entry_rules or self._auto_rules(entry_schema)
+            e_rules = entry_rules or auto_rules(entry_schema)
             entry_id = f"{node_id}__entry_validator"
             self.validator(
                 entry_id,
@@ -2257,7 +2155,7 @@ class WorkflowBuilder:
             ref._entry_node_id = entry_id
 
         if has_exit:
-            x_rules = exit_rules or self._auto_rules(exit_schema)
+            x_rules = exit_rules or auto_rules(exit_schema)
             exit_id = f"{node_id}__exit_validator"
             self.validator(
                 exit_id,
@@ -2279,48 +2177,7 @@ class WorkflowBuilder:
             ))
             ref._exit_node_id = exit_id
 
-        pn.kwargs.setdefault("external_input_schema", entry_schema)
-        pn.kwargs.setdefault("external_output_schema", exit_schema)
-
-    @staticmethod
-    def _auto_rules(schema: dict[str, Any] | None) -> list[dict[str, Any]]:
-        """Derive validation rules from a JSON Schema dict."""
-        if not schema or not isinstance(schema, dict):
-            return []
-        rules: list[dict[str, Any]] = []
-        required_keys = schema.get("required", [])
-        if required_keys:
-            rules.append({"rule_type": "required_keys", "config": {"keys": required_keys}})
-        rules.append({"rule_type": "schema_conformance", "config": {"schema": schema}})
-        return rules
-
-    @staticmethod
-    def _first_composite_input_port(
-        input_ports: list[dict[str, Any]] | None,
-        input_mappings: dict[str, str] | None,
-    ) -> str:
-        """Derive the composite's first input port name for validator wiring."""
-        if input_ports and len(input_ports) > 0:
-            name = input_ports[0].get("name")
-            if name:
-                return name
-        if input_mappings and len(input_mappings) > 0:
-            return next(iter(input_mappings))
-        return "input"
-
-    @staticmethod
-    def _first_composite_output_port(
-        output_ports: list[dict[str, Any]] | None,
-        output_mappings: dict[str, str] | None,
-    ) -> str:
-        """Derive the composite's first output port name for validator wiring."""
-        if output_ports and len(output_ports) > 0:
-            name = output_ports[0].get("name")
-            if name:
-                return name
-        if output_mappings and len(output_mappings) > 0:
-            return next(iter(output_mappings.values()))
-        return "result"
+        # The composite node itself already exists in the pending node list.
 
     # ── Explicit edge wiring ───────────────────────────────────────
 
@@ -2488,566 +2345,3 @@ class WorkflowBuilder:
             lint_intent_refiner=self._lint_intent_refiner,
             validate=True,
         )
-
-
-class _WorkerScopeContext:
-    """Context object for defining a Worker body graph and named sub-workers."""
-
-    def __init__(
-        self,
-        builder: WorkflowBuilder,
-        node_id: str,
-        *,
-        role: str,
-        instruction: str,
-        persona: str,
-        authority: str,
-        model: str | None,
-        tool_ids: list[str],
-        tool_config: dict[str, Any] | None,
-        code: str,
-        language: str,
-        llm: dict[str, Any] | None,
-        llm_hints: dict[str, Any] | None,
-        context: dict[str, Any] | None,
-        authority_policy: dict[str, Any] | None,
-        execution: dict[str, Any] | None,
-        control_flow: dict[str, Any] | None,
-        input_mappings: dict[str, str] | None,
-        output_mappings: dict[str, str] | None,
-        parallelism: int,
-        merge_strategy: MergeStrategy,
-        spawn_policy: dict[str, Any] | None,
-        external_input_schema: dict[str, Any] | None,
-        external_output_schema: dict[str, Any] | None,
-        control_state_schema: dict[str, Any] | None,
-        local_state: dict[str, Any] | None,
-        compaction_rule: dict[str, Any] | None,
-        failure_policy: dict[str, Any] | None,
-        projections: list[dict[str, Any]] | None,
-        boundary_contract: dict[str, Any] | None,
-        validation_rules: list[dict[str, Any]] | None,
-        name: str | None,
-        description: str,
-        read_set: list[ContextDeclaration] | None,
-        write_set: list[ContextDeclaration] | None,
-        input_ports: list[dict[str, Any]] | None,
-        output_ports: list[dict[str, Any]] | None,
-    ) -> None:
-        self._builder = builder
-        self._node_id = node_id
-        self._body_key = f"{node_id}_body"
-        self._body = WorkflowBuilder(
-            self._body_key,
-            _parent=builder,
-            _scope_type="worker",
-        )
-        self._body._entry_input_ref = PortRef("__entry__", "input", self._body)
-        self._sub_workers: dict[str, str] = {}
-        self._sub_graphs: list[tuple[str, Graph]] = []
-        self._node_kwargs: dict[str, Any] = {
-            "role": role,
-            "instruction": instruction,
-            "persona": persona,
-            "authority": authority,
-            "model": model,
-            "tool_ids": tool_ids,
-            "tool_config": tool_config,
-            "code": code,
-            "language": language,
-            "llm": llm,
-            "llm_hints": llm_hints,
-            "context": context,
-            "authority_policy": authority_policy,
-            "execution": execution,
-            "control_flow": control_flow,
-            "input_mappings": input_mappings,
-            "output_mappings": output_mappings,
-            "parallelism": parallelism,
-            "merge_strategy": merge_strategy,
-            "spawn_policy": spawn_policy,
-            "external_input_schema": external_input_schema,
-            "external_output_schema": external_output_schema,
-            "control_state_schema": control_state_schema,
-            "local_state": local_state,
-            "compaction_rule": compaction_rule,
-            "failure_policy": failure_policy,
-            "projections": projections,
-            "boundary_contract": boundary_contract,
-            "validation_rules": validation_rules,
-            "name": name,
-            "description": description,
-            "read_set": read_set,
-            "write_set": write_set,
-            "input_ports": input_ports,
-            "output_ports": output_ports,
-        }
-
-    def __getattr__(self, name: str) -> Any:
-        if hasattr(self._body, name):
-            return getattr(self._body, name)
-        raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
-
-    @contextmanager
-    def sub_worker(self, alias: str) -> Generator[WorkflowBuilder, None, None]:
-        """Define a named sub-worker graph owned by this Worker."""
-        sub_key = f"{self._node_id}_{alias}"
-        sub = WorkflowBuilder(
-            sub_key,
-            _parent=self._builder,
-            _scope_type="worker_sub",
-        )
-        sub._entry_input_ref = PortRef("__entry__", "input", sub)
-        yield sub
-        sub_graph = sub._compile_as_subgraph()
-        self._sub_workers[alias] = sub_key
-        self._sub_graphs.append((sub_key, sub_graph))
-
-    @staticmethod
-    def _has_material_content(graph: Graph) -> bool:
-        return bool(
-            graph.nodes
-            or graph.edges
-            or graph.sub_graphs
-            or graph.shared_context
-            or graph.artifact_refs
-            or graph.hyperedges
-            or graph.worker_resources
-        )
-
-    def _finalize(self) -> None:
-        body_graph = self._body._compile_as_subgraph()
-        body_graph_key: str | None = None
-        if self._has_material_content(body_graph):
-            body_graph_key = self._body_key
-
-        self._builder.worker(
-            self._node_id,
-            role=self._node_kwargs["role"],
-            instruction=self._node_kwargs["instruction"],
-            persona=self._node_kwargs["persona"],
-            authority=self._node_kwargs["authority"],
-            model=self._node_kwargs["model"],
-            tool_ids=self._node_kwargs["tool_ids"],
-            tool_config=self._node_kwargs["tool_config"],
-            code=self._node_kwargs["code"],
-            language=self._node_kwargs["language"],
-            llm=self._node_kwargs["llm"],
-            llm_hints=self._node_kwargs["llm_hints"],
-            context=self._node_kwargs["context"],
-            authority_policy=self._node_kwargs["authority_policy"],
-            execution=self._node_kwargs["execution"],
-            control_flow=self._node_kwargs["control_flow"],
-            input_mappings=self._node_kwargs["input_mappings"],
-            output_mappings=self._node_kwargs["output_mappings"],
-            parallelism=self._node_kwargs["parallelism"],
-            merge_strategy=self._node_kwargs["merge_strategy"],
-            spawn_policy=self._node_kwargs["spawn_policy"],
-            external_input_schema=self._node_kwargs["external_input_schema"],
-            external_output_schema=self._node_kwargs["external_output_schema"],
-            control_state_schema=self._node_kwargs["control_state_schema"],
-            local_state=self._node_kwargs["local_state"],
-            compaction_rule=self._node_kwargs["compaction_rule"],
-            failure_policy=self._node_kwargs["failure_policy"],
-            projections=self._node_kwargs["projections"],
-            body_graph=body_graph_key,
-            sub_workers=self._sub_workers or None,
-            boundary_contract=self._node_kwargs["boundary_contract"],
-            validation_rules=self._node_kwargs["validation_rules"],
-            name=self._node_kwargs["name"],
-            description=self._node_kwargs["description"],
-            read_set=self._node_kwargs["read_set"],
-            write_set=self._node_kwargs["write_set"],
-            input_ports=self._node_kwargs["input_ports"],
-            output_ports=self._node_kwargs["output_ports"],
-        )
-
-        if body_graph_key is not None:
-            self._builder._sub_graphs.append(_PendingSubGraph(
-                parent_node_id=self._node_id,
-                sub_graph_key=body_graph_key,
-                graph=body_graph,
-            ))
-        for sub_key, sub_graph in self._sub_graphs:
-            self._builder._sub_graphs.append(_PendingSubGraph(
-                parent_node_id=self._node_id,
-                sub_graph_key=sub_key,
-                graph=sub_graph,
-            ))
-
-
-class _ParallelSubagentsContext:
-    """Context object for defining parallel subagent branches."""
-
-    def __init__(
-        self,
-        builder: WorkflowBuilder,
-        node_id: str,
-        *,
-        merge_strategy: MergeStrategy,
-        parallelism: int,
-        failure_policy: FailurePolicy | None,
-        reducer: str | None,
-        input_mappings: dict[str, str],
-        name: str | None,
-        description: str,
-        input_ports: list[dict[str, Any]] | None,
-        output_ports: list[dict[str, Any]] | None,
-    ) -> None:
-        self._builder = builder
-        self._node_id = node_id
-        self._merge_strategy = merge_strategy
-        self._parallelism = parallelism
-        self._failure_policy = failure_policy
-        self._reducer = reducer
-        self._input_mappings = input_mappings
-        self._name = name
-        self._description = description
-        self._input_ports = input_ports
-        self._output_ports = output_ports
-        self._branch_keys: list[str] = []
-        self._sub_graphs: list[tuple[str, Graph]] = []
-
-    @contextmanager
-    def branch(self, key: str) -> Generator[WorkflowBuilder, None, None]:
-        """Define a branch sub-graph. Yields a WorkflowBuilder for the branch."""
-        sub_key = f"{self._node_id}_{key}"
-        sub = WorkflowBuilder(sub_key, _parent=self._builder, _scope_type="parallel_branch")
-        sub._entry_input_ref = PortRef("__entry__", "input", sub)
-        yield sub
-        sub_graph = sub._compile_as_subgraph()
-        self._branch_keys.append(key)
-        self._sub_graphs.append((sub_key, sub_graph))
-
-    def define_branch(self, key: str, graph: Graph) -> None:
-        """Add a pre-built Graph as a branch (alternative to branch() context manager)."""
-        sub_key = f"{self._node_id}_{key}"
-        self._branch_keys.append(key)
-        self._sub_graphs.append((sub_key, graph))
-
-    def _finalize(self) -> None:
-        """Create the parallel_subagents node and register sub_graphs."""
-        from dan.models.ports import InputPort, OutputPort
-
-        branch_graphs = [sub_key for sub_key, _ in self._sub_graphs]
-        if not branch_graphs:
-            raise BuildError([f"parallel_subagents({self._node_id!r}) has no branches"])
-
-        kwargs: dict[str, Any] = {
-            "name": self._name or self._node_id,
-            "description": self._description,
-            "branch_graphs": branch_graphs,
-            "parallelism": self._parallelism,
-            "merge_strategy": self._merge_strategy,
-            "input_mappings": self._input_mappings,
-        }
-        if self._failure_policy is not None:
-            kwargs["failure_policy"] = self._failure_policy
-        if self._reducer is not None:
-            kwargs["reducer"] = self._reducer
-
-        pn = _PendingNode(
-            id=self._node_id,
-            node_type="parallel_subagents",
-            kwargs=kwargs,
-            explicit_input_ports=[InputPort(**p) for p in (self._input_ports or [])],
-            explicit_output_ports=[OutputPort(**p) for p in (self._output_ports or [])],
-        )
-        self._builder._add_node(pn)
-        for sub_key, sub_graph in self._sub_graphs:
-            self._builder._sub_graphs.append(_PendingSubGraph(
-                parent_node_id=self._node_id,
-                sub_graph_key=sub_key,
-                graph=sub_graph,
-            ))
-
-
-class _OrchestratorContext:
-    """Context object for defining orchestrator teams."""
-
-    def __init__(
-        self,
-        builder: WorkflowBuilder,
-        node_id: str,
-        *,
-        orchestrator_prompt: str,
-        orchestrator_model: str | None,
-        completion_condition: str,
-        max_iterations: int,
-        timeout_seconds: float | None,
-        input_mappings: dict[str, str],
-        failure_policy: FailurePolicy | None,
-        name: str | None,
-        description: str,
-        input_ports: list[dict[str, Any]] | None,
-        output_ports: list[dict[str, Any]] | None,
-    ) -> None:
-        self._builder = builder
-        self._node_id = node_id
-        self._orchestrator_prompt = orchestrator_prompt
-        self._orchestrator_model = orchestrator_model
-        self._completion_condition = completion_condition
-        self._max_iterations = max_iterations
-        self._timeout_seconds = timeout_seconds
-        self._input_mappings = input_mappings
-        self._failure_policy = failure_policy
-        self._name = name
-        self._description = description
-        self._input_ports = input_ports
-        self._output_ports = output_ports
-        self._teams: dict[str, str] = {}
-        self._sub_graphs: list[tuple[str, Graph]] = []
-
-    @contextmanager
-    def team(self, team_name: str) -> Generator[WorkflowBuilder, None, None]:
-        """Define a team sub-graph. Yields a WorkflowBuilder for the team."""
-        sub_key = f"{self._node_id}_{team_name}"
-        sub = WorkflowBuilder(sub_key, _parent=self._builder, _scope_type="orchestrator_team")
-        sub._entry_input_ref = PortRef("__entry__", "input", sub)
-        yield sub
-        sub_graph = sub._compile_as_subgraph()
-        self._teams[team_name] = sub_key
-        self._sub_graphs.append((sub_key, sub_graph))
-
-    def _finalize(self) -> None:
-        """Create the orchestrator node and register sub_graphs."""
-        from dan.models.ports import InputPort, OutputPort
-
-        if not self._teams:
-            raise BuildError([f"orchestrator({self._node_id!r}) has no teams"])
-
-        kwargs: dict[str, Any] = {
-            "name": self._name or self._node_id,
-            "description": self._description,
-            "teams": dict(self._teams),
-            "orchestrator_prompt": self._orchestrator_prompt,
-            "completion_condition": self._completion_condition,
-            "max_iterations": self._max_iterations,
-            "input_mappings": self._input_mappings,
-        }
-        if self._orchestrator_model is not None:
-            kwargs["orchestrator_model"] = self._orchestrator_model
-        if self._timeout_seconds is not None:
-            kwargs["timeout_seconds"] = self._timeout_seconds
-        if self._failure_policy is not None:
-            kwargs["failure_policy"] = self._failure_policy
-
-        pn = _PendingNode(
-            id=self._node_id,
-            node_type="orchestrator",
-            kwargs=kwargs,
-            explicit_input_ports=[InputPort(**p) for p in (self._input_ports or [])],
-            explicit_output_ports=[OutputPort(**p) for p in (self._output_ports or [])],
-        )
-        self._builder._add_node(pn)
-        for sub_key, sub_graph in self._sub_graphs:
-            self._builder._sub_graphs.append(_PendingSubGraph(
-                parent_node_id=self._node_id,
-                sub_graph_key=sub_key,
-                graph=sub_graph,
-            ))
-
-
-class _AgentTeamContext:
-    """Context object for defining agent-team member sub-graphs."""
-
-    def __init__(
-        self,
-        builder: WorkflowBuilder,
-        node_id: str,
-        *,
-        moderator_prompt: str,
-        moderator_model: str | None,
-        turn_strategy: str,
-        max_turns: int,
-        completion_condition: str,
-        timeout_seconds: float | None,
-        shared_context_keys: list[str],
-        handoff_policy: str,
-        input_mappings: dict[str, str],
-        agent_inputs: dict[str, dict[str, Any]],
-        failure_policy: FailurePolicy | None,
-        name: str | None,
-        description: str,
-        input_ports: list[dict[str, Any]] | None,
-        output_ports: list[dict[str, Any]] | None,
-    ) -> None:
-        self._builder = builder
-        self._node_id = node_id
-        self._moderator_prompt = moderator_prompt
-        self._moderator_model = moderator_model
-        self._turn_strategy = turn_strategy
-        self._max_turns = max_turns
-        self._completion_condition = completion_condition
-        self._timeout_seconds = timeout_seconds
-        self._shared_context_keys = shared_context_keys
-        self._handoff_policy = handoff_policy
-        self._input_mappings = input_mappings
-        self._agent_inputs = agent_inputs
-        self._failure_policy = failure_policy
-        self._name = name
-        self._description = description
-        self._input_ports = input_ports
-        self._output_ports = output_ports
-        self._agents: dict[str, str] = {}
-        self._sub_graphs: list[tuple[str, Graph]] = []
-
-    @contextmanager
-    def agent(self, agent_name: str) -> Generator[WorkflowBuilder, None, None]:
-        """Define an agent sub-graph. Yields a WorkflowBuilder for the agent."""
-        sub_key = f"{self._node_id}_{agent_name}"
-        sub = WorkflowBuilder(sub_key, _parent=self._builder, _scope_type="agent_team_member")
-        sub._entry_input_ref = PortRef("__entry__", "input", sub)
-        yield sub
-        sub_graph = sub._compile_as_subgraph()
-        self._agents[agent_name] = sub_key
-        self._sub_graphs.append((sub_key, sub_graph))
-
-    def _finalize(self) -> None:
-        """Create the agent_team node and register subgraphs."""
-        from dan.models.ports import InputPort, OutputPort
-
-        if len(self._agents) < 2:
-            raise BuildError([f"team({self._node_id!r}) requires at least 2 agents"])
-
-        kwargs: dict[str, Any] = {
-            "name": self._name or self._node_id,
-            "description": self._description,
-            "agents": dict(self._agents),
-            "moderator_prompt": self._moderator_prompt,
-            "turn_strategy": self._turn_strategy,
-            "max_turns": self._max_turns,
-            "completion_condition": self._completion_condition,
-            "shared_context_keys": list(self._shared_context_keys),
-            "handoff_policy": self._handoff_policy,
-            "input_mappings": dict(self._input_mappings),
-            "agent_inputs": dict(self._agent_inputs),
-        }
-        if self._moderator_model is not None:
-            kwargs["moderator_model"] = self._moderator_model
-        if self._timeout_seconds is not None:
-            kwargs["timeout_seconds"] = self._timeout_seconds
-        if self._failure_policy is not None:
-            kwargs["failure_policy"] = self._failure_policy
-
-        pn = _PendingNode(
-            id=self._node_id,
-            node_type="agent_team",
-            kwargs=kwargs,
-            explicit_input_ports=[InputPort(**p) for p in (self._input_ports or [])],
-            explicit_output_ports=[OutputPort(**p) for p in (self._output_ports or [])],
-        )
-        self._builder._add_node(pn)
-        for sub_key, sub_graph in self._sub_graphs:
-            self._builder._sub_graphs.append(_PendingSubGraph(
-                parent_node_id=self._node_id,
-                sub_graph_key=sub_key,
-                graph=sub_graph,
-            ))
-
-
-class _ValidatedCompositeRef:
-    """Proxy returned by ``validated_composite`` that intercepts ``>>`` chains.
-
-    - When used as a ``>>`` *target* (right-hand side), incoming data is
-      routed to the **entry validator** (if present), else the composite.
-    - When used as a ``>>`` *source* (left-hand side), outgoing data
-      originates from the **exit validator** (if present), else the composite.
-
-    This ensures user-level ``a >> block >> b`` automatically flows
-    through the boundary validators without manual wiring.
-    """
-
-    def __init__(self, composite_id: str, builder: WorkflowBuilder) -> None:
-        self._composite_id = composite_id
-        self._builder = builder
-        self._entry_node_id: str | None = None
-        self._exit_node_id: str | None = None
-        self._sub: WorkflowBuilder | None = None
-
-    def _set_sub(self, sub: WorkflowBuilder) -> _ValidatedCompositeRef:
-        self._sub = sub
-        return self
-
-    def __getattr__(self, name: str) -> Any:
-        """Delegate builder methods (llm, code, etc.) to the sub-workflow."""
-        if self._sub is not None and hasattr(self._sub, name):
-            return getattr(self._sub, name)
-        raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
-
-    @property
-    def node_id(self) -> str:
-        """Target node for incoming ``>>`` edges."""
-        return self._entry_node_id or self._composite_id
-
-    @property
-    def source_node_id(self) -> str:
-        """Source node for outgoing ``>>`` edges."""
-        return self._exit_node_id or self._composite_id
-
-    @property
-    def node_type(self) -> str:
-        if self._entry_node_id:
-            return "validator"
-        return "composite"
-
-    @property
-    def _source_node_type(self) -> str:
-        if self._exit_node_id:
-            return "validator"
-        return "composite"
-
-    def __getitem__(self, port_name: str) -> PortRef:
-        return PortRef(self._composite_id, port_name, self._builder)
-
-    def __rshift__(self, other: NodeRef | _ValidatedCompositeRef) -> NodeRef | _ValidatedCompositeRef:
-        """Chain: use exit validator (or composite) as the source."""
-        from dan.builder.compiler import default_output_port, default_input_port
-
-        src_id = self.source_node_id
-        src_type = self._source_node_type
-        src_port = default_output_port(src_type)
-
-        if isinstance(other, _ValidatedCompositeRef):
-            dst_id = other.node_id
-            dst_port = default_input_port(other.node_type)
-        elif isinstance(other, NodeRef):
-            dst_id = other.node_id
-            dst_port = other.default_input
-        else:
-            return NotImplemented
-
-        self._builder._edges.append(_PendingEdge(
-            source_node_id=src_id,
-            source_port=src_port,
-            target_node_id=dst_id,
-            target_port=dst_port,
-            edge_type="data",
-        ))
-        return other
-
-    def __rrshift__(self, other: NodeRef) -> _ValidatedCompositeRef:
-        """Handle ``node_ref >> validated_block``."""
-        from dan.builder.compiler import default_input_port
-
-        if not isinstance(other, NodeRef):
-            return NotImplemented
-
-        src_port = other.default_output
-        dst_id = self.node_id
-        dst_type = self.node_type
-        dst_port = default_input_port(dst_type)
-
-        builder = self._builder or other._builder
-        if builder is not None:
-            builder._edges.append(_PendingEdge(
-                source_node_id=other.node_id,
-                source_port=src_port,
-                target_node_id=dst_id,
-                target_port=dst_port,
-                edge_type="data",
-            ))
-        return self
-
-    def __repr__(self) -> str:
-        return f"_ValidatedCompositeRef({self._composite_id!r})"

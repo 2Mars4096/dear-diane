@@ -1,11 +1,30 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 from dan.engine.conditions import apply_feedback_selector
 from dan.engine.executor import ExecutorRegistry
 from dan.executor_defaults import build_default_tool_registry, register_default_executors
 from dan.executors.tool import ToolExecutor
 from dan.models.context import FeedbackSelector
+from dan.worker.adapters import build_default_worker_executors
 from dan.worker.executor import LegacyWorkerAdapterExecutor, WorkerExecutor
+
+
+def _run_without_openai(script: str) -> subprocess.CompletedProcess[str]:
+    repo_root = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = f"{repo_root / 'src'}:{repo_root}"
+    return subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_register_default_executors_populates_builtin_node_types() -> None:
@@ -90,6 +109,79 @@ def test_register_default_executors_can_use_custom_tool_registry() -> None:
     assert isinstance(worker_executor, WorkerExecutor)
     assert tool_adapter.worker_executor is worker_executor
     assert worker_executor._tool.registry.has("custom_tool")
+
+
+def test_build_default_worker_executors_shares_worker_and_legacy_adapter() -> None:
+    from dan.executors.tool import ToolRegistry
+
+    async def _custom_tool(**kwargs):
+        return kwargs
+
+    tool_registry = ToolRegistry()
+    tool_registry.register("custom_tool", _custom_tool)
+
+    bundle = build_default_worker_executors(tool_registry=tool_registry)
+
+    assert isinstance(bundle.worker_executor, WorkerExecutor)
+    assert isinstance(bundle.legacy_worker_adapter, LegacyWorkerAdapterExecutor)
+    assert bundle.legacy_worker_adapter.worker_executor is bundle.worker_executor
+    assert bundle.worker_executor._tool.registry.has("custom_tool")
+
+
+def test_llm_executor_module_import_is_lazy_about_openai() -> None:
+    result = _run_without_openai(
+        """
+import importlib.abc
+
+class _OpenAIBlocker(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "openai" or fullname.startswith("openai."):
+            raise ModuleNotFoundError("blocked openai import for lazy-import test")
+        return None
+
+import sys
+sys.meta_path.insert(0, _OpenAIBlocker())
+
+from dan.executors.llm import LLMExecutor
+
+LLMExecutor()
+print("ok")
+"""
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_default_executor_registration_is_lazy_about_openai() -> None:
+    result = _run_without_openai(
+        """
+import importlib.abc
+
+class _OpenAIBlocker(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "openai" or fullname.startswith("openai."):
+            raise ModuleNotFoundError("blocked openai import for default-registry test")
+        return None
+
+import sys
+sys.meta_path.insert(0, _OpenAIBlocker())
+
+from dan.engine.executor import ExecutorRegistry
+from dan.executor_defaults import register_default_executors
+from dan.server.run_manager import RunManager
+
+registry = ExecutorRegistry()
+register_default_executors(registry)
+assert registry.has("worker")
+
+manager = RunManager()
+executor_registry = manager._make_executor_registry()
+assert executor_registry.has("worker")
+print("ok")
+"""
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_apply_feedback_selector_filters_renames_and_transforms() -> None:

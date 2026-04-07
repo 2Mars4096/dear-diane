@@ -199,4 +199,7 @@ def test_unknown_tool_call_stage_falls_back_to_llm_node() -> None:
     graph = IntentCompiler().build_graph(intent)
 
     assert len(graph.nodes) == 1
-    assert graph.nodes[0].node_type == "llm_operator"
+    node = graph.nodes[0]
+    assert node.node_type in {"llm_operator", "worker"}
+    if node.node_type == "worker":
+        assert not node.tool_ids

@@ -80,7 +80,7 @@ class TestIntentCompiler:
         ])
         code = compiler.compile(intent)
         assert "wf.build()" in code
-        assert 'wf.llm(' in code
+        assert 'wf.llm(' in code or 'wf.worker(' in code
 
     def test_compile_accepts_domain_kwarg(self):
         compiler = IntentCompiler()

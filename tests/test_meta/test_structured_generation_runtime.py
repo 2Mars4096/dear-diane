@@ -607,3 +607,58 @@ async def test_structured_generation_runtime_uses_structured_path_in_canary_mode
     assert graph is not None
     summary_event = next(event for event in events if getattr(event, "path_taken", None))
     assert summary_event.path_taken == "structured_generation"
+
+
+@pytest.mark.asyncio
+async def test_structured_generation_runtime_stays_structured_when_worker_generation_is_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DAN_STRUCTURED_GENERATION", "enabled")
+    monkeypatch.setenv("DAN_WORKER_GENERATION", "enabled")
+    monkeypatch.setattr(planner_module, "validate_codegen_output", _validation_success_for_graph)
+    monkeypatch.setattr(graph_quality_module, "is_acceptable_simple_graph", lambda _graph, _prompt: True)
+
+    manager = _make_manager(
+        [
+            _intent_response(
+                {
+                    "goal": "Build a weekly notes digest workflow",
+                    "global_inputs": ["notes_path"],
+                    "global_outputs": ["digest"],
+                    "stages": [
+                        {
+                            "name": "read_notes",
+                            "description": "Read the notes folder",
+                            "stage_type": "tool_call",
+                            "inputs": ["notes_path"],
+                            "outputs": ["notes"],
+                            "config": {"tool_id": "file_read", "chapter_label": "ingest"},
+                        },
+                        {
+                            "name": "summarize",
+                            "description": "Summarize the notes into a digest",
+                            "stage_type": "transform",
+                            "inputs": ["notes"],
+                            "outputs": ["digest"],
+                            "config": {"chapter_label": "report"},
+                        },
+                    ],
+                }
+            )
+        ]
+    )
+
+    graph, events = await manager._generate_workflow_from_intent(
+        "Build a weekly notes digest workflow",
+        "wf-structured-workers",
+        "ch-structured-workers",
+    )
+
+    assert graph is not None
+    assert [node["id"] for node in graph["nodes"]] == [
+        "workflow_inputs",
+        "read_notes",
+        "summarize",
+    ]
+    summary_event = next(event for event in events if getattr(event, "path_taken", None))
+    assert summary_event.path_taken == "structured_generation"

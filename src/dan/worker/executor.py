@@ -34,6 +34,8 @@ from dan.worker.model import (
 
 if TYPE_CHECKING:
     from dan.executors.llm import LLMExecutor
+else:
+    LLMExecutor = Any
 
 _TASK_TIER_ORDER = {
     "micro": 0,
@@ -119,7 +121,7 @@ class WorkerExecutor:
     def __init__(
         self,
         *,
-        llm_executor: "LLMExecutor | None" = None,
+        llm_executor: LLMExecutor | None = None,
         tool_executor: ToolExecutor | None = None,
         code_executor: CodeExecutor | None = None,
         gate_executor: GateExecutor | None = None,
@@ -131,10 +133,6 @@ class WorkerExecutor:
         vote_executor: VoteExecutor | None = None,
         reduce_executor: ReduceExecutor | None = None,
     ) -> None:
-        if llm_executor is None:
-            from dan.executors.llm import LLMExecutor
-
-            llm_executor = LLMExecutor()
         self._llm = llm_executor
         self._tool = tool_executor
         self._code = code_executor or CodeExecutor()
@@ -153,6 +151,13 @@ class WorkerExecutor:
         self._tool_templates: dict[tuple[str, str], ToolOperator] = {}
         self._llm_templates: dict[str, LLMOperator] = {}
         self._specialized_templates: dict[str, NodeBase] = {}
+
+    def _ensure_llm_executor(self) -> Any:
+        if self._llm is None:
+            from dan.executors.llm import LLMExecutor
+
+            self._llm = LLMExecutor()
+        return self._llm
 
     async def execute(
         self,
@@ -862,7 +867,7 @@ class WorkerExecutor:
                     "task_tier": hints.task_tier,
                 }
             )
-        return await self._llm.execute(legacy, inputs, context)
+        return await self._ensure_llm_executor().execute(legacy, inputs, context)
 
     async def _run_specialized_legacy(
         self,
@@ -1058,7 +1063,7 @@ class WorkerExecutor:
             toolset_error = self._validate_toolset_access(node, effective)
             if toolset_error is not None:
                 return NodeResult(outputs={}, status=NodeStatus.FAILED, error=toolset_error)
-            return await self._llm.execute(
+            return await self._ensure_llm_executor().execute(
                 self._static_llm_template(node, context, effective),
                 inputs,
                 context,

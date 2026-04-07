@@ -5,6 +5,28 @@ from dan.loader import compile_workflow
 from dan.loader.decompiler import decompile_to_markdown
 
 
+def _assert_human_contract(
+    node,
+    *,
+    render_mode: str,
+    render_target: str,
+    instructions: str,
+) -> None:
+    assert node.node_type in {"human", "worker"}
+    if node.node_type == "human":
+        assert node.render_mode == render_mode
+        assert node.render_target == render_target
+        assert node.instructions == instructions
+        assert node.output_schema is not None
+        return
+
+    metadata = node.metadata or {}
+    assert metadata.get("human_render_mode") == render_mode
+    assert metadata.get("human_render_target") == render_target
+    assert metadata.get("human_instructions") == instructions
+    assert metadata.get("human_output_schema") is not None
+
+
 def test_markdown_human_agent_compiles_to_canonical_human_node(tmp_path) -> None:
     workflow_path = tmp_path / "workflow.md"
     agent_path = tmp_path / "review.md"
@@ -49,11 +71,12 @@ Review the draft.
     assert result.graph is not None, result.diagnostics
     node = result.graph.node_by_id("review")
     assert node is not None
-    assert node.node_type == "human"
-    assert node.render_mode == "approval"
-    assert node.render_target == "both"
-    assert node.instructions == "Approve or reject the draft."
-    assert node.output_schema is not None
+    _assert_human_contract(
+        node,
+        render_mode="approval",
+        render_target="both",
+        instructions="Approve or reject the draft.",
+    )
 
 
 def test_human_node_round_trips_through_markdown_without_legacy_warning(tmp_path) -> None:
@@ -85,8 +108,9 @@ def test_human_node_round_trips_through_markdown_without_legacy_warning(tmp_path
     assert compiled.graph is not None, compiled.diagnostics
     node = compiled.graph.node_by_id("review")
     assert node is not None
-    assert node.node_type == "human"
-    assert node.render_mode == "approval"
-    assert node.render_target == "both"
-    assert node.instructions == "Approve or reject the draft."
-    assert node.output_schema is not None
+    _assert_human_contract(
+        node,
+        render_mode="approval",
+        render_target="both",
+        instructions="Approve or reject the draft.",
+    )

@@ -5,6 +5,27 @@ from dan.loader import compile_workflow
 from dan.loader.decompiler import decompile_to_markdown
 
 
+def _vote_contract(node) -> dict[str, object]:
+    if node.node_type == "vote":
+        judge_model = None
+        if node.vote_config is not None:
+            judge_model = node.vote_config.judge_model
+        return {
+            "candidates": list(node.candidates),
+            "strategy": node.vote_strategy,
+            "judge_model": judge_model,
+        }
+
+    metadata = node.metadata or {}
+    assert node.node_type == "worker"
+    vote_config = metadata.get("vote_config") or {}
+    return {
+        "candidates": list(metadata.get("vote_candidates") or []),
+        "strategy": metadata.get("vote_strategy", "majority"),
+        "judge_model": vote_config.get("judge_model"),
+    }
+
+
 def test_vote_markdown_agent_compiles_to_vote_node(tmp_path) -> None:
     workflow_path = tmp_path / "workflow.md"
     agent_path = tmp_path / "quality_check.md"
@@ -42,11 +63,12 @@ Evaluate this analysis and provide your assessment: {input}
     assert result.graph is not None, result.diagnostics
     node = result.graph.node_by_id("quality_check")
     assert node is not None
-    assert node.node_type == "vote"
-    assert node.candidates == ["claude-sonnet-4-6", "gpt-4o"]
-    assert node.vote_strategy == "judge"
-    assert node.vote_config is not None
-    assert node.vote_config.judge_model == "claude-opus-4"
+    assert node.node_type in {"vote", "worker"}
+    assert _vote_contract(node) == {
+        "candidates": ["claude-sonnet-4-6", "gpt-4o"],
+        "strategy": "judge",
+        "judge_model": "claude-opus-4",
+    }
 
 
 def test_vote_node_round_trips_through_markdown(tmp_path) -> None:
@@ -73,8 +95,9 @@ def test_vote_node_round_trips_through_markdown(tmp_path) -> None:
     assert compiled.graph is not None, compiled.diagnostics
     node = compiled.graph.node_by_id("quality_check")
     assert node is not None
-    assert node.node_type == "vote"
-    assert node.candidates == ["claude-sonnet-4-6", "gpt-4o"]
-    assert node.vote_strategy == "judge"
-    assert node.vote_config is not None
-    assert node.vote_config.judge_model == "claude-opus-4"
+    assert node.node_type in {"vote", "worker"}
+    assert _vote_contract(node) == {
+        "candidates": ["claude-sonnet-4-6", "gpt-4o"],
+        "strategy": "judge",
+        "judge_model": "claude-opus-4",
+    }

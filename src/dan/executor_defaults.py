@@ -24,70 +24,43 @@ def register_default_executors(
     tool_registry: Any | None = None,
 ) -> None:
     """Register built-in executors for all standard node types."""
-    from dan.executors.code import CodeExecutor
     from dan.executors.control_flow import (
         AgentTeamExecutor,
         CompositeExecutor,
         ForEachExecutor,
-        GateExecutor,
         GoalLoopExecutor,
-        HumanNodeExecutor,
         IfElseExecutor,
         OrchestratorExecutor,
         ParallelSubagentsExecutor,
-        ReduceExecutor,
-        RouterExecutor,
-        VoteExecutor,
         WhileLoopExecutor,
     )
-    from dan.executors.llm import LLMExecutor
-    from dan.executors.rag import RAGExecutor
-    from dan.executors.reflection import ReflectionExecutor
-    from dan.executors.tool import ToolExecutor
-    from dan.executors.validator import ValidatorExecutor
-    from dan.worker.executor import LegacyWorkerAdapterExecutor, WorkerExecutor
+    from dan.worker.adapters import build_default_worker_executors
 
-    llm_executor = LLMExecutor()
-    code_executor = CodeExecutor()
-    human_executor = HumanNodeExecutor()
-    router_executor = RouterExecutor()
-    validator_executor = ValidatorExecutor()
-    reflection_executor = ReflectionExecutor()
-    tool_executor = ToolExecutor(tool_registry or build_default_tool_registry())
-    worker_executor = WorkerExecutor(
-        llm_executor=llm_executor,
-        tool_executor=tool_executor,
-        code_executor=code_executor,
-        router_executor=router_executor,
-        validator_executor=validator_executor,
-        reflection_executor=reflection_executor,
-        human_executor=human_executor,
-        vote_executor=VoteExecutor(),
-        rag_executor=RAGExecutor(),
+    worker_bundle = build_default_worker_executors(
+        tool_registry=tool_registry or build_default_tool_registry(),
     )
-    legacy_worker_adapter = LegacyWorkerAdapterExecutor(worker_executor)
     defaults: list[tuple[str, Any]] = [
-        ("llm_operator", legacy_worker_adapter),
-        ("tool_operator", legacy_worker_adapter),
-        ("code_operator", legacy_worker_adapter),
-        ("worker", worker_executor),
-        ("rag_operator", legacy_worker_adapter),
-        ("input", legacy_worker_adapter),
+        ("llm_operator", worker_bundle.legacy_worker_adapter),
+        ("tool_operator", worker_bundle.legacy_worker_adapter),
+        ("code_operator", worker_bundle.legacy_worker_adapter),
+        ("worker", worker_bundle.worker_executor),
+        ("rag_operator", worker_bundle.legacy_worker_adapter),
+        ("input", worker_bundle.legacy_worker_adapter),
         ("if_else", IfElseExecutor()),
-        ("gate", GateExecutor()),
+        ("gate", worker_bundle.gate_executor),
         ("while_loop", WhileLoopExecutor()),
         ("for_each", ForEachExecutor()),
         ("parallel_subagents", ParallelSubagentsExecutor()),
         ("orchestrator", OrchestratorExecutor()),
-        ("router", legacy_worker_adapter),
-        ("human", legacy_worker_adapter),
-        ("human_in_the_loop", legacy_worker_adapter),
-        ("validator", legacy_worker_adapter),
+        ("router", worker_bundle.legacy_worker_adapter),
+        ("human", worker_bundle.legacy_worker_adapter),
+        ("human_in_the_loop", worker_bundle.legacy_worker_adapter),
+        ("validator", worker_bundle.legacy_worker_adapter),
         ("composite", CompositeExecutor()),
-        ("vote", legacy_worker_adapter),
-        ("reduce", legacy_worker_adapter),
+        ("vote", worker_bundle.legacy_worker_adapter),
+        ("reduce", worker_bundle.legacy_worker_adapter),
         ("agent_team", AgentTeamExecutor()),
-        ("reflection", legacy_worker_adapter),
+        ("reflection", worker_bundle.legacy_worker_adapter),
         ("goal_loop", GoalLoopExecutor()),
     ]
 

@@ -33,6 +33,23 @@ from dan.models.hyperedges import Hyperedge
 from dan.models.legacy import RAGOperator, ReflectionNode, ValidatorNode
 from dan.worker.model import LLMHints, Worker
 
+_LEGACY_ALIAS_NODE_TYPES = frozenset(
+    {
+        "llm_operator",
+        "tool_operator",
+        "code_operator",
+        "input",
+        "router",
+        "validator",
+        "reflection",
+        "rag_operator",
+        "human",
+        "human_in_the_loop",
+        "vote",
+        "reduce",
+    }
+)
+
 
 def decompile(graph: Graph, *, use_convenience_aliases: bool = False) -> str:
     """Convert a Graph model into executable Python builder DSL code.
@@ -97,6 +114,19 @@ class _Decompiler:
             used.add(name)
             self.var_names[node.id] = name
 
+    def _requires_legacy_builder_mode(self, graph: Graph | None = None) -> bool:
+        current_graph = self.graph if graph is None else graph
+        for node in current_graph.nodes:
+            if isinstance(node, Worker):
+                if self._emit_worker_convenience_call(node) is not None:
+                    return True
+            elif node.node_type in _LEGACY_ALIAS_NODE_TYPES:
+                return True
+        for subgraph in current_graph.sub_graphs.values():
+            if self._requires_legacy_builder_mode(subgraph):
+                return True
+        return False
+
     @staticmethod
     def _edge_lint_payload(edge: DataEdge) -> dict[str, Any] | None:
         lint_meta = getattr(edge, "metadata", {}).get("lint")
@@ -119,7 +149,8 @@ class _Decompiler:
         tags_arg = ""
         if self.graph.metadata.tags:
             tags_arg = f", tags={self.graph.metadata.tags!r}"
-        lines.append(f"wf = workflow({wf_name!r}{desc_arg}{tags_arg})")
+        builder_mode_arg = ", canonical_workers=False" if self._requires_legacy_builder_mode() else ""
+        lines.append(f"wf = workflow({wf_name!r}{desc_arg}{tags_arg}{builder_mode_arg})")
         lines.append("")
 
         # Shared context declarations

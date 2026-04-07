@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from dan.models.context import (
     BoundaryContract,
@@ -22,6 +22,50 @@ from dan.models.nodes import HistoryPolicy, NodeBase
 from dan.models.ports import InputPort, OutputPort
 
 TaskTier = Literal["micro", "routine", "reasoning", "critical"]
+_LEGACY_LLM_HINT_FIELDS = (
+    "prompt_template",
+    "system_prompt",
+    "temperature",
+    "max_tokens",
+    "output_json_schema",
+    "tools",
+    "max_tool_rounds",
+    "task_tier",
+    "history_policy",
+)
+
+
+def _coerce_legacy_llm_fields(data: Any) -> Any:
+    """Fold legacy flat Worker fields into canonical Worker storage."""
+
+    if not isinstance(data, dict):
+        return data
+    payload = dict(data)
+    llm_payload = payload.get("llm_hints")
+    if isinstance(llm_payload, LLMHints):
+        hints = llm_payload.model_dump(exclude_none=False)
+    elif isinstance(llm_payload, dict):
+        hints = dict(llm_payload)
+    elif llm_payload is None:
+        hints = {}
+    else:
+        return payload
+
+    merged = False
+    for field in _LEGACY_LLM_HINT_FIELDS:
+        if field in payload:
+            hints[field] = payload.pop(field)
+            merged = True
+    if merged:
+        payload["llm_hints"] = hints
+    if "tool_id" in payload:
+        tool_id = str(payload.pop("tool_id") or "").strip()
+        payload["tool_ids"] = [tool_id] if tool_id else []
+    if "tool_config" in payload:
+        metadata = dict(payload.get("metadata") or {})
+        metadata["tool_config"] = dict(payload.pop("tool_config") or {})
+        payload["metadata"] = metadata
+    return payload
 
 
 class WorkerAuthority(str, Enum):
@@ -140,6 +184,11 @@ class WorkerConfig(BaseModel):
     boundary_contract: BoundaryContract | None = None
     validation_rules: list[ValidationRule] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _merge_legacy_llm_fields(cls, data: Any) -> Any:
+        return _coerce_legacy_llm_fields(data)
+
 
 class Worker(NodeBase):
     """Universal compute/contract node with reference-first configuration."""
@@ -177,6 +226,109 @@ class Worker(NodeBase):
     projections: list[ContextProjection] = Field(default_factory=list)
     boundary_contract: BoundaryContract | None = None
     validation_rules: list[ValidationRule] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _merge_legacy_llm_fields(cls, data: Any) -> Any:
+        return _coerce_legacy_llm_fields(data)
+
+    def _ensure_llm_hints(self) -> LLMHints:
+        if self.llm_hints is None:
+            self.llm_hints = LLMHints()
+        return self.llm_hints
+
+    @property
+    def prompt_template(self) -> str:
+        return self.llm_hints.prompt_template if self.llm_hints is not None else ""
+
+    @prompt_template.setter
+    def prompt_template(self, value: str) -> None:
+        self._ensure_llm_hints().prompt_template = value
+
+    @property
+    def system_prompt(self) -> str:
+        return self.llm_hints.system_prompt if self.llm_hints is not None else ""
+
+    @system_prompt.setter
+    def system_prompt(self, value: str) -> None:
+        self._ensure_llm_hints().system_prompt = value
+
+    @property
+    def temperature(self) -> float:
+        return self.llm_hints.temperature if self.llm_hints is not None else 0.7
+
+    @temperature.setter
+    def temperature(self, value: float) -> None:
+        self._ensure_llm_hints().temperature = value
+
+    @property
+    def max_tokens(self) -> int | None:
+        return self.llm_hints.max_tokens if self.llm_hints is not None else None
+
+    @max_tokens.setter
+    def max_tokens(self, value: int | None) -> None:
+        self._ensure_llm_hints().max_tokens = value
+
+    @property
+    def output_json_schema(self) -> dict[str, Any] | None:
+        return self.llm_hints.output_json_schema if self.llm_hints is not None else None
+
+    @output_json_schema.setter
+    def output_json_schema(self, value: dict[str, Any] | None) -> None:
+        self._ensure_llm_hints().output_json_schema = value
+
+    @property
+    def tools(self) -> list[dict[str, Any]]:
+        return self.llm_hints.tools if self.llm_hints is not None else []
+
+    @tools.setter
+    def tools(self, value: list[dict[str, Any]]) -> None:
+        self._ensure_llm_hints().tools = value
+
+    @property
+    def max_tool_rounds(self) -> int:
+        return self.llm_hints.max_tool_rounds if self.llm_hints is not None else 10
+
+    @max_tool_rounds.setter
+    def max_tool_rounds(self, value: int) -> None:
+        self._ensure_llm_hints().max_tool_rounds = value
+
+    @property
+    def task_tier(self) -> TaskTier | None:
+        return self.llm_hints.task_tier if self.llm_hints is not None else None
+
+    @task_tier.setter
+    def task_tier(self, value: TaskTier | None) -> None:
+        self._ensure_llm_hints().task_tier = value
+
+    @property
+    def history_policy(self) -> HistoryPolicy | None:
+        return self.llm_hints.history_policy if self.llm_hints is not None else None
+
+    @history_policy.setter
+    def history_policy(self, value: HistoryPolicy | None) -> None:
+        self._ensure_llm_hints().history_policy = value
+
+    @property
+    def tool_id(self) -> str:
+        return self.tool_ids[0] if self.tool_ids else ""
+
+    @tool_id.setter
+    def tool_id(self, value: str) -> None:
+        tool_id = str(value or "").strip()
+        self.tool_ids = [tool_id] if tool_id else []
+
+    @property
+    def tool_config(self) -> dict[str, Any]:
+        config = self.metadata.get("tool_config")
+        if not isinstance(config, dict):
+            config = {}
+            self.metadata["tool_config"] = config
+        return config
+
+    @tool_config.setter
+    def tool_config(self, value: dict[str, Any] | None) -> None:
+        self.metadata["tool_config"] = dict(value or {})
 
     def model_post_init(self, __context: Any) -> None:
         if not self.input_ports:

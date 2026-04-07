@@ -13,7 +13,6 @@ from dan.engine.context_runtime import ArtifactStore, LocalStateManager, SharedC
 from dan.engine.executor import EngineConfig, ExecutionContext, NodeResult
 from dan.engine.state import NodeStatus
 from dan.engine.state import ExecutionState
-from dan.executors.llm import LLMExecutor
 from dan.executors.tool import ToolExecutor, ToolRegistry
 from dan.models.context import MergeStrategy
 from dan.models.graph import Graph
@@ -925,6 +924,8 @@ async def test_llm_with_tools_mode_runs_real_tool_loop_until_plain_text_response
         tool_ids=["lookup"],
         llm_hints={"max_tool_rounds": 2},
     )
+
+    from dan.executors.llm import LLMExecutor
 
     result = await WorkerExecutor(llm_executor=LLMExecutor()).execute(
         worker,

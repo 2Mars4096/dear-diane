@@ -22,7 +22,6 @@ from dan.engine import (
 )
 from dan.engine.executor import ExecutorRegistry
 from dan.executor_defaults import register_default_executors
-from dan.executors.llm import LLMExecutor
 from dan.executors.tool import ToolExecutor, ToolRegistry
 from dan.models.control_flow import CompositeNode, ForEachNode, InputNode, InputVariable
 from dan.models.edges import DataEdge
@@ -714,7 +713,7 @@ def _llm_outputs_for_paper_example(node: LLMOperator, inputs: dict[str, Any]) ->
 
 
 async def _mock_paper_example_llm_execute(
-    self: LLMExecutor,
+    self: Any,
     node: NodeBase,
     inputs: dict[str, Any],
     context: Any,
@@ -735,6 +734,8 @@ async def _mock_paper_example_llm_execute(
 
 
 def _paper_example_patch_factory() -> Any:
+    from dan.executors.llm import LLMExecutor
+
     return patch.object(LLMExecutor, "execute", _mock_paper_example_llm_execute)
 
 

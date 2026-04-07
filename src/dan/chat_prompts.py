@@ -645,7 +645,7 @@ _RESEARCH_REPORT_PROMPT_HINT = """\
 When asked for a research report, literature review, equity analysis, or deep-dive topic:
 
 - Ground factual claims in tool results; if support is missing, say so.
-- Search multiple angles, then read the strongest sources instead of relying only on snippets.
+- Search multiple angles (typically 3-8 distinct web_search queries), then read the strongest sources instead of relying only on snippets.
 - Outline longer deliverables before writing.
 - For long documents, write incrementally to disk one section at a time instead of trying to emit everything in one pass.
 - For academic topics, check for relevant local PDFs when likely available.

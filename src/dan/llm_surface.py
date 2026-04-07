@@ -44,6 +44,14 @@ def _provider_resolver(chat_manager: Any) -> Any | None:
     return resolver if callable(resolver) else None
 
 
+def _instance_callable_attr(chat_manager: Any, name: str) -> Any | None:
+    instance_dict = getattr(chat_manager, "__dict__", None)
+    if not isinstance(instance_dict, dict):
+        return None
+    value = instance_dict.get(name)
+    return value if callable(value) else None
+
+
 def _resolve_registry_provider(chat_manager: Any, model: str) -> Any:
     registry = _provider_registry(chat_manager)
     if registry is None:
@@ -205,8 +213,16 @@ def resolve_llm_provider(
     pii_session_key: str | None = None,
 ) -> Any:
     """Resolve an LLM provider from the chat surface and apply PII wrapping."""
-    registry = _provider_registry(chat_manager)
     resolver = _provider_resolver(chat_manager)
+    internal_resolver = _explicit_attr(chat_manager, "_resolve_provider")
+    instance_internal_resolver = _instance_callable_attr(chat_manager, "_resolve_provider")
+    if resolver is not None and not callable(internal_resolver):
+        return resolver(
+            model=model,
+            pii_session_key=pii_session_key,
+        )
+
+    registry = _provider_registry(chat_manager)
     if registry is not None:
         try:
             return _resolve_wrapped_registry_provider(
@@ -227,19 +243,23 @@ def resolve_llm_provider(
                     model="default",
                     pii_session_key=pii_session_key,
                 )
-            if resolver is None:
-                raise
-            logger.debug(
-                "Falling back to explicit provider resolver after registry lookup failed for model %s",
-                model,
-                exc_info=True,
-            )
-    if resolver is None:
-        raise RuntimeError("No provider registry available")
-    return resolver(
-        model=model,
-        pii_session_key=pii_session_key,
-    )
+            if instance_internal_resolver is not None:
+                logger.debug(
+                    "Falling back to explicit provider resolver after registry lookup failed for model %s",
+                    model,
+                    exc_info=True,
+                )
+                return instance_internal_resolver(
+                    model=model,
+                    pii_session_key=pii_session_key,
+                )
+            raise
+    if instance_internal_resolver is not None:
+        return instance_internal_resolver(
+            model=model,
+            pii_session_key=pii_session_key,
+        )
+    raise RuntimeError("No provider registry available")
 
 
 def resolve_tool_capable_provider(

@@ -206,7 +206,7 @@ class TestConditionalCompiler:
         )
         code = compiler.compile(intent)
         assert "wf.branch(" in code
-        assert "wf.llm(" in code
+        assert "wf.llm(" in code or "wf.worker(" in code
         assert ">> route_gate" in code
 
     def test_compile_conditional_converges_both_branches(self):

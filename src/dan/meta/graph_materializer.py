@@ -13,8 +13,17 @@ from typing import Any
 
 from dan.models.edges import DataEdge
 from dan.models.graph import Graph
+from dan.worker.presets import worker_to_legacy
 
 logger = logging.getLogger(__name__)
+
+
+def _semantic_node_type(node: Any) -> str:
+    if getattr(node, "node_type", None) == "worker":
+        legacy = worker_to_legacy(node)
+        if legacy is not None:
+            return legacy.node_type
+    return getattr(node, "node_type", "")
 
 
 def graph_to_builder_code(graph: Graph, *, use_convenience: bool = True) -> str:
@@ -79,7 +88,7 @@ def _detect_linear_chains(graph: Graph) -> list[list[str]] | None:
     Returns a list of chains (each a list of node IDs) or None if no
     qualifying chain exists.
     """
-    llm_ids = {n.id for n in graph.nodes if n.node_type == "llm_operator"}
+    llm_ids = {n.id for n in graph.nodes if _semantic_node_type(n) == "llm_operator"}
     if len(llm_ids) < 2:
         return None
 
@@ -139,7 +148,7 @@ def _detect_review_loops(graph: Graph) -> list[str]:
         sub = graph.sub_graphs.get(body_key)
         if sub is None:
             continue
-        body_types = {n.node_type for n in sub.nodes}
+        body_types = {_semantic_node_type(n) for n in sub.nodes}
         body_names = {(n.name or n.id).lower() for n in sub.nodes}
         if "llm_operator" not in body_types:
             continue
@@ -175,7 +184,7 @@ def _apply_convenience_patterns(graph: Graph, base_code: str) -> str | None:
     modifications = 0
 
     for line in lines:
-        if chain_heads and "= wf.llm(" in line:
+        if chain_heads and ("= wf.llm(" in line or "= wf.worker(" in line):
             for head_id, chain in chain_heads.items():
                 if repr(head_id) in line:
                     ids_str = " >> ".join(chain)

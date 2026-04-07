@@ -7,9 +7,12 @@ import inspect
 import json
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from openai import AsyncOpenAI, APIError, APITimeoutError, RateLimitError
+if TYPE_CHECKING:
+    from openai import AsyncOpenAI
+else:
+    AsyncOpenAI = Any
 
 from dan.providers import LLMAuthenticationError
 
@@ -37,6 +40,28 @@ from dan.utils.tokens import estimate_tokens
 logger = logging.getLogger(__name__)
 
 _LLM_DEFAULT_RETRY = RetryPolicy(max_retries=3)
+
+
+class _OpenAIAPIError(Exception):
+    """Fallback APIError placeholder when ``openai`` is unavailable."""
+
+
+class _OpenAIAPITimeoutError(_OpenAIAPIError):
+    """Fallback APITimeoutError placeholder when ``openai`` is unavailable."""
+
+
+class _OpenAIRateLimitError(_OpenAIAPIError):
+    """Fallback RateLimitError placeholder when ``openai`` is unavailable."""
+
+
+def _resolve_openai_error_types() -> tuple[type[Exception], type[Exception], type[Exception]]:
+    """Resolve ``openai`` exception classes without importing them at module load time."""
+    try:
+        from openai import APIError, APITimeoutError, RateLimitError
+
+        return APIError, APITimeoutError, RateLimitError
+    except Exception:
+        return _OpenAIAPIError, _OpenAIAPITimeoutError, _OpenAIRateLimitError
 
 
 def _materialize_plain_text_outputs(node: LLMOperator, raw_text: str) -> dict[str, Any]:
@@ -1124,6 +1149,9 @@ class LLMExecutor:
         max_retries = max(policy.max_retries, 1)
         backoff = policy.backoff
         current_model = model
+        api_error_type, api_timeout_error_type, rate_limit_error_type = (
+            _resolve_openai_error_types()
+        )
 
         for retry in range(max_retries):
             try:
@@ -1138,7 +1166,7 @@ class LLMExecutor:
                 else:
                     return "", "No execution context available", None, None
 
-            except (RateLimitError, APITimeoutError) as exc:
+            except (rate_limit_error_type, api_timeout_error_type) as exc:
                 if retry < max_retries - 1:
                     logger.warning(
                         "Transient API error (attempt %d/%d): %s",
@@ -1219,7 +1247,7 @@ class LLMExecutor:
             except LLMAuthenticationError as exc:
                 return "", str(exc), None, None
 
-            except (APIError,) as exc:
+            except api_error_type as exc:
                 return "", f"API error: {exc}", None, None
 
             except Exception as exc:

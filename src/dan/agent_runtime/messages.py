@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import logging
 import re
 import datetime as _dt
@@ -10,6 +11,7 @@ from typing import Any, Awaitable
 from dan.agent_runtime.tokens import compact_history
 from dan.agent_runtime.profiles import ResolvedAgentProfile
 from dan.domain_taxonomy import format_domain_label
+from dan.prompt_contracts import PromptEnvelope
 
 _TOOLLESS_SYSTEM_PROMPT = (
     "You are DAN, a personal AI assistant with full tool access. "
@@ -427,6 +429,7 @@ def build_system_content(
     user_context_block: str = "",
     mcp_block: str = "",
     memory_context: str = "",
+    prompt_envelope: PromptEnvelope | None = None,
     extra_system_instructions: str = "",
 ) -> str:
     """Compose the final system message content from prompt-building inputs."""
@@ -452,14 +455,28 @@ def build_system_content(
             "Do not mention or attempt to use tools. "
             "Respond in plain text only and explain any information limits honestly."
         )
-    if user_context_block:
-        system_sections.append(user_context_block)
-    if mcp_block:
-        system_sections.append(f"## Connected MCP servers\n{mcp_block}")
-    if memory_context:
-        system_sections.append(memory_context)
-    if extra_system_instructions:
-        system_sections.append(extra_system_instructions.strip())
+    if prompt_envelope is not None:
+        rendered_envelope = copy.deepcopy(prompt_envelope)
+        if user_context_block and rendered_envelope.user_preference_context.is_empty():
+            rendered_envelope.user_preference_context.append(user_context_block)
+        if mcp_block and rendered_envelope.mcp_context.is_empty():
+            rendered_envelope.mcp_context.append(f"## Connected MCP servers\n{mcp_block}")
+        if memory_context and rendered_envelope.memory_context.is_empty():
+            rendered_envelope.memory_context.append(memory_context)
+        appendix = rendered_envelope.render_system_appendix()
+        if appendix:
+            system_sections.append(appendix)
+        elif extra_system_instructions:
+            system_sections.append(extra_system_instructions.strip())
+    else:
+        if user_context_block:
+            system_sections.append(user_context_block)
+        if mcp_block:
+            system_sections.append(f"## Connected MCP servers\n{mcp_block}")
+        if memory_context:
+            system_sections.append(memory_context)
+        if extra_system_instructions:
+            system_sections.append(extra_system_instructions.strip())
 
     return "\n\n".join(
         section.rstrip()
@@ -551,6 +568,7 @@ async def build_runtime_messages(
     user_message: str,
     history: list[dict[str, Any]],
     prompt_profile: ResolvedAgentProfile,
+    prompt_envelope: PromptEnvelope | None = None,
     prompt_context: str = "",
     debug_context: str = "",
     surface_context: dict[str, Any] | None = None,
@@ -585,8 +603,14 @@ async def build_runtime_messages(
     """Build the full provider-facing prompt payload through injected seams."""
     log = logger_override or logging.getLogger(__name__)
     surface_context_block = format_surface_context(surface_context)
+    effective_prompt_context = prompt_context
+    if (
+        prompt_envelope is not None
+        and prompt_envelope.system_policy.content.strip()
+    ):
+        effective_prompt_context = prompt_envelope.system_policy.content.strip()
     context_block = build_context_block(
-        prompt_context=prompt_context,
+        prompt_context=effective_prompt_context,
         surface_context_block=surface_context_block,
         mode=prompt_profile.normalized_mode,
         debug_context=debug_context,
@@ -661,6 +685,7 @@ async def build_runtime_messages(
         user_context_block=user_context_block,
         mcp_block=mcp_block,
         memory_context=memory_context,
+        prompt_envelope=prompt_envelope,
         extra_system_instructions=extra_system_instructions,
     )
     recent_context_message = (

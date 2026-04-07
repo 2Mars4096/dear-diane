@@ -273,8 +273,12 @@ class ExperienceStore:
         self._store = memory_store
         self._index = experience_index
 
-    async def save_experience(self, experience: WorkflowExperience) -> None:
-        """Persist a workflow experience at GLOBAL scope."""
+    def has_index(self) -> bool:
+        """Return whether semantic indexing is configured for saved experiences."""
+        return self._index is not None
+
+    async def write_experience(self, experience: WorkflowExperience) -> None:
+        """Persist a workflow experience without waiting on semantic indexing."""
         from dan.engine.memory import MemoryEntry, MemoryScope
 
         entry = MemoryEntry(
@@ -283,15 +287,24 @@ class ExperienceStore:
             scope=MemoryScope.GLOBAL,
         )
         await self._store.write(self.GLOBAL_WORKFLOW, self.SESSION_ID, entry)
-        if self._index is not None:
-            try:
-                await self._index.index_experience(experience)
-            except Exception:
-                logger.debug(
-                    "Failed to index experience for workflow %s",
-                    experience.workflow_id,
-                    exc_info=True,
-                )
+
+    async def index_saved_experience(self, experience: WorkflowExperience) -> None:
+        """Best-effort semantic indexing for an already-persisted experience."""
+        if self._index is None:
+            return
+        try:
+            await self._index.index_experience(experience)
+        except Exception:
+            logger.debug(
+                "Failed to index experience for workflow %s",
+                experience.workflow_id,
+                exc_info=True,
+            )
+
+    async def save_experience(self, experience: WorkflowExperience) -> None:
+        """Persist a workflow experience at GLOBAL scope."""
+        await self.write_experience(experience)
+        await self.index_saved_experience(experience)
 
     async def load_experience(self, workflow_id: str) -> WorkflowExperience | None:
         """Load a single workflow experience by ID."""

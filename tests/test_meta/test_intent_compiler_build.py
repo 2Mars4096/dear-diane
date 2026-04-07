@@ -22,6 +22,7 @@ from dan.meta.intent_schema import (
     WorkflowIntent,
 )
 from dan.worker.model import Worker
+from dan.worker.presets import worker_to_legacy
 from dan.validation.graph import validate_graph
 
 
@@ -34,6 +35,15 @@ def _assert_valid_graph(graph: object) -> None:
     issues = validate_graph(graph)  # type: ignore[arg-type]
     real_errors = [i for i in issues if "schema safety bypassed" not in i]
     assert real_errors == [], f"Unexpected validation errors: {real_errors}"
+
+
+def _semantic_node_type(node: object) -> str:
+    node_type = getattr(node, "node_type", "")
+    if node_type == "worker":
+        legacy = worker_to_legacy(node)
+        if legacy is not None:
+            return legacy.node_type
+    return node_type
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +61,7 @@ class TestBuildGraphSingleStage:
         ])
         graph = self.compiler.build_graph(intent)
         assert len(graph.nodes) >= 1
-        assert any(n.node_type == "llm_operator" for n in graph.nodes)
+        assert any(_semantic_node_type(n) == "llm_operator" for n in graph.nodes)
         _assert_valid_graph(graph)
 
     def test_review_loop(self) -> None:
@@ -96,7 +106,7 @@ class TestBuildGraphSingleStage:
         _assert_valid_graph(graph)
         assert any(n.node_type == "for_each" for n in graph.nodes)
         body_graph = graph.sub_graphs["triple_each_body"]
-        assert any(n.node_type == "code_operator" for n in body_graph.nodes)
+        assert any(_semantic_node_type(n) == "code_operator" for n in body_graph.nodes)
 
     def test_rag_retrieval(self) -> None:
         intent = _make_intent([
@@ -109,8 +119,8 @@ class TestBuildGraphSingleStage:
         ])
         graph = self.compiler.build_graph(intent)
         assert len(graph.nodes) >= 2
-        has_rag = any(n.node_type == "rag_operator" for n in graph.nodes)
-        has_llm = any(n.node_type == "llm_operator" for n in graph.nodes)
+        has_rag = any(_semantic_node_type(n) == "rag_operator" for n in graph.nodes)
+        has_llm = any(_semantic_node_type(n) == "llm_operator" for n in graph.nodes)
         assert has_rag and has_llm
         _assert_valid_graph(graph)
 
@@ -124,7 +134,7 @@ class TestBuildGraphSingleStage:
         ])
         graph = self.compiler.build_graph(intent)
         assert len(graph.nodes) >= 1
-        assert any(n.node_type == "tool_operator" for n in graph.nodes)
+        assert any(_semantic_node_type(n) == "tool_operator" for n in graph.nodes)
         _assert_valid_graph(graph)
 
     def test_code_execution(self) -> None:
@@ -137,7 +147,7 @@ class TestBuildGraphSingleStage:
         ])
         graph = self.compiler.build_graph(intent)
         assert len(graph.nodes) >= 1
-        assert any(n.node_type == "code_operator" for n in graph.nodes)
+        assert any(_semantic_node_type(n) == "code_operator" for n in graph.nodes)
         _assert_valid_graph(graph)
 
     def test_code_execution_without_code_raises(self) -> None:
@@ -188,7 +198,7 @@ class TestBuildGraphSingleStage:
             ),
         ])
         graph = self.compiler.build_graph(intent)
-        node_types = {n.node_type for n in graph.nodes}
+        node_types = {_semantic_node_type(n) for n in graph.nodes}
         assert "gate" in node_types
         assert "code_operator" in node_types
         _assert_valid_graph(graph)

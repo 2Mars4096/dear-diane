@@ -150,6 +150,26 @@ class TestRoundTripSimple:
         assert r2.graph is not None
         assert sorted(r1.graph.metadata.tags) == sorted(r2.graph.metadata.tags)
 
+    def test_worker_builder_round_trip_omits_generated_workflow_inputs(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DAN_WORKER_BUILDER", "enabled")
+
+        r1 = compile_workflow(FIXTURES / "simple_workflow.md")
+        assert r1.graph is not None
+        assert any(
+            n.id == "workflow_inputs" and n.node_type == "worker"
+            for n in r1.graph.nodes
+        )
+
+        decompile_to_markdown(r1.graph, tmp_path)
+
+        workflow_text = (tmp_path / "workflow.md").read_text()
+        assert "[workflow_inputs]" not in workflow_text
+        assert "workflow_inputs." not in workflow_text
+        assert not (tmp_path / "workflow-inputs.md").exists()
+
+        r2 = compile_workflow(tmp_path / "workflow.md")
+        assert r2.graph is not None
+
 
 class TestRoundTripComplex:
     def test_node_types_preserved(self, tmp_path):

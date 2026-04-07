@@ -8,6 +8,7 @@ import pytest
 from dan.loader.compiler import compile_workflow
 from dan.models.edges import DataEdge
 from dan.models.graph import Graph
+from dan.worker.presets import worker_to_legacy
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MARKDOWN_WORKFLOW = PROJECT_ROOT / "examples" / "paper_writing_md" / "workflow.md"
@@ -48,7 +49,15 @@ def _all_edges(graph: Graph) -> list:
 def _user_authored_node_types(nodes: list) -> set[str]:
     """Node types that are user-authored (exclude auto-generated input, gate, for_each)."""
     exclude = {"input", "gate"}
-    return {n.node_type for n in nodes if n.node_type not in exclude}
+    return {_semantic_node_type(n) for n in nodes if _semantic_node_type(n) not in exclude}
+
+
+def _semantic_node_type(node) -> str:
+    if node.node_type == "worker":
+        legacy = worker_to_legacy(node)
+        if legacy is not None:
+            return legacy.node_type
+    return node.node_type
 
 
 class TestPaperWritingParity:
@@ -74,7 +83,7 @@ class TestPaperWritingParity:
 
     def test_markdown_has_llm_agents(self, md_graph: Graph) -> None:
         nodes = _all_nodes(md_graph)
-        llm_nodes = [n for n in nodes if n.node_type == "llm_operator"]
+        llm_nodes = [n for n in nodes if _semantic_node_type(n) == "llm_operator"]
         assert len(llm_nodes) >= 4, (
             f"Expected >= 4 LLM agents (idea_generator, outline_planner, reviewer, reviser, etc.), "
             f"got {len(llm_nodes)}"
@@ -82,7 +91,7 @@ class TestPaperWritingParity:
 
     def test_python_has_llm_agents(self, py_graph: Graph) -> None:
         nodes = _all_nodes(py_graph)
-        llm_nodes = [n for n in nodes if n.node_type == "llm_operator"]
+        llm_nodes = [n for n in nodes if _semantic_node_type(n) == "llm_operator"]
         assert len(llm_nodes) >= 4
 
     def test_markdown_has_foreach_node(self, md_graph: Graph) -> None:
@@ -112,25 +121,27 @@ class TestPaperWritingParity:
     def test_markdown_has_human_node(self, md_graph: Graph) -> None:
         nodes = _all_nodes(md_graph)
         human_nodes = [
-            n for n in nodes if n.node_type in {"human", "human_in_the_loop"}
+            n for n in nodes if _semantic_node_type(n) in {"human", "human_in_the_loop"}
         ]
         assert len(human_nodes) >= 1
 
     def test_python_has_human_node(self, py_graph: Graph) -> None:
         nodes = _all_nodes(py_graph)
-        human_nodes = [n for n in nodes if n.node_type == "human_in_the_loop"]
+        human_nodes = [
+            n for n in nodes if _semantic_node_type(n) in {"human", "human_in_the_loop"}
+        ]
         assert len(human_nodes) >= 1
 
     def test_markdown_has_code_or_tool_node(self, md_graph: Graph) -> None:
         nodes = _all_nodes(md_graph)
-        code_nodes = [n for n in nodes if n.node_type == "code_operator"]
-        tool_nodes = [n for n in nodes if n.node_type == "tool_operator"]
+        code_nodes = [n for n in nodes if _semantic_node_type(n) == "code_operator"]
+        tool_nodes = [n for n in nodes if _semantic_node_type(n) == "tool_operator"]
         assert len(code_nodes) >= 1 or len(tool_nodes) >= 1
 
     def test_python_has_code_and_tool_nodes(self, py_graph: Graph) -> None:
         nodes = _all_nodes(py_graph)
-        code_nodes = [n for n in nodes if n.node_type == "code_operator"]
-        tool_nodes = [n for n in nodes if n.node_type == "tool_operator"]
+        code_nodes = [n for n in nodes if _semantic_node_type(n) == "code_operator"]
+        tool_nodes = [n for n in nodes if _semantic_node_type(n) == "tool_operator"]
         assert len(code_nodes) >= 1
         assert len(tool_nodes) >= 1
 
@@ -164,7 +175,7 @@ class TestPaperWritingParity:
         gates = [n for n in nodes if n.node_type == "gate"]
         if gates:
             gaps.append("Markdown uses GateNode for loops; Python may use WhileLoopNode")
-        tool_nodes = [n for n in nodes if n.node_type == "tool_operator"]
+        tool_nodes = [n for n in nodes if _semantic_node_type(n) == "tool_operator"]
         if tool_nodes:
             gaps.append(f"Tool nodes present: {[n.id for n in tool_nodes]}")
         if gaps:

@@ -33,6 +33,7 @@ def build_paper_writing_via_builder() -> Graph:
         "Paper Writing Workflow",
         description="Multi-agent paper writing with review-revise loop",
         tags=["paper-writing", "multi-agent"],
+        canonical_workers=False,
     )
 
     paper.context("outline", json_schema={"type": "string"}, description="Paper outline")

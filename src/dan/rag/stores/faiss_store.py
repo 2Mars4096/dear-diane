@@ -101,7 +101,7 @@ class FAISSVectorStore:
             self._metadata[collection].append(dict(rec.metadata))
 
         if vectors:
-            arr = np.array(vectors, dtype=np.float32)
+            arr = np.ascontiguousarray(np.array(vectors, dtype=np.float32))
             arr = _l2_normalize(arr)
             self._indexes[collection].add(arr)
 
@@ -122,7 +122,7 @@ class FAISSVectorStore:
         search_k = top_k * 3 if filters else top_k
         search_k = min(search_k, index.ntotal)
 
-        q = np.array([vector], dtype=np.float32)
+        q = np.ascontiguousarray(np.array([vector], dtype=np.float32))
         q = _l2_normalize(q)
         scores, indices = index.search(q, search_k)
 
@@ -224,7 +224,7 @@ class FAISSVectorStore:
 
         new_index = faiss.IndexFlatIP(dims)
         if vectors:
-            arr = np.stack(vectors)
+            arr = np.ascontiguousarray(np.stack(vectors).astype(np.float32, copy=False))
             new_index.add(arr)
 
         self._indexes[collection] = new_index

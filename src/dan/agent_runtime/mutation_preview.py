@@ -18,7 +18,7 @@ from dan.graph_mutator import (
     OperationError,
     TOOL_PORT_MANIFESTS,
 )
-from dan.server.workflow_latency import workflow_stage_sample, workflow_stage_start_ns
+from dan.workflow_latency import workflow_stage_sample, workflow_stage_start_ns
 from dan.workflow_generation_guidance import (
     render_workflow_generation_contract,
     workflow_generation_contract_enabled,

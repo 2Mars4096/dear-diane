@@ -124,6 +124,9 @@ def _tool_builder_kwargs(stage: StageIntent, tool_id: str) -> dict[str, Any]:
         if isinstance(tool_config_raw, dict)
         else {}
     )
+    generalized_args_raw = stage.config.get("generalized_args")
+    if not tool_config and isinstance(generalized_args_raw, dict):
+        tool_config = dict(generalized_args_raw)
 
     input_ports_raw = stage.config.get("input_ports")
     if isinstance(input_ports_raw, list):

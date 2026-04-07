@@ -29,7 +29,7 @@ class TestVarNameGeneration:
 
 class TestDecompileSimpleChain:
     def test_round_trip(self):
-        wf = workflow("test_chain")
+        wf = workflow("test_chain", canonical_workers=False)
         a = wf.llm("gen", model="gpt-4o", prompt="Generate: {topic}")
         b = wf.llm("refine", prompt="Refine text")
         a >> b
@@ -43,7 +43,7 @@ class TestDecompileSimpleChain:
         assert "graph = wf.build()" in code
 
     def test_decompiled_code_is_executable(self):
-        wf = workflow("exec_test")
+        wf = workflow("exec_test", canonical_workers=False)
         a = wf.llm("step_a", model="m", prompt="A")
         b = wf.llm("step_b", prompt="B")
         a >> b
@@ -59,7 +59,7 @@ class TestDecompileSimpleChain:
         assert len(rebuilt.edges) == len(original.edges)
 
     def test_chain_detection_emits_rshift(self):
-        wf = workflow("chain_test")
+        wf = workflow("chain_test", canonical_workers=False)
         a = wf.llm("a", model="m", prompt="A")
         b = wf.llm("b", prompt="B")
         c = wf.llm("c", prompt="C")
@@ -236,7 +236,7 @@ class TestWorkerConvenienceAliases:
         assert output_ports["approved"].json_schema == {"type": "boolean"}
 
     def test_decompile_llm_round_trip_preserves_explicit_empty_output_ports(self):
-        wf = workflow("llm_empty_outputs")
+        wf = workflow("llm_empty_outputs", canonical_workers=False)
         wf.llm(
             "survey_aspect",
             prompt="Summarize {papers}",
