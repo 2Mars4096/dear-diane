@@ -12,16 +12,8 @@ from typing import TYPE_CHECKING, Any
 from dan.engine.conditions import evaluate_reducer
 from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.state import NodeStatus
-from dan.executors.code import CodeExecutor
-from dan.executors.control_flow import GateExecutor, HumanNodeExecutor, ReduceExecutor, RouterExecutor, VoteExecutor
-from dan.executors.rag import RAGExecutor
-from dan.executors.reflection import ReflectionExecutor
-from dan.executors.tool import ToolExecutor
-from dan.executors.validator import ValidatorExecutor
 from dan.models.context import ContextMode, MergeStrategy
-from dan.models.legacy import CodeOperator, LLMOperator, ToolOperator
 from dan.models.nodes import NodeBase, RetryPolicy
-from dan.tools import get_all_tools
 from dan.worker.model import (
     AuthorityPolicy,
     ContextBindings,
@@ -33,9 +25,29 @@ from dan.worker.model import (
 )
 
 if TYPE_CHECKING:
+    from dan.executors.code import CodeExecutor
+    from dan.executors.control_flow import GateExecutor, HumanNodeExecutor, ReduceExecutor, RouterExecutor, VoteExecutor
     from dan.executors.llm import LLMExecutor
+    from dan.executors.rag import RAGExecutor
+    from dan.executors.reflection import ReflectionExecutor
+    from dan.executors.tool import ToolExecutor
+    from dan.executors.validator import ValidatorExecutor
+    from dan.models.legacy import CodeOperator, LLMOperator, ToolOperator
 else:
+    CodeExecutor = Any
+    GateExecutor = Any
+    HumanNodeExecutor = Any
+    ReduceExecutor = Any
+    RouterExecutor = Any
+    VoteExecutor = Any
     LLMExecutor = Any
+    RAGExecutor = Any
+    ReflectionExecutor = Any
+    ToolExecutor = Any
+    ValidatorExecutor = Any
+    CodeOperator = Any
+    LLMOperator = Any
+    ToolOperator = Any
 
 _TASK_TIER_ORDER = {
     "micro": 0,
@@ -135,15 +147,15 @@ class WorkerExecutor:
     ) -> None:
         self._llm = llm_executor
         self._tool = tool_executor
-        self._code = code_executor or CodeExecutor()
-        self._gate = gate_executor or GateExecutor()
-        self._router = router_executor or RouterExecutor()
-        self._validator = validator_executor or ValidatorExecutor()
-        self._reflection = reflection_executor or ReflectionExecutor()
-        self._rag = rag_executor or RAGExecutor()
-        self._human = human_executor or HumanNodeExecutor()
-        self._vote = vote_executor or VoteExecutor()
-        self._reduce = reduce_executor or ReduceExecutor()
+        self._code = code_executor
+        self._gate = gate_executor
+        self._router = router_executor
+        self._validator = validator_executor
+        self._reflection = reflection_executor
+        self._rag = rag_executor
+        self._human = human_executor
+        self._vote = vote_executor
+        self._reduce = reduce_executor
         self._static_effective_configs: dict[str, EffectiveWorkerConfig] = {}
         self._static_modes: dict[str, tuple[ExecutionMode, ...]] = {}
         self._static_llm_templates: dict[tuple[str, str], LLMOperator] = {}
@@ -158,6 +170,77 @@ class WorkerExecutor:
 
             self._llm = LLMExecutor()
         return self._llm
+
+    def _ensure_tool_executor(self, context: ExecutionContext | None = None) -> ToolExecutor:
+        if self._tool is None:
+            from dan.executors.tool import ToolExecutor
+
+            registry = getattr(context, "tool_registry", None) if context is not None else None
+            self._tool = ToolExecutor(registry)
+        return self._tool
+
+    def _ensure_code_executor(self) -> CodeExecutor:
+        if self._code is None:
+            from dan.executors.code import CodeExecutor
+
+            self._code = CodeExecutor()
+        return self._code
+
+    def _ensure_gate_executor(self) -> GateExecutor:
+        if self._gate is None:
+            from dan.executors.control_flow import GateExecutor
+
+            self._gate = GateExecutor()
+        return self._gate
+
+    def _ensure_router_executor(self) -> RouterExecutor:
+        if self._router is None:
+            from dan.executors.control_flow import RouterExecutor
+
+            self._router = RouterExecutor()
+        return self._router
+
+    def _ensure_validator_executor(self) -> ValidatorExecutor:
+        if self._validator is None:
+            from dan.executors.validator import ValidatorExecutor
+
+            self._validator = ValidatorExecutor()
+        return self._validator
+
+    def _ensure_reflection_executor(self) -> ReflectionExecutor:
+        if self._reflection is None:
+            from dan.executors.reflection import ReflectionExecutor
+
+            self._reflection = ReflectionExecutor()
+        return self._reflection
+
+    def _ensure_rag_executor(self) -> RAGExecutor:
+        if self._rag is None:
+            from dan.executors.rag import RAGExecutor
+
+            self._rag = RAGExecutor()
+        return self._rag
+
+    def _ensure_human_executor(self) -> HumanNodeExecutor:
+        if self._human is None:
+            from dan.executors.control_flow import HumanNodeExecutor
+
+            self._human = HumanNodeExecutor()
+        return self._human
+
+    def _ensure_vote_executor(self) -> VoteExecutor:
+        if self._vote is None:
+            from dan.executors.control_flow import VoteExecutor
+
+            self._vote = VoteExecutor()
+        return self._vote
+
+    def _ensure_reduce_executor(self) -> ReduceExecutor:
+        if self._reduce is None:
+            from dan.executors.control_flow import ReduceExecutor
+
+            self._reduce = ReduceExecutor()
+        return self._reduce
 
     async def execute(
         self,
@@ -563,6 +646,8 @@ class WorkerExecutor:
         context: ExecutionContext,
         effective: EffectiveWorkerConfig,
     ) -> LLMOperator:
+        from dan.models.legacy import LLMOperator
+
         hints = effective.llm_hints or LLMHints()
         resolved_model = self._resolved_model(effective, context)
         cache_key = (_worker_fingerprint(node), resolved_model)
@@ -701,6 +786,8 @@ class WorkerExecutor:
         context: ExecutionContext,
         effective: EffectiveWorkerConfig,
     ) -> NodeResult:
+        from dan.models.legacy import CodeOperator
+
         node_key = _worker_fingerprint(node)
         template = self._code_templates.get(node_key)
         if template is None:
@@ -728,7 +815,7 @@ class WorkerExecutor:
             template,
             self._effective_retry_policy(node, effective),
         )
-        return await self._code.execute(legacy, inputs, context)
+        return await self._ensure_code_executor().execute(legacy, inputs, context)
 
     async def _run_direct_tool(
         self,
@@ -737,6 +824,8 @@ class WorkerExecutor:
         context: ExecutionContext,
         effective: EffectiveWorkerConfig,
     ) -> NodeResult:
+        from dan.models.legacy import ToolOperator
+
         toolset_error = self._validate_toolset_access(node, effective)
         if toolset_error is not None:
             return NodeResult(outputs={}, status=NodeStatus.FAILED, error=toolset_error)
@@ -750,10 +839,7 @@ class WorkerExecutor:
                 ),
             )
         tool_id = effective.tool_ids[0]
-        tool_executor = self._tool
-        if tool_executor is None:
-            registry = getattr(context, "tool_registry", None)
-            tool_executor = ToolExecutor(registry)
+        tool_executor = self._ensure_tool_executor(context)
         template_key = (_worker_fingerprint(node), tool_id)
         template = self._tool_templates.get(template_key)
         if template is None:
@@ -789,6 +875,8 @@ class WorkerExecutor:
         context: ExecutionContext,
         effective: EffectiveWorkerConfig,
     ) -> NodeResult:
+        from dan.models.legacy import LLMOperator
+
         toolset_error = self._validate_toolset_access(node, effective)
         if toolset_error is not None:
             return NodeResult(outputs={}, status=NodeStatus.FAILED, error=toolset_error)
@@ -896,21 +984,21 @@ class WorkerExecutor:
         )
 
         if legacy.node_type == "router":
-            return await self._router.execute(legacy, inputs, context)
+            return await self._ensure_router_executor().execute(legacy, inputs, context)
         if legacy.node_type == "validator":
-            return await self._validator.execute(legacy, inputs, context)
+            return await self._ensure_validator_executor().execute(legacy, inputs, context)
         if legacy.node_type == "gate":
-            return await self._gate.execute(legacy, inputs, context)
+            return await self._ensure_gate_executor().execute(legacy, inputs, context)
         if legacy.node_type == "reflection":
-            return await self._reflection.execute(legacy, inputs, context)
+            return await self._ensure_reflection_executor().execute(legacy, inputs, context)
         if legacy.node_type == "rag_operator":
-            return await self._rag.execute(legacy, inputs, context)
+            return await self._ensure_rag_executor().execute(legacy, inputs, context)
         if legacy.node_type in {"human", "human_in_the_loop"}:
-            return await self._human.execute(legacy, inputs, context)
+            return await self._ensure_human_executor().execute(legacy, inputs, context)
         if legacy.node_type == "vote":
-            return await self._vote.execute(legacy, inputs, context)
+            return await self._ensure_vote_executor().execute(legacy, inputs, context)
         if legacy.node_type == "reduce":
-            return await self._reduce.execute(legacy, inputs, context)
+            return await self._ensure_reduce_executor().execute(legacy, inputs, context)
         return NodeResult(
             outputs={},
             status=NodeStatus.FAILED,
@@ -927,6 +1015,8 @@ class WorkerExecutor:
     ) -> list[dict[str, Any]]:
         if explicit_tools:
             return list(explicit_tools)
+        from dan.tools import get_all_tools
+
         available = get_all_tools()
         schemas: list[dict[str, Any]] = []
         for tool_id in tool_ids:
@@ -1112,32 +1202,3 @@ class WorkerExecutor:
             outputs = dict(inputs)
         return NodeResult(outputs=outputs, status=NodeStatus.COMPLETED)
 
-
-class LegacyWorkerAdapterExecutor:
-    """Execute bridged legacy compute nodes by routing through WorkerExecutor."""
-
-    def __init__(self, worker_executor: WorkerExecutor) -> None:
-        self.worker_executor = worker_executor
-
-    async def execute(
-        self,
-        node: NodeBase,
-        inputs: dict[str, Any],
-        context: ExecutionContext,
-    ) -> NodeResult:
-        if isinstance(node, Worker):
-            return await self.worker_executor.execute(node, inputs, context)
-
-        from dan.worker.presets import legacy_to_worker
-
-        worker = legacy_to_worker(node)
-        if worker is None:
-            return NodeResult(
-                outputs={},
-                status=NodeStatus.FAILED,
-                error=(
-                    f"Legacy node type {getattr(node, 'node_type', type(node).__name__)!r} "
-                    "does not have a Worker bridge"
-                ),
-            )
-        return await self.worker_executor.execute(worker, inputs, context)

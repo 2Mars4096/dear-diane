@@ -1,0 +1,483 @@
+"""Local LLM + tool runtime helpers for bounded organisms and coding CLIs."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import Any, Callable, Sequence
+
+from dan.providers import LLMProvider, apply_cache_hints
+from dan.tools import get_all_tools
+from dan.worker.core.interfaces import CompletionRequest, CompletionResponse
+from dan.worker.core.model import WorkerDefinition
+from dan.worker.organisms.coding_execution import CodingOrganism
+from dan.worker.organisms.project_execution import ProjectExecutionOrganism
+from dan.worker.organs import OrganPattern
+from dan.worker.tissue import TissuePattern
+
+DEFAULT_LIVE_ORGANISM_TOOL_IDS = [
+    "list_directory",
+    "file_read",
+    "file_write",
+    "shell_command",
+    "git_status",
+    "git_diff",
+    "git_log",
+]
+_READ_ONLY_TOOL_EXCLUSIONS = frozenset({"file_write"})
+ToolRuntimeEventCallback = Callable[[dict[str, Any]], None]
+ToolApprovalCallback = Callable[[str, dict[str, Any], dict[str, Any]], bool]
+
+
+def _dedupe(values: Sequence[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        ordered.append(text)
+    return ordered
+
+
+def _read_only_tool_ids(tool_ids: Sequence[str]) -> list[str]:
+    return [tool_id for tool_id in _dedupe(tool_ids) if tool_id not in _READ_ONLY_TOOL_EXCLUSIONS]
+
+
+def available_local_organism_tools() -> dict[str, dict[str, Any]]:
+    """Return the discovered standalone tool metadata keyed by tool id."""
+
+    return {
+        tool_id: dict(metadata)
+        for tool_id, (_fn, metadata) in get_all_tools().items()
+    }
+
+
+class LocalOrganismToolRuntime:
+    """Thin adapter over the standalone ``dan.tools`` modules."""
+
+    def __init__(
+        self,
+        *,
+        tool_ids: Sequence[str] | None = None,
+        workspace_root: str | Path | None = None,
+        approval_callback: ToolApprovalCallback | None = None,
+        event_callback: ToolRuntimeEventCallback | None = None,
+    ) -> None:
+        available = get_all_tools()
+        selected = _dedupe(tool_ids or DEFAULT_LIVE_ORGANISM_TOOL_IDS)
+        missing = [tool_id for tool_id in selected if tool_id not in available]
+        if missing:
+            raise ValueError(
+                "Unknown local organism tools: "
+                + ", ".join(sorted(missing))
+            )
+        self._workspace_root = Path(workspace_root or ".").expanduser().resolve()
+        self._tools = {
+            tool_id: available[tool_id]
+            for tool_id in selected
+        }
+        self._approval_callback = approval_callback
+        self._event_callback = event_callback
+
+    @property
+    def workspace_root(self) -> Path:
+        return self._workspace_root
+
+    @property
+    def tool_ids(self) -> list[str]:
+        return list(self._tools)
+
+    def metadata_for(self, tool_id: str) -> dict[str, Any]:
+        _fn, metadata = self._tools[tool_id]
+        return dict(metadata)
+
+    def _emit_event(self, event: str, **payload: Any) -> None:
+        if self._event_callback is None:
+            return
+        self._event_callback({"event": event, **payload})
+
+    async def call(self, tool_id: str, arguments: dict[str, Any] | None = None) -> Any:
+        if tool_id not in self._tools:
+            raise KeyError(f"Tool '{tool_id}' is not enabled for this runtime")
+
+        function, metadata = self._tools[tool_id]
+        kwargs = dict(arguments or {})
+        if tool_id == "shell_command" and not str(kwargs.get("working_directory") or "").strip():
+            kwargs["working_directory"] = str(self._workspace_root)
+        elif tool_id in {"git_status", "git_diff", "git_log"} and "path" not in kwargs:
+            kwargs["path"] = str(self._workspace_root)
+        self._emit_event(
+            "tool.started",
+            tool_id=tool_id,
+            arguments=dict(kwargs),
+            metadata=dict(metadata),
+            workspace_root=str(self._workspace_root),
+        )
+        if self._approval_callback is not None:
+            approved = self._approval_callback(tool_id, dict(kwargs), dict(metadata))
+            if not approved:
+                self._emit_event(
+                    "tool.denied",
+                    tool_id=tool_id,
+                    arguments=dict(kwargs),
+                    metadata=dict(metadata),
+                )
+                raise PermissionError(f"tool_call_denied:{tool_id}")
+        prior_workspace = os.environ.get("DAN_WORKSPACE_ROOT")
+        os.environ["DAN_WORKSPACE_ROOT"] = str(self._workspace_root)
+        try:
+            result = await function(**kwargs)
+        except Exception as exc:
+            self._emit_event(
+                "tool.failed",
+                tool_id=tool_id,
+                arguments=dict(kwargs),
+                metadata=dict(metadata),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            raise
+        finally:
+            if prior_workspace is None:
+                os.environ.pop("DAN_WORKSPACE_ROOT", None)
+            else:
+                os.environ["DAN_WORKSPACE_ROOT"] = prior_workspace
+        self._emit_event(
+            "tool.completed",
+            tool_id=tool_id,
+            arguments=dict(kwargs),
+            metadata=dict(metadata),
+            result=result,
+        )
+        return result
+
+
+class ToolLoopCompletionProvider:
+    """Completion provider that runs a local tool loop around a provider call."""
+
+    def __init__(
+        self,
+        *,
+        provider: LLMProvider,
+        tool_runtime: LocalOrganismToolRuntime,
+        default_model: str,
+        max_rounds: int = 8,
+        max_tool_calls: int = 24,
+        provider_request_overrides: dict[str, Any] | None = None,
+        event_callback: ToolRuntimeEventCallback | None = None,
+    ) -> None:
+        self._provider = provider
+        self._tool_runtime = tool_runtime
+        self._default_model = str(default_model or "").strip()
+        self._max_rounds = max(1, int(max_rounds))
+        self._max_tool_calls = max(1, int(max_tool_calls))
+        self._provider_request_overrides = dict(provider_request_overrides or {})
+        self._event_callback = event_callback
+
+    def _emit_event(self, event: str, **payload: Any) -> None:
+        if self._event_callback is None:
+            return
+        self._event_callback({"event": event, **payload})
+
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        model = str(request.model or self._default_model or "").strip()
+        if not model:
+            raise ValueError("Tool-loop completion provider requires a concrete model")
+
+        messages: list[dict[str, Any]] = []
+        if request.system_prompt:
+            messages.append({"role": "system", "content": request.system_prompt})
+        messages.append({"role": "user", "content": request.user_prompt})
+
+        tool_schemas = self._resolve_tool_schemas(request.tools)
+        executed_tools: list[dict[str, Any]] = []
+        rounds = 0
+        total_tool_calls = 0
+        stop_reason = "completed"
+        last_result: Any = None
+
+        while True:
+            self._emit_event(
+                "model.requested",
+                model=model,
+                round=rounds + 1,
+                tool_count=len(tool_schemas),
+            )
+            provider_kwargs = {
+                "tools": tool_schemas or None,
+                **self._provider_request_overrides,
+            }
+            last_result = await self._provider.complete(
+                messages=apply_cache_hints(self._provider, list(messages)),
+                model=model,
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+                **provider_kwargs,
+            )
+            assistant_message = self._assistant_message(last_result)
+            messages.append(assistant_message)
+
+            tool_calls = list(last_result.tool_calls or [])
+            self._emit_event(
+                "model.responded",
+                model=last_result.model or model,
+                round=rounds + 1,
+                tool_calls=[call.get("function", {}).get("name") or call.get("name") for call in tool_calls if isinstance(call, dict)],
+                finish_reason=getattr(last_result, "finish_reason", None),
+                text=(last_result.text or "")[:400],
+            )
+            if not tool_calls:
+                self._emit_event(
+                    "completion.completed",
+                    model=last_result.model or model,
+                    stop_reason=stop_reason,
+                    tool_calls_executed=len(executed_tools),
+                )
+                return CompletionResponse(
+                    text=last_result.text,
+                    raw={
+                        "provider_result": {
+                            "model": last_result.model,
+                            "finish_reason": last_result.finish_reason,
+                            "usage": last_result.usage,
+                            "provider_metadata": last_result.provider_metadata,
+                        },
+                        "assistant_message": assistant_message,
+                        "executed_tools": executed_tools,
+                        "stop_reason": stop_reason,
+                    },
+                )
+
+            rounds += 1
+            if rounds > self._max_rounds:
+                stop_reason = f"max_tool_rounds_exceeded:{self._max_rounds}"
+                self._emit_event(
+                    "completion.completed",
+                    model=last_result.model or model,
+                    stop_reason=stop_reason,
+                    tool_calls_executed=len(executed_tools),
+                )
+                return CompletionResponse(
+                    text=last_result.text or "",
+                    raw={
+                        "provider_result": {
+                            "model": last_result.model,
+                            "finish_reason": last_result.finish_reason,
+                            "usage": last_result.usage,
+                            "provider_metadata": last_result.provider_metadata,
+                        },
+                        "assistant_message": assistant_message,
+                        "executed_tools": executed_tools,
+                        "stop_reason": stop_reason,
+                    },
+                )
+
+            for raw_call in tool_calls:
+                total_tool_calls += 1
+                tool_id, tool_call_id, arguments = self._parse_tool_call(raw_call)
+                if total_tool_calls > self._max_tool_calls:
+                    tool_payload = {
+                        "ok": False,
+                        "error": f"tool_call_limit_exceeded:{self._max_tool_calls}",
+                    }
+                elif tool_id not in self._tool_runtime.tool_ids:
+                    tool_payload = {
+                        "ok": False,
+                        "error": f"tool_not_enabled:{tool_id}",
+                    }
+                else:
+                    try:
+                        result = await self._tool_runtime.call(tool_id, arguments)
+                    except Exception as exc:
+                        tool_payload = {
+                            "ok": False,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    else:
+                        tool_payload = {
+                            "ok": True,
+                            "result": result,
+                        }
+
+                executed_tools.append(
+                    {
+                        "tool_id": tool_id,
+                        "tool_call_id": tool_call_id,
+                        "arguments": arguments,
+                        **tool_payload,
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "name": tool_id,
+                        "content": json.dumps(
+                            tool_payload,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            default=str,
+                        ),
+                    }
+                )
+
+    def _resolve_tool_schemas(self, request_tools: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        allowed = set(self._tool_runtime.tool_ids)
+        filtered: list[dict[str, Any]] = []
+        for tool in request_tools:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            name = str(function.get("name") or "").strip() if isinstance(function, dict) else ""
+            if name and name in allowed:
+                filtered.append(tool)
+        return filtered
+
+    @staticmethod
+    def _assistant_message(result: Any) -> dict[str, Any]:
+        raw_message = getattr(result, "raw_assistant_message", None)
+        if isinstance(raw_message, dict):
+            payload = dict(raw_message)
+            payload.setdefault("role", "assistant")
+            if result.tool_calls and "tool_calls" not in payload:
+                payload["tool_calls"] = list(result.tool_calls)
+            payload.setdefault("content", result.text if result.text else None)
+            return payload
+        payload: dict[str, Any] = {
+            "role": "assistant",
+            "content": result.text if result.text else None,
+        }
+        if result.tool_calls:
+            payload["tool_calls"] = list(result.tool_calls)
+        return payload
+
+    @staticmethod
+    def _parse_tool_call(raw_call: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+        function = raw_call.get("function") if isinstance(raw_call, dict) else None
+        tool_id = str(function.get("name") or raw_call.get("name") or "").strip() if isinstance(function, dict) else ""
+        tool_call_id = str(raw_call.get("id") or f"tool-call-{tool_id or 'unknown'}").strip()
+        raw_arguments = function.get("arguments") if isinstance(function, dict) else raw_call.get("arguments")
+        if isinstance(raw_arguments, dict):
+            arguments = dict(raw_arguments)
+        elif isinstance(raw_arguments, str) and raw_arguments.strip():
+            try:
+                parsed = json.loads(raw_arguments)
+            except Exception:
+                arguments = {"raw_arguments": raw_arguments}
+            else:
+                arguments = dict(parsed) if isinstance(parsed, dict) else {"arguments": parsed}
+        else:
+            arguments = {}
+        return tool_id, tool_call_id, arguments
+
+
+def _worker_with_tool_ids(worker: WorkerDefinition, tool_ids: Sequence[str]) -> WorkerDefinition:
+    return worker.model_copy(update={"tool_ids": _dedupe(tool_ids)})
+
+
+def _tissue_with_tool_ids(
+    tissue: TissuePattern | None,
+    *,
+    member_tool_ids: Sequence[str],
+) -> TissuePattern | None:
+    if tissue is None:
+        return None
+    return tissue.model_copy(
+        update={
+            "members": [
+                member.model_copy(
+                    update={
+                        "worker": _worker_with_tool_ids(member.worker, member_tool_ids),
+                    }
+                )
+                for member in tissue.members
+            ]
+        }
+    )
+
+
+def _organ_with_tool_ids(
+    organ: OrganPattern,
+    *,
+    member_tool_ids: Sequence[str],
+    lead_tool_ids: Sequence[str],
+) -> OrganPattern:
+    return organ.model_copy(
+        update={
+            "lead_worker": _worker_with_tool_ids(organ.lead_worker, lead_tool_ids),
+            "tissue": _tissue_with_tool_ids(organ.tissue, member_tool_ids=member_tool_ids),
+        }
+    )
+
+
+def attach_local_tooling_to_reference_organism(
+    organism: ProjectExecutionOrganism,
+    *,
+    tool_ids: Sequence[str] | None = None,
+) -> ProjectExecutionOrganism:
+    """Return a copy of the reference organism with runtime-selected local tools."""
+
+    full_tool_ids = _dedupe(tool_ids or DEFAULT_LIVE_ORGANISM_TOOL_IDS)
+    read_only_tool_ids = _read_only_tool_ids(full_tool_ids)
+    return organism.model_copy(
+        update={
+            "planner_worker": _worker_with_tool_ids(organism.planner_worker, []),
+            "research_organ": _organ_with_tool_ids(
+                organism.research_organ,
+                member_tool_ids=read_only_tool_ids,
+                lead_tool_ids=read_only_tool_ids,
+            ),
+            "validator_organ": _organ_with_tool_ids(
+                organism.validator_organ,
+                member_tool_ids=full_tool_ids,
+                lead_tool_ids=full_tool_ids,
+            ),
+            "coding_organ": _organ_with_tool_ids(
+                organism.coding_organ,
+                member_tool_ids=full_tool_ids,
+                lead_tool_ids=full_tool_ids,
+            ),
+            "synthesis_organ": _organ_with_tool_ids(
+                organism.synthesis_organ,
+                member_tool_ids=read_only_tool_ids,
+                lead_tool_ids=read_only_tool_ids,
+            ),
+        }
+    )
+
+
+def attach_local_tooling_to_coding_organism(
+    organism: CodingOrganism,
+    *,
+    tool_ids: Sequence[str] | None = None,
+) -> CodingOrganism:
+    """Return a copy of the coding organism with runtime-selected local tools."""
+
+    full_tool_ids = _dedupe(tool_ids or DEFAULT_LIVE_ORGANISM_TOOL_IDS)
+    read_only_tool_ids = _read_only_tool_ids(full_tool_ids)
+    return organism.model_copy(
+        update={
+            "orchestrator_worker": _worker_with_tool_ids(organism.orchestrator_worker, []),
+            "worker_tool_ids": list(read_only_tool_ids),
+            "aggregator_organ": _organ_with_tool_ids(
+                organism.aggregator_organ,
+                member_tool_ids=full_tool_ids,
+                lead_tool_ids=full_tool_ids,
+            ),
+            "validator_organ": _organ_with_tool_ids(
+                organism.validator_organ,
+                member_tool_ids=read_only_tool_ids,
+                lead_tool_ids=read_only_tool_ids,
+            ),
+        }
+    )
+
+
+__all__ = [
+    "DEFAULT_LIVE_ORGANISM_TOOL_IDS",
+    "LocalOrganismToolRuntime",
+    "ToolLoopCompletionProvider",
+    "attach_local_tooling_to_coding_organism",
+    "attach_local_tooling_to_reference_organism",
+    "available_local_organism_tools",
+]
