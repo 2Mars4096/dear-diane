@@ -60,6 +60,56 @@ def _parse_payload(outputs: dict[str, Any]) -> dict[str, Any]:
     return {"result": raw}
 
 
+def _clean_text(value: Any) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def _preview_text(value: Any, *, limit: int = 140) -> str:
+    text = _clean_text(value)
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        text = _clean_text(value)
+        if text:
+            return text
+    return ""
+
+
+def _plan_status_message(plan: "CodingOrchestratorPlan") -> str:
+    public_response = _clean_text(getattr(plan, "public_response", ""))
+    if public_response:
+        return public_response
+    briefs = [_preview_text(brief, limit=90) for brief in plan.worker_briefs if _clean_text(brief)]
+    if not briefs:
+        return ""
+    return "; ".join(briefs[:2]) + (f"; +{len(briefs) - 2} more" if len(briefs) > 2 else "")
+
+
+def _worker_status_message(member_result: dict[str, Any]) -> str:
+    return _first_text(
+        member_result.get("change_summary"),
+        member_result.get("candidate_fragment"),
+    )
+
+
+def _aggregation_status_message(payload: dict[str, Any]) -> str:
+    return _first_text(
+        payload.get("change_summary"),
+        payload.get("candidate_id"),
+    )
+
+
+def _validation_status_message(payload: dict[str, Any]) -> str:
+    return _first_text(
+        payload.get("comparison_note"),
+        payload.get("repair_brief"),
+    )
+
+
 class CodingTask(BaseModel):
     """Bounded task contract for the coding organism."""
 
@@ -77,6 +127,7 @@ class CodingTask(BaseModel):
 class CodingOrchestratorPlan(BaseModel):
     """Normalized orchestrator plan for one coding attempt."""
 
+    public_response: str = ""
     worker_count: int = Field(default=2, ge=1)
     worker_briefs: list[str] = Field(default_factory=list)
     aggregation_focus: str = (
@@ -138,10 +189,11 @@ class CodingOrganismExecution:
 def _orchestrator_output_contract() -> OutputContract:
     return OutputContract(
         definition_of_done=(
-            "Return the next bounded coding plan: worker count, worker briefs, aggregation focus, validator focus, and pass threshold."
+            "Return the next bounded coding plan: a concise public_response, worker count, worker briefs, aggregation focus, validator focus, and pass threshold."
         ),
         expected_return_shape=json.dumps(
             {
+                "public_response": "<optional>",
                 "worker_count": "<required>",
                 "worker_briefs": "<required>",
                 "aggregation_focus": "<required>",
@@ -262,8 +314,9 @@ def _root_orchestrator_packet(
         task=HandoffTask(
             task_id=f"{task.task_id}:orchestrate:1",
             instruction=(
-                "Plan the next coding attempt. Choose how many workers to run, define distinct briefs for them, "
-                "and set the aggregation and validation focus."
+                "Plan the next coding attempt. First analyze the user intent and write one concise formal "
+                "public_response for the user-facing console that states what you understand and what you will do next. "
+                "Then choose how many workers to run, define distinct briefs for them, and set the aggregation and validation focus."
             ),
             scope="coding-organism.orchestrate",
             hard_constraints=list(task.hard_constraints),
@@ -308,8 +361,9 @@ def _repair_orchestrator_packet(
         lineage_suffix="coordinator:orchestrator",
         task_id=f"{task.task_id}:orchestrate:{attempt}",
         instruction=(
-            "Plan the next coding attempt after validator feedback. Choose worker_count, worker_briefs, "
-            "aggregation_focus, validator_focus, and pass_threshold."
+            "Plan the next coding attempt after validator feedback. First analyze the updated user intent and write "
+            "one concise formal public_response for the user-facing console that states what you understand and what "
+            "you will do next. Then choose worker_count, worker_briefs, aggregation_focus, validator_focus, and pass_threshold."
         ),
         scope="coding-organism.orchestrate",
         hard_constraints=list(task.hard_constraints),
@@ -478,8 +532,10 @@ def coding_execution_organism(
             id=orchestrator_address.cell_id,
             role="coding_orchestrator",
             instruction=(
-                "Coordinate the coding organism. Choose worker_count, distinct worker briefs, aggregation focus, "
-                "and validator focus. Keep the pool small, purposeful, and bounded."
+                "Coordinate the coding organism. Treat the user turn as an agent handoff: first analyze user intent "
+                "and write one concise formal public_response that states what you understand and what you will do next, "
+                "then choose worker_count, distinct worker briefs, aggregation focus, and validator focus. "
+                "Keep the pool small, purposeful, and bounded."
             ),
             model=model,
         ),
@@ -514,6 +570,30 @@ async def execute_coding_organism(
         if event_callback is None:
             return
         event_callback({"event": event, **payload})
+
+    def _emit_status_update(
+        *,
+        actor: str,
+        phase: str,
+        attempt: int,
+        message: str,
+        status: str = "running",
+        replace_last: bool = False,
+        **payload: Any,
+    ) -> None:
+        text = _clean_text(message)
+        if not text:
+            return
+        _emit(
+            "status.update",
+            actor=actor,
+            phase=phase,
+            attempt=attempt,
+            status=status,
+            message=text,
+            replace_last=replace_last,
+            **payload,
+        )
 
     trace_log = trace_log or CrossCellTraceLog()
     stage_records: list[OrganismStageRecord] = []
@@ -615,6 +695,18 @@ async def execute_coding_organism(
             organism=organism,
             task=task,
         )
+        _emit_status_update(
+            actor="orchestrator",
+            phase="orchestration",
+            attempt=attempt,
+            status="completed",
+            message=_plan_status_message(plan),
+            public_response=plan.public_response,
+            worker_count=plan.worker_count,
+            worker_briefs=list(plan.worker_briefs),
+            aggregation_focus=plan.aggregation_focus,
+            validator_focus=plan.validator_focus,
+        )
         worker_pool_pattern, worker_pool_address = _worker_pool_pattern(
             organism=organism,
             attempt=attempt,
@@ -691,6 +783,19 @@ async def execute_coding_organism(
             prior_packet = worker_packet
             prior_signal_id = worker_execution.signals[-1].signal_id
             break
+
+        member_results = dict(worker_execution.result.outputs.get("member_results") or {})
+        for member_id in sorted(member_results):
+            member_result = _parse_payload(dict(member_results.get(member_id) or {}))
+            _emit_status_update(
+                actor=member_id,
+                phase="workers",
+                attempt=attempt,
+                status="completed",
+                message=_worker_status_message(member_result),
+                target_files=list(member_result.get("target_files") or []),
+                test_plan=list(member_result.get("test_plan") or []),
+            )
 
         _emit(
             "stage.started",
@@ -773,6 +878,20 @@ async def execute_coding_organism(
                 if aggregation_execution.result.status == "completed"
                 else "Could not prepare a candidate."
             ),
+        )
+        _emit_status_update(
+            actor="aggregator",
+            phase="aggregation",
+            attempt=attempt,
+            status=(
+                "completed"
+                if aggregation_execution.result.status == "completed"
+                else aggregation_execution.result.status
+            ),
+            message=_aggregation_status_message(dict(aggregation_execution.result.outputs)),
+            candidate_id=aggregation_execution.result.outputs.get("candidate_id"),
+            target_files=list(aggregation_execution.result.outputs.get("target_files") or []),
+            test_plan=list(aggregation_execution.result.outputs.get("test_plan") or []),
         )
         if aggregation_execution.result.status != "completed":
             prior_packet = aggregation_packet
@@ -872,6 +991,24 @@ async def execute_coding_organism(
                 else "Validation did not complete."
             ),
         )
+        _emit_status_update(
+            actor="validator",
+            phase="validation",
+            attempt=attempt,
+            status=(
+                "passed"
+                if validation_passed
+                else (
+                    "needs_repair"
+                    if validation_execution.result.status == "completed"
+                    else validation_execution.result.status
+                )
+            ),
+            message=_validation_status_message(dict(validation_execution.result.outputs)),
+            score=score,
+            missing_requirements=list(validation_execution.result.outputs.get("missing_requirements") or []),
+            repair_brief=str(validation_execution.result.outputs.get("repair_brief") or ""),
+        )
 
         prior_packet = validation_packet
         prior_signal_id = validation_execution.signals[-1].signal_id
@@ -905,6 +1042,14 @@ async def execute_coding_organism(
                 attempt=attempt,
                 score=score,
                 repair_brief=repair_brief,
+                missing_requirements=list(validation_execution.result.outputs.get("missing_requirements") or []),
+            )
+            _emit_status_update(
+                actor="validator",
+                phase="repair",
+                attempt=attempt,
+                status="needs_repair",
+                message=repair_brief,
                 missing_requirements=list(validation_execution.result.outputs.get("missing_requirements") or []),
             )
         if passed and score is not None and score >= plan.pass_threshold:
@@ -941,6 +1086,26 @@ async def execute_coding_organism(
             error = "The best candidate still failed validation."
     else:
         error = "The coding organism did not produce a validated candidate."
+
+    if status == "completed":
+        _emit_status_update(
+            actor="orchestrator",
+            phase="delivery",
+            attempt=best_attempt or 0,
+            status="completed",
+            message=_aggregation_status_message(final_output),
+            candidate_id=final_output.get("candidate_id"),
+            target_files=list(final_output.get("target_files") or []),
+            test_plan=list(final_output.get("test_plan") or []),
+        )
+    elif error:
+        _emit_status_update(
+            actor="orchestrator",
+            phase="delivery",
+            attempt=best_attempt or 0,
+            status="failed",
+            message=error,
+        )
 
     result = CodingOrganismResult(
         status=status,
