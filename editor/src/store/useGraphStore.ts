@@ -35,13 +35,28 @@ import { PREDEFINED_AGENT_TEMPLATES } from "../lib/paletteTemplates";
 import { layoutGraph, needsAutoLayout } from "../lib/layout";
 import * as api from "../lib/api";
 import { useAppStore } from "./useAppStore";
-
-// -- 6-1: History & multi-select -----------------------------------------------
-interface GraphSnapshot {
-  nodes: Node[];
-  edges: Edge[];
-  danGraph: DanGraph | null;
-}
+import {
+  closeGraphRunSocket,
+  createEmptyGraphEditorState,
+  createEmptyGraphRunState,
+  type GraphSnapshot,
+  persistGraphTabState,
+  readPersistedGraphTabState,
+  restoreGraphTab,
+  snapshotGraphTab,
+  type TabInfo,
+  type TabSnapshot,
+} from "./graphSessionState";
+import {
+  createInitialGraphPanelState,
+  focusHistoryPanelForGraphStore,
+  focusLogPanelForGraphStore,
+  loadRunLogsForGraphStore,
+  openBuildWithAIForGraphStore,
+  openDebugWithErrorForGraphStore,
+  setGraphChatMode,
+  type GraphChatMode,
+} from "./graphPanelFocus";
 const MAX_HISTORY = 50;
 
 type PersistenceState = Pick<
@@ -126,50 +141,6 @@ export const EVENT_CATEGORY: Record<string, string> = {
   iteration_completed: "lifecycle",
   human_input_needed: "lifecycle",
 };
-
-// -- 6-9: Tab types ----------------------------------------------------------
-
-export interface TabInfo {
-  id: string;
-  graphId: string;
-  graphName: string;
-  cachedRunStatus: string | null;
-}
-
-interface TabSnapshot {
-  graphId: string | null;
-  danGraph: DanGraph | null;
-  graphRevision: string | null;
-  dirty: boolean;
-  nodes: Node[];
-  edges: Edge[];
-  selectedNodeId: string | null;
-  selectedEdgeId: string | null;
-  selectedNodeIds: Set<string>;
-  layerStack: Array<{ graphKey: string; nodeId: string; nodeName?: string }>;
-  validationErrors: Record<string, string[]>;
-  inputNodeValues: Record<string, Record<string, unknown>>;
-  nodeTimings: Record<string, { start: number; end?: number }>;
-  activeExecutionPath: Set<string>;
-  nodeIterations: Record<string, { current: number; total?: number; condition?: string }>;
-  streamingOutputs: Record<string, string>;
-  pendingHumanInput: { requestId: string; nodeId: string; prompt: string } | null;
-  _history: { past: GraphSnapshot[]; future: GraphSnapshot[] };
-  runId: string | null;
-  runStatus: string | null;
-  nodeStatuses: Record<string, string>;
-  nodeOutputs: Record<string, Record<string, unknown>>;
-  logs: LogEntry[];
-  loopGroups: LoopGroup[];
-  runSummary: { elapsed_seconds?: number; total_prompt_tokens?: number; total_completion_tokens?: number; total_tokens?: number } | null;
-  nodeUsage: Record<string, { prompt_tokens: number; completion_tokens: number; total_tokens: number }>;
-  nodeCosts: Record<string, number>;
-  tokenBreakdowns: Record<string, TokenBreakdown>;
-  wasteFindings: WasteFinding[];
-  optimizationMutations: OptimizationMutation[];
-  edgeTokenCounts: Record<string, number>;
-  nodeTiers: Record<string, TierInfo>;
-}
 
 interface GraphState {
   // -- Graph identity
@@ -326,8 +297,8 @@ interface GraphState {
   restoreTabs: () => Promise<void>;
 
   // -- 10-9: Build-from-intent chat mode / 12-2: Multi-mode chat
-  chatMode: "ask" | "agent" | "plan" | "debug" | "auto";
-  setChatMode: (mode: "ask" | "agent" | "plan" | "debug" | "auto") => void;
+  chatMode: GraphChatMode;
+  setChatMode: (mode: GraphChatMode) => void;
   openBuildWithAI: () => Promise<void>;
   chatFocusTrigger: number;
   chatPrefill: string | null;
@@ -441,94 +412,15 @@ function _lintNotificationKey(
 export const useGraphStore = create<GraphState>((set, get) => {
   // -- 6-9: Tab internal helpers -----------------------------------------------
 
-  const _snapshotActiveTab = (): TabSnapshot => {
-    const s = get();
-    return {
-      graphId: s.graphId,
-      danGraph: s.danGraph ? structuredClone(s.danGraph) : null,
-      graphRevision: s.graphRevision,
-      dirty: s.dirty,
-      nodes: structuredClone(s.nodes),
-      edges: structuredClone(s.edges),
-      selectedNodeId: s.selectedNodeId,
-      selectedEdgeId: s.selectedEdgeId,
-      selectedNodeIds: new Set(s.selectedNodeIds),
-      layerStack: structuredClone(s.layerStack),
-      validationErrors: { ...s.validationErrors },
-      inputNodeValues: structuredClone(s.inputNodeValues),
-      nodeTimings: { ...s.nodeTimings },
-      activeExecutionPath: new Set(s.activeExecutionPath),
-      nodeIterations: structuredClone(s.nodeIterations),
-      streamingOutputs: { ...s.streamingOutputs },
-      pendingHumanInput: s.pendingHumanInput ? { ...s.pendingHumanInput } : null,
-      _history: structuredClone(s._history),
-      runId: s.runId,
-      runStatus: s.runStatus,
-      nodeStatuses: { ...s.nodeStatuses },
-      nodeOutputs: structuredClone(s.nodeOutputs),
-      logs: [...s.logs],
-      loopGroups: structuredClone(s.loopGroups),
-      runSummary: s.runSummary ? { ...s.runSummary } : null,
-      nodeUsage: { ...s.nodeUsage },
-      nodeCosts: { ...s.nodeCosts },
-      tokenBreakdowns: { ...s.tokenBreakdowns },
-      wasteFindings: [...s.wasteFindings],
-      optimizationMutations: [...s.optimizationMutations],
-      edgeTokenCounts: { ...s.edgeTokenCounts },
-      nodeTiers: { ...s.nodeTiers },
-    };
-  };
+  const _snapshotActiveTab = (): TabSnapshot => snapshotGraphTab(get());
 
   const _restoreTab = (snapshot: TabSnapshot): void => {
-    set({
-      graphId: snapshot.graphId,
-      danGraph: snapshot.danGraph,
-      graphRevision: snapshot.graphRevision,
-      dirty: snapshot.dirty,
-      nodes: snapshot.nodes,
-      edges: snapshot.edges,
-      selectedNodeId: snapshot.selectedNodeId,
-      selectedEdgeId: snapshot.selectedEdgeId,
-      selectedNodeIds: snapshot.selectedNodeIds,
-      layerStack: snapshot.layerStack,
-      validationErrors: snapshot.validationErrors,
-      inputNodeValues: snapshot.inputNodeValues,
-      nodeTimings: snapshot.nodeTimings,
-      activeExecutionPath: snapshot.activeExecutionPath,
-      nodeIterations: snapshot.nodeIterations,
-      streamingOutputs: snapshot.streamingOutputs,
-      pendingHumanInput: snapshot.pendingHumanInput,
-      _history: snapshot._history,
-      runId: snapshot.runId,
-      runStatus: snapshot.runStatus,
-      nodeStatuses: snapshot.nodeStatuses,
-      nodeOutputs: snapshot.nodeOutputs,
-      logs: snapshot.logs,
-      loopGroups: snapshot.loopGroups ?? [],
-      runSummary: snapshot.runSummary ?? null,
-      nodeUsage: snapshot.nodeUsage ?? {},
-      nodeCosts: snapshot.nodeCosts ?? {},
-      tokenBreakdowns: snapshot.tokenBreakdowns ?? {},
-      wasteFindings: snapshot.wasteFindings ?? [],
-      optimizationMutations: snapshot.optimizationMutations ?? [],
-      edgeTokenCounts: snapshot.edgeTokenCounts ?? {},
-      nodeTiers: snapshot.nodeTiers ?? {},
-    });
+    set(restoreGraphTab(snapshot));
   };
 
   const _persistTabState = (): void => {
-    try {
-      const { tabs, activeTabId, tabCache, runId } = get();
-      const runs: Record<string, { runId: string | null; graphId: string }> = {};
-      for (const tab of tabs) {
-        if (tab.id === activeTabId) {
-          runs[tab.id] = { runId, graphId: tab.graphId };
-        } else {
-          runs[tab.id] = { runId: tabCache[tab.id]?.runId ?? null, graphId: tab.graphId };
-        }
-      }
-      sessionStorage.setItem("dan_open_tabs", JSON.stringify({ tabs, activeTabId, runs }));
-    } catch { /* quota */ }
+    const { tabs, activeTabId, tabCache, runId } = get();
+    persistGraphTabState({ tabs, activeTabId, tabCache, runId });
   };
 
   return {
@@ -571,12 +463,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
   loopGroups: [],
 
   // -- 10-9 / 12-2: Chat modes
-  chatMode: "auto" as const,
-  chatFocusTrigger: 0,
-  chatPrefill: null as string | null,
-  logFocusCounter: 0,
-  historyFocusCounter: 0,
-  historyFocusRunId: null,
+  ...createInitialGraphPanelState(),
 
   // -- 18-4: Token analytics
   tokenBreakdowns: {},
@@ -1047,7 +934,11 @@ export const useGraphStore = create<GraphState>((set, get) => {
       const saved = await get().saveGraph();
       if (!saved) return;
       const { run_id } = await api.startRun(graphId, finalInputs);
-      set({ runId: run_id, runStatus: "running", nodeStatuses: {}, nodeOutputs: {}, nodeTimings: {}, nodeUsage: {}, nodeCosts: {}, nodeTiers: {}, activeExecutionPath: new Set(), logs: [], runSummary: null, tokenBreakdowns: {}, wasteFindings: [], optimizationMutations: [], edgeTokenCounts: {} });
+      set({
+        ...createEmptyGraphRunState(),
+        runId: run_id,
+        runStatus: "running",
+      });
       _persistTabState();
       get().addToast({ type: "info", message: `Run started (${run_id.slice(0, 8)})` });
       const ws = api.connectRunEvents(
@@ -1066,7 +957,11 @@ export const useGraphStore = create<GraphState>((set, get) => {
     if (!graphId || !runId) return;
     try {
       await api.resumeRun(runId, graphId);
-      set({ runStatus: "running", nodeStatuses: {}, nodeTimings: {}, nodeUsage: {}, nodeCosts: {}, nodeTiers: {}, activeExecutionPath: new Set(), logs: [], runSummary: null, tokenBreakdowns: {}, wasteFindings: [], optimizationMutations: [], edgeTokenCounts: {} });
+      set({
+        ...createEmptyGraphRunState(),
+        runId,
+        runStatus: "running",
+      });
       _persistTabState();
       get().addToast({ type: "info", message: "Run resumed" });
       const ws = api.connectRunEvents(
@@ -1093,21 +988,9 @@ export const useGraphStore = create<GraphState>((set, get) => {
         graph_id: graphId,
       });
       set({
+        ...createEmptyGraphRunState(),
         runId: result.run_id,
         runStatus: "running",
-        nodeStatuses: {},
-        nodeOutputs: {},
-        nodeTimings: {},
-        nodeUsage: {},
-        nodeCosts: {},
-        nodeTiers: {},
-        activeExecutionPath: new Set(),
-        logs: [],
-        runSummary: null,
-        tokenBreakdowns: {},
-        wasteFindings: [],
-        optimizationMutations: [],
-        edgeTokenCounts: {},
       });
       _persistTabState();
       get().addToast({ type: "info", message: `Rerun started (${scopeType.replace("_", " ")} ${nodeId.slice(0, 12)})` });
@@ -1157,16 +1040,11 @@ export const useGraphStore = create<GraphState>((set, get) => {
         await get().loadGraph(stored.graphId);
       }
       set({
+        ...createEmptyGraphRunState(),
         runId: stored.runId,
         runStatus: info.status,
         nodeStatuses: info.node_statuses ?? {},
-        nodeOutputs: {},
-        nodeTimings: {},
-        nodeUsage: {},
-        nodeCosts: {},
-        edgeTokenCounts: {},
         activeExecutionPath: new Set(Object.keys(info.node_statuses ?? {})),
-        logs: [],
       });
       const ws = api.connectRunEvents(
         stored.runId,
@@ -1895,94 +1773,17 @@ export const useGraphStore = create<GraphState>((set, get) => {
   },
 
   // -- 10-9 / 12-2: Multi-mode chat
-  setChatMode: (mode) => set({ chatMode: mode }),
-  openDebugWithError: (errorContext) => set((s) => ({
-    chatMode: "debug",
-    chatPrefill: errorContext,
-    chatFocusTrigger: (s.chatFocusTrigger ?? 0) + 1,
-  })),
+  setChatMode: (mode) => setGraphChatMode(set, mode),
+  openDebugWithError: (errorContext) =>
+    openDebugWithErrorForGraphStore(set, errorContext),
   focusLogPanel: () => {
-    useAppStore.getState().setMode("operations");
-    set((s) => ({ logFocusCounter: s.logFocusCounter + 1 }));
+    focusLogPanelForGraphStore(set);
   },
   loadRunLogs: async (runId) => {
-    useAppStore.getState().setMode("operations");
-    set((s) => ({ logFocusCounter: s.logFocusCounter + 1 }));
-    try {
-      const [runInfo, eventResponse] = await Promise.all([
-        api.getRun(runId),
-        api.getRunEvents(runId),
-      ]);
-      const runSummary = runInfo as api.RunSummary;
-      const normalizedNodeUsage = Object.fromEntries(
-        Object.entries(runSummary.node_usage ?? {}).map(([nodeId, usage]) => [
-          nodeId,
-          {
-            prompt_tokens: Number((usage as Record<string, unknown>)?.prompt_tokens ?? 0),
-            completion_tokens: Number((usage as Record<string, unknown>)?.completion_tokens ?? 0),
-            total_tokens: Number((usage as Record<string, unknown>)?.total_tokens ?? 0),
-          },
-        ]),
-      ) as Record<string, { prompt_tokens: number; completion_tokens: number; total_tokens: number }>;
-      const baseSummary = {
-        elapsed_seconds: runSummary.elapsed_seconds ?? undefined,
-        total_prompt_tokens: runSummary.total_prompt_tokens,
-        total_completion_tokens: runSummary.total_completion_tokens,
-        total_tokens: runSummary.total_tokens,
-      };
-      set({
-        runId: runInfo.run_id,
-        runStatus: runInfo.status,
-        nodeStatuses: {},
-        nodeOutputs: {},
-        nodeTimings: {},
-        nodeUsage: normalizedNodeUsage,
-        nodeCosts: {},
-        nodeTiers: {},
-        activeExecutionPath: new Set<string>(),
-        logs: [],
-        runSummary: baseSummary,
-        nodeIterations: {},
-        streamingOutputs: {},
-        pendingHumanInput: null,
-        tokenBreakdowns: {},
-        wasteFindings: [],
-        optimizationMutations: [],
-        edgeTokenCounts: {},
-      });
-      for (const event of eventResponse.events) {
-        get().handleRunEvent(event as Record<string, unknown>, { historical: true });
-      }
-      set((s) => {
-        const finalStatuses =
-          Object.keys(s.nodeStatuses).length > 0 ? s.nodeStatuses : (runInfo.node_statuses ?? {});
-        const finalSummary = {
-          elapsed_seconds: s.runSummary?.elapsed_seconds ?? baseSummary.elapsed_seconds,
-          total_prompt_tokens: s.runSummary?.total_prompt_tokens ?? baseSummary.total_prompt_tokens,
-          total_completion_tokens:
-            s.runSummary?.total_completion_tokens ?? baseSummary.total_completion_tokens,
-          total_tokens: s.runSummary?.total_tokens ?? baseSummary.total_tokens,
-        };
-        return {
-          nodeStatuses: finalStatuses,
-          activeExecutionPath: new Set(Object.keys(finalStatuses)),
-          runStatus: runInfo.status,
-          runSummary: finalSummary,
-        };
-      });
-    } catch (err: unknown) {
-      get().addToast({
-        type: "error",
-        message: (err as Error).message ?? "Failed to load run logs",
-      });
-    }
+    await loadRunLogsForGraphStore(set, get, runId);
   },
   focusHistoryPanel: (runId) => {
-    useAppStore.getState().setMode("operations");
-    set((s) => ({
-      historyFocusCounter: s.historyFocusCounter + 1,
-      historyFocusRunId: runId ?? null,
-    }));
+    focusHistoryPanelForGraphStore(set, runId);
   },
 
   // -- 18-4: Token analytics actions -------------------------------------------
@@ -2075,11 +1876,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
   },
 
   openBuildWithAI: async () => {
-    const autoId = `build-${Math.random().toString(36).slice(2, 8)}`;
-    await get().createGraph(autoId);
-    if (get().graphId === autoId) {
-      set({ chatMode: "agent", chatFocusTrigger: (get().chatFocusTrigger ?? 0) + 1 });
-    }
+    await openBuildWithAIForGraphStore(set, get);
   },
 
   // -- 6-1: History (undo/redo) -------------------------------------------------
@@ -2143,8 +1940,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       set((s) => ({ tabCache: { ...s.tabCache, [activeTabId]: snapshot } }));
     }
 
-    const oldWs = get().ws;
-    if (oldWs) { oldWs.onmessage = null; oldWs.onclose = null; oldWs.close(); }
+    closeGraphRunSocket(get().ws);
     set({ ws: null });
 
     const isBlank = graphId === "blank";
@@ -2165,28 +1961,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       nodes: isBlank ? [] : s.nodes,
       edges: isBlank ? [] : s.edges,
       dirty: false,
-      runId: null,
-      runStatus: null,
-      nodeStatuses: {},
-      nodeOutputs: {},
-      logs: [],
-      runSummary: null,
-      nodeTimings: {},
-      nodeUsage: {},
-      nodeCosts: {},
-      edgeTokenCounts: {},
-      activeExecutionPath: new Set<string>(),
-      nodeIterations: {},
-      streamingOutputs: {},
-      pendingHumanInput: null,
-      _history: { past: [], future: [] },
-      validationErrors: {},
-      inputNodeValues: {},
-      selectedNodeId: null,
-      selectedEdgeId: null,
-      selectedNodeIds: new Set<string>(),
-      layerStack: [],
-      loopGroups: [],
+      ...createEmptyGraphEditorState(),
       chatMode: "auto" as const,
       chatFocusTrigger: 0,
     }));
@@ -2218,8 +1993,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       const snapshot = _snapshotActiveTab();
       set((s) => ({ tabCache: { ...s.tabCache, [activeTabId]: snapshot } }));
     }
-    const oldWs = get().ws;
-    if (oldWs) { oldWs.onmessage = null; oldWs.onclose = null; oldWs.close(); }
+    closeGraphRunSocket(get().ws);
     set({ ws: null });
     const tabId = crypto.randomUUID();
     const newTab: TabInfo = {
@@ -2237,28 +2011,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       nodes,
       edges,
       dirty: true,
-      runId: null,
-      runStatus: null,
-      nodeStatuses: {},
-      nodeOutputs: {},
-      logs: [],
-      runSummary: null,
-      nodeTimings: {},
-      nodeUsage: {},
-      nodeCosts: {},
-      edgeTokenCounts: {},
-      activeExecutionPath: new Set<string>(),
-      nodeIterations: {},
-      streamingOutputs: {},
-      pendingHumanInput: null,
-      _history: { past: [], future: [] },
-      validationErrors: {},
-      inputNodeValues: {},
-      selectedNodeId: null,
-      selectedEdgeId: null,
-      selectedNodeIds: new Set<string>(),
-      layerStack: [],
-      loopGroups: [],
+      ...createEmptyGraphEditorState(),
     }));
     get().addToast({ type: "success", message: `Opened "${template.label}" starter` });
     _persistTabState();
@@ -2280,8 +2033,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
 
     if (dirty && !window.confirm("Unsaved changes will be lost. Switch template in this tab?")) return;
 
-    const oldWs = get().ws;
-    if (oldWs) { oldWs.onmessage = null; oldWs.onclose = null; oldWs.close(); }
+    closeGraphRunSocket(get().ws);
     set({ ws: null });
 
     set((s) => {
@@ -2292,28 +2044,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         tabs: s.tabs.map((t) =>
           t.id === activeTabId ? { ...t, graphId, graphName: graphId, cachedRunStatus: null } : t,
         ),
-        runId: null,
-        runStatus: null,
-        nodeStatuses: {},
-        nodeOutputs: {},
-        logs: [],
-        runSummary: null,
-        nodeTimings: {},
-        nodeUsage: {},
-        nodeCosts: {},
-        edgeTokenCounts: {},
-        activeExecutionPath: new Set<string>(),
-        nodeIterations: {},
-        streamingOutputs: {},
-        pendingHumanInput: null,
-        _history: { past: [], future: [] },
-        validationErrors: {},
-        inputNodeValues: {},
-        selectedNodeId: null,
-        selectedEdgeId: null,
-        selectedNodeIds: new Set<string>(),
-        layerStack: [],
-        loopGroups: [],
+        ...createEmptyGraphEditorState(),
       };
     });
 
@@ -2339,8 +2070,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       }));
     }
 
-    const oldWs = get().ws;
-    if (oldWs) { oldWs.onmessage = null; oldWs.onclose = null; oldWs.close(); }
+    closeGraphRunSocket(get().ws);
     set({ ws: null });
 
     const cached = get().tabCache[tabId];
@@ -2412,30 +2142,10 @@ export const useGraphStore = create<GraphState>((set, get) => {
       return;
     }
 
-    const oldWs = get().ws;
-    if (oldWs) { oldWs.onmessage = null; oldWs.onclose = null; oldWs.close(); }
+    closeGraphRunSocket(get().ws);
     set({
       ws: null,
-      runId: null,
-      runStatus: null,
-      nodeStatuses: {},
-      nodeOutputs: {},
-      logs: [],
-      runSummary: null,
-      nodeTimings: {},
-      nodeUsage: {},
-      nodeCosts: {},
-      edgeTokenCounts: {},
-      activeExecutionPath: new Set<string>(),
-      nodeIterations: {},
-      streamingOutputs: {},
-      pendingHumanInput: null,
-      validationErrors: {},
-      inputNodeValues: {},
-      selectedNodeId: null,
-      selectedEdgeId: null,
-      selectedNodeIds: new Set<string>(),
-      layerStack: [],
+      ...createEmptyGraphEditorState(),
     });
 
     await get().loadGraph(graphId);
@@ -2444,15 +2154,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
   },
 
   restoreTabs: async () => {
-    let stored: {
-      tabs: TabInfo[];
-      activeTabId: string | null;
-      runs: Record<string, { runId: string | null; graphId: string }>;
-    } | null = null;
-    try {
-      const raw = sessionStorage.getItem("dan_open_tabs");
-      if (raw) stored = JSON.parse(raw);
-    } catch { /* corrupt */ }
+    const stored = readPersistedGraphTabState();
 
     if (stored?.tabs?.length) {
       set({ tabs: stored.tabs, activeTabId: stored.activeTabId });

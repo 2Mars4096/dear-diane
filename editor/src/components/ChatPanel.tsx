@@ -50,7 +50,7 @@ import {
 } from "../store/useMessagingStore";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
-import type { ChatMessage, ChatStreamEvent } from "../types/chat";
+import type { ChatMessage } from "../types/chat";
 import type { ChatThreadSummary } from "../lib/api";
 import * as api from "../lib/api";
 import type { ApplyMutationResult } from "../lib/api";
@@ -63,10 +63,7 @@ import GraphDiffPreview from "./GraphDiffPreview";
 import MentionAutocomplete from "./MentionAutocomplete";
 import ConfirmDialog from "./shell/ConfirmDialog";
 import {
-  buildAutoApplyPreviewMessage,
-  parseRunIdFromStreamChannel,
   readMutationConfirmPreference,
-  shouldAutoApplyMutation,
   summarizeMutationPlan,
   writeMutationConfirmPreference,
 } from "../lib/chatMutation";
@@ -84,7 +81,6 @@ import {
 } from "../lib/chatThreadTitle";
 import {
   fromBackendMessage,
-  safeTokenUsage,
   toBackendMessage,
 } from "../lib/chatMessagePersistence";
 import {
@@ -112,37 +108,26 @@ import {
   resolveAttachmentName,
   sanitizeChatHistory,
 } from "../lib/editorChat";
-import { progressAckText } from "../lib/chatProgress";
-import { upsertToolCallResult, upsertToolCallStart } from "../lib/toolCallState";
 import {
   buildMessagingSettingsEventDetail,
   shouldOfferMessagingOnboarding,
 } from "../lib/messagingOnboarding";
-import { createThreadPersistenceCoordinator } from "../lib/threadPersistenceCoordinator";
-import { describeLatestToolProgress } from "../lib/toolCallPresentation";
 import {
-  detachToBackground,
   getBackgroundThreadIds,
   isStreamingInBackground,
   subscribe as subscribeBackgroundStreams,
   shutdownAll as shutdownAllBackgroundStreams,
 } from "../lib/backgroundStreamRegistry";
 import {
-  getStreamDisconnectError,
-  getStreamReconnectDelayMs,
   isAssistantBubbleStreaming,
-  shouldReconnectStream,
 } from "../lib/chatStreamLifecycle";
-import { formatInterruptedAssistantContent } from "../lib/chatInterrupted";
 import { deriveGraphRevisionSource, getClientGraphRevision } from "../lib/chatGraphRevision";
-import {
-  mergeRunEventPayloads,
-  recoverTerminalRunStateFromSnapshot,
-} from "../lib/runStreamRecovery";
 import {
   formatCodeContextForChat,
   resolveClipboardCodeContext,
 } from "../lib/clipboardContext";
+import { useChatPanelThreadPersistence } from "./chat/useChatPanelThreadPersistence";
+import { useChatPanelTransport } from "./chat/useChatPanelTransport";
 
 const DEFAULT_WIDTH = 380;
 const MIN_WIDTH = 280;
@@ -516,6 +501,9 @@ export default function ChatPanel({
       threadIdOverride?: string | null,
     ) => void) | null
   >(null);
+  const applyMutationForMessageRef = useRef<
+    ((message: ChatMessage, options?: { auto?: boolean }) => Promise<void>) | null
+  >(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchThreadResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -545,63 +533,16 @@ export default function ChatPanel({
   const activeAssistantIdRef = useRef<string | null>(null);
   const runStreamHandoffRef = useRef(false);
   const dragging = useRef(false);
+  const detachCurrentStreamRef = useRef<() => void>(() => {});
   const activeThreadIdRef = useRef<string | null>(null);
   const prevGraphIdRef = useRef<string | null>(null);
   const activeChannelIdRef = useRef<string | null>(null);
   const activeRunChannelIdRef = useRef<string | null>(null);
   const graphIdRef = useRef<string | null>(graphId);
-  const persistenceCoordinatorRef = useRef<
-    ReturnType<typeof createThreadPersistenceCoordinator<ChatMessage[]>> | null
-  >(null);
-  if (!persistenceCoordinatorRef.current) {
-    persistenceCoordinatorRef.current =
-      createThreadPersistenceCoordinator<ChatMessage[]>({
-        persist: async (workflowId, threadId, nextMessages, options) => {
-          try {
-            await api.updateChatThread(workflowId, threadId, {
-              messages: nextMessages.map(toBackendMessage),
-            });
-          } catch (err: unknown) {
-            if (!options?.silent) {
-              console.warn(
-                options?.label ?? "Failed to save thread:",
-                err,
-              );
-            }
-          }
-        },
-      });
-  }
   activeChannelIdRef.current = activeChannelId;
   graphIdRef.current = graphId;
 
   activeThreadIdRef.current = activeThreadId;
-
-  const setTrackedActiveChannelId = useCallback((nextChannelId: string | null) => {
-    // Keep the ref in sync immediately so reconnect checks still see the
-    // active channel if the socket closes before the next render commits.
-    activeChannelIdRef.current = nextChannelId;
-    setActiveChannelId(nextChannelId);
-  }, []);
-
-  const detachCurrentStream = useCallback(() => {
-    const ws = wsRef.current;
-    const threadId = activeThreadIdRef.current;
-    const assistantId = activeAssistantIdRef.current;
-    if (!ws || ws.readyState >= WebSocket.CLOSING || !threadId || !assistantId) return;
-    const wfId = graphIdRef.current;
-    if (!wfId) return;
-    detachToBackground({
-      ws,
-      channelId: activeChannelIdRef.current ?? "",
-      threadId,
-      workflowId: wfId,
-      assistantMessageId: assistantId,
-      messages: messagesRef.current,
-    });
-    wsRef.current = null;
-    activeAssistantIdRef.current = null;
-  }, []);
 
   const [bgStreamIds, setBgStreamIds] = useState<Set<string>>(() => getBackgroundThreadIds());
   const bgStreamReloadRef = useRef<((wfId: string) => void) | null>(null);
@@ -652,68 +593,13 @@ export default function ChatPanel({
   // Thread persistence helpers
   // -------------------------------------------------------------------------
 
-  const persistThreadMessages = useCallback(
-    (
-      workflowId: string | null,
-      threadId: string | null | undefined,
-      nextMessages: ChatMessage[],
-      options?: { silent?: boolean; label?: string },
-    ) => {
-      if (!workflowId || !threadId) return;
-      void persistenceCoordinatorRef.current?.persistNow(
-        workflowId,
-        threadId,
-        nextMessages,
-        options,
-      );
-    },
-    [],
-  );
-
-  const scheduleThreadPersist = useCallback(
-    (
-      workflowId: string | null,
-      threadId: string | null | undefined,
-      nextMessages: ChatMessage[],
-      delayMs = 5_000,
-    ) => {
-      if (!workflowId || !threadId) return;
-      persistenceCoordinatorRef.current?.schedule(
-        workflowId,
-        threadId,
-        nextMessages,
-        delayMs,
-        { silent: true },
-      );
-    },
-    [],
-  );
-
-  const flushScheduledThreadPersist = useCallback(
-    (
-      fallbackWorkflowId?: string | null,
-      fallbackThreadId?: string | null,
-      fallbackMessages?: ChatMessage[],
-    ) => {
-      void persistenceCoordinatorRef.current?.flushPending(
-        fallbackWorkflowId && fallbackThreadId && fallbackMessages
-          ? {
-              workflowId: fallbackWorkflowId,
-              threadId: fallbackThreadId,
-              value: fallbackMessages,
-              options: { silent: true },
-            }
-          : undefined,
-      );
-    },
-    [],
-  );
-
-  useEffect(() => {
-    return () => {
-      persistenceCoordinatorRef.current?.dispose();
-    };
-  }, []);
+  const {
+    cancelThreadPersistence,
+    flushScheduledThreadPersist,
+    persistThreadMessages,
+    saveThreadMessages,
+    scheduleThreadPersist,
+  } = useChatPanelThreadPersistence();
 
   const fetchThreads = useCallback(async (wfId: string) => {
     setLoadingThreads(true);
@@ -772,7 +658,7 @@ export default function ChatPanel({
 
   const loadThread = useCallback(
     async (wfId: string, threadId: string) => {
-      if (isStreaming) detachCurrentStream();
+      if (isStreaming) detachCurrentStreamRef.current();
       setIsStreaming(false);
       setPendingQueue([]);
       setRewriteTarget(null);
@@ -800,7 +686,7 @@ export default function ChatPanel({
         console.warn("Failed to load thread:", err);
       }
     },
-    [isStreaming, detachCurrentStream, onThreadOpen, onThreadTitleUpdate],
+    [isStreaming, onThreadOpen, onThreadTitleUpdate],
   );
 
   const probeBackendAvailability = useCallback(async () => {
@@ -941,6 +827,45 @@ export default function ChatPanel({
     [graphId, onThreadOpen, onThreadTitleUpdate, threadTitle],
   );
 
+  const {
+    attachRunStream,
+    connectChatStream,
+    detachCurrentStream,
+    handleStop,
+  } = useChatPanelTransport({
+    graphIdRef,
+    activeThreadIdRef,
+    activeAssistantIdRef,
+    activeChannelIdRef,
+    activeRunChannelIdRef,
+    messagesRef,
+    runStreamHandoffRef,
+    wsRef,
+    setActiveChannelId,
+    setIsStreaming,
+    setIsRunStreaming,
+    setMessages,
+    setError,
+    setContextWindow,
+    setDetectedMode,
+    setStaleRevision,
+    persistThreadMessages,
+    scheduleThreadPersist,
+    flushScheduledThreadPersist,
+    classifyBackendDisconnectState,
+    restoreThreadSnapshotFromServer,
+    fetchThreads,
+    loadGraph,
+    mutationConfirmMode,
+    applyMutationForMessage: async (message, options) => {
+      await applyMutationForMessageRef.current?.(message, options);
+    },
+    addToast: (toast) => {
+      useGraphStore.getState().addToast(toast);
+    },
+  });
+  detachCurrentStreamRef.current = detachCurrentStream;
+
   // -------------------------------------------------------------------------
   // Auto-restore on panel open / workflow switch
   // -------------------------------------------------------------------------
@@ -952,11 +877,9 @@ export default function ChatPanel({
     const oldThreadId = activeThreadIdRef.current;
 
     if (oldGraphId && oldGraphId !== graphId && oldThreadId) {
-      api
-        .updateChatThread(oldGraphId, oldThreadId, {
-          messages: messages.map(toBackendMessage),
-        })
-        .catch((err) => console.warn("Failed to save thread on switch:", err));
+      void saveThreadMessages(oldGraphId, oldThreadId, messagesRef.current, {
+        label: "Failed to save thread on switch:",
+      });
       setActiveThreadId(null);
       setMessages([]);
       setThreadTitle("");
@@ -1008,7 +931,7 @@ export default function ChatPanel({
     return () => {
       cancelled = true;
     };
-  }, [chatOpen, graphId, fetchThreads, loadGraph, loadThread, workspaceId]);
+  }, [chatOpen, fetchThreads, graphId, loadGraph, loadThread, saveThreadMessages, workspaceId]);
 
   useEffect(() => {
     if (!showThreadList || !graphId) return;
@@ -1204,229 +1127,6 @@ export default function ChatPanel({
       return next;
     });
   }, []);
-
-  const attachRunStream = useCallback(
-    (
-      initialStreamChannelId: string,
-      assistantId: string,
-      capturedGraphId: string | null,
-      initialRunRef?: { runId: string; scope: string; status: string } | null,
-      options?: { reconnectCount?: number },
-    ) => {
-      const connectRunStream = (streamChannelId: string, reconnectCount = 0) => {
-        activeRunChannelIdRef.current = streamChannelId;
-        const runWs = new WebSocket(
-          api.buildApiWebSocketUrl(`/api/chat/${streamChannelId}/events`),
-        );
-        wsRef.current = runWs;
-        setTrackedActiveChannelId(null); // run streams are observational, not stoppable via chat stop route
-        setIsStreaming(false);
-        setIsRunStreaming(true);
-        let runWsClosedIntentionally = false;
-        let runWsHadTransportError = false;
-        let runWsHadTerminalEvent = false;
-
-        runWs.onmessage = (ev) => {
-          try {
-            const parsed = JSON.parse(ev.data);
-            if (parsed.type === "chat_run_event" && parsed.run_event) {
-              const re = parsed.run_event as {
-                event_type: string;
-                node_id?: string | null;
-                summary: string;
-                detail?: Record<string, unknown>;
-              };
-              const isTerminalRunEvent =
-                re.event_type === "run_completed" ||
-                re.event_type === "run_failed" ||
-                re.event_type === "run_cancelled";
-              setMessages((prev) => {
-                const updated = prev.map((m) =>
-                  m.id === assistantId
-                    ? {
-                        ...m,
-                        content: m.content ? `${m.content}\n${re.summary}` : re.summary,
-                        runEvents: [
-                          ...(m.runEvents || []),
-                          {
-                            type: "run_event",
-                            event_type: re.event_type,
-                            node_id: re.node_id,
-                            summary: re.summary,
-                            detail: re.detail,
-                          },
-                        ],
-                        runRef: m.runRef
-                          ? {
-                              ...m.runRef,
-                              status:
-                                re.event_type === "run_completed"
-                                  ? "completed"
-                                  : re.event_type === "run_failed"
-                                    ? "failed"
-                                    : re.event_type === "run_cancelled"
-                                      ? "cancelled"
-                                      : m.runRef.status,
-                            }
-                          : initialRunRef ?? m.runRef,
-                      }
-                    : m,
-                );
-                const tid = activeThreadIdRef.current;
-                if (isTerminalRunEvent) {
-                  persistThreadMessages(capturedGraphId, tid, updated);
-                } else {
-                  scheduleThreadPersist(capturedGraphId, tid, updated);
-                }
-                return updated;
-              });
-              if (isTerminalRunEvent) {
-                runWsHadTerminalEvent = true;
-                runWsClosedIntentionally = true;
-                activeRunChannelIdRef.current = null;
-                setIsRunStreaming(false);
-                runWs.close();
-              }
-            }
-          } catch {
-            /* ignore parse errors */
-          }
-        };
-
-        runWs.onerror = () => {
-          runWsHadTransportError = true;
-          flushScheduledThreadPersist(
-            capturedGraphId,
-            activeThreadIdRef.current,
-            messagesRef.current,
-          );
-        };
-        runWs.onclose = (event) => {
-          flushScheduledThreadPersist(
-            capturedGraphId,
-            activeThreadIdRef.current,
-            messagesRef.current,
-          );
-          if (
-            shouldReconnectStream({
-              closedIntentionally: runWsClosedIntentionally,
-              activeChannelId: activeRunChannelIdRef.current,
-              channelId: streamChannelId,
-              reconnectCount,
-              closeCode: event.code,
-              hadTransportError: runWsHadTransportError,
-              hadTerminalEvent: runWsHadTerminalEvent,
-            })
-          ) {
-            window.setTimeout(() => {
-              connectRunStream(streamChannelId, reconnectCount + 1);
-            }, getStreamReconnectDelayMs(reconnectCount));
-            return;
-          }
-          if (
-            runWsClosedIntentionally ||
-            ((event.code === 1000 || event.code === 1005) && runWsHadTerminalEvent)
-          ) {
-            if (activeRunChannelIdRef.current === streamChannelId) {
-              activeRunChannelIdRef.current = null;
-            }
-            setIsRunStreaming(false);
-            return;
-          }
-          if (activeRunChannelIdRef.current === streamChannelId) {
-            activeRunChannelIdRef.current = null;
-          }
-          setIsRunStreaming(false);
-          void (async () => {
-            const backendState = await classifyBackendDisconnectState(
-              event.code,
-              runWsHadTransportError,
-            );
-            const runId =
-              initialRunRef?.runId ?? parseRunIdFromStreamChannel(streamChannelId);
-            const recoveredScope = initialRunRef?.scope ?? "full";
-            if (backendState !== "unavailable" && runId) {
-              try {
-                const runInfo = await api.getRun(runId);
-                const eventResponse = await api.getRunEvents(runId).catch(() => ({
-                  events: [] as Array<Record<string, unknown>>,
-                  source: "memory" as const,
-                }));
-                const recoveredRun = recoverTerminalRunStateFromSnapshot({
-                  runInfo,
-                  rawEvents: eventResponse.events,
-                  scope: recoveredScope,
-                });
-                if (recoveredRun) {
-                  setError(null);
-                  setMessages((prev) => {
-                    const updated = prev.map((message) => {
-                      if (message.id !== assistantId) return message;
-                      const baseRunRef = message.runRef ?? initialRunRef ?? {
-                        runId,
-                        scope: recoveredScope,
-                        status: recoveredRun.status,
-                      };
-                      return {
-                        ...message,
-                        runEvents: mergeRunEventPayloads(
-                          message.runEvents,
-                          recoveredRun.runEvents,
-                        ),
-                        runRef: {
-                          ...baseRunRef,
-                          status: recoveredRun.status,
-                        },
-                      };
-                    });
-                    persistThreadMessages(
-                      capturedGraphId,
-                      activeThreadIdRef.current,
-                      updated,
-                    );
-                    return updated;
-                  });
-                  return;
-                }
-              } catch {
-                // Fall back to the generic disconnect banner below.
-              }
-            }
-            const disconnectError = getStreamDisconnectError({
-              closedIntentionally: runWsClosedIntentionally,
-              closeCode: event.code,
-              hadTransportError: runWsHadTransportError,
-              hadTerminalEvent: runWsHadTerminalEvent,
-              streamLabel: "Run stream connection",
-              recoveryHint:
-                backendState === "unavailable"
-                  ? "Wait a few seconds for DAN to come back, then ask for status or rerun."
-                  : "Ask for status or rerun if needed.",
-              backendState,
-            });
-            if (disconnectError) {
-              setError(disconnectError);
-              useGraphStore.getState().addToast({
-                type: "error",
-                message:
-                  backendState === "unavailable"
-                    ? "Local DAN backend unavailable"
-                    : "Run stream disconnected",
-              });
-            }
-          })();
-        };
-      };
-
-      connectRunStream(initialStreamChannelId, options?.reconnectCount ?? 0);
-    },
-    [
-      classifyBackendDisconnectState,
-      flushScheduledThreadPersist,
-      persistThreadMessages,
-      scheduleThreadPersist,
-    ],
-  );
 
   // -------------------------------------------------------------------------
   // Width resize via left drag handle
@@ -1753,476 +1453,12 @@ export default function ChatPanel({
           }
         }
 
-        const seenStreamChannels = new Set<string>();
-
-        const connectToChatStream = (
-          channelId: string,
-          options?: { reconnectCount?: number },
-        ) => {
-          const reconnectCount = options?.reconnectCount ?? 0;
-          const isReconnect = reconnectCount > 0;
-          if (!isReconnect && seenStreamChannels.has(channelId)) {
-            setError("Chat stream redirect loop detected");
-            setIsStreaming(false);
-            setTrackedActiveChannelId(null);
-            return;
-          }
-          if (!isReconnect) seenStreamChannels.add(channelId);
-          setTrackedActiveChannelId(channelId);
-
-          const ws = new WebSocket(
-            api.buildApiWebSocketUrl(`/api/chat/${channelId}/events`),
-          );
-          wsRef.current = ws;
-          let wsClosedIntentionally = false;
-          let wsHadTransportError = false;
-          let wsHadTerminalEvent = false;
-
-          ws.onmessage = (e) => {
-            try {
-              const evt: ChatStreamEvent = JSON.parse(e.data);
-
-              if (["node_started", "node_completed", "artifact_created"].includes(evt.type)) {
-                window.dispatchEvent(new CustomEvent("dan:engine-event-raw", { detail: evt }));
-              }
-
-              if (evt.type === "chat_queued") {
-                const nextChannel = (evt.stream_channel_id ?? "").trim();
-                const queuePosition =
-                  typeof evt.queue_position === "number" ? evt.queue_position : 0;
-
-                setMessages((prev) => {
-                  const updated = prev.map((m) =>
-                    m.id === assistantId
-                      ? {
-                          ...m,
-                          content:
-                            queuePosition > 1
-                              ? `Queued behind ${queuePosition} earlier messages...`
-                              : "Queued behind an earlier message...",
-                        }
-                      : m,
-                  );
-                  scheduleThreadPersist(
-                    capturedGraphId,
-                    threadId ?? activeThreadIdRef.current,
-                    updated,
-                  );
-                  return updated;
-                });
-
-                if (nextChannel && nextChannel !== channelId) {
-                  runStreamHandoffRef.current = true;
-                  wsClosedIntentionally = true;
-                  ws.close();
-                  connectToChatStream(nextChannel);
-                }
-                return;
-              }
-            if (evt.type === "chat_token") {
-              setMessages((prev) => {
-                const updated = prev.map((m) =>
-                  m.id === assistantId
-                    ? {
-                        ...m,
-                        content:
-                          evt.accumulated ?? m.content + (evt.delta ?? ""),
-                        progressStatus: undefined,
-                      }
-                    : m,
-                );
-                scheduleThreadPersist(
-                  capturedGraphId,
-                  threadId ?? activeThreadIdRef.current,
-                  updated,
-                );
-                return updated;
-              });
-            } else if (evt.type === "chat_complete") {
-              const isProgressAck = evt.detected_mode === "progress_ack";
-              const progressText = isProgressAck ? progressAckText(evt) : null;
-              if (evt.context_window) setContextWindow(evt.context_window);
-              if (evt.detected_mode && !isProgressAck) setDetectedMode(evt.detected_mode);
-              setMessages((prev) => {
-                const updated = prev.map((m) =>
-                  m.id === assistantId
-                    ? isProgressAck
-                      ? {
-                          ...m,
-                          progressStatus: progressText || m.progressStatus,
-                          progressFilePath: undefined,
-                          tokenUsage: safeTokenUsage(evt.token_usage) ?? m.tokenUsage ?? null,
-                        }
-                      : {
-                          ...m,
-                          content: (evt.content || m.content),
-                          progressStatus: undefined,
-                          tokenUsage: safeTokenUsage(evt.token_usage) ?? m.tokenUsage ?? null,
-                          estimatedCost:
-                            typeof evt.estimated_cost === "number"
-                              ? evt.estimated_cost
-                              : m.estimatedCost ?? null,
-                        }
-                    : m,
-                );
-                if (isProgressAck) {
-                  scheduleThreadPersist(
-                    capturedGraphId,
-                    threadId ?? activeThreadIdRef.current,
-                    updated,
-                  );
-                } else {
-                  persistThreadMessages(
-                    capturedGraphId,
-                    threadId ?? activeThreadIdRef.current,
-                    updated,
-                  );
-                }
-                return updated;
-              });
-              if (isProgressAck) {
-                // Progress/reassurance update — keep streaming
-              } else {
-                wsHadTerminalEvent = true;
-                wsClosedIntentionally = true;
-                if (evt.stream_channel_id) {
-                  runStreamHandoffRef.current = true;
-                  ws.close();
-                  const runId = parseRunIdFromStreamChannel(evt.stream_channel_id);
-                  attachRunStream(
-                    evt.stream_channel_id,
-                    assistantId,
-                    capturedGraphId,
-                    runId
-                      ? { runId, scope: "full", status: "running" }
-                      : null,
-                  );
-                } else {
-                  ws.close();
-                  setIsStreaming(false);
-                  setTrackedActiveChannelId(null);
-                  if (capturedGraphId) void fetchThreads(capturedGraphId);
-                }
-              }
-            } else if (evt.type === "chat_mutation") {
-              if (evt.context_window) setContextWindow(evt.context_window);
-              if (evt.detected_mode) setDetectedMode(evt.detected_mode);
-              let nextMutationMessage: ChatMessage | null = null;
-              setMessages((prev) => {
-                const updated = prev.map((m) =>
-                  m.id === assistantId
-                    ? (() => {
-                        const built = buildAutoApplyPreviewMessage(
-                          m,
-                          evt.mutation_plan ?? null,
-                          evt.dry_run_result ?? null,
-                          evt.message_id ?? null,
-                          evt.applied ? "applied" : "proposed",
-                          evt.content ?? m.content,
-                          safeTokenUsage(evt.token_usage) ?? m.tokenUsage ?? null,
-                        );
-                        nextMutationMessage = built;
-                        return built;
-                      })()
-                    : m,
-                );
-                persistThreadMessages(
-                  capturedGraphId,
-                  threadId ?? activeThreadIdRef.current,
-                  updated,
-                );
-                return updated;
-              });
-              setIsStreaming(false);
-              setTrackedActiveChannelId(null);
-              wsHadTerminalEvent = true;
-              wsClosedIntentionally = true;
-              ws.close();
-              if (capturedGraphId) void fetchThreads(capturedGraphId);
-              if (
-                nextMutationMessage &&
-                shouldAutoApplyMutation(
-                  (nextMutationMessage as ChatMessage).dryRunResult ?? null,
-                  mutationConfirmMode,
-                  (nextMutationMessage as ChatMessage).mutationStatus ?? null,
-                )
-              ) {
-                const autoMessage = nextMutationMessage;
-                setTimeout(() => {
-                  void applyMutationForMessage(autoMessage, { auto: true });
-                }, 0);
-              }
-            } else if (evt.type === "chat_interrupted") {
-              setMessages((prev) => {
-                const updated = prev.map((m) =>
-                  m.id === assistantId
-                    ? {
-                        ...m,
-                        content: formatInterruptedAssistantContent(m, evt.content),
-                        tokenUsage: safeTokenUsage(evt.token_usage) ?? m.tokenUsage ?? null,
-                      }
-                    : m,
-                );
-                persistThreadMessages(
-                  capturedGraphId,
-                  threadId ?? activeThreadIdRef.current,
-                  updated,
-                );
-                return updated;
-              });
-              setIsStreaming(false);
-              setTrackedActiveChannelId(null);
-              wsHadTerminalEvent = true;
-              wsClosedIntentionally = true;
-              ws.close();
-              if (capturedGraphId) void fetchThreads(capturedGraphId);
-            } else if (evt.type === "chat_tool_call_start") {
-              setMessages((prev) => {
-                const updated = prev.map((m) =>
-                  m.id === assistantId
-                    ? (() => {
-                        const nextToolCalls = upsertToolCallStart(m.toolCalls, {
-                          id: evt.tool_call_id!,
-                          toolName: evt.tool_name!,
-                          argsPreview: evt.args_preview ?? "",
-                        });
-                        const prog = describeLatestToolProgress(nextToolCalls);
-                        return {
-                          ...m,
-                          progressStatus: prog?.text ?? m.progressStatus,
-                          progressFilePath: prog?.filePath ?? m.progressFilePath,
-                          toolCalls: nextToolCalls,
-                        };
-                      })()
-                    : m,
-                );
-                scheduleThreadPersist(
-                  capturedGraphId,
-                  threadId ?? activeThreadIdRef.current,
-                  updated,
-                );
-                return updated;
-              });
-            } else if (evt.type === "chat_tool_call_result") {
-              setMessages((prev) => {
-                const updated = prev.map((m) =>
-                  m.id === assistantId
-                    ? (() => {
-                        const nextToolCalls = upsertToolCallResult(m.toolCalls, {
-                          id: evt.tool_call_id!,
-                          toolName: evt.tool_name!,
-                          argsPreview: evt.args_preview,
-                          status: evt.status,
-                          outputPreview: evt.output_preview,
-                          durationMs: evt.duration_ms,
-                        });
-                        const prog = describeLatestToolProgress(nextToolCalls);
-                        return {
-                          ...m,
-                          progressStatus: prog?.text ?? m.progressStatus,
-                          progressFilePath: prog?.filePath ?? m.progressFilePath,
-                          toolCalls: nextToolCalls,
-                        };
-                      })()
-                    : m,
-                );
-                scheduleThreadPersist(
-                  capturedGraphId,
-                  threadId ?? activeThreadIdRef.current,
-                  updated,
-                );
-                return updated;
-              });
-            } else if (evt.type === "chat_graph_created") {
-              if (capturedGraphId) void loadGraph(capturedGraphId);
-            } else if (evt.type === "chat_validation_result") {
-              if (evt.success === false && evt.errors?.length) {
-                const errSummary = (evt.errors as string[]).slice(0, 3).join("; ");
-                useGraphStore
-                  .getState()
-                  .addToast({ type: "error", message: `Validation failed: ${errSummary}` });
-              }
-            } else if (evt.type === "chat_file_attachment") {
-              setMessages((prev) => {
-                const updated = prev.map((m) =>
-                  m.id === assistantId
-                    ? {
-                        ...m,
-                        attachments: (m.attachments || []).some(
-                          (attachment) => attachment.path === (evt.path ?? ""),
-                        )
-                          ? (m.attachments || [])
-                          : [
-                              ...(m.attachments || []),
-                              {
-                                path: evt.path ?? "",
-                                filename: evt.filename ?? "File",
-                                size: evt.size,
-                              },
-                            ],
-                      }
-                    : m,
-                );
-                scheduleThreadPersist(
-                  capturedGraphId,
-                  threadId ?? activeThreadIdRef.current,
-                  updated,
-                );
-                return updated;
-              });
-            } else if (evt.type === "chat_injected_message") {
-              const injectedUserMsg: ChatMessage = {
-                id: evt.inject_id ?? crypto.randomUUID(),
-                role: "user",
-                content: evt.content ?? "",
-                timestamp: Date.now(),
-              };
-              setMessages((prev) => {
-                const aidx = prev.findIndex((m) => m.id === assistantId);
-                if (aidx === -1) return [...prev, injectedUserMsg];
-                const before = prev.slice(0, aidx);
-                const after = prev.slice(aidx);
-                return [...before, injectedUserMsg, ...after];
-              });
-            } else if (evt.type === "ping") {
-              // WS keepalive — no-op
-            } else if (evt.type === "chat_notice") {
-              const notice = (evt.content ?? "").trim();
-              if (notice) {
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    id: crypto.randomUUID(),
-                    role: "system",
-                    content: notice,
-                    timestamp: Date.now(),
-                  },
-                ]);
-              }
-            } else if (evt.type === "chat_error") {
-              if (evt.error?.includes("revision_mismatch")) {
-                setStaleRevision(true);
-              }
-              flushScheduledThreadPersist(
-                capturedGraphId,
-                threadId ?? activeThreadIdRef.current,
-                messagesRef.current,
-              );
-              setError(evt.error ?? "Unknown error");
-              setIsStreaming(false);
-              setTrackedActiveChannelId(null);
-              wsHadTerminalEvent = true;
-              wsClosedIntentionally = true;
-              ws.close();
-              if (capturedGraphId) void fetchThreads(capturedGraphId);
-              }
-
-              if (
-                (evt.type === "chat_complete" || evt.type === "chat_mutation") &&
-                evt.revision_mismatch
-              ) {
-                setStaleRevision(true);
-              }
-            } catch {
-              /* ignore parse errors */
-            }
-          };
-
-          ws.onerror = () => {
-            wsHadTransportError = true;
-            flushScheduledThreadPersist(
-              capturedGraphId,
-              threadId ?? activeThreadIdRef.current,
-              messagesRef.current,
-            );
-          };
-
-          ws.onclose = (event) => {
-            flushScheduledThreadPersist(
-              capturedGraphId,
-              threadId ?? activeThreadIdRef.current,
-              messagesRef.current,
-            );
-            if (runStreamHandoffRef.current) {
-              runStreamHandoffRef.current = false;
-              return;
-            }
-            if (
-              shouldReconnectStream({
-                closedIntentionally: wsClosedIntentionally,
-                activeChannelId: activeChannelIdRef.current,
-                channelId,
-                reconnectCount,
-                closeCode: event.code,
-                hadTransportError: wsHadTransportError,
-                hadTerminalEvent: wsHadTerminalEvent,
-              })
-            ) {
-              window.setTimeout(() => {
-                connectToChatStream(channelId, {
-                  reconnectCount: reconnectCount + 1,
-                });
-              }, getStreamReconnectDelayMs(reconnectCount));
-              return;
-            }
-            if (
-              wsClosedIntentionally ||
-              ((event.code === 1000 || event.code === 1005) && wsHadTerminalEvent)
-            ) {
-              setIsStreaming(false);
-              setTrackedActiveChannelId(null);
-              return;
-            }
-            setIsStreaming(false);
-            setTrackedActiveChannelId(null);
-            void (async () => {
-              const activeThreadForRecovery =
-                threadId ?? activeThreadIdRef.current ?? null;
-              const backendState = await classifyBackendDisconnectState(
-                event.code,
-                wsHadTransportError,
-              );
-              const restoredSnapshot =
-                backendState === "unavailable"
-                  ? false
-                  : await restoreThreadSnapshotFromServer(
-                      capturedGraphId,
-                      activeThreadForRecovery,
-                    );
-              const disconnectError = getStreamDisconnectError({
-                closedIntentionally: wsClosedIntentionally,
-                closeCode: event.code,
-                hadTransportError: wsHadTransportError,
-                hadTerminalEvent: wsHadTerminalEvent,
-                backendState,
-                restoredSnapshot,
-                recoveryHint:
-                  backendState === "unavailable"
-                    ? "Wait a few seconds for DAN to come back, then click Retry."
-                    : "Click Retry to continue from the latest saved thread state.",
-              });
-              if (disconnectError) {
-                setError(disconnectError);
-                useGraphStore.getState().addToast({
-                  type: "error",
-                  message:
-                    backendState === "unavailable"
-                      ? "Local DAN backend unavailable"
-                      : backendState === "restarted"
-                        ? restoredSnapshot
-                          ? "Recovered latest saved chat snapshot"
-                          : "Chat stream lost after backend restart"
-                        : "Chat stream disconnected",
-                });
-              }
-              if (capturedGraphId && backendState !== "unavailable") {
-                void fetchThreads(capturedGraphId);
-              }
-            })();
-          };
-        };
-
-        connectToChatStream(stream_channel_id);
+        connectChatStream(
+          stream_channel_id,
+          assistantId,
+          capturedGraphId,
+          threadId ?? activeThreadIdRef.current,
+        );
       } catch (err) {
         const msg =
           err instanceof Error ? err.message : "Failed to send message";
@@ -2242,23 +1478,17 @@ export default function ChatPanel({
     },
     [
       attachRunStream,
+      connectChatStream,
       createBranchedThread,
-      deriveDraftThreadTitleFromMessage,
-      flushScheduledThreadPersist,
       fullScreen,
       graphId,
       graphRevision,
       isGraphDirty,
       inputText,
       isStreaming,
-      mutationConfirmMode,
       persistThreadMessages,
       refreshActiveThreadTitle,
       rewriteTarget,
-      restoreThreadSnapshotFromServer,
-      scheduleThreadPersist,
-      classifyBackendDisconnectState,
-      fetchThreads,
       userAttachments,
     ],
   );
@@ -2440,16 +1670,6 @@ export default function ChatPanel({
     }
   }, []);
 
-  const handleStop = useCallback(async () => {
-    const chId = activeChannelIdRef.current;
-    if (!chId) return;
-    try {
-      await api.stopChatStream(chId);
-    } catch (err) {
-      console.warn("Failed to stop stream:", err);
-    }
-  }, []);
-
   const handleExport = useCallback(
     async (format: "md" | "json" = "md") => {
       const tid = activeThreadIdRef.current;
@@ -2622,17 +1842,13 @@ export default function ChatPanel({
   const handleBackToList = useCallback(async () => {
     const tid = activeThreadIdRef.current;
     if (tid && graphId && messages.length > 0) {
-      try {
-        await api.updateChatThread(graphId, tid, {
-          messages: messages.map(toBackendMessage),
-        });
-      } catch (err) {
-        console.warn("Failed to save thread:", err);
-      }
+      await saveThreadMessages(graphId, tid, messages, {
+        label: "Failed to save thread:",
+      });
     }
     setShowThreadList(true);
     if (graphId) fetchThreads(graphId);
-  }, [graphId, messages, fetchThreads]);
+  }, [fetchThreads, graphId, messages, saveThreadMessages]);
 
   const handleSelectThread = useCallback(
     async ({ threadId, workflowId }: ThreadTarget) => {
@@ -2673,7 +1889,7 @@ export default function ChatPanel({
         snapshot = await api.getChatThread(workflowId, threadId);
       } catch { /* proceed without undo capability */ }
       try {
-        persistenceCoordinatorRef.current?.cancelForThread(workflowId, threadId);
+        cancelThreadPersistence(workflowId, threadId);
         await api.deleteChatThread(workflowId, threadId);
         const wasActive =
           activeThreadId === threadId && graphId === workflowId;
@@ -2752,7 +1968,7 @@ export default function ChatPanel({
         console.warn("Failed to delete thread:", err);
       }
     },
-    [activeThreadId, fetchThreads, graphId, handleSelectThread, threads],
+    [activeThreadId, cancelThreadPersistence, fetchThreads, graphId, handleSelectThread, threads],
   );
 
   const handleRenameThread = useCallback(
@@ -2892,13 +2108,9 @@ export default function ChatPanel({
           [msg.id]: { historyCursor: pastLen > 0 ? pastLen - 1 : 0 },
         }));
         if (tid && graphId) {
-          api
-            .updateChatThread(graphId, tid, {
-              messages: updated.map(toBackendMessage),
-            })
-            .catch((err: unknown) =>
-              console.warn("Failed to save thread:", err),
-            );
+          void saveThreadMessages(graphId, tid, updated, {
+            label: "Failed to save thread:",
+          });
         }
         if (!options?.auto) {
           setPreviewingMessage(null);
@@ -2933,8 +2145,9 @@ export default function ChatPanel({
         setIsApplying(false);
       }
     },
-    [graphId, pushSnapshot, loadGraph],
+    [graphId, loadGraph, pushSnapshot, saveThreadMessages],
   );
+  applyMutationForMessageRef.current = applyMutationForMessage;
 
   const handleApplyMutation = useCallback(async () => {
     const msg = previewingMessage;
@@ -2951,15 +2164,13 @@ export default function ChatPanel({
     setMessages(updated);
     const tid = activeThreadIdRef.current;
     if (tid && graphId) {
-      api
-        .updateChatThread(graphId, tid, {
-          messages: updated.map(toBackendMessage),
-        })
-        .catch((err: unknown) => console.warn("Failed to save thread:", err));
+      void saveThreadMessages(graphId, tid, updated, {
+        label: "Failed to save thread:",
+      });
     }
     setPreviewingMessage(null);
     setApplyError(null);
-  }, [previewingMessage, graphId, messages]);
+  }, [graphId, messages, previewingMessage, saveThreadMessages]);
 
   const handleRevert = useCallback(
     (messageId: string) => {
