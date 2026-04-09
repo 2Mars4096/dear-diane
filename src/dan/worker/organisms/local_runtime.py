@@ -99,7 +99,13 @@ class LocalOrganismToolRuntime:
             return
         self._event_callback({"event": event, **payload})
 
-    async def call(self, tool_id: str, arguments: dict[str, Any] | None = None) -> Any:
+    async def call(
+        self,
+        tool_id: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        worker_id: str | None = None,
+    ) -> Any:
         if tool_id not in self._tools:
             raise KeyError(f"Tool '{tool_id}' is not enabled for this runtime")
 
@@ -115,6 +121,7 @@ class LocalOrganismToolRuntime:
             arguments=dict(kwargs),
             metadata=dict(metadata),
             workspace_root=str(self._workspace_root),
+            worker_id=str(worker_id or "").strip() or None,
         )
         if self._approval_callback is not None:
             approved = self._approval_callback(tool_id, dict(kwargs), dict(metadata))
@@ -124,6 +131,7 @@ class LocalOrganismToolRuntime:
                     tool_id=tool_id,
                     arguments=dict(kwargs),
                     metadata=dict(metadata),
+                    worker_id=str(worker_id or "").strip() or None,
                 )
                 raise PermissionError(f"tool_call_denied:{tool_id}")
         prior_workspace = os.environ.get("DAN_WORKSPACE_ROOT")
@@ -137,6 +145,7 @@ class LocalOrganismToolRuntime:
                 arguments=dict(kwargs),
                 metadata=dict(metadata),
                 error=f"{type(exc).__name__}: {exc}",
+                worker_id=str(worker_id or "").strip() or None,
             )
             raise
         finally:
@@ -150,6 +159,7 @@ class LocalOrganismToolRuntime:
             arguments=dict(kwargs),
             metadata=dict(metadata),
             result=result,
+            worker_id=str(worker_id or "").strip() or None,
         )
         return result
 
@@ -185,6 +195,7 @@ class ToolLoopCompletionProvider:
         model = str(request.model or self._default_model or "").strip()
         if not model:
             raise ValueError("Tool-loop completion provider requires a concrete model")
+        worker_id = str(request.metadata.get("worker_id") or "").strip() or None
 
         messages: list[dict[str, Any]] = []
         if request.system_prompt:
@@ -204,6 +215,7 @@ class ToolLoopCompletionProvider:
                 model=model,
                 round=rounds + 1,
                 tool_count=len(tool_schemas),
+                worker_id=worker_id,
             )
             provider_kwargs = {
                 "tools": tool_schemas or None,
@@ -227,6 +239,7 @@ class ToolLoopCompletionProvider:
                 tool_calls=[call.get("function", {}).get("name") or call.get("name") for call in tool_calls if isinstance(call, dict)],
                 finish_reason=getattr(last_result, "finish_reason", None),
                 text=(last_result.text or "")[:400],
+                worker_id=worker_id,
             )
             if not tool_calls:
                 self._emit_event(
@@ -234,6 +247,7 @@ class ToolLoopCompletionProvider:
                     model=last_result.model or model,
                     stop_reason=stop_reason,
                     tool_calls_executed=len(executed_tools),
+                    worker_id=worker_id,
                 )
                 return CompletionResponse(
                     text=last_result.text,
@@ -258,6 +272,7 @@ class ToolLoopCompletionProvider:
                     model=last_result.model or model,
                     stop_reason=stop_reason,
                     tool_calls_executed=len(executed_tools),
+                    worker_id=worker_id,
                 )
                 return CompletionResponse(
                     text=last_result.text or "",
@@ -289,7 +304,11 @@ class ToolLoopCompletionProvider:
                     }
                 else:
                     try:
-                        result = await self._tool_runtime.call(tool_id, arguments)
+                        result = await self._tool_runtime.call(
+                            tool_id,
+                            arguments,
+                            worker_id=worker_id,
+                        )
                     except Exception as exc:
                         tool_payload = {
                             "ok": False,
