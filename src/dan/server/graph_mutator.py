@@ -21,6 +21,7 @@ from dan.server.graph_mutator_helpers import (
     _generate_node_id,
     _graph_mutator_uses_workers,
     _resolve_source_output_port,
+    _resolve_target_input_port,
     _slugify,
     _workerize_mutation_node_config,
 )
@@ -995,26 +996,19 @@ class GraphMutator:
         if source_port_error is not None:
             return source_port_error
 
-        target_ports = [p["name"] for p in target_node.get("input_ports", [])]
-        if op.target_port not in target_ports:
-            if op.strict:
-                return (
-                    f"Target node '{op.target_id}' has no input port '{op.target_port}'. "
-                    f"Available ports: {target_ports}. "
-                    "Use strict=False to auto-create (not recommended)."
-                )
-            target_node.setdefault("input_ports", []).append(
-                {"name": op.target_port, "schema": {}, "required": False}
-            )
-            msg = (
-                f"Auto-created input port '{op.target_port}' on node '{op.target_id}' "
-                "(port not declared). Verify spelling."
-            )
-            if diagnostics is not None:
-                diagnostics.append(msg)
-            logger.debug("Auto-created input port '%s' on node '%s'", op.target_port, op.target_id)
+        resolved_target_port, target_port_error = _resolve_target_input_port(
+            target_node,
+            requested_port=op.target_port,
+            node_id=op.target_id,
+            strict=op.strict,
+            diagnostics=diagnostics,
+        )
+        if target_port_error is not None:
+            return target_port_error
 
-        edge_id = f"{op.source_id}.{resolved_source_port}->{op.target_id}.{op.target_port}"
+        edge_id = (
+            f"{op.source_id}.{resolved_source_port}->{op.target_id}.{resolved_target_port}"
+        )
 
         for e in graph.get("edges", []):
             if e.get("id") == edge_id:
@@ -1026,7 +1020,7 @@ class GraphMutator:
             "source_node_id": op.source_id,
             "source_port": resolved_source_port,
             "target_node_id": op.target_id,
-            "target_port": op.target_port,
+            "target_port": resolved_target_port,
             "ui": {},
             "metadata": {},
         }

@@ -18,6 +18,7 @@ __all__ = [
     "_graph_mutator_uses_workers",
     "_node_is_input_like",
     "_resolve_source_output_port",
+    "_resolve_target_input_port",
     "_slugify",
     "_workerize_mutation_node_config",
 ]
@@ -452,15 +453,27 @@ def _resolve_source_output_port(
             diagnostics.append(repair_message)
         return resolved_port, None
 
-    alias_map = {
-        "for_each": {"item": "results"},
-        "parallel_subagents": {"item": "results"},
-        "orchestrator": {"item": "results"},
-        "if_else": {"branch": "true"},
-    }
     node_type = str(node.get("node_type") or "")
-    aliased_port = alias_map.get(node_type, {}).get(resolved_port)
     source_ports = [p["name"] for p in node.get("output_ports", [])]
+    aliased_port = None
+
+    if resolved_port == "response":
+        for candidate in ("body", "text", "result"):
+            if candidate in source_ports:
+                aliased_port = candidate
+                break
+    elif resolved_port == "output" and "result" in source_ports:
+        aliased_port = "result"
+
+    if aliased_port is None:
+        alias_map = {
+            "for_each": {"item": "results"},
+            "parallel_subagents": {"item": "results"},
+            "orchestrator": {"item": "results"},
+            "if_else": {"branch": "true"},
+        }
+        aliased_port = alias_map.get(node_type, {}).get(resolved_port)
+
     if aliased_port and aliased_port in source_ports:
         if diagnostics is not None:
             diagnostics.append(
@@ -473,6 +486,38 @@ def _resolve_source_output_port(
         f"Source node '{node_id}' has no output port '{requested_port}' "
         f"(available: {source_ports})"
     )
+
+
+def _resolve_target_input_port(
+    node: dict[str, Any],
+    *,
+    requested_port: str,
+    node_id: str,
+    strict: bool,
+    diagnostics: list[str] | None = None,
+) -> tuple[str | None, str | None]:
+    """Resolve or auto-create a target input port during edge application."""
+    target_ports = [p["name"] for p in node.get("input_ports", [])]
+    if requested_port in target_ports:
+        return requested_port, None
+
+    if strict:
+        return None, (
+            f"Target node '{node_id}' has no input port '{requested_port}'. "
+            f"Available ports: {target_ports}. "
+            "Use strict=False to auto-create (not recommended)."
+        )
+
+    node.setdefault("input_ports", []).append(
+        {"name": requested_port, "schema": {}, "required": False}
+    )
+    message = (
+        f"Auto-created input port '{requested_port}' on node '{node_id}' "
+        "(port not declared). Verify spelling."
+    )
+    if diagnostics is not None:
+        diagnostics.append(message)
+    return requested_port, None
 
 
 def _default_ports(

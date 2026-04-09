@@ -95,12 +95,7 @@ async def health_check(request: Request = None) -> dict[str, Any]:
     state = get_app_state(request)
     result: dict[str, Any] = {"status": "ok"}
     run_manager = state.run_manager if state is not None else None
-    startup_issues = list(getattr(state, "startup_degradations", []) or [])
-    if state is None:
-        from dan.server.app import _run_manager, _startup_degradations
-
-        run_manager = _run_manager
-        startup_issues = [dict(item) for item in (_startup_degradations or [])]
+    startup_issues = [dict(item) for item in (getattr(state, "startup_degradations", []) or [])]
     if run_manager is not None:
         runs = run_manager.list_runs()
         active = [r for r in runs if r.get("status") in ("running", "pending")]
@@ -462,19 +457,24 @@ async def run_test_case(
 
 
 @router.get("/api/memory/{workflow_id}/{session_id}")
-async def list_memory_keys(workflow_id: str, session_id: str):
+async def list_memory_keys(workflow_id: str, session_id: str, request: Request):
     validate_path_segment(workflow_id, "workflow_id")
     validate_path_segment(session_id, "session_id")
-    store = get_memory_store()
+    store = get_memory_store(request)
     keys = await store.list_keys(workflow_id, session_id)
     return {"workflow_id": workflow_id, "session_id": session_id, "keys": keys}
 
 
 @router.get("/api/memory/{workflow_id}/{session_id}/{key:path}")
-async def read_memory_entry(workflow_id: str, session_id: str, key: str):
+async def read_memory_entry(
+    workflow_id: str,
+    session_id: str,
+    key: str,
+    request: Request,
+):
     validate_path_segment(workflow_id, "workflow_id")
     validate_path_segment(session_id, "session_id")
-    store = get_memory_store()
+    store = get_memory_store(request)
     entry = await store.read(workflow_id, session_id, key)
     if entry is None:
         raise HTTPException(status_code=404, detail=f"Memory key '{key}' not found")
@@ -482,18 +482,18 @@ async def read_memory_entry(workflow_id: str, session_id: str, key: str):
 
 
 @router.delete("/api/memory/{workflow_id}/{session_id}")
-async def clear_session_memory(workflow_id: str, session_id: str):
+async def clear_session_memory(workflow_id: str, session_id: str, request: Request):
     validate_path_segment(workflow_id, "workflow_id")
     validate_path_segment(session_id, "session_id")
-    store = get_memory_store()
+    store = get_memory_store(request)
     await store.clear_session(workflow_id, session_id)
     return {"status": "cleared", "workflow_id": workflow_id, "session_id": session_id}
 
 
 @router.get("/api/memory/{workflow_id}")
-async def list_sessions(workflow_id: str):
+async def list_sessions(workflow_id: str, request: Request):
     validate_path_segment(workflow_id, "workflow_id")
-    store = get_memory_store()
+    store = get_memory_store(request)
     sessions = await store.list_sessions(workflow_id)
     return {"workflow_id": workflow_id, "sessions": sessions}
 

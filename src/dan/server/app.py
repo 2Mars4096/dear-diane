@@ -44,6 +44,11 @@ _PATH_SEGMENT_RE = __import__("re").compile(r"^[A-Za-z0-9_\-]+$")
 
 
 def _require_run_manager() -> RunManager:
+    from dan.server.startup import get_active_app_state
+
+    state = get_active_app_state()
+    if state is not None and state.run_manager is not None:
+        return state.run_manager
     if _run_manager is None:
         raise HTTPException(status_code=503, detail="Server not fully initialised")
     return _run_manager
@@ -152,13 +157,32 @@ def _validate_path_segment(value: str, name: str) -> str:
 
 
 def _get_memory_store():
+    from dan.server.startup import (
+        build_memory_store_from_state,
+        get_active_app_state,
+    )
+
+    state = get_active_app_state()
+    if state is not None:
+        return build_memory_store_from_state(state)
+
     from dan.engine.memory_store import FileSystemMemoryStore
+
     rm = _require_run_manager()
     memory_dir = rm.engine_config.memory_dir if rm.engine_config else "./memory"
     return FileSystemMemoryStore(memory_dir)
 
 
 def _get_experience_index():
+    from dan.server.startup import (
+        get_active_app_state,
+        get_experience_index_from_state,
+    )
+
+    state = get_active_app_state()
+    if state is not None:
+        return get_experience_index_from_state(state)
+
     global _experience_index_cache
     if _experience_index_cache is not None:
         return _experience_index_cache
@@ -197,6 +221,15 @@ def _get_experience_index():
 
 
 def _get_experience_store(*, with_index: bool = False):
+    from dan.server.startup import (
+        build_experience_store_from_state,
+        get_active_app_state,
+    )
+
+    state = get_active_app_state()
+    if state is not None:
+        return build_experience_store_from_state(state, with_index=with_index)
+
     from dan.engine.experience import ExperienceStore
 
     index = _get_experience_index() if with_index else None
@@ -205,7 +238,26 @@ def _get_experience_store(*, with_index: bool = False):
 
 def _build_meta_controller():
     """Build (controller, planner, session_store) — used by meta router."""
+    from dan.server.startup import (
+        build_meta_controller_from_state,
+        get_active_app_state,
+    )
+
+    state = get_active_app_state()
+    if state is not None:
+        return build_meta_controller_from_state(state)
+    return _build_meta_controller_from_globals()
+
+
+def _build_meta_controller_from_globals():
+    """Compatibility fallback for callers that still patch app-level globals.
+
+    The canonical runtime path is AppState-backed via ``startup.py``. This
+    fallback preserves older focused tests and direct no-request callers that
+    intentionally monkeypatch ``dan.server.app`` helpers.
+    """
     import uuid as _uuid
+
     from dan.meta.controller import MetaController, MetaSessionStore
     from dan.meta.discovery import DiscoveryService
     from dan.meta.planner import WorkflowPlanner
@@ -214,8 +266,11 @@ def _build_meta_controller():
         RepairEscalator,
         StructuralRepairPlanner,
     )
-    from dan.server.run_manager import RunStatus as _RS
     from dan.server.skill_library import SKILL_LIBRARY
+    from dan.server.run_manager import RunStatus as _RS
+
+    if _graph_store is None:
+        raise HTTPException(status_code=503, detail="Graph store not initialised")
 
     rm = _require_run_manager()
     memory_store = _get_memory_store()
@@ -234,7 +289,8 @@ def _build_meta_controller():
         skill_library=SKILL_LIBRARY,
     )
 
-    provider_registry = None if _chat_manager is not None else _build_chat_provider_registry()
+    chat_manager = _chat_manager
+    provider_registry = None if chat_manager is not None else _build_chat_provider_registry()
     fallback_model = os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6")
 
     async def _llm_call(
@@ -244,8 +300,8 @@ def _build_meta_controller():
         temperature: float,
     ) -> str:
         model_name = model or fallback_model
-        if _chat_manager is not None:
-            provider = resolve_llm_provider(_chat_manager, model=model_name)
+        if chat_manager is not None:
+            provider = resolve_llm_provider(chat_manager, model=model_name)
             result = await provider.complete(
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -255,7 +311,6 @@ def _build_meta_controller():
                 temperature=temperature,
             )
             return result.text
-        # Fall back to the mirrored llm_core gateway only when no public chat-manager seam exists.
         if _model_gateway is not None:
             result = await _model_gateway.complete(
                 [
@@ -290,7 +345,11 @@ def _build_meta_controller():
 
     structural_planner = StructuralRepairPlanner(
         llm_call=_llm_call,
-        model=rm.engine_config.repair_model or rm.engine_config.planner_model or rm.engine_config.llm_default_model,
+        model=(
+            rm.engine_config.repair_model
+            or rm.engine_config.planner_model
+            or rm.engine_config.llm_default_model
+        ),
     )
     repair_store = RepairActionStore(memory_store)
     escalator = RepairEscalator(
@@ -314,16 +373,16 @@ def _build_meta_controller():
     ) -> dict[str, Any]:
         workflow_id = str(prepared_workflow_id or "").strip()
         graph_data = prepared_graph if isinstance(prepared_graph, dict) else None
-        _plan_warning: str | None = None
+        plan_warning: str | None = None
         if graph_data is None:
             user_text = getattr(plan, "description", None)
             exec_result = await planner.execute_plan(plan, user_text=user_text)
             workflow_id = str(exec_result.get("workflow_id", "")).strip()
             graph_data = exec_result.get("graph")
             if exec_result.get("legacy_fallback"):
-                _plan_warning = exec_result.get("warning")
+                plan_warning = exec_result.get("warning")
         elif isinstance(graph_data, dict) and graph_data.get("legacy_fallback"):
-            _plan_warning = graph_data.get("warning")
+            plan_warning = graph_data.get("warning")
         if not workflow_id:
             workflow_id = f"meta-{_uuid.uuid4().hex[:10]}"
         if not isinstance(graph_data, dict):
@@ -367,13 +426,17 @@ def _build_meta_controller():
             }
         snapshot = current.snapshot()
         principle_dicts: list[dict[str, Any]] = []
-        ps = rm._get_principle_store()
-        if ps is not None:
+        principle_store = rm._get_principle_store()
+        if principle_store is not None:
             try:
-                principles = await ps.load_principles(workflow_id)
+                principles = await principle_store.load_principles(workflow_id)
                 principle_dicts = [p.model_dump() for p in principles]
             except Exception:
-                logger.debug("Failed loading principles for %s", workflow_id, exc_info=True)
+                logger.debug(
+                    "Failed loading principles for %s",
+                    workflow_id,
+                    exc_info=True,
+                )
         result = {
             "success": bool(snapshot.get("success", False)),
             "run_id": rec.run_id,
@@ -383,12 +446,10 @@ def _build_meta_controller():
             "principles": principle_dicts,
             "outputs": snapshot.get("outputs", {}),
         }
-        if _plan_warning:
-            result["warning"] = _plan_warning
+        if plan_warning:
+            result["warning"] = plan_warning
             result["legacy_fallback"] = True
         return result
-
-    from dan.server.routers.meta import _meta_subscribers
 
     async def _emit_meta_event(event: dict[str, Any]) -> None:
         sid = event.get("session_id", "")

@@ -5,6 +5,7 @@ multiplexes events to WebSocket subscribers with catch-up support.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import logging
 import os
@@ -538,6 +539,50 @@ class RunManager:
             task.cancel()
         self.mark_run_cancelled(run_id, reason="user_cancelled")
         return True
+
+    async def shutdown(self, *, timeout: float = 5.0) -> None:
+        """Cancel active runs and wait briefly for their tasks to settle.
+
+        Server lifespan teardown can happen while run tasks are still active.
+        If those tasks are left running, pytest ASGI/lifespan tests can stall
+        in loop teardown even when the request-level assertions already passed.
+        """
+        pending_tasks: list[asyncio.Task[None]] = []
+
+        for run_id, task in list(self._tasks.items()):
+            if task.done():
+                continue
+            self.mark_run_cancelled(run_id, reason="server_shutdown")
+            task.cancel()
+            pending_tasks.append(task)
+
+        for run_id, request_id in list(self._meta_approval_request_by_run.items()):
+            evt = self._pending_human_inputs.get(request_id)
+            self._human_input_responses[request_id] = {
+                "approved": False,
+                "response": "reject",
+                "_cancelled": True,
+            }
+            if evt is not None:
+                evt.set()
+            self.mark_run_cancelled(run_id, reason="server_shutdown")
+
+        if pending_tasks:
+            done, pending = await asyncio.wait(pending_tasks, timeout=timeout)
+            for task in done:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+            if pending:
+                logger.warning(
+                    "RunManager shutdown timed out waiting for %d task(s)",
+                    len(pending),
+                )
+
+        self._tasks = {
+            run_id: task
+            for run_id, task in self._tasks.items()
+            if not task.done()
+        }
 
     def mark_run_cancelled(self, run_id: str, *, reason: str) -> dict[str, Any] | None:
         """Mark a run as cancelled and emit a run_cancelled event."""

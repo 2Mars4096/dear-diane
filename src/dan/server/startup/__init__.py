@@ -22,7 +22,7 @@ from dan.server.paths import resolve_graphs_dir, resolve_workspace_root
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 logger = logging.getLogger(__name__)
 _API_KEY_PLACEHOLDERS = frozenset({"your-api-key-here", "changeme", "replace-me"})
@@ -34,6 +34,23 @@ _PRIMARY_LLM_KEY_ENV_VARS = (
     "DAN_ANTHROPIC_API_KEY",
     "DAN_GOOGLE_API_KEY",
 )
+_active_app_state: AppState | None = None
+
+
+def get_active_app_state() -> AppState | None:
+    return _active_app_state
+
+
+def set_active_app_state(state: AppState | None) -> None:
+    global _active_app_state
+    _active_app_state = state
+
+
+def require_active_app_state() -> AppState:
+    state = get_active_app_state()
+    if state is None:
+        raise HTTPException(status_code=503, detail="Server not fully initialised")
+    return state
 
 
 def _skip_adapter_autostart_for_current_process(app: Any | None = None) -> bool:
@@ -138,6 +155,297 @@ def _build_model_gateway(engine_config: Any = None):
 
     cfg = engine_config if engine_config is not None else _get_engine_config()
     return build_gateway(engine_config=cfg)
+
+
+def build_memory_store_from_state(state: AppState | None = None):
+    from dan.engine.memory_store import FileSystemMemoryStore
+
+    app_state = state or require_active_app_state()
+    run_manager = app_state.require_run_manager()
+    memory_dir = (
+        run_manager.engine_config.memory_dir
+        if run_manager.engine_config
+        else "./memory"
+    )
+    return FileSystemMemoryStore(memory_dir)
+
+
+def get_experience_index_from_state(state: AppState | None = None):
+    app_state = state or require_active_app_state()
+    if app_state.experience_index_cache is not None:
+        return app_state.experience_index_cache
+    try:
+        from dan.engine.experience import ExperienceIndex
+        from dan.rag import build_embedding_registry
+        from dan.rag.stores import VectorStoreConfig, VectorStoreFactory
+
+        run_manager = app_state.require_run_manager()
+        config = run_manager.engine_config
+        registry = build_embedding_registry(config)
+        model = config.default_embedding_model
+        provider = registry.resolve(model)
+        backend = os.environ.get(
+            "DAN_EXPERIENCE_STORE_BACKEND",
+            os.environ.get("DAN_RAG_STORE_BACKEND", "memory"),
+        )
+        persist_dir = os.environ.get("DAN_EXPERIENCE_PERSIST_DIR", "./rag_data")
+        vector_store = VectorStoreFactory.create(
+            VectorStoreConfig(
+                backend=backend,
+                persist_directory=persist_dir,
+            ),
+        )
+        app_state.experience_index_cache = ExperienceIndex(
+            embedding_provider=provider,
+            vector_store=vector_store,
+            embedding_model=model,
+        )
+        return app_state.experience_index_cache
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Experience index unavailable: {exc}",
+        ) from exc
+
+
+def build_experience_store_from_state(
+    state: AppState | None = None,
+    *,
+    with_index: bool = False,
+):
+    from dan.engine.experience import ExperienceStore
+
+    app_state = state or require_active_app_state()
+    index = get_experience_index_from_state(app_state) if with_index else None
+    return ExperienceStore(
+        build_memory_store_from_state(app_state),
+        experience_index=index,
+    )
+
+
+def build_meta_controller_from_state(state: AppState | None = None):
+    """Build (controller, planner, session_store) from the canonical AppState."""
+    import uuid as _uuid
+
+    from dan.models.graph import Graph
+    from dan.meta.controller import MetaController, MetaSessionStore
+    from dan.meta.discovery import DiscoveryService
+    from dan.meta.planner import WorkflowPlanner
+    from dan.meta.repair import (
+        RepairActionStore,
+        RepairEscalator,
+        StructuralRepairPlanner,
+    )
+    from dan.server.llm_gateway import resolve_llm_provider
+    from dan.server.routers.meta import _meta_subscribers
+    from dan.server.run_manager import RunStatus as _RS
+    from dan.server.skill_library import SKILL_LIBRARY
+
+    app_state = state or require_active_app_state()
+    graph_store = app_state.require_graph_store()
+    rm = app_state.require_run_manager()
+    memory_store = build_memory_store_from_state(app_state)
+    try:
+        exp_index = get_experience_index_from_state(app_state)
+    except HTTPException:
+        exp_index = None
+    exp_store = build_experience_store_from_state(
+        app_state,
+        with_index=exp_index is not None,
+    )
+
+    discovery = DiscoveryService(
+        experience_index=exp_index,
+        experience_store=exp_store,
+        graph_store=graph_store,
+        tool_registry=rm.tool_registry,
+        self_knowledge=app_state.self_knowledge_index,
+        skill_library=SKILL_LIBRARY,
+    )
+
+    chat_manager = app_state.chat_manager
+    provider_registry = (
+        None if chat_manager is not None else _build_chat_provider_registry()
+    )
+    fallback_model = os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6")
+
+    async def _llm_call(
+        system_prompt: str,
+        user_prompt: str,
+        model: str | None,
+        temperature: float,
+    ) -> str:
+        model_name = model or fallback_model
+        if chat_manager is not None:
+            provider = resolve_llm_provider(chat_manager, model=model_name)
+            result = await provider.complete(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                model=model_name,
+                temperature=temperature,
+            )
+            return result.text
+        if app_state.model_gateway is not None:
+            result = await app_state.model_gateway.complete(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                model_name,
+                temperature=temperature,
+            )
+            return result.text
+        assert provider_registry is not None
+        provider = provider_registry.resolve(model_name)
+        result = await provider.complete(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            model=model_name,
+            temperature=temperature,
+        )
+        return result.text
+
+    planner = WorkflowPlanner(
+        discovery=discovery,
+        graph_store=graph_store,
+        llm_call=_llm_call,
+        model=rm.engine_config.planner_model or rm.engine_config.llm_default_model,
+        max_retries=rm.engine_config.planner_max_retries,
+        temperature=rm.engine_config.planner_temperature,
+        discovery_top_k=rm.engine_config.planner_discovery_top_k,
+    )
+
+    structural_planner = StructuralRepairPlanner(
+        llm_call=_llm_call,
+        model=(
+            rm.engine_config.repair_model
+            or rm.engine_config.planner_model
+            or rm.engine_config.llm_default_model
+        ),
+    )
+    repair_store = RepairActionStore(memory_store)
+    escalator = RepairEscalator(
+        structural_planner=structural_planner,
+        action_store=repair_store,
+        max_attempts_per_level=rm.engine_config.max_repair_attempts_per_level,
+        max_redesigns=rm.engine_config.max_redesigns_per_goal,
+    )
+
+    session_store = MetaSessionStore(memory_store)
+
+    async def _run_workflow(
+        plan: Any,
+        session_id: str,
+        *,
+        workflow_inputs: dict[str, Any] | None = None,
+        upstream_handoffs: dict[str, Any] | None = None,
+        workflow_spec: dict[str, Any] | None = None,
+        prepared_graph: dict[str, Any] | None = None,
+        prepared_workflow_id: str | None = None,
+    ) -> dict[str, Any]:
+        workflow_id = str(prepared_workflow_id or "").strip()
+        graph_data = prepared_graph if isinstance(prepared_graph, dict) else None
+        plan_warning: str | None = None
+        if graph_data is None:
+            user_text = getattr(plan, "description", None)
+            exec_result = await planner.execute_plan(plan, user_text=user_text)
+            workflow_id = str(exec_result.get("workflow_id", "")).strip()
+            graph_data = exec_result.get("graph")
+            if exec_result.get("legacy_fallback"):
+                plan_warning = exec_result.get("warning")
+        elif isinstance(graph_data, dict) and graph_data.get("legacy_fallback"):
+            plan_warning = graph_data.get("warning")
+        if not workflow_id:
+            workflow_id = f"meta-{_uuid.uuid4().hex[:10]}"
+        if not isinstance(graph_data, dict):
+            return {
+                "success": False,
+                "workflow_id": workflow_id,
+                "error_context": "Planner execution did not return a graph",
+            }
+
+        graph_store.save_graph(workflow_id, graph_data)
+
+        graph_model = Graph.model_validate(graph_data)
+        rec = await rm.start_run(
+            graph_model,
+            graph_id=workflow_id,
+            inputs=dict(workflow_inputs or {}),
+            session_id=session_id,
+            goal_context={
+                "meta_workflow_spec": dict(workflow_spec or {}),
+                "upstream_handoffs": dict(upstream_handoffs or {}),
+            },
+        )
+        while True:
+            current = rm.get_run(rec.run_id)
+            if current is None:
+                return {
+                    "success": False,
+                    "workflow_id": workflow_id,
+                    "error_context": f"Run {rec.run_id} disappeared",
+                }
+            if current.status in (_RS.COMPLETED, _RS.FAILED, _RS.CANCELLED):
+                break
+            await asyncio.sleep(0.1)
+
+        current = rm.get_run(rec.run_id)
+        if current is None:
+            return {
+                "success": False,
+                "workflow_id": workflow_id,
+                "error_context": f"Run {rec.run_id} missing after completion",
+            }
+        snapshot = current.snapshot()
+        principle_dicts: list[dict[str, Any]] = []
+        principle_store = rm._get_principle_store()
+        if principle_store is not None:
+            try:
+                principles = await principle_store.load_principles(workflow_id)
+                principle_dicts = [p.model_dump() for p in principles]
+            except Exception:
+                logger.debug(
+                    "Failed loading principles for %s",
+                    workflow_id,
+                    exc_info=True,
+                )
+        result = {
+            "success": bool(snapshot.get("success", False)),
+            "run_id": rec.run_id,
+            "workflow_id": workflow_id,
+            "errors": snapshot.get("errors", {}),
+            "error_context": str(snapshot.get("errors", "")),
+            "principles": principle_dicts,
+            "outputs": snapshot.get("outputs", {}),
+        }
+        if plan_warning:
+            result["warning"] = plan_warning
+            result["legacy_fallback"] = True
+        return result
+
+    async def _emit_meta_event(event: dict[str, Any]) -> None:
+        sid = event.get("session_id", "")
+        for queue in _meta_subscribers.get(sid, []):
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                logger.warning("Meta subscriber queue full for session %s", sid)
+
+    controller = MetaController(
+        planner=planner,
+        repair_escalator=escalator,
+        experience_store=exp_store,
+        session_store=session_store,
+        run_workflow=_run_workflow,
+        emit_event=_emit_meta_event,
+        graph_loader=graph_store.get_graph,
+        graph_saver=graph_store.save_graph,
+    )
+    return controller, planner, session_store
 
 
 # ---------------------------------------------------------------------------
@@ -654,12 +962,10 @@ async def init_integrations(state: AppState, app: FastAPI) -> None:
     from dan.server.gateway.router import init_gateway
     from dan.server.gateway.router import router as gateway_router
 
-    def _build_meta_controller_from_state() -> tuple[Any, Any, Any]:
-        from dan.server.app import _build_meta_controller as _app_build_meta_controller
+    def _build_meta_controller_factory() -> tuple[Any, Any, Any]:
+        return build_meta_controller_from_state(state)
 
-        return _app_build_meta_controller()
-
-    state.build_meta_controller = _build_meta_controller_from_state
+    state.build_meta_controller = _build_meta_controller_factory
 
     workspace_root = resolve_workspace_root()
     workspace_root_path = Path(workspace_root)
@@ -754,17 +1060,14 @@ async def init_integrations(state: AppState, app: FastAPI) -> None:
     app.state.self_knowledge_index = state.self_knowledge_index
 
     # Wire experience/discovery into capability context (25-2)
-    from dan.server.app import (
-        _get_experience_index,
-        _get_experience_store,
-        _build_meta_controller,
-    )
-
     try:
-        _exp_index = _get_experience_index()
+        _exp_index = get_experience_index_from_state(state)
     except Exception:
         _exp_index = None
-    _exp_store = _get_experience_store(with_index=_exp_index is not None)
+    _exp_store = build_experience_store_from_state(
+        state,
+        with_index=_exp_index is not None,
+    )
 
     if state.memory_kernel is not None:
         if getattr(state.memory_kernel, "_dual_write", None) is not None:
@@ -815,7 +1118,7 @@ async def init_integrations(state: AppState, app: FastAPI) -> None:
     try:
         from dan.server.concierge import build_concierge
 
-        meta_controller, _meta_planner, _meta_store = _build_meta_controller()
+        meta_controller, _meta_planner, _meta_store = state.build_meta_controller()
 
         result = build_concierge(
             chat_manager=state.chat_manager,
@@ -1335,6 +1638,12 @@ async def shutdown(state: AppState) -> None:
         except asyncio.CancelledError:
             pass
 
+    if state.run_manager is not None:
+        try:
+            await state.run_manager.shutdown()
+        except Exception:
+            logger.debug("Run manager shutdown failed", exc_info=True)
+
     if state.telemetry_store is not None:
         try:
             await state.telemetry_store.close()
@@ -1413,69 +1722,46 @@ async def lifespan(app: FastAPI):
         chat_store=ChatStore(base_dir=graphs_dir),
         test_case_store=TestCaseStore(base_dir=graphs_dir),
     )
+    set_active_app_state(state)
 
-    log_startup_configuration_warnings()
-    init_learning_tiers()
+    try:
+        log_startup_configuration_warnings()
+        init_learning_tiers()
 
-    await init_stores(state)
-    logger.info("Startup phase 1/6 (stores) [%s]", _phase_ms())
+        await init_stores(state)
+        logger.info("Startup phase 1/6 (stores) [%s]", _phase_ms())
 
-    await init_engine(state)
-    logger.info("Startup phase 2/6 (engine) [%s]", _phase_ms())
+        await init_engine(state)
+        logger.info("Startup phase 2/6 (engine) [%s]", _phase_ms())
 
-    _mirror_state_to_globals(state)
+        await init_capabilities(state)
+        logger.info("Startup phase 3/6 (capabilities) [%s]", _phase_ms())
 
-    await init_capabilities(state)
-    logger.info("Startup phase 3/6 (capabilities) [%s]", _phase_ms())
+        await init_managers(state)
+        logger.info("Startup phase 4/6 (managers) [%s]", _phase_ms())
 
-    await init_managers(state)
-    logger.info("Startup phase 4/6 (managers) [%s]", _phase_ms())
+        await init_integrations(state, app)
+        logger.info("Startup phase 5/6 (integrations) [%s]", _phase_ms())
 
-    _mirror_state_to_globals(state)
+        await init_background(state, app)
+        logger.info("Startup phase 6/6 (background) [%s]", _phase_ms())
 
-    await init_integrations(state, app)
-    logger.info("Startup phase 5/6 (integrations) [%s]", _phase_ms())
+        app.state.dan = state
+        app.state.mcp_bridge = state.mcp_bridge
+        app.state.startup_summary = get_startup_degradation_summary(state)
 
-    await init_background(state, app)
-    logger.info("Startup phase 6/6 (background) [%s]", _phase_ms())
+        await init_adapters(app)
+        logger.info("Startup complete [%s]", _phase_ms())
+    except Exception:
+        if get_active_app_state() is state:
+            set_active_app_state(None)
+        raise
 
-    app.state.dan = state
-    app.state.mcp_bridge = state.mcp_bridge
-    app.state.startup_summary = get_startup_degradation_summary(state)
-
-    _mirror_state_to_globals(state)
-
-    await init_adapters(app)
-    logger.info("Startup complete [%s]", _phase_ms())
-
-    yield
-
-    await shutdown(state)
-
-
-def _mirror_state_to_globals(state: AppState) -> None:
-    """Populate ``app.py`` module globals from the canonical :class:`AppState`.
-
-    This keeps ``from dan.server.app import _graph_store`` working until
-    all call sites are migrated to ``request.app.state.dan``.
-    """
-    import dan.server.app as _app_mod
-
-    _app_mod._graph_store = state.graph_store
-    _app_mod._chat_store = state.chat_store
-    _app_mod._test_case_store = state.test_case_store
-    _app_mod._run_manager = state.run_manager
-    _app_mod._chat_manager = state.chat_manager
-    _app_mod._mention_resolver = state.mention_resolver
-    _app_mod._publish_registry = state.publish_registry
-    _app_mod._block_registry = state.block_registry
-    _app_mod._concierge = state.concierge
-    _app_mod._dispatcher = state.dispatcher
-    _app_mod._mcp_bridge = state.mcp_bridge
-    _app_mod._notification_manager = state.notification_manager
-    _app_mod._self_knowledge_index = state.self_knowledge_index
-    _app_mod._experience_index_cache = state.experience_index_cache
-    _app_mod._furnace_session_store = state.furnace_session_store
-    _app_mod._furnace_enabled = state.furnace_enabled
-    _app_mod._startup_degradations = list(state.startup_degradations)
-    _app_mod._model_gateway = state.model_gateway
+    try:
+        yield
+    finally:
+        try:
+            await shutdown(state)
+        finally:
+            if get_active_app_state() is state:
+                set_active_app_state(None)

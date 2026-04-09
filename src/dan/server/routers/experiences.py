@@ -73,6 +73,16 @@ def _build_trace_draft_response(draft: Any) -> dict[str, Any]:
     }
 
 
+def _resolve_graph_store_compat(request: Request | None = None):
+    """Support both request-backed and legacy zero-arg graph-store seams."""
+    try:
+        return get_graph_store(request)
+    except TypeError:
+        if request is not None:
+            raise
+        return get_graph_store()
+
+
 def _compile_trace_draft(
     draft: Any,
     *,
@@ -121,7 +131,7 @@ def _resolve_trace_promotion_workflow_id(
     from dan.server.graph_store import _validate_graph_id
     from dan.server.trace_workflow_distiller import suggest_trace_workflow_id
 
-    graph_store = get_graph_store(request) if request is not None else get_graph_store()
+    graph_store = _resolve_graph_store_compat(request)
     explicit = requested_workflow_id.strip()
     if explicit:
         _validate_graph_id(explicit)
@@ -297,7 +307,7 @@ async def promote_trace_draft(body: dict[str, Any], request: Request = None):
         )
         return response
 
-    graph_store = get_graph_store(request) if request is not None else get_graph_store()
+    graph_store = _resolve_graph_store_compat(request)
     graph_to_save = prepare_trace_workflow_graph_for_promotion(
         report.graph_dict,
         draft,
@@ -339,7 +349,7 @@ async def refresh_experience(workflow_id: str, request: Request):
     from dan.models.graph import Graph
 
     rm = get_run_manager(request)
-    gs = get_graph_store(request)
+    gs = _resolve_graph_store_compat(request)
     try:
         store = get_experience_store(request, with_index=True)
     except HTTPException:

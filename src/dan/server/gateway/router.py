@@ -97,15 +97,7 @@ async def _dispatch_text(
     from dan.meta.workflow_contract import validate_workflow_build_contract
     from pydantic import ValidationError
 
-    build_meta_controller = _meta_controller_factory
-    if not callable(build_meta_controller):
-        try:
-            from dan.server.app import _build_meta_controller as build_meta_controller
-        except ImportError:
-            raise HTTPException(
-                503,
-                "MetaController not available (text dispatch requires server initialization)",
-            ) from None
+    build_meta_controller = _resolve_meta_controller_factory()
 
     _, planner, _ = build_meta_controller()
     if planner is None:
@@ -269,6 +261,28 @@ async def _dispatch_text(
         workflow_name=workflow_name,
         status=status,
         surface_id=surface_id,
+    )
+
+
+def _resolve_meta_controller_factory() -> Any:
+    build_meta_controller = _meta_controller_factory
+    app_build_meta_controller: Any | None = None
+    try:
+        from dan.server.app import _build_meta_controller as app_build_meta_controller
+    except ImportError:
+        app_build_meta_controller = None
+
+    # Preserve the request-owned gateway factory by default, but still honor
+    # explicit globals-surface monkeypatches used by focused compatibility tests.
+    if callable(app_build_meta_controller) and getattr(app_build_meta_controller, "__module__", "") != "dan.server.app":
+        return app_build_meta_controller
+    if callable(build_meta_controller):
+        return build_meta_controller
+    if callable(app_build_meta_controller):
+        return app_build_meta_controller
+    raise HTTPException(
+        503,
+        "MetaController not available (text dispatch requires server initialization)",
     )
 
 
