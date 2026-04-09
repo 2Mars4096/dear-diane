@@ -16,7 +16,6 @@ from typing import Any, Callable
 from dan.llm_core.config import GatewayConfig
 from dan.llm_core.gateway import ModelGateway
 from dan.providers import ProviderConfig
-from dan.providers.openai_provider import OpenAIProvider
 from dan.providers.registry import ProviderRegistry
 
 logger = logging.getLogger(__name__)
@@ -42,7 +41,11 @@ def _registry_from_params(
             api_key=api_key or "",
             base_url=base_url,
         )
-        registry.register("default", OpenAIProvider(default_config))
+        from dan.providers.factory import create_provider
+
+        provider = create_provider("default", default_config)
+        if provider is not None:
+            registry.register("default", provider)
 
     if providers:
         from dan.providers.factory import create_provider

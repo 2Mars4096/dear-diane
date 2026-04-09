@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from dan.providers import ProviderConfig
 from dan.providers.registry import ProviderRegistry
+from dan.providers.retrying_provider import wrap_provider_with_retries
 
 if TYPE_CHECKING:
     from dan.providers import LLMProvider
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 def _build_openai_provider(config: ProviderConfig) -> "LLMProvider":
     from dan.providers.openai_provider import OpenAIProvider
 
-    return OpenAIProvider(config)
+    return wrap_provider_with_retries(OpenAIProvider(config), config)
 
 
 class ProviderRegistryConfig(Protocol):
@@ -42,7 +43,7 @@ def create_provider(name: str, config: ProviderConfig) -> "LLMProvider | None":
         try:
             from dan.providers.anthropic_provider import AnthropicProvider
 
-            return AnthropicProvider(config)
+            return wrap_provider_with_retries(AnthropicProvider(config), config)
         except ImportError:
             logger.warning(
                 "anthropic package not installed; skipping provider '%s'",
@@ -54,7 +55,7 @@ def create_provider(name: str, config: ProviderConfig) -> "LLMProvider | None":
         try:
             from dan.providers.google_provider import GoogleProvider
 
-            return GoogleProvider(config)
+            return wrap_provider_with_retries(GoogleProvider(config), config)
         except ImportError:
             logger.warning(
                 "google-generativeai not installed; skipping provider '%s'",
