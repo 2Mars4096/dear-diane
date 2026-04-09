@@ -46,6 +46,15 @@ class CodingOrganismReport(BaseModel):
     trace_rows: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class CodingConversationEntry(BaseModel):
+    """One durable user/assistant exchange in the DAN Code shell."""
+
+    role: str
+    text: str
+    kind: str = "message"
+    created_at: str = Field(default_factory=_utcnow_iso)
+
+
 class CodingCliSession(BaseModel):
     """Persistent session state for the product shell."""
 
@@ -54,6 +63,9 @@ class CodingCliSession(BaseModel):
     created_at: str = Field(default_factory=_utcnow_iso)
     updated_at: str = Field(default_factory=_utcnow_iso)
     turns: list[CodingOrganismReport] = Field(default_factory=list)
+    conversation: list[CodingConversationEntry] = Field(default_factory=list)
+    pending_clarification: str | None = None
+    orchestrator_state: dict[str, Any] = Field(default_factory=dict)
 
     def next_turn_number(self) -> int:
         return len(self.turns) + 1
@@ -78,6 +90,19 @@ class CodingCliSession(BaseModel):
 
     def record_turn(self, report: CodingOrganismReport) -> None:
         self.turns.append(report)
+        self.updated_at = _utcnow_iso()
+
+    def record_message(self, *, role: str, text: str, kind: str = "message") -> None:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return
+        self.conversation.append(
+            CodingConversationEntry(
+                role=str(role or "").strip() or "assistant",
+                text=cleaned,
+                kind=str(kind or "").strip() or "message",
+            )
+        )
         self.updated_at = _utcnow_iso()
 
 

@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
 
+from pydantic import BaseModel, Field
+
 from dan.cli import load_env, normalize_workspace_root, resolve_config
 from dan.cli.code_product import (
     CODE_PRODUCT_NAME,
@@ -31,7 +33,15 @@ from dan.providers.factory import build_provider_registry
 from dan.server.runtime_config import build_engine_config_from_env
 from dan.worker.composition import CrossCellTraceLog
 from dan.worker.core.executor import WorkerCoreExecutor
-from dan.worker.organisms import CodingTask, coding_execution_organism, execute_coding_organism
+from dan.worker.organisms import (
+    CodingConversationContext,
+    CodingConversationController,
+    CodingConversationMessage,
+    CodingConversationReportSummary,
+    CodingTask,
+    coding_execution_organism,
+    execute_coding_organism,
+)
 from dan.worker.organisms.local_runtime import (
     DEFAULT_LIVE_ORGANISM_TOOL_IDS,
     LocalOrganismToolRuntime,
@@ -62,31 +72,6 @@ RISKY_TOOL_IDS = frozenset(
         "git_branch",
         "git_worktree",
         "python_eval",
-    }
-)
-NON_TASK_MESSAGES = frozenset(
-    {
-        "hi",
-        "hello",
-        "hey",
-        "yo",
-        "sup",
-        "help",
-        "thanks",
-        "thank you",
-    }
-)
-NON_TASK_QUESTIONS = frozenset(
-    {
-        "what can you do",
-        "who are you",
-        "what do you do",
-        "can we chat",
-        "how should i use this",
-        "how do i use this",
-        "how does this work",
-        "are you like claude code",
-        "is this like claude code",
     }
 )
 SESSION_RESULTS_MESSAGES = (
@@ -326,27 +311,6 @@ def _normalize_message(text: str) -> str:
     )
 
 
-def _is_non_task_message(text: str) -> bool:
-    normalized = _normalize_message(text)
-    if not normalized:
-        return True
-    if normalized in NON_TASK_MESSAGES:
-        return True
-    return normalized in NON_TASK_QUESTIONS
-
-
-def _non_task_guidance() -> str:
-    return (
-        "I’m the coding shell for this workspace. I can inspect the repo, explain code, "
-        "patch files, run focused validation, and summarize recent coding turns.\n"
-        "Try one of these:\n"
-        "- summarize the CLI wiring under src/dan/cli\n"
-        "- inspect the failing tests and patch the smallest viable fix\n"
-        "- explain how dan code is built on the universal worker\n"
-        "Use /help to see CLI commands."
-    )
-
-
 def _is_workspace_query(text: str) -> bool:
     normalized = _normalize_message(text)
     if normalized == "pwd":
@@ -389,9 +353,7 @@ def _handle_local_prompt(
     session: CodingCliSession,
     trailing_blank_line: bool,
 ) -> bool:
-    if _is_non_task_message(text):
-        print(_non_task_guidance())
-    elif _is_workspace_query(text):
+    if _is_workspace_query(text):
         _print_workspace_query_answer(workspace_root=workspace_root, session=session)
     elif _is_results_query(text):
         _print_latest_result(session)
@@ -608,12 +570,94 @@ class CodeProgressRenderer:
     def __init__(self, *, enabled: bool, show_model_trace: bool = False) -> None:
         self._enabled = bool(enabled)
         self._show_model_trace = bool(show_model_trace)
+        self._replace_cache: dict[tuple[str, str, str], str] = {}
 
     @staticmethod
     def _print_assistant(message: str) -> None:
         text = str(message or "").strip()
         if text:
             print(f"[assistant] {text}")
+
+    @staticmethod
+    def _scope_label(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if "." in text:
+            return text.split(".", 1)[1]
+        return text
+
+    def _stream_prefix(self, channel: str, event: dict[str, Any]) -> str:
+        scope = self._scope_label(event.get("worker_id"))
+        if scope:
+            return f"[{scope}][{channel}]"
+        return f"[{channel}]"
+
+    @staticmethod
+    def _format_score(value: Any) -> str | None:
+        try:
+            return f"{float(value):.2f}"
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _attempt_stage_label(attempt: Any, stage: Any) -> str:
+        return f"attempt {attempt} / {str(stage or 'stage').strip()}"
+
+    @staticmethod
+    def _assistant_subject(event: dict[str, Any]) -> str:
+        parts: list[str] = []
+        attempt = event.get("attempt")
+        if attempt not in {None, ""}:
+            parts.append(f"attempt {attempt}")
+        actor = str(event.get("actor") or "").strip()
+        phase = str(event.get("phase") or "").strip()
+        if actor:
+            parts.append(actor)
+        if phase and phase != actor:
+            parts.append(phase)
+        return " / ".join(parts)
+
+    def _render_status_update(self, event: dict[str, Any]) -> None:
+        message = _truncate_text(str(event.get("message") or ""), limit=240)
+        if not message:
+            return
+        subject = self._assistant_subject(event)
+        extras: list[str] = []
+        worker_count = event.get("worker_count")
+        if worker_count is not None and str(event.get("phase") or "").strip() == "orchestration":
+            extras.append(f"workers={worker_count}")
+        candidate_id = str(event.get("candidate_id") or "").strip()
+        if candidate_id:
+            extras.append(f"candidate={candidate_id}")
+        score = self._format_score(event.get("score"))
+        if score is not None:
+            extras.append(f"score={score}")
+        target_files = [str(item).strip() for item in (event.get("target_files") or []) if str(item).strip()]
+        if target_files:
+            extras.append(f"files={len(target_files)}")
+        test_plan = [str(item).strip() for item in (event.get("test_plan") or []) if str(item).strip()]
+        if test_plan:
+            extras.append(f"validation={len(test_plan)}")
+        missing_requirements = [
+            str(item).strip()
+            for item in (event.get("missing_requirements") or [])
+            if str(item).strip()
+        ]
+        if missing_requirements:
+            extras.append(f"gaps={len(missing_requirements)}")
+        suffix = f" ({', '.join(extras)})" if extras else ""
+        rendered = f"{subject}: {message}{suffix}" if subject else f"{message}{suffix}"
+        if event.get("replace_last"):
+            cache_key = (
+                str(event.get("attempt") or ""),
+                str(event.get("actor") or ""),
+                str(event.get("phase") or ""),
+            )
+            if self._replace_cache.get(cache_key) == rendered:
+                return
+            self._replace_cache[cache_key] = rendered
+        self._print_assistant(rendered)
 
     def __call__(self, event: dict[str, Any]) -> None:
         if not self._enabled:
@@ -622,7 +666,9 @@ class CodeProgressRenderer:
         if name == "organism.started":
             objective = _truncate_text(str(event.get("objective") or ""), limit=160)
             print(f"[status] starting coding run: {objective}")
-            self._print_assistant("I’m reviewing the request and planning the first coding attempt.")
+            return
+        if name == "assistant.message":
+            self._print_assistant(str(event.get("message") or ""))
             return
         if name == "attempt.started":
             attempt = event.get("attempt", "?")
@@ -638,82 +684,66 @@ class CodeProgressRenderer:
             else:
                 print(f"[status] attempt {attempt}: starting")
             return
+        if name == "status.update":
+            self._render_status_update(event)
+            return
         if name == "stage.started":
             attempt = event.get("attempt", "?")
-            message = _truncate_text(str(event.get("message") or ""), limit=160)
             stage = str(event.get("stage") or "stage")
-            if message:
-                self._print_assistant(f"attempt {attempt} / {stage}: {message}")
-            else:
-                self._print_assistant(f"attempt {attempt} / {stage}")
+            extras: list[str] = []
+            if event.get("worker_count") is not None:
+                extras.append(f"workers={event.get('worker_count')}")
+            suffix = f" ({', '.join(extras)})" if extras else ""
+            print(f"[status] {self._attempt_stage_label(attempt, stage)}: running{suffix}")
             return
         if name == "stage.completed":
             attempt = event.get("attempt", "?")
             stage = str(event.get("stage") or "stage")
             status = str(event.get("status") or "").strip()
-            message = _truncate_text(str(event.get("message") or ""), limit=160)
             extras: list[str] = []
             if event.get("worker_count") is not None and stage in {"orchestration", "workers"}:
                 extras.append(f"workers={event.get('worker_count')}")
+            successful_workers = [
+                str(item).strip()
+                for item in (event.get("successful_workers") or [])
+                if str(item).strip()
+            ]
+            if successful_workers and stage == "workers":
+                extras.append(f"successful={len(successful_workers)}")
             if event.get("candidate_id"):
                 extras.append(f"candidate={event.get('candidate_id')}")
-            if event.get("score") is not None:
-                try:
-                    extras.append(f"score={float(event.get('score')):.2f}")
-                except (TypeError, ValueError):
-                    pass
+            score = self._format_score(event.get("score"))
+            if score is not None:
+                extras.append(f"score={score}")
             if event.get("passed") is not None:
                 extras.append(f"passed={'yes' if event.get('passed') else 'no'}")
+            missing_requirements = [
+                str(item).strip()
+                for item in (event.get("missing_requirements") or [])
+                if str(item).strip()
+            ]
+            if missing_requirements and stage == "validation" and not event.get("passed"):
+                extras.append(f"gaps={len(missing_requirements)}")
             suffix = f" ({', '.join(extras)})" if extras else ""
-            if message:
-                self._print_assistant(f"attempt {attempt} / {stage} {status}: {message}{suffix}")
-            else:
-                self._print_assistant(f"attempt {attempt} / {stage} {status}{suffix}")
-            if stage == "orchestration":
-                brief_summary = _summarize_briefs(event.get("worker_briefs") or [])
-                if brief_summary:
-                    self._print_assistant(f"attempt {attempt} plan: {brief_summary}")
-            elif stage == "workers":
-                workers = _summarize_items(event.get("successful_workers") or [])
-                if workers:
-                    self._print_assistant(f"attempt {attempt} worker replies: {workers}")
-            elif stage == "aggregation":
-                candidate_id = str(event.get("candidate_id") or "").strip()
-                files = _summarize_items(event.get("target_files") or [])
-                validation_count = len(event.get("test_plan") or [])
-                parts: list[str] = []
-                if candidate_id:
-                    parts.append(f"candidate {candidate_id}")
-                if files:
-                    parts.append(f"targets {files}")
-                if validation_count:
-                    parts.append(f"validation commands={validation_count}")
-                if parts:
-                    self._print_assistant("aggregated " + "; ".join(parts) + ".")
-            elif stage == "validation":
-                missing = _summarize_items(event.get("missing_requirements") or [], limit=4)
-                if event.get("passed"):
-                    self._print_assistant("validator accepted the current candidate.")
-                elif missing:
-                    self._print_assistant(f"attempt {attempt} gaps: {missing}")
+            print(f"[status] {self._attempt_stage_label(attempt, stage)}: {status or 'completed'}{suffix}")
             return
         if name == "repair.requested":
             attempt = event.get("attempt", "?")
-            score = event.get("score")
-            brief = _truncate_text(str(event.get("repair_brief") or ""), limit=180)
-            missing = [str(item).strip() for item in (event.get("missing_requirements") or []) if str(item).strip()]
-            prefix = f"[status] validator requested repair after attempt {attempt}"
+            details: list[str] = []
+            score = self._format_score(event.get("score"))
             if score is not None:
-                try:
-                    prefix += f" (score={float(score):.2f})"
-                except (TypeError, ValueError):
-                    pass
-            print(prefix)
-            if brief:
-                print(f"[status] repair brief: {brief}")
-                self._print_assistant("I’m starting a repair-focused retry from that validator brief.")
+                details.append(f"score={score}")
+            missing = [
+                str(item).strip()
+                for item in (event.get("missing_requirements") or [])
+                if str(item).strip()
+            ]
             if missing:
-                print(f"[status] missing: {', '.join(missing[:4])}")
+                details.append(f"missing={len(missing)}")
+            prefix = f"[status] validator requested repair after attempt {attempt}"
+            if details:
+                prefix += f" ({', '.join(details)})"
+            print(prefix)
             return
         if name == "organism.completed":
             status = str(event.get("status") or "completed")
@@ -727,17 +757,16 @@ class CodeProgressRenderer:
                     suffix.append(f"candidate={candidate_id}")
                 summary = f" ({', '.join(suffix)})" if suffix else ""
                 print(f"[status] coding run completed{summary}")
-                self._print_assistant("The final report below lists the selected candidate, files, validation, and risks.")
             else:
                 error = _truncate_text(str(event.get("error") or "coding run failed"), limit=180)
                 print(f"[status] coding run failed: {error}")
-                self._print_assistant("The run stopped without a validated candidate. Review the failure details below.")
             return
         if name == "model.requested":
             if not self._show_model_trace:
                 return
+            prefix = self._stream_prefix("model", event)
             print(
-                "[model] request: "
+                f"{prefix} request: "
                 f"round={event.get('round', '?')} "
                 f"model={event.get('model') or '(unknown)'} "
                 f"tools={event.get('tool_count', 0)}"
@@ -746,13 +775,14 @@ class CodeProgressRenderer:
         if name == "model.responded":
             if not self._show_model_trace:
                 return
+            prefix = self._stream_prefix("model", event)
             tool_calls = [
                 str(tool_id).strip()
                 for tool_id in (event.get("tool_calls") or [])
                 if str(tool_id).strip()
             ]
             summary = (
-                "[model] response: "
+                f"{prefix} response: "
                 f"round={event.get('round', '?')} "
                 f"model={event.get('model') or '(unknown)'}"
             )
@@ -764,27 +794,31 @@ class CodeProgressRenderer:
             print(summary)
             text = _truncate_text(str(event.get("text") or ""), limit=240)
             if text:
-                print(f"[model] preview: {text}")
+                print(f"{prefix} preview: {text}")
             return
         if name == "tool.started":
             tool_id = str(event.get("tool_id") or "tool")
             arguments = dict(event.get("arguments") or {})
-            print(f"[tool] {tool_id}: {_tool_request_summary(tool_id, arguments)}")
+            prefix = self._stream_prefix("tool", event)
+            print(f"{prefix} {tool_id}: {_tool_request_summary(tool_id, arguments)}")
             return
         if name == "tool.completed":
             tool_id = str(event.get("tool_id") or "tool")
             payload = {"ok": True, "result": event.get("result")}
-            print(f"[tool] ok {tool_id}: {_tool_result_summary(tool_id, payload)}")
+            prefix = self._stream_prefix("tool", event)
+            print(f"{prefix} ok {tool_id}: {_tool_result_summary(tool_id, payload)}")
             return
         if name in {"tool.failed", "tool.denied"}:
             tool_id = str(event.get("tool_id") or "tool")
             message = str(event.get("error") or "denied")
-            print(f"[tool] {name.split('.')[-1]} {tool_id}: {message}")
+            prefix = self._stream_prefix("tool", event)
+            print(f"{prefix} {name.split('.')[-1]} {tool_id}: {message}")
             return
         if name == "completion.completed":
             stop_reason = str(event.get("stop_reason") or "completed")
             if stop_reason != "completed":
-                print(f"[model] stop_reason={stop_reason}")
+                prefix = self._stream_prefix("model", event)
+                print(f"{prefix} stop_reason={stop_reason}")
 
 
 def _effective_live_tool_ids(
@@ -1075,6 +1109,281 @@ def _provider_request_overrides_for_thinking_mode(
     return {"thinking": {"type": normalized}}
 
 
+class CodeConversationOutcome(BaseModel):
+    """Rendered outcome of one orchestrated DAN Code turn."""
+
+    status: str
+    assistant_messages: list[str] = Field(default_factory=list)
+    question: str | None = None
+    reports: list[CodingOrganismReport] = Field(default_factory=list)
+
+
+def _assistant_text(message: str) -> str:
+    return " ".join(str(message or "").strip().split())
+
+
+def _report_context(report: CodingOrganismReport) -> CodingConversationReportSummary:
+    return CodingConversationReportSummary(
+        status=report.status,
+        task_id=report.task_id,
+        objective=report.objective,
+        candidate_id=report.candidate_id,
+        change_summary=report.change_summary,
+        target_files=list(report.target_files),
+        test_plan=list(report.test_plan),
+        risks=list(report.risks),
+        error=report.error,
+    )
+
+
+def _report_finding(report: CodingOrganismReport) -> str:
+    target_files = ", ".join(report.target_files) or "(none)"
+    test_plan = "; ".join(report.test_plan) or "(none)"
+    return (
+        "Current bounded coding pass: "
+        f"objective={report.objective}; "
+        f"candidate={report.candidate_id or '(none)'}; "
+        f"status={report.status}; "
+        f"files={target_files}; "
+        f"tests={test_plan}"
+    )
+
+
+def _conversation_context(
+    *,
+    session: CodingCliSession,
+    workspace_root: Path,
+    model: str,
+    thinking_mode: str,
+    tool_ids: Sequence[str],
+    acceptance_criteria: Sequence[str],
+    additional_reports: Sequence[CodingOrganismReport] | None = None,
+) -> CodingConversationContext:
+    recent_reports = [
+        _report_context(report)
+        for report in [*session.turns[-4:], *(additional_reports or [])]
+    ]
+    return CodingConversationContext(
+        workspace_root=str(workspace_root),
+        model=model,
+        thinking_mode=thinking_mode,
+        tool_ids=list(tool_ids),
+        acceptance_criteria=list(acceptance_criteria),
+        pending_clarification=session.pending_clarification,
+        recent_conversation=[
+            CodingConversationMessage(
+                role=entry.role,
+                text=entry.text,
+                kind=entry.kind,
+            )
+            for entry in session.conversation[-8:]
+        ],
+        recent_reports=recent_reports[-6:],
+    )
+
+
+def _load_orchestrator_session(
+    *,
+    session: CodingCliSession,
+    controller: CodingConversationController,
+):
+    try:
+        return controller.load_session(
+            dict(session.orchestrator_state.get("durable_session") or {})
+        )
+    except Exception:
+        return None
+
+
+def _store_orchestrator_session(
+    *,
+    session: CodingCliSession,
+    controller: CodingConversationController,
+    durable_session,
+) -> None:
+    session.orchestrator_state = {
+        **dict(session.orchestrator_state),
+        "durable_session": controller.dump_session(durable_session),
+    }
+
+
+def _emit_assistant_message(
+    progress_renderer: CodeProgressRenderer,
+    message: str,
+) -> None:
+    text = _assistant_text(message)
+    if not text:
+        return
+    progress_renderer({"event": "assistant.message", "message": text})
+
+
+async def _run_orchestrated_turn(
+    *,
+    args,
+    controller: CodingConversationController,
+    llm_provider: LLMProvider,
+    workspace_root: Path,
+    model: str,
+    objective: str,
+    session: CodingCliSession,
+    tool_ids: Sequence[str],
+    acceptance_criteria: Sequence[str],
+    max_tool_rounds: int,
+    max_tool_calls: int,
+    approval_mode: str,
+    thinking_mode: str,
+    run_root: Path,
+    approval_callback=None,
+    progress_renderer: CodeProgressRenderer,
+) -> CodeConversationOutcome:
+    assistant_messages: list[str] = []
+    reports: list[CodingOrganismReport] = []
+    question: str | None = None
+    session.record_message(role="user", text=objective)
+
+    orchestrator_session = _load_orchestrator_session(
+        session=session,
+        controller=controller,
+    )
+    decision, orchestrator_session = await controller.decide_user_turn(
+        session=orchestrator_session,
+        user_message=objective,
+        pending_clarification=session.pending_clarification,
+        context=_conversation_context(
+            session=session,
+            workspace_root=workspace_root,
+            model=model,
+            thinking_mode=thinking_mode,
+            tool_ids=tool_ids,
+            acceptance_criteria=acceptance_criteria,
+        ),
+    )
+    _store_orchestrator_session(
+        session=session,
+        controller=controller,
+        durable_session=orchestrator_session,
+    )
+
+    def _record_assistant(text: str, *, kind: str = "message") -> None:
+        cleaned = _assistant_text(text)
+        if not cleaned:
+            return
+        assistant_messages.append(cleaned)
+        session.record_message(role="assistant", text=cleaned, kind=kind)
+        _emit_assistant_message(progress_renderer, cleaned)
+
+    if decision.public_response:
+        _record_assistant(decision.public_response)
+
+    if decision.action == "respond":
+        session.pending_clarification = None
+        return CodeConversationOutcome(
+            status="responded",
+            assistant_messages=assistant_messages,
+            question=None,
+            reports=[],
+        )
+
+    if decision.action == "clarify":
+        question = _assistant_text(decision.clarifying_question or decision.public_response)
+        session.pending_clarification = question or None
+        if question and question not in assistant_messages:
+            _record_assistant(question, kind="clarification")
+        return CodeConversationOutcome(
+            status="clarify",
+            assistant_messages=assistant_messages,
+            question=question,
+            reports=[],
+        )
+
+    session.pending_clarification = None
+    next_objective = _assistant_text(decision.coding_objective or objective)
+    next_repair_brief = _assistant_text(decision.repair_brief)
+    next_research_findings = _dedupe(
+        [*session.carry_forward_findings(), *list(decision.research_findings)]
+    )
+    effective_acceptance_criteria = _dedupe(
+        [*list(acceptance_criteria), *list(decision.acceptance_criteria)]
+    ) or list(acceptance_criteria)
+    max_supervision_loops = 2
+    base_turn_number = session.next_turn_number()
+
+    for continuation_index in range(max_supervision_loops):
+        report_turn_number = base_turn_number + len(reports)
+        report = await _run_coding_turn(
+            args=args,
+            llm_provider=llm_provider,
+            workspace_root=workspace_root,
+            model=model,
+            objective=next_objective,
+            task_id=f"{args.task_id}:{report_turn_number}",
+            research_findings=next_research_findings,
+            evidence_summaries=[],
+            workdir=_build_run_workdir(run_root, turn_number=report_turn_number),
+            acceptance_criteria=effective_acceptance_criteria,
+            tool_ids=tool_ids,
+            max_tool_rounds=max_tool_rounds,
+            max_tool_calls=max_tool_calls,
+            approval_mode=approval_mode,
+            thinking_mode=thinking_mode,
+            repair_brief=next_repair_brief,
+            approval_callback=approval_callback,
+            event_callback=progress_renderer,
+        )
+        reports.append(report)
+
+        review, orchestrator_session = await controller.review_coding_result(
+            session=orchestrator_session,
+            objective=next_objective,
+            report_summary=_report_context(report),
+            context=_conversation_context(
+                session=session,
+                workspace_root=workspace_root,
+                model=model,
+                thinking_mode=thinking_mode,
+                tool_ids=tool_ids,
+                acceptance_criteria=effective_acceptance_criteria,
+                additional_reports=reports,
+            ),
+        )
+        _store_orchestrator_session(
+            session=session,
+            controller=controller,
+            durable_session=orchestrator_session,
+        )
+        if review.public_response:
+            _record_assistant(review.public_response)
+
+        if review.action == "continue" and continuation_index + 1 < max_supervision_loops:
+            next_objective = _assistant_text(review.next_objective or next_objective)
+            next_repair_brief = _assistant_text(review.repair_brief or report.error or next_repair_brief)
+            next_research_findings = _dedupe(
+                [*next_research_findings, _report_finding(report), *list(review.research_findings)]
+            )
+            continue
+
+        if review.action == "clarify":
+            question = _assistant_text(review.clarifying_question or review.public_response)
+            session.pending_clarification = question or None
+            if question and question not in assistant_messages:
+                _record_assistant(question, kind="clarification")
+            return CodeConversationOutcome(
+                status="clarify",
+                assistant_messages=assistant_messages,
+                question=question,
+                reports=reports,
+            )
+        break
+
+    final_status = reports[-1].status if reports else "responded"
+    return CodeConversationOutcome(
+        status=final_status,
+        assistant_messages=assistant_messages,
+        question=question,
+        reports=reports,
+    )
+
+
 async def _run_coding_turn(
     *,
     args,
@@ -1092,6 +1401,7 @@ async def _run_coding_turn(
     max_tool_calls: int,
     approval_mode: str,
     thinking_mode: str,
+    repair_brief: str,
     approval_callback=None,
     event_callback=None,
 ) -> CodingOrganismReport:
@@ -1103,7 +1413,7 @@ async def _run_coding_turn(
         thinking_mode=thinking_mode,
         task_id=task_id,
     )
-    return await run_coding_organism_live(
+    result = await run_coding_organism_live(
         workdir,
         llm_provider=llm_provider,
         objective=objective,
@@ -1113,7 +1423,7 @@ async def _run_coding_turn(
         organism_id=str(args.organism_id),
         acceptance_criteria=acceptance_criteria,
         research_findings=_dedupe(list(args.research_findings) + list(research_findings)),
-        repair_brief=str(args.repair_brief),
+        repair_brief=str(repair_brief),
         evidence_summaries=_dedupe(list(args.evidence_summaries) + list(evidence_summaries)),
         tool_ids=tool_ids,
         workspace_root=workspace_root,
@@ -1124,6 +1434,13 @@ async def _run_coding_turn(
         event_callback=event_callback,
         session_context=session_context,
     )
+    if isinstance(result, CodingOrganismReport):
+        return result
+    if hasattr(result, "model_dump"):
+        return CodingOrganismReport.model_validate(result.model_dump(mode="json"))
+    if isinstance(result, dict):
+        return CodingOrganismReport.model_validate(result)
+    raise TypeError(f"Unsupported coding report result: {type(result).__name__}")
 
 
 def _print_repl_help() -> None:
@@ -1133,7 +1450,8 @@ def _print_repl_help() -> None:
     print("/status  Show workspace/session status")
     print("/history Show recent coding turns")
     print("/summary Show session-level file/test summary")
-    print("/reset   Clear carried-forward session context")
+    print("/reset   Clear carried-forward conversation and coding context")
+    print("/clear   Alias for /reset")
     print("/exit    Exit the coding CLI")
     print()
     print("Notes:")
@@ -1156,10 +1474,13 @@ def _print_session_status(
     print(f"workspace: {workspace_root}")
     print(f"session: {session.session_id}")
     print(f"turns: {len(session.turns)}")
+    print(f"conversation messages: {len(session.conversation)}")
     print(f"model: {model}")
     print(f"thinking mode: {thinking_mode}")
     print(f"tools: {', '.join(tool_ids) or '(none)'}")
     print(f"approval mode: {approval_mode}")
+    if session.pending_clarification:
+        print(f"pending clarification: {session.pending_clarification}")
     print(f"session persistence: {'enabled' if persist_session else 'disabled'}")
     if persist_session:
         print(f"session file: {product_paths.session}")
@@ -1349,6 +1670,7 @@ def _print_config_payload(payload: dict[str, Any], *, as_json: bool) -> None:
 def _interactive_loop(
     *,
     args,
+    controller: CodingConversationController,
     llm_provider: LLMProvider,
     workspace_root: Path,
     model: str,
@@ -1410,7 +1732,7 @@ def _interactive_loop(
         if objective == "/summary":
             _print_session_rollup(session)
             continue
-        if objective == "/reset":
+        if objective in {"/reset", "/clear"}:
             session = CodingCliSession(workspace_root=str(workspace_root))
             if persist_session:
                 save_code_product_session(product_paths, session)
@@ -1424,38 +1746,40 @@ def _interactive_loop(
         ):
             continue
 
-        turn_number = session.next_turn_number()
-        report = asyncio.run(
-            _run_coding_turn(
+        outcome = asyncio.run(
+            _run_orchestrated_turn(
                 args=args,
+                controller=controller,
                 llm_provider=llm_provider,
                 workspace_root=workspace_root,
                 model=model,
                 objective=objective,
-                task_id=session.task_id_for(str(args.task_id)),
-                research_findings=session.carry_forward_findings(),
-                evidence_summaries=[],
-                workdir=_build_run_workdir(run_root, turn_number=turn_number),
-                acceptance_criteria=acceptance_criteria,
+                session=session,
                 tool_ids=tool_ids,
+                acceptance_criteria=acceptance_criteria,
                 max_tool_rounds=max_tool_rounds,
                 max_tool_calls=max_tool_calls,
                 approval_mode=approval_mode,
                 thinking_mode=thinking_mode,
+                run_root=run_root,
                 approval_callback=approval_state,
-                event_callback=progress_renderer,
+                progress_renderer=progress_renderer,
             )
         )
-        session.record_turn(report)
-        if persist_session:
-            _persist_session(product_paths=product_paths, session=session, report=report)
-        _render_report(
-            report,
-            as_json=bool(args.json),
-            output_path=args.output,
-            workspace_root=workspace_root,
-        )
-        if not args.json:
+        if outcome.reports:
+            for report in outcome.reports:
+                session.record_turn(report)
+                if persist_session:
+                    _persist_session(product_paths=product_paths, session=session, report=report)
+            _render_report(
+                outcome.reports[-1],
+                as_json=bool(args.json),
+                output_path=args.output,
+                workspace_root=workspace_root,
+            )
+        elif persist_session:
+            save_code_product_session(product_paths, session)
+        if not args.json and outcome.reports:
             _print_session_rollup(session)
             print()
 
@@ -1586,10 +1910,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         enabled=not bool(args.json) and not bool(args.quiet_progress),
         show_model_trace=bool(args.show_model_trace),
     )
+    conversation_controller = CodingConversationController(
+        provider=provider,
+        model=live_model,
+        provider_request_overrides=_provider_request_overrides_for_thinking_mode(
+            thinking_mode
+        ),
+        event_callback=progress_renderer,
+    )
 
     if args.objective is None:
         return _interactive_loop(
             args=args,
+            controller=conversation_controller,
             llm_provider=provider,
             workspace_root=workspace_root,
             model=live_model,
@@ -1607,38 +1940,55 @@ def main(argv: Sequence[str] | None = None) -> int:
             progress_renderer=progress_renderer,
         )
 
-    report = asyncio.run(
-        _run_coding_turn(
+    outcome = asyncio.run(
+        _run_orchestrated_turn(
             args=args,
+            controller=conversation_controller,
             llm_provider=provider,
             workspace_root=workspace_root,
             model=live_model,
             objective=str(args.objective),
-            task_id=session.task_id_for(str(args.task_id)),
-            research_findings=session.carry_forward_findings(),
-            evidence_summaries=[],
-            workdir=_build_run_workdir(run_root, turn_number=session.next_turn_number()),
-            acceptance_criteria=acceptance_criteria,
+            session=session,
             tool_ids=tool_ids,
+            acceptance_criteria=acceptance_criteria,
             max_tool_rounds=max_tool_rounds,
             max_tool_calls=max_tool_calls,
             approval_mode=approval_mode,
             thinking_mode=thinking_mode,
+            run_root=run_root,
             approval_callback=approval_state,
-            event_callback=progress_renderer,
+            progress_renderer=progress_renderer,
         )
     )
-    session.record_turn(report)
-    if persist_session:
-        _persist_session(product_paths=product_paths, session=session, report=report)
-    _render_report(
-        report,
-        as_json=bool(args.json),
-        output_path=args.output,
-        workspace_root=workspace_root,
-    )
+    for report in outcome.reports:
+        session.record_turn(report)
+        if persist_session:
+            _persist_session(product_paths=product_paths, session=session, report=report)
+    if persist_session and not outcome.reports:
+        save_code_product_session(product_paths, session)
 
-    return 0 if report.status == "completed" else 1
+    if outcome.reports:
+        _render_report(
+            outcome.reports[-1],
+            as_json=bool(args.json),
+            output_path=args.output,
+            workspace_root=workspace_root,
+        )
+        return 0 if outcome.reports[-1].status == "completed" else 1
+
+    payload = outcome.model_dump(mode="json")
+    if args.output:
+        destination = _resolve_user_path(args.output, base_dir=workspace_root)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
+    elif not outcome.assistant_messages and outcome.question:
+        print(f"[assistant] {outcome.question}")
+    return 0
 
 
 if __name__ == "__main__":
