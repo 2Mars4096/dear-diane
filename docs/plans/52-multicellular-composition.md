@@ -1,6 +1,6 @@
 # 52: Multicellular Composition
 
-**Status:** not-started
+**Status:** completed
 **Goal:** Build the first trustworthy multicellular layer on top of the hardened universal worker by introducing signaling, tissues, organs, and one bounded reference organism.
 
 ## Problem
@@ -23,6 +23,7 @@ In scope:
 - direct handoff and broadcast/event signaling contracts
 - reusable tissue-level coordination patterns
 - bounded organ-level modules with strict interfaces
+- first-class deep-research and universal-validator organs
 - one reference organism that proves the architecture end to end
 
 Out of scope:
@@ -33,18 +34,18 @@ Out of scope:
 - trying to solve every future multi-agent use case in the first organism
 
 ## Tasks
-- [ ] 1. Define the multicellular sequencing rule
-  - [ ] 1-1. Keep `52-*` blocked on the acceptance bar from [51-5-single-cell-evals-and-hardening](51-5-single-cell-evals-and-hardening.md)
-- [ ] 2. Land the signaling layer
-  - [ ] 2-1. Plan and sequence [52-1-cell-signaling-and-handoff-contracts](52-1-cell-signaling-and-handoff-contracts.md)
-- [ ] 3. Land tissue-level coordination patterns
-  - [ ] 3-1. Plan and sequence [52-2-tissue-patterns-worker-pools-and-quorum](52-2-tissue-patterns-worker-pools-and-quorum.md)
-- [ ] 4. Land organ-level bounded modules
-  - [ ] 4-1. Plan and sequence [52-3-organ-patterns-research-coding-validation-synthesis](52-3-organ-patterns-research-coding-validation-synthesis.md)
-- [ ] 5. Assemble and prove one reference organism
-  - [ ] 5-1. Plan and sequence [52-4-reference-organism-project-execution-system](52-4-reference-organism-project-execution-system.md)
-- [ ] 6. Exit with one coherent multicellular story
-  - [ ] 6-1. Confirm that the same cell contract can be reused across tissues, organs, and the reference organism without collapsing back into ad hoc orchestration
+- [x] 1. Define the multicellular sequencing rule
+  - [x] 1-1. Keep `52-*` blocked on the acceptance bar from [51-5-single-cell-evals-and-hardening](51-5-single-cell-evals-and-hardening.md)
+- [x] 2. Land the signaling layer
+  - [x] 2-1. Plan and sequence [52-1-cell-signaling-and-handoff-contracts](52-1-cell-signaling-and-handoff-contracts.md)
+- [x] 3. Land tissue-level coordination patterns
+  - [x] 3-1. Plan and sequence [52-2-tissue-patterns-worker-pools-and-quorum](52-2-tissue-patterns-worker-pools-and-quorum.md)
+- [x] 4. Land organ-level bounded modules
+  - [x] 4-1. Plan and sequence [52-3-organ-patterns-research-coding-validation-synthesis](52-3-organ-patterns-research-coding-validation-synthesis.md)
+- [x] 5. Assemble and prove one reference organism
+  - [x] 5-1. Plan and sequence [52-4-reference-organism-project-execution-system](52-4-reference-organism-project-execution-system.md)
+- [x] 6. Exit with one coherent multicellular story
+  - [x] 6-1. Confirm that the same cell contract can be reused across tissues, organs, and the reference organism without collapsing back into ad hoc orchestration
 
 ## Dependencies / Sequencing
 
@@ -82,4 +83,11 @@ Rationale:
 
 ## Notes
 - This plan is the execution counterpart to the “cells -> tissues -> organs -> organism” framing in [docs/universal-worker-strategy-summary.md](../universal-worker-strategy-summary.md).
-- `52-*` should stay blocked until `51-5` makes the single-cell viability bar explicit and green.
+- `52-*` stayed blocked until `51-5` made the single-cell viability bar explicit and green. That gate is now satisfied by the `tests/eval/test_single_cell_acceptance_gate.py` basket plus the focused worker-core regressions.
+- 2026-04-08: `52-1` is now landed in the main workspace. `src/dan/worker/signaling.py` and `src/dan/worker/composition.py` establish typed handoff packets, supervisory signals, append-only cross-cell traces, and the thin `execute_cell_handoff(...)` bridge over `WorkerCoreExecutor`; the focused signaling basket in `tests/test_worker/test_model.py` passes in the main workspace.
+- 2026-04-08: `52-2` is now landed in the main workspace. `src/dan/worker/tissue.py` establishes reusable worker-pool, quorum, and retrieval-enrichment tissue patterns on top of the existing `CellHandoffPacket` membrane rather than inventing a second coordination primitive.
+- 2026-04-08: the first bounded organ layer is now landed in the main workspace. `src/dan/worker/organ.py` adds the strict two-stage organ membrane (`tissue -> lead cell`), organ boundary contracts, escalation surfaces, and bounded organ presets; `tests/eval/test_bounded_organ_patterns.py` proves the first hardened universal-validator organ plus the shared preset shape.
+- 2026-04-08: `52-3` is now fully landed in the main workspace. The bounded organ runtime lives under `src/dan/worker/organs/__init__.py`, `src/dan/worker/organ.py` stays as the compatibility export surface, and the first organ set now includes explicit deep-research, coding/build, universal-validator, and synthesis presets with strict outward contracts.
+- 2026-04-08: `52-4` is now landed in the main workspace. `src/dan/worker/organisms/project_execution.py` proves one bounded project-execution organism with an explicit planner brain, research/build/validator/synthesis organs, a bounded validator-driven repair loop, and final accountability synthesis instead of ad hoc top-level orchestration.
+- 2026-04-08: the full multicellular proof basket is green in the main workspace: `PYTHONPATH=src pytest -q tests/test_worker/test_model.py tests/test_worker/test_reference_organism.py tests/eval/test_reference_organism_acceptance.py` passed (`24 passed`), which closes the intended `cells -> tissues -> organs -> organism` story for this phase.
+- The first serious organs should include a deep researcher and a universal validator. The meta workflow builder remains rooted in [45-4-meta-workflow-builder-eval-harness](45-4-meta-workflow-builder-eval-harness.md) and should only graduate into `52-*` after it proves itself there.

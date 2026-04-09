@@ -1,6 +1,6 @@
 # 51: Universal Worker Hardening And Standalone Cell
 
-**Status:** not-started
+**Status:** completed
 **Goal:** Mature the reusable universal worker into a truly independent, portable, and powerful cell that can later serve as the foundation for multicellular DAN systems.
 
 ## Problem
@@ -33,21 +33,21 @@ Out of scope:
 - a giant second framework parallel to DAN
 
 ## Tasks
-- [ ] 1. Lock the independent-cell boundary
-  - [ ] 1-1. Define the minimum properties every standalone cell must own: identity, instruction, capability surface, memory/evidence inputs, output contract, and governance limits
-  - [ ] 1-2. Keep the cell boundary small and explicit so later organism layers are not forced back into prompt spaghetti
-- [ ] 2. Land the staged acquisition hardening track
-  - [ ] 2-1. Plan and sequence [51-1-progressive-context-acquisition-and-continuation-hooks](51-1-progressive-context-acquisition-and-continuation-hooks.md)
-- [ ] 3. Land the capability/tool hardening track
-  - [ ] 3-1. Plan and sequence [51-2-capability-manifest-and-selective-tool-loading](51-2-capability-manifest-and-selective-tool-loading.md)
-- [ ] 4. Land the memory/evidence hardening track
-  - [ ] 4-1. Plan and sequence [51-3-memory-and-evidence-lifecycle](51-3-memory-and-evidence-lifecycle.md)
-- [ ] 5. Land the standalone runner track
-  - [ ] 5-1. Plan and sequence [51-4-standalone-worker-runner](51-4-standalone-worker-runner.md)
-- [ ] 6. Prove single-cell viability
-  - [ ] 6-1. Plan and sequence [51-5-single-cell-evals-and-hardening](51-5-single-cell-evals-and-hardening.md)
-- [ ] 7. Exit with one clear acceptance bar
-  - [ ] 7-1. Confirm the worker can run independently, acquire only necessary context, preserve continuation hooks, respect governance limits, and produce contracted outputs on a small canonical task set
+- [x] 1. Lock the independent-cell boundary
+  - [x] 1-1. Define the minimum properties every standalone cell must own: identity, instruction, capability surface, memory/evidence inputs, output contract, and governance limits
+  - [x] 1-2. Keep the cell boundary small and explicit so later organism layers are not forced back into prompt spaghetti
+- [x] 2. Land the staged acquisition hardening track
+  - [x] 2-1. Plan and sequence [51-1-progressive-context-acquisition-and-continuation-hooks](51-1-progressive-context-acquisition-and-continuation-hooks.md)
+- [x] 3. Land the capability/tool hardening track
+  - [x] 3-1. Plan and sequence [51-2-capability-manifest-and-selective-tool-loading](51-2-capability-manifest-and-selective-tool-loading.md)
+- [x] 4. Land the memory/evidence hardening track
+  - [x] 4-1. Plan and sequence [51-3-memory-and-evidence-lifecycle](51-3-memory-and-evidence-lifecycle.md)
+- [x] 5. Land the standalone runner track
+  - [x] 5-1. Plan and sequence [51-4-standalone-worker-runner](51-4-standalone-worker-runner.md)
+- [x] 6. Prove single-cell viability
+  - [x] 6-1. Plan and sequence [51-5-single-cell-evals-and-hardening](51-5-single-cell-evals-and-hardening.md)
+- [x] 7. Exit with one clear acceptance bar
+  - [x] 7-1. Confirm the worker can run independently, acquire only necessary context, preserve continuation hooks, respect governance limits, and produce contracted outputs on a small canonical task set
 
 ## Dependencies / Sequencing
 
@@ -90,3 +90,8 @@ Rationale:
 - This plan is the execution counterpart to [docs/universal-worker-strategy-summary.md](../universal-worker-strategy-summary.md).
 - `52-*` depends on `51-*`; multicellular composition should not start before the cell boundary is strong enough to stand on its own.
 - `46-*` established the Worker primitive, while the remaining `50-*` cleanup still removes some runtime seams around it. `51-*` assumes those lower-level boundary cleanups continue to move in the same direction rather than reintroducing compatibility drift.
+- 2026-04-07: `51-1` is landed in the main workspace. The worker-core request/result membrane now carries explicit staged-acquisition contracts (`AcquisitionRequest`, `DiscoveryCatalog`, `AcquisitionSelection`, `ExpandedContext`, `ContinuationPayload`), local tool-catalog/file-inventory discovery helpers, and executor-side `discover -> select -> expand -> act` orchestration with focused regression coverage.
+- 2026-04-08: `51-2` and `51-3` are now landed in the main workspace. The worker core now exposes typed `CapabilityManifest` objects plus lazy manifest discovery/hydration for tool catalogs, and it also carries a layered `working` / `episodic` / `retained` memory lifecycle with bounded write-back, compaction, and ref-first rehydration.
+- 2026-04-08 follow-up: the single-cell membrane is now request-owned all the way through execution. Tool exposure flows through `ToolUseContract`, memory reuse/write authority flows through `MemoryRequest`, and multicellular handoff hooks can normalize into typed communication channels without reintroducing DAN-specific prompt glue.
+- 2026-04-08: `51-4` is now landed in the main workspace. `src/dan/worker/runner.py` provides the small standalone runner surface (`StandaloneWorkerRunner`, `StandaloneRunPolicy`, session state, compact events/attempts, and operator observability) without pulling organism-level orchestration into the cell boundary.
+- 2026-04-08: `51-5` is now landed in the main workspace. The single-cell acceptance bar is explicit and green via `tests/eval/test_single_cell_acceptance_gate.py` plus the focused worker-core regressions for staged acquisition, manifest selectivity, memory lifecycle, and standalone runner recovery/budget behavior.

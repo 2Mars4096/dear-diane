@@ -89,6 +89,200 @@ Open `http://localhost:5173`. The editor connects to the backend at `localhost:8
 
 **Chat: build + run a workflow** — Open a workflow tab, set chat to **Agent**, use `plan_graph_mutations` to edit, then ask the model to **`start_run`** with any `inputs` (e.g. `watchlist_path`). **Author equity/watchlist workflows in DAN (Agent chat), not by pasting large generated graphs/code from outside.** Prompts: [`docs/chat-equity-workflow-cookbook.md`](docs/chat-equity-workflow-cookbook.md).
 
+### Run the Reference Coding Organism
+
+This is a local, no-server CLI around the bounded `research -> coding -> validation -> synthesis` reference organism. Demo mode stays deterministic; live mode uses the same organism with a local tool basket:
+
+```bash
+dan organism --json
+# or
+dan-organism --json
+```
+
+You can override the bounded coding objective directly:
+
+```bash
+dan organism "Repair the validator path and keep the delivery summary explicit."
+```
+
+Live local coding mode:
+
+```bash
+dan organism --live --model gpt-4.1
+```
+
+The default live tool basket is:
+- `list_directory`
+- `file_read`
+- `file_write`
+- `shell_command`
+- `git_status`
+- `git_diff`
+- `git_log`
+
+You can inspect or narrow it explicitly:
+
+```bash
+dan organism --list-tools
+dan organism --live --model gpt-4.1 --tool file_read --tool file_write --tool shell_command
+```
+
+### Run DAN Code
+
+If you want only the coding surface, use the dedicated `dan code` product instead of the full reference organism:
+
+```bash
+dan code --workspace .
+# or
+dan-code --workspace .
+# or
+dancode --workspace .
+```
+
+It uses `.env` / environment settings by default for the provider and model, and keeps product state under `./.dan-code/` inside the workspace:
+
+- `config.json` — workspace-local DAN Code defaults
+- `session.json` — resumable session state
+- `transcript.jsonl` — compact run history
+- `runs/` — per-turn evidence notes
+
+`dan code` runs directly on a dedicated coding organism built from the same universal worker membrane. Its runtime shape is explicit:
+
+- one tool-free orchestrator
+- a dynamic pool of homogeneous coding workers
+- one aggregation cell
+- one validator cell
+
+The orchestrator decides worker fan-out per attempt, the workers stay cloneable, the aggregator owns the final bounded candidate, and the validator can reject that candidate and force a repair round. It does not route through the full DAN graph engine unless you choose to build that bridge later.
+
+In the CLI, that same orchestrator is now the public voice of the run: it narrates planning, worker execution, candidate synthesis, validation, and repair in assistant-style updates without exposing hidden chain-of-thought.
+
+Role-level tool exposure is also explicit:
+
+- orchestrator: no local tools
+- workers: read-oriented local tools (`file_read`, `shell_command`, git inspection, etc.)
+- aggregator: full selected tool basket, including writes
+- validator: read-oriented local tools for inspection and focused validation
+
+Each real coding turn now carries standard runtime context automatically, including workspace root, current working directory, current date/time/timezone, active model, enabled tool IDs, and approval mode. That keeps the model from wasting early tool calls on facts the runtime already knows.
+
+Provider thinking mode is also configurable per workspace or per run:
+
+- `--thinking-mode auto` keeps the provider default/compatibility behavior
+- `--thinking-mode disabled` favors faster visible answer text on providers like Kimi
+- `--thinking-mode enabled` keeps explicit reasoning mode on when the provider supports it
+
+`dan code` resolves thinking mode in this order: CLI flag -> `.dan-code/config.json` -> `DAN_CODE_THINKING_MODE` from `.env` / environment -> `auto`.
+
+Bootstrap the workspace-local product config explicitly:
+
+```bash
+dan code --workspace . --init
+dan code --workspace . --show-config
+```
+
+If you omit the task, it starts an interactive coding session and resumes the saved workspace session automatically when present:
+
+```bash
+dan code --workspace .
+```
+
+Inside the session:
+- `/help` shows commands
+- `/tools` lists available local tools
+- `/status` shows model, tools, and session paths
+- `/history` shows recent coding turns
+- `/summary` shows the session-level file/test rollup
+- `/reset` clears carried-forward session context
+- `/exit` leaves the session
+
+Interactive sessions now default to `--approval-mode confirm-risky`, which prompts before `file_write`, `shell_command`, and other mutating tools. One-shot runs default to `--approval-mode auto`. You can override that explicitly:
+
+```bash
+dan code --workspace . --approval-mode auto
+dan code --workspace . --approval-mode confirm-all
+dan code --workspace . --thinking-mode disabled
+dan code --workspace . --show-model-trace
+```
+
+Explicit local prompts like `hi` no longer trigger the tool loop; DAN Code now responds with a short shell intro plus concrete next-step guidance. Simple session/meta queries such as `what is the root dir now` or `tell me the results` are also answered locally from session state. Typo variants like `hii` are not special-cased and still follow the normal coding-run path.
+
+By default, `dan code` now prints public orchestrator feedback during a run, so you can see planning, worker execution, aggregation, validation, retries, and completion in assistant-style updates instead of only raw tool calls. Common read-heavy tools such as `list_directory` and `file_read` are also summarized compactly so the useful signal stays visible.
+
+`--show-model-trace` adds a more detailed public progress trace to the CLI. It prints model request/response previews alongside tool calls, but it does not expose hidden chain-of-thought or private scratchpad text.
+
+Give it a bounded coding objective directly:
+
+```bash
+dan code --workspace . \
+  "Inspect the failing worker tests, patch the smallest viable fix, run focused validation, and summarize the result."
+```
+
+Useful options:
+
+```bash
+dan code --list-tools
+dan code --workspace . --json
+dan code --workspace . --tool file_read --tool file_write --tool shell_command
+dan code --workspace . --new-session
+dan code --workspace . --no-session-persist
+dan code --workspace . --quiet-progress
+dan code --workspace . --show-model-trace
+```
+
+### Measure Raw API Latency
+
+If you want to isolate provider latency from DAN runtime overhead, use the raw parallel chat-completions probe:
+
+```bash
+python scripts/measure_raw_llm_latency.py --model gpt-4.1 --count 10 --concurrency 10
+```
+
+It hits an OpenAI-compatible `/chat/completions` endpoint directly and reports per-call timings plus aggregate latency stats (`avg`, `median`, `p95`, `min`, `max`, total wall time).
+
+If you want streaming-first responsiveness numbers, use:
+
+```bash
+python scripts/measure_raw_llm_latency.py --model gpt-4.1 --count 10 --concurrency 10 --stream
+```
+
+That additionally reports:
+
+- `first_chunk_*` latency
+- `first_text_*` latency for the first visible streamed text chunk
+- `first_answer_text_*` latency for the first actual answer-content chunk
+
+and can print the streamed text live with:
+
+```bash
+python scripts/measure_raw_llm_latency.py --model gpt-4.1 --stream --print-stream
+```
+
+It reads the same env settings when present:
+
+- `DAN_MODEL` / `DAN_LLM_MODEL`
+- `DAN_LLM_API_KEY` / `OPENAI_API_KEY`
+- `DAN_LLM_BASE_URL` / `DAN_BASE_URL` / `OPENAI_BASE_URL`
+
+You can also force provider thinking mode when the backend supports it:
+
+```bash
+python scripts/measure_raw_llm_latency.py --model kimi-k2.5 --stream --thinking-mode enabled
+python scripts/measure_raw_llm_latency.py --model kimi-k2.5 --stream --thinking-mode disabled
+```
+
+This matters for Kimi-style responses where streaming may emit `reasoning_content` before normal answer text. The probe treats either path as first visible text, while still measuring first answer-text latency separately.
+
+You can also benchmark an exact raw payload:
+
+```bash
+python scripts/measure_raw_llm_latency.py \
+  --payload-file .tmp/chat-payload.json \
+  --count 10 \
+  --concurrency 10 \
+  --json
+```
+
 ### Run a Workflow from Python
 
 ```python

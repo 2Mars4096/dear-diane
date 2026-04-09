@@ -21,7 +21,7 @@ from dan.worker import Worker
 
 **Node** — An operator (atomic unit of work) or a composite (sub-graph that behaves as a single node). The runtime currently exposes 20+ node types, including the newer `worker` contract primitive.
 
-For new authored compute stages, prefer `wf.worker(...)` or the classic compute aliases (`wf.llm(...)`, `wf.tool(...)`, `wf.code(...)`, `wf.rag(...)`, `wf.input_node(...)`, `wf.reflection(...)`, `wf.human(...)`, `wf.human_in_the_loop(...)`, `wf.vote(...)`, `wf.ensemble(...)`) that now normalize through the Worker contract surface internally. If you want those aliases to emit canonical `worker` nodes directly, use `workflow(..., canonical_workers=True)` or `DAN_WORKER_BUILDER=canary|enabled`. If you need to import the older concrete compute/compatibility model classes directly, prefer `dan.models.legacy` as the canonical compatibility surface rather than mixing imports from `dan.models.nodes` and `dan.models.control_flow`.
+For new authored compute stages, prefer `wf.worker(...)` or the classic compute aliases (`wf.llm(...)`, `wf.tool(...)`, `wf.code(...)`, `wf.rag(...)`, `wf.input_node(...)`, `wf.reflection(...)`, `wf.human(...)`, `wf.human_in_the_loop(...)`, `wf.vote(...)`, `wf.ensemble(...)`, `wf.router(...)`, `wf.validator(...)`) that now normalize through the Worker contract surface internally. If you want those aliases to emit canonical `worker` nodes directly, use `workflow(..., canonical_workers=True)` or leave `canonical_workers` unset and let the default `DAN_WORKER_BUILDER` policy apply. If you need to import the older concrete compute/compatibility model classes directly, prefer `dan.models.legacy` as the canonical compatibility surface rather than mixing imports from `dan.models.nodes` and `dan.models.control_flow`.
 
 **Edge** — A typed connection between node ports. Three types: data, control, context.
 
@@ -46,7 +46,7 @@ wf = workflow(
     "my_workflow",              # graph name (required)
     description="What it does", # optional
     tags=["demo", "research"],  # optional
-    canonical_workers=False,    # optional: emit worker-native compute-like aliases
+    canonical_workers=None,     # optional: follow DAN_WORKER_BUILDER (unset defaults to Worker-first)
     lint_autogen="disabled",    # optional: disabled | canary | enabled
     lint_intent_refiner=None,   # optional: callable(base_intent, context) -> refined intent
 )
@@ -72,15 +72,16 @@ You can also set `DAN_LINT_AUTOGEN=disabled|canary|enabled` as a process-wide de
 
 `lint_intent_refiner` is an optional graph-construction-time hook for complex workflows. When provided, compile/build-time lint autogen passes the deterministic intent string plus a small context dict (`graph_name`, source/target IDs/types/descriptions, target role/port, resolved instruction) to the callable and uses the returned text if it is non-empty. If the callable is absent or raises, autogen falls back to the deterministic intent text.
 
-`canonical_workers` controls whether the classic compute-like aliases (`wf.llm(...)`, `wf.tool(...)`, `wf.code(...)`, `wf.input_node(...)`, `wf.reduce(...)`, `wf.rag(...)`, `wf.reflection(...)`, `wf.human(...)`, `wf.human_in_the_loop(...)`, `wf.vote(...)`, `wf.ensemble(...)`) emit legacy compute/compatibility node types or canonical `worker` nodes:
-- `False` (default): keep emitting legacy public graph shapes
+`canonical_workers` controls whether the classic compute-like aliases (`wf.llm(...)`, `wf.tool(...)`, `wf.code(...)`, `wf.input_node(...)`, `wf.reduce(...)`, `wf.rag(...)`, `wf.reflection(...)`, `wf.human(...)`, `wf.human_in_the_loop(...)`, `wf.vote(...)`, `wf.ensemble(...)`, `wf.router(...)`, `wf.validator(...)`) emit legacy compute/compatibility node types or canonical `worker` nodes:
+- `None` (default): follow the process-wide `DAN_WORKER_BUILDER` policy; when that env var is unset or blank, DAN now defaults to Worker-first emission
+- `False`: keep emitting legacy public graph shapes
 - `True`: emit `worker` nodes directly while preserving the familiar default ports (`text` for `llm`, `result` for `tool` / `code`)
 
-You can also set `DAN_WORKER_BUILDER=disabled|canary|enabled` as a process-wide default. `canary` and `enabled` both currently opt that broader compute-like alias bucket into Worker-native emission; retained control/runtime primitives such as router, validator, gate, loops, and orchestration nodes still stay explicit.
+You can also set `DAN_WORKER_BUILDER=disabled|canary|enabled` as a process-wide default. Unset or blank now behaves like `enabled`. `disabled` is the explicit compatibility opt-out, while `canary` and `enabled` currently both prefer Worker-native emission for the broader compute-like alias bucket. Only the true retained control/runtime primitives such as `gate`, `for_each`, `goal_loop`, `parallel_subagents`, `orchestrator`, and `agent_team` stay explicit.
 
-The markdown loader/compiler now honors that same authoring gate for compute-like agent specs. With `DAN_WORKER_BUILDER=canary|enabled`, loaded `llm` / `tool` / `code` / `human` / `reflection` / `vote`-style agents are Workerized while retained control/runtime primitives such as `gate`, `for_each`, `goal_loop`, `parallel_subagents`, `orchestrator`, and `agent_team` stay explicit.
+The markdown loader/compiler now honors that same authoring gate for compatible compute-like agent specs. With Worker-first mode enabled, loaded compute-style agents are Workerized while the retained control/runtime primitives such as `gate`, `for_each`, `goal_loop`, `parallel_subagents`, `orchestrator`, and `agent_team` stay explicit.
 
-Chat/editor mutation add-node follows the same additive rollout too. With `DAN_WORKER_BUILDER=canary|enabled`, `GraphMutator` now Workerizes the full safe compute-like mutation bucket: `llm_operator`, `tool_operator`, `code_operator`, `rag_operator`, `input`, `reflection`, `human`, `human_in_the_loop`, `vote`, and `reduce`. It preserves their familiar default ports and maps their specialized config onto Worker metadata while leaving router, validator, gate, loop, and orchestration primitives explicit. Plain leaf Workers also no longer get fake empty `body_graph` stubs during mutation add-node.
+Chat/editor mutation add-node follows the same rollout too. In Worker-first mode, `GraphMutator` now Workerizes the full safe compute-like mutation bucket: `llm_operator`, `tool_operator`, `code_operator`, `rag_operator`, `input`, `router`, `validator`, `reflection`, `human`, `human_in_the_loop`, `vote`, and `reduce`. It preserves their familiar default ports and maps their specialized config onto Worker metadata while leaving gate, loop, and orchestration primitives explicit. Plain leaf Workers also no longer get fake empty `body_graph` stubs during mutation add-node.
 
 ---
 

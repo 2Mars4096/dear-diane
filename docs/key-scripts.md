@@ -9,32 +9,32 @@ Refresh with `python3 scripts/inventory.py --write docs/key-scripts.md`.
 | File | Lines |
 | --- | --- |
 | src/dan/engine/scheduler.py | 4154 |
-| src/dan/server/concierge/runtime/__init__.py | 4004 |
-| src/dan/server/chat_manager.py | 3759 |
-| src/dan/builder/builder.py | 3053 |
+| src/dan/server/chat_manager.py | 3398 |
+| src/dan/server/concierge/runtime/__init__.py | 3355 |
 | src/dan/executors/control_flow.py | 2859 |
 | src/dan/server/routers/adapters.py | 2459 |
 | src/dan/meta/planner.py | 2384 |
-| src/dan/server/graph_mutator.py | 2259 |
-| src/dan/server/concierge/tier_executors.py | 2203 |
-| src/dan/server/run_manager.py | 2155 |
-| src/dan/server/agent_runtime/workflow_generation.py | 1983 |
+| src/dan/builder/builder.py | 2369 |
+| src/dan/server/concierge/tier_executors.py | 2198 |
+| src/dan/builder/decompiler.py | 1961 |
 | src/dan/adapters/telegram_fleet.py | 1931 |
-| src/dan/builder/decompiler.py | 1930 |
 | src/dan/cli/chat.py | 1894 |
 | src/dan/server/concierge/scheduler.py | 1875 |
 | src/dan/loader/compiler.py | 1873 |
-| src/dan/server/routers/furnace.py | 1834 |
+| src/dan/server/routers/furnace.py | 1839 |
+| src/dan/server/startup/__init__.py | 1761 |
+| src/dan/server/startup.py | 1701 |
+| src/dan/server/agent_runtime/workflow_generation/runtime.py | 1647 |
+| src/dan/server/run_manager.py | 1618 |
 | src/dan/server/concierge/triage.py | 1531 |
 | src/dan/engine/token_optimization.py | 1529 |
-| src/dan/server/startup/__init__.py | 1464 |
 
 ### Frontend
 | File | Lines |
 | --- | --- |
-| editor/src/components/ChatPanel.tsx | 5151 |
+| editor/src/components/ChatPanel.tsx | 4362 |
 | editor/src/components/ConfigPanel.tsx | 2982 |
-| editor/src/store/useGraphStore.ts | 2533 |
+| editor/src/store/useGraphStore.ts | 2235 |
 | editor/src/components/code/ExtensionsPanel.tsx | 1915 |
 | editor/src/components/shell/GlobalSettingsPanel.tsx | 1646 |
 | editor/src/components/code/GitPanel.tsx | 1511 |
@@ -52,24 +52,24 @@ Refresh with `python3 scripts/inventory.py --write docs/key-scripts.md`.
 
 | File | Lines | Role | Authoritative Owner | Current Overreach | Target Boundary | Follow-on |
 | --- | --- | --- | --- | --- | --- | --- |
-| src/dan/server/concierge/runtime/__init__.py | 4004 | control-plane sink | orchestration and state progression | dispatch policy, schedule rewrite, progress UX, and control-plane glue still share one file | runtime/dispatch_policy.py, runtime/schedule_commands.py, runtime/progress_ux.py | 50-5 |
-| src/dan/server/chat_manager.py | 3759 | facade sink | chat boundary and import shim only | still owns workflow build/apply/save, smoke-run glue, and prompt plumbing | src/dan/server/chat/* plus src/dan/server/agent_runtime/* | 50-3 |
-| src/dan/server/run_manager.py | 2155 | lifecycle owner | run lifecycle, start/resume/cancel, relay seam | run guards are caller-owned today and the completion tail still mixes reflection, telemetry, and learning | workflow_guards.py in 50-2, run_finalization.py in 50-4 | 50-2, 50-4 |
-| src/dan/server/capability_handlers.py | 1260 | compatibility facade | registration and schema wiring only | still owns graph delete, mutation apply/save, and latest-mutation lookup | src/dan/server/capabilities/* | 50-3 |
-| src/dan/server/concierge/tier_executors.py | 2203 | prompt and handoff sink | slot-based prompt assembly and child-handoff derivation | duplicates prompt build/extract/apply chains and mixes execution, events, and handoff text | shared executor base plus typed envelopes | 46-6 |
+| src/dan/server/concierge/runtime/__init__.py | 3355 | control-plane sink | orchestration and state progression | dispatch policy, schedule rewrite, progress UX, and control-plane glue still share one file | runtime/dispatch_policy.py, runtime/schedule_commands.py, runtime/progress_ux.py | 50-5 |
+| src/dan/server/chat_manager.py | 3398 | facade sink | chat boundary and import shim only | still owns workflow build/apply/save, smoke-run glue, and prompt plumbing | src/dan/server/chat/* plus src/dan/server/agent_runtime/* | 50-3 |
+| src/dan/server/run_manager.py | 1618 | lifecycle owner | run lifecycle, start/resume/cancel, relay seam | run guards are caller-owned today and the completion tail still mixes reflection, telemetry, and learning | workflow_guards.py in 50-2, run_finalization.py in 50-4 | 50-2, 50-4 |
+| src/dan/server/capability_handlers.py | 879 | compatibility facade | registration and schema wiring only | still owns graph delete, mutation apply/save, and latest-mutation lookup | src/dan/server/capabilities/* | 50-3 |
+| src/dan/server/concierge/tier_executors.py | 2198 | prompt and handoff sink | slot-based prompt assembly and child-handoff derivation | duplicates prompt build/extract/apply chains and mixes execution, events, and handoff text | shared executor base plus typed envelopes | 46-6 |
 | src/dan/server/concierge/scheduler.py | 1875 | scheduler daemon owner | lease authority and fire-time execution only | still carries user-facing schedule-command semantics and workflow normalization | schedule surface helpers outside the daemon boundary | 50-5 |
-| src/dan/server/concierge/dispatcher.py | 688 | ingress and queue adapter | ingress serialization and canonical queue lease model | shares queue and task ownership with tiered_dispatch, models.py, and task_registry.py | one documented queue owner with task/session ids demoted accordingly | 50-5 |
+| src/dan/server/concierge/dispatcher.py | 693 | ingress and queue adapter | ingress serialization and canonical queue lease model | shares queue and task ownership with tiered_dispatch, models.py, and task_registry.py | one documented queue owner with task/session ids demoted accordingly | 50-5 |
 | src/dan/server/concierge/models.py | 183 | user-facing state truth | SurfaceMessage, Task, Project, and ResolvedContext truth | project/task truth overlaps with ConciergeTask and Session ids in adjacent layers | keep user-facing truth here; demote lifecycle and trace mirrors | 50-5 |
 | src/dan/server/concierge/task_registry.py | 588 | task lifecycle tracker | concierge-level task state and persistence | overlaps with dispatcher queues and models.Task/Project on work identity | either canonical queue lease owner or thin state tracker, not both | 50-5 |
 | src/dan/server/concierge/session.py | 530 | execution trace owner | runtime session tree and execution traces | session ids bleed into user-facing work-state reasoning | keep runtime-only trace ownership here | 50-5 |
-| src/dan/server/agent_runtime/workflow_generation.py | 1983 | authoring sink | workflow-generation phases with explicit package seams | planning, build, diagnosis, repair, and recovery still mix in one file | workflow_generation/ package split by phase | 50-6 |
-| src/dan/server/graph_mutator.py | 2259 | mutation sink | apply engine separated from macro authoring and repair policy | apply, macros, migration policy, and repair logic still mix together | split by apply engine, macros, and repair helpers | 50-6 |
+| src/dan/server/agent_runtime/workflow_generation.py | 0 | authoring sink | workflow-generation phases with explicit package seams | planning, build, diagnosis, repair, and recovery still mix in one file | workflow_generation/ package split by phase | 50-6 |
+| src/dan/server/graph_mutator.py | 1284 | mutation sink | apply engine separated from macro authoring and repair policy | apply, macros, migration policy, and repair logic still mix together | split by apply engine, macros, and repair helpers | 50-6 |
 | src/dan/server/routers/adapters.py | 2459 | gateway sink | adapter protocol and streaming surface only | adapter state, routing, callback protocol, and streaming are still bundled together | smaller adapter-surface modules | 50-6 |
-| src/dan/worker/executor.py | 1138 | worker adapter boundary | core worker compute dispatch behind adapter seams | still imports dan.executors.*, dan.engine.*, and dan.models.legacy directly | dan/worker/core/ plus dan/worker/adapters/ | 46-7 |
-| src/dan/executor_defaults.py | 96 | legacy bridge registry | default adapter registration only | 12 compute families still route through LegacyWorkerAdapterExecutor in the default path | shrink bridge registrations as native worker core grows | 50-7, 46-7 |
-| editor/src/components/ChatPanel.tsx | 5151 | frontend shell sink | chat thread UI shell only | thread, stream, run, reconnect, persistence, and branch state all mix together | stream/reconnect/persistence hooks and message-list components | 50-8 |
+| src/dan/worker/executor.py | 1204 | worker adapter boundary | core worker compute dispatch behind adapter seams | still mixes engine-facing dispatch, cached legacy-template reuse, and DAN runtime compatibility modes beside the thinner worker-core membrane | dan/worker/core/ plus dan/worker/adapters/ | 46-7 |
+| src/dan/executor_defaults.py | 90 | default runtime registry | default adapter registration only | ready llm/tool/code/input families now use dedicated worker-backed runtime executors, but default policy still mixes worker-backed paths with remaining explicit legacy registrations | keep only honest default policy wiring while any remaining compatibility projections shrink outward | 46-7 |
+| editor/src/components/ChatPanel.tsx | 4362 | frontend shell sink | chat thread UI shell only | thread, stream, run, reconnect, persistence, and branch state all mix together | stream/reconnect/persistence hooks and message-list components | 50-8 |
 | editor/src/components/ConfigPanel.tsx | 2982 | frontend config sink | node and edge config editing shell only | schema validation, editing logic, and form rendering still share one file | config subpanels and validation helpers | 50-8 |
-| editor/src/store/useGraphStore.ts | 2533 | frontend state sink | graph-editor state only | workflow, chat-session, and broader workspace state still spill into the graph store | chat-session, run-history, and workspace-tab stores | 50-8 |
+| editor/src/store/useGraphStore.ts | 2235 | frontend state sink | graph-editor state only | workflow, chat-session, and broader workspace state still spill into the graph store | chat-session, run-history, and workspace-tab stores | 50-8 |
 | editor/src/store/useMessagingStore.ts | 1424 | frontend messaging sink | messaging and transport state only | adapter and broader UI concerns still spill into one store | narrow messaging-only selectors and split stores if the inventory still justifies it | 50-8 |
 
 ## Authoritative State Flow
@@ -94,28 +94,28 @@ Refresh with `python3 scripts/inventory.py --write docs/key-scripts.md`.
 | prompt assembly | tier_executors.py shared prompt builder plus PromptEnvelope | chat_manager.py, messages.py, raw metadata strings | 46-6 removes ad-hoc concatenation and duplicate metadata extraction |
 | queue authority | one concierge queue model | dispatcher queues plus tiered_dispatch background queue/cap | 50-5 chooses one queue lease owner and demotes the other |
 | work-state identity | models.Task / Project for user truth | ConciergeTask and Session partial mirrors | 50-5 documents which ids are canonical in logs, prompts, and follow-up resolution |
-| legacy worker bridge | Worker core plus DAN adapters | LegacyWorkerAdapterExecutor in executor_defaults.py | 50-7 and 46-7 shrink the bridged node-family set from the default path |
+| legacy worker bridge | Worker core plus DAN adapters | compatibility-only adapters plus the remaining projection seams | 50-7 landed the default-path split; 46-7 can keep shrinking compatibility-only seams if external bundle extraction becomes active |
 
 ## Prompt Carrier Inventory
 
-- `prompt_context`: 53 occurrences across 12 files
-- `extra_system_instructions`: 32 occurrences across 6 files
+- `prompt_context`: 59 occurrences across 13 files
+- `extra_system_instructions`: 39 occurrences across 7 files
 - 46-6 target: retire the free-form carriers in favor of typed prompt slots and drive `extra_system_instructions` down to <=8 uses.
 
 | File | prompt_context | extra_system_instructions | Total |
 | --- | --- | --- | --- |
-| src/dan/server/chat_manager.py | 15 | 11 | 26 |
-| src/dan/server/concierge/tier_executors.py | 8 | 9 | 17 |
-| src/dan/agent_runtime/messages.py | 6 | 6 | 12 |
-| src/dan/server/routers/chat.py | 9 | 1 | 10 |
+| src/dan/server/chat_manager.py | 13 | 11 | 24 |
+| src/dan/server/concierge/tier_executors.py | 9 | 10 | 19 |
+| src/dan/agent_runtime/messages.py | 9 | 8 | 17 |
+| src/dan/server/chat/prompt_builder.py | 5 | 3 | 8 |
+| src/dan/server/routers/chat.py | 8 | 0 | 8 |
 | src/dan/agent_runtime/text_runtime.py | 3 | 3 | 6 |
 | src/dan/agent_runtime/synthesis_runtime.py | 1 | 2 | 3 |
 | src/dan/server/concierge/pending_actions.py | 3 | 0 | 3 |
+| src/dan/prompt_contracts.py | 0 | 2 | 2 |
 | src/dan/meta/__init__.py | 2 | 0 | 2 |
 | src/dan/meta/controller.py | 2 | 0 | 2 |
 | src/dan/meta/planner.py | 2 | 0 | 2 |
-| src/dan/meta/generation_defaults.py | 1 | 0 | 1 |
-| src/dan/server/concierge/tiered_dispatch.py | 1 | 0 | 1 |
 
 ### Concierge Prompt Pipeline
 
@@ -131,35 +131,46 @@ Refresh with `python3 scripts/inventory.py --write docs/key-scripts.md`.
 
 | File | Line | Forbidden Import | Import |
 | --- | --- | --- | --- |
-| src/dan/worker/executor.py | 15 | dan.executors.* | from dan.executors.code import CodeExecutor |
-| src/dan/worker/executor.py | 16 | dan.executors.* | from dan.executors.control_flow import GateExecutor, HumanNodeExecutor, ReduceExecutor, RouterExecutor, VoteExecutor |
-| src/dan/worker/executor.py | 17 | dan.executors.* | from dan.executors.rag import RAGExecutor |
-| src/dan/worker/executor.py | 18 | dan.executors.* | from dan.executors.reflection import ReflectionExecutor |
-| src/dan/worker/executor.py | 19 | dan.executors.* | from dan.executors.tool import ToolExecutor |
-| src/dan/worker/executor.py | 20 | dan.executors.* | from dan.executors.validator import ValidatorExecutor |
-| src/dan/worker/executor.py | 22 | dan.models.legacy | from dan.models.legacy import CodeOperator, LLMOperator, ToolOperator |
-| src/dan/worker/executor.py | 36 | dan.executors.* | from dan.executors.llm import LLMExecutor |
-| src/dan/worker/executor.py | 135 | dan.executors.* | from dan.executors.llm import LLMExecutor |
+| src/dan/worker/adapters.py | 14 | dan.executors.* | from dan.executors.code import CodeExecutor |
+| src/dan/worker/adapters.py | 15 | dan.executors.* | from dan.executors.control_flow import GateExecutor, HumanNodeExecutor, ReduceExecutor, RouterExecutor, VoteExecutor |
+| src/dan/worker/adapters.py | 16 | dan.executors.* | from dan.executors.input import InputExecutor |
+| src/dan/worker/adapters.py | 17 | dan.executors.* | from dan.executors.rag import RAGExecutor |
+| src/dan/worker/adapters.py | 18 | dan.executors.* | from dan.executors.reflection import ReflectionExecutor |
+| src/dan/worker/adapters.py | 19 | dan.executors.* | from dan.executors.tool import ToolExecutor |
+| src/dan/worker/adapters.py | 20 | dan.executors.* | from dan.executors.validator import ValidatorExecutor |
+| src/dan/worker/adapters.py | 26 | dan.executors.* | from dan.executors.llm import LLMExecutor |
+| src/dan/worker/adapters.py | 39 | dan.executors.* | from dan.executors.llm import LLMExecutor |
+| src/dan/worker/executor.py | 28 | dan.executors.* | from dan.executors.code import CodeExecutor |
+| src/dan/worker/executor.py | 29 | dan.executors.* | from dan.executors.control_flow import GateExecutor, HumanNodeExecutor, ReduceExecutor, RouterExecutor, VoteExecutor |
+| src/dan/worker/executor.py | 30 | dan.executors.* | from dan.executors.llm import LLMExecutor |
+| src/dan/worker/executor.py | 31 | dan.executors.* | from dan.executors.rag import RAGExecutor |
+| src/dan/worker/executor.py | 32 | dan.executors.* | from dan.executors.reflection import ReflectionExecutor |
+| src/dan/worker/executor.py | 33 | dan.executors.* | from dan.executors.tool import ToolExecutor |
+| src/dan/worker/executor.py | 34 | dan.executors.* | from dan.executors.validator import ValidatorExecutor |
+| src/dan/worker/executor.py | 35 | dan.models.legacy | from dan.models.legacy import CodeOperator, LLMOperator, ToolOperator |
+| src/dan/worker/executor.py | 169 | dan.executors.* | from dan.executors.llm import LLMExecutor |
+| src/dan/worker/executor.py | 176 | dan.executors.* | from dan.executors.tool import ToolExecutor |
+| src/dan/worker/executor.py | 184 | dan.executors.* | from dan.executors.code import CodeExecutor |
+| src/dan/worker/executor.py | 191 | dan.executors.* | from dan.executors.control_flow import GateExecutor |
+| src/dan/worker/executor.py | 198 | dan.executors.* | from dan.executors.control_flow import RouterExecutor |
+| src/dan/worker/executor.py | 205 | dan.executors.* | from dan.executors.validator import ValidatorExecutor |
+| src/dan/worker/executor.py | 212 | dan.executors.* | from dan.executors.reflection import ReflectionExecutor |
+| src/dan/worker/executor.py | 219 | dan.executors.* | from dan.executors.rag import RAGExecutor |
+| src/dan/worker/executor.py | 226 | dan.executors.* | from dan.executors.control_flow import HumanNodeExecutor |
+| src/dan/worker/executor.py | 233 | dan.executors.* | from dan.executors.control_flow import VoteExecutor |
+| src/dan/worker/executor.py | 240 | dan.executors.* | from dan.executors.control_flow import ReduceExecutor |
+| src/dan/worker/executor.py | 649 | dan.models.legacy | from dan.models.legacy import LLMOperator |
+| src/dan/worker/executor.py | 789 | dan.models.legacy | from dan.models.legacy import CodeOperator |
+| src/dan/worker/executor.py | 827 | dan.models.legacy | from dan.models.legacy import ToolOperator |
+| src/dan/worker/executor.py | 878 | dan.models.legacy | from dan.models.legacy import LLMOperator |
 | src/dan/worker/model.py | 20 | dan.models.legacy | from dan.models.legacy import ValidationRule |
 | src/dan/worker/presets.py | 9 | dan.models.legacy | from dan.models.legacy import ( |
 
 ## Legacy Adapter Inventory
 
-- Default-path bridged node families: 12
+- Default-path bridged node families: 0
 | Node Type | executor_defaults.py Line |
 | --- | --- |
-| llm_operator | 70 |
-| tool_operator | 71 |
-| code_operator | 72 |
-| rag_operator | 74 |
-| input | 75 |
-| router | 82 |
-| human | 83 |
-| human_in_the_loop | 84 |
-| validator | 85 |
-| vote | 87 |
-| reduce | 88 |
-| reflection | 90 |
 
 ### Default Registration Callers
 
@@ -167,8 +178,8 @@ Refresh with `python3 scripts/inventory.py --write docs/key-scripts.md`.
 | --- | --- |
 | src/dan/client/local.py | 204 |
 | src/dan/engine/scheduler.py | 498 |
-| src/dan/executor_defaults.py | 21 |
-| src/dan/server/run_manager.py | 1267 |
+| src/dan/executor_defaults.py | 39 |
+| src/dan/server/run_manager.py | 1301 |
 
 ## Split Guardrails
 
@@ -214,4 +225,4 @@ Refresh with `python3 scripts/inventory.py --write docs/key-scripts.md`.
 | attachment prompt double-pass in routers/chat.py | 50-3 | remove the extra_system_instructions duplicate once the single-slot path is wired |
 | dispatch-policy, schedule rewrite, and progress UX code in runtime/__init__.py | 50-5 | delete embedded special cases when extracted neighbors own them |
 | free-form prompt carriers and duplicated metadata strings | 46-6 | retire prompt_context, extra_system_instructions, and metadata prompt copies in the same patch series |
-| LegacyWorkerAdapterExecutor registrations | 50-7 / 46-7 | shrink bridged node families as worker-core adapters absorb the DAN-specific coupling |
+| remaining Worker/legacy projection glue and compatibility-only bridge registrations | 46-7 | keep shrinking compatibility-only adapter surfaces once an external bundle consumer justifies the extra extraction work |
