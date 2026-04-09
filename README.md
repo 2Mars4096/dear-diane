@@ -27,7 +27,7 @@ DAN is aimed at deep work that ordinary single-agent copilots handle poorly: mul
 - **Model heterogeneity** — each operator independently specifies its model (cheap for classification, strong for reasoning)
 - **Output normalization** — built-in parse → validate → re-prompt → retry on every LLM operator
 - **Retry & fallback** — per-node `RetryPolicy` with exponential backoff, fallback models, and halt/skip/error failure modes
-- **Multi-provider LLM** — built-in support for OpenAI, Anthropic, and Google; prefix-based routing (`gpt-*`, `claude-*`, `gemini-*`) with per-node model override
+- **Multi-provider LLM** — built-in support for OpenAI, Anthropic, and Google; prefix-based routing (`gpt-*`, `claude-*`, `gemini-*`) with per-node model override, plus a shared provider-layer retry wrapper for transient API failures so agent surfaces do not each reinvent recovery logic
 - **11 built-in tools** — file I/O, web search/fetch, HTTP, shell commands, PDF reading, text chunking, JSON extraction, regex. Web fetch can optionally recover through DAN's persistent browser for JS-heavy or auth-gated pages; relative paths stay sandboxed to the workspace root, while explicit absolute paths are trusted and allowed. For untrusted LLM callers, keep inputs relative or add an approval layer
 - **Checkpointing** — resume long-running workflows from the last completed level
 
@@ -155,7 +155,9 @@ It uses `.env` / environment settings by default for the provider and model, and
 
 The orchestrator decides worker fan-out per attempt, the workers stay cloneable, the aggregator owns the final bounded candidate, and the validator can reject that candidate and force a repair round. It does not route through the full DAN graph engine unless you choose to build that bridge later.
 
-In the CLI, that same orchestrator is now the public voice of the run: it narrates planning, worker execution, candidate synthesis, validation, and repair in assistant-style updates without exposing hidden chain-of-thought.
+The stack is intentionally thin and composable: `provider wrapper -> durable orchestrator -> bounded coding organism`. The provider wrapper owns transient API retries, the durable orchestrator owns user-facing decisions, and the bounded coding organism owns implementation/validation work. Those layers talk through small explicit contracts instead of one large shared runtime blob.
+
+In the CLI, that same orchestrator is now the public voice of the run: deterministic lifecycle/status lines stay in `[status]`, while assistant-style narration comes from structured runtime updates (`status.update`) emitted by the orchestrator, workers, aggregator, validator, and final delivery path. The orchestrator plan now also includes a formal `public_response`, so it can first state the interpreted user intent and next action before the implementation plan. Hidden chain-of-thought still stays private.
 
 Role-level tool exposure is also explicit:
 
@@ -187,6 +189,8 @@ If you omit the task, it starts an interactive coding session and resumes the sa
 dan code --workspace .
 ```
 
+That interactive shell now keeps a durable orchestrator alive across turns. Ordinary natural-language messages go to the orchestrator first, and the orchestrator decides whether to answer directly, ask one clarifying question, or launch one bounded coding run. When it does launch coding, the bounded `orchestrator -> worker pool -> aggregator -> validator` organism still does the heavy implementation work, but the resulting report is routed back into the same orchestrator session so it can decide `done`, `continue`, or `clarify`. The shell/orchestrator seam is now explicit as typed conversation-context and bounded-run-summary packets, so the layers stay diagrammable and replaceable.
+
 Inside the session:
 - `/help` shows commands
 - `/tools` lists available local tools
@@ -194,6 +198,7 @@ Inside the session:
 - `/history` shows recent coding turns
 - `/summary` shows the session-level file/test rollup
 - `/reset` clears carried-forward session context
+- `/clear` is an alias for `/reset`
 - `/exit` leaves the session
 
 Interactive sessions now default to `--approval-mode confirm-risky`, which prompts before `file_write`, `shell_command`, and other mutating tools. One-shot runs default to `--approval-mode auto`. You can override that explicitly:
@@ -205,11 +210,13 @@ dan code --workspace . --thinking-mode disabled
 dan code --workspace . --show-model-trace
 ```
 
-Explicit local prompts like `hi` no longer trigger the tool loop; DAN Code now responds with a short shell intro plus concrete next-step guidance. Simple session/meta queries such as `what is the root dir now` or `tell me the results` are also answered locally from session state. Typo variants like `hii` are not special-cased and still follow the normal coding-run path.
+Greetings and lightweight chat now go through the durable orchestrator instead of a canned local fast-path, so the shell can respond conversationally before deciding whether any coding work is needed. Simple workspace/result meta queries such as `what is the root dir now` or `tell me the results` are still answered locally from session state, and `/clear` resets the durable conversation state.
 
-By default, `dan code` now prints public orchestrator feedback during a run, so you can see planning, worker execution, aggregation, validation, retries, and completion in assistant-style updates instead of only raw tool calls. Common read-heavy tools such as `list_directory` and `file_read` are also summarized compactly so the useful signal stays visible.
+By default, `dan code` now prints deterministic lifecycle `[status]` lines plus dynamic assistant updates from both the durable orchestrator and the bounded coding organism, so you can see intake, planning, worker execution, aggregation, validation, retries, and completion without falling back to raw tool spam. Common read-heavy tools such as `list_directory` and `file_read` are also summarized compactly so the useful signal stays visible.
 
-`--show-model-trace` adds a more detailed public progress trace to the CLI. It prints model request/response previews alongside tool calls, but it does not expose hidden chain-of-thought or private scratchpad text.
+Transient provider failures now retry in the shared LLM provider layer before the shell gives up, which is especially important for OpenAI-compatible endpoints such as Kimi. That recovery behavior is shared across agent surfaces rather than being hardcoded into `dan code`.
+
+`--show-model-trace` adds a more detailed public progress trace to the CLI. It prints worker-scoped model request/response previews alongside tool calls (for example `[worker-1][model] ...`), but it does not expose hidden chain-of-thought or private scratchpad text.
 
 Give it a bounded coding objective directly:
 
