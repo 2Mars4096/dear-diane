@@ -849,9 +849,10 @@ class TestBuilderRoundTrip:
     def test_validator_build_decompile_rebuild(self):
         from dan.builder import workflow
         from dan.builder.decompiler import decompile
+        from dan.worker.model import Worker
 
         wf = workflow("roundtrip_test")
-        v = wf.validator(
+        wf.validator(
             "v1",
             rules=[
                 {"rule_type": "required_keys", "config": {"keys": ["name"]}},
@@ -873,9 +874,12 @@ class TestBuilderRoundTrip:
 
         assert v1_node is not None
         assert v2_node is not None
-        assert v1_node.node_type == v2_node.node_type == "validator"
-        assert v1_node.on_failure == v2_node.on_failure
-        assert v1_node.strict_mode == v2_node.strict_mode
+        assert isinstance(v1_node, Worker)
+        assert isinstance(v2_node, Worker)
+        assert v1_node.node_type == v2_node.node_type == "worker"
+        assert v1_node.role == v2_node.role == "validator"
+        assert v1_node.metadata["validator_on_failure"] == v2_node.metadata["validator_on_failure"] == "route"
+        assert v1_node.metadata["validator_strict_mode"] == v2_node.metadata["validator_strict_mode"] is True
         assert len(v1_node.validation_rules) == len(v2_node.validation_rules)
 
         for r1, r2 in zip(v1_node.validation_rules, v2_node.validation_rules):

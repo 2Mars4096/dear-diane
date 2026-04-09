@@ -17,7 +17,7 @@ REFERENCE_GRAPHS = [
     pytest.param("graphs/three_step_chain.json", id="three_step_chain"),
     pytest.param("graphs/build-probe-simple-a.json", id="build_probe_simple_a"),
     pytest.param("graphs/paper_writing.json", id="paper_writing"),
-    pytest.param("graphs/eval-lr2-01-build-enabled-16df44e3.json", id="eval_lr2_generated"),
+    pytest.param("graphs/a8c217118e87.json", id="drb2_deep_research_evaluator"),
     pytest.param(
         "graphs/batch_paper_writing.json",
         id="batch_paper_writing",
@@ -48,7 +48,7 @@ RUN_READY_GRAPH_FIXTURES = [
     pytest.param("graphs/three_step_chain.json", id="three_step_chain"),
     pytest.param("graphs/build-probe-simple-a.json", id="build_probe_simple_a"),
     pytest.param("graphs/paper_writing.json", id="paper_writing"),
-    pytest.param("graphs/eval-lr2-01-build-enabled-16df44e3.json", id="eval_lr2_generated"),
+    pytest.param("graphs/a8c217118e87.json", id="drb2_deep_research_evaluator"),
 ]
 
 

@@ -21,7 +21,12 @@ from dan.engine import (
     ProgrammaticRenderer,
 )
 from dan.engine.executor import ExecutorRegistry
-from dan.executor_defaults import register_default_executors
+from dan.executor_defaults import (
+    DEFAULT_DIRECT_LEGACY_COMPUTE_TYPES,
+    DEFAULT_WORKER_RUNTIME_COMPUTE_TYPES,
+    register_default_executors,
+)
+from dan.executors.input import InputExecutor
 from dan.executors.tool import ToolExecutor, ToolRegistry
 from dan.models.control_flow import CompositeNode, ForEachNode, InputNode, InputVariable
 from dan.models.edges import DataEdge
@@ -29,7 +34,9 @@ from dan.models.graph import Graph
 from dan.models.nodes import CodeOperator, LLMOperator, NodeBase, ToolOperator
 from dan.providers import CompletionResult
 from dan.providers.registry import ProviderRegistry
-from dan.worker.executor import LegacyWorkerAdapterExecutor, WorkerExecutor
+from dan.worker.adapters import LegacyWorkerAdapterExecutor
+from dan.worker.adapters import WorkerBackedLegacyComputeExecutor
+from dan.worker.executor import WorkerExecutor
 from dan.worker.presets import convert_graph
 
 
@@ -70,29 +77,21 @@ def _make_executor_registry(tool_registry: ToolRegistry | None = None) -> Execut
     return registry
 
 
-def test_default_executor_registry_routes_bridged_legacy_compute_types_through_worker_executor() -> None:
+def test_default_executor_registry_routes_ready_families_through_worker_runtime() -> None:
     registry = ExecutorRegistry()
     register_default_executors(registry)
 
     worker_executor = registry.get("worker")
 
     assert isinstance(worker_executor, WorkerExecutor)
-    for node_type in {
-        "llm_operator",
-        "tool_operator",
-        "code_operator",
-        "rag_operator",
-        "input",
-        "router",
-        "human",
-        "human_in_the_loop",
-        "validator",
-        "vote",
-        "reflection",
-    }:
-        adapter = registry.get(node_type)
-        assert isinstance(adapter, LegacyWorkerAdapterExecutor)
-        assert adapter.worker_executor is worker_executor
+    for node_type in DEFAULT_WORKER_RUNTIME_COMPUTE_TYPES:
+        executor = registry.get(node_type)
+        assert isinstance(executor, WorkerBackedLegacyComputeExecutor)
+        assert executor.worker_executor is worker_executor
+    for node_type in DEFAULT_DIRECT_LEGACY_COMPUTE_TYPES:
+        assert not isinstance(registry.get(node_type), LegacyWorkerAdapterExecutor)
+        assert not isinstance(registry.get(node_type), WorkerBackedLegacyComputeExecutor)
+    assert isinstance(registry.get("tool_operator").registry, ToolRegistry)
 
 
 async def _run_graph(

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import get_args
 
+import pytest
+
 from dan.chat_prompts import NODE_TYPES
 from dan.graph_mutator import GraphMutator, MutationPlan
 from dan.models.graph import Graph
@@ -369,5 +371,170 @@ def test_graph_mutator_worker_builder_repairs_missing_named_input_source_port(
     ]
     assert any(
         "Auto-added input variable/output port 'watchlist_path'" in message
+        for message in result.diagnostics
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_node", "requested_port", "expected_port"),
+    [
+        (
+            {
+                "op": "add_node",
+                "id": "fetch",
+                "node_type": "tool_operator",
+                "name": "Fetch",
+                "config": {"tool_id": "web_fetch"},
+            },
+            "response",
+            "text",
+        ),
+        (
+            {
+                "op": "add_node",
+                "id": "transform",
+                "node_type": "code_operator",
+                "name": "Transform",
+                "config": {"code": "result = input"},
+            },
+            "output",
+            "result",
+        ),
+    ],
+)
+def test_graph_mutator_repairs_stale_source_port_aliases_during_edge_apply(
+    monkeypatch,
+    source_node,
+    requested_port: str,
+    expected_port: str,
+) -> None:
+    monkeypatch.delenv("DAN_WORKER_BUILDER", raising=False)
+    mutator = GraphMutator()
+    plan = MutationPlan(
+        operations=[
+            source_node,
+            {
+                "op": "add_node",
+                "id": "draft",
+                "node_type": "llm_operator",
+                "name": "Draft",
+            },
+            {
+                "op": "add_edge",
+                "source_id": source_node["id"],
+                "source_port": requested_port,
+                "target_id": "draft",
+                "target_port": "input",
+            },
+        ],
+        description="Repair stale source port alias during edge apply",
+    )
+
+    result = mutator.dry_run(_empty_graph(), plan)
+
+    assert result.success, result.errors
+    assert result.new_graph is not None
+    Graph.model_validate(result.new_graph)
+    assert result.new_graph["edges"][0]["source_port"] == expected_port
+    assert any(
+        f"Normalized source port '{requested_port}' to '{expected_port}'" in message
+        for message in result.diagnostics
+    )
+
+
+def test_graph_mutator_auto_creates_missing_target_port_during_edge_apply(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("DAN_WORKER_BUILDER", raising=False)
+    mutator = GraphMutator()
+    plan = MutationPlan(
+        operations=[
+            {
+                "op": "add_node",
+                "id": "entry",
+                "node_type": "input",
+                "name": "Entry",
+            },
+            {
+                "op": "add_node",
+                "id": "consume",
+                "node_type": "code_operator",
+                "name": "Consume",
+                "config": {"code": "result = input"},
+            },
+            {
+                "op": "add_edge",
+                "source_id": "entry",
+                "source_port": "input",
+                "target_id": "consume",
+                "target_port": "payload",
+            },
+        ],
+        description="Auto-create target input port during edge apply",
+    )
+
+    result = mutator.dry_run(_empty_graph(), plan)
+
+    assert result.success, result.errors
+    assert result.new_graph is not None
+    Graph.model_validate(result.new_graph)
+
+    nodes = {node["id"]: node for node in result.new_graph["nodes"]}
+    assert [port["name"] for port in nodes["consume"]["input_ports"]] == [
+        "input",
+        "payload",
+    ]
+    assert result.new_graph["edges"][0]["target_port"] == "payload"
+    assert any(
+        "Auto-created input port 'payload' on node 'consume'" in message
+        for message in result.diagnostics
+    )
+
+
+def test_graph_mutator_worker_builder_repairs_stale_source_port_alias_during_edge_apply(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DAN_WORKER_BUILDER", "enabled")
+    mutator = GraphMutator()
+    plan = MutationPlan(
+        operations=[
+            {
+                "op": "add_node",
+                "id": "fetch",
+                "node_type": "tool_operator",
+                "name": "Fetch",
+                "config": {"tool_id": "web_fetch"},
+            },
+            {
+                "op": "add_node",
+                "id": "draft",
+                "node_type": "llm_operator",
+                "name": "Draft",
+                "config": {
+                    "prompt_template": "Write a summary",
+                },
+            },
+            {
+                "op": "add_edge",
+                "source_id": "fetch",
+                "source_port": "response",
+                "target_id": "draft",
+                "target_port": "input",
+            },
+        ],
+        description="Repair stale source port alias under worker builder gate",
+    )
+
+    result = mutator.dry_run(_empty_graph(), plan)
+
+    assert result.success, result.errors
+    assert result.new_graph is not None
+    Graph.model_validate(result.new_graph)
+
+    nodes = {node["id"]: node for node in result.new_graph["nodes"]}
+    assert nodes["fetch"]["node_type"] == "worker"
+    assert result.new_graph["edges"][0]["source_port"] == "text"
+    assert any(
+        "Normalized source port 'response' to 'text'" in message
         for message in result.diagnostics
     )

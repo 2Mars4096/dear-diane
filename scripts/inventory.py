@@ -154,17 +154,17 @@ KEY_SCRIPTS: tuple[KeyScript, ...] = (
         path="src/dan/worker/executor.py",
         role="worker adapter boundary",
         authoritative_owner="core worker compute dispatch behind adapter seams",
-        current_overreach="still imports dan.executors.*, dan.engine.*, and dan.models.legacy directly",
+        current_overreach="still mixes engine-facing dispatch, cached legacy-template reuse, and DAN runtime compatibility modes beside the thinner worker-core membrane",
         target_boundary="dan/worker/core/ plus dan/worker/adapters/",
         follow_on="46-7",
     ),
     KeyScript(
         path="src/dan/executor_defaults.py",
-        role="legacy bridge registry",
+        role="default runtime registry",
         authoritative_owner="default adapter registration only",
-        current_overreach="12 compute families still route through LegacyWorkerAdapterExecutor in the default path",
-        target_boundary="shrink bridge registrations as native worker core grows",
-        follow_on="50-7, 46-7",
+        current_overreach="ready llm/tool/code/input families now use dedicated worker-backed runtime executors, but default policy still mixes worker-backed paths with remaining explicit legacy registrations",
+        target_boundary="keep only honest default policy wiring while any remaining compatibility projections shrink outward",
+        follow_on="46-7",
     ),
     KeyScript(
         path="editor/src/components/ChatPanel.tsx",
@@ -291,8 +291,8 @@ DUPLICATION_ROWS = (
     (
         "legacy worker bridge",
         "Worker core plus DAN adapters",
-        "LegacyWorkerAdapterExecutor in executor_defaults.py",
-        "50-7 and 46-7 shrink the bridged node-family set from the default path",
+        "compatibility-only adapters plus the remaining projection seams",
+        "50-7 landed the default-path split; 46-7 can keep shrinking compatibility-only seams if external bundle extraction becomes active",
     ),
 )
 
@@ -376,9 +376,9 @@ PRUNING_ROWS = (
         "retire prompt_context, extra_system_instructions, and metadata prompt copies in the same patch series",
     ),
     (
-        "LegacyWorkerAdapterExecutor registrations",
-        "50-7 / 46-7",
-        "shrink bridged node families as worker-core adapters absorb the DAN-specific coupling",
+        "remaining Worker/legacy projection glue and compatibility-only bridge registrations",
+        "46-7",
+        "keep shrinking compatibility-only adapter surfaces once an external bundle consumer justifies the extra extraction work",
     ),
 )
 

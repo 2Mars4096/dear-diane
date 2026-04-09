@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import pytest
+
 from dan.builder import decompile, workflow
 from dan.models.context import MergeStrategy
 from dan.models.graph import Graph
 from dan.worker.model import Worker
+
+
+@pytest.fixture(autouse=True)
+def _pin_default_worker_builder_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DAN_WORKER_BUILDER", raising=False)
 
 
 def test_worker_builder_compiles_resource_refs_and_edge_lint() -> None:
@@ -540,7 +547,7 @@ def test_worker_builder_autogenerates_lint_when_enabled() -> None:
 
 
 def test_worker_builder_autogen_canary_limits_to_worker_edges() -> None:
-    wf = workflow("worker_autogen_canary", lint_autogen="canary")
+    wf = workflow("worker_autogen_canary", canonical_workers=False, lint_autogen="canary")
     source = wf.tool(
         "fetch",
         tool_id="file_read",
@@ -683,7 +690,7 @@ def test_reduce_alias_can_emit_worker_or_legacy_shapes() -> None:
     assert getattr(legacy_node, "reducer", None) == "sum(item['score'] for item in input)"
 
 
-def test_legacy_compute_aliases_delegate_through_worker_projection(monkeypatch) -> None:
+def test_compute_aliases_default_to_worker_nodes_and_legacy_mode_still_projects(monkeypatch) -> None:
     from dan.worker import presets as worker_presets
 
     seen: list[Worker] = []
@@ -695,7 +702,7 @@ def test_legacy_compute_aliases_delegate_through_worker_projection(monkeypatch) 
 
     monkeypatch.setattr(worker_presets, "worker_to_legacy", recording_worker_to_legacy)
 
-    wf = workflow("legacy_alias_projection")
+    wf = workflow("worker_alias_default")
     wf.llm("draft", prompt="Draft {input}")
     wf.tool("fetch", tool_id="file_read", config={"path": "notes.txt"})
     wf.code("format", code="result = input")
@@ -744,6 +751,100 @@ def test_legacy_compute_aliases_delegate_through_worker_projection(monkeypatch) 
 
     graph = wf.build()
 
+    assert seen == []
+    assert isinstance(graph.node_by_id("draft"), Worker)
+    assert graph.node_by_id("draft").llm_hints.prompt_template == "Draft {input}"
+    assert isinstance(graph.node_by_id("fetch"), Worker)
+    assert graph.node_by_id("fetch").metadata["tool_config"] == {"path": "notes.txt"}
+    assert isinstance(graph.node_by_id("format"), Worker)
+    assert graph.node_by_id("format").code == "result = input"
+    assert isinstance(graph.node_by_id("retrieve"), Worker)
+    assert [port.name for port in graph.node_by_id("retrieve").input_ports] == ["query"]
+    assert [port.name for port in graph.node_by_id("retrieve").output_ports] == ["chunks"]
+    assert graph.node_by_id("retrieve").metadata["rag_collection"] == "papers"
+    assert graph.node_by_id("retrieve").metadata["rag_top_k"] == 7
+    assert isinstance(graph.node_by_id("workflow_inputs"), Worker)
+    assert [port.name for port in graph.node_by_id("workflow_inputs").output_ports] == ["input", "topic"]
+    assert isinstance(graph.node_by_id("route"), Worker)
+    assert [port.name for port in graph.node_by_id("route").output_ports] == ["route", "result"]
+    assert graph.node_by_id("route").metadata["route_descriptions"] == {
+        "research": "Do research",
+        "draft": "Draft the answer",
+    }
+    assert isinstance(graph.node_by_id("validate"), Worker)
+    assert graph.node_by_id("validate").validation_rules[0].rule_type == "required_keys"
+    assert [port.name for port in graph.node_by_id("validate").input_ports] == ["data"]
+    assert [port.name for port in graph.node_by_id("validate").output_ports] == ["valid", "invalid"]
+    assert graph.node_by_id("validate").metadata["validator_on_failure"] == "halt"
+    assert graph.node_by_id("validate").metadata["validator_strict_mode"] is True
+    assert isinstance(graph.node_by_id("reflect"), Worker)
+    assert [port.name for port in graph.node_by_id("reflect").output_ports] == ["principles"]
+    assert graph.node_by_id("reflect").metadata["reflection_prompt"] == "Distill lessons."
+    assert isinstance(graph.node_by_id("review"), Worker)
+    assert [port.name for port in graph.node_by_id("review").input_ports] == ["input"]
+    assert [port.name for port in graph.node_by_id("review").output_ports] == ["response"]
+    assert graph.node_by_id("review").metadata["human_render_mode"] == "approval"
+    assert graph.node_by_id("review").metadata["human_render_target"] == "both"
+    assert isinstance(graph.node_by_id("checkpoint"), Worker)
+    assert [port.name for port in graph.node_by_id("checkpoint").output_ports] == ["response"]
+    assert graph.node_by_id("checkpoint").metadata["human_prompt"] == "Continue?"
+    assert graph.node_by_id("checkpoint").metadata["human_timeout_seconds"] == 30.0
+    assert isinstance(graph.node_by_id("choose_best"), Worker)
+    assert [port.name for port in graph.node_by_id("choose_best").output_ports] == ["winner"]
+    assert graph.node_by_id("choose_best").metadata["vote_strategy"] == "judge"
+    assert graph.node_by_id("choose_best").metadata["vote_parallelism"] == 2
+
+    seen.clear()
+
+    legacy_wf = workflow("legacy_alias_projection", canonical_workers=False)
+    legacy_wf.llm("draft", prompt="Draft {input}")
+    legacy_wf.tool("fetch", tool_id="file_read", config={"path": "notes.txt"})
+    legacy_wf.code("format", code="result = input")
+    legacy_wf.rag("retrieve", collection="papers", top_k=7)
+    legacy_wf.input_node(
+        "workflow_inputs",
+        variables=[{"name": "topic", "type": "string", "description": "Research topic"}],
+    )
+    legacy_wf.router(
+        "route",
+        model="test-model",
+        route_descriptions={"research": "Do research", "draft": "Draft the answer"},
+    )
+    legacy_wf.validator(
+        "validate",
+        rules=[{"rule_type": "required_keys", "config": {"keys": ["summary"]}}],
+        on_failure="halt",
+        strict_mode=True,
+    )
+    legacy_wf.reflection(
+        "reflect",
+        reflection_prompt="Distill lessons.",
+        reflection_model="test-model",
+    )
+    legacy_wf.human(
+        "review",
+        prompt="Review the draft",
+        render_mode="approval",
+        instructions="Approve or request changes",
+        render_target="both",
+    )
+    legacy_wf.human_in_the_loop(
+        "checkpoint",
+        prompt="Continue?",
+        timeout_seconds=30.0,
+        default_action="resume",
+    )
+    legacy_wf.vote(
+        "choose_best",
+        prompt="Pick the best answer",
+        candidates=["claude-sonnet-4-6", "gpt-4o"],
+        num_votes=2,
+        strategy="judge",
+        parallelism=2,
+    )
+
+    legacy_graph = legacy_wf.build()
+
     assert [node.id for node in seen] == [
         "draft",
         "fetch",
@@ -758,41 +859,14 @@ def test_legacy_compute_aliases_delegate_through_worker_projection(monkeypatch) 
         "choose_best",
     ]
     assert all(isinstance(node, Worker) for node in seen)
-    assert graph.node_by_id("draft").node_type == "llm_operator"
-    assert graph.node_by_id("fetch").node_type == "tool_operator"
-    assert graph.node_by_id("format").node_type == "code_operator"
-    assert graph.node_by_id("fetch").tool_config == {"path": "notes.txt"}
-    assert graph.node_by_id("retrieve").node_type == "rag_operator"
-    assert [port.name for port in graph.node_by_id("retrieve").input_ports] == ["query"]
-    assert [port.name for port in graph.node_by_id("retrieve").output_ports] == ["chunks"]
-    assert graph.node_by_id("retrieve").collection == "papers"
-    assert graph.node_by_id("retrieve").top_k == 7
-    assert graph.node_by_id("workflow_inputs").node_type == "input"
-    assert [port.name for port in graph.node_by_id("workflow_inputs").output_ports] == ["input", "topic"]
-    assert graph.node_by_id("route").node_type == "router"
-    assert [port.name for port in graph.node_by_id("route").output_ports] == ["route", "result"]
-    assert graph.node_by_id("route").route_descriptions == {
-        "research": "Do research",
-        "draft": "Draft the answer",
-    }
-    assert graph.node_by_id("validate").node_type == "validator"
-    assert [port.name for port in graph.node_by_id("validate").input_ports] == ["data"]
-    assert [port.name for port in graph.node_by_id("validate").output_ports] == ["valid", "invalid"]
-    assert graph.node_by_id("validate").on_failure == "halt"
-    assert graph.node_by_id("validate").strict_mode is True
-    assert graph.node_by_id("reflect").node_type == "reflection"
-    assert [port.name for port in graph.node_by_id("reflect").output_ports] == ["principles"]
-    assert graph.node_by_id("reflect").reflection_prompt == "Distill lessons."
-    assert graph.node_by_id("review").node_type == "human"
-    assert [port.name for port in graph.node_by_id("review").input_ports] == ["input"]
-    assert [port.name for port in graph.node_by_id("review").output_ports] == ["response"]
-    assert graph.node_by_id("review").render_mode == "approval"
-    assert graph.node_by_id("review").render_target == "both"
-    assert graph.node_by_id("checkpoint").node_type == "human_in_the_loop"
-    assert [port.name for port in graph.node_by_id("checkpoint").output_ports] == ["response"]
-    assert graph.node_by_id("checkpoint").prompt == "Continue?"
-    assert graph.node_by_id("checkpoint").timeout_seconds == 30.0
-    assert graph.node_by_id("choose_best").node_type == "vote"
-    assert [port.name for port in graph.node_by_id("choose_best").output_ports] == ["winner"]
-    assert graph.node_by_id("choose_best").vote_strategy == "judge"
-    assert graph.node_by_id("choose_best").parallelism == 2
+    assert legacy_graph.node_by_id("draft").node_type == "llm_operator"
+    assert legacy_graph.node_by_id("fetch").node_type == "tool_operator"
+    assert legacy_graph.node_by_id("format").node_type == "code_operator"
+    assert legacy_graph.node_by_id("retrieve").node_type == "rag_operator"
+    assert legacy_graph.node_by_id("workflow_inputs").node_type == "input"
+    assert legacy_graph.node_by_id("route").node_type == "router"
+    assert legacy_graph.node_by_id("validate").node_type == "validator"
+    assert legacy_graph.node_by_id("reflect").node_type == "reflection"
+    assert legacy_graph.node_by_id("review").node_type == "human"
+    assert legacy_graph.node_by_id("checkpoint").node_type == "human_in_the_loop"
+    assert legacy_graph.node_by_id("choose_best").node_type == "vote"

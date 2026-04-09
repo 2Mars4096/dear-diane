@@ -18,13 +18,33 @@ from dan.models.node_taxonomy import (
 )
 from dan.worker import (
     AuthorityPolicy,
+    CellAddress,
+    CellAuthorityLimits,
+    CellBudgetLimits,
+    CellHandoffPacket,
+    CommunicationChannelKind,
+    CompletionSignal,
+    ContinuationHooks,
     ControlFlowConfig,
     ContextBindings,
+    CrossCellTraceLog,
+    EvidenceRef,
     ExecutionSemantics,
+    HandoffTask,
     LLMHints,
+    OutputContract,
+    SignalTrace,
     Worker,
     WorkerAuthority,
+    WorkerCoreExecutor,
+    WorkerDefinition,
+    execute_cell_handoff,
+    make_budget_pressure_signal,
+    make_escalation_signal,
+    make_status_signal,
+    make_warning_signal,
 )
+from dan.worker.core.interfaces import CompletionRequest, CompletionResponse
 
 
 def test_bare_worker_defaults_to_input_and_result_ports() -> None:
@@ -409,3 +429,265 @@ def test_worker_composite_contract_fields_are_typed_and_stable() -> None:
     assert worker.compaction_rule.window_size == 2
     assert worker.failure_policy.max_iterations is None
     assert worker.projections[0].name == "reviewer_view"
+
+
+def _planner_address() -> CellAddress:
+    return CellAddress(
+        cell_id="planner-cell",
+        tissue_id="coordination",
+        organ_id="brain",
+        organism_id="demo-organism",
+    )
+
+
+def _research_packet(*, trace: SignalTrace | None = None) -> CellHandoffPacket:
+    return CellHandoffPacket(
+        trace=trace or SignalTrace(trace_id="trace:52-1", root_task_id="root-review"),
+        sender=_planner_address(),
+        recipient=CellAddress(
+            cell_id="research-cell",
+            tissue_id="analysis",
+            organ_id="brain",
+            organism_id="demo-organism",
+        ),
+        task=HandoffTask(
+            task_id="research-task",
+            instruction="Inspect the evidence and summarize the signaling relationship.",
+            scope="cell-signaling",
+            hard_constraints=["Use only supplied evidence."],
+            soft_constraints=["Keep the answer to one sentence."],
+            input_payload={"question": "Which kinase activates pathway B?"},
+        ),
+        evidence_refs=[
+            EvidenceRef(
+                ref_id="paper:1",
+                label="Paper abstract",
+                summary="Kinase A activates pathway B in epithelial cells.",
+                source="paper-1",
+                locator="papers/kinase-a.txt",
+            )
+        ],
+        output_contract=OutputContract(
+            definition_of_done="Return the core claim as one sentence.",
+            expected_return_shape="One sentence.",
+        ),
+        budget_limits=CellBudgetLimits(
+            max_selected_refs_per_source=1,
+            max_expanded_refs_per_source=1,
+            max_completion_rounds=1,
+            max_runtime_seconds=30,
+        ),
+        authority_limits=CellAuthorityLimits(
+            acting_authority=WorkerAuthority.DELEGATE,
+            max_spawned_cells=0,
+            allow_delegate=False,
+            allow_memory_write_scopes=["memory.team"],
+        ),
+        continuation_hooks=ContinuationHooks(
+            reply_to_cell_id="planner-cell",
+            status_topic="organism.status",
+            completion_topic="organism.completion",
+            escalation_topic="organism.escalation",
+        ),
+    )
+
+
+class _CellCompletionProvider:
+    def __init__(self) -> None:
+        self.requests: list[CompletionRequest] = []
+
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        self.requests.append(request)
+        worker_id = str(request.metadata.get("worker_id") or "")
+        if worker_id == "research-cell":
+            return CompletionResponse(
+                text="Kinase A activates pathway B.",
+                raw={"worker_id": worker_id},
+            )
+        if worker_id == "writer-cell":
+            return CompletionResponse(
+                text="Draft: Kinase A activates pathway B and should be highlighted.",
+                raw={"worker_id": worker_id},
+            )
+        return CompletionResponse(text="Unhandled worker.", raw={"worker_id": worker_id})
+
+
+def test_cell_handoff_packet_converts_to_execution_request_with_trace_and_limits() -> None:
+    packet = _research_packet()
+
+    request = packet.to_execution_request()
+
+    assert request.task == "Inspect the evidence and summarize the signaling relationship."
+    assert request.constraints.scope == "cell-signaling"
+    assert request.constraints.hard_constraints == ["Use only supplied evidence."]
+    assert request.constraints.soft_constraints == ["Keep the answer to one sentence."]
+    assert request.evidence[0].ref_id == "paper:1"
+    assert request.evidence[0].content == "Kinase A activates pathway B in epithelial cells."
+    assert request.acquisition.policy is not None
+    assert request.acquisition.policy.max_selected_items_per_source == 1
+    assert request.acquisition.policy.max_expanded_items_per_source == 1
+    assert request.continuation is not None
+    assert request.continuation.stage.value == "act"
+    assert request.continuation.selections[0].ref_id == "paper:1"
+    assert request.continuation.task_state["handoff_packet_id"] == packet.packet_id
+    assert request.memory.allowed_write_scopes == ["memory.team"]
+    assert request.communication.address_for(CommunicationChannelKind.COMPLETION) == "organism.completion"
+    assert request.metadata["trace_id"] == "trace:52-1"
+    assert request.metadata["sender"]["cell_id"] == "planner-cell"
+    assert request.metadata["recipient"]["cell_id"] == "research-cell"
+    assert request.metadata["budget_limits"]["max_runtime_seconds"] == 30
+    assert request.metadata["authority_limits"]["acting_authority"] == "delegate"
+    assert request.metadata["continuation_hooks"]["completion_topic"] == "organism.completion"
+
+
+def test_trace_log_keeps_handoffs_separate_from_supervisory_signals() -> None:
+    packet = _research_packet()
+    log = CrossCellTraceLog()
+    log.record_handoff(packet)
+    log.record_signal(
+        make_status_signal(
+            packet,
+            status="running",
+            summary="Research cell is processing the packet.",
+        )
+    )
+    log.record_signal(
+        make_warning_signal(
+            packet,
+            code="thin_evidence",
+            detail="Only one ref is attached to the handoff.",
+            summary="Research cell may need stronger evidence.",
+        )
+    )
+    log.record_signal(
+        make_budget_pressure_signal(
+            packet,
+            summary="Research cell is on its last completion round.",
+            pressure_sources=["max_completion_rounds"],
+            remaining={"max_completion_rounds": 0},
+        )
+    )
+
+    trace_rows = log.inspect_trace(packet.trace.trace_id)
+
+    assert [row["kind"] for row in trace_rows] == ["handoff", "signal", "signal", "signal"]
+    assert trace_rows[0]["recipient_cell_id"] == "research-cell"
+    assert [row["signal_type"] for row in trace_rows[1:]] == [
+        "status",
+        "warning",
+        "budget_pressure",
+    ]
+    assert all("broadcast_scope" in row for row in trace_rows[1:])
+    assert all("recipient_cell_id" not in row for row in trace_rows[1:])
+
+
+@pytest.mark.asyncio
+async def test_three_cell_slice_coordinates_via_typed_handoffs_and_supervisory_signals() -> None:
+    provider = _CellCompletionProvider()
+    executor = WorkerCoreExecutor(completion_provider=provider)
+    trace = SignalTrace(trace_id="trace:organism-demo", root_task_id="compose-brief")
+    trace_log = CrossCellTraceLog()
+
+    research_packet = _research_packet(trace=trace)
+    research_worker = WorkerDefinition(
+        id="research-cell",
+        role="researcher",
+        instruction="Use only the supplied evidence.",
+        model="stub-model",
+    )
+    research_run = await execute_cell_handoff(
+        executor=executor,
+        worker=research_worker,
+        packet=research_packet,
+        trace_log=trace_log,
+    )
+
+    assert research_run.result.status == "completed"
+    research_signal = research_run.signals[-1]
+    assert isinstance(research_signal, CompletionSignal)
+    research_output_ref = research_signal.as_evidence_ref(
+        ref_id="handoff:research:output",
+        label="Research finding",
+    )
+
+    writer_packet = CellHandoffPacket(
+        trace=SignalTrace(
+            trace_id=trace.trace_id,
+            root_task_id=trace.root_task_id,
+            parent_packet_id=research_packet.packet_id,
+            parent_signal_id=research_signal.signal_id,
+        ),
+        sender=_planner_address(),
+        recipient=CellAddress(
+            cell_id="writer-cell",
+            tissue_id="synthesis",
+            organ_id="reporting",
+            organism_id="demo-organism",
+        ),
+        task=HandoffTask(
+            task_id="draft-task",
+            instruction="Draft one sentence from the research finding.",
+            hard_constraints=["Do not invent claims."],
+        ),
+        evidence_refs=[research_output_ref],
+        output_contract=OutputContract(
+            definition_of_done="Draft one sentence using the research output.",
+            expected_return_shape="One sentence.",
+        ),
+        budget_limits=CellBudgetLimits(max_completion_rounds=1),
+        authority_limits=CellAuthorityLimits(
+            acting_authority=WorkerAuthority.LEAF,
+            max_spawned_cells=0,
+        ),
+        continuation_hooks=ContinuationHooks(
+            reply_to_cell_id="planner-cell",
+            status_topic="organism.status",
+            completion_topic="organism.completion",
+            escalation_topic="organism.escalation",
+        ),
+    )
+    writer_worker = WorkerDefinition(
+        id="writer-cell",
+        role="writer",
+        instruction="Draft from the supplied research finding only.",
+        model="stub-model",
+    )
+    writer_run = await execute_cell_handoff(
+        executor=executor,
+        worker=writer_worker,
+        packet=writer_packet,
+        trace_log=trace_log,
+    )
+    trace_log.record_signal(
+        make_budget_pressure_signal(
+            writer_packet,
+            summary="Writer cell is out of spare completion rounds.",
+            pressure_sources=["max_completion_rounds"],
+            remaining={"max_completion_rounds": 0},
+        )
+    )
+    trace_log.record_signal(
+        make_escalation_signal(
+            writer_packet,
+            reason="validator_review_required",
+            requested_action="Send the draft to a validator cell before publishing.",
+            summary="Writer completed but requests validator review.",
+        )
+    )
+
+    assert writer_run.result.status == "completed"
+    assert provider.requests[0].metadata["handoff_packet_id"] == research_packet.packet_id
+    assert provider.requests[1].metadata["handoff_packet_id"] == writer_packet.packet_id
+    assert "Kinase A activates pathway B." in provider.requests[1].user_prompt
+
+    trace_rows = trace_log.inspect_trace(trace.trace_id)
+
+    assert len(trace_log.packets_for_trace(trace.trace_id)) == 2
+    assert len(trace_log.signals_for_trace(trace.trace_id)) == 6
+    assert {row["signal_type"] for row in trace_rows if row["kind"] == "signal"} == {
+        "status",
+        "completed",
+        "budget_pressure",
+        "escalated",
+    }
+    assert all(row["trace_id"] == trace.trace_id for row in trace_rows)

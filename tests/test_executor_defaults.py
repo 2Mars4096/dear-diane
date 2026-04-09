@@ -7,11 +7,17 @@ from pathlib import Path
 
 from dan.engine.conditions import apply_feedback_selector
 from dan.engine.executor import ExecutorRegistry
-from dan.executor_defaults import build_default_tool_registry, register_default_executors
-from dan.executors.tool import ToolExecutor
+from dan.executor_defaults import (
+    DEFAULT_DIRECT_LEGACY_COMPUTE_TYPES,
+    DEFAULT_WORKER_RUNTIME_COMPUTE_TYPES,
+    build_default_tool_registry,
+    register_default_executors,
+)
 from dan.models.context import FeedbackSelector
 from dan.worker.adapters import build_default_worker_executors
-from dan.worker.executor import LegacyWorkerAdapterExecutor, WorkerExecutor
+from dan.worker.adapters import LegacyWorkerAdapterExecutor
+from dan.worker.adapters import WorkerBackedLegacyComputeExecutor
+from dan.worker.executor import WorkerExecutor
 
 
 def _run_without_openai(script: str) -> subprocess.CompletedProcess[str]:
@@ -59,27 +65,45 @@ def test_register_default_executors_populates_builtin_node_types() -> None:
     assert expected.issubset(set(registry.registered_types()))
 
 
-def test_default_compute_family_adapters_share_worker_executor_and_builtin_tools() -> None:
+def test_default_compute_families_use_worker_runtime_for_ready_families() -> None:
     registry = ExecutorRegistry()
 
     register_default_executors(registry)
 
-    tool_adapter = registry.get("tool_operator")
-    llm_adapter = registry.get("llm_operator")
-    code_adapter = registry.get("code_operator")
-    reduce_adapter = registry.get("reduce")
+    tool_executor = registry.get("tool_operator")
+    llm_executor = registry.get("llm_operator")
+    code_executor = registry.get("code_operator")
+    input_executor = registry.get("input")
+    router_executor = registry.get("router")
+    validator_executor = registry.get("validator")
+    reflection_executor = registry.get("reflection")
+    rag_executor = registry.get("rag_operator")
+    human_executor = registry.get("human")
+    human_in_the_loop_executor = registry.get("human_in_the_loop")
+    vote_executor = registry.get("vote")
+    reduce_executor = registry.get("reduce")
     worker_executor = registry.get("worker")
 
-    assert isinstance(tool_adapter, LegacyWorkerAdapterExecutor)
-    assert isinstance(llm_adapter, LegacyWorkerAdapterExecutor)
-    assert isinstance(code_adapter, LegacyWorkerAdapterExecutor)
-    assert isinstance(reduce_adapter, LegacyWorkerAdapterExecutor)
     assert isinstance(worker_executor, WorkerExecutor)
-    assert tool_adapter.worker_executor is worker_executor
-    assert llm_adapter.worker_executor is worker_executor
-    assert code_adapter.worker_executor is worker_executor
-    assert reduce_adapter.worker_executor is worker_executor
-    assert isinstance(worker_executor._tool, ToolExecutor)
+    for node_type in DEFAULT_WORKER_RUNTIME_COMPUTE_TYPES:
+        executor = registry.get(node_type)
+        assert isinstance(executor, WorkerBackedLegacyComputeExecutor)
+        assert executor.worker_executor is worker_executor
+    for node_type in DEFAULT_DIRECT_LEGACY_COMPUTE_TYPES:
+        assert not isinstance(registry.get(node_type), LegacyWorkerAdapterExecutor)
+        assert not isinstance(registry.get(node_type), WorkerBackedLegacyComputeExecutor)
+    assert tool_executor.registry is worker_executor._tool.registry
+    assert llm_executor.worker_executor is worker_executor
+    assert code_executor.worker_executor is worker_executor
+    assert input_executor.worker_executor is worker_executor
+    assert router_executor is worker_executor._router
+    assert validator_executor is worker_executor._validator
+    assert reflection_executor is worker_executor._reflection
+    assert rag_executor is worker_executor._rag
+    assert human_executor is worker_executor._human
+    assert human_in_the_loop_executor is worker_executor._human
+    assert vote_executor is worker_executor._vote
+    assert reduce_executor is worker_executor._reduce
     assert worker_executor._tool.registry.has("pdf_read")
 
 
@@ -102,12 +126,13 @@ def test_register_default_executors_can_use_custom_tool_registry() -> None:
 
     register_default_executors(registry, tool_registry=tool_registry)
 
-    tool_adapter = registry.get("tool_operator")
+    tool_executor = registry.get("tool_operator")
     worker_executor = registry.get("worker")
 
-    assert isinstance(tool_adapter, LegacyWorkerAdapterExecutor)
     assert isinstance(worker_executor, WorkerExecutor)
-    assert tool_adapter.worker_executor is worker_executor
+    assert isinstance(tool_executor, WorkerBackedLegacyComputeExecutor)
+    assert tool_executor.worker_executor is worker_executor
+    assert tool_executor.registry is worker_executor._tool.registry
     assert worker_executor._tool.registry.has("custom_tool")
 
 
@@ -125,6 +150,11 @@ def test_build_default_worker_executors_shares_worker_and_legacy_adapter() -> No
     assert isinstance(bundle.worker_executor, WorkerExecutor)
     assert isinstance(bundle.legacy_worker_adapter, LegacyWorkerAdapterExecutor)
     assert bundle.legacy_worker_adapter.worker_executor is bundle.worker_executor
+    assert bundle.llm_worker_runtime.worker_executor is bundle.worker_executor
+    assert bundle.tool_worker_runtime.worker_executor is bundle.worker_executor
+    assert bundle.tool_worker_runtime.registry is bundle.tool_executor.registry
+    assert bundle.code_worker_runtime.worker_executor is bundle.worker_executor
+    assert bundle.input_worker_runtime.worker_executor is bundle.worker_executor
     assert bundle.worker_executor._tool.registry.has("custom_tool")
 
 

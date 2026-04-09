@@ -67,13 +67,15 @@ def test_generate_spec_node_types_constant_matches_prompt_contract() -> None:
     assert resolve_worker_generation_mode("bogus") == "disabled"
 
 
-def test_worker_builder_mode_resolver_is_additive_and_conservative() -> None:
+def test_worker_builder_mode_resolver_defaults_to_worker_first_but_keeps_explicit_opt_out() -> None:
     assert resolve_worker_builder_mode("disabled") == "disabled"
     assert resolve_worker_builder_mode("canary") == "canary"
     assert resolve_worker_builder_mode("enabled") == "enabled"
     assert resolve_worker_builder_mode("bogus") == "disabled"
+    assert resolve_worker_builder_mode(None) == "enabled"
     assert worker_builder_uses_workers(mode="disabled") is False
     assert worker_builder_uses_workers(mode="canary") is True
+    assert worker_builder_uses_workers(mode="enabled") is True
 
 
 def test_graph_mutator_body_graph_policy_uses_taxonomy_constant() -> None:
