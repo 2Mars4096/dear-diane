@@ -70,6 +70,7 @@ output/
 checkpoints/
 .agent-subsessions/
 .codex-subsessions/
+.dan-code/
 
 # Memory store (runtime-generated, not source-controlled)
 memory/
@@ -106,11 +107,16 @@ pnpm-debug.log*
 .cursor/
 .claude/
 /tests/*
+!/tests/__init__.py
 !/tests/test_server/
 /tests/test_server/*
 !/tests/test_server/test_paths.py
+!/tests/test_server/test_misc_health.py
+!/tests/test_server/test_router_dependencies.py
+!/tests/test_server/test_run_manager.py
 !/tests/test_server/test_scoped_run.py
 !/tests/test_server/test_run_manager_reflection.py
+!/tests/test_server/test_run_manager_telemetry.py
 !/tests/test_mutation_duplicate_add_repair.py
 !/tests/test_capabilities_introspection.py
 !/tests/test_domain_learning.py
@@ -146,9 +152,12 @@ pnpm-debug.log*
 !/tests/test_worker/
 /tests/test_worker/*
 !/tests/test_worker/test_builder.py
+!/tests/test_worker/test_capability_manifest.py
+!/tests/test_worker/test_core_executor.py
 !/tests/test_worker/test_equivalence.py
 !/tests/test_worker/test_executor.py
 !/tests/test_worker/test_linting.py
+!/tests/test_worker/test_memory_evidence_lifecycle.py
 !/tests/test_worker/test_model.py
 !/tests/test_worker/test_presets.py
 !/tests/test_worker/test_roles.py
