@@ -1,5 +1,13 @@
 """Bounded organism presets built on the 52 cell/tissue/organ substrate."""
 
+from dan.worker.organisms.coding_conversation import (
+    CodingConversationContext,
+    CodingConversationController,
+    CodingConversationMessage,
+    CodingConversationReportSummary,
+    CodingConversationReviewDecision,
+    CodingConversationTurnDecision,
+)
 from dan.worker.organisms.coding_execution import (
     CodingOrganism,
     CodingOrganismExecution,
@@ -35,6 +43,12 @@ from dan.worker.organisms.reference_demo import (
 )
 
 __all__ = [
+    "CodingConversationContext",
+    "CodingConversationController",
+    "CodingConversationMessage",
+    "CodingConversationReportSummary",
+    "CodingConversationReviewDecision",
+    "CodingConversationTurnDecision",
     "CodingOrganism",
     "CodingOrganismExecution",
     "CodingOrganismResult",
