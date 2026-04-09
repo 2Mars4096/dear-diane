@@ -1,6 +1,23 @@
 """Public exports for the reusable worker core bundle."""
 
-from dan.worker.core.contracts import ConstraintSet, EvidenceBlock, ExecutionRequest, OutputContract, TrustLabel
+from dan.worker.core.capabilities import CapabilityCostTier, CapabilityManifest, CapabilitySummary
+from dan.worker.core.contracts import (
+    CommunicationChannel,
+    CommunicationChannelKind,
+    CommunicationContract,
+    ConstraintSet,
+    EvidenceBlock,
+    ExecutionRequest,
+    MemoryCompactionPolicy,
+    MemoryExtractionMode,
+    MemoryLayer,
+    MemoryRecord,
+    MemoryRequest,
+    MemorySnapshot,
+    MemoryWrite,
+    OutputContract,
+    TrustLabel,
+)
 from dan.worker.core.executor import WorkerCoreExecutor, WorkerExecutionResult
 from dan.worker.core.interfaces import (
     CompletionProvider,
@@ -15,15 +32,28 @@ from dan.worker.core.interfaces import (
 from dan.worker.core.model import CompletionHints, WorkerDefinition
 
 __all__ = [
+    "CapabilityCostTier",
+    "CapabilityManifest",
+    "CapabilitySummary",
     "CompletionHints",
     "CompletionProvider",
     "CompletionRequest",
     "CompletionResponse",
+    "CommunicationChannel",
+    "CommunicationChannelKind",
+    "CommunicationContract",
     "ConstraintSet",
     "EventSink",
     "EvidenceBlock",
     "ExecutionRequest",
     "MemoryProvider",
+    "MemoryCompactionPolicy",
+    "MemoryExtractionMode",
+    "MemoryLayer",
+    "MemoryRecord",
+    "MemoryRequest",
+    "MemorySnapshot",
+    "MemoryWrite",
     "OutputContract",
     "ToolCallRequest",
     "ToolCallResponse",

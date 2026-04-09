@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from dan.worker.core.contracts import AcquisitionPolicy
+
 
 class CompletionHints(BaseModel):
     """Execution-time completion hints for the reusable core."""
@@ -26,4 +28,5 @@ class WorkerDefinition(BaseModel):
     model: str | None = None
     tool_ids: list[str] = Field(default_factory=list)
     llm_hints: CompletionHints | None = None
+    acquisition_policy: AcquisitionPolicy | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
