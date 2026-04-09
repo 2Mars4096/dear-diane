@@ -64,7 +64,7 @@ def derive_workflow_interface(graph: Graph) -> WorkflowInterface:
 
 
 def _collect_inputs(graph: Graph) -> dict[str, dict[str, Any]]:
-    """Gather input properties from InputNode variables or prompt placeholders."""
+    """Gather input properties from explicit workflow-input declarations or placeholders."""
     props: dict[str, dict[str, Any]] = {}
 
     for node in graph.nodes:
@@ -77,6 +77,28 @@ def _collect_inputs(graph: Graph) -> dict[str, dict[str, Any]]:
                 if var.default is not None:
                     prop["default"] = var.default
                 props[var.name] = prop
+            continue
+
+        metadata = getattr(node, "metadata", None)
+        if not isinstance(metadata, dict):
+            continue
+        raw_variables = metadata.get("input_variables")
+        if not isinstance(raw_variables, list):
+            continue
+        for raw_var in raw_variables:
+            if not isinstance(raw_var, dict):
+                continue
+            name = raw_var.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            json_type = _var_type_to_json(raw_var.get("type"))
+            prop = {"type": json_type}
+            description = raw_var.get("description")
+            if isinstance(description, str) and description:
+                prop["description"] = description
+            if raw_var.get("default") is not None:
+                prop["default"] = raw_var["default"]
+            props[name] = prop
 
     if props:
         return props

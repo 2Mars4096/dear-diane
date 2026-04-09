@@ -692,24 +692,41 @@ class WorkflowBuilder:
                 OutputPort(name="invalid"),
             ]
 
-        pn = self._legacy_compute_pending_from_worker(
-            node_id,
-            expected_node_type="validator",
-            worker_kwargs={
-                "name": name or node_id,
-                "description": description,
-                "role": "validator",
-                "metadata": {
-                    "validation_rules": list(rules or []),
-                    "validator_on_failure": on_failure,
-                    "validator_strict_mode": strict_mode,
-                },
+        worker_kwargs = {
+            "name": name or node_id,
+            "description": description,
+            "role": "validator",
+            "validation_rules": list(rules or []),
+            "metadata": {
+                "validator_on_failure": on_failure,
+                "validator_strict_mode": strict_mode,
             },
-            explicit_input_ports=explicit_input_ports,
-            explicit_output_ports=explicit_output_ports,
-        )
+        }
+        if self._emit_canonical_worker_alias():
+            pn = self._worker_pending_alias(
+                node_id,
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(
+                node_id,
+                "worker",
+                self,
+                _default_input=explicit_input_ports[0].name if explicit_input_ports else None,
+                _default_output=explicit_output_ports[0].name if explicit_output_ports else None,
+            )
+        else:
+            pn = self._legacy_compute_pending_from_worker(
+                node_id,
+                expected_node_type="validator",
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "validator", self)
         self._add_node(pn)
-        return NodeRef(node_id, "validator", self)
+        return ref
 
     def reflection(
         self,
@@ -869,7 +886,13 @@ class WorkflowBuilder:
                 explicit_input_ports=explicit_input_ports,
                 explicit_output_ports=explicit_output_ports,
             )
-            ref = NodeRef(node_id, "worker", self)
+            ref = NodeRef(
+                node_id,
+                "worker",
+                self,
+                _default_input=explicit_input_ports[0].name if explicit_input_ports else None,
+                _default_output=explicit_output_ports[0].name if explicit_output_ports else None,
+            )
         else:
             pn = self._legacy_compute_pending_from_worker(
                 node_id,
@@ -904,21 +927,32 @@ class WorkflowBuilder:
                 OutputPort(name="result"),
             ]
 
-        pn = self._legacy_compute_pending_from_worker(
-            node_id,
-            expected_node_type="router",
-            worker_kwargs={
-                "name": name or node_id,
-                "description": description,
-                "role": "router",
-                "model": model,
-                "metadata": {"route_descriptions": dict(route_descriptions)},
-            },
-            explicit_input_ports=explicit_input_ports,
-            explicit_output_ports=explicit_output_ports,
-        )
+        worker_kwargs = {
+            "name": name or node_id,
+            "description": description,
+            "role": "router",
+            "model": model,
+            "metadata": {"route_descriptions": dict(route_descriptions)},
+        }
+        if self._emit_canonical_worker_alias():
+            pn = self._worker_pending_alias(
+                node_id,
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "worker", self)
+        else:
+            pn = self._legacy_compute_pending_from_worker(
+                node_id,
+                expected_node_type="router",
+                worker_kwargs=worker_kwargs,
+                explicit_input_ports=explicit_input_ports,
+                explicit_output_ports=explicit_output_ports,
+            )
+            ref = NodeRef(node_id, "router", self)
         self._add_node(pn)
-        return NodeRef(node_id, "router", self)
+        return ref
 
     def input_node(
         self,

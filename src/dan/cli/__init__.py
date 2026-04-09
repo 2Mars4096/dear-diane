@@ -11,6 +11,18 @@ DAN_DIR = Path.home() / ".dan"
 RUNS_DIR = DAN_DIR / "runs"
 
 
+def _safe_current_directory() -> str:
+    """Return a best-effort current directory without requiring getcwd()."""
+
+    pwd = str(os.environ.get("PWD") or "").strip()
+    if pwd:
+        return pwd
+    try:
+        return str(Path.cwd())
+    except FileNotFoundError:
+        return "."
+
+
 def load_env() -> None:
     """Load .env file if present (same pattern as dan.server.app)."""
     try:
@@ -44,8 +56,26 @@ def resolve_config(
             or os.environ.get("DAN_LLM_BASE_URL")
             or os.environ.get("DAN_BASE_URL", "")
         ),
-        "workspace": workspace or os.environ.get("DAN_WORKSPACE_ROOT", str(Path.cwd())),
+        "workspace": workspace or os.environ.get("DAN_WORKSPACE_ROOT") or _safe_current_directory(),
     }
+
+
+def normalize_workspace_root(workspace: str | Path) -> Path:
+    """Resolve a workspace root without requiring the process CWD to exist."""
+
+    candidate = Path(str(workspace or ".")).expanduser()
+    if candidate.is_absolute():
+        return candidate.resolve(strict=False)
+
+    pwd = str(os.environ.get("PWD") or "").strip()
+    if pwd:
+        return (Path(pwd).expanduser() / candidate).resolve(strict=False)
+
+    try:
+        base = Path.cwd()
+    except FileNotFoundError:
+        return Path(os.path.normpath(str(candidate)))
+    return (base / candidate).resolve(strict=False)
 
 
 def ensure_dan_dir() -> Path:

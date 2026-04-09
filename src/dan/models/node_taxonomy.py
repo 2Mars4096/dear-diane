@@ -154,14 +154,18 @@ def worker_generation_uses_workers(*, mode: str | None = None) -> bool:
 
 
 def resolve_worker_builder_mode(raw: str | None = None) -> WorkerBuilderMode:
-    """Resolve the additive Worker-builder rollout mode.
+    """Resolve the Worker-builder authoring mode.
 
-    `disabled`: builder aliases continue emitting legacy compute node types.
-    `canary` / `enabled`: simple compute aliases may emit Worker-native nodes
-    while retained control/runtime primitives stay explicit.
+    Unset mode now defaults to `enabled`, so builder/loader/mutator authoring
+    prefers Worker-native compute nodes unless a caller explicitly opts back to
+    `disabled`. `canary` remains an accepted synonym for the same Worker-first
+    behavior.
     """
 
-    mode = str(raw if raw is not None else os.environ.get("DAN_WORKER_BUILDER", "disabled")).strip().lower()
+    source = raw if raw is not None else os.environ.get("DAN_WORKER_BUILDER")
+    if source is None or not str(source).strip():
+        return "enabled"
+    mode = str(source).strip().lower()
     if mode in {"canary", "enabled"}:
         return mode
     return "disabled"

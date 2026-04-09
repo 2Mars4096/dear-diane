@@ -10,6 +10,7 @@ import sys
 
 _SUBCOMMANDS = {
     "bot": ("dan.cli.bot", "main"),
+    "code": ("dan.cli.code", "main"),
     "serve": ("dan.server.__main__", "main"),
     "run": ("dan.cli.run", "main"),
     "chat": ("dan.cli.chat", "main"),
@@ -22,6 +23,7 @@ _SUBCOMMANDS = {
     "logs": ("dan.cli.logs", "main"),
     "editor": ("dan.cli.editor", "main"),
     "furnace": ("dan.cli.furnace", "main"),
+    "organism": ("dan.cli.organism", "main"),
 }
 
 
@@ -48,6 +50,7 @@ def _print_help() -> None:
     print("Usage: dan <subcommand> [args...]\n")
     print("Subcommands:")
     print("  bot        Manage Telegram bot fleet")
+    print("  code       Run the DAN Code coding CLI")
     print("  serve      Start the DAN server")
     print("  run        Run a workflow")
     print("  chat       Interactive chat session")
@@ -57,6 +60,7 @@ def _print_help() -> None:
     print("  down       Stop server + services")
     print("  editor     Start server + visual editor")
     print("  furnace    Direct furnace control CLI")
+    print("  organism   Run the local bounded organism demo CLI")
     print("  service    Manage background services")
     print("  status     Show server status")
     print("  logs       View server logs")
