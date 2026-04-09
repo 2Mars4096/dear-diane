@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from dan.worker import StandaloneRunPolicy, StandaloneWorkerRunner
+from dan.worker import (
+    DurableAgentPolicy,
+    DurableAgentRunner,
+    StandaloneRunPolicy,
+    StandaloneWorkerRunner,
+)
 from dan.worker.core.acquisition import LocalAcquisitionProvider
 from dan.worker.core.contracts import (
     AcquisitionFamily,
@@ -535,3 +540,130 @@ async def test_standalone_runner_honors_total_runtime_budget_between_retries() -
         and event.payload.get("stop_reason") == "time_budget_exhausted"
         for event in result.events
     )
+
+
+@pytest.mark.asyncio
+async def test_durable_agent_runner_processes_mailbox_in_order_and_reuses_continuation(
+    tmp_path: Path,
+) -> None:
+    _write_file(tmp_path / "plan.md", "CHECKPOINT_DETAIL\nresume from saved evidence\n")
+
+    completion_provider = _RecordingCompletionProvider()
+    acquisition_provider = _RecordingAcquisitionProvider()
+    runner = DurableAgentRunner(
+        completion_provider=completion_provider,
+        acquisition_provider=acquisition_provider,
+    )
+    worker = WorkerDefinition(
+        id="durable-agent",
+        model="stub-model",
+        acquisition_policy=AcquisitionPolicy(
+            max_selected_items_per_source=1,
+            max_expanded_items_per_source=1,
+        ),
+    )
+    session = runner.create_session(worker, metadata={"surface": "durable-test"})
+
+    first_message = runner.enqueue_message(
+        session,
+        ExecutionRequest.from_harness(
+            task="Read plan.md before acting.",
+            acquisition={
+                "sources": [
+                    AcquisitionSource(
+                        source_id="files",
+                        family=AcquisitionFamily.FILE_INVENTORY,
+                        metadata={"root": str(tmp_path)},
+                    )
+                ]
+            },
+        ),
+    )
+    second_message = runner.enqueue_message(
+        session,
+        ExecutionRequest.from_harness(
+            task="Continue from the saved checkpoint without rescanning the workspace.",
+        ),
+    )
+
+    turns = await runner.run_until_idle(worker, session)
+
+    assert [turn.message_id for turn in turns] == [first_message.message_id, second_message.message_id]
+    assert [message.message_index for message in session.mailbox] == [1, 2]
+    assert [request.metadata["agent_message_index"] for request in completion_provider.requests] == [1, 2]
+    assert all(request.metadata["durable_mode"] is True for request in completion_provider.requests)
+    assert all(request.metadata["agent_session_id"] == session.session_id for request in completion_provider.requests)
+    assert completion_provider.requests[1].continuation is not None
+    assert [call["source_id"] for call in acquisition_provider.discover_calls].count("files") == 1
+    assert session.metadata["surface"] == "durable-test"
+    assert any(event.event == "agent.mailbox.completed" for event in session.events)
+
+
+@pytest.mark.asyncio
+async def test_durable_agent_runner_bounded_policy_reduces_to_one_message() -> None:
+    runner = DurableAgentRunner(
+        completion_provider=_RecordingCompletionProvider(),
+        default_policy=DurableAgentPolicy.bounded(),
+    )
+    worker = WorkerDefinition(id="bounded-agent", model="stub-model")
+    session = runner.create_session(worker)
+
+    runner.enqueue_message(session, ExecutionRequest.from_harness(task="Answer exactly one turn."))
+    turns = await runner.run_until_idle(worker, session)
+
+    assert len(turns) == 1
+    assert turns[0].status == "completed"
+    assert session.status == "closed"
+    assert session.closed_at is not None
+    assert any(event.event == "agent.session.closed" for event in session.events)
+
+    with pytest.raises(ValueError, match="already closed"):
+        runner.enqueue_message(session, ExecutionRequest.from_harness(task="Second turn should be rejected."))
+
+
+@pytest.mark.asyncio
+async def test_durable_agent_runner_tracks_background_capacity_and_closes_when_idle() -> None:
+    runner = DurableAgentRunner(completion_provider=_RecordingCompletionProvider())
+    worker = WorkerDefinition(id="background-agent", model="stub-model")
+    policy = DurableAgentPolicy(close_when_idle=True, max_background_tasks=1)
+    session = runner.create_session(worker)
+    release_background = asyncio.Event()
+
+    async def _hold_background() -> None:
+        await release_background.wait()
+
+    background = runner.start_background_task(
+        session,
+        "background-sync",
+        _hold_background(),
+        policy=policy,
+    )
+
+    with pytest.raises(RuntimeError, match="background task limit"):
+        runner.start_background_task(
+            session,
+            "background-overflow",
+            _hold_background(),
+            policy=policy,
+        )
+
+    runner.enqueue_message(
+        session,
+        ExecutionRequest.from_harness(task="Keep answering while the background task is still running."),
+        policy=policy,
+    )
+    turn = await runner.process_next(worker, session, policy=policy)
+
+    assert turn is not None
+    assert turn.status == "completed"
+    assert session.status == "running"
+    assert runner.active_background_tasks(session)[0].task_id == background.task_id
+
+    release_background.set()
+    await runner.wait_for_background_tasks(session, policy=policy)
+
+    assert background.status == "completed"
+    assert session.status == "closed"
+    assert session.closed_at is not None
+    assert runner.active_background_tasks(session) == []
+    assert any(event.event == "agent.background.completed" for event in session.events)
