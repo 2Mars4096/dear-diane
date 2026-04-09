@@ -19,28 +19,24 @@ This document covers every step from company formation to product launch. Phases
 
 **Steps:**
 
-- [ ] **Choose company name** — check availability at [wyoming.gov/business](https://wyoming.gov/business)
-  - **Decision: Liberate AI LLC**
+- [x] **Choose company name** — ~~check availability at wyoming.gov/business~~
+  - **Decision: Liberate AI LLC** (approved 2026-03-27)
   - Motto: "Let Intelligence Bear Every Routine And Tedious Effort"
   - Chinese brand: 利博 (Lìbó) / tagline: 释繁归简
-  - Verify the name doesn't conflict with existing trademarks (USPTO TESS search)
-- [ ] **File Articles of Organization** — $100, online at Wyoming Secretary of State
-  - Processing: 1–3 business days
-  - Need: company name, registered agent, organizer info, management type (member-managed for single member)
-- [ ] **Appoint a registered agent** — required by Wyoming law
-  - Option A: Self-serve ($0) — only if you have a Wyoming address
-  - Option B: Registered agent service ($50–150/yr) — Northwest, Incfile, ZenBusiness
-  - Recommendation: Use a service — you probably don't have a WY address
-- [ ] **Draft Operating Agreement** — not legally required but essential for:
-  - Opening a bank account (banks often ask for it)
-  - Establishing single-member LLC tax treatment
-  - Documenting IP ownership (all code/IP belongs to the LLC)
-  - Template: free via Northwest or ZenBusiness, or DIY
-- [ ] **Get EIN from IRS** — free, online at [irs.gov](https://www.irs.gov/businesses/small-businesses-self-employed/apply-for-an-employer-identification-number-ein-online)
-  - Needed for bank account, tax filings, and payment processing
+- [x] **File Articles of Organization** — filed via Wyoming Agents ($154 incl. registered agent)
+  - Approved same day (2026-03-27)
+- [x] **Appoint a registered agent** — Wyoming Agents (included in filing package)
+- [x] **Draft Operating Agreement** — template created at `docs/business/operating-agreement-liberate-ai-llc.md`
+  - Needs: fill in blanks (name, address, contribution values) and sign
+- [x] **Draft IP Assignment Agreement** — template created at `docs/business/ip-assignment-agreement.md`
+  - Needs: fill in blanks and sign concurrently with Operating Agreement
+- [ ] **Get EIN from IRS** — call +1 (267) 941-1099 (international EIN line)
+  - Best time: 6:00–8:00 PM HKT (6:00–8:00 AM ET)
+  - Have Form SS-4, Articles of Organization, and passport ready
+  - EIN given verbally on the call; CP 575 letter arrives by mail in 4–6 weeks
 - [ ] **Open business bank account** — need EIN + Operating Agreement + Articles
-  - Online-friendly options: Mercury, Relay, Brex (all cater to tech startups)
-  - Mercury is popular for solo founders — no minimum balance, integrates with Stripe
+  - Recommended: Mercury (mercury.com) — startup-friendly, no branch visit, accepts foreign founders
+- [ ] **Sign Operating Agreement and IP Assignment** — fill blanks, sign, keep as PDF
 
 **Total cost: ~$150–250 (filing + registered agent)**
 **Timeline: 1–2 weeks**
