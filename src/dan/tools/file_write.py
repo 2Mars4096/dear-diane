@@ -55,13 +55,20 @@ TOOL_METADATA = {
 
 
 async def file_write(
-    path: str,
-    content: str,
+    path: str | None = None,
+    content: str | None = None,
     mode: str = "overwrite",
     encoding: str = "utf-8",
+    file_path: str | None = None,
     **_kwargs,
 ) -> dict:
-    resolved = validate_path(path, operation="write")
+    effective_path = str(path or file_path or "").strip()
+    if not effective_path:
+        raise TypeError("file_write() missing 1 required positional argument: 'path'")
+    if content is None:
+        raise TypeError("file_write() missing 1 required positional argument: 'content'")
+
+    resolved = validate_path(effective_path, operation="write")
 
     if mode not in ("overwrite", "append"):
         raise ValueError(
@@ -76,6 +83,6 @@ async def file_write(
 
     return {
         "bytes_written": len(content.encode(encoding)),
-        "path": path,
+        "path": effective_path,
         "mode": mode,
     }

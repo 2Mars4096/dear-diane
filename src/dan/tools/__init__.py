@@ -33,6 +33,7 @@ _TOOL_MODULES = [
     "current_datetime",
     "file_copy",
     "file_delete",
+    "file_edit",
     "file_move",
     "file_read",
     "file_write",

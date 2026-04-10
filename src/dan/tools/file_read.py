@@ -54,39 +54,75 @@ TOOL_METADATA = {
 MAX_FILE_SIZE = 1_048_576  # 1 MB
 
 
+def _normalize_line_number(value: int | None, *, name: str) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be an integer") from None
+    if parsed < 1:
+        raise ValueError(f"{name} must be >= 1")
+    return parsed
+
+
 async def file_read(
-    path: str,
+    path: str | None = None,
     start_line: int | None = None,
     end_line: int | None = None,
     encoding: str = "utf-8",
+    file_path: str | None = None,
     **_kwargs,
 ) -> dict:
-    resolved = validate_path(path)
+    effective_path = str(path or file_path or "").strip()
+    if not effective_path:
+        raise TypeError("file_read() missing 1 required positional argument: 'path'")
+
+    resolved = validate_path(effective_path)
 
     if not os.path.isfile(resolved):
         raise FileNotFoundError(
-            f"File not found: '{path}'. Check the path and try again."
+            f"File not found: '{effective_path}'. Check the path and try again."
         )
 
+    normalized_start = _normalize_line_number(start_line, name="start_line")
+    normalized_end = _normalize_line_number(end_line, name="end_line")
+    if (
+        normalized_start is not None
+        and normalized_end is not None
+        and normalized_end < normalized_start
+    ):
+        raise ValueError("end_line must be >= start_line")
+
     size = os.path.getsize(resolved)
-    if size > MAX_FILE_SIZE:
+    reading_range = normalized_start is not None or normalized_end is not None
+    if size > MAX_FILE_SIZE and not reading_range:
         raise ValueError(
-            f"File '{path}' is {size:,} bytes (limit {MAX_FILE_SIZE:,}). "
+            f"File '{effective_path}' is {size:,} bytes (limit {MAX_FILE_SIZE:,}). "
             "Use start_line/end_line to read a portion."
         )
 
-    with open(resolved, encoding=encoding) as f:
-        lines = f.readlines()
+    if reading_range:
+        first_line = normalized_start or 1
+        last_line = normalized_end
+        selected_lines: list[str] = []
+        with open(resolved, encoding=encoding) as f:
+            for line_number, line in enumerate(f, start=1):
+                if line_number < first_line:
+                    continue
+                if last_line is not None and line_number > last_line:
+                    break
+                selected_lines.append(line)
+        content = "".join(selected_lines)
+        line_count = len(selected_lines)
+    else:
+        with open(resolved, encoding=encoding) as f:
+            content = f.read()
+        line_count = len(content.splitlines())
 
-    if start_line is not None or end_line is not None:
-        s = (start_line or 1) - 1
-        e = end_line if end_line is not None else len(lines)
-        lines = lines[max(s, 0) : e]
-
-    content = "".join(lines)
     return {
         "content": content,
-        "line_count": len(lines),
+        "line_count": line_count,
         "size": len(content.encode(encoding)),
-        "path": path,
+        "path": effective_path,
     }
