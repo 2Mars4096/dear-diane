@@ -7,8 +7,9 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from dan.providers import LLMProvider, apply_cache_hints
+from dan.providers import CompletionResult, LLMProvider, apply_cache_hints
 from dan.tools import get_all_tools
+from dan.tools._git_helpers import _find_repo
 from dan.worker.core.interfaces import CompletionRequest, CompletionResponse
 from dan.worker.core.model import WorkerDefinition
 from dan.worker.organisms.coding_execution import CodingOrganism
@@ -19,13 +20,18 @@ from dan.worker.tissue import TissuePattern
 DEFAULT_LIVE_ORGANISM_TOOL_IDS = [
     "list_directory",
     "file_read",
+    "file_edit",
     "file_write",
     "shell_command",
+    "web_search",
     "git_status",
     "git_diff",
     "git_log",
 ]
-_READ_ONLY_TOOL_EXCLUSIONS = frozenset({"file_write"})
+# ``shell_command`` is intentionally treated as mutation-capable here because the
+# current standalone shell tool accepts arbitrary commands rather than a
+# constrained read-only subset.
+_READ_ONLY_TOOL_EXCLUSIONS = frozenset({"file_edit", "file_write", "shell_command"})
 ToolRuntimeEventCallback = Callable[[dict[str, Any]], None]
 ToolApprovalCallback = Callable[[str, dict[str, Any], dict[str, Any]], bool]
 
@@ -44,6 +50,66 @@ def _dedupe(values: Sequence[str]) -> list[str]:
 
 def _read_only_tool_ids(tool_ids: Sequence[str]) -> list[str]:
     return [tool_id for tool_id in _dedupe(tool_ids) if tool_id not in _READ_ONLY_TOOL_EXCLUSIONS]
+
+
+def _workspace_supports_git(workspace_root: str | Path) -> bool:
+    try:
+        _find_repo(str(Path(workspace_root).expanduser().resolve()))
+    except Exception:
+        return False
+    return True
+
+
+def _workspace_tool_ids(tool_ids: Sequence[str], *, workspace_root: str | Path) -> list[str]:
+    selected = _dedupe(tool_ids)
+    if _workspace_supports_git(workspace_root):
+        return selected
+    return [
+        tool_id
+        for tool_id in selected
+        if tool_id not in {"git_status", "git_diff", "git_log"}
+    ]
+
+
+def _tool_use_policy(tool_ids: Sequence[str]) -> str:
+    available = _dedupe(tool_ids)
+    if not available:
+        return ""
+
+    lines = [
+        "Local tool-use policy:",
+        "- Prefer the most specific structured tool available for the job.",
+        "- Keep tool calls targeted and incremental. Avoid duplicate discovery once you already have the needed fact.",
+    ]
+    if "list_directory" in available:
+        lines.append("- Use `list_directory` for directory inspection instead of shell `ls`.")
+    if "file_read" in available:
+        lines.append("- Use `file_read` for file contents instead of shell `cat`, `head`, or similar fallbacks.")
+    if "file_edit" in available:
+        lines.append(
+            "- Use `file_edit` for targeted line-based edits to existing files. Always include `path` and `start_line`, and include `content` for replace/insert edits. If you need multiple non-overlapping edits in the same file, prefer one `file_edit` call with `edits=[...]` over repeated single-edit calls."
+        )
+    if "file_write" in available:
+        lines.append(
+            "- Use `file_write` for creating new files or replacing/appending whole-file content. Do not use shell heredocs, redirection, or `cat > file` when `file_edit` or `file_write` is available."
+        )
+    if "web_search" in available:
+        lines.append(
+            "- Use `web_search` for live external lookups or lightweight web research instead of guessing current facts."
+        )
+    if {"git_status", "git_diff", "git_log"} & set(available):
+        lines.append(
+            "- Use the structured git tools for repository state, diff, and history. First confirm the target path is actually inside a git repository before using them."
+        )
+    if "shell_command" in available:
+        lines.append(
+            "- Use `shell_command` only when the structured tools cannot express the task, such as focused validation/build commands or narrow one-off searches."
+        )
+        if not ({"git_status", "git_diff", "git_log"} & set(available)):
+            lines.append(
+                "- Do not use shell `git` commands when git tools are unavailable; that usually means the workspace is not a git repository."
+            )
+    return "\n".join(lines)
 
 
 def available_local_organism_tools() -> dict[str, dict[str, Any]]:
@@ -67,14 +133,17 @@ class LocalOrganismToolRuntime:
         event_callback: ToolRuntimeEventCallback | None = None,
     ) -> None:
         available = get_all_tools()
-        selected = _dedupe(tool_ids or DEFAULT_LIVE_ORGANISM_TOOL_IDS)
+        self._workspace_root = Path(workspace_root or ".").expanduser().resolve()
+        selected = _workspace_tool_ids(
+            tool_ids or DEFAULT_LIVE_ORGANISM_TOOL_IDS,
+            workspace_root=self._workspace_root,
+        )
         missing = [tool_id for tool_id in selected if tool_id not in available]
         if missing:
             raise ValueError(
                 "Unknown local organism tools: "
                 + ", ".join(sorted(missing))
             )
-        self._workspace_root = Path(workspace_root or ".").expanduser().resolve()
         self._tools = {
             tool_id: available[tool_id]
             for tool_id in selected
@@ -173,16 +242,22 @@ class ToolLoopCompletionProvider:
         provider: LLMProvider,
         tool_runtime: LocalOrganismToolRuntime,
         default_model: str,
-        max_rounds: int = 8,
+        max_rounds: int | None = None,
         max_tool_calls: int = 24,
+        stream_text_responses: bool = False,
         provider_request_overrides: dict[str, Any] | None = None,
         event_callback: ToolRuntimeEventCallback | None = None,
     ) -> None:
         self._provider = provider
         self._tool_runtime = tool_runtime
         self._default_model = str(default_model or "").strip()
-        self._max_rounds = max(1, int(max_rounds))
+        self._max_rounds = (
+            None
+            if max_rounds is None or int(max_rounds) <= 0
+            else max(1, int(max_rounds))
+        )
         self._max_tool_calls = max(1, int(max_tool_calls))
+        self._stream_text_responses = bool(stream_text_responses)
         self._provider_request_overrides = dict(provider_request_overrides or {})
         self._event_callback = event_callback
 
@@ -191,18 +266,119 @@ class ToolLoopCompletionProvider:
             return
         self._event_callback({"event": event, **payload})
 
+    async def _complete_text_response(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        model: str,
+        request: CompletionRequest,
+        provider_kwargs: dict[str, Any],
+        round_number: int,
+        worker_id: str | None,
+    ) -> CompletionResult:
+        if not self._stream_text_responses:
+            return await self._provider.complete(
+                messages=messages,
+                model=model,
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+                **provider_kwargs,
+            )
+
+        stream_method = getattr(self._provider, "stream", None)
+        if not callable(stream_method):
+            return await self._provider.complete(
+                messages=messages,
+                model=model,
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+                **provider_kwargs,
+            )
+
+        accumulated = ""
+        usage: dict[str, Any] | None = None
+        emitted_delta = False
+        self._emit_event(
+            "model.stream.started",
+            model=model,
+            round=round_number,
+            worker_id=worker_id,
+        )
+        try:
+            async for chunk in stream_method(
+                messages=messages,
+                model=model,
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+                **provider_kwargs,
+            ):
+                delta = str(getattr(chunk, "delta", "") or "")
+                accumulated = str(
+                    getattr(chunk, "accumulated", accumulated + delta) or accumulated + delta
+                )
+                usage_candidate = getattr(chunk, "usage", None)
+                if usage_candidate:
+                    usage = dict(usage_candidate)
+                if delta:
+                    emitted_delta = True
+                    self._emit_event(
+                        "model.stream.delta",
+                        model=model,
+                        round=round_number,
+                        delta=delta,
+                        accumulated=accumulated,
+                        worker_id=worker_id,
+                    )
+            self._emit_event(
+                "model.stream.completed",
+                model=model,
+                round=round_number,
+                usage=usage,
+                worker_id=worker_id,
+            )
+            return CompletionResult(
+                text=accumulated,
+                usage=usage,
+                model=model,
+                finish_reason="stream",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": accumulated or None,
+                },
+                provider_metadata={"streamed_response": True},
+            )
+        except Exception:
+            if emitted_delta:
+                raise
+            return await self._provider.complete(
+                messages=messages,
+                model=model,
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+                **provider_kwargs,
+            )
+
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         model = str(request.model or self._default_model or "").strip()
         if not model:
             raise ValueError("Tool-loop completion provider requires a concrete model")
         worker_id = str(request.metadata.get("worker_id") or "").strip() or None
 
+        tool_schemas = self._resolve_tool_schemas(request.tools)
         messages: list[dict[str, Any]] = []
         if request.system_prompt:
             messages.append({"role": "system", "content": request.system_prompt})
+        tool_policy = _tool_use_policy(
+            [
+                str(tool.get("function", {}).get("name") or "").strip()
+                for tool in tool_schemas
+                if isinstance(tool, dict)
+            ]
+        )
+        if tool_policy:
+            messages.append({"role": "system", "content": tool_policy})
         messages.append({"role": "user", "content": request.user_prompt})
 
-        tool_schemas = self._resolve_tool_schemas(request.tools)
         executed_tools: list[dict[str, Any]] = []
         rounds = 0
         total_tool_calls = 0
@@ -221,12 +397,13 @@ class ToolLoopCompletionProvider:
                 "tools": tool_schemas or None,
                 **self._provider_request_overrides,
             }
-            last_result = await self._provider.complete(
+            last_result = await self._complete_text_response(
                 messages=apply_cache_hints(self._provider, list(messages)),
                 model=model,
-                temperature=request.temperature,
-                max_tokens=request.max_tokens,
-                **provider_kwargs,
+                request=request,
+                provider_kwargs=provider_kwargs,
+                round_number=rounds + 1,
+                worker_id=worker_id,
             )
             assistant_message = self._assistant_message(last_result)
             messages.append(assistant_message)
@@ -239,6 +416,7 @@ class ToolLoopCompletionProvider:
                 tool_calls=[call.get("function", {}).get("name") or call.get("name") for call in tool_calls if isinstance(call, dict)],
                 finish_reason=getattr(last_result, "finish_reason", None),
                 text=(last_result.text or "")[:400],
+                streamed=bool((getattr(last_result, "provider_metadata", None) or {}).get("streamed_response")),
                 worker_id=worker_id,
             )
             if not tool_calls:
@@ -265,7 +443,7 @@ class ToolLoopCompletionProvider:
                 )
 
             rounds += 1
-            if rounds > self._max_rounds:
+            if self._max_rounds is not None and rounds > self._max_rounds:
                 stop_reason = f"max_tool_rounds_exceeded:{self._max_rounds}"
                 self._emit_event(
                     "completion.completed",
