@@ -36,6 +36,8 @@ _CONDITION_KEYWORDS = {
 }
 
 _TOOL_KEYWORD_MAP: dict[str, str] = {
+    "edit file": "file_edit",
+    "patch file": "file_edit",
     "read file": "file_read",
     "load file": "file_read",
     "write file": "file_write",

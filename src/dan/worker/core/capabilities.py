@@ -82,6 +82,7 @@ _FILESYSTEM_WRITE_TOOL_IDS = {
     "compress",
     "file_copy",
     "file_delete",
+    "file_edit",
     "file_move",
     "file_write",
     "git_worktree",
@@ -226,7 +227,7 @@ def _derive_retry_safe(tool_id: str) -> bool | None:
 def _derive_idempotent(tool_id: str) -> bool | None:
     if tool_id in _READ_ONLY_TOOL_IDS:
         return True
-    if tool_id in {"file_write", "file_delete", "send_email", "git_commit"}:
+    if tool_id in {"file_edit", "file_write", "file_delete", "send_email", "git_commit"}:
         return False
     return None
 

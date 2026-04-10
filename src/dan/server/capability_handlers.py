@@ -40,6 +40,7 @@ from dan.server.capabilities.web import (
     handle_http_request,
 )
 from dan.server.capabilities.file_io import (
+    handle_file_edit,
     handle_file_read,
     handle_file_write,
     handle_file_grep,
@@ -479,6 +480,27 @@ FILE_WRITE_CAPABILITY_SCHEMA = build_tool_schema(
     },
 )
 
+FILE_EDIT_CAPABILITY_SCHEMA = build_tool_schema(
+    name="file_edit",
+    description="Edit an existing text file by line range. Supports replace, insert_before, insert_after, and delete using 1-indexed line numbers.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "File path (absolute or relative)."},
+            "start_line": {"type": "integer", "description": "Anchor or first target line (1-indexed)."},
+            "end_line": {"type": "integer", "description": "Last target line for replace/delete (inclusive)."},
+            "content": {"type": "string", "description": "Replacement or inserted content."},
+            "mode": {
+                "type": "string",
+                "enum": ["replace", "insert_before", "insert_after", "delete"],
+                "description": "Edit mode.",
+            },
+            "encoding": {"type": "string", "description": "Optional file encoding."},
+        },
+        "required": ["path", "start_line"],
+    },
+)
+
 SHELL_COMMAND_CAPABILITY_SCHEMA = build_tool_schema(
     name="shell_command",
     description="Execute a shell command and return its output. Use when the user asks to run a command, check system info, or perform a terminal operation.",
@@ -810,6 +832,7 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
     registry.register("list_directory", LIST_DIRECTORY_CAPABILITY_SCHEMA, handle_list_directory, modes=list(ALL_MODES), category="file", cacheable=True)
     registry.register("spreadsheet_read", SPREADSHEET_READ_CAPABILITY_SCHEMA, handle_spreadsheet_read, modes=list(ALL_MODES), category="data", cacheable=True)
     registry.register("web_fetch", WEB_FETCH_CAPABILITY_SCHEMA, handle_web_fetch, modes=list(ALL_MODES), category="web", cacheable=True)
+    registry.register("file_edit", FILE_EDIT_CAPABILITY_SCHEMA, handle_file_edit, modes=WRITE_MODES, category="file")
     registry.register("file_write", FILE_WRITE_CAPABILITY_SCHEMA, handle_file_write, modes=WRITE_MODES, category="file")
     registry.register("shell_command", SHELL_COMMAND_CAPABILITY_SCHEMA, handle_shell_command, modes=WRITE_MODES, category="system")
     registry.register("http_request", HTTP_REQUEST_CAPABILITY_SCHEMA, handle_http_request, modes=WRITE_MODES, category="web")

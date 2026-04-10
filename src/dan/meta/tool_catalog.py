@@ -8,6 +8,7 @@ _PREFERRED_TOOL_IDS = [
     "web_search",
     "web_fetch",
     "file_read",
+    "file_edit",
     "file_write",
     "csv_read",
     "pdf_read",

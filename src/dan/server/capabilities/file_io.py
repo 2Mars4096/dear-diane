@@ -11,6 +11,7 @@ from dan.server.capabilities._helpers import (
     _resolve_user_path,
     _truncate,
 )
+from dan.tools.file_edit import file_edit as _file_edit_tool
 
 _TEXT_EXTENSIONS = frozenset({
     ".txt", ".md", ".tex", ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css",
@@ -176,6 +177,31 @@ async def handle_file_write(args: dict[str, Any], ctx: CapabilityContext) -> Cap
         )
     except Exception as exc:
         return CapabilityResult(success=False, message=f"Failed to write file: {exc}")
+
+
+async def handle_file_edit(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    raw_path = (args.get("path") or args.get("file_path") or "").strip()
+    if not raw_path:
+        return CapabilityResult(success=False, message="No file path provided.")
+    try:
+        result = await _file_edit_tool(
+            path=raw_path,
+            start_line=args.get("start_line"),
+            end_line=args.get("end_line"),
+            content=args.get("content"),
+            mode=args.get("mode", "replace"),
+            encoding=args.get("encoding", "utf-8"),
+        )
+        return CapabilityResult(
+            success=True,
+            message=(
+                f"{result['mode']} {result['path']} lines "
+                f"{result['start_line']}-{result['end_line']}"
+            ),
+            data=result,
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Failed to edit file: {exc}")
 
 
 async def handle_file_grep(

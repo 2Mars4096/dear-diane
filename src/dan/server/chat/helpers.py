@@ -890,11 +890,12 @@ def _summarize_tool_result(
             path = path.rsplit("/", 1)[-1][:40]
         size = f"{len(message):,}" if message else "0"
         return f"Read {path} ({size} chars){status}"
-    if tool_name in ("file_write", "write_file", "edit_file"):
+    if tool_name in ("file_edit", "file_write", "write_file", "edit_file"):
         path = args.get("path") or args.get("file_path") or ""
         if isinstance(path, str):
             path = path.rsplit("/", 1)[-1][:40]
-        return f"Wrote {path}{status}"
+        verb = "Edited" if tool_name == "file_edit" else "Wrote"
+        return f"{verb} {path}{status}"
     if tool_name == "list_directory":
         path = args.get("path") or ""
         if isinstance(path, str):

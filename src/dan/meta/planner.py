@@ -205,6 +205,7 @@ _PATH_SUFFIXES_BY_TOOL: dict[str, set[str]] = {
 _DIRECTORY_PATH_TOOLS = {"list_directory"}
 _PATH_CONFIG_KEY_BY_TOOL: dict[str, str] = {
     "csv_read": "path",
+    "file_edit": "path",
     "file_read": "path",
     "file_write": "path",
     "list_directory": "path",
