@@ -21,13 +21,23 @@ from dan.worker import (
     BRIDGED_LEGACY_NODE_TYPES,
     EXPLICIT_NON_BRIDGED_LEGACY_NODE_TYPES,
     convert_graph,
+    infer_execution_effect,
     legacy_to_worker,
+    mutation_claim_requires_evidence,
+    normalize_structured_outcome_payload,
     role,
+    structured_outcome_view,
     supports_legacy_conversion,
+    universal_validator_organ,
     validate_conversion,
     worker_to_legacy,
 )
 from dan.worker.model import LLMHints, Worker
+from dan.worker.organisms.coding_execution import (
+    CodingTask,
+    _normalize_orchestrator_plan,
+    coding_execution_organism,
+)
 
 
 def test_role_factory_returns_standard_worker() -> None:
@@ -139,6 +149,78 @@ def test_convert_graph_workerizes_convertible_nodes_and_preserves_structure() ->
     assert isinstance(converted.sub_graphs["draft_body"].nodes[0], Worker)
     assert converted.worker_resources == graph.worker_resources
     assert validate_conversion(graph, converted) == []
+
+
+def test_structured_outcome_normalization_repairs_char_split_fields() -> None:
+    payload = {
+        "candidate_id": "candidate-1",
+        "change_summary": "Verification only - no code changes required.",
+        "target_files": ["/workspace/absharks/shark-anatomy.html"],
+        "test_plan": list("1. Open shark-anatomy.html\n2. Verify navbar"),
+        "risks": "- Visual verification still required",
+    }
+
+    normalized = normalize_structured_outcome_payload(payload)
+
+    assert normalized["candidate_id"] == "candidate-1"
+    assert normalized["test_plan"] == [
+        "1. Open shark-anatomy.html",
+        "2. Verify navbar",
+    ]
+    assert normalized["risks"] == ["Visual verification still required"]
+    assert normalized["workspace_effect"] == "verified"
+
+
+def test_structured_outcome_mutation_proof_policy_keys_off_effect_not_file_presence() -> None:
+    verified = structured_outcome_view(
+        {
+            "candidate_id": "candidate-verified",
+            "change_summary": "No code changes required.",
+            "target_files": ["/workspace/absharks/shark-anatomy.html"],
+        }
+    )
+    modified = structured_outcome_view(
+        {
+            "candidate_id": "candidate-modified",
+            "change_summary": "Patched the navbar hover treatment.",
+            "target_files": ["/workspace/absharks/styles.css"],
+        }
+    )
+
+    assert infer_execution_effect(verified) == "verified"
+    assert mutation_claim_requires_evidence(verified) is False
+    assert infer_execution_effect(modified) == "modified"
+    assert mutation_claim_requires_evidence(modified) is True
+
+
+def test_universal_validator_accepts_explicit_tie_break_priority() -> None:
+    organ = universal_validator_organ(
+        organism_id="test-organism",
+        review_tie_break_priority=["pass", "repair"],
+    )
+
+    assert organ.tissue is not None
+    assert organ.tissue.quorum is not None
+    assert organ.tissue.quorum.tie_break_priority == ["pass", "repair"]
+    assert organ.metadata["review_tie_break_priority"] == ["pass", "repair"]
+
+
+def test_coding_orchestrator_plan_collapses_duplicate_briefs_back_to_one_worker() -> None:
+    plan = _normalize_orchestrator_plan(
+        outputs={
+            "worker_count": 3,
+            "worker_briefs": [
+                "Fix the navbar hover effect in styles.css.",
+                "Fix the navbar hover effect in styles.css.",
+                "Fix the navbar hover effect in styles.css.",
+            ],
+        },
+        organism=coding_execution_organism(model="gpt-test"),
+        task=CodingTask(task_id="coding-task", objective="Fix the navbar hover effect."),
+    )
+
+    assert plan.worker_count == 1
+    assert plan.worker_briefs == ["Fix the navbar hover effect in styles.css."]
 
 
 def test_worker_with_llm_hints_without_model_projects_to_legacy_llm_operator() -> None:

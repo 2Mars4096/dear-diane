@@ -365,6 +365,100 @@ class _SleepingCompletionProvider:
         return CompletionResponse(text="late", raw=None)
 
 
+class _SequentialCompletionProvider:
+    def __init__(self, *responses: str) -> None:
+        self._responses = list(responses)
+        self.requests: list[CompletionRequest] = []
+
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        self.requests.append(request)
+        if not self._responses:
+            raise AssertionError("No completion response queued")
+        return CompletionResponse(
+            text=self._responses.pop(0),
+            raw={"request_count": len(self.requests)},
+        )
+
+
+@pytest.mark.asyncio
+async def test_worker_core_repairs_structured_output_against_output_schema() -> None:
+    provider = _SequentialCompletionProvider(
+        '{"action":"respond"}',
+        '{"action":"respond","public_response":"latest run status: failed"}',
+    )
+    worker = WorkerDefinition(id="structured-worker", model="stub-model")
+    request = ExecutionRequest.from_harness(
+        task="Answer with a structured turn decision.",
+        output_contract={
+            "definition_of_done": "Return a turn decision object.",
+            "expected_return_shape": json.dumps(
+                {
+                    "action": "respond|clarify|code",
+                    "public_response": "<required>",
+                },
+                sort_keys=True,
+            ),
+            "output_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["respond", "clarify", "code"]},
+                    "public_response": {"type": "string"},
+                },
+                "required": ["action", "public_response"],
+            },
+        },
+    )
+
+    result = await WorkerCoreExecutor(completion_provider=provider).execute(worker, request)
+
+    assert result.status == "completed"
+    assert result.outputs["result"] == {
+        "action": "respond",
+        "public_response": "latest run status: failed",
+    }
+    assert result.metadata["structured_output"]["repaired"] is True
+    assert len(provider.requests) == 2
+    assert "Output schema (JSON Schema):" in provider.requests[0].system_prompt
+    assert "Validation errors:" in provider.requests[1].user_prompt
+
+
+@pytest.mark.asyncio
+async def test_worker_core_fails_when_structured_output_repair_stays_invalid() -> None:
+    provider = _SequentialCompletionProvider(
+        '{"action":"respond"}',
+        '{"action":"respond"}',
+    )
+    worker = WorkerDefinition(id="structured-worker", model="stub-model")
+    request = ExecutionRequest.from_harness(
+        task="Answer with a structured turn decision.",
+        output_contract={
+            "definition_of_done": "Return a turn decision object.",
+            "expected_return_shape": json.dumps(
+                {
+                    "action": "respond|clarify|code",
+                    "public_response": "<required>",
+                },
+                sort_keys=True,
+            ),
+            "output_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["respond", "clarify", "code"]},
+                    "public_response": {"type": "string"},
+                },
+                "required": ["action", "public_response"],
+            },
+        },
+    )
+
+    result = await WorkerCoreExecutor(completion_provider=provider).execute(worker, request)
+
+    assert result.status == "failed"
+    assert "Structured output validation failed after one repair pass" in (result.error or "")
+    assert result.metadata["structured_output"]["repaired"] is True
+    assert len(provider.requests) == 2
+
+
 @pytest.mark.asyncio
 async def test_standalone_runner_reuses_session_state_and_surfaces_observability(tmp_path: Path) -> None:
     _write_file(tmp_path / "src/dan/worker/core/executor.py", "TARGET_FILE_DETAIL\nselected executor slice\n")
