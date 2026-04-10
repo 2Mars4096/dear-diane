@@ -1,6 +1,7 @@
 """Bounded organism presets built on the 52 cell/tissue/organ substrate."""
 
 from dan.worker.organisms.coding_conversation import (
+    CodingConversationFacts,
     CodingConversationContext,
     CodingConversationController,
     CodingConversationMessage,
@@ -43,6 +44,7 @@ from dan.worker.organisms.reference_demo import (
 )
 
 __all__ = [
+    "CodingConversationFacts",
     "CodingConversationContext",
     "CodingConversationController",
     "CodingConversationMessage",
