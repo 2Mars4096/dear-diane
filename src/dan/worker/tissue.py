@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Literal
@@ -528,7 +529,32 @@ def _extract_vote(payload: dict[str, Any], quorum: TissueQuorumPolicy) -> str:
     if candidate is None and quorum.vote_output_key == "result":
         candidate = payload.get("text")
     vote = _compact_value(candidate)
-    return vote.lower() if quorum.normalize_case else vote
+    normalized = vote.lower() if quorum.normalize_case else vote
+    if not normalized or not quorum.tie_break_priority:
+        return normalized
+
+    normalized_priority_votes = [
+        candidate.lower() if quorum.normalize_case else candidate
+        for candidate in quorum.tie_break_priority
+    ]
+
+    if normalized in set(normalized_priority_votes):
+        return normalized
+
+    matches: list[tuple[int, str]] = []
+    for candidate_vote in quorum.tie_break_priority:
+        target = candidate_vote.lower() if quorum.normalize_case else candidate_vote
+        match = re.search(rf"\b{re.escape(target)}\b", normalized)
+        if match is not None:
+            matches.append((match.start(), target))
+    if matches:
+        matches.sort(key=lambda item: item[0])
+        return matches[0][1]
+
+    # If a reviewer completed successfully but returned prose that does not map back
+    # onto the configured verdict vocabulary, fall back to the most conservative
+    # tie-break priority instead of escalating on harmless output drift.
+    return normalized_priority_votes[0]
 
 
 def _resolve_quorum(
@@ -542,6 +568,8 @@ def _resolve_quorum(
     }
     vote_counts: dict[str, int] = {}
     for vote in member_votes.values():
+        if not vote:
+            continue
         vote_counts[vote] = vote_counts.get(vote, 0) + 1
 
     minimum_successes = quorum.minimum_successful_members or quorum.required_agreement

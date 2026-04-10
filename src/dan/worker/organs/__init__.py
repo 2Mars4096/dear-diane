@@ -31,6 +31,7 @@ from dan.worker.signaling import (
     SignalTrace,
     SupervisorySignalBase,
 )
+from dan.worker.structured_payload import parse_jsonish_payload
 from dan.worker.tissue import (
     TissueExecution,
     TissueMember,
@@ -56,18 +57,10 @@ def _parse_structured_payload(outputs: dict[str, Any]) -> dict[str, Any]:
     raw = outputs.get("result", outputs.get("text", outputs))
     if isinstance(raw, dict):
         return dict(raw)
-    if isinstance(raw, str):
-        text = raw.strip()
-        if not text:
-            return {"result": raw}
-        try:
-            parsed = json.loads(text)
-        except Exception:
-            return {"result": raw}
-        if isinstance(parsed, dict):
-            return parsed
-        return {"result": parsed}
-    return {"result": raw}
+    parsed = parse_jsonish_payload(raw)
+    if isinstance(parsed, dict):
+        return dict(parsed)
+    return {"result": parsed}
 
 
 class OrganPatternKind(str, Enum):
@@ -470,8 +463,12 @@ async def execute_organ_pattern(
             packet=packet,
             result=OrganExecutionResult(
                 status="escalated",
+                outputs=dict(payload),
                 error="Organ output contract failed.",
-                metadata={"contract_errors": output_errors},
+                metadata={
+                    "contract_errors": output_errors,
+                    "raw_outputs": dict(lead_execution.result.outputs),
+                },
             ),
             tissue_packet=tissue_packet,
             tissue_execution=tissue_execution,
@@ -633,6 +630,7 @@ def universal_validator_organ(
     organism_id: str,
     model: str | None = None,
     organ_id: str = "universal-validator",
+    review_tie_break_priority: list[str] | None = None,
 ) -> OrganPattern:
     """Preset for a bounded universal validator organ."""
 
@@ -653,7 +651,7 @@ def universal_validator_organ(
                 organ_id=organ_id,
                 organism_id=organism_id,
                 role="validator_reviewer",
-                instruction="Return a one-word verdict for the candidate: pass or repair.",
+                instruction="Return a one-word verdict for the candidate: pass or repair. When uncertain, choose repair.",
                 model=model,
             ),
             _member(
@@ -663,11 +661,12 @@ def universal_validator_organ(
                 organ_id=organ_id,
                 organism_id=organism_id,
                 role="validator_reviewer",
-                instruction="Return a one-word verdict for the candidate: pass or repair.",
+                instruction="Return a one-word verdict for the candidate: pass or repair. When uncertain, choose repair.",
                 model=model,
             ),
         ],
         required_agreement=2,
+        tie_break_priority=list(review_tie_break_priority or ["repair", "pass"]),
         limits=TissuePoolLimits(max_members=2, max_concurrency=2, max_failures=0),
         metadata={"organ_id": organ_id},
     )
@@ -703,9 +702,11 @@ def universal_validator_organ(
                 "missing_requirements",
                 "comparison_note",
             ],
+            allow_additional_output_keys=True,
         ),
         metadata={
             "score_report_schema": "The validator emits evaluation fields rather than direct task output.",
+            "review_tie_break_priority": list(review_tie_break_priority or ["repair", "pass"]),
         },
     )
 
@@ -779,6 +780,7 @@ def coding_build_organ(
         boundary_contract=OrganBoundaryContract(
             required_input_keys=["objective", "acceptance_criteria", "research_findings", "repair_brief"],
             required_output_keys=["candidate_id", "change_summary", "target_files", "test_plan", "risks"],
+            allow_additional_output_keys=True,
         ),
     )
 
@@ -807,13 +809,19 @@ def coding_aggregation_organ(
         lead_worker=WorkerDefinition(
             id=f"{organ_id}.lead",
             role="coding_aggregator",
-            instruction="Merge worker outputs into one bounded coding candidate with explicit files, focused validation, and risks.",
+            instruction=(
+                "Merge worker outputs into one bounded coding candidate with explicit files, focused validation, "
+                "and risks. Prefer structured file tools for edits and avoid shell-based file creation when a "
+                "direct file-writing tool is available."
+            ),
             model=model,
         ),
         lead_instruction=(
             "Merge the worker outputs into one bounded candidate. Reuse the strongest "
-            "parts, keep the change narrow, and return explicit target files, focused "
-            "validation, and inspectable risks."
+            "parts, keep the change narrow, perform concrete edits with the most specific "
+            "structured tools available, and return explicit target files, focused validation, "
+            "and inspectable risks. If the workspace already satisfies the brief and no mutation "
+            "is needed, say that explicitly in the change summary instead of implying a fix."
         ),
         boundary_contract=OrganBoundaryContract(
             required_input_keys=[
@@ -830,6 +838,7 @@ def coding_aggregation_organ(
                 "test_plan",
                 "risks",
             ],
+            allow_additional_output_keys=True,
         ),
         metadata={
             "aggregation_role": "Keep parallel worker fan-out separate from final candidate selection and merge.",
