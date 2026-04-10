@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import json
 import os
-import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +33,7 @@ from dan.server.runtime_config import build_engine_config_from_env
 from dan.worker.composition import CrossCellTraceLog
 from dan.worker.core.executor import WorkerCoreExecutor
 from dan.worker.organisms import (
+    CodingConversationFacts,
     CodingConversationContext,
     CodingConversationController,
     CodingConversationMessage,
@@ -63,6 +63,7 @@ DEFAULT_CODING_ACCEPTANCE_CRITERIA = [
 ]
 RISKY_TOOL_IDS = frozenset(
     {
+        "file_edit",
         "file_write",
         "file_delete",
         "file_move",
@@ -73,33 +74,6 @@ RISKY_TOOL_IDS = frozenset(
         "git_worktree",
         "python_eval",
     }
-)
-SESSION_RESULTS_MESSAGES = (
-    "tell me the results",
-    "show me the results",
-    "give me the results",
-    "give me results",
-    "tell me results",
-    "show me results",
-    "give me responses",
-    "show me responses",
-    "tell me responses",
-    "can you give me responses",
-    "can you give me the results",
-    "what are the results",
-    "what were the results",
-    "what happened",
-    "latest result",
-    "last result",
-)
-WORKSPACE_QUERY_MESSAGES = (
-    "root dir",
-    "root directory",
-    "workspace root",
-    "workspace directory",
-    "current directory",
-    "current dir",
-    "working directory",
 )
 
 
@@ -252,7 +226,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-tool-rounds",
         type=int,
         default=None,
-        help="Maximum provider tool rounds per worker completion.",
+        help="Optional maximum provider tool rounds per worker completion. Unset or <= 0 leaves it unbounded.",
     )
     parser.add_argument(
         "--max-tool-calls",
@@ -305,63 +279,46 @@ def _now_context() -> dict[str, str]:
     }
 
 
-def _normalize_message(text: str) -> str:
-    return " ".join(
-        re.sub(r"[^a-z0-9/]+", " ", str(text or "").strip().lower()).split()
-    )
-
-
-def _is_workspace_query(text: str) -> bool:
-    normalized = _normalize_message(text)
-    if normalized == "pwd":
-        return True
-    if not any(token in normalized.split() for token in {"what", "where", "show", "tell", "print"}):
-        return False
-    return any(phrase in normalized for phrase in WORKSPACE_QUERY_MESSAGES)
-
-
-def _is_results_query(text: str) -> bool:
-    normalized = _normalize_message(text)
-    return any(phrase in normalized for phrase in SESSION_RESULTS_MESSAGES)
-
-
-def _print_workspace_query_answer(*, workspace_root: Path, session: CodingCliSession) -> None:
-    print(f"workspace root: {workspace_root}")
-    print(
-        "current working directory: "
-        f"{Path(os.environ.get('PWD') or str(workspace_root)).expanduser()}"
-    )
-    print(f"session: {session.session_id}")
-    print("Use /status for the full session view.")
-
-
-def _print_latest_result(session: CodingCliSession) -> None:
-    if not session.turns:
-        print("No saved coding results yet.")
-        print("Use /status or /help to see what DAN Code can do.")
-        return
-    print("Latest saved result:")
-    _print_report(session.turns[-1].model_dump(mode="json"))
-    _print_session_rollup(session)
-    print("Use /history for prior turns.")
-
-
-def _handle_local_prompt(
-    text: str,
+def _conversation_facts(
     *,
-    workspace_root: Path,
     session: CodingCliSession,
-    trailing_blank_line: bool,
-) -> bool:
-    if _is_workspace_query(text):
-        _print_workspace_query_answer(workspace_root=workspace_root, session=session)
-    elif _is_results_query(text):
-        _print_latest_result(session)
-    else:
-        return False
-    if trailing_blank_line:
-        print()
-    return True
+    workspace_root: Path,
+    model: str,
+    thinking_mode: str,
+    tool_ids: Sequence[str],
+    approval_mode: str,
+    additional_reports: Sequence[CodingOrganismReport] | None = None,
+) -> CodingConversationFacts:
+    latest_report = (
+        list(additional_reports or [])[-1]
+        if additional_reports
+        else (session.turns[-1] if session.turns else None)
+    )
+    now_context = _now_context()
+    shell_process_directory = str(
+        Path(os.environ.get("PWD") or str(workspace_root)).expanduser()
+    )
+    return CodingConversationFacts(
+        product_name=CODE_PRODUCT_NAME,
+        workspace_root=str(workspace_root),
+        effective_working_directory=str(workspace_root),
+        shell_process_directory=shell_process_directory,
+        session_id=session.session_id,
+        active_model=str(model or "").strip(),
+        thinking_mode=str(thinking_mode or "").strip(),
+        approval_mode=str(approval_mode or "").strip(),
+        enabled_tools=list(tool_ids),
+        coding_turn_count=len(session.turns) + len(list(additional_reports or [])),
+        conversation_message_count=len(session.conversation),
+        pending_clarification=session.pending_clarification,
+        latest_report_status=str(getattr(latest_report, "status", "") or ""),
+        latest_report_objective=str(getattr(latest_report, "objective", "") or ""),
+        latest_report_target_files=list(getattr(latest_report, "target_files", []) or []),
+        latest_report_error=getattr(latest_report, "error", None),
+        current_timestamp=now_context["current_timestamp"],
+        current_date=now_context["current_date"],
+        timezone=now_context["timezone"],
+    )
 
 
 def _build_runtime_context(
@@ -373,11 +330,15 @@ def _build_runtime_context(
     thinking_mode: str,
     task_id: str,
 ) -> dict[str, Any]:
+    shell_process_directory = str(
+        Path(os.environ.get("PWD") or str(workspace_root)).expanduser()
+    )
     now_context = _now_context()
     return {
         "product_name": CODE_PRODUCT_NAME,
         "workspace_root": str(workspace_root),
-        "current_working_directory": str(Path(os.environ.get("PWD") or str(workspace_root)).expanduser()),
+        "current_working_directory": str(workspace_root),
+        "shell_process_directory": shell_process_directory,
         "model": model,
         "task_id": task_id,
         "tool_ids": list(tool_ids),
@@ -443,6 +404,12 @@ def _summarize_briefs(briefs: Sequence[Any], *, limit: int = 2) -> str:
 
 
 def _tool_request_summary(tool_id: str, arguments: dict[str, Any]) -> str:
+    if tool_id == "file_edit":
+        mode = str(arguments.get("mode") or "replace")
+        path = str(arguments.get("path") or arguments.get("file_path") or "(missing path)")
+        start_line = arguments.get("start_line")
+        end_line = arguments.get("end_line", start_line)
+        return f"{mode} {path}:{start_line}-{end_line}"
     if tool_id == "file_write":
         mode = str(arguments.get("mode") or "overwrite")
         path = str(arguments.get("path") or "(missing path)")
@@ -491,6 +458,12 @@ def _tool_result_summary(tool_id: str, payload: dict[str, Any]) -> str:
             return (
                 f"wrote {result.get('bytes_written', '?')} bytes to "
                 f"{result.get('path', '(unknown path)')}"
+            )
+        if tool_id == "file_edit":
+            return (
+                f"{result.get('mode', 'edit')} "
+                f"{result.get('path', '(unknown path)')}:"
+                f"{result.get('start_line', '?')}-{result.get('end_line', '?')}"
             )
         if tool_id == "shell_command":
             stdout = str(result.get("stdout") or "")
@@ -571,6 +544,7 @@ class CodeProgressRenderer:
         self._enabled = bool(enabled)
         self._show_model_trace = bool(show_model_trace)
         self._replace_cache: dict[tuple[str, str, str], str] = {}
+        self._open_model_streams: set[tuple[str, str]] = set()
 
     @staticmethod
     def _print_assistant(message: str) -> None:
@@ -592,6 +566,19 @@ class CodeProgressRenderer:
         if scope:
             return f"[{scope}][{channel}]"
         return f"[{channel}]"
+
+    @staticmethod
+    def _stream_key(event: dict[str, Any]) -> tuple[str, str]:
+        return (
+            str(event.get("worker_id") or ""),
+            str(event.get("round") or ""),
+        )
+
+    def _flush_open_model_streams(self) -> None:
+        if not self._open_model_streams:
+            return
+        print()
+        self._open_model_streams.clear()
 
     @staticmethod
     def _format_score(value: Any) -> str | None:
@@ -663,6 +650,38 @@ class CodeProgressRenderer:
         if not self._enabled:
             return
         name = str(event.get("event") or "")
+        if name == "model.stream.started":
+            if not self._show_model_trace:
+                return
+            key = self._stream_key(event)
+            if key in self._open_model_streams:
+                return
+            prefix = self._stream_prefix("model", event)
+            print(f"{prefix} stream: ", end="", flush=True)
+            self._open_model_streams.add(key)
+            return
+        if name == "model.stream.delta":
+            if not self._show_model_trace:
+                return
+            key = self._stream_key(event)
+            if key not in self._open_model_streams:
+                prefix = self._stream_prefix("model", event)
+                print(f"{prefix} stream: ", end="", flush=True)
+                self._open_model_streams.add(key)
+            delta = str(event.get("delta") or "").replace("\r", "").replace("\n", "\\n")
+            if delta:
+                print(delta, end="", flush=True)
+            return
+        if name == "model.stream.completed":
+            if not self._show_model_trace:
+                return
+            key = self._stream_key(event)
+            if key in self._open_model_streams:
+                print()
+                self._open_model_streams.discard(key)
+            return
+        if name not in {"model.stream.started", "model.stream.delta"}:
+            self._flush_open_model_streams()
         if name == "organism.started":
             objective = _truncate_text(str(event.get("objective") or ""), limit=160)
             print(f"[status] starting coding run: {objective}")
@@ -792,6 +811,8 @@ class CodeProgressRenderer:
             if finish_reason:
                 summary += f" finish_reason={finish_reason}"
             print(summary)
+            if event.get("streamed"):
+                return
             text = _truncate_text(str(event.get("text") or ""), limit=240)
             if text:
                 print(f"{prefix} preview: {text}")
@@ -849,12 +870,17 @@ def _effective_max_tool_rounds(
     explicit: int | None,
     *,
     product_config: CodeProductConfig | None = None,
-) -> int:
+) -> int | None:
     if explicit is not None:
-        return int(explicit)
+        value = int(explicit)
+        return None if value <= 0 else value
     if product_config:
-        return int(product_config.max_tool_rounds)
-    return 8
+        configured = product_config.max_tool_rounds
+        if configured is None:
+            return None
+        value = int(configured)
+        return None if value <= 0 else value
+    return None
 
 
 def _effective_max_tool_calls(
@@ -975,9 +1001,10 @@ async def run_coding_organism_live(
     evidence_summaries: Sequence[str] | None = None,
     tool_ids: Sequence[str] | None = None,
     workspace_root: str | Path | None = None,
-    max_tool_rounds: int = 8,
+    max_tool_rounds: int | None = None,
     max_tool_calls: int = 24,
     thinking_mode: str = "auto",
+    stream_model_trace: bool = False,
     approval_callback=None,
     event_callback=None,
     session_context: dict[str, Any] | None = None,
@@ -994,6 +1021,7 @@ async def run_coding_organism_live(
         default_model=model,
         max_rounds=max_tool_rounds,
         max_tool_calls=max_tool_calls,
+        stream_text_responses=bool(stream_model_trace),
         provider_request_overrides=_provider_request_overrides_for_thinking_mode(
             thinking_mode
         ),
@@ -1042,9 +1070,9 @@ async def run_coding_organism_live(
             else None
         ),
         change_summary=str(outputs.get("change_summary") or ""),
-        target_files=list(outputs.get("target_files") or []),
-        test_plan=list(outputs.get("test_plan") or []),
-        risks=list(outputs.get("risks") or []),
+        target_files=outputs.get("target_files"),
+        test_plan=outputs.get("test_plan"),
+        risks=outputs.get("risks"),
         outputs=outputs,
         handoff_count=sum(1 for row in trace_rows if row.get("kind") == "handoff"),
         signal_count=sum(1 for row in trace_rows if row.get("kind") == "signal"),
@@ -1156,9 +1184,19 @@ def _conversation_context(
     model: str,
     thinking_mode: str,
     tool_ids: Sequence[str],
+    approval_mode: str,
     acceptance_criteria: Sequence[str],
     additional_reports: Sequence[CodingOrganismReport] | None = None,
 ) -> CodingConversationContext:
+    facts = _conversation_facts(
+        session=session,
+        workspace_root=workspace_root,
+        model=model,
+        thinking_mode=thinking_mode,
+        tool_ids=tool_ids,
+        approval_mode=approval_mode,
+        additional_reports=additional_reports,
+    )
     recent_reports = [
         _report_context(report)
         for report in [*session.turns[-4:], *(additional_reports or [])]
@@ -1170,6 +1208,7 @@ def _conversation_context(
         tool_ids=list(tool_ids),
         acceptance_criteria=list(acceptance_criteria),
         pending_clarification=session.pending_clarification,
+        facts=facts,
         recent_conversation=[
             CodingConversationMessage(
                 role=entry.role,
@@ -1228,7 +1267,7 @@ async def _run_orchestrated_turn(
     session: CodingCliSession,
     tool_ids: Sequence[str],
     acceptance_criteria: Sequence[str],
-    max_tool_rounds: int,
+    max_tool_rounds: int | None,
     max_tool_calls: int,
     approval_mode: str,
     thinking_mode: str,
@@ -1255,6 +1294,7 @@ async def _run_orchestrated_turn(
             model=model,
             thinking_mode=thinking_mode,
             tool_ids=tool_ids,
+            approval_mode=approval_mode,
             acceptance_criteria=acceptance_criteria,
         ),
     )
@@ -1327,6 +1367,7 @@ async def _run_orchestrated_turn(
             approval_mode=approval_mode,
             thinking_mode=thinking_mode,
             repair_brief=next_repair_brief,
+            stream_model_trace=bool(args.show_model_trace),
             approval_callback=approval_callback,
             event_callback=progress_renderer,
         )
@@ -1342,6 +1383,7 @@ async def _run_orchestrated_turn(
                 model=model,
                 thinking_mode=thinking_mode,
                 tool_ids=tool_ids,
+                approval_mode=approval_mode,
                 acceptance_criteria=effective_acceptance_criteria,
                 additional_reports=reports,
             ),
@@ -1397,11 +1439,12 @@ async def _run_coding_turn(
     workdir: Path,
     acceptance_criteria: Sequence[str],
     tool_ids: Sequence[str],
-    max_tool_rounds: int,
+    max_tool_rounds: int | None,
     max_tool_calls: int,
     approval_mode: str,
     thinking_mode: str,
     repair_brief: str,
+    stream_model_trace: bool = False,
     approval_callback=None,
     event_callback=None,
 ) -> CodingOrganismReport:
@@ -1430,6 +1473,7 @@ async def _run_coding_turn(
         max_tool_rounds=max_tool_rounds,
         max_tool_calls=max_tool_calls,
         thinking_mode=thinking_mode,
+        stream_model_trace=stream_model_trace,
         approval_callback=approval_callback,
         event_callback=event_callback,
         session_context=session_context,
@@ -1455,7 +1499,8 @@ def _print_repl_help() -> None:
     print("/exit    Exit the coding CLI")
     print()
     print("Notes:")
-    print("- explicit workspace/result questions are answered locally")
+    print("- natural-language turns go through the durable orchestrator first")
+    print("- only explicit slash commands stay local to the shell")
     print("- concrete coding requests launch the coding organism")
 
 
@@ -1472,6 +1517,11 @@ def _print_session_status(
 ) -> None:
     print(f"product: {CODE_PRODUCT_NAME}")
     print(f"workspace: {workspace_root}")
+    print(f"effective working directory: {workspace_root}")
+    print(
+        "shell process directory: "
+        f"{Path(os.environ.get('PWD') or str(workspace_root)).expanduser()}"
+    )
     print(f"session: {session.session_id}")
     print(f"turns: {len(session.turns)}")
     print(f"conversation messages: {len(session.conversation)}")
@@ -1613,7 +1663,7 @@ def _resolved_config_payload(
     requested_model: str | None,
     tool_ids: Sequence[str],
     acceptance_criteria: Sequence[str],
-    max_tool_rounds: int,
+    max_tool_rounds: int | None,
     max_tool_calls: int,
     thinking_mode: str,
     persist_session: bool,
@@ -1643,7 +1693,7 @@ def _resolved_config_payload(
         "resolved_thinking_mode": thinking_mode,
         "tool_ids": list(tool_ids),
         "acceptance_criteria": list(acceptance_criteria),
-        "max_tool_rounds": int(max_tool_rounds),
+        "max_tool_rounds": max_tool_rounds,
         "max_tool_calls": int(max_tool_calls),
         "approval_mode": approval_mode,
         "saved_turns": len(session.turns) if session is not None else 0,
@@ -1662,6 +1712,12 @@ def _print_config_payload(payload: dict[str, Any], *, as_json: bool) -> None:
     print(f"resolved model: {payload.get('resolved_model') or '(unset)'}")
     print(f"thinking mode: {payload.get('resolved_thinking_mode') or 'auto'}")
     print(f"tools: {', '.join(payload['tool_ids']) or '(none)'}")
+    max_tool_rounds = payload.get("max_tool_rounds")
+    print(
+        "max tool rounds: "
+        + (str(max_tool_rounds) if max_tool_rounds is not None else "unbounded")
+    )
+    print(f"max tool calls: {payload['max_tool_calls']}")
     print(f"approval mode: {payload['approval_mode']}")
     print(f"saved turns: {payload['saved_turns']}")
     print(f"session persistence: {'enabled' if payload['persist_session'] else 'disabled'}")
@@ -1679,7 +1735,7 @@ def _interactive_loop(
     product_paths: CodeProductPaths,
     tool_ids: Sequence[str],
     acceptance_criteria: Sequence[str],
-    max_tool_rounds: int,
+    max_tool_rounds: int | None,
     max_tool_calls: int,
     persist_session: bool,
     run_root: Path,
@@ -1738,14 +1794,6 @@ def _interactive_loop(
                 save_code_product_session(product_paths, session)
             print("session context cleared")
             continue
-        if _handle_local_prompt(
-            objective,
-            workspace_root=workspace_root,
-            session=session,
-            trailing_blank_line=True,
-        ):
-            continue
-
         outcome = asyncio.run(
             _run_orchestrated_turn(
                 args=args,
@@ -1879,14 +1927,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_config_payload(payload, as_json=bool(args.json))
         return 0
 
-    if args.objective is not None and _handle_local_prompt(
-        str(args.objective),
-        workspace_root=workspace_root,
-        session=session,
-        trailing_blank_line=False,
-    ):
-        return 0
-
     try:
         live_model = _resolve_live_model(args.model, product_config=product_config)
         provider = _build_live_provider(
@@ -1913,6 +1953,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     conversation_controller = CodingConversationController(
         provider=provider,
         model=live_model,
+        stream_text_responses=bool(args.show_model_trace),
         provider_request_overrides=_provider_request_overrides_for_thinking_mode(
             thinking_mode
         ),

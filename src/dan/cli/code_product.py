@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 CODE_PRODUCT_NAME = "DAN Code"
 CODE_PRODUCT_DIRNAME = ".dan-code"
@@ -23,6 +23,39 @@ def _resolve_path(value: str | Path, *, base_dir: Path) -> Path:
     if not path.is_absolute():
         path = base_dir / path
     return path.resolve()
+
+
+def _normalize_text_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+
+    normalized: list[str] = []
+    if isinstance(value, str):
+        texts = [value]
+    elif isinstance(value, (list, tuple)):
+        items = [str(item) for item in value]
+        if items and all(len(item) <= 1 for item in items):
+            texts = ["".join(items)]
+        else:
+            texts = items
+    elif isinstance(value, set):
+        texts = [str(item) for item in value]
+    else:
+        texts = [str(value)]
+
+    for text in texts:
+        for line in str(text).splitlines():
+            cleaned = line.strip()
+            if not cleaned:
+                continue
+            if cleaned.startswith("- "):
+                cleaned = cleaned[2:].strip()
+            normalized.append(cleaned)
+    if normalized:
+        return normalized
+
+    cleaned = " ".join(str(text).strip() for text in texts).strip()
+    return [cleaned] if cleaned else []
 
 
 class CodingOrganismReport(BaseModel):
@@ -44,6 +77,11 @@ class CodingOrganismReport(BaseModel):
     signal_count: int = 0
     error: str | None = None
     trace_rows: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("target_files", "test_plan", "risks", mode="before")
+    @classmethod
+    def _normalize_list_fields(cls, value: Any) -> list[str]:
+        return _normalize_text_list(value)
 
 
 class CodingConversationEntry(BaseModel):
@@ -115,7 +153,7 @@ class CodeProductConfig(BaseModel):
     thinking_mode: str = "auto"
     default_tool_ids: list[str] = Field(default_factory=list)
     acceptance_criteria: list[str] = Field(default_factory=list)
-    max_tool_rounds: int = 8
+    max_tool_rounds: int | None = None
     max_tool_calls: int = 24
 
 
