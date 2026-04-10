@@ -114,8 +114,10 @@ dan organism --live --model gpt-4.1
 The default live tool basket is:
 - `list_directory`
 - `file_read`
+- `file_edit`
 - `file_write`
 - `shell_command`
+- `web_search`
 - `git_status`
 - `git_diff`
 - `git_log`
@@ -155,15 +157,15 @@ It uses `.env` / environment settings by default for the provider and model, and
 
 The orchestrator decides worker fan-out per attempt, the workers stay cloneable, the aggregator owns the final bounded candidate, and the validator can reject that candidate and force a repair round. It does not route through the full DAN graph engine unless you choose to build that bridge later.
 
-The stack is intentionally thin and composable: `provider wrapper -> durable orchestrator -> bounded coding organism`. The provider wrapper owns transient API retries, the durable orchestrator owns user-facing decisions, and the bounded coding organism owns implementation/validation work. Those layers talk through small explicit contracts instead of one large shared runtime blob.
+The stack is intentionally thin and composable: `provider wrapper -> durable orchestrator -> bounded coding organism`. The provider wrapper owns transient API retries, the durable orchestrator owns user-facing decisions, and the bounded coding organism owns implementation/validation work. Those layers talk through small explicit contracts instead of one large shared runtime blob. The durable layer now also carries one shared runtime/session facts packet, so the CLI and orchestrator read workspace root, effective working directory, latest run status, and similar basics from the same source of truth.
 
 In the CLI, that same orchestrator is now the public voice of the run: deterministic lifecycle/status lines stay in `[status]`, while assistant-style narration comes from structured runtime updates (`status.update`) emitted by the orchestrator, workers, aggregator, validator, and final delivery path. The orchestrator plan now also includes a formal `public_response`, so it can first state the interpreted user intent and next action before the implementation plan. Hidden chain-of-thought still stays private.
 
 Role-level tool exposure is also explicit:
 
 - orchestrator: no local tools
-- workers: read-oriented local tools (`file_read`, `shell_command`, git inspection, etc.)
-- aggregator: full selected tool basket, including writes
+- workers: read-oriented local tools only; raw `shell_command` is treated as mutation-capable and is therefore excluded from the read-only basket
+- aggregator: full selected tool basket, including writes and raw shell access when enabled
 - validator: read-oriented local tools for inspection and focused validation
 
 Each real coding turn now carries standard runtime context automatically, including workspace root, current working directory, current date/time/timezone, active model, enabled tool IDs, and approval mode. That keeps the model from wasting early tool calls on facts the runtime already knows.
@@ -189,7 +191,7 @@ If you omit the task, it starts an interactive coding session and resumes the sa
 dan code --workspace .
 ```
 
-That interactive shell now keeps a durable orchestrator alive across turns. Ordinary natural-language messages go to the orchestrator first, and the orchestrator decides whether to answer directly, ask one clarifying question, or launch one bounded coding run. When it does launch coding, the bounded `orchestrator -> worker pool -> aggregator -> validator` organism still does the heavy implementation work, but the resulting report is routed back into the same orchestrator session so it can decide `done`, `continue`, or `clarify`. The shell/orchestrator seam is now explicit as typed conversation-context and bounded-run-summary packets, so the layers stay diagrammable and replaceable.
+That interactive shell now keeps a durable orchestrator alive across turns. Ordinary natural-language messages go to the orchestrator first, and the orchestrator decides whether to answer directly, ask one clarifying question, or launch one bounded coding run. It now reserves bounded coding runs for directly actionable repo/coding tasks instead of defaulting short chat/meta turns into the worker pool, uses recent conversation/report context to resolve referential requests like `the website we talked about`, and clarifies when that reference is still not specific enough. When it does launch coding, the bounded `orchestrator -> worker pool -> aggregator -> validator` organism still does the heavy implementation work, but the resulting report is routed back into the same orchestrator session so it can decide `done`, `continue`, or `clarify`. The shell/orchestrator seam is now explicit as typed facts/context/report packets, so the layers stay diagrammable and replaceable.
 
 Inside the session:
 - `/help` shows commands
@@ -201,7 +203,7 @@ Inside the session:
 - `/clear` is an alias for `/reset`
 - `/exit` leaves the session
 
-Interactive sessions now default to `--approval-mode confirm-risky`, which prompts before `file_write`, `shell_command`, and other mutating tools. One-shot runs default to `--approval-mode auto`. You can override that explicitly:
+Interactive sessions now default to `--approval-mode confirm-risky`, which prompts before `file_edit`, `file_write`, `shell_command`, and other mutating tools. One-shot runs default to `--approval-mode auto`. You can override that explicitly:
 
 ```bash
 dan code --workspace . --approval-mode auto
@@ -210,13 +212,29 @@ dan code --workspace . --thinking-mode disabled
 dan code --workspace . --show-model-trace
 ```
 
-Greetings and lightweight chat now go through the durable orchestrator instead of a canned local fast-path, so the shell can respond conversationally before deciding whether any coding work is needed. Simple workspace/result meta queries such as `what is the root dir now` or `tell me the results` are still answered locally from session state, and `/clear` resets the durable conversation state.
+Tool rounds are unbounded by default now. If you want a hard cap for a particular run, set `--max-tool-rounds N`; leaving it unset, or setting `--max-tool-rounds 0`, keeps the local tool loop unbounded while `max_tool_calls` still acts as the broader safety rail.
+
+The local tool loop now also injects a shared structured-tool policy. In practice that means `dan code` should prefer `list_directory`, `file_read`, `file_edit`, `file_write`, `web_search`, and structured git tools over shell fallbacks, use `file_edit` for targeted line-based edits to existing files, batch multiple non-overlapping edits to the same file into one `file_edit(edits=[...])` call when possible, use `file_write` for whole-file create/replace/append flows, use `web_search` for live external lookups instead of guessing current facts, avoid shell heredocs when direct file tools are available, and cut down on repeated discovery once it already has the needed fact.
+
+The structured-output seam is more tolerant now as well. Fenced ` ```json ... ``` ` replies from the orchestrator or bounded organs are parsed as structured payloads instead of being dumped back to the console as raw text, and local file tools accept `file_path` as a compatibility alias for `path` so minor argument-name mismatches do not waste a tool round.
+
+Greetings, lightweight chat, and natural-language status/workspace/result questions now go through the durable orchestrator instead of a canned local fast-path, so the shell can respond conversationally before deciding whether any coding work is needed. The orchestrator answers those turns from the shared runtime/session facts plus recent report context, while `/clear` still resets the durable conversation state.
 
 By default, `dan code` now prints deterministic lifecycle `[status]` lines plus dynamic assistant updates from both the durable orchestrator and the bounded coding organism, so you can see intake, planning, worker execution, aggregation, validation, retries, and completion without falling back to raw tool spam. Common read-heavy tools such as `list_directory` and `file_read` are also summarized compactly so the useful signal stays visible.
 
+If a bounded coding run fails after producing real files or a partial candidate, `dan code` now preserves and reports that material output instead of collapsing the run to `files: (none)`. Failed runs still stay failed, but the shell will show the concrete files/change summary it actually got far enough to produce.
+
+The same shared facts packet also drives orchestrator-owned status/workspace answers. Questions like current status or current working directory now use the effective DAN Code workspace/tool context instead of falling back to generic assistant copy, regex shortcuts, or the host shell `PWD`.
+
+For speed, the durable control layer now also skips two low-signal model hops in common coding flows: plainly-direct imperative coding/edit requests can jump straight into one bounded coding run without paying an extra intent-classification turn first, and clearly successful completed bounded passes can stop without paying an extra review-model turn.
+
+Those orchestrator turns also intentionally avoid reusing the worker-core continuation from the prior coding turn. The durable shell already carries explicit recent conversation plus recent report context, so meta questions like current status or latest results do not need latent acquisition state from the previous coding task.
+
+The orchestrator also normalizes partial replies conservatively now. If the model answers a meta question with plain text or a partial structured payload, `dan code` treats that as a conversational/status response instead of silently launching the bounded coding organism.
+
 Transient provider failures now retry in the shared LLM provider layer before the shell gives up, which is especially important for OpenAI-compatible endpoints such as Kimi. That recovery behavior is shared across agent surfaces rather than being hardcoded into `dan code`.
 
-`--show-model-trace` adds a more detailed public progress trace to the CLI. It prints worker-scoped model request/response previews alongside tool calls (for example `[worker-1][model] ...`), but it does not expose hidden chain-of-thought or private scratchpad text.
+`--show-model-trace` adds a more detailed public progress trace to the CLI. It prints worker-scoped model request/response previews alongside tool calls, and text-only replies now stream their public deltas live inline (for example `[worker-1][model] stream: ...`) instead of waiting for a final preview line. It still does not expose hidden chain-of-thought or private scratchpad text.
 
 Give it a bounded coding objective directly:
 
