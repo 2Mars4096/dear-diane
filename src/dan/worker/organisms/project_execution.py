@@ -21,6 +21,7 @@ from dan.worker.organs import (
     synthesis_organ,
     universal_validator_organ,
 )
+from dan.worker.structured_payload import parse_jsonish_payload
 from dan.worker.signaling import (
     CellAddress,
     CellAuthorityLimits,
@@ -37,15 +38,10 @@ def _parse_payload(outputs: dict[str, Any]) -> dict[str, Any]:
     raw = outputs.get("result", outputs.get("text", outputs))
     if isinstance(raw, dict):
         return dict(raw)
-    if isinstance(raw, str):
-        try:
-            parsed = json.loads(raw)
-        except Exception:
-            return {"result": raw}
-        if isinstance(parsed, dict):
-            return parsed
-        return {"result": parsed}
-    return {"result": raw}
+    parsed = parse_jsonish_payload(raw)
+    if isinstance(parsed, dict):
+        return parsed
+    return {"result": parsed}
 
 
 class ProjectExecutionTask(BaseModel):

@@ -13,6 +13,17 @@ from dan.worker.core.contracts import OutputContract
 from dan.worker.core.executor import WorkerCoreExecutor
 from dan.worker.core.model import WorkerDefinition
 from dan.worker.model import WorkerAuthority
+from dan.worker.outcomes import (
+    ExecutionEffect as WorkspaceEffect,
+    StructuredOutcomeView as CodingCandidateView,
+    clean_text as _clean_text,
+    first_text as _first_text,
+    has_material_structured_outcome as _has_material_structured_outcome,
+    infer_execution_effect as _infer_execution_effect,
+    mutation_claim_requires_evidence as _mutation_claim_requires_evidence,
+    normalize_structured_outcome_payload as _normalize_structured_outcome_payload,
+    structured_outcome_view as _structured_outcome_view,
+)
 from dan.worker.organisms.project_execution import OrganismObservability, OrganismStageRecord
 from dan.worker.organs import (
     OrganExecution,
@@ -31,6 +42,7 @@ from dan.worker.signaling import (
     HandoffTask,
     SignalTrace,
 )
+from dan.worker.structured_payload import parse_jsonish_payload
 from dan.worker.tissue import (
     TissueExecution,
     TissueMember,
@@ -49,19 +61,10 @@ def _parse_payload(outputs: dict[str, Any]) -> dict[str, Any]:
     raw = outputs.get("result", outputs.get("text", outputs))
     if isinstance(raw, dict):
         return dict(raw)
-    if isinstance(raw, str):
-        try:
-            parsed = json.loads(raw)
-        except Exception:
-            return {"result": raw}
-        if isinstance(parsed, dict):
-            return parsed
-        return {"result": parsed}
-    return {"result": raw}
-
-
-def _clean_text(value: Any) -> str:
-    return " ".join(str(value or "").strip().split())
+    parsed = parse_jsonish_payload(raw)
+    if isinstance(parsed, dict):
+        return parsed
+    return {"result": parsed}
 
 
 def _preview_text(value: Any, *, limit: int = 140) -> str:
@@ -96,10 +99,39 @@ def _worker_status_message(member_result: dict[str, Any]) -> str:
     )
 
 
+def _candidate_view(payload: dict[str, Any]) -> CodingCandidateView:
+    return _structured_outcome_view(
+        payload,
+        id_field="candidate_id",
+        summary_field="change_summary",
+        target_refs_field="target_files",
+        validation_steps_field="test_plan",
+        risks_field="risks",
+        effect_field="workspace_effect",
+    )
+
+
+def _candidate_workspace_effect(candidate: CodingCandidateView) -> WorkspaceEffect | None:
+    return _infer_execution_effect(candidate)
+
+
+def _candidate_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return _normalize_structured_outcome_payload(
+        payload,
+        id_field="candidate_id",
+        summary_field="change_summary",
+        target_refs_field="target_files",
+        validation_steps_field="test_plan",
+        risks_field="risks",
+        effect_field="workspace_effect",
+    )
+
+
 def _aggregation_status_message(payload: dict[str, Any]) -> str:
+    candidate = _candidate_view(payload)
     return _first_text(
-        payload.get("change_summary"),
-        payload.get("candidate_id"),
+        candidate.change_summary,
+        candidate.candidate_id,
     )
 
 
@@ -108,6 +140,72 @@ def _validation_status_message(payload: dict[str, Any]) -> str:
         payload.get("comparison_note"),
         payload.get("repair_brief"),
     )
+
+
+def _result_failure_message(stage: str, *, error: str | None, metadata: dict[str, Any] | None = None) -> str:
+    details = [str(item).strip() for item in (metadata or {}).get("contract_errors") or [] if str(item).strip()]
+    base = _clean_text(error) or f"{stage.title()} did not complete."
+    if not details:
+        return f"{stage.title()} failed: {base}"
+    preview = ", ".join(details[:4])
+    if len(details) > 4:
+        preview += f", +{len(details) - 4} more"
+    return f"{stage.title()} failed: {base} ({preview})"
+
+
+def _coerce_worker_count(value: Any) -> int | None:
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _planned_worker_count(
+    *,
+    payload: dict[str, Any],
+    organism: "CodingOrganism",
+) -> int:
+    explicit = _coerce_worker_count(payload.get("worker_count"))
+    if explicit is not None:
+        return max(1, min(explicit, int(organism.max_worker_count)))
+
+    brief_count = len(
+        [str(brief).strip() for brief in payload.get("worker_briefs") or [] if str(brief).strip()]
+    )
+    if brief_count > 0:
+        return max(1, min(brief_count, int(organism.max_worker_count)))
+
+    return max(1, min(int(organism.default_worker_count), int(organism.max_worker_count)))
+
+
+def _has_material_candidate_output(payload: dict[str, Any]) -> bool:
+    return _has_material_structured_outcome(
+        payload,
+        id_field="candidate_id",
+        summary_field="change_summary",
+        target_refs_field="target_files",
+        validation_steps_field="test_plan",
+        risks_field="risks",
+        effect_field="workspace_effect",
+    )
+
+
+def _salvage_candidate_output(execution: OrganExecution | None) -> dict[str, Any]:
+    if execution is None:
+        return {}
+    candidates: list[dict[str, Any]] = []
+    direct_outputs = dict(execution.result.outputs or {})
+    if direct_outputs:
+        candidates.append(direct_outputs)
+    raw_outputs = execution.result.metadata.get("raw_outputs")
+    if raw_outputs:
+        candidates.append(_parse_payload(dict(raw_outputs) if isinstance(raw_outputs, dict) else {"result": raw_outputs}))
+    if execution.lead_execution is not None:
+        candidates.append(_parse_payload(dict(execution.lead_execution.result.outputs or {})))
+    for candidate in candidates:
+        if _has_material_candidate_output(candidate):
+            return _candidate_payload(candidate)
+    return {}
 
 
 class CodingTask(BaseModel):
@@ -128,7 +226,7 @@ class CodingOrchestratorPlan(BaseModel):
     """Normalized orchestrator plan for one coding attempt."""
 
     public_response: str = ""
-    worker_count: int = Field(default=2, ge=1)
+    worker_count: int = Field(default=1, ge=1)
     worker_briefs: list[str] = Field(default_factory=list)
     aggregation_focus: str = (
         "Merge the worker outputs into one bounded coding candidate with explicit files and focused validation."
@@ -146,14 +244,16 @@ class CodingOrganism(BaseModel):
     orchestrator_worker: WorkerDefinition
     worker_role: str = "coding_worker"
     worker_instruction: str = (
-        "Produce one bounded coding contribution for the assigned brief. Return candidate_fragment, "
-        "change_summary, target_files, test_plan, and risks."
+        "Produce one bounded coding contribution for the assigned brief. Prefer the most specific structured tool "
+        "available, avoid redundant repo-wide discovery, and inspect only what the brief needs. Return "
+        "candidate_fragment, change_summary, target_files, test_plan, and risks. If inspection shows the workspace "
+        "already satisfies the brief, say 'No code changes required' explicitly in change_summary."
     )
     worker_model: str | None = None
     worker_tool_ids: list[str] = Field(default_factory=list)
     aggregator_organ: OrganPattern
     validator_organ: OrganPattern
-    default_worker_count: int = Field(default=2, ge=1)
+    default_worker_count: int = Field(default=1, ge=1)
     max_worker_count: int = Field(default=4, ge=1)
     max_repair_rounds: int = Field(default=1, ge=0)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -184,7 +284,6 @@ class CodingOrganismExecution:
     validation_executions: list[OrganExecution] = field(default_factory=list)
     trace_log: CrossCellTraceLog | None = None
     result: CodingOrganismResult | None = None
-
 
 def _orchestrator_output_contract() -> OutputContract:
     return OutputContract(
@@ -316,7 +415,9 @@ def _root_orchestrator_packet(
             instruction=(
                 "Plan the next coding attempt. First analyze the user intent and write one concise formal "
                 "public_response for the user-facing console that states what you understand and what you will do next. "
-                "Then choose how many workers to run, define distinct briefs for them, and set the aggregation and validation focus."
+                "Then choose how many workers to run, define distinct briefs for them, and set the aggregation and validation focus. "
+                "Default to 1 worker unless multiple genuinely distinct, non-overlapping paths are materially useful. "
+                "If you choose more than 1 worker, provide the same number of distinct briefs."
             ),
             scope="coding-organism.orchestrate",
             hard_constraints=list(task.hard_constraints),
@@ -363,7 +464,9 @@ def _repair_orchestrator_packet(
         instruction=(
             "Plan the next coding attempt after validator feedback. First analyze the updated user intent and write "
             "one concise formal public_response for the user-facing console that states what you understand and what "
-            "you will do next. Then choose worker_count, worker_briefs, aggregation_focus, validator_focus, and pass_threshold."
+            "you will do next. Then choose worker_count, worker_briefs, aggregation_focus, validator_focus, and pass_threshold. "
+            "Default to 1 worker unless multiple genuinely distinct, non-overlapping paths are materially useful. "
+            "If you choose more than 1 worker, provide the same number of distinct briefs."
         ),
         scope="coding-organism.orchestrate",
         hard_constraints=list(task.hard_constraints),
@@ -399,6 +502,21 @@ def _normalize_worker_briefs(
     return normalized[:worker_count]
 
 
+def _distinct_worker_briefs(worker_briefs: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for brief in worker_briefs:
+        text = _clean_text(brief)
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(text)
+    return ordered
+
+
 def _normalize_orchestrator_plan(
     *,
     outputs: dict[str, Any],
@@ -406,16 +524,17 @@ def _normalize_orchestrator_plan(
     task: CodingTask,
 ) -> CodingOrchestratorPlan:
     payload = _parse_payload(outputs)
+    worker_count = _planned_worker_count(payload=payload, organism=organism)
     try:
         plan = CodingOrchestratorPlan.model_validate(payload)
     except Exception:
-        plan = CodingOrchestratorPlan()
-    worker_count = max(1, min(int(plan.worker_count), int(organism.max_worker_count)))
-    if worker_count < int(organism.default_worker_count):
-        worker_count = max(worker_count, 1)
+        plan = CodingOrchestratorPlan(worker_count=worker_count)
+    distinct_briefs = _distinct_worker_briefs(list(plan.worker_briefs))
+    if worker_count > 1 and len(distinct_briefs) < worker_count:
+        worker_count = max(1, len(distinct_briefs))
     worker_briefs = _normalize_worker_briefs(
         worker_count=worker_count,
-        worker_briefs=list(plan.worker_briefs),
+        worker_briefs=distinct_briefs,
         objective=task.objective,
     )
     return plan.model_copy(
@@ -511,6 +630,90 @@ def _completion_output_refs(signals: list[Any]) -> list[EvidenceRef]:
     return []
 
 
+def _executed_tools_from_execution(execution: OrganExecution | None) -> list[dict[str, Any]] | None:
+    if execution is None or execution.lead_execution is None:
+        return None
+    raw_response = execution.lead_execution.result.metadata.get("raw_response")
+    if not isinstance(raw_response, dict):
+        return None
+    executed_tools = raw_response.get("executed_tools")
+    if not isinstance(executed_tools, list):
+        return None
+    return [dict(tool) for tool in executed_tools if isinstance(tool, dict)]
+
+
+def _looks_like_mutating_shell_command(command: Any) -> bool:
+    text = _clean_text(command).lower()
+    if not text:
+        return False
+    mutation_markers = (
+        "apply_patch",
+        "git apply",
+        "sed -i",
+        "perl -pi",
+        "perl -0pi",
+        "tee ",
+        "cat >",
+        "cat >>",
+        "mv ",
+        "cp ",
+        "mkdir ",
+        "touch ",
+        "rm ",
+        " > ",
+        " >> ",
+    )
+    return any(marker in text for marker in mutation_markers)
+
+
+def _aggregation_requires_mutation_evidence(
+    *,
+    payload: dict[str, Any],
+    execution: OrganExecution | None,
+) -> tuple[str, dict[str, Any]] | None:
+    candidate = _candidate_view(payload)
+    claimed_files = list(candidate.target_files)
+    if not claimed_files:
+        return None
+
+    executed_tools = _executed_tools_from_execution(execution)
+    if executed_tools is None:
+        return None
+
+    successful_mutation_tools: list[str] = []
+    executed_tool_ids: list[str] = []
+    for tool in executed_tools:
+        tool_id = str(tool.get("tool_id") or "").strip()
+        if tool_id:
+            executed_tool_ids.append(tool_id)
+        if not tool.get("ok"):
+            continue
+        if tool_id in {"file_edit", "file_write"}:
+            successful_mutation_tools.append(tool_id)
+            continue
+        if tool_id == "shell_command":
+            command = dict(tool.get("arguments") or {}).get("command")
+            if _looks_like_mutating_shell_command(command):
+                successful_mutation_tools.append(tool_id)
+
+    if successful_mutation_tools:
+        return None
+
+    workspace_effect = _candidate_workspace_effect(candidate)
+    if not _mutation_claim_requires_evidence(candidate):
+        return None
+
+    return (
+        "Candidate claimed concrete file changes but no mutation-capable tool call succeeded.",
+        {
+            "mutation_evidence_required": True,
+            "claimed_target_files": claimed_files,
+            "executed_tool_ids": executed_tool_ids,
+            "workspace_effect": workspace_effect,
+        },
+    )
+
+
 def coding_execution_organism(
     *,
     organism_id: str = "coding-organism",
@@ -535,7 +738,9 @@ def coding_execution_organism(
                 "Coordinate the coding organism. Treat the user turn as an agent handoff: first analyze user intent "
                 "and write one concise formal public_response that states what you understand and what you will do next, "
                 "then choose worker_count, distinct worker briefs, aggregation focus, and validator focus. "
-                "Keep the pool small, purposeful, and bounded."
+                "Keep the pool small, purposeful, bounded, and non-overlapping so workers do not repeat the same discovery. "
+                "Default to 1 worker unless multiple genuinely distinct paths are necessary. If you want more than 1 worker, "
+                "provide the same number of distinct non-overlapping briefs."
             ),
             model=model,
         ),
@@ -549,6 +754,7 @@ def coding_execution_organism(
             organism_id=organism_id,
             model=model,
             organ_id=f"{base_id}.validator",
+            review_tie_break_priority=["repair", "pass"],
         ),
         metadata={
             "coding_flow": "orchestrator -> worker pool -> aggregator -> validator",
@@ -660,6 +866,13 @@ async def execute_coding_organism(
         )
         orchestrator_runs.append(orchestrator_run)
         orchestrator_payload = _parse_payload(orchestrator_run.result.outputs)
+        plan: CodingOrchestratorPlan | None = None
+        if orchestrator_run.result.status == "completed":
+            plan = _normalize_orchestrator_plan(
+                outputs=orchestrator_run.result.outputs,
+                organism=organism,
+                task=task,
+            )
         stage_records.append(
             _record(
                 stage="orchestration",
@@ -676,11 +889,15 @@ async def execute_coding_organism(
             stage="orchestration",
             attempt=attempt,
             status=orchestrator_run.result.status,
-            worker_count=orchestrator_payload.get("worker_count"),
-            worker_briefs=list(orchestrator_payload.get("worker_briefs") or []),
-            pass_threshold=orchestrator_payload.get("pass_threshold"),
+            worker_count=(plan.worker_count if plan is not None else orchestrator_payload.get("worker_count")),
+            worker_briefs=(
+                list(plan.worker_briefs)
+                if plan is not None
+                else list(orchestrator_payload.get("worker_briefs") or [])
+            ),
+            pass_threshold=(plan.pass_threshold if plan is not None else orchestrator_payload.get("pass_threshold")),
             message=(
-                f"Planned {orchestrator_payload.get('worker_count')} coding workers."
+                f"Planned {(plan.worker_count if plan is not None else orchestrator_payload.get('worker_count'))} coding workers."
                 if orchestrator_run.result.status == "completed"
                 else "Could not complete planning."
             ),
@@ -690,11 +907,7 @@ async def execute_coding_organism(
             prior_signal_id = orchestrator_run.signals[-1].signal_id
             break
 
-        plan = _normalize_orchestrator_plan(
-            outputs=orchestrator_run.result.outputs,
-            organism=organism,
-            task=task,
-        )
+        assert plan is not None
         _emit_status_update(
             actor="orchestrator",
             phase="orchestration",
@@ -787,14 +1000,15 @@ async def execute_coding_organism(
         member_results = dict(worker_execution.result.outputs.get("member_results") or {})
         for member_id in sorted(member_results):
             member_result = _parse_payload(dict(member_results.get(member_id) or {}))
+            member_candidate = _candidate_view(member_result)
             _emit_status_update(
                 actor=member_id,
                 phase="workers",
                 attempt=attempt,
                 status="completed",
                 message=_worker_status_message(member_result),
-                target_files=list(member_result.get("target_files") or []),
-                test_plan=list(member_result.get("test_plan") or []),
+                target_files=list(member_candidate.target_files),
+                test_plan=list(member_candidate.test_plan),
             )
 
         _emit(
@@ -836,6 +1050,7 @@ async def execute_coding_organism(
                         "target_files": "<required>",
                         "test_plan": "<required>",
                         "risks": "<required>",
+                        "workspace_effect": "<optional: modified|verified>",
                     },
                     sort_keys=True,
                 ),
@@ -854,25 +1069,46 @@ async def execute_coding_organism(
             trace_log=trace_log,
         )
         aggregation_executions.append(aggregation_execution)
+        if aggregation_execution.result.outputs:
+            aggregation_execution.result.outputs = _candidate_payload(dict(aggregation_execution.result.outputs))
+        if aggregation_execution.result.status == "completed":
+            evidence_failure = _aggregation_requires_mutation_evidence(
+                payload=dict(aggregation_execution.result.outputs),
+                execution=aggregation_execution,
+            )
+            if evidence_failure is not None:
+                error_text, extra_metadata = evidence_failure
+                aggregation_execution.result.status = "failed"
+                aggregation_execution.result.error = error_text
+                aggregation_execution.result.metadata = {
+                    **dict(aggregation_execution.result.metadata),
+                    **dict(extra_metadata),
+                }
         stage_records.append(
             _record(
                 stage="aggregation",
                 attempt=attempt,
                 packet=aggregation_packet,
                 status=aggregation_execution.result.status,
-                summary=aggregation_execution.signals[-1].summary,
+                summary=(
+                    aggregation_execution.result.error
+                    if aggregation_execution.result.status != "completed" and aggregation_execution.result.error
+                    else aggregation_execution.signals[-1].summary
+                ),
                 organ_id=organism.aggregator_organ.organ_id,
                 output_keys=sorted(aggregation_execution.result.outputs),
             )
         )
+        aggregation_candidate = _candidate_view(dict(aggregation_execution.result.outputs))
         _emit(
             "stage.completed",
             stage="aggregation",
             attempt=attempt,
             status=aggregation_execution.result.status,
-            candidate_id=aggregation_execution.result.outputs.get("candidate_id"),
-            target_files=list(aggregation_execution.result.outputs.get("target_files") or []),
-            test_plan=list(aggregation_execution.result.outputs.get("test_plan") or []),
+            candidate_id=aggregation_candidate.candidate_id,
+            target_files=list(aggregation_candidate.target_files),
+            test_plan=list(aggregation_candidate.test_plan),
+            workspace_effect=_candidate_workspace_effect(aggregation_candidate),
             message=(
                 "Prepared one bounded coding candidate."
                 if aggregation_execution.result.status == "completed"
@@ -889,9 +1125,10 @@ async def execute_coding_organism(
                 else aggregation_execution.result.status
             ),
             message=_aggregation_status_message(dict(aggregation_execution.result.outputs)),
-            candidate_id=aggregation_execution.result.outputs.get("candidate_id"),
-            target_files=list(aggregation_execution.result.outputs.get("target_files") or []),
-            test_plan=list(aggregation_execution.result.outputs.get("test_plan") or []),
+            candidate_id=aggregation_candidate.candidate_id,
+            target_files=list(aggregation_candidate.target_files),
+            test_plan=list(aggregation_candidate.test_plan),
+            workspace_effect=_candidate_workspace_effect(aggregation_candidate),
         )
         if aggregation_execution.result.status != "completed":
             prior_packet = aggregation_packet
@@ -1074,8 +1311,12 @@ async def execute_coding_organism(
     final_output: dict[str, Any] = {}
     status: Literal["completed", "failed"] = "failed"
     error: str | None = None
+    fallback_candidate_output = _salvage_candidate_output(
+        best_aggregation if best_aggregation is not None else (aggregation_executions[-1] if aggregation_executions else None)
+    )
     if best_aggregation is not None and best_validation is not None:
         final_output = {
+            **fallback_candidate_output,
             **dict(best_aggregation.result.outputs),
             "validation_report": dict(best_validation.result.outputs),
             "repair_history": list(repair_history),
@@ -1085,7 +1326,38 @@ async def execute_coding_organism(
         else:
             error = "The best candidate still failed validation."
     else:
-        error = "The coding organism did not produce a validated candidate."
+        if fallback_candidate_output:
+            final_output = dict(fallback_candidate_output)
+        if validation_executions:
+            latest = validation_executions[-1].result
+            error = _result_failure_message(
+                "validation",
+                error=latest.error,
+                metadata=latest.metadata,
+            )
+        elif aggregation_executions:
+            latest = aggregation_executions[-1].result
+            error = _result_failure_message(
+                "aggregation",
+                error=latest.error,
+                metadata=latest.metadata,
+            )
+        elif worker_pool_executions:
+            latest = worker_pool_executions[-1].result
+            error = _result_failure_message(
+                "workers",
+                error=latest.error,
+                metadata=latest.metadata,
+            )
+        elif orchestrator_runs:
+            latest = orchestrator_runs[-1].result
+            error = _result_failure_message(
+                "orchestration",
+                error=latest.error,
+                metadata=latest.metadata,
+            )
+        else:
+            error = "The coding organism did not produce a validated candidate."
 
     if status == "completed":
         _emit_status_update(
@@ -1105,6 +1377,9 @@ async def execute_coding_organism(
             attempt=best_attempt or 0,
             status="failed",
             message=error,
+            candidate_id=final_output.get("candidate_id"),
+            target_files=list(final_output.get("target_files") or []),
+            test_plan=list(final_output.get("test_plan") or []),
         )
 
     result = CodingOrganismResult(
