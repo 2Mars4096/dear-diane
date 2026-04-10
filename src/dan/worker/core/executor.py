@@ -29,6 +29,7 @@ from dan.worker.core.contracts import (
     MemoryLayer,
     MemoryExtractionMode,
     MemorySnapshot,
+    OutputContract,
 )
 from dan.worker.core.interfaces import (
     AcquisitionProvider,
@@ -42,6 +43,11 @@ from dan.worker.core.interfaces import (
 )
 from dan.worker.core.memory import build_memory_sources, working_memory_evidence
 from dan.worker.core.model import CompletionHints, WorkerDefinition
+from dan.worker.core.structured_output import (
+    has_structured_output_schema,
+    render_output_schema,
+    validate_structured_output,
+)
 
 
 def _stringify(value: Any) -> str:
@@ -436,13 +442,82 @@ class WorkerCoreExecutor:
             metadata={"worker_id": worker.id, **request.metadata},
         )
         response = await self._completion_provider.complete(completion_request)
+        outputs: dict[str, Any] = {
+            "text": response.text,
+            "result": response.text,
+        }
+        metadata: dict[str, Any] = {"raw_response": response.raw}
+        if has_structured_output_schema(request.output_contract):
+            validation = validate_structured_output(response.text, request.output_contract)
+            if validation.valid:
+                outputs["result"] = validation.parsed
+                metadata["structured_output"] = {
+                    "validated": True,
+                    "repaired": False,
+                    "errors": [],
+                }
+            else:
+                await self._emit(
+                    "worker.structured_output.repair_requested",
+                    {
+                        "worker_id": worker.id,
+                        "errors": list(validation.errors),
+                    },
+                )
+                repair_response = await self._repair_structured_output(
+                    worker=worker,
+                    request=completion_request,
+                    invalid_response=response,
+                    validation_errors=validation.errors,
+                )
+                repaired = validate_structured_output(repair_response.text, request.output_contract)
+                if not repaired.valid:
+                    await self._emit(
+                        "worker.structured_output.repair_failed",
+                        {
+                            "worker_id": worker.id,
+                            "errors": list(repaired.errors),
+                        },
+                    )
+                    return WorkerExecutionResult(
+                        status="failed",
+                        error=(
+                            "Structured output validation failed after one repair pass: "
+                            + "; ".join(repaired.errors[:5])
+                        ),
+                        metadata={
+                            "raw_response": response.raw,
+                            "repair_raw_response": repair_response.raw,
+                            "structured_output": {
+                                "validated": False,
+                                "repaired": True,
+                                "initial_errors": list(validation.errors),
+                                "repair_errors": list(repaired.errors),
+                            },
+                        },
+                    )
+                await self._emit(
+                    "worker.structured_output.repair_succeeded",
+                    {
+                        "worker_id": worker.id,
+                    },
+                )
+                outputs["text"] = repair_response.text
+                outputs["result"] = repaired.parsed
+                metadata = {
+                    "raw_response": repair_response.raw,
+                    "initial_raw_response": response.raw,
+                    "structured_output": {
+                        "validated": True,
+                        "repaired": True,
+                        "initial_errors": list(validation.errors),
+                        "repair_errors": [],
+                    },
+                }
         return WorkerExecutionResult(
             status="completed",
-            outputs={
-                "text": response.text,
-                "result": response.text,
-            },
-            metadata={"raw_response": response.raw},
+            outputs=outputs,
+            metadata=metadata,
         )
 
     async def _run_direct_tool(
@@ -515,6 +590,9 @@ class WorkerCoreExecutor:
             parts.append(f"Definition of done:\n{request.output_contract.definition_of_done}")
         if request.output_contract.expected_return_shape:
             parts.append(f"Expected return shape:\n{request.output_contract.expected_return_shape}")
+        schema_text = render_output_schema(request.output_contract)
+        if schema_text:
+            parts.append(f"Output schema (JSON Schema):\n{schema_text}")
         return "\n\n".join(part for part in parts if part)
 
     @staticmethod
@@ -564,6 +642,60 @@ class WorkerCoreExecutor:
         if request.input_payload:
             sections.append(f"Input payload:\n{_stringify(request.input_payload)}")
         return "\n\n".join(part for part in sections if part)
+
+    async def _repair_structured_output(
+        self,
+        *,
+        worker: WorkerDefinition,
+        request: CompletionRequest,
+        invalid_response: CompletionResponse,
+        validation_errors: list[str],
+    ) -> CompletionResponse:
+        assert self._completion_provider is not None
+        repair_request = CompletionRequest(
+            model=request.model,
+            system_prompt=(
+                "Role: structured_output_repairer\n\n"
+                "Repair the previous model output so it satisfies the required JSON schema. "
+                "Return only valid JSON. Do not include markdown fences, commentary, or explanations."
+            ),
+            user_prompt="\n\n".join(
+                section
+                for section in [
+                    (
+                        "Original definition of done:\n"
+                        f"{request.output_contract.definition_of_done}"
+                        if request.output_contract.definition_of_done
+                        else ""
+                    ),
+                    (
+                        "Original expected return shape:\n"
+                        f"{request.output_contract.expected_return_shape}"
+                        if request.output_contract.expected_return_shape
+                        else ""
+                    ),
+                    (
+                        "Required JSON schema:\n"
+                        f"{render_output_schema(request.output_contract)}"
+                    ),
+                    (
+                        "Validation errors:\n"
+                        + "\n".join(f"- {error}" for error in validation_errors)
+                    ),
+                    f"Previous response:\n{invalid_response.text}",
+                ]
+                if section
+            ),
+            temperature=0.0,
+            max_tokens=request.max_tokens,
+            output_contract=request.output_contract,
+            metadata={
+                **request.metadata,
+                "structured_output_repair": True,
+                "worker_id": worker.id,
+            },
+        )
+        return await self._completion_provider.complete(repair_request)
 
     @staticmethod
     def _render_catalog(catalog: DiscoveryCatalog) -> str:
