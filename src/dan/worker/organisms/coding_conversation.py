@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -16,8 +18,15 @@ from dan.worker.core.contracts import (
 )
 from dan.worker.core.interfaces import CompletionRequest, CompletionResponse
 from dan.worker.core.model import WorkerDefinition
+from dan.worker.core.structured_output import (
+    has_structured_output_schema,
+    validate_structured_output,
+)
 from dan.worker.runner import DurableAgentRunner, DurableAgentSessionState
 from dan.worker.structured_payload import parse_jsonish_payload
+
+DEFAULT_CONTROL_HEDGE_MAX_ATTEMPTS = 2
+DEFAULT_CONTROL_HEDGE_DELAY_SECONDS = 2.0
 
 
 def _clean_text(value: Any) -> str:
@@ -45,6 +54,40 @@ def _dedupe(values: list[str]) -> list[str]:
         seen.add(text)
         ordered.append(text)
     return ordered
+
+
+def _positive_int(value: Any, *, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _positive_float(value: Any, *, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _resolve_control_hedge_max_attempts(value: int | None) -> int:
+    if value is not None:
+        return _positive_int(value, default=DEFAULT_CONTROL_HEDGE_MAX_ATTEMPTS)
+    return _positive_int(
+        os.environ.get("DAN_CODE_CONTROL_HEDGE_MAX_ATTEMPTS"),
+        default=DEFAULT_CONTROL_HEDGE_MAX_ATTEMPTS,
+    )
+
+
+def _resolve_control_hedge_delay_seconds(value: float | None) -> float:
+    if value is not None:
+        return _positive_float(value, default=DEFAULT_CONTROL_HEDGE_DELAY_SECONDS)
+    return _positive_float(
+        os.environ.get("DAN_CODE_CONTROL_HEDGE_DELAY_SECONDS"),
+        default=DEFAULT_CONTROL_HEDGE_DELAY_SECONDS,
+    )
 
 
 def _embedded_decision_payload(value: Any) -> dict[str, Any] | None:
@@ -84,6 +127,13 @@ def _report_has_material_output(report_summary: "CodingConversationReportSummary
         report_summary.candidate_id
         or report_summary.target_files
         or _clean_text(report_summary.change_summary)
+    )
+
+
+def _report_is_failed_no_output(report_summary: "CodingConversationReportSummary") -> bool:
+    return (
+        _clean_text(report_summary.status).lower() != "completed"
+        and not _report_has_material_output(report_summary)
     )
 
 
@@ -209,7 +259,7 @@ def _looks_like_explicit_coding_request(
     )
     if any(cue in cleaned for cue in meta_cues):
         return False
-    latest_report = _latest_report_summary(context)
+    latest_report = _latest_resumable_report_summary(context)
     if _looks_like_resume_request(cleaned):
         return latest_report is not None and bool(_clean_text(latest_report.objective))
     action_cues = (
@@ -234,24 +284,15 @@ def _looks_like_explicit_coding_request(
     return _contains_code_reference(cleaned)
 
 
-def _latest_report_summary(
+def _latest_resumable_report_summary(
     context: "CodingConversationContext",
 ) -> "CodingConversationReportSummary | None":
-    if context.recent_reports:
-        return context.recent_reports[-1]
-    if not _clean_text(context.facts.latest_report_objective):
-        return None
-    return CodingConversationReportSummary(
-        status=_clean_text(context.facts.latest_report_status),
-        task_id="",
-        objective=_clean_text(context.facts.latest_report_objective),
-        candidate_id=None,
-        change_summary="",
-        target_files=list(context.facts.latest_report_target_files),
-        test_plan=[],
-        risks=[],
-        error=_clean_text(context.facts.latest_report_error),
-    )
+    for report in reversed(context.recent_reports):
+        if _report_is_failed_no_output(report):
+            continue
+        if _clean_text(report.objective):
+            return report
+    return None
 
 
 def _review_requires_more_work(
@@ -288,7 +329,7 @@ def _fast_path_turn_decision(
         return None
     if not _looks_like_explicit_coding_request(user_message, context=context):
         return None
-    latest_report = _latest_report_summary(context)
+    latest_report = _latest_resumable_report_summary(context)
     if latest_report is not None and _looks_like_resume_request(user_message):
         objective = _clean_text(latest_report.objective)
         if objective:
@@ -334,18 +375,215 @@ class ProviderCompletionAdapter:
         default_model: str,
         stream_text_responses: bool = False,
         provider_request_overrides: dict[str, Any] | None = None,
+        hedge_max_attempts: int = DEFAULT_CONTROL_HEDGE_MAX_ATTEMPTS,
+        hedge_delay_seconds: float = DEFAULT_CONTROL_HEDGE_DELAY_SECONDS,
         event_callback=None,
     ) -> None:
         self._provider = provider
         self._default_model = str(default_model or "").strip()
         self._stream_text_responses = bool(stream_text_responses)
         self._provider_request_overrides = dict(provider_request_overrides or {})
+        self._hedge_max_attempts = max(1, int(hedge_max_attempts))
+        self._hedge_delay_seconds = max(0.0, float(hedge_delay_seconds))
         self._event_callback = event_callback
 
     def _emit(self, event: str, **payload: Any) -> None:
         if self._event_callback is None:
             return
         self._event_callback({"event": event, **payload})
+
+    def _is_acceptable_response(
+        self,
+        *,
+        response: CompletionResponse,
+        request: CompletionRequest,
+    ) -> bool:
+        if has_structured_output_schema(request.output_contract):
+            return validate_structured_output(
+                response.text,
+                request.output_contract,
+            ).valid
+        return bool(_clean_text(response.text))
+
+    async def _complete_attempt(
+        self,
+        *,
+        request: CompletionRequest,
+        model: str,
+        worker_id: str | None,
+        messages: list[dict[str, Any]],
+        attempt_index: int,
+    ) -> CompletionResponse:
+        self._emit(
+            "model.requested",
+            model=model,
+            round=attempt_index,
+            tool_count=0,
+            worker_id=worker_id,
+            hedged=attempt_index > 1,
+        )
+        result = await self._provider.complete(
+            messages=messages,
+            model=model,
+            temperature=request.temperature,
+            max_tokens=request.max_tokens,
+            **self._provider_request_overrides,
+        )
+        self._emit(
+            "model.responded",
+            model=result.model or model,
+            round=attempt_index,
+            tool_calls=[],
+            finish_reason=getattr(result, "finish_reason", None),
+            text=(result.text or "")[:400],
+            streamed=False,
+            worker_id=worker_id,
+            hedged=attempt_index > 1,
+        )
+        return CompletionResponse(
+            text=result.text or "",
+            raw={
+                "provider_result": {
+                    "model": result.model,
+                    "finish_reason": result.finish_reason,
+                    "usage": result.usage,
+                    "provider_metadata": result.provider_metadata,
+                },
+                "raw_assistant_message": result.raw_assistant_message,
+            },
+        )
+
+    async def _cancel_pending_attempts(
+        self,
+        tasks: dict[int, asyncio.Task[CompletionResponse]],
+        *,
+        worker_id: str | None,
+        winner_attempt: int,
+    ) -> None:
+        pending_attempts = sorted(
+            attempt_index
+            for attempt_index, task in tasks.items()
+            if not task.done() and attempt_index != winner_attempt
+        )
+        if pending_attempts:
+            self._emit(
+                "model.hedge.cancelled",
+                worker_id=worker_id,
+                cancelled_attempts=pending_attempts,
+                winner_attempt=winner_attempt,
+            )
+        for attempt_index, task in tasks.items():
+            if attempt_index == winner_attempt or task.done():
+                continue
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+    async def _hedged_complete(
+        self,
+        *,
+        request: CompletionRequest,
+        model: str,
+        worker_id: str | None,
+        messages: list[dict[str, Any]],
+    ) -> CompletionResponse:
+        active_tasks: dict[int, asyncio.Task[CompletionResponse]] = {}
+        launched_attempts = 0
+        fallback_response: CompletionResponse | None = None
+        first_exception: BaseException | None = None
+        next_launch_deadline: float | None = None
+        loop = asyncio.get_running_loop()
+
+        def _launch_attempt(attempt_index: int) -> None:
+            nonlocal launched_attempts, next_launch_deadline
+            launched_attempts = max(launched_attempts, attempt_index)
+            if attempt_index > 1:
+                self._emit(
+                    "model.hedge.launched",
+                    model=model,
+                    worker_id=worker_id,
+                    attempt=attempt_index,
+                    launched_attempts=launched_attempts,
+                    hedge_delay_seconds=self._hedge_delay_seconds,
+                )
+            active_tasks[attempt_index] = asyncio.create_task(
+                self._complete_attempt(
+                    request=request,
+                    model=model,
+                    worker_id=worker_id,
+                    messages=messages,
+                    attempt_index=attempt_index,
+                )
+            )
+            next_launch_deadline = (
+                loop.time() + self._hedge_delay_seconds
+                if launched_attempts < self._hedge_max_attempts
+                else None
+            )
+
+        _launch_attempt(1)
+
+        while active_tasks:
+            timeout: float | None = None
+            if next_launch_deadline is not None:
+                timeout = max(0.0, next_launch_deadline - loop.time())
+            done, _pending = await asyncio.wait(
+                set(active_tasks.values()),
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                if launched_attempts < self._hedge_max_attempts:
+                    _launch_attempt(launched_attempts + 1)
+                    continue
+                done, _pending = await asyncio.wait(
+                    set(active_tasks.values()),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            for task in done:
+                attempt_index = next(
+                    key for key, value in active_tasks.items() if value is task
+                )
+                active_tasks.pop(attempt_index, None)
+                try:
+                    response = task.result()
+                except Exception as exc:
+                    if first_exception is None:
+                        first_exception = exc
+                    continue
+                if fallback_response is None:
+                    fallback_response = response
+                if self._is_acceptable_response(response=response, request=request):
+                    self._emit(
+                        "model.hedge.accepted",
+                        model=model,
+                        worker_id=worker_id,
+                        accepted_attempt=attempt_index,
+                        launched_attempts=launched_attempts,
+                        used_fallback=False,
+                    )
+                    await self._cancel_pending_attempts(
+                        active_tasks,
+                        worker_id=worker_id,
+                        winner_attempt=attempt_index,
+                    )
+                    return response
+            if not active_tasks and launched_attempts < self._hedge_max_attempts:
+                _launch_attempt(launched_attempts + 1)
+
+        if fallback_response is not None:
+            self._emit(
+                "model.hedge.accepted",
+                model=model,
+                worker_id=worker_id,
+                accepted_attempt=None,
+                launched_attempts=launched_attempts,
+                used_fallback=True,
+            )
+            return fallback_response
+        if first_exception is not None:
+            raise first_exception
+        raise RuntimeError("Hedged DAN Code controller completion produced no response")
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         model = str(request.model or self._default_model or "").strip()
@@ -363,7 +601,6 @@ class ProviderCompletionAdapter:
         if request.system_prompt:
             messages.append({"role": "system", "content": request.system_prompt})
         messages.append({"role": "user", "content": request.user_prompt})
-        streamed = False
         stream_method = getattr(self._provider, "stream", None)
         if self._stream_text_responses and callable(stream_method):
             accumulated = ""
@@ -444,42 +681,29 @@ class ProviderCompletionAdapter:
                 if emitted_delta:
                     raise
 
-        result = await self._provider.complete(
-            messages=messages,
-            model=model,
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
-            **self._provider_request_overrides,
-        )
-        self._emit(
-            "model.responded",
-            model=result.model or model,
-            round=1,
-            tool_calls=[],
-            finish_reason=getattr(result, "finish_reason", None),
-            text=(result.text or "")[:400],
-            streamed=streamed,
-            worker_id=worker_id,
-        )
+        if self._hedge_max_attempts > 1 and self._hedge_delay_seconds >= 0:
+            response = await self._hedged_complete(
+                request=request,
+                model=model,
+                worker_id=worker_id,
+                messages=messages,
+            )
+        else:
+            response = await self._complete_attempt(
+                request=request,
+                model=model,
+                worker_id=worker_id,
+                messages=messages,
+                attempt_index=1,
+            )
         self._emit(
             "completion.completed",
-            model=result.model or model,
+            model=model,
             stop_reason="completed",
             tool_calls_executed=0,
             worker_id=worker_id,
         )
-        return CompletionResponse(
-            text=result.text or "",
-            raw={
-                "provider_result": {
-                    "model": result.model,
-                    "finish_reason": result.finish_reason,
-                    "usage": result.usage,
-                    "provider_metadata": result.provider_metadata,
-                },
-                "raw_assistant_message": result.raw_assistant_message,
-            },
-        )
+        return response
 
 
 class CodingConversationTurnDecision(BaseModel):
@@ -719,7 +943,7 @@ def _fallback_turn_decision(
             public_response="I still need one concrete clarification before I should start coding.",
             clarifying_question=pending_clarification,
         )
-    latest_report = _latest_report_summary(context)
+    latest_report = _latest_resumable_report_summary(context)
     if latest_report is not None and _looks_like_continuation_request(user_message):
         objective = _clean_text(latest_report.objective)
         if objective:
@@ -927,6 +1151,8 @@ class CodingConversationController:
         model: str,
         stream_text_responses: bool = False,
         provider_request_overrides: dict[str, Any] | None = None,
+        hedge_max_attempts: int | None = None,
+        hedge_delay_seconds: float | None = None,
         event_callback=None,
     ) -> None:
         self._worker = _orchestrator_worker(str(model))
@@ -936,6 +1162,12 @@ class CodingConversationController:
                 default_model=str(model),
                 stream_text_responses=stream_text_responses,
                 provider_request_overrides=provider_request_overrides,
+                hedge_max_attempts=_resolve_control_hedge_max_attempts(
+                    hedge_max_attempts
+                ),
+                hedge_delay_seconds=_resolve_control_hedge_delay_seconds(
+                    hedge_delay_seconds
+                ),
                 event_callback=event_callback,
             )
         )
