@@ -434,13 +434,45 @@ class AnthropicProvider:
                 yield StreamChunk(delta=text, accumulated=accumulated)
 
         final_message = await stream.get_final_message()
+        final_text = ""
+        tool_calls: list[dict[str, Any]] = []
+        for block in final_message.content:
+            block_type = getattr(block, "type", None)
+            if block_type == "text":
+                final_text += getattr(block, "text", "")
+            elif block_type == "tool_use":
+                tool_calls.append(
+                    {
+                        "id": str(getattr(block, "id", "") or ""),
+                        "type": "function",
+                        "function": {
+                            "name": str(getattr(block, "name", "") or ""),
+                            "arguments": self._stringify_tool_arguments(
+                                getattr(block, "input", {}) or {}
+                            ),
+                        },
+                    }
+                )
         usage = self._extract_usage(final_message)
         if usage is not None:
             cached_input, cache_write = self._extract_cache_tokens(final_message)
             usage["cached_input_tokens"] = cached_input
             usage["cache_write_tokens"] = cache_write
+        raw_assistant_message = self._serialize_assistant_message(
+            text=final_text,
+            tool_calls=tool_calls,
+            content_blocks=list(getattr(final_message, "content", None) or []),
+        )
         yield StreamChunk(
-            delta="", accumulated=accumulated, done=True, usage=usage,
+            delta="",
+            accumulated=final_text or accumulated,
+            done=True,
+            usage=usage,
+            model=model,
+            tool_calls=tool_calls or None,
+            finish_reason=str(getattr(final_message, "stop_reason", "") or ""),
+            raw_assistant_message=raw_assistant_message,
+            provider_metadata={"family": "anthropic"},
         )
 
     @staticmethod

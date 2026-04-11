@@ -534,8 +534,35 @@ class GoogleProvider:
                 yield StreamChunk(delta=delta, accumulated=accumulated)
 
         usage = self._extract_usage(resp)
+        tool_calls: list[dict[str, Any]] | None = None
+        final_text = accumulated
+        finish_reason = ""
+        raw_assistant_message = None
+        try:
+            final_text, tool_calls = self._extract_text_and_tool_calls(resp)
+            candidates = getattr(resp, "candidates", None) or []
+            if candidates:
+                fr = getattr(candidates[0], "finish_reason", None)
+                finish_reason = str(fr.name).lower() if fr else ""
+                candidate_content = getattr(candidates[0], "content", None)
+                candidate_parts = list(getattr(candidate_content, "parts", None) or [])
+                raw_assistant_message = self._serialize_assistant_message(
+                    text=final_text,
+                    tool_calls=tool_calls,
+                    parts=candidate_parts,
+                )
+        except Exception:
+            pass
         yield StreamChunk(
-            delta="", accumulated=accumulated, done=True, usage=usage,
+            delta="",
+            accumulated=final_text,
+            done=True,
+            usage=usage,
+            model=model,
+            tool_calls=tool_calls,
+            finish_reason=finish_reason,
+            raw_assistant_message=raw_assistant_message,
+            provider_metadata={"family": "google"},
         )
 
     @staticmethod

@@ -229,6 +229,72 @@ class OpenAIProvider:
             raw["content"] = content
         return raw
 
+    @staticmethod
+    def _append_stream_text(current: str, piece: Any) -> str:
+        if piece in {None, ""}:
+            return current
+        return current + str(piece)
+
+    @classmethod
+    def _merge_stream_tool_call_delta(
+        cls,
+        tool_calls_by_index: dict[int, dict[str, Any]],
+        raw_tool_call: Any,
+    ) -> None:
+        index_raw = getattr(raw_tool_call, "index", None)
+        try:
+            index = int(index_raw) if index_raw is not None else len(tool_calls_by_index)
+        except Exception:
+            index = len(tool_calls_by_index)
+        payload = tool_calls_by_index.setdefault(
+            index,
+            {
+                "id": "",
+                "type": "function",
+                "function": {
+                    "name": "",
+                    "arguments": "",
+                },
+            },
+        )
+        tool_call_id = getattr(raw_tool_call, "id", None)
+        if tool_call_id:
+            payload["id"] = str(tool_call_id)
+        tool_call_type = getattr(raw_tool_call, "type", None)
+        if tool_call_type:
+            payload["type"] = str(tool_call_type)
+
+        function_payload = payload.setdefault("function", {})
+        function_delta = getattr(raw_tool_call, "function", None)
+        if function_delta is not None:
+            function_payload["name"] = cls._append_stream_text(
+                str(function_payload.get("name") or ""),
+                getattr(function_delta, "name", None),
+            )
+            function_payload["arguments"] = cls._append_stream_text(
+                str(function_payload.get("arguments") or ""),
+                getattr(function_delta, "arguments", None),
+            )
+
+    @classmethod
+    def _final_stream_tool_calls(
+        cls,
+        tool_calls_by_index: dict[int, dict[str, Any]],
+    ) -> list[dict[str, Any]] | None:
+        if not tool_calls_by_index:
+            return None
+        ordered: list[dict[str, Any]] = []
+        for index in sorted(tool_calls_by_index):
+            payload = dict(tool_calls_by_index[index])
+            function_payload = dict(payload.get("function") or {})
+            payload["function"] = {
+                "name": str(function_payload.get("name") or ""),
+                "arguments": str(function_payload.get("arguments") or ""),
+            }
+            payload["type"] = str(payload.get("type") or "function")
+            ordered.append(payload)
+        return ordered
+
     async def complete(
         self,
         messages: list[dict[str, Any]],
@@ -309,6 +375,11 @@ class OpenAIProvider:
                 accumulated=accumulated,
                 done=True,
                 usage=result.usage,
+                model=result.model or model,
+                tool_calls=result.tool_calls,
+                finish_reason=result.finish_reason,
+                raw_assistant_message=result.raw_assistant_message,
+                provider_metadata=result.provider_metadata,
             )
             return
 
@@ -343,17 +414,42 @@ class OpenAIProvider:
             ) from exc
         accumulated = ""
         last_usage = None
+        finish_reason = ""
+        tool_calls_by_index: dict[int, dict[str, Any]] = {}
         async for chunk in stream:
             if chunk.choices:
-                delta = chunk.choices[0].delta.content or ""
+                choice = chunk.choices[0]
+                delta_obj = getattr(choice, "delta", None)
+                delta = getattr(delta_obj, "content", "") or ""
                 accumulated += delta
+                for raw_tool_call in list(getattr(delta_obj, "tool_calls", None) or []):
+                    self._merge_stream_tool_call_delta(tool_calls_by_index, raw_tool_call)
+                choice_finish_reason = getattr(choice, "finish_reason", None)
+                if choice_finish_reason:
+                    finish_reason = str(choice_finish_reason)
                 yield StreamChunk(delta=delta, accumulated=accumulated)
             usage = self._extract_usage(chunk)
             if usage:
                 last_usage = usage
 
+        tool_calls = self._final_stream_tool_calls(tool_calls_by_index)
+        raw_assistant_message: dict[str, Any] = {
+            "role": "assistant",
+            "content": accumulated if accumulated.strip() else (None if tool_calls else accumulated),
+        }
+        if tool_calls:
+            raw_assistant_message["tool_calls"] = tool_calls
+
         yield StreamChunk(
-            delta="", accumulated=accumulated, done=True, usage=last_usage
+            delta="",
+            accumulated=accumulated,
+            done=True,
+            usage=last_usage,
+            model=model,
+            tool_calls=tool_calls,
+            finish_reason=finish_reason,
+            raw_assistant_message=raw_assistant_message,
+            provider_metadata={"family": "openai_compatible"},
         )
 
     @staticmethod

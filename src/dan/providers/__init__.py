@@ -138,6 +138,11 @@ class StreamChunk:
     accumulated: str
     done: bool = False
     usage: dict[str, int] | None = None
+    model: str = ""
+    tool_calls: list[dict[str, Any]] | None = None
+    finish_reason: str = ""
+    raw_assistant_message: dict[str, Any] | None = None
+    provider_metadata: dict[str, Any] | None = None
 
 
 @dataclass
