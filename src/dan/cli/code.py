@@ -7,7 +7,7 @@ import asyncio
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -544,7 +544,8 @@ class CodeProgressRenderer:
         self._enabled = bool(enabled)
         self._show_model_trace = bool(show_model_trace)
         self._replace_cache: dict[tuple[str, str, str], str] = {}
-        self._open_model_streams: set[tuple[str, str]] = set()
+        self._open_model_streams: dict[tuple[str, str], bool] = {}
+        self._completed_model_streams: dict[tuple[str, str], bool] = {}
 
     @staticmethod
     def _print_assistant(message: str) -> None:
@@ -577,7 +578,9 @@ class CodeProgressRenderer:
     def _flush_open_model_streams(self) -> None:
         if not self._open_model_streams:
             return
-        print()
+        if any(self._open_model_streams.values()):
+            print()
+        self._completed_model_streams.update(self._open_model_streams)
         self._open_model_streams.clear()
 
     @staticmethod
@@ -656,18 +659,17 @@ class CodeProgressRenderer:
             key = self._stream_key(event)
             if key in self._open_model_streams:
                 return
-            prefix = self._stream_prefix("model", event)
-            print(f"{prefix} stream: ", end="", flush=True)
-            self._open_model_streams.add(key)
+            self._completed_model_streams.pop(key, None)
+            self._open_model_streams[key] = False
             return
         if name == "model.stream.delta":
             if not self._show_model_trace:
                 return
             key = self._stream_key(event)
-            if key not in self._open_model_streams:
+            if key not in self._open_model_streams or not self._open_model_streams[key]:
                 prefix = self._stream_prefix("model", event)
                 print(f"{prefix} stream: ", end="", flush=True)
-                self._open_model_streams.add(key)
+            self._open_model_streams[key] = True
             delta = str(event.get("delta") or "").replace("\r", "").replace("\n", "\\n")
             if delta:
                 print(delta, end="", flush=True)
@@ -676,9 +678,10 @@ class CodeProgressRenderer:
             if not self._show_model_trace:
                 return
             key = self._stream_key(event)
-            if key in self._open_model_streams:
+            had_visible_output = bool(self._open_model_streams.pop(key, False))
+            self._completed_model_streams[key] = had_visible_output
+            if had_visible_output:
                 print()
-                self._open_model_streams.discard(key)
             return
         if name not in {"model.stream.started", "model.stream.delta"}:
             self._flush_open_model_streams()
@@ -783,6 +786,7 @@ class CodeProgressRenderer:
         if name == "model.requested":
             if not self._show_model_trace:
                 return
+            self._completed_model_streams.pop(self._stream_key(event), None)
             prefix = self._stream_prefix("model", event)
             print(
                 f"{prefix} request: "
@@ -794,6 +798,8 @@ class CodeProgressRenderer:
         if name == "model.responded":
             if not self._show_model_trace:
                 return
+            key = self._stream_key(event)
+            had_visible_stream = bool(self._completed_model_streams.pop(key, False))
             prefix = self._stream_prefix("model", event)
             tool_calls = [
                 str(tool_id).strip()
@@ -811,9 +817,9 @@ class CodeProgressRenderer:
             if finish_reason:
                 summary += f" finish_reason={finish_reason}"
             print(summary)
-            if event.get("streamed"):
-                return
             text = _truncate_text(str(event.get("text") or ""), limit=240)
+            if event.get("streamed") and had_visible_stream:
+                return
             if text:
                 print(f"{prefix} preview: {text}")
             return
@@ -840,6 +846,40 @@ class CodeProgressRenderer:
             if stop_reason != "completed":
                 prefix = self._stream_prefix("model", event)
                 print(f"{prefix} stop_reason={stop_reason}")
+
+
+def _event_timestamp_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _emit_code_event(event_callback, event: dict[str, Any]) -> None:
+    if event_callback is None:
+        return
+    event_callback(dict(event))
+
+
+class CodeRunEventLogger:
+    """Persist the live DAN Code event stream for one bounded coding run."""
+
+    def __init__(self, *, path: Path) -> None:
+        self.path = path.resolve()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._handle = self.path.open("a", encoding="utf-8")
+        self._sequence = 0
+
+    def emit(self, event: dict[str, Any]) -> None:
+        self._sequence += 1
+        payload = {
+            "timestamp": _event_timestamp_iso(),
+            "sequence": self._sequence,
+            **dict(event),
+        }
+        self._handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str))
+        self._handle.write("\n")
+        self._handle.flush()
+
+    def close(self) -> None:
+        self._handle.close()
 
 
 def _effective_live_tool_ids(
@@ -1086,6 +1126,9 @@ def _print_report(report: dict[str, object]) -> None:
     print(f"Run ID: {report['trace_id']}")
     print(f"Task ID: {report['task_id']}")
     print(f"Objective: {report['objective']}")
+    event_log_path = str(report.get("event_log_path") or "").strip()
+    if event_log_path:
+        print(f"Event Log: {event_log_path}")
     if report.get("candidate_id") is not None:
         print(f"Candidate: {report['candidate_id']}")
     elif str(report.get("status") or "").strip() != "completed":
@@ -1251,13 +1294,13 @@ def _store_orchestrator_session(
 
 
 def _emit_assistant_message(
-    progress_renderer: CodeProgressRenderer,
+    event_callback,
     message: str,
 ) -> None:
     text = _assistant_text(message)
     if not text:
         return
-    progress_renderer({"event": "assistant.message", "message": text})
+    _emit_code_event(event_callback, {"event": "assistant.message", "message": text})
 
 
 async def _run_orchestrated_turn(
@@ -1282,6 +1325,7 @@ async def _run_orchestrated_turn(
     assistant_messages: list[str] = []
     reports: list[CodingOrganismReport] = []
     question: str | None = None
+    current_event_callback = progress_renderer
     session.record_message(role="user", text=objective)
 
     orchestrator_session = _load_orchestrator_session(
@@ -1314,7 +1358,7 @@ async def _run_orchestrated_turn(
             return
         assistant_messages.append(cleaned)
         session.record_message(role="assistant", text=cleaned, kind=kind)
-        _emit_assistant_message(progress_renderer, cleaned)
+        _emit_assistant_message(current_event_callback, cleaned)
 
     if decision.public_response:
         _record_assistant(decision.public_response)
@@ -1354,72 +1398,154 @@ async def _run_orchestrated_turn(
 
     for continuation_index in range(max_supervision_loops):
         report_turn_number = base_turn_number + len(reports)
-        report = await _run_coding_turn(
-            args=args,
-            llm_provider=llm_provider,
-            workspace_root=workspace_root,
-            model=model,
-            objective=next_objective,
-            task_id=f"{args.task_id}:{report_turn_number}",
-            research_findings=next_research_findings,
-            evidence_summaries=[],
-            workdir=_build_run_workdir(run_root, turn_number=report_turn_number),
-            acceptance_criteria=effective_acceptance_criteria,
-            tool_ids=tool_ids,
-            max_tool_rounds=max_tool_rounds,
-            max_tool_calls=max_tool_calls,
-            approval_mode=approval_mode,
-            thinking_mode=thinking_mode,
-            repair_brief=next_repair_brief,
-            stream_model_trace=bool(args.show_model_trace),
-            approval_callback=approval_callback,
-            event_callback=progress_renderer,
-        )
-        reports.append(report)
+        task_id = f"{args.task_id}:{report_turn_number}"
+        workdir = _build_run_workdir(run_root, turn_number=report_turn_number)
+        event_logger = CodeRunEventLogger(path=workdir / "events.jsonl")
+        run_completed = False
 
-        review, orchestrator_session = await controller.review_coding_result(
-            session=orchestrator_session,
-            objective=next_objective,
-            report_summary=_report_context(report),
-            context=_conversation_context(
-                session=session,
+        def _run_event_callback(event: dict[str, Any]) -> None:
+            _emit_code_event(progress_renderer, event)
+            event_logger.emit(event)
+
+        current_event_callback = _run_event_callback
+        try:
+            event_logger.emit(
+                {
+                    "event": "run.log.started",
+                    "task_id": task_id,
+                    "turn_number": report_turn_number,
+                    "objective": next_objective,
+                    "workdir": str(workdir),
+                    "repair_brief": next_repair_brief,
+                    "acceptance_criteria": list(effective_acceptance_criteria),
+                }
+            )
+            report = await _run_coding_turn(
+                args=args,
+                llm_provider=llm_provider,
                 workspace_root=workspace_root,
                 model=model,
-                thinking_mode=thinking_mode,
-                tool_ids=tool_ids,
-                approval_mode=approval_mode,
+                objective=next_objective,
+                task_id=task_id,
+                research_findings=next_research_findings,
+                evidence_summaries=[],
+                workdir=workdir,
                 acceptance_criteria=effective_acceptance_criteria,
-                additional_reports=reports,
-            ),
-        )
-        _store_orchestrator_session(
-            session=session,
-            controller=controller,
-            durable_session=orchestrator_session,
-        )
-        if review.public_response:
-            _record_assistant(review.public_response)
-
-        if review.action == "continue" and continuation_index + 1 < max_supervision_loops:
-            next_objective = _assistant_text(review.next_objective or next_objective)
-            next_repair_brief = _assistant_text(review.repair_brief or report.error or next_repair_brief)
-            next_research_findings = _dedupe(
-                [*next_research_findings, _report_finding(report), *list(review.research_findings)]
+                tool_ids=tool_ids,
+                max_tool_rounds=max_tool_rounds,
+                max_tool_calls=max_tool_calls,
+                approval_mode=approval_mode,
+                thinking_mode=thinking_mode,
+                repair_brief=next_repair_brief,
+                stream_model_trace=bool(args.show_model_trace),
+                approval_callback=approval_callback,
+                event_callback=_run_event_callback,
             )
-            continue
+            report.event_log_path = str(event_logger.path)
+            reports.append(report)
 
-        if review.action == "clarify":
-            question = _assistant_text(review.clarifying_question or review.public_response)
-            session.pending_clarification = question or None
-            if question and question not in assistant_messages:
-                _record_assistant(question, kind="clarification")
-            return CodeConversationOutcome(
-                status="clarify",
-                assistant_messages=assistant_messages,
-                question=question,
-                reports=reports,
+            review, orchestrator_session = await controller.review_coding_result(
+                session=orchestrator_session,
+                objective=next_objective,
+                report_summary=_report_context(report),
+                context=_conversation_context(
+                    session=session,
+                    workspace_root=workspace_root,
+                    model=model,
+                    thinking_mode=thinking_mode,
+                    tool_ids=tool_ids,
+                    approval_mode=approval_mode,
+                    acceptance_criteria=effective_acceptance_criteria,
+                    additional_reports=reports,
+                ),
             )
-        break
+            _store_orchestrator_session(
+                session=session,
+                controller=controller,
+                durable_session=orchestrator_session,
+            )
+            if review.public_response:
+                _record_assistant(review.public_response)
+
+            if review.action == "continue" and continuation_index + 1 < max_supervision_loops:
+                event_logger.emit(
+                    {
+                        "event": "run.log.completed",
+                        "task_id": task_id,
+                        "trace_id": report.trace_id,
+                        "status": report.status,
+                        "review_action": review.action,
+                        "candidate_id": report.candidate_id,
+                        "event_log_path": report.event_log_path,
+                    }
+                )
+                run_completed = True
+                next_objective = _assistant_text(review.next_objective or next_objective)
+                next_repair_brief = _assistant_text(
+                    review.repair_brief or report.error or next_repair_brief
+                )
+                next_research_findings = _dedupe(
+                    [
+                        *next_research_findings,
+                        _report_finding(report),
+                        *list(review.research_findings),
+                    ]
+                )
+                continue
+
+            if review.action == "clarify":
+                question = _assistant_text(
+                    review.clarifying_question or review.public_response
+                )
+                session.pending_clarification = question or None
+                if question and question not in assistant_messages:
+                    _record_assistant(question, kind="clarification")
+                event_logger.emit(
+                    {
+                        "event": "run.log.completed",
+                        "task_id": task_id,
+                        "trace_id": report.trace_id,
+                        "status": report.status,
+                        "review_action": review.action,
+                        "candidate_id": report.candidate_id,
+                        "question": question,
+                        "event_log_path": report.event_log_path,
+                    }
+                )
+                run_completed = True
+                return CodeConversationOutcome(
+                    status="clarify",
+                    assistant_messages=assistant_messages,
+                    question=question,
+                    reports=reports,
+                )
+            event_logger.emit(
+                {
+                    "event": "run.log.completed",
+                    "task_id": task_id,
+                    "trace_id": report.trace_id,
+                    "status": report.status,
+                    "review_action": review.action,
+                    "candidate_id": report.candidate_id,
+                    "event_log_path": report.event_log_path,
+                }
+            )
+            run_completed = True
+            break
+        except Exception as exc:
+            if not run_completed:
+                event_logger.emit(
+                    {
+                        "event": "run.log.failed",
+                        "task_id": task_id,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                )
+            raise
+        finally:
+            current_event_callback = progress_renderer
+            event_logger.close()
 
     final_status = reports[-1].status if reports else "responded"
     return CodeConversationOutcome(
