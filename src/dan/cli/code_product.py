@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +13,27 @@ from pydantic import BaseModel, Field, field_validator
 
 CODE_PRODUCT_NAME = "DAN Code"
 CODE_PRODUCT_DIRNAME = ".dan-code"
+CODE_PRODUCT_SESSION_FORMAT_VERSION = 2
+
+
+def _compute_runtime_build_id() -> str:
+    digest = hashlib.sha256()
+    digest.update(str(CODE_PRODUCT_SESSION_FORMAT_VERSION).encode("utf-8"))
+    fingerprint_paths = (
+        Path(__file__).resolve(),
+        Path(__file__).with_name("code.py").resolve(),
+        Path(__file__).resolve().parents[1] / "worker" / "organisms" / "coding_conversation.py",
+    )
+    for path in fingerprint_paths:
+        digest.update(str(path).encode("utf-8"))
+        try:
+            digest.update(path.read_bytes())
+        except OSError:
+            digest.update(b"<missing>")
+    return digest.hexdigest()[:12]
+
+
+CODE_PRODUCT_RUNTIME_BUILD_ID = _compute_runtime_build_id()
 
 
 def _utcnow_iso() -> str:
@@ -69,6 +91,7 @@ class CodingOrganismReport(BaseModel):
     objective: str
     candidate_id: str | None = None
     change_summary: str = ""
+    event_log_path: str | None = None
     target_files: list[str] = Field(default_factory=list)
     test_plan: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
@@ -83,6 +106,16 @@ class CodingOrganismReport(BaseModel):
     def _normalize_list_fields(cls, value: Any) -> list[str]:
         return _normalize_text_list(value)
 
+    def has_material_output(self) -> bool:
+        return bool(
+            self.candidate_id
+            or self.target_files
+            or " ".join(self.change_summary.split())
+        )
+
+    def is_failed_no_output(self) -> bool:
+        return self.status.strip().lower() != "completed" and not self.has_material_output()
+
 
 class CodingConversationEntry(BaseModel):
     """One durable user/assistant exchange in the DAN Code shell."""
@@ -96,6 +129,8 @@ class CodingConversationEntry(BaseModel):
 class CodingCliSession(BaseModel):
     """Persistent session state for the product shell."""
 
+    session_format_version: int = Field(default=CODE_PRODUCT_SESSION_FORMAT_VERSION)
+    runtime_build_id: str = Field(default=CODE_PRODUCT_RUNTIME_BUILD_ID)
     session_id: str = Field(default_factory=lambda: f"coding-session-{uuid4().hex[:8]}")
     workspace_root: str = ""
     created_at: str = Field(default_factory=_utcnow_iso)
@@ -111,9 +146,19 @@ class CodingCliSession(BaseModel):
     def task_id_for(self, base_task_id: str) -> str:
         return f"{base_task_id}:{self.next_turn_number()}"
 
+    def context_reports(self, *, limit: int = 4) -> list[CodingOrganismReport]:
+        selected: list[CodingOrganismReport] = []
+        for report in reversed(self.turns):
+            if report.is_failed_no_output():
+                continue
+            selected.append(report)
+            if len(selected) >= limit:
+                break
+        return list(reversed(selected))
+
     def carry_forward_findings(self, *, limit: int = 3) -> list[str]:
         findings: list[str] = []
-        for report in self.turns[-limit:]:
+        for report in self.context_reports(limit=limit):
             target_files = ", ".join(report.target_files) or "(none)"
             test_plan = "; ".join(report.test_plan) or "(none)"
             findings.append(
@@ -125,6 +170,20 @@ class CodingCliSession(BaseModel):
                 f"tests={test_plan}"
             )
         return findings
+
+    def refresh_for_current_runtime(self) -> bool:
+        if (
+            self.session_format_version == CODE_PRODUCT_SESSION_FORMAT_VERSION
+            and self.runtime_build_id == CODE_PRODUCT_RUNTIME_BUILD_ID
+        ):
+            return False
+        self.session_format_version = CODE_PRODUCT_SESSION_FORMAT_VERSION
+        self.runtime_build_id = CODE_PRODUCT_RUNTIME_BUILD_ID
+        self.conversation = []
+        self.pending_clarification = None
+        self.orchestrator_state = {}
+        self.updated_at = _utcnow_iso()
+        return True
 
     def record_turn(self, report: CodingOrganismReport) -> None:
         self.turns.append(report)
@@ -210,7 +269,23 @@ def load_code_product_session(paths: CodeProductPaths) -> CodingCliSession | Non
 
 def save_code_product_session(paths: CodeProductPaths, session: CodingCliSession) -> None:
     Path(paths.root).mkdir(parents=True, exist_ok=True)
-    Path(paths.session).write_text(session.model_dump_json(indent=2), encoding="utf-8")
+    session.session_format_version = CODE_PRODUCT_SESSION_FORMAT_VERSION
+    session.runtime_build_id = CODE_PRODUCT_RUNTIME_BUILD_ID
+    payload = session.model_dump(
+        mode="json",
+        exclude={
+            "turns": {
+                "__all__": {
+                    "outputs",
+                    "trace_rows",
+                }
+            }
+        },
+    )
+    Path(paths.session).write_text(
+        json.dumps(payload, indent=2),
+        encoding="utf-8",
+    )
 
 
 def append_code_product_transcript(
@@ -230,6 +305,7 @@ def append_code_product_transcript(
         "objective": report.objective,
         "status": report.status,
         "candidate_id": report.candidate_id,
+        "event_log_path": report.event_log_path,
         "target_files": list(report.target_files),
         "test_plan": list(report.test_plan),
         "risks": list(report.risks),

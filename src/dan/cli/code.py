@@ -1197,9 +1197,13 @@ def _conversation_context(
         approval_mode=approval_mode,
         additional_reports=additional_reports,
     )
+    session_reports = session.context_reports(limit=4)
+    additional_context_reports = [
+        report for report in list(additional_reports or []) if not report.is_failed_no_output()
+    ]
     recent_reports = [
         _report_context(report)
-        for report in [*session.turns[-4:], *(additional_reports or [])]
+        for report in [*session_reports, *additional_context_reports]
     ]
     return CodingConversationContext(
         workspace_root=str(workspace_root),
@@ -1606,8 +1610,14 @@ def _load_or_create_session(
     if persist_session and not new_session:
         loaded = load_code_product_session(product_paths)
         if loaded is not None:
+            should_persist = False
             if not loaded.workspace_root:
                 loaded.workspace_root = str(workspace_root)
+                should_persist = True
+            if loaded.refresh_for_current_runtime():
+                should_persist = True
+            if should_persist:
+                save_code_product_session(product_paths, loaded)
             return loaded
     return CodingCliSession(workspace_root=str(workspace_root))
 
