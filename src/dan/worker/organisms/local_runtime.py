@@ -298,6 +298,12 @@ class ToolLoopCompletionProvider:
         accumulated = ""
         usage: dict[str, Any] | None = None
         emitted_delta = False
+        saw_stream_output = False
+        finish_reason = ""
+        tool_calls: list[dict[str, Any]] | None = None
+        raw_assistant_message: dict[str, Any] | None = None
+        streamed_model = model
+        provider_metadata: dict[str, Any] | None = None
         self._emit_event(
             "model.stream.started",
             model=model,
@@ -312,6 +318,7 @@ class ToolLoopCompletionProvider:
                 max_tokens=request.max_tokens,
                 **provider_kwargs,
             ):
+                saw_stream_output = True
                 delta = str(getattr(chunk, "delta", "") or "")
                 accumulated = str(
                     getattr(chunk, "accumulated", accumulated + delta) or accumulated + delta
@@ -319,6 +326,21 @@ class ToolLoopCompletionProvider:
                 usage_candidate = getattr(chunk, "usage", None)
                 if usage_candidate:
                     usage = dict(usage_candidate)
+                chunk_model = str(getattr(chunk, "model", "") or "").strip()
+                if chunk_model:
+                    streamed_model = chunk_model
+                chunk_finish_reason = str(getattr(chunk, "finish_reason", "") or "").strip()
+                if chunk_finish_reason:
+                    finish_reason = chunk_finish_reason
+                chunk_tool_calls = getattr(chunk, "tool_calls", None)
+                if chunk_tool_calls is not None:
+                    tool_calls = list(chunk_tool_calls)
+                chunk_raw_message = getattr(chunk, "raw_assistant_message", None)
+                if isinstance(chunk_raw_message, dict):
+                    raw_assistant_message = dict(chunk_raw_message)
+                chunk_provider_metadata = getattr(chunk, "provider_metadata", None)
+                if isinstance(chunk_provider_metadata, dict):
+                    provider_metadata = dict(chunk_provider_metadata)
                 if delta:
                     emitted_delta = True
                     self._emit_event(
@@ -336,19 +358,26 @@ class ToolLoopCompletionProvider:
                 usage=usage,
                 worker_id=worker_id,
             )
+            if raw_assistant_message is None:
+                raw_assistant_message = {
+                    "role": "assistant",
+                    "content": accumulated if accumulated.strip() else (None if tool_calls else accumulated),
+                }
+                if tool_calls:
+                    raw_assistant_message["tool_calls"] = list(tool_calls)
+            merged_provider_metadata = dict(provider_metadata or {})
+            merged_provider_metadata["streamed_response"] = True
             return CompletionResult(
                 text=accumulated,
                 usage=usage,
-                model=model,
-                finish_reason="stream",
-                raw_assistant_message={
-                    "role": "assistant",
-                    "content": accumulated or None,
-                },
-                provider_metadata={"streamed_response": True},
+                model=streamed_model or model,
+                tool_calls=tool_calls,
+                finish_reason=finish_reason or "stream",
+                raw_assistant_message=raw_assistant_message,
+                provider_metadata=merged_provider_metadata,
             )
         except Exception:
-            if emitted_delta:
+            if emitted_delta or saw_stream_output:
                 raise
             return await self._provider.complete(
                 messages=messages,
