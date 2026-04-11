@@ -145,8 +145,8 @@ It uses `.env` / environment settings by default for the provider and model, and
 
 - `config.json` — workspace-local DAN Code defaults
 - `session.json` — resumable session state
-- `transcript.jsonl` — compact run history
-- `runs/` — per-turn evidence notes
+- `transcript.jsonl` — compact run history with `event_log_path` pointers
+- `runs/` — per-turn evidence notes plus `events.jsonl` step logs
 
 `dan code` runs directly on a dedicated coding organism built from the same universal worker membrane. Its runtime shape is explicit:
 
@@ -169,6 +169,12 @@ Role-level tool exposure is also explicit:
 - validator: read-oriented local tools for inspection and focused validation
 
 Each real coding turn now carries standard runtime context automatically, including workspace root, current working directory, current date/time/timezone, active model, enabled tool IDs, and approval mode. That keeps the model from wasting early tool calls on facts the runtime already knows.
+
+Each bounded coding run now also writes `.dan-code/runs/turn-XX/events.jsonl`, a timestamped JSONL stream of the emitted run events. That file is the durable step-by-step audit trail for later analysis, and both the final CLI report and `transcript.jsonl` keep the matching `event_log_path`.
+
+For the chat-like control layer above the coding organism, `dan code` now also uses a bounded hedge on real orchestrator/review LLM decisions: if one no-tool controller call stays slow, a second provider call can launch after a short delay, and the first response that already satisfies the structured decision schema wins. This keeps the hedge above the agents rather than inside the write-heavy coding organism.
+
+The default hedge stays conservative: up to `2` controller attempts with a `2.0s` stagger. You can override those controls with `DAN_CODE_CONTROL_HEDGE_MAX_ATTEMPTS` and `DAN_CODE_CONTROL_HEDGE_DELAY_SECONDS` when you want to test more or less aggressive control-plane speculation.
 
 Provider thinking mode is also configurable per workspace or per run:
 
