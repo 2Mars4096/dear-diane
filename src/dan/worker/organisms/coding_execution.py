@@ -38,6 +38,7 @@ from dan.worker.signaling import (
     CellBudgetLimits,
     CellHandoffPacket,
     CompletionSignal,
+    ContinuationHooks,
     EvidenceRef,
     HandoffTask,
     SignalTrace,
@@ -381,6 +382,23 @@ def _record(
     )
 
 
+def _child_hooks(parent_packet: CellHandoffPacket) -> ContinuationHooks:
+    hooks = parent_packet.continuation_hooks.model_copy(deep=True)
+    hooks.reply_to_cell_id = parent_packet.recipient.cell_id
+    hooks.resume_from_packet_id = parent_packet.packet_id
+    return hooks
+
+
+def _child_authority_limits(
+    parent_packet: CellHandoffPacket,
+    *,
+    authority: WorkerAuthority,
+) -> CellAuthorityLimits:
+    payload = parent_packet.authority_limits.model_dump(mode="json", exclude_none=True)
+    payload["acting_authority"] = authority
+    return CellAuthorityLimits.model_validate(payload)
+
+
 def _child_packet(
     *,
     sender: CellAddress,
@@ -419,12 +437,18 @@ def _child_packet(
         ),
         evidence_refs=[ref.model_copy(deep=True) for ref in evidence_refs],
         output_contract=output_contract.model_copy(deep=True),
-        budget_limits=CellBudgetLimits(max_completion_rounds=1),
-        authority_limits=CellAuthorityLimits(
-            acting_authority=authority,
-            max_spawned_cells=0,
+        budget_limits=parent_packet.budget_limits.model_copy(deep=True),
+        authority_limits=_child_authority_limits(parent_packet, authority=authority),
+        continuation=(
+            parent_packet.continuation.model_copy(deep=True)
+            if parent_packet.continuation is not None
+            else None
         ),
-        metadata=dict(metadata),
+        continuation_hooks=_child_hooks(parent_packet),
+        metadata={
+            **dict(parent_packet.metadata),
+            **dict(metadata),
+        },
     )
 
 
