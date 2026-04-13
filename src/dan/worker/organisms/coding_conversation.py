@@ -168,122 +168,6 @@ def _looks_like_continuation_request(text: str) -> bool:
     return any(cue in cleaned for cue in cues)
 
 
-def _looks_like_resume_request(text: str) -> bool:
-    cleaned = _clean_text(text).lower()
-    if not cleaned:
-        return False
-    cues = (
-        "continue",
-        "retry",
-        "try again",
-        "one more attempt",
-        "another attempt",
-        "resume",
-        "go ahead",
-        "proceed",
-        "finish it",
-        "complete it",
-        "keep working",
-    )
-    return any(cue in cleaned for cue in cues)
-
-
-def _contains_code_reference(text: str) -> bool:
-    cleaned = _clean_text(text).lower()
-    if not cleaned:
-        return False
-    if "/" in cleaned or "\\" in cleaned:
-        return True
-    if any(
-        ext in cleaned
-        for ext in (
-            ".py",
-            ".ts",
-            ".tsx",
-            ".js",
-            ".jsx",
-            ".css",
-            ".html",
-            ".md",
-            ".json",
-            ".yaml",
-            ".yml",
-            ".sh",
-        )
-    ):
-        return True
-    code_cues = (
-        " file ",
-        " files ",
-        " test ",
-        " tests ",
-        " bug ",
-        " bugs ",
-        " repo ",
-        " code ",
-        " function ",
-        " class ",
-        " module ",
-        " component ",
-        " page ",
-        " website ",
-        " navbar ",
-        " validator ",
-        " runtime ",
-        " cli ",
-        " orchestrator ",
-        " agent ",
-    )
-    padded = f" {cleaned} "
-    return any(cue in padded for cue in code_cues)
-
-
-def _looks_like_explicit_coding_request(
-    text: str,
-    *,
-    context: "CodingConversationContext",
-) -> bool:
-    cleaned = _clean_text(text).lower()
-    if not cleaned:
-        return False
-    if _looks_like_user_question(cleaned):
-        return False
-    meta_cues = (
-        "current status",
-        "latest status",
-        "show me the results",
-        "tell me the results",
-        "workspace root",
-        "working directory",
-        "what happened",
-    )
-    if any(cue in cleaned for cue in meta_cues):
-        return False
-    latest_report = _latest_resumable_report_summary(context)
-    if _looks_like_resume_request(cleaned):
-        return latest_report is not None and bool(_clean_text(latest_report.objective))
-    action_cues = (
-        "fix",
-        "edit",
-        "patch",
-        "update",
-        "change",
-        "implement",
-        "add",
-        "remove",
-        "rename",
-        "refactor",
-        "debug",
-        "repair",
-        "optimize",
-        "speed up",
-        "clean up",
-    )
-    if not any(cue in cleaned for cue in action_cues):
-        return False
-    return _contains_code_reference(cleaned)
-
-
 def _latest_resumable_report_summary(
     context: "CodingConversationContext",
 ) -> "CodingConversationReportSummary | None":
@@ -316,52 +200,6 @@ def _continue_review_response(report_summary: "CodingConversationReportSummary")
     return (
         "This bounded pass did not produce a concrete validated result yet, "
         "so I need another bounded repair pass."
-    )
-
-
-def _fast_path_turn_decision(
-    *,
-    user_message: str,
-    pending_clarification: str | None,
-    context: "CodingConversationContext",
-) -> "CodingConversationTurnDecision | None":
-    if pending_clarification:
-        return None
-    if not _looks_like_explicit_coding_request(user_message, context=context):
-        return None
-    latest_report = _latest_resumable_report_summary(context)
-    if latest_report is not None and _looks_like_resume_request(user_message):
-        objective = _clean_text(latest_report.objective)
-        if objective:
-            return CodingConversationTurnDecision(
-                action="code",
-                public_response=(
-                    "I’ll continue from the latest coding objective and start another "
-                    "bounded pass."
-                ),
-                coding_objective=objective,
-                repair_brief=_clean_text(latest_report.error),
-            )
-    objective = _clean_text(user_message)
-    if not objective:
-        return None
-    return CodingConversationTurnDecision(
-        action="code",
-        public_response="I’m starting one bounded coding run for this request.",
-        coding_objective=objective,
-    )
-
-
-def _fast_path_review_decision(
-    *,
-    objective: str,
-    report_summary: "CodingConversationReportSummary",
-) -> "CodingConversationReviewDecision | None":
-    if _review_requires_more_work(objective, report_summary):
-        return None
-    return CodingConversationReviewDecision(
-        action="done",
-        public_response="This bounded coding pass is done.",
     )
 
 
@@ -1172,13 +1010,6 @@ class CodingConversationController:
         durable_session = session or self.create_session(
             metadata={"surface": "dan-code", "kind": "conversation"}
         )
-        fast_path = _fast_path_turn_decision(
-            user_message=user_message,
-            pending_clarification=pending_clarification,
-            context=context,
-        )
-        if fast_path is not None:
-            return fast_path, durable_session
         request = ExecutionRequest.from_harness(
             task=(
                 "Handle the next DAN Code user turn. Decide whether to respond "
@@ -1217,12 +1048,6 @@ class CodingConversationController:
         report_summary: CodingConversationReportSummary,
         context: CodingConversationContext,
     ) -> tuple[CodingConversationReviewDecision, DurableAgentSessionState]:
-        fast_path = _fast_path_review_decision(
-            objective=objective,
-            report_summary=report_summary,
-        )
-        if fast_path is not None:
-            return fast_path, session
         request = ExecutionRequest.from_harness(
             task=(
                 "Review the bounded coding run. Decide whether to stop, continue with "
