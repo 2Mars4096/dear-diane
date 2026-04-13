@@ -855,6 +855,7 @@ async def execute_coding_organism(
     best_attempt: int | None = None
     best_aggregation: OrganExecution | None = None
     best_validation: OrganExecution | None = None
+    best_pass_threshold: float | None = None
 
     prior_packet: CellHandoffPacket | None = None
     prior_signal_id: str | None = None
@@ -1301,6 +1302,7 @@ async def execute_coding_organism(
             best_attempt = attempt
             best_aggregation = aggregation_execution
             best_validation = validation_execution
+            best_pass_threshold = float(plan.pass_threshold)
 
         passed = validation_passed
         repair_brief = str(validation_execution.result.outputs.get("repair_brief") or "")
@@ -1312,6 +1314,7 @@ async def execute_coding_organism(
                 "candidate_id": aggregation_execution.result.outputs.get("candidate_id"),
                 "score": score,
                 "passed": passed,
+                "pass_threshold": float(plan.pass_threshold),
                 "repair_brief": repair_brief,
             }
         )
@@ -1353,6 +1356,8 @@ async def execute_coding_organism(
     final_output: dict[str, Any] = {}
     status: Literal["completed", "failed"] = "failed"
     error: str | None = None
+    selected_score = best_score if best_score >= 0 else None
+    selected_pass_threshold = best_pass_threshold
     fallback_candidate_output = _salvage_candidate_output(
         best_aggregation if best_aggregation is not None else (aggregation_executions[-1] if aggregation_executions else None)
     )
@@ -1363,8 +1368,18 @@ async def execute_coding_organism(
             "validation_report": dict(best_validation.result.outputs),
             "repair_history": list(repair_history),
         }
-        if bool(best_validation.result.outputs.get("passed")):
+        if (
+            bool(best_validation.result.outputs.get("passed"))
+            and selected_score is not None
+            and selected_pass_threshold is not None
+            and selected_score >= selected_pass_threshold
+        ):
             status = "completed"
+        elif bool(best_validation.result.outputs.get("passed")):
+            error = (
+                "The best candidate passed the validator verdict but stayed below the "
+                f"required pass threshold ({selected_score:.2f} < {selected_pass_threshold:.2f})."
+            )
         else:
             error = "The best candidate still failed validation."
     else:
@@ -1439,6 +1454,7 @@ async def execute_coding_organism(
             "aggregation_attempts": len(aggregation_executions),
             "validation_attempts": len(validation_executions),
             "coding_flow": organism.metadata.get("coding_flow"),
+            "selected_pass_threshold": selected_pass_threshold,
         },
     )
     _emit(
