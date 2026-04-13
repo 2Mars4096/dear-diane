@@ -232,7 +232,9 @@ If a bounded coding run fails after producing real files or a partial candidate,
 
 The same shared facts packet also drives orchestrator-owned status/workspace answers. Questions like current status or current working directory now use the effective DAN Code workspace/tool context instead of falling back to generic assistant copy, regex shortcuts, or the host shell `PWD`.
 
-For speed, the durable control layer now also skips two low-signal model hops in common coding flows: plainly-direct imperative coding/edit requests can jump straight into one bounded coding run without paying an extra intent-classification turn first, and clearly successful completed bounded passes can stop without paying an extra review-model turn.
+The control plane now stays on one direct universal-agent path even for explicit coding turns and completed post-run reviews. Those decisions still go through the same durable orchestrator mailbox instead of controller-local fast paths, and `coding_conversation.py` plus `coding_execution.py` now share one `coding_orchestrator` worker definition so the shell stays a thin connector over the same worker substrate it drives.
+
+The bounded coding organism now also preserves the parent handoff membrane when it spawns child coding/aggregation/validation stages. Budget, authority, continuation, and reply-hook state stay on one contract, and a bounded run only ends `completed` when the selected candidate both passes validation and meets the selected `pass_threshold`.
 
 Those orchestrator turns also intentionally avoid reusing the worker-core continuation from the prior coding turn. The durable shell already carries explicit recent conversation plus recent report context, so meta questions like current status or latest results do not need latent acquisition state from the previous coding task.
 
