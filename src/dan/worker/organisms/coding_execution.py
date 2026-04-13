@@ -153,6 +153,33 @@ def _result_failure_message(stage: str, *, error: str | None, metadata: dict[str
     return f"{stage.title()} failed: {base} ({preview})"
 
 
+def build_coding_orchestrator_worker(
+    *,
+    worker_id: str,
+    model: str | None,
+) -> WorkerDefinition:
+    """Shared DAN Code orchestrator worker on the universal-agent substrate."""
+
+    return WorkerDefinition(
+        id=worker_id,
+        role="coding_orchestrator",
+        instruction=(
+            "You are the coding orchestrator for DAN Code on top of the universal worker substrate. "
+            "Treat the user as another agent in the system and respond directly, concretely, and briefly. "
+            "Use the current task plus output contract to decide whether you are answering a durable "
+            "conversation turn, reviewing the last bounded coding run, or planning the next bounded "
+            "coding attempt. Only launch coding when the request is a direct actionable repo or "
+            "implementation task. For social chatter, acknowledgements, meta discussion, or ambiguous "
+            "turns, respond conversationally or ask one clarifying question. When planning a coding "
+            "attempt, keep the pool small, purposeful, bounded, and non-overlapping; default to one "
+            "worker unless multiple distinct paths are materially useful. When reviewing a bounded run, "
+            "treat validator output as evidence rather than final authority, and do not stop when the run "
+            "failed or produced no concrete material output."
+        ),
+        model=model,
+    )
+
+
 def _coerce_worker_count(value: Any) -> int | None:
     try:
         return int(value)
@@ -731,17 +758,8 @@ def coding_execution_organism(
         organism_id=organism_id,
         base_id=base_id,
         orchestrator_address=orchestrator_address,
-        orchestrator_worker=WorkerDefinition(
-            id=orchestrator_address.cell_id,
-            role="coding_orchestrator",
-            instruction=(
-                "Coordinate the coding organism. Treat the user turn as an agent handoff: first analyze user intent "
-                "and write one concise formal public_response that states what you understand and what you will do next, "
-                "then choose worker_count, distinct worker briefs, aggregation focus, and validator focus. "
-                "Keep the pool small, purposeful, bounded, and non-overlapping so workers do not repeat the same discovery. "
-                "Default to 1 worker unless multiple genuinely distinct paths are necessary. If you want more than 1 worker, "
-                "provide the same number of distinct non-overlapping briefs."
-            ),
+        orchestrator_worker=build_coding_orchestrator_worker(
+            worker_id=orchestrator_address.cell_id,
             model=model,
         ),
         worker_model=model,
@@ -1427,6 +1445,7 @@ __all__ = [
     "CodingOrganismResult",
     "CodingOrchestratorPlan",
     "CodingTask",
+    "build_coding_orchestrator_worker",
     "coding_execution_organism",
     "execute_coding_organism",
 ]

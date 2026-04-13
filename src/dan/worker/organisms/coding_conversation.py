@@ -17,11 +17,11 @@ from dan.worker.core.contracts import (
     OutputContract,
 )
 from dan.worker.core.interfaces import CompletionRequest, CompletionResponse
-from dan.worker.core.model import WorkerDefinition
 from dan.worker.core.structured_output import (
     has_structured_output_schema,
     validate_structured_output,
 )
+from dan.worker.organisms.coding_execution import build_coding_orchestrator_worker
 from dan.worker.runner import DurableAgentRunner, DurableAgentSessionState
 from dan.worker.structured_payload import parse_jsonish_payload
 
@@ -899,33 +899,6 @@ def _conversation_review_contract() -> OutputContract:
     )
 
 
-def _orchestrator_worker(model: str) -> WorkerDefinition:
-    return WorkerDefinition(
-        id="dan-code.orchestrator",
-        role="coding_orchestrator",
-        instruction=(
-            "You are the durable orchestrator for DAN Code. Treat the user as another "
-            "agent in the system and respond directly, concretely, and briefly. Decide "
-            "whether to answer conversationally, ask one clarifying question, or launch "
-            "one bounded coding run. Only launch coding when the user has given a direct, "
-            "actionable repo or implementation task. For social chatter, acknowledgements, "
-            "meta discussion, or ambiguous non-task turns, respond conversationally or ask "
-            "for clarification instead of starting the worker pool. Use the provided "
-            "runtime/session facts and recent reports when the user asks about status, "
-            "progress, what's next, workspace, current working directory, latest results, "
-            "or what happened in the last run. Those turns should normally stay in respond "
-            "mode rather than launch coding. Resolve references against recent conversation and report context "
-            "before coding; if a request still depends on an unresolved prior discussion, "
-            "ask for clarification. If you ask the user to choose between next steps or give "
-            "missing information, set action=clarify and put that concrete question in "
-            "clarifying_question. When reviewing coding results, the "
-            "validator is evidence only; you decide whether to continue, clarify, or stop. "
-            "A build-style task with no concrete output is not done."
-        ),
-        model=model,
-    )
-
-
 def _fallback_turn_decision(
     *,
     user_message: str,
@@ -1155,7 +1128,10 @@ class CodingConversationController:
         hedge_delay_seconds: float | None = None,
         event_callback=None,
     ) -> None:
-        self._worker = _orchestrator_worker(str(model))
+        self._worker = build_coding_orchestrator_worker(
+            worker_id="dan-code.orchestrator",
+            model=str(model),
+        )
         self._runner = DurableAgentRunner(
             completion_provider=ProviderCompletionAdapter(
                 provider=provider,
