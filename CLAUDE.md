@@ -4,7 +4,7 @@ This file provides persistent instructions for Claude Code when working on this 
 
 ## Project Tracking Documents
 
-All tracking docs live in `docs/`. Detailed plans live in `docs/plans/`.
+All tracking docs live in `docs/`. Standard implementation plans live in `docs/plans/`, and specialized plan tracks may live in sibling folders under `docs/` (currently `UI-plans/`, `benchmark-plans/`, `live-test-plans/`, and `search-infra-plans/`).
 
 ### Document Inventory
 
@@ -12,6 +12,8 @@ All tracking docs live in `docs/`. Detailed plans live in `docs/plans/`.
 |------|---------|--------------|----------------|
 | `docs/todo.md` | High-level task list grouped by phase, links to plan files | Start of session to pick up work | After completing or discovering tasks |
 | `docs/plans/N-name.md` | Detailed breakdown of a buildable unit with nested sub-tasks | When working on that plan | Check off sub-tasks as you complete them |
+| `docs/live-test-plans/N-name.md` | Dedicated live-test plans for DAN product capability batteries | When working on live/manual evaluation tracks | Check off sub-tasks as you complete them |
+| `docs/search-infra-plans/N-name.md` | Dedicated plans for the separately named Beacon Search infrastructure track | When working on search-infrastructure extraction or rollout | Check off sub-tasks as you complete them |
 | `docs/changelog.md` | Log of completed work, **latest first** (descending order) | Before starting work (to avoid re-doing) | After every meaningful change — end of session at latest |
 | `docs/architecture.md` | Tech stack, directory layout, conventions, patterns | Before writing any code | When adding new modules, changing patterns, or introducing dependencies |
 | `docs/bugs.md` | Known issues, failed approaches, workarounds | Before debugging or proposing solutions | When discovering bugs or when an approach fails |
@@ -22,7 +24,7 @@ All tracking docs live in `docs/`. Detailed plans live in `docs/plans/`.
 ### Session Start Protocol
 
 1. Read `docs/todo.md` — identify what to work on and which plan is active
-2. Read the active plan file in `docs/plans/` — get detailed sub-tasks for current work
+2. Read the active plan file in its plan folder (`docs/plans/`, `docs/UI-plans/`, `docs/benchmark-plans/`, `docs/live-test-plans/`, or `docs/search-infra-plans/`) — get detailed sub-tasks for current work
 3. Read `docs/changelog.md` (last 3–5 entries) — understand recent context
 4. Read `docs/architecture.md` — respect existing patterns before writing code
 5. Read `docs/development-plan.md` only if the task touches roadmap-level decisions
@@ -58,6 +60,8 @@ plans/
 ```
 
 The number prefix encodes the hierarchy. Sub-plans are created just-in-time — only when you're about to start working on that piece. Future items stay as one-liners in `todo.md` marked `(not yet planned)`.
+
+Specialized plan folders under `docs/` may also keep their own local numbering. For example, `docs/search-infra-plans/1-name.md` can coexist with `docs/plans/1-name.md`; numbering is local to each folder, not global across every plan track.
 
 #### Plan file format
 
