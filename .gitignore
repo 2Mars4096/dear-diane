@@ -58,9 +58,6 @@ htmlcov/
 # Local runtime databases
 docjobs.db
 
-# SWE-bench runner scratch artifacts (repo clones + per-instance workspaces)
-tests/eval/results/swebench_repo_cache/
-tests/eval/results/*/workspace/
 
 # LaTeX build artifacts
 *.aux
@@ -205,6 +202,9 @@ tests/test_concierge/.DS_Store
 !/tests/eval/**
 tests/eval/__pycache__/
 tests/eval/.DS_Store
+# SWE-bench runner scratch artifacts (repo clones + per-instance workspaces)
+/tests/eval/results/swebench_repo_cache/
+/tests/eval/results/*/workspace/
 !/tests/test_eval_runner.py
 tests/__pycache__/
 tests/.DS_Store
