@@ -12,6 +12,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -24,6 +25,8 @@ _DEFAULT_PROVIDER_ORDER = ("tavily", "serper", "brave", "duckduckgo")
 _DEFAULT_SEARCH_MULTI_PROVIDER = False
 _PROVIDER_COOLDOWN_SECONDS = 60.0
 _PROVIDER_FAILURE_SKIP_THRESHOLD = 5
+_DEFAULT_GROUNDED_FETCH_TIMEOUT_SECONDS = 15.0
+_DEFAULT_GROUNDED_FETCH_CONCURRENCY = 3
 
 _SEARCH_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _SEARCH_INFLIGHT: dict[str, asyncio.Task[dict[str, Any]]] = {}
@@ -58,7 +61,8 @@ _PROVIDER_HEALTH: dict[str, ProviderHealthRecord] = {}
 TOOL_METADATA = {
     "tool_id": "web_search",
     "description": (
-        "Search the web for current information. Provider cascade: "
+        "Search the web for current information and, when requested, ground the answer "
+        "by fetching the top authoritative result pages. Provider cascade: "
         "Tavily (DAN_TAVILY_API_KEY), Serper/Google (DAN_SERPER_API_KEY), "
         "Brave (DAN_BRAVE_API_KEY), DuckDuckGo (no key, least reliable)."
     ),
@@ -67,7 +71,11 @@ TOOL_METADATA = {
         "properties": {
             "query": {
                 "type": "string",
-                "description": "Search query string.",
+                "description": "Search query string. For direct page retrieval, you may also pass `url` instead.",
+            },
+            "url": {
+                "type": "string",
+                "description": "Optional direct URL to fetch through the same `web_search` surface.",
             },
             "num_results": {
                 "type": "integer",
@@ -77,7 +85,7 @@ TOOL_METADATA = {
             "search_depth": {
                 "type": "string",
                 "enum": ["quick", "thorough"],
-                "description": "Quick = snippet-first; thorough may query multiple providers.",
+                "description": "Quick = snippet-first; thorough also grounds top results by fetching authoritative pages unless `fetch_content=false`.",
             },
             "allowed_domains": {
                 "type": "array",
@@ -89,8 +97,23 @@ TOOL_METADATA = {
                 "items": {"type": "string"},
                 "description": "Optional blocklist of domains to exclude.",
             },
+            "fetch_content": {
+                "type": "boolean",
+                "description": "When true, fetch the top authoritative result pages and include grounded excerpts.",
+                "default": False,
+            },
+            "max_fetched_results": {
+                "type": "integer",
+                "description": "Maximum number of result pages to fetch for grounding.",
+                "default": 2,
+            },
+            "browser_fallback": {
+                "type": "boolean",
+                "description": "If true, allow browser-backed recovery when grounding pages are JS-gated.",
+                "default": False,
+            },
         },
-        "required": ["query"],
+        "required": [],
     },
     "examples": [
         {
@@ -109,10 +132,296 @@ TOOL_METADATA = {
     ],
     "category": "web",
     "returns": (
-        "dict with results (list of {title, url, snippet, provider, result_kind}), "
-        "count, provider/providers, cache_hit, and provider_failures"
+        "dict with results (list of {title, url, snippet, provider, result_kind, "
+        "authority_tier, authority_reason}), optional grounded fetched_results, count, "
+        "provider/providers, cache_hit, and provider_failures"
     ),
 }
+
+_PRIMARY_AUTHORITY_DOMAINS = {
+    "sec.gov",
+    "federalreserve.gov",
+    "treasury.gov",
+    "occ.treas.gov",
+    "ftc.gov",
+    "fda.gov",
+    "justice.gov",
+    "congress.gov",
+    "europa.eu",
+    "ec.europa.eu",
+    "iea.org",
+    "imf.org",
+    "worldbank.org",
+    "iso.org",
+    "ietf.org",
+    "w3.org",
+    "openai.com",
+    "platform.openai.com",
+    "docs.anthropic.com",
+    "developers.google.com",
+    "developer.mozilla.org",
+    "nyse.com",
+    "nasdaq.com",
+    "cmegroup.com",
+    "theice.com",
+    "cboe.com",
+    "lseg.com",
+}
+_LOW_AUTHORITY_AGGREGATOR_DOMAINS = {
+    "finance.yahoo.com",
+    "yahoo.com",
+    "marketwatch.com",
+    "investing.com",
+    "tradingview.com",
+    "etfdb.com",
+    "zacks.com",
+    "benzinga.com",
+    "tipranks.com",
+    "robinhood.com",
+    "stockanalysis.com",
+    "marketscreener.com",
+    "fool.com",
+    "seekingalpha.com",
+    "barchart.com",
+}
+_REFERENCE_AUTHORITY_DOMAINS = {
+    "wikipedia.org",
+    "scholar.google.com",
+    "arxiv.org",
+    "readthedocs.io",
+    "docs.rs",
+    "pypi.org",
+}
+_DOC_HOST_PREFIXES = (
+    "docs.",
+    "developer.",
+    "developers.",
+    "api.",
+    "help.",
+    "support.",
+    "learn.",
+)
+_DOC_PATH_MARKERS = (
+    "/docs",
+    "/documentation",
+    "/reference",
+    "/api",
+    "/manual",
+    "/guide",
+    "/guides",
+    "/help",
+    "/support",
+    "/kb",
+    "/faq",
+)
+_INVESTOR_PATH_MARKERS = (
+    "/investor",
+    "/investors",
+    "/investor-relations",
+    "/shareholder",
+    "/sec-filings",
+)
+
+
+def _normalize_result_domain(url: str) -> str:
+    domain = domain_from_url(url)
+    if not domain:
+        return ""
+    return domain[4:] if domain.startswith("www.") else domain
+
+
+def _domain_matches(domain: str, candidates: set[str]) -> bool:
+    return any(domain == item or domain.endswith(f".{item}") for item in candidates)
+
+
+def _authority_profile(url: str) -> tuple[str, int, str]:
+    raw_url = str(url or "").strip()
+    if not raw_url:
+        return "unknown", 0, "missing URL"
+
+    parsed = urlparse(raw_url)
+    host = str(parsed.netloc or "").strip().lower()
+    domain = _normalize_result_domain(raw_url)
+    path = str(parsed.path or "").strip().lower()
+
+    if domain.endswith(".gov") or domain.endswith(".mil"):
+        return "primary", 400, "government or regulatory domain"
+    if _domain_matches(domain, _PRIMARY_AUTHORITY_DOMAINS):
+        return "primary", 380, "authoritative primary-source domain"
+    if host.startswith(_DOC_HOST_PREFIXES) or any(marker in path for marker in _DOC_PATH_MARKERS):
+        return "primary", 360, "official documentation or reference page"
+    if any(marker in path for marker in _INVESTOR_PATH_MARKERS):
+        return "primary", 340, "issuer investor-relations style page"
+    if domain.endswith(".edu") or _domain_matches(domain, _REFERENCE_AUTHORITY_DOMAINS):
+        return "reference", 260, "reference or academic source"
+    if _domain_matches(domain, _LOW_AUTHORITY_AGGREGATOR_DOMAINS):
+        return "aggregator", 80, "aggregator, quote page, or retail summary source"
+    if domain.endswith(".org"):
+        return "reference", 220, "organizational reference source"
+    if domain:
+        return "standard", 160, "standard web source"
+    return "unknown", 0, "unclassified source"
+
+
+def _annotate_and_rank_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    annotated: list[tuple[int, int, dict[str, Any]]] = []
+    for index, result in enumerate(results):
+        row = copy.deepcopy(result)
+        tier, score, reason = _authority_profile(str(row.get("url", "") or ""))
+        row["authority_tier"] = tier
+        row["authority_reason"] = reason
+        row["authority_score"] = score
+        annotated.append((score, index, row))
+    annotated.sort(key=lambda item: (-item[0], item[1]))
+    ranked = [row for _score, _index, row in annotated]
+    for row in ranked:
+        row.pop("authority_score", None)
+    return ranked
+
+
+def _bounded_excerpt(text: Any, *, limit: int = 1200) -> str:
+    cleaned = " ".join(str(text or "").split()).strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 3].rstrip() + "..."
+
+
+def _positive_int(value: Any, *, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+async def _ground_search_results(
+    results: list[dict[str, Any]],
+    *,
+    max_fetched_results: int,
+    browser_fallback: bool,
+    fetch_timeout_seconds: int,
+    max_concurrency: int,
+) -> tuple[list[dict[str, Any]], int]:
+    if not results:
+        return [], 0
+
+    from dan.tools.web_fetch import web_fetch
+
+    fetch_limit = min(len(results), max(1, min(int(max_fetched_results), 3)))
+    semaphore = asyncio.Semaphore(max(1, int(max_concurrency)))
+
+    async def _fetch_one(index: int, row: dict[str, Any]) -> tuple[int, dict[str, Any], int]:
+        url = str(row.get("url", "") or "").strip()
+        payload: dict[str, Any] = {
+            "title": str(row.get("title", "") or "").strip(),
+            "url": url,
+            "authority_tier": str(row.get("authority_tier", "") or "").strip(),
+            "authority_reason": str(row.get("authority_reason", "") or "").strip(),
+        }
+        if not url:
+            payload.update(
+                {
+                    "ok": False,
+                    "error": "missing URL",
+                }
+            )
+            return index, payload, 0
+        try:
+            async with semaphore:
+                fetched = await web_fetch(
+                    url=url,
+                    timeout=max(1, int(fetch_timeout_seconds)),
+                    browser_fallback=browser_fallback,
+                )
+        except Exception as exc:
+            payload.update(
+                {
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            return index, payload, 0
+        fallback_used = bool(fetched.get("browser_fallback_used"))
+        payload.update(
+            {
+                "ok": True,
+                "fetch_via": str(fetched.get("fetch_via") or ""),
+                "status_code": fetched.get("status_code"),
+                "content_type": str(fetched.get("content_type") or ""),
+                "browser_fallback_used": fallback_used,
+                "excerpt": _bounded_excerpt(fetched.get("content") or fetched.get("text") or ""),
+            }
+        )
+        return index, payload, 1 if fallback_used else 0
+
+    selected_rows = [
+        row
+        for row in results
+        if str(row.get("url", "") or "").strip()
+    ][:fetch_limit]
+    fetches = await asyncio.gather(*[
+        _fetch_one(index, row)
+        for index, row in enumerate(selected_rows)
+    ])
+    fetches.sort(key=lambda item: item[0])
+    grounded = [payload for _index, payload, _fallback_count in fetches]
+    browser_fallback_count = sum(fallback_count for _index, _payload, fallback_count in fetches)
+    return grounded, browser_fallback_count
+
+
+async def _direct_fetch_result(
+    url: str,
+    *,
+    browser_fallback: bool,
+) -> dict[str, Any]:
+    from dan.tools.web_fetch import web_fetch
+
+    fetched = await web_fetch(url=url, browser_fallback=browser_fallback)
+    tier, _score, reason = _authority_profile(url)
+    excerpt = _bounded_excerpt(fetched.get("content") or fetched.get("text") or "")
+    result_row = {
+        "title": str(fetched.get("url") or url),
+        "url": str(fetched.get("url") or url),
+        "snippet": excerpt,
+        "provider": "direct_fetch",
+        "providers": ["direct_fetch"],
+        "result_kind": "direct_fetch",
+        "authority_tier": tier,
+        "authority_reason": reason,
+        "fetch_content_requested": True,
+        "grounded_result_count": 1,
+        "browser_fallback_count": 1 if fetched.get("browser_fallback_used") else 0,
+        "fetched_results": [
+            {
+                "title": str(fetched.get("url") or url),
+                "url": str(fetched.get("url") or url),
+                "authority_tier": tier,
+                "authority_reason": reason,
+                "ok": True,
+                "fetch_via": str(fetched.get("fetch_via") or ""),
+                "status_code": fetched.get("status_code"),
+                "content_type": str(fetched.get("content_type") or ""),
+                "browser_fallback_used": bool(fetched.get("browser_fallback_used")),
+                "excerpt": excerpt,
+            }
+        ],
+        "results": [
+            {
+                "title": str(fetched.get("url") or url),
+                "url": str(fetched.get("url") or url),
+                "snippet": excerpt,
+                "provider": "direct_fetch",
+                "result_kind": "direct_fetch",
+                "authority_tier": tier,
+                "authority_reason": reason,
+            }
+        ],
+        "count": 1,
+        "cache_hit": bool(fetched.get("cache_hit")),
+        "shared_inflight": bool(fetched.get("shared_inflight")),
+        "provider_failures": [],
+    }
+    return result_row
 
 
 class WebSearchProvidersExhaustedError(RuntimeError):
@@ -166,6 +475,29 @@ def _env_bool(name: str, default: bool = False) -> bool:
 def _search_cache_ttl_seconds() -> float:
     shared_default = _env_float("DAN_WEB_CACHE_TTL_SECONDS", _DEFAULT_CACHE_TTL_SECONDS)
     return _env_float("DAN_WEB_SEARCH_CACHE_TTL_SECONDS", shared_default)
+
+
+def _grounded_fetch_timeout_seconds() -> int:
+    return max(
+        1,
+        int(round(
+            _env_float(
+                "DAN_WEB_SEARCH_FETCH_TIMEOUT_SECONDS",
+                _DEFAULT_GROUNDED_FETCH_TIMEOUT_SECONDS,
+            )
+        )),
+    )
+
+
+def _grounded_fetch_concurrency() -> int:
+    raw = os.environ.get("DAN_WEB_SEARCH_FETCH_CONCURRENCY")
+    if raw is None:
+        return _DEFAULT_GROUNDED_FETCH_CONCURRENCY
+    try:
+        parsed = int(raw.strip())
+    except (TypeError, ValueError):
+        return _DEFAULT_GROUNDED_FETCH_CONCURRENCY
+    return max(1, min(parsed, 4))
 
 
 def _trim_message(text: str, limit: int = 240) -> str:
@@ -258,6 +590,9 @@ def _search_cache_key(
     provider_order: list[str],
     multi_provider: bool,
     max_provider_searches: int,
+    fetch_requested: bool,
+    max_fetched_results: int,
+    browser_fallback: bool,
 ) -> str:
     payload = {
         "query": query.strip(),
@@ -272,6 +607,9 @@ def _search_cache_key(
         "provider_order": ",".join(provider_order),
         "multi_provider": bool(multi_provider),
         "max_provider_searches": int(max_provider_searches),
+        "fetch_requested": bool(fetch_requested),
+        "max_fetched_results": int(max_fetched_results),
+        "browser_fallback": bool(browser_fallback),
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
@@ -308,6 +646,7 @@ def _store_cached_result(key: str, payload: dict[str, Any]) -> None:
 
 def _finalize_search_result(payload: dict[str, Any]) -> dict[str, Any]:
     payload = copy.deepcopy(payload)
+    payload["results"] = _annotate_and_rank_results(list(payload.get("results") or []))
     payload.setdefault("provider_failures", [])
     payload.setdefault("providers", [payload.get("provider", "")] if payload.get("provider") else [])
     payload["cache_hit"] = False
@@ -852,18 +1191,101 @@ async def _execute_search(
     raise WebSearchProvidersExhaustedError(provider_failures, last_exc)
 
 
-async def web_search(
+async def _execute_search_with_optional_grounding(
     query: str,
+    num_results: int,
+    *,
+    search_depth: str,
+    allowed_domains: list[str],
+    blocked_domains: list[str],
+    location: dict[str, str],
+    multi_provider: bool,
+    max_provider_searches: int,
+    fetch_requested: bool,
+    max_fetched_results: int,
+    browser_fallback: bool,
+) -> dict[str, Any]:
+    result = await _execute_search(
+        query,
+        num_results,
+        search_depth=search_depth,
+        allowed_domains=allowed_domains,
+        blocked_domains=blocked_domains,
+        location=location,
+        multi_provider=multi_provider,
+        max_provider_searches=max_provider_searches,
+    )
+    result_copy = copy.deepcopy(result)
+    result_copy["cache_hit"] = False
+    result_copy["shared_inflight"] = False
+    if not fetch_requested:
+        result_copy["fetch_content_requested"] = False
+        result_copy["grounded_result_count"] = 0
+        result_copy["browser_fallback_count"] = 0
+        result_copy["fetched_results"] = []
+        return result_copy
+
+    grounded, browser_fallback_count = await _ground_search_results(
+        list(result_copy.get("results") or []),
+        max_fetched_results=_positive_int(max_fetched_results, default=2),
+        browser_fallback=bool(browser_fallback),
+        fetch_timeout_seconds=_grounded_fetch_timeout_seconds(),
+        max_concurrency=_grounded_fetch_concurrency(),
+    )
+    result_copy["fetch_content_requested"] = True
+    result_copy["grounded_result_count"] = sum(1 for row in grounded if row.get("ok"))
+    result_copy["browser_fallback_count"] = browser_fallback_count
+    result_copy["fetched_results"] = grounded
+    return result_copy
+
+
+async def web_search(
+    query: str = "",
     num_results: int = 5,
     *,
+    url: str | None = None,
     search_depth: str = "quick",
     allowed_domains: list[str] | None = None,
     blocked_domains: list[str] | None = None,
     location: dict[str, str] | None = None,
     max_provider_searches: int = 4,
     multi_provider: bool | None = None,
+    fetch_content: bool | None = None,
+    max_fetched_results: int = 2,
+    browser_fallback: bool = False,
     **_kwargs,
 ) -> dict[str, Any]:
+    query_text = str(query or "").strip()
+    url_text = str(url or "").strip()
+    if url_text and not query_text:
+        return await _direct_fetch_result(
+            url_text,
+            browser_fallback=bool(browser_fallback),
+        )
+
+    if not query_text:
+        return {
+            "results": [],
+            "count": 0,
+            "provider": "",
+            "providers": [],
+            "provider_failures": [],
+            "cache_hit": False,
+            "shared_inflight": False,
+            "fetch_content_requested": False,
+            "grounded_result_count": 0,
+            "browser_fallback_count": 0,
+            "fetched_results": [],
+        }
+
+    normalized_depth = str(search_depth or "quick").strip().lower()
+    if normalized_depth not in {"quick", "thorough"}:
+        normalized_depth = "quick"
+    fetch_requested = (
+        bool(url_text) or normalized_depth == "thorough"
+        if fetch_content is None
+        else bool(fetch_content)
+    )
     allowed = _normalize_domain_list(allowed_domains)
     blocked = _normalize_domain_list(blocked_domains) + [
         domain for domain in _default_blocked_domains()
@@ -877,15 +1299,18 @@ async def web_search(
         else bool(multi_provider)
     )
     key = _search_cache_key(
-        query,
+        query_text,
         num_results,
-        search_depth=search_depth,
+        search_depth=normalized_depth,
         allowed_domains=allowed,
         blocked_domains=blocked,
         location=location_payload,
         provider_order=provider_order,
         multi_provider=use_multi_provider,
         max_provider_searches=max_provider_searches,
+        fetch_requested=fetch_requested,
+        max_fetched_results=_positive_int(max_fetched_results, default=2),
+        browser_fallback=bool(browser_fallback),
     )
     cached = _get_cached_result(key)
     if cached is not None:
@@ -896,15 +1321,18 @@ async def web_search(
         is_owner = inflight is None
         if inflight is None:
             inflight = asyncio.create_task(
-                _execute_search(
-                    query.strip(),
+                _execute_search_with_optional_grounding(
+                    query_text,
                     int(num_results),
-                    search_depth=str(search_depth or "quick"),
+                    search_depth=normalized_depth,
                     allowed_domains=allowed,
                     blocked_domains=blocked,
                     location=location_payload,
-                    multi_provider=use_multi_provider and str(search_depth or "quick") == "thorough",
+                    multi_provider=use_multi_provider and normalized_depth == "thorough",
                     max_provider_searches=max_provider_searches,
+                    fetch_requested=fetch_requested,
+                    max_fetched_results=_positive_int(max_fetched_results, default=2),
+                    browser_fallback=bool(browser_fallback),
                 )
             )
             _SEARCH_INFLIGHT[key] = inflight

@@ -136,6 +136,14 @@ def _browser_fallback_default() -> bool:
     return _env_bool("DAN_WEB_BROWSER_FALLBACK", False)
 
 
+def _fetch_total_timeout_seconds(request_timeout: int) -> float:
+    configured = _env_float("DAN_WEB_FETCH_TOTAL_TIMEOUT_SECONDS", 0.0)
+    if configured > 0:
+        return configured
+    request_timeout = max(1, int(request_timeout))
+    return max(float(request_timeout) + 5.0, float(request_timeout) * 1.5)
+
+
 def _fetch_cache_key(
     url: str,
     timeout: int,
@@ -345,7 +353,20 @@ async def web_fetch(
             _FETCH_INFLIGHT[key] = inflight
 
     try:
-        result = await inflight
+        total_timeout = _fetch_total_timeout_seconds(int(timeout))
+        result = await asyncio.wait_for(
+            inflight if is_owner else asyncio.shield(inflight),
+            timeout=total_timeout,
+        )
+    except asyncio.TimeoutError as exc:
+        if is_owner and not inflight.done():
+            inflight.cancel()
+            with _FETCH_STATE_LOCK:
+                if _FETCH_INFLIGHT.get(key) is inflight:
+                    _FETCH_INFLIGHT.pop(key, None)
+        raise TimeoutError(
+            f"web_fetch timed out after {total_timeout:.1f}s for {url.strip()}"
+        ) from exc
     finally:
         if is_owner:
             with _FETCH_STATE_LOCK:
