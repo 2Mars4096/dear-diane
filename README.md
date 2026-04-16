@@ -111,6 +111,19 @@ Live local coding mode:
 dan organism --live --model gpt-4.1
 ```
 
+If you want only the research organ, use the thinner research-only surface:
+
+```bash
+dan organism --research-only --json
+dan organism --research-only --live --model gpt-4.1
+```
+
+The research surface now auto-sizes reader fan-out from task breadth up to `8` concurrent readers. If you want to pin it explicitly for a run, use:
+
+```bash
+dan organism --research-only --research-readers 8 --json
+```
+
 The default live tool basket is:
 - `list_directory`
 - `file_read`
@@ -121,6 +134,87 @@ The default live tool basket is:
 - `git_status`
 - `git_diff`
 - `git_log`
+
+Live research keeps the same runtime but uses the read-only role split, so the deep-research organ still sees `web_search` and file-read tooling while write-capable tools stay stripped from the research cells. The top-level connector now chooses the research reader pool ad hoc from the task and caps it at `8` concurrent readers unless you override it with `--research-readers`. Its public report contract is now:
+- `findings`
+- `evidence_summary`
+- `evidence_refs`
+- `contradictions`
+- `open_questions`
+- `verification_facts`
+- `audit_issues`
+- `quality_gates`
+- `report_readiness`
+- `readiness_note`
+- `confidence`
+- `recommended_change`
+
+### Run DAN Research
+
+If you want the deep-research surface as a chat-first product instead of the thin organism harness, use `dan research`:
+
+```bash
+dan research --workspace .
+# or
+dan-research --workspace .
+# or
+danresearch --workspace .
+```
+
+It uses `.env` / environment settings by default for the provider and model, keeps product state under `./.dan-research/` inside the workspace, and keeps the stack intentionally thin:
+
+- provider wrapper
+- durable research orchestrator
+- bounded deep-research organ
+
+The workspace-local product directory now includes:
+
+- `config.json` — workspace-local DAN Research defaults
+- `session.json` — resumable session state
+- `transcript.jsonl` — compact turn history with `event_log_path` and `control_log_path` pointers
+- `control-plane-events.jsonl` — workspace-level timestamped CLI/session/orchestrator log
+- `runs/` — per-turn `events.jsonl` logs for model/tool/research events inside each bounded run
+
+Only concrete investigation/verification/comparison requests launch the bounded research organ; ordinary chat turns, clarifications, and post-run review decisions stay at the durable orchestrator layer.
+
+Before the bounded run starts, DAN Research now also inserts one thin intention-breaker step at the same product seam. That planner decomposes the user ask into small concrete subproblems, records why each subproblem matters, and states what evidence would resolve it. The bounded deep-research organ still does the actual search/synthesis work; the new layer just gives it a sharper pre-search map and lets continuation passes narrow onto unresolved gaps instead of repeating another broad sweep.
+
+Research width and depth are now explicit operator controls:
+
+```bash
+dan research --workspace . "Compare our local runtime limits with the docs"
+dan research --workspace . --research-readers 8 --depth deep
+dan research --workspace . --show-config
+```
+
+- width: auto-sized reader fan-out from task breadth, capped at `8` concurrent readers, with `--research-readers N` as an override
+- depth: `--depth shallow|standard|deep`, which maps to per-worker tool-loop budgets and can still be overridden directly with `--max-tool-rounds` and `--max-tool-calls`
+- per-cell runtime budget: the research CLI now also resolves a default wall-clock ceiling per bounded cell (`60s` shallow, `120s` standard, `180s` deep) and passes it through the existing cell-budget membrane; override with `DAN_RESEARCH_MAX_RUNTIME_SECONDS`, or set it to `0`/negative to leave runtime unbounded
+- default research tool basket: `list_directory`, `file_read`, `web_search`, `git_status`, `git_diff`, `git_log`
+
+Like the thinner `--research-only` organism surface, DAN Research keeps the read-only runtime split for research workers, so it can use `web_search` plus local read tools but not write-capable tools. `web_search` now covers both discovery and grounded page reads on this surface: `search_depth="thorough"` or `fetch_content=true` fetches the top authoritative result pages internally, and a direct `url=` can be passed through the same tool name when the worker already knows the page it needs. Grounded page reads now also run concurrently with bounded fetch deadlines and reuse cache/inflight work on repeated verification-style queries, which cuts down the long quiet stretches that used to happen during current-fact rechecks.
+
+For the same reason, wide first-pass fan-out no longer requires every reader to succeed before the retrieval tissue can continue. The deep-research organ now allows a small number of bounded reader failures on wider pools, and if the orchestrator asks for another pass without an explicit `--research-readers` override, the follow-up pass automatically narrows to a smaller reader width so targeted verification does not keep paying for another full broad sweep.
+
+Concrete external entities are now handled more conservatively at the product layer. When a current product, ticker, law, policy page, API version, or other external entity materially affects the conclusion, DAN Research is expected to fetch an authoritative page and verify the current identity/status/version/availability or mark that fact explicitly unverified. The public report now also carries explicit adjudication layers: a verification appendix for critical facts (`verified` / `unverified` / `conflicted`), an audit appendix for unresolved logic, freshness, source-authority, methodology, or scope-fit gaps, standard `quality_gates`, and a `report_readiness` label (`blocked` / `provisional` / `grounded` / `actionable`).
+
+The standard quality gates are generic and should appear on every completed run: `time_anchor`, `scope_boundary`, `source_authority`, `numeric_reconciliation`, `claim_object_fit`, and `final_status`. They are meant to catch cross-domain failures such as mixing historical/current timestamps, making global or absence claims without a searched universe, relying on non-primary sources for existence/status facts, accepting conflicting vendor numbers without reconciliation, or mapping a thesis to the wrong object.
+
+Before broad search starts, DAN Research now also assigns each bounded run one generic temporal frame: `current`, `historical_snapshot`, `trend`, or `timeless`. That frame is inferred from the objective plus the runtime date/timezone, passed through the bounded task and reader briefs, and then persisted on the final report so relative terms like `current`, `latest`, `recent`, or “past 6 months” have one explicit anchor instead of being left implicit.
+
+If review still says another bounded pass is required after the current supervision loop is out of passes, DAN Research now returns the artifact explicitly as `incomplete` / `blocked` instead of leaving the last report looking finished. In practice that means you either get the extra pass included in the artifact, or you get an honest incomplete result with a failing `final_status` gate telling you why it stopped.
+
+The web discovery path is also more source-aware now. `web_search` results are ranked so regulator, exchange, issuer, and official docs/reference pages are preferred over retail quote or summary pages when both are present. The review layer refuses to finalize low-confidence or weakly-grounded runs as `done`: reports without explicit evidence refs, with conflicted critical facts, with blocking audit issues, with missing/failed quality gates, with confidence below the configured floor, or that still mark themselves `blocked` / `provisional` are pushed back for more work instead of being treated as trustworthy final output.
+
+If a run looks quiet after lines like `ok web_search`, the tool itself may already have returned and the CLI may be waiting on the next model/orchestrator step or a slow grounded verification fetch. DAN Research now emits sparse `research.heartbeat` lines during longer quiet periods so the active worker/phase/query stays visible, and bounded reader cells now time out through the normal packet budget instead of hanging indefinitely. For more visibility, use:
+
+```bash
+dan research --workspace . --show-model-trace
+tail -f .dan-research/control-plane-events.jsonl
+tail -f .dan-research/runs/turn-01/events.jsonl
+```
+
+The research control plane now also uses the same conservative hedged-controller pattern as DAN Code, but only for the no-tool orchestrator/review decisions above the bounded research organ. The default stays small: up to `2` controller attempts with a `2.0s` stagger. You can override those controls with `DAN_RESEARCH_CONTROL_HEDGE_MAX_ATTEMPTS` and `DAN_RESEARCH_CONTROL_HEDGE_DELAY_SECONDS`.
 
 You can inspect or narrow it explicitly:
 
@@ -220,6 +314,8 @@ dan code --workspace . --show-model-trace
 
 Tool rounds are unbounded by default now. If you want a hard cap for a particular run, set `--max-tool-rounds N`; leaving it unset, or setting `--max-tool-rounds 0`, keeps the local tool loop unbounded while `max_tool_calls` still acts as the broader safety rail.
 
+Provider completion waits are also bounded by default now. `dan code` resolves the per-completion timeout in this order: `--completion-timeout-seconds` -> `.dan-code/config.json` -> `DAN_CODE_COMPLETION_TIMEOUT_SECONDS` -> default `90s`. Use `--completion-timeout-seconds 0` to disable that bound. During a long quiet provider wait, the CLI now emits sparse heartbeat/status lines and an explicit timeout event instead of sitting silently after the last tool call.
+
 The local tool loop now also injects a shared structured-tool policy. In practice that means `dan code` should prefer `list_directory`, `file_read`, `file_edit`, `file_write`, `web_search`, and structured git tools over shell fallbacks, use `file_edit` for targeted line-based edits to existing files, batch multiple non-overlapping edits to the same file into one `file_edit(edits=[...])` call when possible, use `file_write` for whole-file create/replace/append flows, use `web_search` for live external lookups instead of guessing current facts, avoid shell heredocs when direct file tools are available, and cut down on repeated discovery once it already has the needed fact.
 
 The structured-output seam is more tolerant now as well. Fenced ` ```json ... ``` ` replies from the orchestrator or bounded organs are parsed as structured payloads instead of being dumped back to the console as raw text, and local file tools accept `file_path` as a compatibility alias for `path` so minor argument-name mismatches do not waste a tool round.
@@ -250,6 +346,42 @@ Give it a bounded coding objective directly:
 dan code --workspace . \
   "Inspect the failing worker tests, patch the smallest viable fix, run focused validation, and summarize the result."
 ```
+
+For SWE-bench-style issue-resolution runs, point `dan code` at a single compatible instance file after you have already checked the repo out at the benchmark base commit:
+
+```bash
+dan code \
+  --workspace /path/to/checked-out/repo \
+  --model kimi-k2.5 \
+  --thinking-mode disabled \
+  --swebench-instance-file /path/to/instance.json \
+  --swebench-predictions-path /path/to/predictions.jsonl \
+  --json
+```
+
+When `--swebench-instance-file` is present, `dan code` can synthesize the coding objective from the instance if you omit the positional objective. The current workspace is treated as the benchmark checkout, and the run writes benchmark-side artifacts into the same per-turn directory as the normal event log:
+
+- `swebench-instance.json` — the resolved instance record used for the run
+- `swebench.patch` — the final workspace `git diff`
+- `swebench-prediction.json` — one scorer-compatible prediction object
+
+If you also pass `--swebench-predictions-path`, DAN Code appends the same `{instance_id, model_name_or_path, model_patch}` payload to that JSONL file for the official SWE-bench harness. This path assumes the workspace is already clean and checked out to the correct benchmark base commit; DAN Code does not reset or clone the repo for you.
+
+For the first operator-driven public benchmark adapter, use `tests/eval/swebench_runner.py` to prepare the repo checkout and call the same `dan code` path for one instance:
+
+```bash
+PYTHONPATH=src:. python -m tests.eval.swebench_runner \
+  --dataset-repo princeton-nlp/SWE-bench_Lite \
+  --split dev \
+  --instance-id marshmallow-code__marshmallow-1359 \
+  --model kimi-k2.5 \
+  --thinking-mode disabled \
+  --completion-timeout-seconds 90 \
+  --max-tool-rounds 10 \
+  --json
+```
+
+The runner caches benchmark repos under `tests/eval/results/swebench_repo_cache/`, creates one timestamped run directory under `tests/eval/results/`, writes the resolved `instance.json`, prepares a detached `workspace/` checkout at `base_commit`, and tells `dan code` to use a sibling `dan-code/` workdir. When a run exits cleanly, it also records `stdout.log`, `stderr.log`, `report.json`, and `predictions.jsonl` at the top of that run directory. It is intentionally a thin operator tool, not a full scorer or benchmark-set scheduler.
 
 Useful options:
 

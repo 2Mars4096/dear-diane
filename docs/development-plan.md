@@ -417,8 +417,11 @@ The paper-writing workflow already in `development-plan.md` Section 1 is the tar
 | **20** | Telegram Multi-Bot Platform | Adapter upgrade, BotFleet, MessageRouter, native features (polls, streaming edits, reactions, forum topics), `dan-bot` CLI, unified `dan` CLI | **Completed** |
 | **21** | Daily-Use QoL | Model control, visibility, capability exposure, CLI power-user features, defaults overhaul | **Completed** |
 | **22** | Workflow generation optimization | Convenience layer, intent expansion, smart defaults, domain profiles. **32-7:** Direct execution architecture — eliminated codegen→sandbox roundtrip for complex tasks. `IntentCompiler.build_graph()` constructs Graph objects in-process. | In progress |
+| **23** | Search infra incubation | Separate named search/retrieval subsystem (`Beacon Search`) behind the current `web_search` / `web_fetch` compatibility surface, with first-party corpus, ranking, and eval-gated cutover | Not started |
 
 ---
+
+Adjacent incubation track: **Beacon Search** is intentionally named as a separate search-infrastructure effort, but the initial work should stay inside DAN until the broker contract, corpus, and eval gates are stable. During that incubation, the current `web_search` / `web_fetch` tools remain the caller-visible surface and the legacy provider-backed path stays available for fallback and comparison.
 
 ## 8. References
 
