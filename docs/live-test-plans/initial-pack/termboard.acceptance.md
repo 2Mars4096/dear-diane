@@ -1,0 +1,7 @@
+- The app launches and is usable from the terminal without confusion.
+- Cards can be created, edited, moved, and deleted.
+- Search and tag filtering actually help find cards.
+- State survives restart.
+- Undo works for the major card operations.
+- The README makes the controls understandable.
+- Tests cover the board logic and persistence behavior.
