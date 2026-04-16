@@ -214,6 +214,7 @@ class CodeProductConfig(BaseModel):
     acceptance_criteria: list[str] = Field(default_factory=list)
     max_tool_rounds: int | None = None
     max_tool_calls: int = 24
+    completion_timeout_seconds: float | None = None
 
 
 class CodeProductPaths(BaseModel):

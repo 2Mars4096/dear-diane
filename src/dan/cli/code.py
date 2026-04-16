@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from dan.cli import load_env, normalize_workspace_root, resolve_config
 from dan.cli.code_product import (
@@ -37,6 +37,9 @@ from dan.worker.organisms import (
     CodingConversationContext,
     CodingConversationController,
     CodingConversationMessage,
+    CodingProjectPlan,
+    CodingProjectPlannerContext,
+    CodingProjectPlannerController,
     CodingConversationReportSummary,
     CodingTask,
     coding_execution_organism,
@@ -50,6 +53,7 @@ from dan.worker.organisms.local_runtime import (
     available_local_organism_tools,
 )
 from dan.worker.signaling import EvidenceRef
+from dan.tools.git_diff import git_diff as git_diff_tool
 
 DEFAULT_CODING_OBJECTIVE = (
     "Inspect the workspace, produce one bounded coding candidate, and return "
@@ -75,6 +79,102 @@ RISKY_TOOL_IDS = frozenset(
         "python_eval",
     }
 )
+
+_SWEBENCH_DEFAULT_ACCEPTANCE_CRITERIA = [
+    "Resolve the benchmark issue in the current checked-out repository with the smallest correct patch you can justify.",
+    "Avoid unrelated refactors or cleanup outside the benchmark issue scope.",
+    "Leave the resulting workspace diff intact so it can be exported as a SWE-bench prediction artifact.",
+]
+
+
+def _stringify_context_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned or None
+    try:
+        rendered = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        rendered = str(value)
+    cleaned = rendered.strip()
+    return cleaned or None
+
+
+def _normalize_context_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            return []
+        try:
+            parsed = json.loads(cleaned)
+        except Exception:
+            return [cleaned]
+        value = parsed
+    if isinstance(value, (list, tuple, set)):
+        items = value
+    else:
+        items = [value]
+    normalized: list[str] = []
+    for item in items:
+        cleaned = _stringify_context_value(item)
+        if cleaned:
+            normalized.append(cleaned)
+    return normalized
+
+
+class SweBenchInstance(BaseModel):
+    """Minimal SWE-bench-compatible instance record."""
+
+    instance_id: str
+    problem_statement: str
+    repo: str | None = None
+    base_commit: str | None = None
+    requirements: str | None = None
+    interface: str | None = None
+    before_repo_set_cmd: str | None = None
+    selected_test_files_to_run: list[str] = Field(default_factory=list)
+    fail_to_pass: list[str] = Field(default_factory=list)
+    pass_to_pass: list[str] = Field(default_factory=list)
+
+    @field_validator(
+        "instance_id",
+        "problem_statement",
+        "repo",
+        "base_commit",
+        "requirements",
+        "interface",
+        "before_repo_set_cmd",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_text_fields(cls, value: Any) -> str | None:
+        return _stringify_context_value(value)
+
+    @field_validator(
+        "selected_test_files_to_run",
+        "fail_to_pass",
+        "pass_to_pass",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_list_fields(cls, value: Any) -> list[str]:
+        return _normalize_context_list(value)
+
+
+class SweBenchRunContext(BaseModel):
+    """Resolved benchmark context for one DAN Code run."""
+
+    instance: SweBenchInstance
+    objective: str
+    task_id_base: str
+    acceptance_criteria: list[str] = Field(default_factory=list)
+    evidence_summaries: list[str] = Field(default_factory=list)
+    benchmark_context: dict[str, Any] = Field(default_factory=dict)
+    instance_file: str
+    predictions_path: str | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -235,6 +335,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum provider tool calls per worker completion.",
     )
     parser.add_argument(
+        "--completion-timeout-seconds",
+        type=float,
+        default=None,
+        help=(
+            "Maximum wall-clock seconds for one provider completion before DAN Code "
+            "fails that completion boundedly. Falls back to workspace product config, "
+            "DAN_CODE_COMPLETION_TIMEOUT_SECONDS, then 90 seconds. Set <= 0 to disable."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Print the full coding report or config payload as JSON.",
@@ -242,6 +352,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output",
         help="Optional path to write the JSON report.",
+    )
+    parser.add_argument(
+        "--swebench-instance-file",
+        help=(
+            "Optional SWE-bench-compatible instance JSON/JSONL file. "
+            "If provided without a free-form objective, DAN Code synthesizes the "
+            "benchmark objective from the instance."
+        ),
+    )
+    parser.add_argument(
+        "--swebench-predictions-path",
+        help=(
+            "Optional JSONL file to append scorer-compatible SWE-bench predictions "
+            "(`instance_id`, `model_name_or_path`, `model_patch`)."
+        ),
     )
     return parser
 
@@ -268,6 +393,193 @@ def _resolve_user_path(value: str | Path, *, base_dir: Path) -> Path:
     if not path.is_absolute():
         path = base_dir / path
     return path.resolve()
+
+
+def _load_swebench_instance(
+    value: str | Path,
+    *,
+    base_dir: Path,
+) -> SweBenchInstance:
+    path = _resolve_user_path(value, base_dir=base_dir)
+    raw = path.read_text(encoding="utf-8")
+    if path.suffix.lower() == ".jsonl":
+        rows = [line.strip() for line in raw.splitlines() if line.strip()]
+        if len(rows) != 1:
+            raise ValueError(
+                f"SWE-bench instance file {path} must contain exactly one JSONL row"
+            )
+        payload = json.loads(rows[0])
+    else:
+        payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"SWE-bench instance file {path} must decode to a JSON object"
+        )
+    try:
+        instance = SweBenchInstance.model_validate(payload)
+    except Exception as exc:
+        raise ValueError(
+            f"Invalid SWE-bench instance file {path}: {exc}"
+        ) from exc
+    if not instance.instance_id or not instance.problem_statement:
+        raise ValueError(
+            f"SWE-bench instance file {path} is missing required fields "
+            "`instance_id` and/or `problem_statement`"
+        )
+    return instance
+
+
+def _swebench_objective(
+    instance: SweBenchInstance,
+    *,
+    operator_objective: str | None,
+) -> str:
+    preface = _assistant_text(operator_objective or "")
+    if not preface:
+        preface = (
+            f"Resolve SWE-bench instance {instance.instance_id} in the current "
+            "checked-out repository and produce the smallest correct patch."
+        )
+    sections = [preface]
+    if instance.repo:
+        sections.append(f"Repository: {instance.repo}")
+    if instance.base_commit:
+        sections.append(f"Benchmark base commit: {instance.base_commit}")
+    sections.append(f"Instance ID: {instance.instance_id}")
+    sections.append(f"Issue:\n{instance.problem_statement}")
+    if instance.requirements:
+        sections.append(f"Benchmark requirements:\n{instance.requirements}")
+    if instance.interface:
+        sections.append(f"Relevant interface/context:\n{instance.interface}")
+    if instance.selected_test_files_to_run:
+        sections.append(
+            "Selected tests:\n- "
+            + "\n- ".join(instance.selected_test_files_to_run[:20])
+        )
+    return "\n\n".join(section for section in sections if section.strip())
+
+
+def _build_swebench_context(
+    instance: SweBenchInstance,
+    *,
+    instance_file: Path,
+    predictions_path: Path | None,
+    operator_objective: str | None,
+    task_id_base: str,
+) -> SweBenchRunContext:
+    evidence_summaries = [
+        "\n".join(
+            line
+            for line in (
+                "# SWE-bench instance metadata",
+                f"- instance_id: {instance.instance_id}",
+                f"- repo: {instance.repo or '(unknown)'}",
+                f"- base_commit: {instance.base_commit or '(unknown)'}",
+                f"- instance_file: {instance_file}",
+            )
+            if line
+        ),
+        f"# SWE-bench problem statement\n\n{instance.problem_statement}",
+    ]
+    if instance.requirements:
+        evidence_summaries.append(
+            f"# SWE-bench benchmark requirements\n\n{instance.requirements}"
+        )
+    if instance.interface:
+        evidence_summaries.append(
+            f"# SWE-bench interface/context notes\n\n{instance.interface}"
+        )
+    if instance.selected_test_files_to_run:
+        evidence_summaries.append(
+            "# SWE-bench selected tests\n\n- "
+            + "\n- ".join(instance.selected_test_files_to_run[:50])
+        )
+    if instance.before_repo_set_cmd:
+        evidence_summaries.append(
+            f"# SWE-bench setup/reset command\n\n{instance.before_repo_set_cmd}"
+        )
+    return SweBenchRunContext(
+        instance=instance,
+        objective=_swebench_objective(
+            instance,
+            operator_objective=operator_objective,
+        ),
+        task_id_base=task_id_base,
+        acceptance_criteria=list(_SWEBENCH_DEFAULT_ACCEPTANCE_CRITERIA),
+        evidence_summaries=evidence_summaries,
+        benchmark_context={
+            "benchmark_name": "SWE-bench",
+            "instance_id": instance.instance_id,
+            "repo": instance.repo,
+            "base_commit": instance.base_commit,
+            "selected_test_files_to_run": list(instance.selected_test_files_to_run),
+        },
+        instance_file=str(instance_file),
+        predictions_path=str(predictions_path) if predictions_path is not None else None,
+    )
+
+
+def _append_jsonl_record(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        handle.write("\n")
+
+
+def _capture_workspace_patch_text(workspace_root: Path) -> str:
+    result = asyncio.run(git_diff_tool(path=str(workspace_root)))
+    return str(result.get("diff_text") or "")
+
+
+def _write_swebench_artifacts(
+    report: CodingOrganismReport,
+    *,
+    swebench: SweBenchRunContext,
+    workspace_root: Path,
+    model: str,
+) -> None:
+    artifact_dir = (
+        Path(report.event_log_path).expanduser().resolve().parent
+        if report.event_log_path
+        else workspace_root
+    )
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    instance_artifact_path = artifact_dir / "swebench-instance.json"
+    patch_artifact_path = artifact_dir / "swebench.patch"
+    prediction_artifact_path = artifact_dir / "swebench-prediction.json"
+    patch_text = _capture_workspace_patch_text(workspace_root)
+    prediction_payload = {
+        "instance_id": swebench.instance.instance_id,
+        "model_name_or_path": model,
+        "model_patch": patch_text,
+    }
+    instance_artifact_path.write_text(
+        swebench.instance.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    patch_artifact_path.write_text(patch_text, encoding="utf-8")
+    prediction_artifact_path.write_text(
+        json.dumps(prediction_payload, indent=2, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    if swebench.predictions_path:
+        _append_jsonl_record(Path(swebench.predictions_path), prediction_payload)
+    swebench_output = dict(report.outputs.get("swebench") or {})
+    swebench_output.update(
+        {
+            "instance_id": swebench.instance.instance_id,
+            "repo": swebench.instance.repo,
+            "base_commit": swebench.instance.base_commit,
+            "instance_file": swebench.instance_file,
+            "instance_artifact_path": str(instance_artifact_path),
+            "patch_artifact_path": str(patch_artifact_path),
+            "prediction_artifact_path": str(prediction_artifact_path),
+            "predictions_path": swebench.predictions_path,
+            "model_name_or_path": model,
+            "patch_bytes": len(patch_text.encode("utf-8")),
+        }
+    )
+    report.outputs["swebench"] = swebench_output
 
 
 def _now_context() -> dict[str, str]:
@@ -329,12 +641,13 @@ def _build_runtime_context(
     approval_mode: str,
     thinking_mode: str,
     task_id: str,
+    benchmark_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     shell_process_directory = str(
         Path(os.environ.get("PWD") or str(workspace_root)).expanduser()
     )
     now_context = _now_context()
-    return {
+    payload = {
         "product_name": CODE_PRODUCT_NAME,
         "workspace_root": str(workspace_root),
         "current_working_directory": str(workspace_root),
@@ -346,6 +659,9 @@ def _build_runtime_context(
         "thinking_mode": thinking_mode,
         **now_context,
     }
+    if benchmark_context:
+        payload["benchmark_context"] = dict(benchmark_context)
+    return payload
 
 
 def _truncate_text(value: str, *, limit: int = 120) -> str:
@@ -823,6 +1139,34 @@ class CodeProgressRenderer:
             if text:
                 print(f"{prefix} preview: {text}")
             return
+        if name == "model.timeout":
+            scope = self._scope_label(event.get("worker_id"))
+            prefix = "[status] model timeout"
+            if scope:
+                prefix += f" [{scope}]"
+            details = [
+                f"round={event.get('round', '?')}",
+                f"model={event.get('model') or '(unknown)'}",
+            ]
+            timeout_seconds = event.get("timeout_seconds")
+            if timeout_seconds not in {None, ""}:
+                details.append(f"timeout={float(timeout_seconds):.2f}s")
+            print(f"{prefix}: {' '.join(details)}")
+            return
+        if name == "code.heartbeat":
+            scope = self._scope_label(event.get("worker_id"))
+            phase = str(event.get("phase") or "running").strip() or "running"
+            detail = _truncate_text(str(event.get("detail") or ""), limit=160)
+            elapsed_seconds = event.get("elapsed_seconds")
+            summary = f"[status] heartbeat: {phase}"
+            if scope:
+                summary += f" [{scope}]"
+            if detail:
+                summary += f" ({detail})"
+            if elapsed_seconds not in {None, ""}:
+                summary += f" idle={elapsed_seconds}s"
+            print(summary)
+            return
         if name == "tool.started":
             tool_id = str(event.get("tool_id") or "tool")
             arguments = dict(event.get("arguments") or {})
@@ -856,6 +1200,175 @@ def _emit_code_event(event_callback, event: dict[str, Any]) -> None:
     if event_callback is None:
         return
     event_callback(dict(event))
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return max(0.0, float(raw.strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+class CodeHeartbeatMonitor:
+    """Emit sparse heartbeat events when a bounded DAN Code turn goes quiet."""
+
+    def __init__(
+        self,
+        *,
+        event_callback,
+        enabled: bool = True,
+        idle_seconds: float = 10.0,
+        repeat_seconds: float = 15.0,
+        poll_seconds: float = 2.0,
+    ) -> None:
+        self._event_callback = event_callback
+        self._enabled = bool(enabled) and event_callback is not None
+        self._idle_seconds = max(0.01, float(idle_seconds))
+        self._repeat_seconds = max(self._idle_seconds, float(repeat_seconds))
+        self._poll_seconds = max(0.01, float(poll_seconds))
+        self._last_activity = 0.0
+        self._last_heartbeat = 0.0
+        self._phase = "starting"
+        self._worker_id = ""
+        self._detail = ""
+        self._task: asyncio.Task[None] | None = None
+        self._stop_event = asyncio.Event()
+
+    def observe(self, event: dict[str, Any]) -> None:
+        if not self._enabled:
+            return
+        name = str(event.get("event") or "").strip()
+        if not name or name == "code.heartbeat":
+            return
+        loop = asyncio.get_running_loop()
+        self._last_activity = loop.time()
+        worker_id = str(event.get("worker_id") or "").strip()
+        if worker_id:
+            self._worker_id = worker_id
+
+        if name == "run.log.started":
+            self._phase = "run"
+            self._detail = _truncate_text(str(event.get("objective") or ""), limit=160)
+            return
+        if name == "assistant.message":
+            self._phase = "assistant"
+            self._detail = _truncate_text(str(event.get("message") or ""), limit=160)
+            return
+        if name == "status.update":
+            self._phase = str(event.get("phase") or event.get("actor") or "status").strip() or "status"
+            self._detail = _truncate_text(str(event.get("message") or ""), limit=160)
+            return
+        if name == "stage.started":
+            self._phase = str(event.get("stage") or "stage").strip() or "stage"
+            self._detail = f"attempt={event.get('attempt', '?')}"
+            return
+        if name == "stage.completed":
+            self._phase = f"{str(event.get('stage') or 'stage').strip() or 'stage'}-completed"
+            self._detail = _truncate_text(str(event.get("status") or "completed"), limit=160)
+            return
+        if name == "model.requested":
+            self._phase = "model"
+            self._detail = (
+                f"round={event.get('round', '?')} "
+                f"tools={event.get('tool_count', 0)}"
+            )
+            return
+        if name == "model.responded":
+            finish = str(event.get("finish_reason") or "stop").strip() or "stop"
+            self._phase = "model-response"
+            self._detail = f"finish_reason={finish}"
+            return
+        if name == "model.timeout":
+            timeout_seconds = event.get("timeout_seconds")
+            timeout_detail = (
+                f" timeout={float(timeout_seconds):.2f}s"
+                if timeout_seconds not in {None, ""}
+                else ""
+            )
+            self._phase = "model-timeout"
+            self._detail = f"round={event.get('round', '?')}{timeout_detail}"
+            return
+        if name == "tool.started":
+            self._phase = "tool"
+            self._detail = _truncate_text(
+                _tool_request_summary(
+                    str(event.get("tool_id") or ""),
+                    dict(event.get("arguments") or {}),
+                ),
+                limit=160,
+            )
+            return
+        if name == "tool.completed":
+            self._phase = "post-tool"
+            self._detail = _truncate_text(
+                _tool_request_summary(
+                    str(event.get("tool_id") or ""),
+                    dict(event.get("arguments") or {}),
+                ),
+                limit=160,
+            )
+            return
+        if name in {"tool.failed", "tool.denied"}:
+            self._phase = "tool-error"
+            self._detail = _truncate_text(
+                f"{event.get('tool_id') or 'tool'}: {event.get('error') or name}",
+                limit=160,
+            )
+            return
+        if name == "completion.completed":
+            self._phase = "completion"
+            self._detail = _truncate_text(str(event.get("stop_reason") or "completed"), limit=160)
+            return
+        if name in {"organism.completed", "run.log.completed"}:
+            self._phase = "completed"
+            self._detail = _truncate_text(str(event.get("status") or "completed"), limit=160)
+            return
+        if name == "run.log.failed":
+            self._phase = "failed"
+            self._detail = _truncate_text(str(event.get("error") or "run failed"), limit=160)
+
+    async def start(self) -> None:
+        if not self._enabled or self._task is not None:
+            return
+        now = asyncio.get_running_loop().time()
+        if self._last_activity <= 0:
+            self._last_activity = now
+        self._last_heartbeat = now
+        self._task = asyncio.create_task(self._run())
+
+    async def stop(self) -> None:
+        self._stop_event.set()
+        if self._task is None:
+            return
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        self._task = None
+
+    async def _run(self) -> None:
+        while not self._stop_event.is_set():
+            await asyncio.sleep(self._poll_seconds)
+            now = asyncio.get_running_loop().time()
+            if (now - self._last_activity) < self._idle_seconds:
+                continue
+            if (now - self._last_heartbeat) < self._repeat_seconds:
+                continue
+            self._last_heartbeat = now
+            _emit_code_event(
+                self._event_callback,
+                {
+                    "event": "code.heartbeat",
+                    "worker_id": self._worker_id or None,
+                    "phase": self._phase,
+                    "detail": self._detail,
+                    "elapsed_seconds": int(now - self._last_activity),
+                },
+            )
 
 
 class CodeRunEventLogger:
@@ -933,6 +1446,27 @@ def _effective_max_tool_calls(
     if product_config:
         return int(product_config.max_tool_calls)
     return 24
+
+
+def _effective_completion_timeout_seconds(
+    explicit: float | None,
+    *,
+    product_config: CodeProductConfig | None = None,
+) -> float | None:
+    if explicit is not None:
+        value = float(explicit)
+        return None if value <= 0 else value
+    if product_config and product_config.completion_timeout_seconds is not None:
+        value = float(product_config.completion_timeout_seconds)
+        return None if value <= 0 else value
+    raw = os.environ.get("DAN_CODE_COMPLETION_TIMEOUT_SECONDS")
+    if raw is not None:
+        try:
+            value = float(str(raw).strip())
+        except (TypeError, ValueError):
+            return 90.0
+        return None if value <= 0 else value
+    return 90.0
 
 
 def _print_tool_catalog(*, as_json: bool) -> None:
@@ -1043,6 +1577,7 @@ async def run_coding_organism_live(
     workspace_root: str | Path | None = None,
     max_tool_rounds: int | None = None,
     max_tool_calls: int = 24,
+    completion_timeout_seconds: float | None = None,
     thinking_mode: str = "auto",
     stream_model_trace: bool = False,
     approval_callback=None,
@@ -1061,9 +1596,11 @@ async def run_coding_organism_live(
         default_model=model,
         max_rounds=max_tool_rounds,
         max_tool_calls=max_tool_calls,
+        completion_timeout_seconds=completion_timeout_seconds,
         stream_text_responses=bool(stream_model_trace),
         provider_request_overrides=_provider_request_overrides_for_thinking_mode(
-            thinking_mode
+            thinking_mode,
+            completion_timeout_seconds=completion_timeout_seconds,
         ),
         event_callback=event_callback,
     )
@@ -1173,11 +1710,16 @@ def _build_run_workdir(run_root: Path, *, turn_number: int) -> Path:
 
 def _provider_request_overrides_for_thinking_mode(
     thinking_mode: str,
+    *,
+    completion_timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
+    overrides: dict[str, Any] = {}
     normalized = str(thinking_mode or "auto").strip().lower()
-    if normalized == "auto":
-        return {}
-    return {"thinking": {"type": normalized}}
+    if normalized != "auto":
+        overrides["thinking"] = {"type": normalized}
+    if completion_timeout_seconds is not None:
+        overrides["timeout"] = float(completion_timeout_seconds)
+    return overrides
 
 
 class CodeConversationOutcome(BaseModel):
@@ -1268,6 +1810,56 @@ def _conversation_context(
     )
 
 
+def _project_planner_context(
+    *,
+    session: CodingCliSession,
+    workspace_root: Path,
+    model: str,
+    thinking_mode: str,
+    tool_ids: Sequence[str],
+    approval_mode: str,
+    acceptance_criteria: Sequence[str],
+    existing_plan: CodingProjectPlan | None,
+    additional_reports: Sequence[CodingOrganismReport] | None = None,
+) -> CodingProjectPlannerContext:
+    facts = _conversation_facts(
+        session=session,
+        workspace_root=workspace_root,
+        model=model,
+        thinking_mode=thinking_mode,
+        tool_ids=tool_ids,
+        approval_mode=approval_mode,
+        additional_reports=additional_reports,
+    )
+    session_reports = session.context_reports(limit=4)
+    additional_context_reports = [
+        report for report in list(additional_reports or []) if not report.is_failed_no_output()
+    ]
+    recent_reports = [
+        _report_context(report)
+        for report in [*session_reports, *additional_context_reports]
+    ]
+    return CodingProjectPlannerContext(
+        workspace_root=str(workspace_root),
+        model=model,
+        thinking_mode=thinking_mode,
+        tool_ids=list(tool_ids),
+        acceptance_criteria=list(acceptance_criteria),
+        pending_clarification=session.pending_clarification,
+        facts=facts,
+        recent_conversation=[
+            CodingConversationMessage(
+                role=entry.role,
+                text=entry.text,
+                kind=entry.kind,
+            )
+            for entry in session.conversation[-8:]
+        ],
+        recent_reports=recent_reports[-6:],
+        existing_plan=existing_plan,
+    )
+
+
 def _load_orchestrator_session(
     *,
     session: CodingCliSession,
@@ -1293,6 +1885,57 @@ def _store_orchestrator_session(
     }
 
 
+def _load_project_planner_session(
+    *,
+    session: CodingCliSession,
+    planner: CodingProjectPlannerController,
+):
+    try:
+        return planner.load_session(
+            dict(session.orchestrator_state.get("project_planner_session") or {})
+        )
+    except Exception:
+        return None
+
+
+def _store_project_planner_session(
+    *,
+    session: CodingCliSession,
+    planner: CodingProjectPlannerController,
+    durable_session,
+) -> None:
+    session.orchestrator_state = {
+        **dict(session.orchestrator_state),
+        "project_planner_session": planner.dump_session(durable_session),
+    }
+
+
+def _load_project_plan(session: CodingCliSession) -> CodingProjectPlan | None:
+    try:
+        payload = dict(session.orchestrator_state.get("project_plan") or {})
+    except Exception:
+        return None
+    if not payload:
+        return None
+    try:
+        return CodingProjectPlan.model_validate(payload)
+    except Exception:
+        return None
+
+
+def _store_project_plan(
+    *,
+    session: CodingCliSession,
+    plan: CodingProjectPlan | None,
+) -> None:
+    orchestrator_state = dict(session.orchestrator_state)
+    if plan is None:
+        orchestrator_state.pop("project_plan", None)
+    else:
+        orchestrator_state["project_plan"] = plan.model_dump(mode="json")
+    session.orchestrator_state = orchestrator_state
+
+
 def _emit_assistant_message(
     event_callback,
     message: str,
@@ -1307,6 +1950,7 @@ async def _run_orchestrated_turn(
     *,
     args,
     controller: CodingConversationController,
+    project_planner: CodingProjectPlannerController,
     llm_provider: LLMProvider,
     workspace_root: Path,
     model: str,
@@ -1314,161 +1958,281 @@ async def _run_orchestrated_turn(
     session: CodingCliSession,
     tool_ids: Sequence[str],
     acceptance_criteria: Sequence[str],
+    evidence_summaries: Sequence[str],
     max_tool_rounds: int | None,
     max_tool_calls: int,
+    completion_timeout_seconds: float | None,
     approval_mode: str,
     thinking_mode: str,
     run_root: Path,
+    task_id_base: str,
+    benchmark_context: dict[str, Any] | None = None,
     approval_callback=None,
     progress_renderer: CodeProgressRenderer,
 ) -> CodeConversationOutcome:
     assistant_messages: list[str] = []
     reports: list[CodingOrganismReport] = []
     question: str | None = None
-    current_event_callback = progress_renderer
+    current_event_logger: CodeRunEventLogger | None = None
     session.record_message(role="user", text=objective)
 
-    orchestrator_session = _load_orchestrator_session(
-        session=session,
-        controller=controller,
+    def _run_event_callback(event: dict[str, Any]) -> None:
+        heartbeat.observe(event)
+        _emit_code_event(progress_renderer, event)
+        if current_event_logger is not None:
+            current_event_logger.emit(event)
+
+    heartbeat = CodeHeartbeatMonitor(
+        event_callback=_run_event_callback,
+        enabled=True,
+        idle_seconds=_env_float("DAN_CODE_HEARTBEAT_IDLE_SECONDS", 10.0),
+        repeat_seconds=_env_float("DAN_CODE_HEARTBEAT_INTERVAL_SECONDS", 15.0),
+        poll_seconds=_env_float("DAN_CODE_HEARTBEAT_POLL_SECONDS", 2.0),
     )
-    decision, orchestrator_session = await controller.decide_user_turn(
-        session=orchestrator_session,
-        user_message=objective,
-        pending_clarification=session.pending_clarification,
-        context=_conversation_context(
+    controller.set_event_callback(_run_event_callback)
+    project_planner.set_event_callback(_run_event_callback)
+    await heartbeat.start()
+
+    try:
+        orchestrator_session = _load_orchestrator_session(
             session=session,
-            workspace_root=workspace_root,
-            model=model,
-            thinking_mode=thinking_mode,
-            tool_ids=tool_ids,
-            approval_mode=approval_mode,
-            acceptance_criteria=acceptance_criteria,
-        ),
-    )
-    _store_orchestrator_session(
-        session=session,
-        controller=controller,
-        durable_session=orchestrator_session,
-    )
-
-    def _record_assistant(text: str, *, kind: str = "message") -> None:
-        cleaned = _assistant_text(text)
-        if not cleaned:
-            return
-        assistant_messages.append(cleaned)
-        session.record_message(role="assistant", text=cleaned, kind=kind)
-        _emit_assistant_message(current_event_callback, cleaned)
-
-    if decision.public_response:
-        _record_assistant(decision.public_response)
-
-    if decision.action == "respond":
-        session.pending_clarification = None
-        return CodeConversationOutcome(
-            status="responded",
-            assistant_messages=assistant_messages,
-            question=None,
-            reports=[],
+            controller=controller,
         )
-
-    if decision.action == "clarify":
-        question = _assistant_text(decision.clarifying_question or decision.public_response)
-        session.pending_clarification = question or None
-        if question and question not in assistant_messages:
-            _record_assistant(question, kind="clarification")
-        return CodeConversationOutcome(
-            status="clarify",
-            assistant_messages=assistant_messages,
-            question=question,
-            reports=[],
-        )
-
-    session.pending_clarification = None
-    next_objective = _assistant_text(decision.coding_objective or objective)
-    next_repair_brief = _assistant_text(decision.repair_brief)
-    next_research_findings = _dedupe(
-        [*session.carry_forward_findings(), *list(decision.research_findings)]
-    )
-    effective_acceptance_criteria = _dedupe(
-        [*list(acceptance_criteria), *list(decision.acceptance_criteria)]
-    ) or list(acceptance_criteria)
-    max_supervision_loops = 2
-    base_turn_number = session.next_turn_number()
-
-    for continuation_index in range(max_supervision_loops):
-        report_turn_number = base_turn_number + len(reports)
-        task_id = f"{args.task_id}:{report_turn_number}"
-        workdir = _build_run_workdir(run_root, turn_number=report_turn_number)
-        event_logger = CodeRunEventLogger(path=workdir / "events.jsonl")
-        run_completed = False
-
-        def _run_event_callback(event: dict[str, Any]) -> None:
-            _emit_code_event(progress_renderer, event)
-            event_logger.emit(event)
-
-        current_event_callback = _run_event_callback
-        try:
-            event_logger.emit(
-                {
-                    "event": "run.log.started",
-                    "task_id": task_id,
-                    "turn_number": report_turn_number,
-                    "objective": next_objective,
-                    "workdir": str(workdir),
-                    "repair_brief": next_repair_brief,
-                    "acceptance_criteria": list(effective_acceptance_criteria),
-                }
-            )
-            report = await _run_coding_turn(
-                args=args,
-                llm_provider=llm_provider,
+        decision, orchestrator_session = await controller.decide_user_turn(
+            session=orchestrator_session,
+            user_message=objective,
+            pending_clarification=session.pending_clarification,
+            context=_conversation_context(
+                session=session,
                 workspace_root=workspace_root,
                 model=model,
-                objective=next_objective,
-                task_id=task_id,
-                research_findings=next_research_findings,
-                evidence_summaries=[],
-                workdir=workdir,
-                acceptance_criteria=effective_acceptance_criteria,
-                tool_ids=tool_ids,
-                max_tool_rounds=max_tool_rounds,
-                max_tool_calls=max_tool_calls,
-                approval_mode=approval_mode,
                 thinking_mode=thinking_mode,
-                repair_brief=next_repair_brief,
-                stream_model_trace=bool(args.show_model_trace),
-                approval_callback=approval_callback,
-                event_callback=_run_event_callback,
-            )
-            report.event_log_path = str(event_logger.path)
-            reports.append(report)
+                tool_ids=tool_ids,
+                approval_mode=approval_mode,
+                acceptance_criteria=acceptance_criteria,
+            ),
+        )
+        _store_orchestrator_session(
+            session=session,
+            controller=controller,
+            durable_session=orchestrator_session,
+        )
 
-            review, orchestrator_session = await controller.review_coding_result(
-                session=orchestrator_session,
-                objective=next_objective,
-                report_summary=_report_context(report),
-                context=_conversation_context(
-                    session=session,
+        def _record_assistant(text: str, *, kind: str = "message") -> None:
+            cleaned = _assistant_text(text)
+            if not cleaned:
+                return
+            assistant_messages.append(cleaned)
+            session.record_message(role="assistant", text=cleaned, kind=kind)
+            _emit_assistant_message(_run_event_callback, cleaned)
+
+        if decision.public_response:
+            _record_assistant(decision.public_response)
+
+        if decision.action == "respond":
+            session.pending_clarification = None
+            return CodeConversationOutcome(
+                status="responded",
+                assistant_messages=assistant_messages,
+                question=None,
+                reports=[],
+            )
+
+        if decision.action == "clarify":
+            question = _assistant_text(decision.clarifying_question or decision.public_response)
+            session.pending_clarification = question or None
+            if question and question not in assistant_messages:
+                _record_assistant(question, kind="clarification")
+            return CodeConversationOutcome(
+                status="clarify",
+                assistant_messages=assistant_messages,
+                question=question,
+                reports=[],
+            )
+
+        session.pending_clarification = None
+        next_objective = _assistant_text(decision.coding_objective or objective)
+        next_repair_brief = _assistant_text(decision.repair_brief)
+        next_research_findings = _dedupe(
+            [*session.carry_forward_findings(), *list(decision.research_findings)]
+        )
+        effective_acceptance_criteria = _dedupe(
+            [*list(acceptance_criteria), *list(decision.acceptance_criteria)]
+        ) or list(acceptance_criteria)
+        existing_project_plan = _load_project_plan(session)
+        project_planner_session = _load_project_planner_session(
+            session=session,
+            planner=project_planner,
+        )
+        planner_decision, project_planner_session = await project_planner.plan_project(
+            session=project_planner_session,
+            user_message=objective,
+            requested_objective=next_objective,
+            requested_acceptance_criteria=effective_acceptance_criteria,
+            context=_project_planner_context(
+                session=session,
+                workspace_root=workspace_root,
+                model=model,
+                thinking_mode=thinking_mode,
+                tool_ids=tool_ids,
+                approval_mode=approval_mode,
+                acceptance_criteria=effective_acceptance_criteria,
+                existing_plan=existing_project_plan,
+            ),
+        )
+        _store_project_planner_session(
+            session=session,
+            planner=project_planner,
+            durable_session=project_planner_session,
+        )
+        project_plan = CodingProjectPlan(
+            project_goal=planner_decision.project_goal,
+            plan_summary=planner_decision.plan_summary,
+            milestones=list(planner_decision.milestones),
+            active_milestone_id=planner_decision.active_milestone_id,
+        )
+        _store_project_plan(session=session, plan=project_plan)
+        if planner_decision.public_response:
+            _record_assistant(planner_decision.public_response)
+        next_objective = _assistant_text(planner_decision.active_objective or next_objective)
+        effective_acceptance_criteria = _dedupe(
+            [
+                *list(effective_acceptance_criteria),
+                *list(planner_decision.active_acceptance_criteria),
+            ]
+        ) or list(effective_acceptance_criteria)
+        max_supervision_loops = 2
+        base_turn_number = session.next_turn_number()
+
+        for continuation_index in range(max_supervision_loops):
+            report_turn_number = base_turn_number + len(reports)
+            task_id = f"{task_id_base}:{report_turn_number}"
+            workdir = _build_run_workdir(run_root, turn_number=report_turn_number)
+            event_logger = CodeRunEventLogger(path=workdir / "events.jsonl")
+            current_event_logger = event_logger
+            run_completed = False
+            try:
+                _emit_code_event(
+                    _run_event_callback,
+                    {
+                        "event": "run.log.started",
+                        "task_id": task_id,
+                        "turn_number": report_turn_number,
+                        "objective": next_objective,
+                        "workdir": str(workdir),
+                        "repair_brief": next_repair_brief,
+                        "acceptance_criteria": list(effective_acceptance_criteria),
+                        "project_goal": project_plan.project_goal,
+                        "project_plan_summary": project_plan.plan_summary,
+                        "active_milestone_id": project_plan.active_milestone_id,
+                        "milestone_count": len(project_plan.milestones),
+                    },
+                )
+                report = await _run_coding_turn(
+                    args=args,
+                    llm_provider=llm_provider,
                     workspace_root=workspace_root,
                     model=model,
-                    thinking_mode=thinking_mode,
-                    tool_ids=tool_ids,
-                    approval_mode=approval_mode,
+                    objective=next_objective,
+                    task_id=task_id,
+                    research_findings=next_research_findings,
+                    workdir=workdir,
                     acceptance_criteria=effective_acceptance_criteria,
-                    additional_reports=reports,
-                ),
-            )
-            _store_orchestrator_session(
-                session=session,
-                controller=controller,
-                durable_session=orchestrator_session,
-            )
-            if review.public_response:
-                _record_assistant(review.public_response)
+                    tool_ids=tool_ids,
+                    evidence_summaries=evidence_summaries,
+                    max_tool_rounds=max_tool_rounds,
+                    max_tool_calls=max_tool_calls,
+                    completion_timeout_seconds=completion_timeout_seconds,
+                    approval_mode=approval_mode,
+                    thinking_mode=thinking_mode,
+                    repair_brief=next_repair_brief,
+                    benchmark_context=benchmark_context,
+                    stream_model_trace=bool(args.show_model_trace),
+                    approval_callback=approval_callback,
+                    event_callback=_run_event_callback,
+                )
+                report.event_log_path = str(event_logger.path)
+                reports.append(report)
 
-            if review.action == "continue" and continuation_index + 1 < max_supervision_loops:
-                event_logger.emit(
+                review, orchestrator_session = await controller.review_coding_result(
+                    session=orchestrator_session,
+                    objective=next_objective,
+                    report_summary=_report_context(report),
+                    context=_conversation_context(
+                        session=session,
+                        workspace_root=workspace_root,
+                        model=model,
+                        thinking_mode=thinking_mode,
+                        tool_ids=tool_ids,
+                        approval_mode=approval_mode,
+                        acceptance_criteria=effective_acceptance_criteria,
+                        additional_reports=reports,
+                    ),
+                )
+                _store_orchestrator_session(
+                    session=session,
+                    controller=controller,
+                    durable_session=orchestrator_session,
+                )
+                if review.public_response:
+                    _record_assistant(review.public_response)
+
+                if review.action == "continue" and continuation_index + 1 < max_supervision_loops:
+                    _emit_code_event(
+                        _run_event_callback,
+                        {
+                            "event": "run.log.completed",
+                            "task_id": task_id,
+                            "trace_id": report.trace_id,
+                            "status": report.status,
+                            "review_action": review.action,
+                            "candidate_id": report.candidate_id,
+                            "event_log_path": report.event_log_path,
+                        },
+                    )
+                    run_completed = True
+                    next_objective = _assistant_text(review.next_objective or next_objective)
+                    next_repair_brief = _assistant_text(
+                        review.repair_brief or report.error or next_repair_brief
+                    )
+                    next_research_findings = _dedupe(
+                        [
+                            *next_research_findings,
+                            _report_finding(report),
+                            *list(review.research_findings),
+                        ]
+                    )
+                    continue
+
+                if review.action == "clarify":
+                    question = _assistant_text(
+                        review.clarifying_question or review.public_response
+                    )
+                    session.pending_clarification = question or None
+                    if question and question not in assistant_messages:
+                        _record_assistant(question, kind="clarification")
+                    _emit_code_event(
+                        _run_event_callback,
+                        {
+                            "event": "run.log.completed",
+                            "task_id": task_id,
+                            "trace_id": report.trace_id,
+                            "status": report.status,
+                            "review_action": review.action,
+                            "candidate_id": report.candidate_id,
+                            "question": question,
+                            "event_log_path": report.event_log_path,
+                        },
+                    )
+                    run_completed = True
+                    return CodeConversationOutcome(
+                        status="clarify",
+                        assistant_messages=assistant_messages,
+                        question=question,
+                        reports=reports,
+                    )
+                _emit_code_event(
+                    _run_event_callback,
                     {
                         "event": "run.log.completed",
                         "task_id": task_id,
@@ -1477,83 +2241,37 @@ async def _run_orchestrated_turn(
                         "review_action": review.action,
                         "candidate_id": report.candidate_id,
                         "event_log_path": report.event_log_path,
-                    }
+                    },
                 )
                 run_completed = True
-                next_objective = _assistant_text(review.next_objective or next_objective)
-                next_repair_brief = _assistant_text(
-                    review.repair_brief or report.error or next_repair_brief
-                )
-                next_research_findings = _dedupe(
-                    [
-                        *next_research_findings,
-                        _report_finding(report),
-                        *list(review.research_findings),
-                    ]
-                )
-                continue
+                break
+            except Exception as exc:
+                if not run_completed:
+                    _emit_code_event(
+                        _run_event_callback,
+                        {
+                            "event": "run.log.failed",
+                            "task_id": task_id,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                        },
+                    )
+                raise
+            finally:
+                current_event_logger = None
+                event_logger.close()
 
-            if review.action == "clarify":
-                question = _assistant_text(
-                    review.clarifying_question or review.public_response
-                )
-                session.pending_clarification = question or None
-                if question and question not in assistant_messages:
-                    _record_assistant(question, kind="clarification")
-                event_logger.emit(
-                    {
-                        "event": "run.log.completed",
-                        "task_id": task_id,
-                        "trace_id": report.trace_id,
-                        "status": report.status,
-                        "review_action": review.action,
-                        "candidate_id": report.candidate_id,
-                        "question": question,
-                        "event_log_path": report.event_log_path,
-                    }
-                )
-                run_completed = True
-                return CodeConversationOutcome(
-                    status="clarify",
-                    assistant_messages=assistant_messages,
-                    question=question,
-                    reports=reports,
-                )
-            event_logger.emit(
-                {
-                    "event": "run.log.completed",
-                    "task_id": task_id,
-                    "trace_id": report.trace_id,
-                    "status": report.status,
-                    "review_action": review.action,
-                    "candidate_id": report.candidate_id,
-                    "event_log_path": report.event_log_path,
-                }
-            )
-            run_completed = True
-            break
-        except Exception as exc:
-            if not run_completed:
-                event_logger.emit(
-                    {
-                        "event": "run.log.failed",
-                        "task_id": task_id,
-                        "error_type": type(exc).__name__,
-                        "error": str(exc),
-                    }
-                )
-            raise
-        finally:
-            current_event_callback = progress_renderer
-            event_logger.close()
-
-    final_status = reports[-1].status if reports else "responded"
-    return CodeConversationOutcome(
-        status=final_status,
-        assistant_messages=assistant_messages,
-        question=question,
-        reports=reports,
-    )
+        final_status = reports[-1].status if reports else "responded"
+        return CodeConversationOutcome(
+            status=final_status,
+            assistant_messages=assistant_messages,
+            question=question,
+            reports=reports,
+        )
+    finally:
+        controller.set_event_callback(progress_renderer)
+        project_planner.set_event_callback(progress_renderer)
+        await heartbeat.stop()
 
 
 async def _run_coding_turn(
@@ -1569,8 +2287,10 @@ async def _run_coding_turn(
     workdir: Path,
     acceptance_criteria: Sequence[str],
     tool_ids: Sequence[str],
+    benchmark_context: dict[str, Any] | None = None,
     max_tool_rounds: int | None,
     max_tool_calls: int,
+    completion_timeout_seconds: float | None,
     approval_mode: str,
     thinking_mode: str,
     repair_brief: str,
@@ -1585,6 +2305,7 @@ async def _run_coding_turn(
         approval_mode=approval_mode,
         thinking_mode=thinking_mode,
         task_id=task_id,
+        benchmark_context=benchmark_context,
     )
     result = await run_coding_organism_live(
         workdir,
@@ -1602,6 +2323,7 @@ async def _run_coding_turn(
         workspace_root=workspace_root,
         max_tool_rounds=max_tool_rounds,
         max_tool_calls=max_tool_calls,
+        completion_timeout_seconds=completion_timeout_seconds,
         thinking_mode=thinking_mode,
         stream_model_trace=stream_model_trace,
         approval_callback=approval_callback,
@@ -1644,6 +2366,7 @@ def _print_session_status(
     tool_ids: Sequence[str],
     persist_session: bool,
     approval_mode: str,
+    completion_timeout_seconds: float | None,
 ) -> None:
     print(f"product: {CODE_PRODUCT_NAME}")
     print(f"workspace: {workspace_root}")
@@ -1658,6 +2381,10 @@ def _print_session_status(
     print(f"model: {model}")
     print(f"thinking mode: {thinking_mode}")
     print(f"tools: {', '.join(tool_ids) or '(none)'}")
+    if completion_timeout_seconds is None:
+        print("completion timeout: disabled")
+    else:
+        print(f"completion timeout: {float(completion_timeout_seconds):.2f}s")
     print(f"approval mode: {approval_mode}")
     if session.pending_clarification:
         print(f"pending clarification: {session.pending_clarification}")
@@ -1785,6 +2512,10 @@ def _initialize_product_config(
             args.max_tool_calls,
             product_config=product_config,
         ),
+        completion_timeout_seconds=_effective_completion_timeout_seconds(
+            args.completion_timeout_seconds,
+            product_config=product_config,
+        ),
     )
     write_code_product_config(product_paths, config)
     return config
@@ -1801,6 +2532,7 @@ def _resolved_config_payload(
     acceptance_criteria: Sequence[str],
     max_tool_rounds: int | None,
     max_tool_calls: int,
+    completion_timeout_seconds: float | None,
     thinking_mode: str,
     persist_session: bool,
     approval_mode: str,
@@ -1831,6 +2563,7 @@ def _resolved_config_payload(
         "acceptance_criteria": list(acceptance_criteria),
         "max_tool_rounds": max_tool_rounds,
         "max_tool_calls": int(max_tool_calls),
+        "completion_timeout_seconds": completion_timeout_seconds,
         "approval_mode": approval_mode,
         "saved_turns": len(session.turns) if session is not None else 0,
     }
@@ -1854,6 +2587,11 @@ def _print_config_payload(payload: dict[str, Any], *, as_json: bool) -> None:
         + (str(max_tool_rounds) if max_tool_rounds is not None else "unbounded")
     )
     print(f"max tool calls: {payload['max_tool_calls']}")
+    timeout_seconds = payload.get("completion_timeout_seconds")
+    if timeout_seconds is None:
+        print("completion timeout: disabled")
+    else:
+        print(f"completion timeout: {float(timeout_seconds):.2f}s")
     print(f"approval mode: {payload['approval_mode']}")
     print(f"saved turns: {payload['saved_turns']}")
     print(f"session persistence: {'enabled' if payload['persist_session'] else 'disabled'}")
@@ -1863,6 +2601,7 @@ def _interactive_loop(
     *,
     args,
     controller: CodingConversationController,
+    project_planner: CodingProjectPlannerController,
     llm_provider: LLMProvider,
     workspace_root: Path,
     model: str,
@@ -1873,6 +2612,7 @@ def _interactive_loop(
     acceptance_criteria: Sequence[str],
     max_tool_rounds: int | None,
     max_tool_calls: int,
+    completion_timeout_seconds: float | None,
     persist_session: bool,
     run_root: Path,
     approval_state: CodeToolApprovalState,
@@ -1916,6 +2656,7 @@ def _interactive_loop(
                 tool_ids=tool_ids,
                 persist_session=persist_session,
                 approval_mode=approval_mode,
+                completion_timeout_seconds=completion_timeout_seconds,
             )
             continue
         if objective == "/history":
@@ -1934,6 +2675,7 @@ def _interactive_loop(
             _run_orchestrated_turn(
                 args=args,
                 controller=controller,
+                project_planner=project_planner,
                 llm_provider=llm_provider,
                 workspace_root=workspace_root,
                 model=model,
@@ -1941,11 +2683,15 @@ def _interactive_loop(
                 session=session,
                 tool_ids=tool_ids,
                 acceptance_criteria=acceptance_criteria,
+                evidence_summaries=[],
                 max_tool_rounds=max_tool_rounds,
                 max_tool_calls=max_tool_calls,
+                completion_timeout_seconds=completion_timeout_seconds,
                 approval_mode=approval_mode,
                 thinking_mode=thinking_mode,
                 run_root=run_root,
+                task_id_base=str(args.task_id),
+                benchmark_context=None,
                 approval_callback=approval_state,
                 progress_renderer=progress_renderer,
             )
@@ -2006,6 +2752,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.max_tool_calls,
         product_config=product_config,
     )
+    completion_timeout_seconds = _effective_completion_timeout_seconds(
+        args.completion_timeout_seconds,
+        product_config=product_config,
+    )
     try:
         thinking_mode = _effective_thinking_mode(
             args.thinking_mode,
@@ -2015,8 +2765,44 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(str(exc))
     approval_mode = _effective_approval_mode(
         args.approval_mode,
-        interactive=args.objective is None,
+        interactive=args.objective is None and not bool(args.swebench_instance_file),
     )
+    swebench: SweBenchRunContext | None = None
+    run_objective = str(args.objective or "").strip() or None
+    task_id_base = str(args.task_id or "").strip() or "coding-organ-task"
+    if args.swebench_instance_file:
+        try:
+            instance_path = _resolve_user_path(
+                args.swebench_instance_file,
+                base_dir=workspace_root,
+            )
+            predictions_path = (
+                _resolve_user_path(
+                    args.swebench_predictions_path,
+                    base_dir=workspace_root,
+                )
+                if args.swebench_predictions_path
+                else None
+            )
+            swebench_instance = _load_swebench_instance(
+                instance_path,
+                base_dir=workspace_root,
+            )
+            swebench = _build_swebench_context(
+                swebench_instance,
+                instance_file=instance_path,
+                predictions_path=predictions_path,
+                operator_objective=run_objective,
+                task_id_base=(
+                    swebench_instance.instance_id
+                    if task_id_base == "coding-organ-task"
+                    else task_id_base
+                ),
+            )
+        except Exception as exc:
+            parser.error(str(exc))
+        run_objective = swebench.objective
+        task_id_base = swebench.task_id_base
 
     if args.init:
         config = _initialize_product_config(
@@ -2036,6 +2822,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 acceptance_criteria=config.acceptance_criteria,
                 max_tool_rounds=config.max_tool_rounds,
                 max_tool_calls=config.max_tool_calls,
+                completion_timeout_seconds=config.completion_timeout_seconds,
                 thinking_mode=config.thinking_mode,
                 persist_session=persist_session,
                 approval_mode=approval_mode,
@@ -2056,6 +2843,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             acceptance_criteria=acceptance_criteria,
             max_tool_rounds=max_tool_rounds,
             max_tool_calls=max_tool_calls,
+            completion_timeout_seconds=completion_timeout_seconds,
             thinking_mode=thinking_mode,
             persist_session=persist_session,
             approval_mode=approval_mode,
@@ -2091,15 +2879,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         model=live_model,
         stream_text_responses=bool(args.show_model_trace),
         provider_request_overrides=_provider_request_overrides_for_thinking_mode(
-            thinking_mode
+            thinking_mode,
+            completion_timeout_seconds=completion_timeout_seconds,
+        ),
+        event_callback=progress_renderer,
+    )
+    project_planner = CodingProjectPlannerController(
+        provider=provider,
+        model=live_model,
+        stream_text_responses=bool(args.show_model_trace),
+        provider_request_overrides=_provider_request_overrides_for_thinking_mode(
+            thinking_mode,
+            completion_timeout_seconds=completion_timeout_seconds,
         ),
         event_callback=progress_renderer,
     )
 
-    if args.objective is None:
+    effective_acceptance_criteria = _dedupe(
+        [
+            *list(acceptance_criteria),
+            *list(swebench.acceptance_criteria if swebench is not None else []),
+        ]
+    ) or list(acceptance_criteria)
+    effective_evidence_summaries = _dedupe(
+        [
+            *list(args.evidence_summaries),
+            *list(swebench.evidence_summaries if swebench is not None else []),
+        ]
+    )
+
+    if run_objective is None:
         return _interactive_loop(
             args=args,
             controller=conversation_controller,
+            project_planner=project_planner,
             llm_provider=provider,
             workspace_root=workspace_root,
             model=live_model,
@@ -2107,9 +2920,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             session=session,
             product_paths=product_paths,
             tool_ids=tool_ids,
-            acceptance_criteria=acceptance_criteria,
+            acceptance_criteria=effective_acceptance_criteria,
             max_tool_rounds=max_tool_rounds,
             max_tool_calls=max_tool_calls,
+            completion_timeout_seconds=completion_timeout_seconds,
             persist_session=persist_session,
             run_root=run_root,
             approval_state=approval_state,
@@ -2121,22 +2935,37 @@ def main(argv: Sequence[str] | None = None) -> int:
         _run_orchestrated_turn(
             args=args,
             controller=conversation_controller,
+            project_planner=project_planner,
             llm_provider=provider,
             workspace_root=workspace_root,
             model=live_model,
-            objective=str(args.objective),
+            objective=run_objective,
             session=session,
             tool_ids=tool_ids,
-            acceptance_criteria=acceptance_criteria,
+            acceptance_criteria=effective_acceptance_criteria,
+            evidence_summaries=effective_evidence_summaries,
             max_tool_rounds=max_tool_rounds,
             max_tool_calls=max_tool_calls,
+            completion_timeout_seconds=completion_timeout_seconds,
             approval_mode=approval_mode,
             thinking_mode=thinking_mode,
             run_root=run_root,
+            task_id_base=task_id_base,
+            benchmark_context=(
+                swebench.benchmark_context if swebench is not None else None
+            ),
             approval_callback=approval_state,
             progress_renderer=progress_renderer,
         )
     )
+    if swebench is not None:
+        for report in outcome.reports:
+            _write_swebench_artifacts(
+                report,
+                swebench=swebench,
+                workspace_root=workspace_root,
+                model=live_model,
+            )
     for report in outcome.reports:
         session.record_turn(report)
         if persist_session:
