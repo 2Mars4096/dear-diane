@@ -11,6 +11,7 @@ import sys
 _SUBCOMMANDS = {
     "bot": ("dan.cli.bot", "main"),
     "code": ("dan.cli.code", "main"),
+    "research": ("dan.cli.research", "main"),
     "serve": ("dan.server.__main__", "main"),
     "run": ("dan.cli.run", "main"),
     "chat": ("dan.cli.chat", "main"),
@@ -51,6 +52,7 @@ def _print_help() -> None:
     print("Subcommands:")
     print("  bot        Manage Telegram bot fleet")
     print("  code       Run the DAN Code coding CLI")
+    print("  research   Run the DAN Research deep-research CLI")
     print("  serve      Start the DAN server")
     print("  run        Run a workflow")
     print("  chat       Interactive chat session")
