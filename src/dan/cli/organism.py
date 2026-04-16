@@ -17,11 +17,15 @@ from dan.worker.organisms.reference_demo import (
     DEFAULT_REFERENCE_ACCEPTANCE_CRITERIA,
     DEFAULT_REFERENCE_EVIDENCE_SUMMARIES,
     DEFAULT_REFERENCE_HARD_CONSTRAINTS,
+    MAX_DEEP_RESEARCH_READERS,
     DEFAULT_REFERENCE_OBJECTIVE,
     DEFAULT_REFERENCE_SOFT_CONSTRAINTS,
     DEFAULT_REFERENCE_VALIDATION_COMMANDS,
+    DeepResearchOrganDemoReport,
     available_local_organism_tools,
     build_reference_organism_demo_task,
+    run_deep_research_organ_demo,
+    run_deep_research_organ_live,
     run_reference_organism_demo,
     run_reference_organism_live,
 )
@@ -108,6 +112,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the organism against a live provider plus local tools instead of the deterministic demo provider.",
     )
     parser.add_argument(
+        "--research-only",
+        action="store_true",
+        help="Run only the bounded deep-research organ instead of the full reference organism.",
+    )
+    parser.add_argument(
+        "--research-readers",
+        type=int,
+        help=(
+            f"Override the deep-research reader count (1-{MAX_DEEP_RESEARCH_READERS}). "
+            "By default the connector sizes reader fan-out from task breadth."
+        ),
+    )
+    parser.add_argument(
         "--workspace",
         help="Workspace root for live local tool calls. Defaults to DAN_WORKSPACE_ROOT or the current directory.",
     )
@@ -160,7 +177,7 @@ def _non_empty(values: list[str], defaults: list[str]) -> list[str]:
     return cleaned or list(defaults)
 
 
-def _print_report(report: dict[str, object]) -> None:
+def _print_reference_report(report: dict[str, object]) -> None:
     print(f"Status: {report['status']}")
     print(f"Trace ID: {report['trace_id']}")
     if report.get("selected_attempt") is not None:
@@ -177,6 +194,17 @@ def _print_report(report: dict[str, object]) -> None:
     stages = " -> ".join(report.get("stage_sequence") or []) or "(none)"
     print(f"Stages: {stages}")
     print("\nFinal Output:")
+    print(json.dumps(report.get("final_output") or {}, indent=2, ensure_ascii=False, sort_keys=True))
+
+
+def _print_research_report(report: dict[str, object]) -> None:
+    print(f"Status: {report['status']}")
+    print(f"Trace ID: {report['trace_id']}")
+    print(f"Handoffs: {report.get('handoff_count')} | Signals: {report.get('signal_count')}")
+    if report.get("selected_reader_count") is not None:
+        print(f"Readers: {report.get('selected_reader_count')}")
+    print(f"Output Refs: {', '.join(report.get('output_ref_ids') or []) or '(none)'}")
+    print("\nResearch Output:")
     print(json.dumps(report.get("final_output") or {}, indent=2, ensure_ascii=False, sort_keys=True))
 
 
@@ -242,6 +270,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.list_tools:
         _print_tool_catalog(as_json=bool(args.json))
         return 0
+    if args.research_readers is not None and not (1 <= args.research_readers <= MAX_DEEP_RESEARCH_READERS):
+        parser.error(
+            f"--research-readers must be between 1 and {MAX_DEEP_RESEARCH_READERS}"
+        )
 
     workdir = Path(args.workdir).expanduser()
     resolved_config = resolve_config(workspace=args.workspace)
@@ -268,28 +300,57 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         except Exception as exc:
             parser.error(str(exc))
-        report = asyncio.run(
-            run_reference_organism_live(
-                workdir,
-                llm_provider=provider,
-                task=task,
-                model=live_model,
-                organism_id=str(args.organism_id),
-                tool_ids=_effective_live_tool_ids(args.tool_ids),
-                workspace_root=workspace_root,
-                max_tool_rounds=args.max_tool_rounds,
-                max_tool_calls=args.max_tool_calls,
+        if args.research_only:
+            report = asyncio.run(
+                run_deep_research_organ_live(
+                    workdir,
+                    llm_provider=provider,
+                    task=task,
+                    model=live_model,
+                    organism_id=str(args.organism_id),
+                    tool_ids=_effective_live_tool_ids(args.tool_ids),
+                    workspace_root=workspace_root,
+                    max_tool_rounds=args.max_tool_rounds,
+                    max_tool_calls=args.max_tool_calls,
+                    research_reader_count=args.research_readers,
+                )
             )
-        )
+        else:
+            report = asyncio.run(
+                run_reference_organism_live(
+                    workdir,
+                    llm_provider=provider,
+                    task=task,
+                    model=live_model,
+                    organism_id=str(args.organism_id),
+                    tool_ids=_effective_live_tool_ids(args.tool_ids),
+                    workspace_root=workspace_root,
+                    max_tool_rounds=args.max_tool_rounds,
+                    max_tool_calls=args.max_tool_calls,
+                    research_reader_count=args.research_readers,
+                )
+            )
     else:
-        report = asyncio.run(
-            run_reference_organism_demo(
-                workdir,
-                task=task,
-                model=str(args.model),
-                organism_id=str(args.organism_id),
+        if args.research_only:
+            report = asyncio.run(
+                run_deep_research_organ_demo(
+                    workdir,
+                    task=task,
+                    model=str(args.model),
+                    organism_id=str(args.organism_id),
+                    research_reader_count=args.research_readers,
+                )
             )
-        )
+        else:
+            report = asyncio.run(
+                run_reference_organism_demo(
+                    workdir,
+                    task=task,
+                    model=str(args.model),
+                    organism_id=str(args.organism_id),
+                    research_reader_count=args.research_readers,
+                )
+            )
     payload = report.model_dump(mode="json")
 
     if args.output:
@@ -300,7 +361,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.json:
         print(report.model_dump_json(indent=2))
     else:
-        _print_report(payload)
+        if isinstance(report, DeepResearchOrganDemoReport):
+            _print_research_report(payload)
+        else:
+            _print_reference_report(payload)
 
     return 0 if report.status == "completed" else 1
 

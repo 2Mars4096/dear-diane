@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -280,7 +281,35 @@ async def execute_cell_handoff(
     if trace_log is not None:
         trace_log.record_signal(accepted)
 
-    result = await executor.execute(worker, request)
+    runtime_budget_seconds = packet.budget_limits.max_runtime_seconds
+    if runtime_budget_seconds is None:
+        result = await executor.execute(worker, request)
+    else:
+        execution_task = asyncio.create_task(executor.execute(worker, request))
+        try:
+            result = await asyncio.wait_for(
+                execution_task,
+                timeout=float(runtime_budget_seconds),
+            )
+        except asyncio.TimeoutError:
+            execution_task.cancel()
+            try:
+                await execution_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+            result = WorkerExecutionResult(
+                status="failed",
+                error=(
+                    "runtime_budget_exceeded: "
+                    f"{packet.recipient.cell_id} exceeded {int(runtime_budget_seconds)}s"
+                ),
+                metadata={
+                    "runtime_budget_seconds": int(runtime_budget_seconds),
+                    "worker_id": worker.id,
+                },
+            )
     if result.status == "completed":
         terminal_signal = make_completion_signal(packet, result, output_refs=output_refs)
     else:

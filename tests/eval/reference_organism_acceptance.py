@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from dan.worker import (
     CrossCellTraceLog,
     EvidenceRef,
+    recommended_deep_research_reader_count,
     ProjectExecutionTask,
     WorkerCoreExecutor,
     execute_project_execution_organism,
@@ -66,14 +67,9 @@ class _ReferenceOrganismCompletionProvider:
                 raw={"worker_id": worker_id},
             )
 
-        if worker_id == "deep-research.reader-a":
+        if worker_id.startswith("deep-research.reader-"):
             return CompletionResponse(
-                text="The defect is that the candidate fix must carry an explicit focused test command.",
-                raw={"worker_id": worker_id},
-            )
-        if worker_id == "deep-research.reader-b":
-            return CompletionResponse(
-                text="The acceptance bar also requires the delivery summary to name missing requirements and residual risk.",
+                text="Grounded research note.",
                 raw={"worker_id": worker_id},
             )
         if worker_id == "deep-research.lead":
@@ -85,7 +81,66 @@ class _ReferenceOrganismCompletionProvider:
                             "The final delivery must preserve missing-requirement and residual-risk reporting.",
                         ],
                         "evidence_summary": ["brief:issue", "brief:acceptance", "brief:test-gap"],
+                        "evidence_refs": ["brief:issue", "brief:acceptance", "brief:test-gap"],
+                        "contradictions": [],
                         "open_questions": ["No blocking open questions remain after the supplied evidence."],
+                        "verification_facts": [
+                            {
+                                "fact": "A passing candidate must name a focused validation command.",
+                                "status": "verified",
+                                "source": "brief:test-gap",
+                                "as_of": "",
+                                "note": "Explicitly supported by the supplied validation-gap brief.",
+                            }
+                        ],
+                        "audit_issues": [],
+                        "quality_gates": [
+                            {
+                                "gate": "time_anchor",
+                                "status": "pass",
+                                "summary": "The deterministic acceptance run is grounded in supplied static evidence.",
+                                "evidence_ref": "brief:issue",
+                                "required_follow_up": "",
+                            },
+                            {
+                                "gate": "scope_boundary",
+                                "status": "pass",
+                                "summary": "The scope is limited to the supplied repo-change acceptance task.",
+                                "evidence_ref": "brief:acceptance",
+                                "required_follow_up": "",
+                            },
+                            {
+                                "gate": "source_authority",
+                                "status": "pass",
+                                "summary": "The supplied acceptance fixture is the source of truth.",
+                                "evidence_ref": "brief:test-gap",
+                                "required_follow_up": "",
+                            },
+                            {
+                                "gate": "numeric_reconciliation",
+                                "status": "not_applicable",
+                                "summary": "No numeric conflict is present.",
+                                "evidence_ref": "",
+                                "required_follow_up": "",
+                            },
+                            {
+                                "gate": "claim_object_fit",
+                                "status": "pass",
+                                "summary": "The recommendation maps to the explicit validation command gap.",
+                                "evidence_ref": "brief:test-gap",
+                                "required_follow_up": "",
+                            },
+                            {
+                                "gate": "final_status",
+                                "status": "pass",
+                                "summary": "Grounded bounded report.",
+                                "evidence_ref": "brief:test-gap",
+                                "required_follow_up": "",
+                            },
+                        ],
+                        "report_readiness": "grounded",
+                        "readiness_note": "The supplied evidence is internally consistent and specific enough for a bounded grounded report.",
+                        "confidence": 0.88,
                         "recommended_change": "Route the repair loop through a candidate that adds explicit validation steps and final reporting.",
                     },
                     sort_keys=True,
@@ -250,13 +305,17 @@ def _task(tmp_path: Path) -> ProjectExecutionTask:
 async def run_reference_organism_acceptance(tmp_path: Path) -> ReferenceOrganismAcceptanceReport:
     provider = _ReferenceOrganismCompletionProvider()
     executor = WorkerCoreExecutor(completion_provider=provider)
-    organism = project_execution_reference_organism(model="stub-model")
+    task = _task(tmp_path)
+    organism = project_execution_reference_organism(
+        model="stub-model",
+        research_reader_count=recommended_deep_research_reader_count(task),
+    )
     trace_log = CrossCellTraceLog()
 
     execution = await execute_project_execution_organism(
         executor=executor,
         organism=organism,
-        task=_task(tmp_path),
+        task=task,
         trace_log=trace_log,
     )
     assert execution.result is not None

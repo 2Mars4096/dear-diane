@@ -17,6 +17,7 @@ from dan.worker.core.contracts import (
     OutputContract,
 )
 from dan.worker.core.interfaces import CompletionRequest, CompletionResponse
+from dan.worker.core.model import WorkerDefinition
 from dan.worker.core.structured_output import (
     has_structured_output_schema,
     validate_structured_output,
@@ -27,6 +28,9 @@ from dan.worker.structured_payload import parse_jsonish_payload
 
 DEFAULT_CONTROL_HEDGE_MAX_ATTEMPTS = 2
 DEFAULT_CONTROL_HEDGE_DELAY_SECONDS = 2.0
+_PROJECT_MILESTONE_STATUSES = frozenset(
+    {"pending", "active", "completed", "blocked"}
+)
 
 
 def _clean_text(value: Any) -> str:
@@ -203,6 +207,30 @@ def _continue_review_response(report_summary: "CodingConversationReportSummary")
     )
 
 
+def build_coding_project_planner_worker(
+    *,
+    worker_id: str,
+    model: str | None,
+) -> WorkerDefinition:
+    """Shared DAN Code project planner on the universal-agent substrate."""
+
+    return WorkerDefinition(
+        id=worker_id,
+        role="coding_project_planner",
+        instruction=(
+            "You are the DAN Code project planner on top of the universal worker substrate. "
+            "Given the user's coding request, recent conversation/report context, and any "
+            "existing milestone plan, produce a short rolling milestone plan and choose the "
+            "next concrete bounded slice to execute now. Keep plans compact, practical, and "
+            "execution-first: usually 1-5 milestones. Reuse and update an existing plan when "
+            "it still fits instead of rebuilding it from scratch. Mark already-finished "
+            "milestones as completed when the supplied recent reports justify that conclusion. "
+            "The active objective must be one concrete bounded milestone, not the whole project."
+        ),
+        model=model,
+    )
+
+
 class ProviderCompletionAdapter:
     """Minimal completion adapter for the durable orchestrator agent."""
 
@@ -229,6 +257,9 @@ class ProviderCompletionAdapter:
         if self._event_callback is None:
             return
         self._event_callback({"event": event, **payload})
+
+    def set_event_callback(self, event_callback) -> None:
+        self._event_callback = event_callback
 
     def _is_acceptable_response(
         self,
@@ -567,6 +598,25 @@ class CodingConversationReviewDecision(BaseModel):
     repair_brief: str = ""
 
 
+class CodingProjectMilestone(BaseModel):
+    """One project-level milestone for DAN Code."""
+
+    milestone_id: str = ""
+    title: str = ""
+    objective: str = ""
+    acceptance_criteria: list[str] = Field(default_factory=list)
+    status: str = "pending"
+
+
+class CodingProjectPlan(BaseModel):
+    """Rolling project plan persisted by DAN Code."""
+
+    project_goal: str = ""
+    plan_summary: str = ""
+    milestones: list[CodingProjectMilestone] = Field(default_factory=list)
+    active_milestone_id: str | None = None
+
+
 class CodingConversationMessage(BaseModel):
     """Minimal conversation packet shared between the CLI shell and orchestrator."""
 
@@ -629,6 +679,33 @@ class CodingConversationContext(BaseModel):
     facts: CodingConversationFacts
     recent_conversation: list[CodingConversationMessage] = Field(default_factory=list)
     recent_reports: list[CodingConversationReportSummary] = Field(default_factory=list)
+
+
+class CodingProjectPlannerContext(BaseModel):
+    """Shared shell/runtime context for the project planner."""
+
+    workspace_root: str
+    model: str
+    thinking_mode: str
+    tool_ids: list[str] = Field(default_factory=list)
+    acceptance_criteria: list[str] = Field(default_factory=list)
+    pending_clarification: str | None = None
+    facts: CodingConversationFacts
+    recent_conversation: list[CodingConversationMessage] = Field(default_factory=list)
+    recent_reports: list[CodingConversationReportSummary] = Field(default_factory=list)
+    existing_plan: CodingProjectPlan | None = None
+
+
+class CodingProjectPlannerDecision(BaseModel):
+    """Project-planner output for the next DAN Code coding slice."""
+
+    public_response: str = ""
+    project_goal: str = ""
+    plan_summary: str = ""
+    milestones: list[CodingProjectMilestone] = Field(default_factory=list)
+    active_milestone_id: str | None = None
+    active_objective: str = ""
+    active_acceptance_criteria: list[str] = Field(default_factory=list)
 
 
 def _conversation_turn_schema() -> dict[str, Any]:
@@ -734,6 +811,298 @@ def _conversation_review_contract() -> OutputContract:
             sort_keys=True,
         ),
         output_schema=_conversation_review_schema(),
+    )
+
+
+def _project_planner_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "public_response": {"type": "string"},
+            "project_goal": {"type": "string"},
+            "plan_summary": {"type": "string"},
+            "milestones": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "milestone_id": {"type": "string"},
+                        "title": {"type": "string"},
+                        "objective": {"type": "string"},
+                        "acceptance_criteria": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "status": {"type": "string"},
+                    },
+                    "required": ["objective"],
+                },
+            },
+            "active_milestone_id": {"type": "string"},
+            "active_objective": {"type": "string"},
+            "active_acceptance_criteria": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        },
+        "required": ["public_response", "milestones"],
+    }
+
+
+def _project_planner_contract() -> OutputContract:
+    return OutputContract(
+        definition_of_done=(
+            "Given the raw user turn, the requested coding objective chosen by the "
+            "conversation orchestrator, recent context, and any existing plan, return a "
+            "short rolling milestone plan plus the next bounded milestone to execute now. "
+            "For small tasks, a single milestone is enough. Reuse and update the existing "
+            "plan when it still applies."
+        ),
+        expected_return_shape=json.dumps(
+            {
+                "public_response": "<required>",
+                "project_goal": "<optional>",
+                "plan_summary": "<optional>",
+                "milestones": [
+                    {
+                        "milestone_id": "<optional>",
+                        "title": "<optional>",
+                        "objective": "<required>",
+                        "acceptance_criteria": ["<optional>"],
+                        "status": "pending|active|completed|blocked",
+                    }
+                ],
+                "active_milestone_id": "<optional>",
+                "active_objective": "<optional>",
+                "active_acceptance_criteria": ["<optional>"],
+            },
+            sort_keys=True,
+        ),
+        output_schema=_project_planner_schema(),
+    )
+
+
+def _coerce_text_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return _dedupe([value])
+    if isinstance(value, (list, tuple, set)):
+        return _dedupe([str(item) for item in value])
+    return _dedupe([str(value)])
+
+
+def _normalize_project_plan(
+    *,
+    project_goal: str,
+    plan_summary: str,
+    milestones_payload: Any,
+    active_milestone_id: str | None,
+    fallback_objective: str,
+    fallback_acceptance_criteria: list[str],
+) -> CodingProjectPlan:
+    normalized_milestones: list[CodingProjectMilestone] = []
+    active_id = _clean_text(active_milestone_id)
+    raw_items = list(milestones_payload) if isinstance(milestones_payload, list) else []
+    for index, raw_item in enumerate(raw_items[:5], start=1):
+        if not isinstance(raw_item, dict):
+            continue
+        objective = _clean_text(
+            raw_item.get("objective")
+            or raw_item.get("brief")
+            or raw_item.get("title")
+        )
+        if not objective:
+            continue
+        milestone_id = _clean_text(raw_item.get("milestone_id") or raw_item.get("id"))
+        if not milestone_id:
+            milestone_id = f"m{index}"
+        status = _clean_text(raw_item.get("status")).lower() or "pending"
+        if status not in _PROJECT_MILESTONE_STATUSES:
+            status = "pending"
+        normalized_milestones.append(
+            CodingProjectMilestone(
+                milestone_id=milestone_id,
+                title=_clean_text(raw_item.get("title")),
+                objective=objective,
+                acceptance_criteria=_coerce_text_list(raw_item.get("acceptance_criteria")),
+                status=status,
+            )
+        )
+
+    fallback_goal = _clean_text(project_goal) or fallback_objective
+    if not normalized_milestones and fallback_objective:
+        normalized_milestones = [
+            CodingProjectMilestone(
+                milestone_id="m1",
+                title="Current slice",
+                objective=fallback_objective,
+                acceptance_criteria=list(fallback_acceptance_criteria),
+                status="active",
+            )
+        ]
+        active_id = "m1"
+
+    if normalized_milestones:
+        milestone_ids = {item.milestone_id for item in normalized_milestones}
+        if active_id not in milestone_ids:
+            preferred = next(
+                (
+                    item.milestone_id
+                    for item in normalized_milestones
+                    if item.status == "active"
+                ),
+                None,
+            )
+            if preferred is None:
+                preferred = next(
+                    (
+                        item.milestone_id
+                        for item in normalized_milestones
+                        if item.status not in {"completed", "blocked"}
+                    ),
+                    normalized_milestones[0].milestone_id,
+                )
+            active_id = preferred
+
+        normalized_statuses: list[CodingProjectMilestone] = []
+        for item in normalized_milestones:
+            status = item.status
+            if item.milestone_id == active_id and status != "completed":
+                status = "active"
+            elif status == "active":
+                status = "pending"
+            normalized_statuses.append(item.model_copy(update={"status": status}))
+        normalized_milestones = normalized_statuses
+
+    return CodingProjectPlan(
+        project_goal=fallback_goal,
+        plan_summary=_clean_text(plan_summary),
+        milestones=normalized_milestones,
+        active_milestone_id=active_id or None,
+    )
+
+
+def _active_milestone(plan: CodingProjectPlan | None) -> CodingProjectMilestone | None:
+    if plan is None or not plan.milestones:
+        return None
+    active_id = _clean_text(plan.active_milestone_id)
+    if active_id:
+        for milestone in plan.milestones:
+            if (
+                milestone.milestone_id == active_id
+                and milestone.status not in {"completed", "blocked"}
+            ):
+                return milestone
+    for milestone in plan.milestones:
+        if milestone.status == "active":
+            return milestone
+    for milestone in plan.milestones:
+        if milestone.status not in {"completed", "blocked"}:
+            return milestone
+    return plan.milestones[-1]
+
+
+def _fallback_project_planner_decision(
+    *,
+    user_message: str,
+    requested_objective: str,
+    requested_acceptance_criteria: list[str],
+    existing_plan: CodingProjectPlan | None,
+) -> CodingProjectPlannerDecision:
+    plan = existing_plan
+    active = _active_milestone(plan)
+    if active is None:
+        fallback_objective = _clean_text(requested_objective) or _clean_text(user_message)
+        plan = _normalize_project_plan(
+            project_goal=fallback_objective,
+            plan_summary="Treat this as one bounded milestone for now.",
+            milestones_payload=[],
+            active_milestone_id=None,
+            fallback_objective=fallback_objective,
+            fallback_acceptance_criteria=list(requested_acceptance_criteria),
+        )
+        active = _active_milestone(plan)
+    assert plan is not None
+    assert active is not None
+    milestone_count = len(plan.milestones)
+    response = (
+        "I’ll continue with the next milestone from the saved project plan."
+        if existing_plan is not None and milestone_count > 1
+        else "I’ll treat this as one bounded milestone for now."
+    )
+    return CodingProjectPlannerDecision(
+        public_response=response,
+        project_goal=plan.project_goal,
+        plan_summary=plan.plan_summary,
+        milestones=list(plan.milestones),
+        active_milestone_id=active.milestone_id,
+        active_objective=active.objective,
+        active_acceptance_criteria=list(active.acceptance_criteria or requested_acceptance_criteria),
+    )
+
+
+def _normalize_project_planner_decision(
+    payload: dict[str, Any],
+    *,
+    user_message: str,
+    requested_objective: str,
+    requested_acceptance_criteria: list[str],
+    existing_plan: CodingProjectPlan | None,
+) -> CodingProjectPlannerDecision:
+    normalized_payload = dict(payload or {})
+    fallback_objective = _clean_text(requested_objective) or _clean_text(user_message)
+    try:
+        validated = CodingProjectPlannerDecision.model_validate(normalized_payload)
+    except Exception:
+        return _fallback_project_planner_decision(
+            user_message=user_message,
+            requested_objective=requested_objective,
+            requested_acceptance_criteria=requested_acceptance_criteria,
+            existing_plan=existing_plan,
+        )
+
+    plan = _normalize_project_plan(
+        project_goal=_clean_text(validated.project_goal) or fallback_objective,
+        plan_summary=_clean_text(validated.plan_summary),
+        milestones_payload=[item.model_dump(mode="json") for item in validated.milestones],
+        active_milestone_id=validated.active_milestone_id,
+        fallback_objective=fallback_objective,
+        fallback_acceptance_criteria=list(requested_acceptance_criteria),
+    )
+    active = _active_milestone(plan)
+    if active is None:
+        return _fallback_project_planner_decision(
+            user_message=user_message,
+            requested_objective=requested_objective,
+            requested_acceptance_criteria=requested_acceptance_criteria,
+            existing_plan=existing_plan,
+        )
+
+    active_objective = _clean_text(validated.active_objective) or active.objective
+    active_acceptance_criteria = _dedupe(
+        [
+            *list(requested_acceptance_criteria),
+            *_coerce_text_list(validated.active_acceptance_criteria),
+            *list(active.acceptance_criteria),
+        ]
+    )
+    public_response = (
+        _clean_text(validated.public_response)
+        or (
+            "I split this into milestones and I’m starting with the next bounded slice."
+            if len(plan.milestones) > 1
+            else "I’ll start with one bounded milestone."
+        )
+    )
+    return CodingProjectPlannerDecision(
+        public_response=public_response,
+        project_goal=plan.project_goal,
+        plan_summary=plan.plan_summary,
+        milestones=list(plan.milestones),
+        active_milestone_id=active.milestone_id,
+        active_objective=active_objective,
+        active_acceptance_criteria=active_acceptance_criteria,
     )
 
 
@@ -970,20 +1339,21 @@ class CodingConversationController:
             worker_id="dan-code.orchestrator",
             model=str(model),
         )
+        self._completion_adapter = ProviderCompletionAdapter(
+            provider=provider,
+            default_model=str(model),
+            stream_text_responses=stream_text_responses,
+            provider_request_overrides=provider_request_overrides,
+            hedge_max_attempts=_resolve_control_hedge_max_attempts(
+                hedge_max_attempts
+            ),
+            hedge_delay_seconds=_resolve_control_hedge_delay_seconds(
+                hedge_delay_seconds
+            ),
+            event_callback=event_callback,
+        )
         self._runner = DurableAgentRunner(
-            completion_provider=ProviderCompletionAdapter(
-                provider=provider,
-                default_model=str(model),
-                stream_text_responses=stream_text_responses,
-                provider_request_overrides=provider_request_overrides,
-                hedge_max_attempts=_resolve_control_hedge_max_attempts(
-                    hedge_max_attempts
-                ),
-                hedge_delay_seconds=_resolve_control_hedge_delay_seconds(
-                    hedge_delay_seconds
-                ),
-                event_callback=event_callback,
-            )
+            completion_provider=self._completion_adapter
         )
 
     def create_session(self, *, metadata: dict[str, Any] | None = None) -> DurableAgentSessionState:
@@ -998,6 +1368,9 @@ class CodingConversationController:
     @staticmethod
     def dump_session(session: DurableAgentSessionState) -> dict[str, Any]:
         return session.model_dump(mode="json")
+
+    def set_event_callback(self, event_callback) -> None:
+        self._completion_adapter.set_event_callback(event_callback)
 
     async def decide_user_turn(
         self,
@@ -1078,11 +1451,116 @@ class CodingConversationController:
         )
 
 
+class CodingProjectPlannerController:
+    """Durable milestone planner for DAN Code project-sized tasks."""
+
+    def __init__(
+        self,
+        *,
+        provider: LLMProvider,
+        model: str,
+        stream_text_responses: bool = False,
+        provider_request_overrides: dict[str, Any] | None = None,
+        hedge_max_attempts: int | None = None,
+        hedge_delay_seconds: float | None = None,
+        event_callback=None,
+    ) -> None:
+        self._worker = build_coding_project_planner_worker(
+            worker_id="dan-code.project-planner",
+            model=str(model),
+        )
+        self._completion_adapter = ProviderCompletionAdapter(
+            provider=provider,
+            default_model=str(model),
+            stream_text_responses=stream_text_responses,
+            provider_request_overrides=provider_request_overrides,
+            hedge_max_attempts=_resolve_control_hedge_max_attempts(
+                hedge_max_attempts
+            ),
+            hedge_delay_seconds=_resolve_control_hedge_delay_seconds(
+                hedge_delay_seconds
+            ),
+            event_callback=event_callback,
+        )
+        self._runner = DurableAgentRunner(
+            completion_provider=self._completion_adapter
+        )
+
+    def create_session(
+        self,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> DurableAgentSessionState:
+        return self._runner.create_session(self._worker, metadata=metadata)
+
+    @staticmethod
+    def load_session(payload: dict[str, Any] | None) -> DurableAgentSessionState | None:
+        if not payload:
+            return None
+        return DurableAgentSessionState.model_validate(payload)
+
+    @staticmethod
+    def dump_session(session: DurableAgentSessionState) -> dict[str, Any]:
+        return session.model_dump(mode="json")
+
+    def set_event_callback(self, event_callback) -> None:
+        self._completion_adapter.set_event_callback(event_callback)
+
+    async def plan_project(
+        self,
+        *,
+        session: DurableAgentSessionState | None,
+        user_message: str,
+        requested_objective: str,
+        requested_acceptance_criteria: list[str],
+        context: CodingProjectPlannerContext,
+    ) -> tuple[CodingProjectPlannerDecision, DurableAgentSessionState]:
+        durable_session = session or self.create_session(
+            metadata={"surface": "dan-code", "kind": "project-planner"}
+        )
+        request = ExecutionRequest.from_harness(
+            task=(
+                "Plan the next DAN Code milestone. Return a short rolling project plan "
+                "and the next bounded milestone objective to execute now."
+            ),
+            acquisition=AcquisitionRequest(
+                policy=AcquisitionPolicy(reuse_continuation=False)
+            ),
+            output_contract=_project_planner_contract(),
+            input_payload={
+                "mode": "project_planning",
+                "user_message": user_message,
+                "requested_objective": requested_objective,
+                "requested_acceptance_criteria": list(requested_acceptance_criteria),
+                "context": context.model_dump(mode="json"),
+            },
+            metadata={"surface": "dan-code", "turn_kind": "project_planning"},
+        )
+        self._runner.enqueue_message(durable_session, request)
+        result = await self._runner.process_next(self._worker, durable_session)
+        payload = _parse_payload(result.outputs if result is not None else {})
+        return (
+            _normalize_project_planner_decision(
+                payload,
+                user_message=user_message,
+                requested_objective=requested_objective,
+                requested_acceptance_criteria=requested_acceptance_criteria,
+                existing_plan=context.existing_plan,
+            ),
+            durable_session,
+        )
+
+
 __all__ = [
     "CodingConversationFacts",
     "CodingConversationContext",
     "CodingConversationController",
     "CodingConversationMessage",
+    "CodingProjectMilestone",
+    "CodingProjectPlan",
+    "CodingProjectPlannerContext",
+    "CodingProjectPlannerController",
+    "CodingProjectPlannerDecision",
     "CodingConversationReportSummary",
     "CodingConversationReviewDecision",
     "CodingConversationTurnDecision",

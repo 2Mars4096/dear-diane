@@ -112,7 +112,11 @@ def _validator_packet() -> CellHandoffPacket:
 async def test_deep_research_organ_keeps_tissue_and_lead_bounded(tmp_path) -> None:
     provider = _ReferenceOrganismCompletionProvider()
     executor = WorkerCoreExecutor(completion_provider=provider)
-    organ = deep_research_organ(organism_id="reference-project-execution", model="stub-model")
+    organ = deep_research_organ(
+        organism_id="reference-project-execution",
+        model="stub-model",
+        reader_count=6,
+    )
     trace_log = CrossCellTraceLog()
 
     execution = await execute_organ_pattern(
@@ -125,12 +129,24 @@ async def test_deep_research_organ_keeps_tissue_and_lead_bounded(tmp_path) -> No
     assert execution.result.status == "completed"
     assert execution.tissue_execution is not None
     assert execution.tissue_execution.result.status == "completed"
+    assert len(organ.tissue.members) == 6
+    assert organ.tissue.limits.max_members == 6
+    assert organ.tissue.limits.max_concurrency == 6
+    assert organ.tissue.limits.max_failures == 2
     assert execution.lead_execution is not None
     assert sorted(execution.result.outputs) == [
+        "audit_issues",
+        "confidence",
+        "contradictions",
+        "evidence_refs",
         "evidence_summary",
         "findings",
         "open_questions",
+        "quality_gates",
+        "readiness_note",
         "recommended_change",
+        "report_readiness",
+        "verification_facts",
     ]
     assert len(execution.result.output_refs) == 1
     assert len(trace_log.inspect_trace("trace:bounded-organ")) >= 8

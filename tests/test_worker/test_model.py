@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from dan.models.context import (
@@ -512,6 +514,15 @@ class _CellCompletionProvider:
         return CompletionResponse(text="Unhandled worker.", raw={"worker_id": worker_id})
 
 
+class _SlowCellCompletionProvider:
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        await asyncio.sleep(1.2)
+        return CompletionResponse(
+            text="This result should miss the runtime budget.",
+            raw={"worker_id": request.metadata.get("worker_id")},
+        )
+
+
 def test_cell_handoff_packet_converts_to_execution_request_with_trace_and_limits() -> None:
     packet = _research_packet()
 
@@ -691,3 +702,36 @@ async def test_three_cell_slice_coordinates_via_typed_handoffs_and_supervisory_s
         "escalated",
     }
     assert all(row["trace_id"] == trace.trace_id for row in trace_rows)
+
+
+@pytest.mark.asyncio
+async def test_execute_cell_handoff_fails_when_runtime_budget_is_exceeded() -> None:
+    provider = _SlowCellCompletionProvider()
+    executor = WorkerCoreExecutor(completion_provider=provider)
+    packet = _research_packet().model_copy(
+        update={
+            "budget_limits": CellBudgetLimits(
+                max_selected_refs_per_source=1,
+                max_expanded_refs_per_source=1,
+                max_completion_rounds=1,
+                max_runtime_seconds=1,
+            )
+        }
+    )
+    worker = WorkerDefinition(
+        id="research-cell",
+        role="researcher",
+        instruction="Use only supplied evidence.",
+        model="stub-model",
+    )
+
+    run = await execute_cell_handoff(
+        executor=executor,
+        worker=worker,
+        packet=packet,
+    )
+
+    assert run.result.status == "failed"
+    assert run.result.error == "runtime_budget_exceeded: research-cell exceeded 1s"
+    assert run.result.metadata["runtime_budget_seconds"] == 1
+    assert run.signals[-1].signal_type == "failure"

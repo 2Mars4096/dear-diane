@@ -274,7 +274,14 @@ class CodingOrganism(BaseModel):
     worker_instruction: str = (
         "Produce one bounded coding contribution for the assigned brief. Prefer the most specific structured tool "
         "available, avoid redundant repo-wide discovery, and inspect only what the brief needs. Return "
-        "candidate_fragment, change_summary, target_files, test_plan, and risks. If inspection shows the workspace "
+        "candidate_fragment, change_summary, target_files, test_plan, and risks. This worker stage is read-only: do "
+        "not try to create files directly, do not pass write-like arguments to read tools, and do not repeatedly "
+        "probe paths that do not exist just because you intend to create them. If the workspace is empty or the "
+        "brief requires new files, inspect only enough context to confirm that and then return a concrete "
+        "candidate_fragment that the later aggregation stage can materialize. Do not turn an empty-workspace "
+        "greenfield brief into generic architecture or best-practice research. Use external search only when "
+        "the brief explicitly depends on current external facts, library documentation, or version-specific "
+        "behavior; otherwise finalize the bounded candidate from local context. If inspection shows the workspace "
         "already satisfies the brief, say 'No code changes required' explicitly in change_summary."
     )
     worker_model: str | None = None
@@ -573,6 +580,7 @@ def _normalize_orchestrator_plan(
     outputs: dict[str, Any],
     organism: CodingOrganism,
     task: CodingTask,
+    repair_brief: str = "",
 ) -> CodingOrchestratorPlan:
     payload = _parse_payload(outputs)
     worker_count = _planned_worker_count(payload=payload, organism=organism)
@@ -586,7 +594,7 @@ def _normalize_orchestrator_plan(
     worker_briefs = _normalize_worker_briefs(
         worker_count=worker_count,
         worker_briefs=distinct_briefs,
-        objective=task.objective,
+        objective=_clean_text(repair_brief) or task.objective,
     )
     return plan.model_copy(
         update={
@@ -915,6 +923,7 @@ async def execute_coding_organism(
                 outputs=orchestrator_run.result.outputs,
                 organism=organism,
                 task=task,
+                repair_brief=(repair_brief if attempt > 1 else ""),
             )
         stage_records.append(
             _record(

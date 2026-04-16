@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from dan.providers import LLMProvider
 from dan.worker.composition import CrossCellTraceLog
 from dan.worker.core.executor import WorkerCoreExecutor
+from dan.worker.core.contracts import OutputContract
 from dan.worker.core.interfaces import CompletionRequest, CompletionResponse
 from dan.worker.organisms.local_runtime import (
     DEFAULT_LIVE_ORGANISM_TOOL_IDS,
@@ -20,11 +21,24 @@ from dan.worker.organisms.local_runtime import (
     available_local_organism_tools,
 )
 from dan.worker.organisms.project_execution import (
+    MAX_DEEP_RESEARCH_READERS,
     ProjectExecutionTask,
     ProjectExecutionOrganismExecution,
+    resolve_deep_research_reader_briefs_for_task,
     execute_project_execution_organism,
     project_execution_reference_organism,
+    resolve_deep_research_reader_count,
 )
+from dan.worker.organs import OrganExecution, execute_organ_pattern
+from dan.worker.signaling import (
+    CellAddress,
+    CellAuthorityLimits,
+    CellBudgetLimits,
+    CellHandoffPacket,
+    HandoffTask,
+    SignalTrace,
+)
+from dan.worker.model import WorkerAuthority
 from dan.worker.signaling import EvidenceRef
 
 DEFAULT_REFERENCE_OBJECTIVE = (
@@ -52,6 +66,16 @@ DEFAULT_REFERENCE_EVIDENCE_SUMMARIES = [
     "The final delivery must preserve missing-requirement reporting and accountability.",
     "Validator should request repair when the focused test command is absent.",
 ]
+_DEEP_RESEARCH_READER_NOTES = [
+    "The defect is that the candidate fix must carry an explicit focused test command.",
+    "The acceptance bar also requires the delivery summary to name missing requirements and residual risk.",
+    "The implementation surface stays narrow: the validator path is the primary repo area that should change.",
+    "A strong candidate needs a concrete validation step, not just a promise that tests exist.",
+    "Any live web or doc lookup should be used only to tighten grounding, not to replace the supplied evidence.",
+    "The current evidence is consistent; the main risk is under-specifying the validation proof rather than contradicting the core diagnosis.",
+    "The recommended change should stay bounded and explicit so downstream build and synthesis steps can stay inspectable.",
+    "Confidence is high once the explicit validation step and final accountability language are both preserved.",
+]
 
 
 class ReferenceOrganismDemoReport(BaseModel):
@@ -68,6 +92,20 @@ class ReferenceOrganismDemoReport(BaseModel):
     signal_count: int = 0
     stage_sequence: list[str] = Field(default_factory=list)
     build_candidate_ids: list[str] = Field(default_factory=list)
+    final_output: dict[str, Any] = Field(default_factory=dict)
+    stage_records: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DeepResearchOrganDemoReport(BaseModel):
+    """Compact CLI-friendly report for a standalone deep-research organ run."""
+
+    status: str
+    trace_id: str
+    handoff_count: int = 0
+    signal_count: int = 0
+    selected_reader_count: int | None = None
+    selected_reader_briefs: list[str] = Field(default_factory=list)
+    output_ref_ids: list[str] = Field(default_factory=list)
     final_output: dict[str, Any] = Field(default_factory=dict)
     stage_records: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -103,6 +141,160 @@ def _build_report(execution: ProjectExecutionOrganismExecution) -> ReferenceOrga
     )
 
 
+def _build_research_report(
+    execution: OrganExecution,
+    *,
+    trace_log: CrossCellTraceLog,
+) -> DeepResearchOrganDemoReport:
+    trace_rows = trace_log.inspect_trace(execution.packet.trace.trace_id)
+    stage_records: list[dict[str, Any]] = []
+    if execution.tissue_packet is not None:
+        stage_records.append(
+            {
+                "stage": "research.tissue",
+                "packet_id": execution.tissue_packet.packet_id,
+                "recipient_cell_id": execution.tissue_packet.recipient.cell_id,
+                "status": execution.tissue_execution.result.status if execution.tissue_execution is not None else "failed",
+            }
+        )
+    if execution.lead_packet is not None:
+        stage_records.append(
+            {
+                "stage": "research.lead",
+                "packet_id": execution.lead_packet.packet_id,
+                "recipient_cell_id": execution.lead_packet.recipient.cell_id,
+                "status": execution.lead_execution.result.status if execution.lead_execution is not None else "failed",
+            }
+        )
+    return DeepResearchOrganDemoReport(
+        status=execution.result.status,
+        trace_id=execution.packet.trace.trace_id,
+        handoff_count=sum(1 for row in trace_rows if row["kind"] == "handoff"),
+        signal_count=sum(1 for row in trace_rows if row["kind"] == "signal"),
+        selected_reader_count=len(execution.pattern.tissue.members) if execution.pattern.tissue is not None else None,
+        selected_reader_briefs=[
+            str(brief).strip()
+            for brief in list(execution.pattern.metadata.get("reader_briefs") or [])
+            if str(brief).strip()
+        ],
+        output_ref_ids=[ref.ref_id for ref in execution.result.output_refs],
+        final_output=dict(execution.result.outputs),
+        stage_records=stage_records,
+    )
+
+
+def _deep_research_packet(
+    *,
+    organism_id: str,
+    organ_id: str,
+    task: ProjectExecutionTask,
+    max_runtime_seconds: int | None = None,
+) -> CellHandoffPacket:
+    return CellHandoffPacket(
+        trace=SignalTrace(
+            root_task_id=task.task_id,
+            lineage=[f"organism:{organism_id}", "surface:research-only"],
+        ),
+        sender=CellAddress(cell_id="user.request", organism_id=organism_id),
+        recipient=CellAddress(
+            cell_id=f"{organ_id}.boundary",
+            organ_id=organ_id,
+            organism_id=organism_id,
+        ),
+        task=HandoffTask(
+            task_id=f"{task.task_id}:research-only",
+            instruction=(
+                "Ground the task with supplied evidence and any available read-only tools. "
+                "Return a bounded deep-research report."
+            ),
+            scope="project-execution.research",
+            hard_constraints=list(task.hard_constraints),
+            soft_constraints=list(task.soft_constraints),
+            input_payload={
+                "objective": task.objective,
+                "temporal_mode": task.temporal_mode,
+                "temporal_anchor": task.temporal_anchor,
+                "temporal_window": task.temporal_window,
+                "temporal_guidance": task.temporal_guidance,
+                "acceptance_criteria": list(task.acceptance_criteria),
+                "delivery_target": task.delivery_target,
+                "focused_validation_commands": list(task.focused_validation_commands),
+                "hard_constraints": list(task.hard_constraints),
+                "soft_constraints": list(task.soft_constraints),
+            },
+        ),
+        evidence_refs=[ref.model_copy(deep=True) for ref in task.evidence_refs],
+        output_contract=OutputContract(
+            definition_of_done=f"Return the bounded public output for organ {organ_id}.",
+            expected_return_shape=json.dumps(
+                {
+                    "findings": "<required>",
+                    "evidence_summary": "<required>",
+                    "evidence_refs": "<required>",
+                    "contradictions": "<required>",
+                    "open_questions": "<required>",
+                    "verification_facts": "<required>",
+                    "audit_issues": "<required>",
+                    "quality_gates": "<required>",
+                    "report_readiness": "<required>",
+                    "readiness_note": "<required>",
+                    "confidence": "<required>",
+                    "recommended_change": "<required>",
+                },
+                sort_keys=True,
+            ),
+        ),
+        budget_limits=CellBudgetLimits(
+            max_completion_rounds=1,
+            max_runtime_seconds=max_runtime_seconds,
+        ),
+        authority_limits=CellAuthorityLimits(
+            acting_authority=WorkerAuthority.DELEGATE,
+            max_spawned_cells=0,
+        ),
+        metadata={
+            "organism_id": organism_id,
+            "organ_id": organ_id,
+            "organ_kind": "deep_research",
+            "surface": "research-only",
+        },
+    )
+
+
+def _research_reader_note(worker_id: str) -> str:
+    try:
+        suffix = worker_id.rsplit("-", 1)[-1]
+        index = max(1, ord(suffix.lower()) - ord("a") + 1)
+    except Exception:
+        index = 1
+    return _DEEP_RESEARCH_READER_NOTES[(index - 1) % len(_DEEP_RESEARCH_READER_NOTES)]
+
+
+def _reference_organism_for_task(
+    *,
+    task: ProjectExecutionTask,
+    organism_id: str,
+    model: str,
+    research_reader_count: int | None,
+    research_reader_briefs: list[str] | tuple[str, ...] | None = None,
+):
+    resolved_reader_count = resolve_deep_research_reader_count(
+        task=task,
+        requested_count=research_reader_count,
+    )
+    resolved_reader_briefs = resolve_deep_research_reader_briefs_for_task(
+        task=task,
+        reader_count=resolved_reader_count,
+        requested_briefs=research_reader_briefs,
+    )
+    return project_execution_reference_organism(
+        organism_id=organism_id,
+        model=model,
+        research_reader_count=resolved_reader_count,
+        research_reader_briefs=resolved_reader_briefs,
+    )
+
+
 class _ReferenceOrganismDemoCompletionProvider:
     """Deterministic completion provider reused by the local demo CLI."""
 
@@ -135,14 +327,9 @@ class _ReferenceOrganismDemoCompletionProvider:
                 raw={"worker_id": worker_id},
             )
 
-        if worker_id == "deep-research.reader-a":
+        if worker_id.startswith("deep-research.reader-"):
             return CompletionResponse(
-                text="The defect is that the candidate fix must carry an explicit focused test command.",
-                raw={"worker_id": worker_id},
-            )
-        if worker_id == "deep-research.reader-b":
-            return CompletionResponse(
-                text="The acceptance bar also requires the delivery summary to name missing requirements and residual risk.",
+                text=_research_reader_note(worker_id),
                 raw={"worker_id": worker_id},
             )
         if worker_id == "deep-research.lead":
@@ -154,7 +341,66 @@ class _ReferenceOrganismDemoCompletionProvider:
                             "The final delivery must preserve missing-requirement and residual-risk reporting.",
                         ],
                         "evidence_summary": ["brief:issue", "brief:acceptance", "brief:test-gap"],
+                        "evidence_refs": ["brief:issue", "brief:acceptance", "brief:test-gap"],
+                        "contradictions": [],
                         "open_questions": ["No blocking open questions remain after the supplied evidence."],
+                        "verification_facts": [
+                            {
+                                "fact": "A passing candidate must name a focused validation command.",
+                                "status": "verified",
+                                "source": "brief:test-gap",
+                                "as_of": "",
+                                "note": "Explicitly supported by the supplied validation-gap brief.",
+                            }
+                        ],
+                        "audit_issues": [],
+                        "quality_gates": [
+                            {
+                                "gate": "time_anchor",
+                                "status": "pass",
+                                "summary": "The deterministic demo is grounded in supplied static evidence.",
+                                "evidence_ref": "brief:issue",
+                                "required_follow_up": "",
+                            },
+                            {
+                                "gate": "scope_boundary",
+                                "status": "pass",
+                                "summary": "The claim scope is limited to the supplied repo-change brief.",
+                                "evidence_ref": "brief:acceptance",
+                                "required_follow_up": "",
+                            },
+                            {
+                                "gate": "source_authority",
+                                "status": "pass",
+                                "summary": "The demo uses the supplied acceptance and validation-gap evidence.",
+                                "evidence_ref": "brief:test-gap",
+                                "required_follow_up": "",
+                            },
+                            {
+                                "gate": "numeric_reconciliation",
+                                "status": "not_applicable",
+                                "summary": "No material numeric conflict is present in the demo evidence.",
+                                "evidence_ref": "",
+                                "required_follow_up": "",
+                            },
+                            {
+                                "gate": "claim_object_fit",
+                                "status": "pass",
+                                "summary": "The recommendation maps directly to the validation-step gap.",
+                                "evidence_ref": "brief:test-gap",
+                                "required_follow_up": "",
+                            },
+                            {
+                                "gate": "final_status",
+                                "status": "pass",
+                                "summary": "Grounded bounded report; not an external recommendation.",
+                                "evidence_ref": "brief:test-gap",
+                                "required_follow_up": "",
+                            },
+                        ],
+                        "report_readiness": "grounded",
+                        "readiness_note": "The supplied evidence is internally consistent and specific enough for a bounded grounded report.",
+                        "confidence": 0.88,
                         "recommended_change": "Route the repair loop through a candidate that adds explicit validation steps and final reporting.",
                     },
                     sort_keys=True,
@@ -326,14 +572,22 @@ async def run_reference_organism_demo(
     task: ProjectExecutionTask | None = None,
     model: str = "stub-model",
     organism_id: str = "reference-project-execution",
+    research_reader_count: int | None = None,
+    research_reader_briefs: list[str] | tuple[str, ...] | None = None,
 ) -> ReferenceOrganismDemoReport:
     """Run the deterministic bounded project-execution organism demo."""
 
     provider = _ReferenceOrganismDemoCompletionProvider()
     executor = WorkerCoreExecutor(completion_provider=provider)
-    organism = project_execution_reference_organism(organism_id=organism_id, model=model)
-    trace_log = CrossCellTraceLog()
     effective_task = task or build_reference_organism_demo_task(workdir)
+    organism = _reference_organism_for_task(
+        task=effective_task,
+        organism_id=organism_id,
+        model=model,
+        research_reader_count=research_reader_count,
+        research_reader_briefs=research_reader_briefs,
+    )
+    trace_log = CrossCellTraceLog()
     execution = await execute_project_execution_organism(
         executor=executor,
         organism=organism,
@@ -341,6 +595,42 @@ async def run_reference_organism_demo(
         trace_log=trace_log,
     )
     return _build_report(execution)
+
+
+async def run_deep_research_organ_demo(
+    workdir: Path,
+    *,
+    task: ProjectExecutionTask | None = None,
+    model: str = "stub-model",
+    organism_id: str = "reference-project-execution",
+    research_reader_count: int | None = None,
+    research_reader_briefs: list[str] | tuple[str, ...] | None = None,
+) -> DeepResearchOrganDemoReport:
+    """Run only the bounded deep-research organ with the deterministic demo provider."""
+
+    provider = _ReferenceOrganismDemoCompletionProvider()
+    executor = WorkerCoreExecutor(completion_provider=provider)
+    effective_task = task or build_reference_organism_demo_task(workdir)
+    organism = _reference_organism_for_task(
+        task=effective_task,
+        organism_id=organism_id,
+        model=model,
+        research_reader_count=research_reader_count,
+        research_reader_briefs=research_reader_briefs,
+    )
+    trace_log = CrossCellTraceLog()
+    packet = _deep_research_packet(
+        organism_id=organism_id,
+        organ_id=organism.research_organ.organ_id,
+        task=effective_task,
+    )
+    execution = await execute_organ_pattern(
+        executor=executor,
+        pattern=organism.research_organ,
+        packet=packet,
+        trace_log=trace_log,
+    )
+    return _build_research_report(execution, trace_log=trace_log)
 
 
 async def run_reference_organism_live(
@@ -352,8 +642,10 @@ async def run_reference_organism_live(
     organism_id: str = "reference-project-execution",
     tool_ids: list[str] | None = None,
     workspace_root: str | Path | None = None,
-    max_tool_rounds: int = 8,
+    max_tool_rounds: int | None = 8,
     max_tool_calls: int = 24,
+    research_reader_count: int | None = None,
+    research_reader_briefs: list[str] | tuple[str, ...] | None = None,
 ) -> ReferenceOrganismDemoReport:
     """Run the bounded reference organism against a live provider and local tools."""
 
@@ -371,7 +663,13 @@ async def run_reference_organism_live(
     )
     executor = WorkerCoreExecutor(completion_provider=completion_provider)
     organism = attach_local_tooling_to_reference_organism(
-        project_execution_reference_organism(organism_id=organism_id, model=model),
+        _reference_organism_for_task(
+            task=effective_task,
+            organism_id=organism_id,
+            model=model,
+            research_reader_count=research_reader_count,
+            research_reader_briefs=research_reader_briefs,
+        ),
         tool_ids=tool_runtime.tool_ids,
     )
     trace_log = CrossCellTraceLog()
@@ -384,17 +682,80 @@ async def run_reference_organism_live(
     return _build_report(execution)
 
 
+async def run_deep_research_organ_live(
+    workdir: Path,
+    *,
+    llm_provider: LLMProvider,
+    task: ProjectExecutionTask | None = None,
+    model: str,
+    organism_id: str = "reference-project-execution",
+    tool_ids: list[str] | None = None,
+    workspace_root: str | Path | None = None,
+    max_tool_rounds: int | None = 8,
+    max_tool_calls: int = 24,
+    max_runtime_seconds: int | None = None,
+    research_reader_count: int | None = None,
+    research_reader_briefs: list[str] | tuple[str, ...] | None = None,
+    event_callback=None,
+) -> DeepResearchOrganDemoReport:
+    """Run only the bounded deep-research organ against a live provider and local tools."""
+
+    effective_task = task or build_reference_organism_demo_task(workdir)
+    tool_runtime = LocalOrganismToolRuntime(
+        tool_ids=tool_ids or DEFAULT_LIVE_ORGANISM_TOOL_IDS,
+        workspace_root=workspace_root,
+        event_callback=event_callback,
+    )
+    completion_provider = ToolLoopCompletionProvider(
+        provider=llm_provider,
+        tool_runtime=tool_runtime,
+        default_model=model,
+        max_rounds=max_tool_rounds,
+        max_tool_calls=max_tool_calls,
+        event_callback=event_callback,
+    )
+    executor = WorkerCoreExecutor(completion_provider=completion_provider)
+    organism = attach_local_tooling_to_reference_organism(
+        _reference_organism_for_task(
+            task=effective_task,
+            organism_id=organism_id,
+            model=model,
+            research_reader_count=research_reader_count,
+            research_reader_briefs=research_reader_briefs,
+        ),
+        tool_ids=tool_runtime.tool_ids,
+    )
+    trace_log = CrossCellTraceLog()
+    packet = _deep_research_packet(
+        organism_id=organism_id,
+        organ_id=organism.research_organ.organ_id,
+        task=effective_task,
+        max_runtime_seconds=max_runtime_seconds,
+    )
+    execution = await execute_organ_pattern(
+        executor=executor,
+        pattern=organism.research_organ,
+        packet=packet,
+        trace_log=trace_log,
+    )
+    return _build_research_report(execution, trace_log=trace_log)
+
+
 __all__ = [
     "DEFAULT_LIVE_ORGANISM_TOOL_IDS",
+    "MAX_DEEP_RESEARCH_READERS",
     "DEFAULT_REFERENCE_ACCEPTANCE_CRITERIA",
     "DEFAULT_REFERENCE_EVIDENCE_SUMMARIES",
     "DEFAULT_REFERENCE_HARD_CONSTRAINTS",
+    "DeepResearchOrganDemoReport",
     "DEFAULT_REFERENCE_OBJECTIVE",
     "DEFAULT_REFERENCE_SOFT_CONSTRAINTS",
     "DEFAULT_REFERENCE_VALIDATION_COMMANDS",
     "available_local_organism_tools",
     "ReferenceOrganismDemoReport",
     "build_reference_organism_demo_task",
+    "run_deep_research_organ_demo",
+    "run_deep_research_organ_live",
     "run_reference_organism_demo",
     "run_reference_organism_live",
 ]

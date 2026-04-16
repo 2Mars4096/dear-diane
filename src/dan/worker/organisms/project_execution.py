@@ -13,11 +13,13 @@ from dan.worker.core.executor import WorkerCoreExecutor
 from dan.worker.core.model import WorkerDefinition
 from dan.worker.model import WorkerAuthority
 from dan.worker.organs import (
+    MAX_DEEP_RESEARCH_READERS,
     OrganExecution,
     OrganPattern,
     coding_build_organ,
     deep_research_organ,
     execute_organ_pattern,
+    resolve_deep_research_reader_briefs,
     synthesis_organ,
     universal_validator_organ,
 )
@@ -44,17 +46,69 @@ def _parse_payload(outputs: dict[str, Any]) -> dict[str, Any]:
     return {"result": parsed}
 
 
+def build_research_orchestrator_worker(
+    *,
+    worker_id: str,
+    model: str | None,
+) -> WorkerDefinition:
+    """Shared DAN Research orchestrator worker on the universal-agent substrate."""
+
+    return WorkerDefinition(
+        id=worker_id,
+        role="research_orchestrator",
+        instruction=(
+            "You are the research orchestrator for DAN Research on top of the universal "
+            "worker substrate. Treat the user as another agent in the system and respond "
+            "directly, concretely, and briefly. Use the current task plus output contract "
+            "to decide whether you are answering a durable conversation turn, reviewing the "
+            "last bounded deep-research run, planning the next bounded research pass, or "
+            "routing that pass. "
+            "Only launch research when the request is a concrete investigation, grounding, "
+            "comparison, verification, or evidence-gathering task. For status questions, "
+            "meta discussion, or requests already answered by the supplied session context, "
+            "respond directly instead of launching more research. If the request is still "
+            "underspecified, ask one clarifying question. Before routing research, decide "
+            "whether the request is about current-as-of-runtime state, a historical "
+            "snapshot, a trend over time, or a timeless/default question, and anchor any "
+            "relative-time language to the supplied current date and timezone. When asked "
+            "to plan research, decompose the objective into small concrete subproblems, say "
+            "why each matters, and say what evidence would resolve it. When reviewing a "
+            "bounded research run, do not stop if the run failed or returned an incomplete "
+            "report."
+        ),
+        model=model,
+    )
+
+
 class ProjectExecutionTask(BaseModel):
     """Exact bounded proving task for the first reference organism."""
 
     task_id: str
     objective: str
+    temporal_mode: str = "timeless"
+    temporal_anchor: str = ""
+    temporal_window: str = ""
+    temporal_guidance: str = ""
     acceptance_criteria: list[str] = Field(default_factory=list)
     delivery_target: str = "bounded repo-change request"
     focused_validation_commands: list[str] = Field(default_factory=list)
     hard_constraints: list[str] = Field(default_factory=list)
     soft_constraints: list[str] = Field(default_factory=list)
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+
+
+DEFAULT_DEEP_RESEARCH_READER_COUNT = MAX_DEEP_RESEARCH_READERS
+MIN_DEEP_RESEARCH_READERS = 2
+DEFAULT_DEEP_RESEARCH_READER_BRIEF_TOPICS = (
+    "core defect and strongest evidence",
+    "acceptance criteria and missing proof",
+    "implementation surface and affected modules",
+    "validation commands and verification evidence",
+    "external docs or live web evidence",
+    "contradictions and weaker interpretations",
+    "delivery shape and recommended next action",
+    "residual risk and confidence gaps",
+)
 
 
 class ProjectExecutionOrganism(BaseModel):
@@ -198,6 +252,10 @@ def _planner_packet(
             soft_constraints=list(task.soft_constraints),
             input_payload={
                 "objective": task.objective,
+                "temporal_mode": task.temporal_mode,
+                "temporal_anchor": task.temporal_anchor,
+                "temporal_window": task.temporal_window,
+                "temporal_guidance": task.temporal_guidance,
                 "acceptance_criteria": list(task.acceptance_criteria),
                 "delivery_target": task.delivery_target,
                 "focused_validation_commands": list(task.focused_validation_commands),
@@ -265,13 +323,126 @@ def _organ_packet(
     )
 
 
+def recommended_deep_research_reader_count(
+    task: ProjectExecutionTask,
+    *,
+    max_readers: int = MAX_DEEP_RESEARCH_READERS,
+    min_readers: int = MIN_DEEP_RESEARCH_READERS,
+) -> int:
+    """Estimate a bounded reader fan-out from the task's current breadth."""
+
+    breadth_units = (
+        len(task.evidence_refs)
+        + len(task.acceptance_criteria)
+        + len(task.focused_validation_commands)
+        + (1 if task.hard_constraints or task.soft_constraints else 0)
+    )
+    return max(min_readers, min(max_readers, breadth_units or min_readers))
+
+
+def resolve_deep_research_reader_count(
+    *,
+    task: ProjectExecutionTask | None = None,
+    requested_count: int | None = None,
+    default: int = DEFAULT_DEEP_RESEARCH_READER_COUNT,
+    max_readers: int = MAX_DEEP_RESEARCH_READERS,
+) -> int:
+    """Resolve the deep-research reader count with validation and task-aware auto sizing."""
+
+    if requested_count is not None:
+        if requested_count < 1 or requested_count > max_readers:
+            raise ValueError(
+                f"deep research reader count must be between 1 and {max_readers}"
+            )
+        return requested_count
+    if task is not None:
+        return recommended_deep_research_reader_count(task, max_readers=max_readers)
+    return max(1, min(default, max_readers))
+
+
+def recommended_deep_research_reader_briefs(
+    task: ProjectExecutionTask,
+    *,
+    reader_count: int,
+    planner_briefs: list[str] | tuple[str, ...] | None = None,
+    planner_instruction: str | None = None,
+) -> list[str]:
+    """Build task-aware reader briefs for one bounded research run."""
+
+    normalized_planner_briefs = [
+        str(brief).strip()
+        for brief in list(planner_briefs or [])
+        if str(brief).strip()
+    ]
+    if normalized_planner_briefs:
+        return [
+            brief
+            for _member_id, brief in resolve_deep_research_reader_briefs(
+                reader_count=reader_count,
+                reader_briefs=normalized_planner_briefs,
+            )
+        ]
+
+    acceptance_summary = "; ".join(task.acceptance_criteria[:3]) or "keep the report grounded"
+    validation_summary = "; ".join(task.focused_validation_commands[:2]) or "identify the strongest proof path"
+    evidence_summary = "; ".join(ref.summary for ref in task.evidence_refs[:3] if str(ref.summary).strip()) or task.objective
+    hard_constraint_summary = "; ".join(task.hard_constraints[:2]) or "stay bounded and inspectable"
+    planner_focus = str(planner_instruction or "").strip() or "Ground the task with the supplied evidence."
+    temporal_summary = (
+        str(task.temporal_guidance).strip()
+        or f"Temporal frame: {str(task.temporal_mode).strip() or 'timeless'}."
+    )
+
+    generated = [
+        (
+            f"{planner_focus} Focus on {topic}. "
+            f"Objective: {task.objective}. "
+            f"{temporal_summary} "
+            f"Acceptance: {acceptance_summary}. "
+            f"Validation: {validation_summary}. "
+            f"Evidence focus: {evidence_summary}. "
+            f"Constraints: {hard_constraint_summary}."
+        ).strip()
+        for topic in DEFAULT_DEEP_RESEARCH_READER_BRIEF_TOPICS[:reader_count]
+    ]
+    return [
+        brief
+        for _member_id, brief in resolve_deep_research_reader_briefs(
+            reader_count=reader_count,
+            reader_briefs=generated,
+        )
+    ]
+
+
+def resolve_deep_research_reader_briefs_for_task(
+    *,
+    task: ProjectExecutionTask,
+    reader_count: int,
+    requested_briefs: list[str] | tuple[str, ...] | None = None,
+    planner_instruction: str | None = None,
+) -> list[str]:
+    """Resolve one normalized reader brief per research reader."""
+
+    return recommended_deep_research_reader_briefs(
+        task,
+        reader_count=reader_count,
+        planner_briefs=requested_briefs,
+        planner_instruction=planner_instruction,
+    )
+
+
 def project_execution_reference_organism(
     *,
     organism_id: str = "reference-project-execution",
     model: str | None = None,
+    research_reader_count: int | None = None,
+    research_reader_briefs: list[str] | tuple[str, ...] | None = None,
 ) -> ProjectExecutionOrganism:
     """Build the first bounded reference organism preset."""
 
+    resolved_research_reader_count = resolve_deep_research_reader_count(
+        requested_count=research_reader_count
+    )
     planner_address = CellAddress(
         cell_id=f"{organism_id}.planner",
         organ_id="planner-brain",
@@ -286,7 +457,12 @@ def project_execution_reference_organism(
             instruction="Plan bounded research, build, validation, and synthesis steps.",
             model=model,
         ),
-        research_organ=deep_research_organ(organism_id=organism_id, model=model),
+        research_organ=deep_research_organ(
+            organism_id=organism_id,
+            model=model,
+            reader_count=resolved_research_reader_count,
+            reader_briefs=research_reader_briefs,
+        ),
         validator_organ=universal_validator_organ(organism_id=organism_id, model=model),
         coding_organ=coding_build_organ(organism_id=organism_id, model=model),
         synthesis_organ=synthesis_organ(organism_id=organism_id, model=model),
@@ -296,6 +472,13 @@ def project_execution_reference_organism(
                 "A later promotion path can consume passed validator reports from 45-4 "
                 "as one additional bounded organ without replacing this organism surface."
             ),
+            "research_reader_count": resolved_research_reader_count,
+            "max_deep_research_readers": MAX_DEEP_RESEARCH_READERS,
+            "research_reader_briefs": [
+                str(brief).strip()
+                for brief in list(research_reader_briefs or [])
+                if str(brief).strip()
+            ],
         },
     )
 
@@ -323,6 +506,31 @@ async def execute_project_execution_organism(
         trace_log=trace_log,
     )
     planner_payload = _parse_payload(planner_run.result.outputs)
+    effective_pass_threshold = float(planner_payload.get("pass_threshold") or organism.pass_threshold)
+    try:
+        planner_selected_reader_count = int(planner_payload.get("research_reader_count"))
+    except (TypeError, ValueError):
+        planner_selected_reader_count = None
+    effective_research_reader_count = resolve_deep_research_reader_count(
+        task=task,
+        requested_count=planner_selected_reader_count
+        if planner_selected_reader_count is not None
+        else organism.metadata.get("research_reader_count"),
+    )
+    effective_research_reader_briefs = resolve_deep_research_reader_briefs_for_task(
+        task=task,
+        reader_count=effective_research_reader_count,
+        requested_briefs=planner_payload.get("research_reader_briefs")
+        or organism.metadata.get("research_reader_briefs"),
+        planner_instruction=str(planner_payload.get("research_instruction") or ""),
+    )
+    research_organ = deep_research_organ(
+        organism_id=organism.organism_id,
+        model=organism.research_organ.lead_worker.model,
+        organ_id=organism.research_organ.organ_id,
+        reader_count=effective_research_reader_count,
+        reader_briefs=effective_research_reader_briefs,
+    )
     stage_records.append(
         _record(
             stage="planning",
@@ -337,7 +545,7 @@ async def execute_project_execution_organism(
 
     research_packet = _organ_packet(
         organism=organism,
-        organ=organism.research_organ,
+        organ=research_organ,
         task_id=f"{task.task_id}:research",
         parent_packet=planner_packet,
         parent_signal_id=planner_run.signals[-1].signal_id,
@@ -345,14 +553,21 @@ async def execute_project_execution_organism(
         scope="project-execution.research",
         input_payload={
             "objective": task.objective,
+            "temporal_mode": task.temporal_mode,
+            "temporal_anchor": task.temporal_anchor,
+            "temporal_window": task.temporal_window,
+            "temporal_guidance": task.temporal_guidance,
             "acceptance_criteria": list(task.acceptance_criteria),
             "delivery_target": task.delivery_target,
+            "focused_validation_commands": list(task.focused_validation_commands),
+            "hard_constraints": list(task.hard_constraints),
+            "soft_constraints": list(task.soft_constraints),
         },
         evidence_refs=task.evidence_refs,
     )
     research_execution = await execute_organ_pattern(
         executor=executor,
-        pattern=organism.research_organ,
+        pattern=research_organ,
         packet=research_packet,
         trace_log=trace_log,
     )
@@ -363,7 +578,7 @@ async def execute_project_execution_organism(
             packet=research_packet,
             status=research_execution.result.status,
             summary=research_execution.signals[-1].summary,
-            organ_id=organism.research_organ.organ_id,
+            organ_id=research_organ.organ_id,
             output_keys=sorted(research_execution.result.outputs),
         )
     )
@@ -410,6 +625,7 @@ async def execute_project_execution_organism(
                 "acceptance_criteria": list(task.acceptance_criteria),
                 "research_findings": dict(research_execution.result.outputs),
                 "repair_brief": repair_brief,
+                "focused_validation_commands": list(task.focused_validation_commands),
             },
             evidence_refs=[
                 *task.evidence_refs,
@@ -448,7 +664,8 @@ async def execute_project_execution_organism(
             input_payload={
                 "candidate": dict(build_execution.result.outputs),
                 "acceptance_criteria": list(task.acceptance_criteria),
-                "quality_bar": float(planner_payload.get("pass_threshold") or organism.pass_threshold),
+                "quality_bar": effective_pass_threshold,
+                "focused_validation_commands": list(task.focused_validation_commands),
                 "comparison_context": {
                     "attempt": attempt,
                     "best_score_so_far": None if best_score < 0 else best_score,
@@ -501,7 +718,7 @@ async def execute_project_execution_organism(
                 "repair_brief": repair_brief,
             }
         )
-        if passed and score is not None and score >= organism.pass_threshold:
+        if passed and score is not None and score >= effective_pass_threshold:
             break
 
     synthesis_execution: OrganExecution | None = None
@@ -520,6 +737,7 @@ async def execute_project_execution_organism(
                 "validation_report": dict(best_validation.result.outputs),
                 "research_findings": dict(research_execution.result.outputs),
                 "repair_history": list(repair_history),
+                "focused_validation_commands": list(task.focused_validation_commands),
             },
             evidence_refs=[
                 *research_execution.result.output_refs,
@@ -555,9 +773,20 @@ async def execute_project_execution_organism(
         for execution in validation_executions
         if execution.result.status == "completed"
     ]
+    selected_score = best_score if best_score >= 0 else None
+    selected_candidate_meets_bar = (
+        best_validation is not None
+        and bool(best_validation.result.outputs.get("passed"))
+        and selected_score is not None
+        and selected_score >= effective_pass_threshold
+    )
     status = (
         "completed"
-        if synthesis_execution is not None and synthesis_execution.result.status == "completed"
+        if (
+            synthesis_execution is not None
+            and synthesis_execution.result.status == "completed"
+            and selected_candidate_meets_bar
+        )
         else "failed"
     )
     result = ProjectExecutionOrganismResult(
@@ -575,14 +804,24 @@ async def execute_project_execution_organism(
             if status == "completed"
             else (
                 synthesis_execution.result.error
-                if synthesis_execution is not None
-                else "The organism did not produce a validated candidate."
+                if synthesis_execution is not None and synthesis_execution.result.error
+                else (
+                    (
+                        "The organism produced a candidate but it stayed below the required "
+                        f"pass threshold ({selected_score:.2f} < {effective_pass_threshold:.2f})."
+                    )
+                    if selected_score is not None and selected_score < effective_pass_threshold
+                    else "The organism did not produce a validated candidate."
+                )
             )
         ),
         observability=observability,
         metadata={
             "repair_history": repair_history,
             "planner_outputs": planner_payload,
+            "selected_pass_threshold": effective_pass_threshold,
+            "selected_research_reader_count": effective_research_reader_count,
+            "selected_research_reader_briefs": list(effective_research_reader_briefs),
             "focused_validation_commands": list(task.focused_validation_commands),
             "deferred_builder_promotion": organism.metadata.get("later_builder_promotion"),
         },
@@ -601,12 +840,20 @@ async def execute_project_execution_organism(
 
 
 __all__ = [
+    "build_research_orchestrator_worker",
+    "DEFAULT_DEEP_RESEARCH_READER_COUNT",
+    "MAX_DEEP_RESEARCH_READERS",
+    "MIN_DEEP_RESEARCH_READERS",
     "OrganismObservability",
     "OrganismStageRecord",
     "ProjectExecutionOrganism",
     "ProjectExecutionOrganismExecution",
     "ProjectExecutionOrganismResult",
     "ProjectExecutionTask",
+    "recommended_deep_research_reader_briefs",
+    "recommended_deep_research_reader_count",
+    "resolve_deep_research_reader_briefs_for_task",
+    "resolve_deep_research_reader_count",
     "execute_project_execution_organism",
     "project_execution_reference_organism",
 ]

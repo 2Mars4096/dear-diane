@@ -43,6 +43,65 @@ from dan.worker.tissue import (
     review_quorum_pool,
 )
 
+MAX_DEEP_RESEARCH_READERS = 8
+_DEEP_RESEARCH_READER_SUFFIXES: list[tuple[str, str]] = [
+    (
+        "reader-a",
+        "Focus on the core defect, the strongest supporting evidence, and the exact "
+        "evidence refs or source identifiers that best ground the conclusion.",
+    ),
+    (
+        "reader-b",
+        "Focus on acceptance criteria, contradictions, risks, missing evidence, and "
+        "any open questions that lower confidence.",
+    ),
+    (
+        "reader-c",
+        "Focus on the most relevant repo implementation surface, affected modules, "
+        "and concrete evidence that narrows where the change should land.",
+    ),
+    (
+        "reader-d",
+        "Focus on validation/test evidence, expected checks, and what would count as "
+        "real proof that the change works.",
+    ),
+    (
+        "reader-e",
+        "Focus on external or adjacent evidence available through read-only tools, "
+        "including current docs, standards, or web-grounded constraints.",
+    ),
+    (
+        "reader-f",
+        "Focus on alternative explanations, weaker interpretations of the evidence, "
+        "and places where the current story may be over-claiming.",
+    ),
+    (
+        "reader-g",
+        "Focus on delivery shape, downstream operator needs, and the minimum bounded "
+        "change recommendation that still closes the request honestly.",
+    ),
+    (
+        "reader-h",
+        "Focus on residual risk, unresolved ambiguity, and what evidence would most "
+        "increase confidence if another pass were needed.",
+    ),
+]
+_DEEP_RESEARCH_READER_BASE_INSTRUCTION = (
+    "Extract grounded findings from the provided evidence and any available "
+    "read-only tools. Keep the output anchored to concrete evidence. Before using "
+    "tools, inspect any temporal_mode, temporal_anchor, temporal_window, or "
+    "temporal_guidance in the input and keep relative-time language consistent "
+    "with that frame."
+)
+
+
+def _deep_research_failure_budget(reader_count: int) -> int:
+    if reader_count <= 1:
+        return 0
+    if reader_count <= 5:
+        return 1
+    return 2
+
 
 def _compact_value(value: Any) -> str:
     if isinstance(value, str):
@@ -61,6 +120,36 @@ def _parse_structured_payload(outputs: dict[str, Any]) -> dict[str, Any]:
     if isinstance(parsed, dict):
         return dict(parsed)
     return {"result": parsed}
+
+
+def resolve_deep_research_reader_briefs(
+    *,
+    reader_count: int,
+    reader_briefs: list[str] | tuple[str, ...] | None = None,
+) -> list[tuple[str, str]]:
+    """Return normalized reader ids plus task-facing briefs for the research tissue."""
+
+    normalized_briefs = [
+        str(brief).strip()
+        for brief in list(reader_briefs or [])
+        if str(brief).strip()
+    ]
+    if reader_count < 1 or reader_count > MAX_DEEP_RESEARCH_READERS:
+        raise ValueError(
+            f"reader_count must be between 1 and {MAX_DEEP_RESEARCH_READERS}"
+        )
+
+    resolved: list[tuple[str, str]] = []
+    for index, (member_id, fallback_brief) in enumerate(
+        _DEEP_RESEARCH_READER_SUFFIXES[:reader_count]
+    ):
+        brief = (
+            normalized_briefs[index]
+            if index < len(normalized_briefs)
+            else fallback_brief
+        )
+        resolved.append((member_id, brief))
+    return resolved
 
 
 class OrganPatternKind(str, Enum):
@@ -530,6 +619,8 @@ def _member(
     instruction: str,
     model: str | None,
     instruction_suffix: str = "",
+    input_payload_overrides: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> TissueMember:
     return TissueMember(
         member_id=member_id,
@@ -546,6 +637,8 @@ def _member(
             model=model,
         ),
         instruction_suffix=instruction_suffix,
+        input_payload_overrides=dict(input_payload_overrides or {}),
+        metadata=dict(metadata or {}),
     )
 
 
@@ -554,8 +647,15 @@ def deep_research_organ(
     organism_id: str,
     model: str | None = None,
     organ_id: str = "deep-research",
+    reader_count: int = MAX_DEEP_RESEARCH_READERS,
+    reader_briefs: list[str] | tuple[str, ...] | None = None,
 ) -> OrganPattern:
     """Preset for a bounded deep-research organ."""
+
+    if reader_count < 1 or reader_count > MAX_DEEP_RESEARCH_READERS:
+        raise ValueError(
+            f"deep_research_organ reader_count must be between 1 and {MAX_DEEP_RESEARCH_READERS}"
+        )
 
     tissue_id = f"{organ_id}.retrieval"
     coordinator = CellAddress(
@@ -564,33 +664,34 @@ def deep_research_organ(
         organ_id=organ_id,
         organism_id=organism_id,
     )
+    resolved_reader_briefs = resolve_deep_research_reader_briefs(
+        reader_count=reader_count,
+        reader_briefs=reader_briefs,
+    )
+    members = [
+        _member(
+            member_id=member_id,
+            cell_id=f"{organ_id}.{member_id}",
+            tissue_id=tissue_id,
+            organ_id=organ_id,
+            organism_id=organism_id,
+            role="research_reader",
+            instruction=_DEEP_RESEARCH_READER_BASE_INSTRUCTION,
+            model=model,
+            instruction_suffix=brief,
+            input_payload_overrides={"reader_brief": brief},
+            metadata={"reader_brief": brief},
+        )
+        for member_id, brief in resolved_reader_briefs
+    ]
     tissue = retrieval_enrichment_pool(
         f"{organ_id}.retrieval-pool",
-        members=[
-            _member(
-                member_id="reader-a",
-                cell_id=f"{organ_id}.reader-a",
-                tissue_id=tissue_id,
-                organ_id=organ_id,
-                organism_id=organism_id,
-                role="research_reader",
-                instruction="Extract grounded findings from the provided evidence.",
-                model=model,
-                instruction_suffix="Focus on the core defect and evidence that directly supports it.",
-            ),
-            _member(
-                member_id="reader-b",
-                cell_id=f"{organ_id}.reader-b",
-                tissue_id=tissue_id,
-                organ_id=organ_id,
-                organism_id=organism_id,
-                role="research_reader",
-                instruction="Extract grounded findings from the provided evidence.",
-                model=model,
-                instruction_suffix="Focus on acceptance criteria, risks, and missing evidence.",
-            ),
-        ],
-        limits=TissuePoolLimits(max_members=2, max_concurrency=2, max_failures=0),
+        members=members,
+        limits=TissuePoolLimits(
+            max_members=reader_count,
+            max_concurrency=min(reader_count, MAX_DEEP_RESEARCH_READERS),
+            max_failures=_deep_research_failure_budget(reader_count),
+        ),
         metadata={"organ_id": organ_id},
     )
     return OrganPattern(
@@ -609,18 +710,54 @@ def deep_research_organ(
         lead_worker=WorkerDefinition(
             id=f"{organ_id}.lead",
             role="research_synthesizer",
-            instruction="Synthesize grounded findings, open questions, and recommended change shape.",
+            instruction=(
+                "Synthesize grounded findings into a bounded research report that includes "
+                "findings, evidence summary, explicit evidence refs, contradictions, open "
+                "questions, a verification appendix for critical facts, an audit appendix "
+                "for unresolved logic/freshness/authority/scope-fit issues, a report "
+                "readiness label, standard quality_gates for time anchoring, scope boundary, "
+                "source authority, numeric reconciliation, claim-object fit, and final status, "
+                "confidence, and a recommended change shape. Respect any temporal frame in "
+                "the input and anchor relative-time claims to that frame instead of drifting "
+                "between historical and current context. Do not mark the report actionable "
+                "when critical facts remain unverified or conflicted, when material audit issues "
+                "remain unresolved, or when a standard quality gate is missing or failed."
+            ),
             model=model,
         ),
-        lead_instruction="Synthesize the tissue output into a bounded research report with grounded findings and a recommended change.",
+        lead_instruction=(
+            "Synthesize the tissue output into a bounded research report with grounded findings, "
+            "evidence refs, contradictions, a verification appendix for critical facts, an "
+            "audit appendix for reasoning and sourcing gaps, an explicit readiness label, "
+            "standard quality gates, confidence, and a recommended change. Respect the "
+            "input temporal frame before grounding time-sensitive claims."
+        ),
         tissue=tissue,
         tissue_coordinator=coordinator,
         boundary_contract=OrganBoundaryContract(
             required_input_keys=["objective", "acceptance_criteria", "delivery_target"],
-            required_output_keys=["findings", "evidence_summary", "open_questions", "recommended_change"],
+            required_output_keys=[
+                "findings",
+                "evidence_summary",
+                "evidence_refs",
+                "contradictions",
+                "open_questions",
+                "verification_facts",
+                "audit_issues",
+                "quality_gates",
+                "report_readiness",
+                "readiness_note",
+                "confidence",
+                "recommended_change",
+            ],
         ),
         metadata={
             "promotion_path": "Later meta-workflow builder promotion stays gated behind 45-4 and consumes this organ's grounded findings rather than replacing the organ membrane.",
+            "research_contract_version": "v3",
+            "reader_count": reader_count,
+            "max_reader_count": MAX_DEEP_RESEARCH_READERS,
+            "failure_budget": _deep_research_failure_budget(reader_count),
+            "reader_briefs": [brief for _member_id, brief in resolved_reader_briefs],
         },
     )
 
@@ -932,6 +1069,7 @@ def synthesis_organ(
 
 
 __all__ = [
+    "MAX_DEEP_RESEARCH_READERS",
     "OrganBoundaryContract",
     "OrganCellStage",
     "OrganEscalationSurface",
@@ -944,6 +1082,7 @@ __all__ = [
     "coding_build_organ",
     "deep_research_organ",
     "execute_organ_pattern",
+    "resolve_deep_research_reader_briefs",
     "synthesis_organ",
     "universal_validator_organ",
 ]
