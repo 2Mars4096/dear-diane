@@ -52,6 +52,16 @@ htmlcov/
 # Logs
 *.log
 
+# Temporary files
+.tmp/
+
+# Local runtime databases
+docjobs.db
+
+# SWE-bench runner scratch artifacts (repo clones + per-instance workspaces)
+tests/eval/results/swebench_repo_cache/
+tests/eval/results/*/workspace/
+
 # LaTeX build artifacts
 *.aux
 *.nav
