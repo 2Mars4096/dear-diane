@@ -23,6 +23,7 @@ from dan.worker.organisms.research_conversation import (
     ResearchConversationReportSummary,
     ResearchConversationReviewDecision,
     ResearchConversationSubproblem,
+    ResearchConversationWorkstream,
     ResearchConversationTurnDecision,
 )
 from dan.worker.organisms.coding_execution import (
@@ -113,6 +114,7 @@ __all__ = [
     "ResearchConversationReportSummary",
     "ResearchConversationReviewDecision",
     "ResearchConversationSubproblem",
+    "ResearchConversationWorkstream",
     "ResearchConversationTurnDecision",
     "DeepResearchOrganDemoReport",
     "available_local_organism_tools",

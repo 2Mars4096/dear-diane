@@ -150,6 +150,14 @@ async def test_deep_research_organ_keeps_tissue_and_lead_bounded(tmp_path) -> No
     ]
     assert len(execution.result.output_refs) == 1
     assert len(trace_log.inspect_trace("trace:bounded-organ")) >= 8
+    reader_shapes = {
+        str(request.metadata.get("worker_id") or ""): request.output_contract.expected_return_shape
+        for request in provider.requests
+        if str(request.metadata.get("worker_id") or "").startswith("deep-research.reader-")
+    }
+    assert reader_shapes
+    assert all("follow_up_queries" in shape for shape in reader_shapes.values())
+    assert all("report_readiness" not in shape for shape in reader_shapes.values())
 
 
 @pytest.mark.asyncio

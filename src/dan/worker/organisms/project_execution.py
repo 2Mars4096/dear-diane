@@ -71,8 +71,10 @@ def build_research_orchestrator_worker(
             "whether the request is about current-as-of-runtime state, a historical "
             "snapshot, a trend over time, or a timeless/default question, and anchor any "
             "relative-time language to the supplied current date and timezone. When asked "
-            "to plan research, decompose the objective into small concrete subproblems, say "
-            "why each matters, and say what evidence would resolve it. When reviewing a "
+            "to plan research, decompose the objective into small concrete subproblems, group "
+            "non-conflicting ones into a few parallel workstreams, say why each part matters, "
+            "say what evidence would resolve it, and say how the resulting streams should be "
+            "aggregated back into the final answer. When reviewing a "
             "bounded research run, do not stop if the run failed or returned an incomplete "
             "report."
         ),

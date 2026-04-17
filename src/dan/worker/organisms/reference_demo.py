@@ -267,7 +267,18 @@ def _research_reader_note(worker_id: str) -> str:
         index = max(1, ord(suffix.lower()) - ord("a") + 1)
     except Exception:
         index = 1
-    return _DEEP_RESEARCH_READER_NOTES[(index - 1) % len(_DEEP_RESEARCH_READER_NOTES)]
+    note = _DEEP_RESEARCH_READER_NOTES[(index - 1) % len(_DEEP_RESEARCH_READER_NOTES)]
+    return json.dumps(
+        {
+            "findings": [note],
+            "evidence_refs": ["brief:issue"],
+            "contradictions": [],
+            "open_questions": [],
+            "reasoning_notes": [],
+            "follow_up_queries": [],
+        },
+        sort_keys=True,
+    )
 
 
 def _reference_organism_for_task(

@@ -44,6 +44,7 @@ from dan.worker.organisms import (
     ResearchConversationReportSummary,
     ResearchConversationReviewDecision,
     ResearchConversationSubproblem,
+    ResearchConversationWorkstream,
     ResearchConversationTurnDecision,
     run_deep_research_organ_live,
 )
@@ -330,6 +331,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional maximum provider tool calls per worker completion. Overrides --depth when set.",
     )
     parser.add_argument(
+        "--max-supervision-loops",
+        type=int,
+        default=None,
+        help=(
+            "Optional cap on bounded research passes per orchestrated turn. "
+            "Use 0 for unbounded; by default DAN Research keeps looping until "
+            "the report is ready, clarification is needed, or a run fails."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Print the full research report or config payload as JSON.",
@@ -377,6 +388,62 @@ def _plan_subproblem_brief(
     return " ".join(parts)
 
 
+def _plan_workstream_brief(
+    workstream: ResearchConversationWorkstream,
+    *,
+    index: int,
+    subproblems_by_id: dict[str, ResearchConversationSubproblem],
+) -> str:
+    related = [
+        subproblems_by_id[problem_id]
+        for problem_id in list(workstream.subproblem_ids or [])
+        if problem_id in subproblems_by_id
+    ]
+    parts = [
+        f"Workstream {str(workstream.stream_id or f'stream-{index}').strip()}: {str(workstream.goal or workstream.title).strip()}",
+        f"Why it matters: {str(workstream.why_it_matters).strip()}",
+    ]
+    title = str(workstream.title or "").strip()
+    if title and title != str(workstream.goal or "").strip():
+        parts.append(f"Title: {title}")
+    for related_index, subproblem in enumerate(related, start=1):
+        parts.append(
+            f"Stream task {related_index} ({str(subproblem.problem_id or '').strip() or f'problem-{related_index}'}): {str(subproblem.question).strip()}"
+        )
+        parts.append(f"Evidence to seek: {str(subproblem.evidence_to_seek).strip()}")
+        search_hint = str(subproblem.search_hint or "").strip()
+        if search_hint:
+            parts.append(f"Search hint: {search_hint}")
+    aggregation_hint = str(workstream.aggregation_hint or "").strip()
+    if aggregation_hint:
+        parts.append(f"Aggregate by: {aggregation_hint}")
+    return " ".join(parts)
+
+
+def _plan_workstream_summary(
+    workstream: ResearchConversationWorkstream,
+    *,
+    index: int,
+    subproblems_by_id: dict[str, ResearchConversationSubproblem],
+) -> str:
+    related_questions = [
+        str(subproblems_by_id[problem_id].question).strip()
+        for problem_id in list(workstream.subproblem_ids or [])
+        if problem_id in subproblems_by_id
+    ]
+    covers = "; ".join(question for question in related_questions if question)
+    parts = [
+        f"Workstream {str(workstream.stream_id or f'stream-{index}').strip()}: {str(workstream.goal or workstream.title).strip()}",
+        f"Why: {str(workstream.why_it_matters).strip()}",
+    ]
+    if covers:
+        parts.append(f"Covers: {covers}")
+    aggregation_hint = str(workstream.aggregation_hint or "").strip()
+    if aggregation_hint:
+        parts.append(f"Aggregate by: {aggregation_hint}")
+    return " ".join(parts)
+
+
 def _plan_reader_briefs(
     plan: ResearchConversationIntentionPlan | None,
     *,
@@ -384,10 +451,27 @@ def _plan_reader_briefs(
 ) -> list[str]:
     briefs: list[str] = []
     if plan is not None:
-        for index, subproblem in enumerate(plan.subproblems, start=1):
-            brief = _plan_subproblem_brief(subproblem, index=index)
-            if brief:
-                briefs.append(brief)
+        subproblems_by_id = {
+            str(subproblem.problem_id or "").strip(): subproblem
+            for subproblem in plan.subproblems
+            if str(subproblem.problem_id or "").strip()
+        }
+        if plan.workstreams:
+            for index, workstream in enumerate(plan.workstreams, start=1):
+                brief = _plan_workstream_brief(
+                    workstream,
+                    index=index,
+                    subproblems_by_id=subproblems_by_id,
+                )
+                if brief:
+                    briefs.append(brief)
+        elif plan.subproblems:
+            for index, subproblem in enumerate(plan.subproblems, start=1):
+                brief = _plan_subproblem_brief(subproblem, index=index)
+                if brief:
+                    briefs.append(brief)
+    if briefs:
+        return _dedupe(briefs)
     briefs.extend(str(brief).strip() for brief in fallback_reader_briefs if str(brief).strip())
     return _dedupe(briefs)
 
@@ -402,6 +486,19 @@ def _plan_evidence_summaries(
         summaries.append(f"Answer goal: {str(plan.answer_goal).strip()}")
     if str(plan.plan_summary or "").strip():
         summaries.append(f"Plan summary: {str(plan.plan_summary).strip()}")
+    subproblems_by_id = {
+        str(subproblem.problem_id or "").strip(): subproblem
+        for subproblem in plan.subproblems
+        if str(subproblem.problem_id or "").strip()
+    }
+    for index, workstream in enumerate(plan.workstreams, start=1):
+        summaries.append(
+            _plan_workstream_summary(
+                workstream,
+                index=index,
+                subproblems_by_id=subproblems_by_id,
+            )
+        )
     for index, subproblem in enumerate(plan.subproblems, start=1):
         summaries.append(_plan_subproblem_brief(subproblem, index=index))
     return _dedupe(summaries)
@@ -417,6 +514,7 @@ def _plan_payload(
         "refined_objective": str(plan.refined_objective or "").strip(),
         "plan_summary": str(plan.plan_summary or "").strip(),
         "subproblem_count": len(plan.subproblems),
+        "workstream_count": len(plan.workstreams),
         "subproblems": [
             {
                 "problem_id": str(item.problem_id or "").strip(),
@@ -432,7 +530,50 @@ def _plan_payload(
             }
             for item in plan.subproblems
         ],
+        "workstreams": [
+            {
+                "stream_id": str(item.stream_id or "").strip(),
+                "title": str(item.title or "").strip(),
+                "goal": str(item.goal or "").strip(),
+                "why_it_matters": str(item.why_it_matters or "").strip(),
+                "subproblem_ids": [
+                    str(problem_id).strip()
+                    for problem_id in list(item.subproblem_ids or [])
+                    if str(problem_id).strip()
+                ],
+                "aggregation_hint": str(item.aggregation_hint or "").strip(),
+            }
+            for item in plan.workstreams
+        ],
     }
+
+
+def _planned_reader_count(
+    plan: ResearchConversationIntentionPlan | None,
+    *,
+    base_requested_count: int | None,
+    continuation_index: int,
+    previous_selected_count: int | None,
+) -> int | None:
+    provisional = _continuation_reader_count(
+        base_requested_count=base_requested_count,
+        continuation_index=continuation_index,
+        previous_selected_count=previous_selected_count,
+    )
+    if base_requested_count is not None:
+        return provisional
+    planned_width = 0
+    if plan is not None:
+        if plan.workstreams:
+            planned_width = len(plan.workstreams)
+        elif plan.subproblems:
+            planned_width = len(plan.subproblems)
+    if planned_width <= 0:
+        return provisional
+    capped_width = min(MAX_DEEP_RESEARCH_READERS, max(1, planned_width))
+    if provisional is None:
+        return capped_width
+    return max(1, min(provisional, capped_width))
 
 
 def _resolve_user_path(value: str | Path, *, base_dir: Path) -> Path:
@@ -679,6 +820,39 @@ def _effective_research_reader_count(
     if product_config and product_config.research_reader_count is not None:
         return int(product_config.research_reader_count)
     return None
+
+
+def _effective_max_supervision_loops(
+    requested_count: int | None,
+    *,
+    product_config: ResearchProductConfig | None = None,
+) -> int | None:
+    candidate: Any = requested_count
+    if candidate is None and product_config is not None:
+        candidate = product_config.max_supervision_loops
+    if candidate is None:
+        candidate = os.environ.get("DAN_RESEARCH_MAX_SUPERVISION_LOOPS")
+    if candidate is None:
+        return None
+    if isinstance(candidate, int):
+        value = candidate
+    else:
+        text = str(candidate).strip().lower()
+        if not text or text in {"none", "null", "unbounded", "unlimited", "inf", "infinite"}:
+            return None
+        try:
+            value = int(text)
+        except ValueError as exc:
+            raise ValueError(
+                "DAN Research max supervision loops must be a positive integer or 0 for unbounded"
+            ) from exc
+    if value == 0:
+        return None
+    if value < 0:
+        raise ValueError(
+            "DAN Research max supervision loops must be a positive integer or 0 for unbounded"
+        )
+    return value
 
 
 def _continuation_reader_count(
@@ -1533,8 +1707,10 @@ async def run_research_organism_live(
     else:
         raise TypeError(f"Unsupported research report result: {type(result).__name__}")
     final_output = dict(payload.get("final_output") or {})
+    status = str(payload.get("status") or "")
+    default_readiness = "grounded" if final_output and status == "completed" else "blocked"
     return ResearchOrganismReport(
-        status=str(payload.get("status") or ""),
+        status=status,
         trace_id=str(payload.get("trace_id") or ""),
         organism_id=organism_id,
         organ_id="deep-research",
@@ -1553,7 +1729,7 @@ async def run_research_organism_live(
         verification_facts=final_output.get("verification_facts"),
         audit_issues=final_output.get("audit_issues"),
         quality_gates=final_output.get("quality_gates"),
-        report_readiness=final_output.get("report_readiness") or "grounded",
+        report_readiness=final_output.get("report_readiness") or default_readiness,
         readiness_note=final_output.get("readiness_note"),
         confidence=final_output.get("confidence"),
         recommended_change=str(final_output.get("recommended_change") or ""),
@@ -1655,6 +1831,7 @@ async def _run_orchestrated_turn(
     default_evidence_summaries: Sequence[str],
     default_reader_briefs: Sequence[str],
     research_reader_count: int | None,
+    max_supervision_loops: int | None,
     depth_profile: str,
     max_tool_rounds: int | None,
     max_tool_calls: int,
@@ -1766,7 +1943,6 @@ async def _run_orchestrated_turn(
     effective_acceptance_criteria = _dedupe(
         [*list(acceptance_criteria), *list(decision.acceptance_criteria)]
     ) or list(acceptance_criteria)
-    max_supervision_loops = 2
     base_turn_number = session.next_turn_number()
     current_plan, orchestrator_session = await controller.plan_research_intention(
         session=orchestrator_session,
@@ -1798,6 +1974,7 @@ async def _run_orchestrated_turn(
         answer_goal=current_plan.answer_goal,
         refined_objective=current_plan.refined_objective,
         subproblem_count=len(current_plan.subproblems),
+        workstream_count=len(current_plan.workstreams),
         plan_summary=current_plan.plan_summary,
     )
     next_objective = _assistant_text(current_plan.refined_objective or next_objective)
@@ -1806,8 +1983,10 @@ async def _run_orchestrated_turn(
     ) or list(effective_acceptance_criteria)
     current_plan_mode = "initial"
 
-    for continuation_index in range(max_supervision_loops):
-        turn_reader_count = _continuation_reader_count(
+    continuation_index = 0
+    while True:
+        turn_reader_count = _planned_reader_count(
+            current_plan,
             base_requested_count=research_reader_count,
             continuation_index=continuation_index,
             previous_selected_count=reports[-1].selected_reader_count if reports else None,
@@ -1979,7 +2158,10 @@ async def _run_orchestrated_turn(
             if review.public_response:
                 _record_assistant(review.public_response)
 
-            if review.action == "continue" and continuation_index + 1 < max_supervision_loops:
+            if review.action == "continue" and (
+                max_supervision_loops is None
+                or continuation_index + 1 < max_supervision_loops
+            ):
                 event_logger.emit(
                     {
                         "event": "run.log.completed",
@@ -2038,6 +2220,7 @@ async def _run_orchestrated_turn(
                     answer_goal=current_plan.answer_goal,
                     refined_objective=current_plan.refined_objective,
                     subproblem_count=len(current_plan.subproblems),
+                    workstream_count=len(current_plan.workstreams),
                     plan_summary=current_plan.plan_summary,
                     prior_trace_id=report.trace_id,
                 )
@@ -2048,6 +2231,7 @@ async def _run_orchestrated_turn(
                     [*list(effective_acceptance_criteria), *list(current_plan.acceptance_criteria)]
                 ) or list(effective_acceptance_criteria)
                 current_plan_mode = "continuation"
+                continuation_index += 1
                 continue
 
             if review.action == "continue":
@@ -2337,6 +2521,7 @@ def _print_session_status(
     delivery_target: str,
     depth_profile: str,
     research_reader_count: int | None,
+    max_supervision_loops: int | None,
     max_tool_rounds: int | None,
     max_tool_calls: int,
     max_runtime_seconds: int | None,
@@ -2358,6 +2543,10 @@ def _print_session_status(
     print(f"delivery target: {delivery_target}")
     print(f"depth: {depth_profile}")
     print(f"research readers: {research_reader_count if research_reader_count is not None else 'auto'}")
+    print(
+        "max supervision loops: "
+        + (str(max_supervision_loops) if max_supervision_loops is not None else "unbounded")
+    )
     print(
         "max tool rounds: "
         + (str(max_tool_rounds) if max_tool_rounds is not None else "unbounded")
@@ -2510,6 +2699,10 @@ def _initialize_product_config(
             product_config=product_config,
         ),
         depth_profile=depth_profile,
+        max_supervision_loops=_effective_max_supervision_loops(
+            args.max_supervision_loops,
+            product_config=product_config,
+        ),
         research_reader_count=_effective_research_reader_count(
             args.research_readers,
             product_config=product_config,
@@ -2533,6 +2726,7 @@ def _resolved_config_payload(
     delivery_target: str,
     depth_profile: str,
     research_reader_count: int | None,
+    max_supervision_loops: int | None,
     max_tool_rounds: int | None,
     max_tool_calls: int,
     max_runtime_seconds: int | None,
@@ -2570,6 +2764,7 @@ def _resolved_config_payload(
         "delivery_target": delivery_target,
         "depth_profile": depth_profile,
         "research_reader_count": research_reader_count,
+        "max_supervision_loops": max_supervision_loops,
         "max_tool_rounds": max_tool_rounds,
         "max_tool_calls": int(max_tool_calls),
         "max_runtime_seconds": max_runtime_seconds,
@@ -2598,6 +2793,14 @@ def _print_config_payload(payload: dict[str, Any], *, as_json: bool) -> None:
             str(payload["research_reader_count"])
             if payload.get("research_reader_count") is not None
             else "auto"
+        )
+    )
+    print(
+        "max supervision loops: "
+        + (
+            str(payload["max_supervision_loops"])
+            if payload.get("max_supervision_loops") is not None
+            else "unbounded"
         )
     )
     max_tool_rounds = payload.get("max_tool_rounds")
@@ -2636,6 +2839,7 @@ def _interactive_loop(
     evidence_summaries: Sequence[str],
     reader_briefs: Sequence[str],
     research_reader_count: int | None,
+    max_supervision_loops: int | None,
     depth_profile: str,
     max_tool_rounds: int | None,
     max_tool_calls: int,
@@ -2702,6 +2906,7 @@ def _interactive_loop(
                 delivery_target=delivery_target,
                 depth_profile=depth_profile,
                 research_reader_count=research_reader_count,
+                max_supervision_loops=max_supervision_loops,
                 max_tool_rounds=max_tool_rounds,
                 max_tool_calls=max_tool_calls,
                 max_runtime_seconds=max_runtime_seconds,
@@ -2745,6 +2950,7 @@ def _interactive_loop(
                 default_evidence_summaries=evidence_summaries,
                 default_reader_briefs=reader_briefs,
                 research_reader_count=research_reader_count,
+                max_supervision_loops=max_supervision_loops,
                 depth_profile=depth_profile,
                 max_tool_rounds=max_tool_rounds,
                 max_tool_calls=max_tool_calls,
@@ -2895,6 +3101,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.thinking_mode,
             product_config=product_config,
         )
+        max_supervision_loops = _effective_max_supervision_loops(
+            args.max_supervision_loops,
+            product_config=product_config,
+        )
     except ValueError as exc:
         parser.error(str(exc))
     max_tool_rounds, max_tool_calls = _depth_budget(
@@ -2936,6 +3146,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 delivery_target=config.delivery_target,
                 depth_profile=config.depth_profile,
                 research_reader_count=config.research_reader_count,
+                max_supervision_loops=config.max_supervision_loops,
                 max_tool_rounds=config.max_tool_rounds,
                 max_tool_calls=config.max_tool_calls,
                 max_runtime_seconds=max_runtime_seconds,
@@ -2961,6 +3172,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             delivery_target=delivery_target,
             depth_profile=depth_profile,
             research_reader_count=research_reader_count,
+            max_supervision_loops=max_supervision_loops,
             max_tool_rounds=max_tool_rounds,
             max_tool_calls=max_tool_calls,
             max_runtime_seconds=max_runtime_seconds,
@@ -3038,6 +3250,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             evidence_summaries=evidence_summaries,
             reader_briefs=reader_briefs,
             research_reader_count=research_reader_count,
+            max_supervision_loops=max_supervision_loops,
             depth_profile=depth_profile,
             max_tool_rounds=max_tool_rounds,
             max_tool_calls=max_tool_calls,
@@ -3069,6 +3282,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 default_evidence_summaries=evidence_summaries,
                 default_reader_briefs=reader_briefs,
                 research_reader_count=research_reader_count,
+                max_supervision_loops=max_supervision_loops,
                 depth_profile=depth_profile,
                 max_tool_rounds=max_tool_rounds,
                 max_tool_calls=max_tool_calls,

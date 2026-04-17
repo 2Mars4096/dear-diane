@@ -527,6 +527,17 @@ class ResearchConversationSubproblem(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
 
 
+class ResearchConversationWorkstream(BaseModel):
+    """Parallel evidence stream that groups related subproblems."""
+
+    stream_id: str = ""
+    title: str = ""
+    goal: str = ""
+    why_it_matters: str = ""
+    subproblem_ids: list[str] = Field(default_factory=list)
+    aggregation_hint: str = ""
+
+
 class ResearchConversationIntentionPlan(BaseModel):
     """Pre-search decomposition for one bounded DAN Research run."""
 
@@ -536,6 +547,7 @@ class ResearchConversationIntentionPlan(BaseModel):
     plan_summary: str = ""
     acceptance_criteria: list[str] = Field(default_factory=list)
     subproblems: list[ResearchConversationSubproblem] = Field(default_factory=list)
+    workstreams: list[ResearchConversationWorkstream] = Field(default_factory=list)
 
 
 class ResearchConversationReviewDecision(BaseModel):
@@ -655,6 +667,24 @@ def _conversation_plan_schema() -> dict[str, Any]:
                     "required": ["question", "why_it_matters", "evidence_to_seek"],
                 },
             },
+            "workstreams": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "stream_id": {"type": "string"},
+                        "title": {"type": "string"},
+                        "goal": {"type": "string"},
+                        "why_it_matters": {"type": "string"},
+                        "subproblem_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "aggregation_hint": {"type": "string"},
+                    },
+                    "required": ["goal", "why_it_matters", "subproblem_ids"],
+                },
+            },
         },
         "required": ["answer_goal", "refined_objective", "subproblems"],
     }
@@ -704,8 +734,12 @@ def _conversation_plan_contract() -> OutputContract:
             "executable research subproblems. For each subproblem, state why it matters "
             "to the final answer and what evidence would resolve it. If a subproblem is "
             "still too broad, split it again until it is small enough to search or verify "
-            "cleanly. When a prior bounded report is supplied, use its unresolved issues "
-            "to build a narrower follow-up plan instead of another broad sweep."
+            "cleanly. Then group non-conflicting subproblems into a few parallel "
+            "workstreams so evidence can be gathered at the same time and aggregated "
+            "cleanly afterward. For each workstream, state why that stream exists and "
+            "how its evidence should be folded back into the final answer. When a prior "
+            "bounded report is supplied, use its unresolved issues to build a narrower "
+            "follow-up plan instead of another broad sweep."
         ),
         expected_return_shape=json.dumps(
             {
@@ -722,6 +756,16 @@ def _conversation_plan_contract() -> OutputContract:
                         "evidence_to_seek": "<required>",
                         "search_hint": "<optional>",
                         "depends_on": ["<optional>"],
+                    }
+                ],
+                "workstreams": [
+                    {
+                        "stream_id": "<optional>",
+                        "title": "<optional>",
+                        "goal": "<required>",
+                        "why_it_matters": "<required>",
+                        "subproblem_ids": ["<required>"],
+                        "aggregation_hint": "<optional>",
                     }
                 ],
             },
@@ -925,6 +969,43 @@ def _report_follow_up_subproblems(
     return subproblems
 
 
+def _fallback_workstreams(
+    subproblems: list[ResearchConversationSubproblem],
+    *,
+    planning_mode: Literal["initial", "continuation"],
+    start_index: int = 1,
+    existing_ids: set[str] | None = None,
+) -> list[ResearchConversationWorkstream]:
+    workstreams: list[ResearchConversationWorkstream] = []
+    taken_ids = set(existing_ids or set())
+    next_index = start_index
+    aggregation_hint = (
+        "Aggregate this stream into one coherent finding or section before final synthesis."
+        if planning_mode == "initial"
+        else "Use this stream to close one unresolved gap from the previous bounded run."
+    )
+    for subproblem in subproblems:
+        while f"stream-{next_index}" in taken_ids:
+            next_index += 1
+        stream_id = f"stream-{next_index}"
+        taken_ids.add(stream_id)
+        next_index += 1
+        workstreams.append(
+            ResearchConversationWorkstream(
+                stream_id=stream_id,
+                title=_clean_text(subproblem.question),
+                goal=_clean_text(subproblem.question),
+                why_it_matters=_clean_text(subproblem.why_it_matters)
+                or "This stream resolves one necessary part of the final answer.",
+                subproblem_ids=[
+                    _clean_text(subproblem.problem_id) or f"problem-{next_index - 1}"
+                ],
+                aggregation_hint=aggregation_hint,
+            )
+        )
+    return workstreams
+
+
 def _fallback_intention_plan(
     *,
     objective: str,
@@ -977,6 +1058,10 @@ def _fallback_intention_plan(
             "Narrow the follow-up pass to the unresolved gaps from the last bounded run "
             "instead of repeating another broad sweep."
         )
+    workstreams = _fallback_workstreams(
+        subproblems,
+        planning_mode=planning_mode,
+    )
     return ResearchConversationIntentionPlan(
         public_response=(
             "I’ll break this into smaller research questions first, then run the bounded pass."
@@ -988,6 +1073,7 @@ def _fallback_intention_plan(
         plan_summary=plan_summary,
         acceptance_criteria=list(acceptance_criteria or context.acceptance_criteria),
         subproblems=subproblems,
+        workstreams=workstreams,
     )
 
 
@@ -1113,6 +1199,80 @@ def _normalize_intention_plan(
     plan_summary = _clean_text(plan.plan_summary) or (
         "Answer the user's objective by resolving the planned subproblems in a bounded way."
     )
+    subproblems_by_id = {
+        _clean_text(item.problem_id): item
+        for item in cleaned_subproblems
+        if _clean_text(item.problem_id)
+    }
+    cleaned_workstreams: list[ResearchConversationWorkstream] = []
+    covered_subproblem_ids: set[str] = set()
+    seen_workstream_signatures: set[tuple[str, ...]] = set()
+    taken_workstream_ids: set[str] = set()
+    for index, item in enumerate(plan.workstreams, start=1):
+        subproblem_ids = [
+            problem_id
+            for problem_id in _normalize_subproblem_dependencies(item.subproblem_ids)
+            if problem_id in subproblems_by_id
+        ]
+        if not subproblem_ids:
+            continue
+        signature = tuple(subproblem_ids)
+        if signature in seen_workstream_signatures:
+            continue
+        seen_workstream_signatures.add(signature)
+        referenced = [subproblems_by_id[problem_id] for problem_id in subproblem_ids]
+        stream_id = _clean_text(item.stream_id) or f"stream-{index}"
+        if stream_id in taken_workstream_ids:
+            next_stream_index = len(taken_workstream_ids) + 1
+            stream_id = f"stream-{next_stream_index}"
+            while stream_id in taken_workstream_ids:
+                next_stream_index += 1
+                stream_id = f"stream-{next_stream_index}"
+        taken_workstream_ids.add(stream_id)
+        derived_goal = _clean_text(item.goal) or _clean_text(item.title)
+        if not derived_goal:
+            derived_goal = _clean_text(
+                "; ".join(subproblem.question for subproblem in referenced[:2])
+            )
+        derived_why = _clean_text(item.why_it_matters)
+        if not derived_why:
+            derived_why = _clean_text(
+                " ".join(
+                    subproblem.why_it_matters
+                    for subproblem in referenced
+                    if _clean_text(subproblem.why_it_matters)
+                )
+            ) or (
+                "This stream groups related subproblems so the evidence can be gathered "
+                "in parallel and aggregated cleanly afterward."
+            )
+        cleaned_workstreams.append(
+            ResearchConversationWorkstream(
+                stream_id=stream_id,
+                title=_clean_text(item.title) or derived_goal,
+                goal=derived_goal,
+                why_it_matters=derived_why,
+                subproblem_ids=subproblem_ids,
+                aggregation_hint=_clean_text(item.aggregation_hint)
+                or "Aggregate the evidence from this stream into one coherent finding before final synthesis.",
+            )
+        )
+        covered_subproblem_ids.update(subproblem_ids)
+
+    remaining_subproblems = [
+        subproblem
+        for subproblem in cleaned_subproblems
+        if _clean_text(subproblem.problem_id) not in covered_subproblem_ids
+    ]
+    if not cleaned_workstreams or remaining_subproblems:
+        cleaned_workstreams.extend(
+            _fallback_workstreams(
+                remaining_subproblems if remaining_subproblems else cleaned_subproblems,
+                planning_mode=planning_mode,
+                start_index=len(cleaned_workstreams) + 1,
+                existing_ids=taken_workstream_ids,
+            )
+        )
     return ResearchConversationIntentionPlan(
         public_response=_clean_text(plan.public_response),
         answer_goal=answer_goal or _clean_text(objective),
@@ -1122,6 +1282,7 @@ def _normalize_intention_plan(
             [*list(acceptance_criteria), *list(plan.acceptance_criteria)]
         ),
         subproblems=cleaned_subproblems,
+        workstreams=cleaned_workstreams,
     )
 
 
@@ -1488,5 +1649,6 @@ __all__ = [
     "ResearchConversationReportSummary",
     "ResearchConversationReviewDecision",
     "ResearchConversationSubproblem",
+    "ResearchConversationWorkstream",
     "ResearchConversationTurnDecision",
 ]

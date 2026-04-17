@@ -17,6 +17,7 @@ from dan.worker.composition import (
     make_escalation_signal,
     make_status_signal,
 )
+from dan.worker.core.contracts import OutputContract
 from dan.worker.core.executor import WorkerCoreExecutor, WorkerExecutionResult
 from dan.worker.core.model import WorkerDefinition
 from dan.worker.signaling import (
@@ -91,7 +92,8 @@ _DEEP_RESEARCH_READER_BASE_INSTRUCTION = (
     "read-only tools. Keep the output anchored to concrete evidence. Before using "
     "tools, inspect any temporal_mode, temporal_anchor, temporal_window, or "
     "temporal_guidance in the input and keep relative-time language consistent "
-    "with that frame."
+    "with that frame. Return only one compact evidence note for your lane; do not "
+    "attempt the full final report or a final recommendation."
 )
 
 
@@ -101,6 +103,63 @@ def _deep_research_failure_budget(reader_count: int) -> int:
     if reader_count <= 5:
         return 1
     return 2
+
+
+def _deep_research_reader_output_contract() -> OutputContract:
+    return OutputContract(
+        definition_of_done=(
+            "Return one compact evidence note for this reader lane. Use a few "
+            "targeted tool calls when needed, then stop and summarize only the "
+            "grounded findings you actually gathered."
+        ),
+        expected_return_shape=json.dumps(
+            {
+                "findings": ["<required>"],
+                "evidence_refs": ["<required>"],
+                "contradictions": [],
+                "open_questions": [],
+                "reasoning_notes": [],
+                "follow_up_queries": [],
+            },
+            sort_keys=True,
+        ),
+        output_schema={
+            "type": "object",
+            "properties": {
+                "findings": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "evidence_refs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "contradictions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "open_questions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "reasoning_notes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "follow_up_queries": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": [
+                "findings",
+                "evidence_refs",
+                "contradictions",
+                "open_questions",
+            ],
+            "additionalProperties": False,
+        },
+    )
 
 
 def _compact_value(value: Any) -> str:
@@ -620,6 +679,7 @@ def _member(
     model: str | None,
     instruction_suffix: str = "",
     input_payload_overrides: dict[str, Any] | None = None,
+    output_contract_override: OutputContract | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> TissueMember:
     return TissueMember(
@@ -638,6 +698,9 @@ def _member(
         ),
         instruction_suffix=instruction_suffix,
         input_payload_overrides=dict(input_payload_overrides or {}),
+        output_contract_override=output_contract_override.model_copy(deep=True)
+        if output_contract_override is not None
+        else None,
         metadata=dict(metadata or {}),
     )
 
@@ -668,6 +731,7 @@ def deep_research_organ(
         reader_count=reader_count,
         reader_briefs=reader_briefs,
     )
+    reader_output_contract = _deep_research_reader_output_contract()
     members = [
         _member(
             member_id=member_id,
@@ -680,6 +744,7 @@ def deep_research_organ(
             model=model,
             instruction_suffix=brief,
             input_payload_overrides={"reader_brief": brief},
+            output_contract_override=reader_output_contract,
             metadata={"reader_brief": brief},
         )
         for member_id, brief in resolved_reader_briefs

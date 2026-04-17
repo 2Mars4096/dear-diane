@@ -745,6 +745,7 @@ class ResearchProductConfig(BaseModel):
     delivery_target: str = "research memo"
     depth_profile: str = "standard"
     research_reader_count: int | None = None
+    max_supervision_loops: int | None = None
     max_tool_rounds: int | None = 8
     max_tool_calls: int = 24
 

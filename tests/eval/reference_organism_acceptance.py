@@ -69,7 +69,17 @@ class _ReferenceOrganismCompletionProvider:
 
         if worker_id.startswith("deep-research.reader-"):
             return CompletionResponse(
-                text="Grounded research note.",
+                text=json.dumps(
+                    {
+                        "findings": ["Grounded research note."],
+                        "evidence_refs": ["brief:issue"],
+                        "contradictions": [],
+                        "open_questions": [],
+                        "reasoning_notes": [],
+                        "follow_up_queries": [],
+                    },
+                    sort_keys=True,
+                ),
                 raw={"worker_id": worker_id},
             )
         if worker_id == "deep-research.lead":

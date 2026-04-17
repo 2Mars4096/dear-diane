@@ -20,6 +20,7 @@ from dan.worker.composition import (
     make_escalation_signal,
     make_status_signal,
 )
+from dan.worker.core.contracts import OutputContract
 from dan.worker.core.executor import WorkerCoreExecutor, WorkerExecutionResult
 from dan.worker.core.model import WorkerDefinition
 from dan.worker.signaling import (
@@ -74,6 +75,7 @@ class TissueMember(BaseModel):
     hard_constraints: list[str] = Field(default_factory=list)
     soft_constraints: list[str] = Field(default_factory=list)
     input_payload_overrides: dict[str, Any] = Field(default_factory=dict)
+    output_contract_override: OutputContract | None = None
     budget_limits: CellBudgetLimits | None = None
     authority_limits: CellAuthorityLimits | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -332,7 +334,11 @@ def build_tissue_member_packet(
             },
         ),
         evidence_refs=[ref.model_copy(deep=True) for ref in packet.evidence_refs],
-        output_contract=packet.output_contract.model_copy(deep=True),
+        output_contract=(
+            member.output_contract_override.model_copy(deep=True)
+            if member.output_contract_override is not None
+            else packet.output_contract.model_copy(deep=True)
+        ),
         budget_limits=_merge_budget_limits(packet.budget_limits, member.budget_limits),
         authority_limits=_merge_authority_limits(packet.authority_limits, member.authority_limits),
         continuation=packet.continuation.model_copy(deep=True) if packet.continuation is not None else None,
