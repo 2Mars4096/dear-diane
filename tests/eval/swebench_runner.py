@@ -30,6 +30,7 @@ from tests.eval import RESULTS_DIR
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REPO_CACHE_DIR = RESULTS_DIR / "swebench_repo_cache"
+GIT_BIN = "/usr/bin/git" if Path("/usr/bin/git").exists() else "git"
 
 
 @dataclass
@@ -55,6 +56,7 @@ class SweBenchRunRecord:
     report_status: str | None
     command: list[str]
     error: str | None = None
+    timed_out: bool = False
 
 
 def _timestamp_slug() -> str:
@@ -68,7 +70,7 @@ def _run_git(
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     proc = subprocess.run(
-        ["git", *args],
+        [GIT_BIN, *args],
         cwd=str(cwd) if cwd is not None else None,
         text=True,
         capture_output=True,
@@ -159,6 +161,48 @@ def _download_dataset_instance(
         )
     payload = _normalize_instance_payload(rows.iloc[0].to_dict())
     return SweBenchInstance.model_validate(payload)
+
+
+def load_swebench_instances(
+    *,
+    instance_file: Path | None,
+    dataset_repo: str | None,
+    split: str | None,
+    instance_ids: set[str] | None = None,
+) -> list[SweBenchInstance]:
+    if instance_file is not None:
+        raw = instance_file.read_text(encoding="utf-8")
+        if instance_file.suffix.lower() == ".jsonl":
+            rows = [
+                _normalize_instance_payload(json.loads(line))
+                for line in raw.splitlines()
+                if line.strip()
+            ]
+        else:
+            decoded = json.loads(raw)
+            if isinstance(decoded, list):
+                rows = [_normalize_instance_payload(item) for item in decoded]
+            elif isinstance(decoded, dict):
+                rows = [_normalize_instance_payload(decoded)]
+            else:
+                raise ValueError(f"Unsupported instance payload in {instance_file}")
+    elif dataset_repo and split:
+        parquet_path = Path(
+            hf_hub_download(
+                repo_id=dataset_repo,
+                repo_type="dataset",
+                filename=f"data/{split}-00000-of-00001.parquet",
+            )
+        )
+        df = pd.read_parquet(parquet_path)
+        rows = [_normalize_instance_payload(row) for row in df.to_dict("records")]
+    else:
+        raise ValueError("Provide either --instance-file, or --dataset-repo + --split")
+    if instance_ids is not None:
+        rows = [row for row in rows if str(row.get("instance_id") or "") in instance_ids]
+    instances = [SweBenchInstance.model_validate(row) for row in rows]
+    instances.sort(key=lambda instance: instance.instance_id)
+    return instances
 
 
 def load_swebench_instance(
@@ -289,6 +333,7 @@ def run_swebench_instance(
     thinking_mode: str,
     completion_timeout_seconds: float | None,
     max_tool_rounds: int | None,
+    run_timeout_seconds: float | None = None,
 ) -> SweBenchRunRecord:
     if not str(instance.repo or "").strip():
         raise ValueError("SWE-bench instance is missing `repo`")
@@ -312,6 +357,7 @@ def run_swebench_instance(
     patch_artifact_path: str | None = None
     report_status: str | None = None
     error: str | None = None
+    timed_out = False
     command: list[str] = []
 
     try:
@@ -336,13 +382,24 @@ def run_swebench_instance(
         env = dict(os.environ)
         py_path = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = "src" + (os.pathsep + py_path if py_path else "")
-        proc = subprocess.run(
-            command,
-            cwd=str(PROJECT_ROOT),
-            text=True,
-            capture_output=True,
-            env=env,
-        )
+        try:
+            proc = subprocess.run(
+                command,
+                cwd=str(PROJECT_ROOT),
+                text=True,
+                capture_output=True,
+                env=env,
+                timeout=run_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            error = f"run timed out after {run_timeout_seconds} seconds"
+            proc = subprocess.CompletedProcess(
+                args=command,
+                returncode=124,
+                stdout=str(exc.stdout or ""),
+                stderr=str(exc.stderr or ""),
+            )
     except Exception as exc:
         proc = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
         error = str(exc)
@@ -386,6 +443,7 @@ def run_swebench_instance(
         report_status=report_status,
         command=[str(part) for part in command],
         error=error,
+        timed_out=timed_out,
     )
 
 
@@ -460,6 +518,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional max tool rounds passed through to dan code.",
     )
     parser.add_argument(
+        "--run-timeout-seconds",
+        type=float,
+        default=None,
+        help="Optional wall-clock timeout for the whole dan code subprocess.",
+    )
+    parser.add_argument(
         "--results-root",
         default=str(RESULTS_DIR),
         help="Directory for benchmark run artifacts.",
@@ -501,6 +565,11 @@ def main(argv: list[str] | None = None) -> int:
                 else None
             ),
             max_tool_rounds=args.max_tool_rounds,
+            run_timeout_seconds=(
+                float(args.run_timeout_seconds)
+                if args.run_timeout_seconds is not None
+                else None
+            ),
         )
     except Exception as exc:
         parser.error(str(exc))
