@@ -24,7 +24,7 @@ Deep Agent Network should win the hard 5% tail tasks: the long-running, high-val
 
 - everyday chat, shallow one-shot requests, or simple coding tasks that a normal copilot can finish faster
 - flat swarm theater where many agents talk without bounded roles, aggregation, or operator control
-- breadth-first product positioning that tries to win generic chat, workflow builders, personal assistants, and autonomous businesses all at once
+- breadth-first product positioning that tries to win consumer-generic chat, workflow builders, personal assistants, and autonomous businesses all at once without one coherent high-trust operator story
 
 ### Motivating Example: Multi-Agent Paper Writing
 
@@ -147,11 +147,13 @@ Some systems already tackle the paper-writing use case specifically:
 
 This approach preserved early backend validation while moving quickly to a practical Langflow/Flowise-like user experience. The foundation (engine, builder, editor, execution UX) is complete; the next phases furnish it for real-world use.
 
-The strategic narrowing from here is to prove DAN on long-running tail tasks first, not to broaden into a generic assistant. That means prioritizing one flagship high-trust workflow family, tightening the always-on continuity UX, and building the supervision, aggregation, checkpointing, and cost controls needed for hierarchical swarms to be useful instead of theatrical.
+The strategic narrowing from here is to prove DAN on long-running tail tasks first, not to broaden into a consumer-generic assistant. The next expansion should still stay inside one coherent high-trust operator story: a general Mac/server chat plane built from bounded organisms, explicit approvals, and deterministic adapters for local work, web work, browser/desktop actions, and communications.
 
 Near-term engineering priority: structural consolidation before further broad feature expansion. The current 50-series plan family focuses on callee-owned workflow/run invariants, retiring false facades, narrowing oversized control-plane/runtime modules, pinning down the key scripts, and pruning redundant code without regressing performance. The goal is to make the codebase sharper and more honest at its boundaries before adding more surface area.
 
 Follow-on priority after that subtraction: standardize the concierge/worker contracts before trying to package them. The new 46-6/46-7 work treats message -> queue -> task -> session -> executor -> result, tool/memory/message connections, and prompt evolution as first-class contracts that must be normalized before DAN can honestly claim to have a reusable universal-agent bundle for other projects.
+
+The new `54-*` rewrite family is the first direct expression of that packaging goal. Instead of keeping separate partial brains for code, research, concierge, gateway, and surface adapters, DAN-v2 should converge on one durable conversation controller that can route into specialist organisms or bounded operator lanes while preserving policy, approval, and audit boundaries.
 
 ---
 
