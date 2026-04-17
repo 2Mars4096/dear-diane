@@ -61,6 +61,7 @@ class RunRecord:
     error: str | None = None
     goal_context: dict[str, Any] | None = None
     automatic_recovery: dict[str, Any] | None = None
+    launch_request: dict[str, Any] | None = None
 
     def _result_meta(self) -> dict[str, Any]:
         if self.result is None or not isinstance(self.result.metadata, dict):
@@ -107,6 +108,12 @@ class RunRecord:
             "pending_overlays": dict(meta.get("pending_overlays", {})),
             "dynamic_topology": dict(meta.get("dynamic_topology", {})),
             "automatic_recovery": automatic_recovery,
+            "goal_context": copy.deepcopy(self.goal_context)
+            if isinstance(self.goal_context, dict)
+            else None,
+            "launch_request": dict(self.launch_request)
+            if isinstance(self.launch_request, dict)
+            else None,
         }
 
     @staticmethod
@@ -126,7 +133,17 @@ class RunRecord:
             elapsed_seconds=summary.get("elapsed_seconds"),
             node_usage=summary.get("node_usage", {}),
             error=summary.get("error"),
+            goal_context=(
+                copy.deepcopy(summary.get("goal_context"))
+                if isinstance(summary.get("goal_context"), dict)
+                else None
+            ),
             automatic_recovery=summary.get("automatic_recovery") or None,
+            launch_request=(
+                dict(summary.get("launch_request"))
+                if isinstance(summary.get("launch_request"), dict)
+                else None
+            ),
         )
         rec.node_statuses = summary.get("node_statuses", {})
         errors = summary.get("errors", {})
@@ -431,6 +448,119 @@ class RunManager:
         if isinstance(graph, Graph):
             return graph
         return Graph.model_validate(graph)
+
+    @staticmethod
+    def _build_launch_request(
+        *,
+        kind: Literal["start_run", "resume_run", "rerun_from_checkpoint"],
+        inputs: dict[str, Any] | None,
+        session_id: str | None,
+        goal_context: dict[str, Any] | None,
+        run_policy: RunPolicy | dict[str, Any] | None,
+        guard_action: Literal["run", "schedule", "schedule_execution"],
+        source_run_id: str | None = None,
+        rerun_scope: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if isinstance(run_policy, RunPolicy):
+            normalized_run_policy: dict[str, Any] | None = run_policy.model_dump(mode="json")
+        elif isinstance(run_policy, dict):
+            normalized_run_policy = copy.deepcopy(run_policy)
+        else:
+            normalized_run_policy = None
+        request = {
+            "kind": kind,
+            "inputs": copy.deepcopy(inputs) if isinstance(inputs, dict) else None,
+            "session_id": str(session_id) if session_id else None,
+            "goal_context": copy.deepcopy(goal_context) if isinstance(goal_context, dict) else None,
+            "run_policy": normalized_run_policy,
+            "guard_action": guard_action,
+        }
+        if source_run_id:
+            request["source_run_id"] = str(source_run_id)
+        if isinstance(rerun_scope, dict) and rerun_scope:
+            request["rerun_scope"] = copy.deepcopy(rerun_scope)
+        return request
+
+    def _load_persisted_events(self, record: RunRecord) -> list[dict[str, Any]]:
+        if record.events:
+            return list(record.events)
+        if self._run_store is None:
+            return []
+        try:
+            return self._run_store.load_events(record.graph_id, record.run_id)
+        except Exception:
+            logger.debug(
+                "Failed to load persisted events for %s/%s",
+                record.graph_id,
+                record.run_id,
+                exc_info=True,
+            )
+            return []
+
+    @staticmethod
+    def _normalize_guard_action(value: Any) -> Literal["run", "schedule", "schedule_execution"]:
+        guard_action = str(value or "run").strip().lower()
+        if guard_action not in {"run", "schedule", "schedule_execution"}:
+            return "run"
+        return guard_action  # type: ignore[return-value]
+
+    def _infer_retry_request(self, source_record: RunRecord) -> dict[str, Any]:
+        if isinstance(source_record.launch_request, dict) and source_record.launch_request:
+            return copy.deepcopy(source_record.launch_request)
+
+        meta = source_record._result_meta()
+        effective_run_policy = (
+            copy.deepcopy(meta.get("effective_run_policy"))
+            if isinstance(meta.get("effective_run_policy"), dict)
+            else None
+        )
+        goal_context = (
+            copy.deepcopy(source_record.goal_context)
+            if isinstance(source_record.goal_context, dict)
+            else None
+        )
+
+        rerun_provenance = (
+            copy.deepcopy(meta.get("__rerun_provenance__"))
+            if isinstance(meta.get("__rerun_provenance__"), dict)
+            else None
+        )
+        if rerun_provenance is None:
+            for event in self._load_persisted_events(source_record):
+                if str(event.get("event_type") or "") != EventType.RERUN_STARTED.value:
+                    continue
+                provenance = event.get("data") or {}
+                if isinstance(provenance.get("provenance"), dict):
+                    rerun_provenance = copy.deepcopy(provenance["provenance"])
+                    break
+
+        if isinstance(rerun_provenance, dict):
+            source_run_id = str(rerun_provenance.get("source_checkpoint_id") or "").strip()
+            rerun_scope = (
+                copy.deepcopy(rerun_provenance.get("rerun_scope"))
+                if isinstance(rerun_provenance.get("rerun_scope"), dict)
+                else None
+            )
+            if source_run_id and rerun_scope:
+                return self._build_launch_request(
+                    kind="rerun_from_checkpoint",
+                    inputs=None,
+                    session_id=None,
+                    goal_context=goal_context,
+                    run_policy=effective_run_policy,
+                    guard_action="run",
+                    source_run_id=source_run_id,
+                    rerun_scope=rerun_scope,
+                )
+
+        return self._build_launch_request(
+            kind="start_run",
+            inputs=None,
+            session_id=None,
+            goal_context=goal_context,
+            run_policy=effective_run_policy,
+            guard_action="run",
+        )
 
     def _start_run_relay(
         self,
@@ -1049,6 +1179,14 @@ class RunManager:
             status=RunStatus.PENDING,
             phase=RunPhase.ACTIVE.value,
             goal_context=dict(goal_context or {}) if goal_context else None,
+            launch_request=self._build_launch_request(
+                kind="start_run",
+                inputs=inputs,
+                session_id=session_id,
+                goal_context=goal_context,
+                run_policy=run_policy,
+                guard_action=guard_action,
+            ),
         )
         if existing is not None:
             record.events = list(existing.events)
@@ -1085,11 +1223,29 @@ class RunManager:
             enforce_run_readiness=enforce_run_readiness,
             guard_action=guard_action,
         )
+        existing = self._runs.get(run_id)
         record = RunRecord(
             run_id=run_id,
             graph_id=graph_id,
             status=RunStatus.PENDING,
             phase=RunPhase.ACTIVE.value,
+            goal_context=(
+                copy.deepcopy(existing.goal_context)
+                if existing is not None and isinstance(existing.goal_context, dict)
+                else None
+            ),
+            launch_request=self._build_launch_request(
+                kind="resume_run",
+                inputs=None,
+                session_id=session_id,
+                goal_context=(
+                    existing.goal_context
+                    if existing is not None and isinstance(existing.goal_context, dict)
+                    else None
+                ),
+                run_policy=run_policy,
+                guard_action=guard_action,
+            ),
         )
         self._runs[run_id] = record
         task = asyncio.create_task(
@@ -1103,6 +1259,81 @@ class RunManager:
         )
         self._tasks[run_id] = task
         return record
+
+    async def retry_run(self, source_run_id: str) -> RunRecord:
+        source_record = self.get_run(source_run_id)
+        if source_record is None:
+            raise ValueError(f"Run '{source_run_id}' not found")
+        launch_request = self._infer_retry_request(source_record)
+        if not callable(self._graph_loader):
+            raise ValueError("RunManager has no graph loader for retry replay")
+        graph = self._graph_loader(source_record.graph_id)
+        if graph is None:
+            raise ValueError(f"Graph '{source_record.graph_id}' not found")
+        inputs = (
+            copy.deepcopy(launch_request.get("inputs"))
+            if isinstance(launch_request.get("inputs"), dict)
+            else None
+        )
+        goal_context = (
+            copy.deepcopy(launch_request.get("goal_context"))
+            if isinstance(launch_request.get("goal_context"), dict)
+            else (
+                copy.deepcopy(source_record.goal_context)
+                if isinstance(source_record.goal_context, dict)
+                else None
+            )
+        )
+        run_policy = (
+            copy.deepcopy(launch_request.get("run_policy"))
+            if isinstance(launch_request.get("run_policy"), dict)
+            else None
+        )
+        session_id = str(launch_request.get("session_id") or "").strip() or None
+        guard_action = self._normalize_guard_action(launch_request.get("guard_action"))
+        kind = str(launch_request.get("kind") or "").strip().lower()
+        if kind == "resume_run":
+            return await self.resume_run(
+                graph,
+                graph_id=source_record.graph_id,
+                run_id=source_run_id,
+                session_id=session_id,
+                run_policy=run_policy,
+                guard_action=guard_action,
+            )
+        if kind == "rerun_from_checkpoint":
+            from dan.engine.checkpoint import RerunScope
+
+            raw_scope = launch_request.get("rerun_scope")
+            if not isinstance(raw_scope, dict) or not raw_scope:
+                raise ValueError(
+                    f"Run '{source_run_id}' does not have replayable rerun scope"
+                )
+            replay_source_run_id = (
+                str(launch_request.get("source_run_id") or "").strip() or source_run_id
+            )
+            return await self.rerun_from_checkpoint(
+                graph,
+                graph_id=source_record.graph_id,
+                source_run_id=replay_source_run_id,
+                scope=RerunScope.model_validate(raw_scope),
+                session_id=session_id,
+                run_policy=run_policy,
+                guard_action=guard_action,
+            )
+        if kind != "start_run":
+            raise ValueError(
+                f"Run '{source_run_id}' does not support retry replay kind '{kind or 'unknown'}'"
+            )
+        return await self.start_run(
+            graph,
+            graph_id=source_record.graph_id,
+            inputs=inputs,
+            session_id=session_id,
+            goal_context=goal_context,
+            run_policy=run_policy,
+            guard_action=guard_action,
+        )
 
     async def apply_pending_overlay(
         self,
@@ -1267,13 +1498,33 @@ class RunManager:
         nodes_to_skip = all_node_ids - nodes_to_rerun
 
         # -- Create new run ------------------------------------------------
+        source_record = self.get_run(source_run_id)
         new_run_id = f"rerun-{int(time.time() * 1000)}"
         record = RunRecord(
             run_id=new_run_id,
             graph_id=graph_id,
             status=RunStatus.PENDING,
             phase=RunPhase.ACTIVE.value,
+            goal_context=(
+                copy.deepcopy(source_record.goal_context)
+                if source_record is not None and isinstance(source_record.goal_context, dict)
+                else None
+            ),
             automatic_recovery=dict(automatic_recovery or {}) or None,
+            launch_request=self._build_launch_request(
+                kind="rerun_from_checkpoint",
+                inputs=None,
+                session_id=session_id,
+                goal_context=(
+                    source_record.goal_context
+                    if source_record is not None and isinstance(source_record.goal_context, dict)
+                    else None
+                ),
+                run_policy=run_policy,
+                guard_action=guard_action,
+                source_run_id=source_run_id,
+                rerun_scope=(scope.model_dump() if hasattr(scope, "model_dump") else None),
+            ),
         )
         self._runs[new_run_id] = record
         parent_run_id = str((automatic_recovery or {}).get("source_run_id") or "")

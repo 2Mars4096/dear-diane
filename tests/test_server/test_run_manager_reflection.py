@@ -309,6 +309,338 @@ async def test_start_run_can_bypass_run_readiness_for_synthetic_graphs(
     await asyncio.wait_for(manager._tasks[record.run_id], timeout=1.0)
 
     assert captured["graph"].metadata.name == "empty"
+    assert record.launch_request == {
+        "kind": "start_run",
+        "inputs": None,
+        "session_id": None,
+        "goal_context": None,
+        "run_policy": None,
+        "guard_action": "run",
+    }
+
+
+@pytest.mark.asyncio
+async def test_retry_run_replays_saved_launch_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = RunManager(graph_loader=lambda graph_id: {"graph_id": graph_id})
+    manager._runs["run-failed"] = RunRecord(
+        run_id="run-failed",
+        graph_id="wf-retry",
+        status=RunStatus.FAILED,
+        goal_context={"origin": "scheduler"},
+        launch_request={
+            "kind": "start_run",
+            "inputs": {"topic": "markets"},
+            "session_id": "sched-1",
+            "goal_context": {"origin": "scheduler"},
+            "run_policy": {"profile": "long_running"},
+            "guard_action": "schedule_execution",
+        },
+    )
+    captured: dict[str, object] = {}
+    retried = RunRecord(run_id="run-retry", graph_id="wf-retry")
+
+    async def fake_start_run(
+        graph,
+        graph_id: str,
+        inputs=None,
+        run_id=None,
+        session_id=None,
+        goal_context=None,
+        run_policy=None,
+        *,
+        enforce_run_readiness=True,
+        guard_action="run",
+    ) -> RunRecord:
+        captured.update(
+            {
+                "graph": graph,
+                "graph_id": graph_id,
+                "inputs": inputs,
+                "run_id": run_id,
+                "session_id": session_id,
+                "goal_context": goal_context,
+                "run_policy": run_policy,
+                "enforce_run_readiness": enforce_run_readiness,
+                "guard_action": guard_action,
+            }
+        )
+        return retried
+
+    monkeypatch.setattr(manager, "start_run", fake_start_run)
+
+    result = await manager.retry_run("run-failed")
+
+    assert result is retried
+    assert captured == {
+        "graph": {"graph_id": "wf-retry"},
+        "graph_id": "wf-retry",
+        "inputs": {"topic": "markets"},
+        "run_id": None,
+        "session_id": "sched-1",
+        "goal_context": {"origin": "scheduler"},
+        "run_policy": {"profile": "long_running"},
+        "enforce_run_readiness": True,
+        "guard_action": "schedule_execution",
+    }
+
+
+@pytest.mark.asyncio
+async def test_retry_run_can_infer_replay_for_older_direct_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = RunManager(graph_loader=lambda graph_id: {"graph_id": graph_id})
+    manager._runs["run-old"] = RunRecord.from_summary(
+        {
+            "run_id": "run-old",
+            "graph_id": "wf-legacy",
+            "status": "failed",
+            "phase": "failed",
+            "started_at": 1.0,
+            "finished_at": 2.0,
+            "success": False,
+            "errors": {"writer": "boom"},
+            "outputs": {},
+            "effective_run_policy": {"profile": "long_running"},
+        }
+    )
+    captured: dict[str, object] = {}
+    retried = RunRecord(run_id="run-retry", graph_id="wf-legacy")
+
+    async def fake_start_run(
+        graph,
+        graph_id: str,
+        inputs=None,
+        run_id=None,
+        session_id=None,
+        goal_context=None,
+        run_policy=None,
+        *,
+        enforce_run_readiness=True,
+        guard_action="run",
+    ) -> RunRecord:
+        captured.update(
+            {
+                "graph": graph,
+                "graph_id": graph_id,
+                "inputs": inputs,
+                "run_id": run_id,
+                "session_id": session_id,
+                "goal_context": goal_context,
+                "run_policy": run_policy,
+                "enforce_run_readiness": enforce_run_readiness,
+                "guard_action": guard_action,
+            }
+        )
+        return retried
+
+    monkeypatch.setattr(manager, "start_run", fake_start_run)
+
+    result = await manager.retry_run("run-old")
+
+    assert result is retried
+    assert captured == {
+        "graph": {"graph_id": "wf-legacy"},
+        "graph_id": "wf-legacy",
+        "inputs": None,
+        "run_id": None,
+        "session_id": None,
+        "goal_context": None,
+        "run_policy": {"profile": "long_running"},
+        "enforce_run_readiness": True,
+        "guard_action": "run",
+    }
+
+
+@pytest.mark.asyncio
+async def test_retry_run_can_replay_saved_resume_launch_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = RunManager(graph_loader=lambda graph_id: {"graph_id": graph_id})
+    manager._runs["run-resume"] = RunRecord(
+        run_id="run-resume",
+        graph_id="wf-resume",
+        status=RunStatus.FAILED,
+        launch_request={
+            "kind": "resume_run",
+            "inputs": None,
+            "session_id": "resume-1",
+            "goal_context": None,
+            "run_policy": {"profile": "checkpoint_resume"},
+            "guard_action": "run",
+        },
+    )
+    captured: dict[str, object] = {}
+    retried = RunRecord(run_id="run-resume", graph_id="wf-resume")
+
+    async def fake_resume_run(
+        graph,
+        graph_id: str,
+        run_id: str,
+        session_id=None,
+        run_policy=None,
+        *,
+        enforce_run_readiness=True,
+        guard_action="run",
+    ) -> RunRecord:
+        captured.update(
+            {
+                "graph": graph,
+                "graph_id": graph_id,
+                "run_id": run_id,
+                "session_id": session_id,
+                "run_policy": run_policy,
+                "enforce_run_readiness": enforce_run_readiness,
+                "guard_action": guard_action,
+            }
+        )
+        return retried
+
+    monkeypatch.setattr(manager, "resume_run", fake_resume_run)
+
+    result = await manager.retry_run("run-resume")
+
+    assert result is retried
+    assert captured == {
+        "graph": {"graph_id": "wf-resume"},
+        "graph_id": "wf-resume",
+        "run_id": "run-resume",
+        "session_id": "resume-1",
+        "run_policy": {"profile": "checkpoint_resume"},
+        "enforce_run_readiness": True,
+        "guard_action": "run",
+    }
+
+
+class _FakeRunStore:
+    def __init__(self, events: dict[tuple[str, str], list[dict[str, object]]] | None = None) -> None:
+        self._events = events or {}
+
+    def cleanup(self, max_age_days: int) -> int:
+        return 0
+
+    def list_summaries(
+        self,
+        limit: int = 10000,
+        workflow_id: str | None = None,
+        status: str | None = None,
+        after: float | None = None,
+        before: float | None = None,
+        offset: int = 0,
+    ):
+        return []
+
+    def load_events(
+        self,
+        workflow_id: str,
+        run_id: str,
+        *,
+        node_id: str | None = None,
+        event_type: str | None = None,
+    ) -> list[dict[str, object]]:
+        events = list(self._events.get((workflow_id, run_id), []))
+        if node_id is not None:
+            events = [event for event in events if event.get("node_id") == node_id]
+        if event_type is not None:
+            events = [event for event in events if event.get("event_type") == event_type]
+        return events
+
+
+@pytest.mark.asyncio
+async def test_retry_run_can_infer_rerun_replay_from_persisted_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _FakeRunStore(
+        events={
+            ("wf-rerun", "rerun-failed"): [
+                {
+                    "event_type": "rerun_started",
+                    "run_id": "rerun-failed",
+                    "data": {
+                        "provenance": {
+                            "source_checkpoint_id": "run-source",
+                            "rerun_scope": {
+                                "scope_type": "single_node",
+                                "target_node_id": "writer",
+                            },
+                        }
+                    },
+                }
+            ]
+        }
+    )
+    manager = RunManager(
+        graph_loader=lambda graph_id: {"graph_id": graph_id},
+        run_store=store,
+    )
+    manager._runs["rerun-failed"] = RunRecord.from_summary(
+        {
+            "run_id": "rerun-failed",
+            "graph_id": "wf-rerun",
+            "status": "failed",
+            "phase": "failed",
+            "started_at": 10.0,
+            "finished_at": 20.0,
+            "success": False,
+            "errors": {"writer": "boom"},
+            "outputs": {},
+            "effective_run_policy": {"profile": "checkpoint_rerun"},
+        }
+    )
+    captured: dict[str, object] = {}
+    retried = RunRecord(run_id="rerun-next", graph_id="wf-rerun")
+
+    async def fake_rerun_from_checkpoint(
+        graph,
+        graph_id: str,
+        source_run_id: str,
+        scope,
+        session_id=None,
+        run_policy=None,
+        *,
+        carry_runtime_lineage=False,
+        automatic_recovery=None,
+        enforce_run_readiness=True,
+        guard_action="run",
+    ) -> RunRecord:
+        captured.update(
+            {
+                "graph": graph,
+                "graph_id": graph_id,
+                "source_run_id": source_run_id,
+                "scope_type": getattr(scope, "scope_type", None),
+                "target_node_id": getattr(scope, "target_node_id", None),
+                "sub_graph_key": getattr(scope, "sub_graph_key", None),
+                "session_id": session_id,
+                "run_policy": run_policy,
+                "carry_runtime_lineage": carry_runtime_lineage,
+                "automatic_recovery": automatic_recovery,
+                "enforce_run_readiness": enforce_run_readiness,
+                "guard_action": guard_action,
+            }
+        )
+        return retried
+
+    monkeypatch.setattr(manager, "rerun_from_checkpoint", fake_rerun_from_checkpoint)
+
+    result = await manager.retry_run("rerun-failed")
+
+    assert result is retried
+    assert captured == {
+        "graph": {"graph_id": "wf-rerun"},
+        "graph_id": "wf-rerun",
+        "source_run_id": "run-source",
+        "scope_type": "single_node",
+        "target_node_id": "writer",
+        "sub_graph_key": None,
+        "session_id": None,
+        "run_policy": {"profile": "checkpoint_rerun"},
+        "carry_runtime_lineage": False,
+        "automatic_recovery": None,
+        "enforce_run_readiness": True,
+        "guard_action": "run",
+    }
 
 
 @pytest.mark.asyncio
