@@ -1,3 +1,6 @@
 *.jsonl
 *.json
+.DS_Store
+# Per-run scratch directories (timestamped runs and SWE-bench batch dirs)
+*/
 !.gitkeep

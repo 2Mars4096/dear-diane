@@ -2,6 +2,9 @@
 .DS_Store
 Thumbs.db
 
+# Business documents
+docs/business/*.pdf
+
 # Python bytecode and caches
 __pycache__/
 *.py[cod]
@@ -51,12 +54,16 @@ htmlcov/
 
 # Logs
 *.log
+logs/
 
 # Temporary files
 .tmp/
 
 # Local runtime databases
 docjobs.db
+
+# SWE-bench official harness summary artifacts written next to the repo root
+/kimi-*.json
 
 
 # LaTeX build artifacts
