@@ -46,6 +46,23 @@ def _read_completed_prediction_ids(path: Path) -> set[str]:
     return completed
 
 
+def _read_attempted_instance_ids(path: Path) -> set[str]:
+    attempted: set[str] = set()
+    if not path.exists():
+        return attempted
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        instance_id = str(payload.get("instance_id") or "").strip()
+        if instance_id:
+            attempted.add(instance_id)
+    return attempted
+
+
 def _append_prediction_once(
     *,
     source_path: Path,
@@ -193,6 +210,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Stop the batch after the first failed instance run.",
     )
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="Retry instance ids that already have a prior record without a combined prediction row.",
+    )
     return parser
 
 
@@ -221,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
         instances = instances[: max(0, int(args.limit))]
 
     completed_ids = _read_completed_prediction_ids(combined_predictions_path)
+    attempted_ids = _read_attempted_instance_ids(records_path)
     copied_seed_ids: list[str] = []
     for seed in args.seed_prediction:
         copied_seed_ids.extend(
@@ -241,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
         "created_or_updated_at": datetime.now(UTC).isoformat(),
         "requested_instances": len(instances),
         "completed_prediction_count": len(completed_ids),
+        "attempted_instance_count": len(attempted_ids),
         "seeded_prediction_ids": copied_seed_ids,
     }
     _write_json(manifest_path, manifest)
@@ -249,6 +273,9 @@ def main(argv: list[str] | None = None) -> int:
     for index, instance in enumerate(instances, start=1):
         if instance.instance_id in completed_ids:
             print(f"[skip] {index}/{len(instances)} {instance.instance_id}", flush=True)
+            continue
+        if not args.retry_failed and instance.instance_id in attempted_ids:
+            print(f"[skip-failed] {index}/{len(instances)} {instance.instance_id}", flush=True)
             continue
         print(f"[run] {index}/{len(instances)} {instance.instance_id}", flush=True)
         record = run_swebench_instance(
@@ -279,6 +306,7 @@ def main(argv: list[str] | None = None) -> int:
         record_payload = asdict(record)
         record_payload["combined_prediction_appended"] = appended_id is not None
         _append_jsonl(records_path, record_payload)
+        attempted_ids.add(instance.instance_id)
         if record.exit_code != 0 or appended_id is None:
             failures += 1
             print(f"[fail] {instance.instance_id} exit={record.exit_code}", flush=True)
@@ -287,6 +315,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"[ok] {instance.instance_id}", flush=True)
         manifest["completed_prediction_count"] = len(completed_ids)
+        manifest["attempted_instance_count"] = len(attempted_ids)
         manifest["created_or_updated_at"] = datetime.now(UTC).isoformat()
         _write_json(manifest_path, manifest)
 

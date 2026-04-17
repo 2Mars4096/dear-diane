@@ -274,3 +274,108 @@ def test_batch_runner_seeds_and_skips_completed_predictions(tmp_path, monkeypatc
         for line in (batch_root / "predictions.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert [row["instance_id"] for row in combined] == ["first", "second"]
+
+
+def test_batch_runner_skips_previously_attempted_failures_by_default(
+    tmp_path, monkeypatch
+) -> None:
+    catalog = tmp_path / "instances.jsonl"
+    catalog.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "instance_id": "first",
+                        "repo": "owner/repo-one",
+                        "base_commit": "abc123",
+                        "problem_statement": "First issue",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "instance_id": "second",
+                        "repo": "owner/repo-two",
+                        "base_commit": "def456",
+                        "problem_statement": "Second issue",
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    batch_root = tmp_path / "batch"
+    records_path = batch_root / "records.jsonl"
+    records_path.parent.mkdir(parents=True, exist_ok=True)
+    records_path.write_text(
+        json.dumps(
+            {
+                "instance_id": "first",
+                "combined_prediction_appended": False,
+                "exit_code": 124,
+                "timed_out": True,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    seen: list[str] = []
+
+    def _fake_run_swebench_instance(**kwargs):
+        instance = kwargs["instance"]
+        seen.append(instance.instance_id)
+        run_dir = tmp_path / "run" / instance.instance_id
+        predictions_path = run_dir / "predictions.jsonl"
+        predictions_path.parent.mkdir(parents=True, exist_ok=True)
+        predictions_path.write_text(
+            json.dumps(
+                {
+                    "instance_id": instance.instance_id,
+                    "model_name_or_path": "kimi-k2.5",
+                    "model_patch": "diff --git a/c.py b/c.py\n",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return SweBenchRunRecord(
+            instance_id=instance.instance_id,
+            repo=str(instance.repo or ""),
+            base_commit=str(instance.base_commit or ""),
+            model="kimi-k2.5",
+            dataset_repo=None,
+            split=None,
+            started_at="2026-04-17T00:00:00+00:00",
+            duration_seconds=1.0,
+            exit_code=0,
+            workspace_root=str(run_dir / "workspace"),
+            run_dir=str(run_dir),
+            instance_file=str(run_dir / "instance.json"),
+            report_path=str(run_dir / "report.json"),
+            stdout_path=str(run_dir / "stdout.log"),
+            stderr_path=str(run_dir / "stderr.log"),
+            predictions_path=str(predictions_path),
+            prediction_artifact_path=None,
+            patch_artifact_path=None,
+            report_status="completed",
+            command=[],
+        )
+
+    monkeypatch.setattr(
+        "tests.eval.swebench_batch_runner.run_swebench_instance",
+        _fake_run_swebench_instance,
+    )
+
+    exit_code = batch_main(
+        [
+            "--instance-file",
+            str(catalog),
+            "--batch-root",
+            str(batch_root),
+        ]
+    )
+
+    assert exit_code == 0
+    assert seen == ["second"]
