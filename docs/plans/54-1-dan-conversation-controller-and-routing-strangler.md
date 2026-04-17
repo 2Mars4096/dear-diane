@@ -1,38 +1,38 @@
 # 54-1: DAN Conversation Controller And Routing Strangler
 
 **Parent:** [54-dan-control-plane-rewrite-around-universal-agents](54-dan-control-plane-rewrite-around-universal-agents.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Introduce a durable top-level `DANConversationController` that owns routing and user-facing control decisions above specialist organisms and operator lanes, while keeping gateway and CLI surfaces mostly transport-only and making the recurrent supervision loop explicit.
 
 ## Tasks
 
 - [ ] 1. Freeze the new top-level DAN-v2 control contract
-  - [ ] 1-1. Define the primary turn decision schema (`respond`, `clarify`, `delegate_research`, `delegate_code`, `delegate_workflow`, `delegate_incident`, `delegate_operator`)
-  - [ ] 1-2. Define the shared DAN facts/context packet passed to that controller
+  - [x] 1-1. Define the primary turn decision schema (`respond`, `clarify`, `delegate` + selected lane `code|research|incident|legacy`)
+  - [x] 1-2. Define the shared DAN facts/context packet passed to that controller
   - [ ] 1-3. Include current surface, workspace root, platform, approval mode, and available adapters/tool families in that packet
-  - [ ] 1-4. Define `SupervisorBrief` fields such as `why_now`, `requested_delta`, `success_test`, `avoid`, and `stop_and_ask_if`
+  - [x] 1-4. Define `SupervisorBrief` fields such as `why_now`, `requested_delta`, `success_test`, `avoid`, and `stop_and_ask_if`
   - [ ] 1-5. Define `WorkerReport` fields such as `what_changed`, `evidence`, `artifacts`, `blockers`, `confidence`, and `best_next_question`
   - [ ] 1-6. Define `ReviewDecision` fields such as `continue`, `sharpen`, `redirect`, `escalate`, or `stop`, plus the next brief delta when continuing
-- [ ] 2. Build the durable controller on `DurableAgentRunner`
-  - [ ] 2-1. Add `src/dan/worker/organisms/dan_conversation.py`
-  - [ ] 2-2. Reuse structured output contracts and hedge behavior where they already work for `dan code` / `dan research`
-  - [ ] 2-3. Persist prior brief/report/decision triples so resumed loops inherit direction instead of restarting vaguely
-- [ ] 3. Add a bounded routing / intent organ or equivalent typed worker seam under the controller
-  - [ ] 3-1. Keep route decisions explicit and inspectable rather than hidden inside gateway or concierge glue
-  - [ ] 3-2. Keep routing narrow enough that specialist organisms or operator lanes still own actual work
-  - [ ] 3-3. Add a review/sequencing seam that can sharpen, redirect, escalate, or stop after each bounded run
+- [x] 2. Build the durable controller on `DurableAgentRunner`
+  - [x] 2-1. Add `src/dan/worker/organisms/dan_conversation.py`
+  - [x] 2-2. Reuse structured output contracts and hedge behavior where they already work for `dan code` / `dan research`
+  - [x] 2-3. Persist prior brief/report/decision triples so resumed loops inherit direction instead of restarting vaguely
+- [x] 3. Add a bounded routing / intent organ or equivalent typed worker seam under the controller
+  - [x] 3-1. Keep route decisions explicit and inspectable rather than hidden inside gateway or concierge glue
+  - [x] 3-2. Keep routing narrow enough that specialist organisms or operator lanes still own actual work
+  - [x] 3-3. Add a review/sequencing seam that can sharpen, redirect, escalate, or stop after each bounded run
 - [ ] 4. Define the transport strangler path
   - [ ] 4-1. Make gateway/router and CLI call the new controller without copying DAN-specific routing logic into each surface
-  - [ ] 4-2. Preserve a fallback path while the new route is still incomplete
-  - [ ] 4-3. Add one controller-selection seam so supported surfaces can target DAN-v1 or DAN-v2 without forking the downstream substrate
-  - [ ] 4-4. Start with one temporary `.env` / config selector for testing (for example `DAN_CONTROL_PLANE=v1|v2`) before deciding whether a visible frontend toggle is still useful later
+  - [x] 4-2. Preserve a fallback path while the new route is still incomplete
+  - [x] 4-3. Add one controller-selection seam so supported surfaces can target DAN-v1 or DAN-v2 without forking the downstream substrate
+  - [x] 4-4. Start with one temporary `.env` / config selector for testing (for example `DAN_CONTROL_PLANE=v1|v2`) before deciding whether a visible frontend toggle is still useful later
 - [ ] 5. Prove the new controller on a small exact benchmark set
-  - [ ] 5-1. Chat/meta/status turn
-  - [ ] 5-2. Research delegation turn
-  - [ ] 5-3. Coding delegation turn
+  - [x] 5-1. Chat/meta/status turn
+  - [x] 5-2. Research delegation turn
+  - [x] 5-3. Coding delegation turn
   - [ ] 5-4. Local operator delegation turn (files/shell/git)
   - [ ] 5-5. Browser or desktop/messaging delegation turn
-  - [ ] 5-6. Incident delegation turn stub
+  - [x] 5-6. Incident delegation turn stub
   - [ ] 5-7. At least one 2-3 loop recurrent benchmark where each pass asks for a sharper delta and the controller stops honestly when no additional leverage remains
 
 ## Decisions
@@ -50,3 +50,7 @@
 - This is the first cut in the strangler rewrite: move “who should handle this turn?” into one durable universal-agent seam.
 - It should explicitly not absorb implementation work that belongs in specialist organisms or bounded operator lanes.
 - The desired loop shape is `intent down -> bounded work -> evidence up -> review decision -> sharper next brief`.
+- Landed first slice: `src/dan/worker/organisms/dan_conversation.py` defines the durable DAN-v2 top controller, `src/dan/server/control_plane.py` bridges that controller into the app chat plane, and `/api/chat/message` now persists controller/code/research session state plus the latest brief/report/decision triple in chat-thread metadata.
+- Landed second slice: `LocalChatRuntime` and the in-process adapter concierge bridge now honor the same `DAN_CONTROL_PLANE` selector and reuse the shared chat-router control-plane path instead of bypassing it.
+- Landed third slice: the top-level controller now accepts `selected_lane=incident`, routes operational-failure cues into a durable Incident Commander controller, and persists incident session payloads alongside controller/code/research sessions.
+- Current limitation: delegated execution still falls through to the shared legacy runtime after DAN-v2 and the specialist controller shape the handoff, and not every external surface has been migrated yet.

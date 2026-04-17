@@ -1,31 +1,31 @@
 # 54-2: Incident Commander Organism
 
 **Parent:** [54-dan-control-plane-rewrite-around-universal-agents](54-dan-control-plane-rewrite-around-universal-agents.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Build the first larger production-shaped organism above the current specialist stack, proving that DAN can investigate, choose actions, execute bounded remediation, verify outcomes, and converge on explicit terminal states for operational incidents.
 
 ## Tasks
 
-- [ ] 1. Freeze the exact first proving benchmark
-  - [ ] 1-1. Choose 3 bounded incident scenarios (for example: failed scheduled workflow, degraded research artifact, broken coding run or stale run state, stuck browser/download session, or failed external adapter delivery)
-  - [ ] 1-2. Define explicit terminal states (`resolved`, `contained`, `blocked`, `escalated`, `needs_approval`)
+- [x] 1. Freeze the exact first proving benchmark
+  - [x] 1-1. Choose 3 bounded incident scenarios (failed scheduled workflow, broken coding run / stale run state, failed external surface session)
+  - [x] 1-2. Define explicit terminal states (`resolved`, `contained`, `blocked`, `escalated`, `needs_approval`) plus transient `open` while bounded work is still underway
 - [ ] 2. Define the organism-level architecture
-  - [ ] 2-1. Triage organ
+  - [x] 2-1. Triage organ
   - [ ] 2-2. Diagnosis organ (reusing deep research where possible)
-  - [ ] 2-3. Action-gate organ
-  - [ ] 2-4. Verification organ
+  - [x] 2-3. Action-gate organ
+  - [x] 2-4. Verification organ
   - [ ] 2-5. Final synthesis / operator handoff
-  - [ ] 2-6. Reuse the same `supervisor_brief -> worker_report -> review_decision` membrane so incident loops sharpen or stop cleanly instead of spinning
+  - [x] 2-6. Reuse the same `supervisor_brief -> worker_report -> review_decision` membrane so incident loops sharpen or stop cleanly instead of spinning
 - [ ] 3. Define the action routing boundary
-  - [ ] 3-1. Deterministic containment / retry / rollback / pause adapters
-  - [ ] 3-2. Optional delegation into the existing coding organism when the chosen action is repair
-  - [ ] 3-3. Explicit human-approval / escalation boundaries
-- [ ] 4. Add the organism runtime and durable controller seam
-  - [ ] 4-1. Add `incident_execution.py`
-  - [ ] 4-2. Add `incident_conversation.py`
+  - [x] 3-1. Deterministic containment / retry / rollback / pause adapters
+  - [x] 3-2. Optional delegation into the existing coding organism when the chosen action is repair
+  - [x] 3-3. Explicit human-approval / escalation boundaries
+- [x] 4. Add the organism runtime and durable controller seam
+  - [x] 4-1. Add `incident_execution.py`
+  - [x] 4-2. Add `incident_conversation.py`
 - [ ] 5. Prove the loop on one exact acceptance harness
-  - [ ] 5-1. Investigate -> choose action -> act -> verify -> close
-  - [ ] 5-2. Show that the organism stops honestly when approval or human intervention is required
+  - [x] 5-1. Investigate -> choose action -> act -> verify -> close
+  - [x] 5-2. Show that the organism stops honestly when approval or human intervention is required
 
 ## Decisions
 
@@ -38,3 +38,13 @@
 
 - This is the first proving organism for the broader DAN-v2 rewrite because it naturally composes research, validation, synthesis, and optional coding repair.
 - The incident surface should be able to say “do not patch yet” or “rollback / escalate” when that is the right answer, including non-code incidents around browser sessions, adapters, or stuck operator state.
+- Landed first implementation slice: `incident_execution.py` freezes three incident scenarios plus action/approval boundaries, `incident_conversation.py` adds a durable Incident Commander controller, and DAN-v2 can now route `selected_lane=incident` into that controller while persisting the incident session in chat-thread control-plane metadata.
+- Landed second implementation slice: `incident_execution.py` now includes deterministic incident execution requests/reports, an action-adapter registry, approval gating, verification, and a five-phase `investigate -> action_gate -> act -> verify -> close` trace for investigate/retry/contain/pause/rollback/repair/escalate flows.
+- Landed third implementation slice: `DANV2Runtime` can now invoke that deterministic incident execution seam when a surface passes explicit structured `surface_context["incident_execution"]` data, so Incident Commander can close honest resolved/contained/blocked/needs_approval incident turns directly without falling through to the legacy substrate.
+- Landed fourth implementation slice: incident `repair` actions now recurse into the existing DAN Code controller path inside `DANV2Runtime`, so Incident Commander can shape a bounded repair through code-specific objective/acceptance contracts before the shared execution substrate runs it.
+- Landed fifth implementation slice: `DANV2Runtime` now accepts optional server `RunManager` context and can synthesize read-only failed-workflow investigation evidence from live run snapshots when no explicit `surface_context["incident_execution"]` payload is present, letting Incident Commander stop honestly on blocked/resolved scheduled-workflow investigations without hand-built surface metadata.
+- Landed sixth implementation slice: failed scheduled workflow `contain` / `pause` actions now have the first real live side-effect adapter. `DANV2Runtime` can select the active run from `RunManager.list_runs()`, call `RunManager.cancel_run(...)`, and still emit the same five-phase incident report shape with `incident_execution_mode=live`.
+- Landed seventh implementation slice: failed scheduled workflow `retry` actions now use a replay-safe live path. `RunManager` persists a replayable `launch_request` for direct `start_run(...)` launches, exposes `retry_run(...)` to reload the workflow graph and replay that launch contract, and `DANV2Runtime` can use that seam so Incident Commander stops honestly at `terminal_state=open` while the retried run settles instead of pretending the retry already resolved the incident.
+- Landed eighth implementation slice: live workflow retry is now broader than fresh direct launches. `RunManager` now persists `goal_context` plus replay contracts for `resume_run(...)` and `rerun_from_checkpoint(...)`, can infer a best-effort direct retry for older persisted runs from `effective_run_policy`, and can reconstruct older checkpoint reruns from persisted `rerun_started` provenance events before `DANV2Runtime` asks for a live retry.
+- Landed ninth implementation slice: DAN-v2 can now execute the dedicated coding organism directly inside `src/dan/server/control_plane.py` instead of only shaping a legacy handoff. The new path is intentionally gated behind `surface_context["direct_code_execution"]` or `DAN_V2_DIRECT_CODE_RUNTIME=1`, reuses the same universal-agent coding organism blocks (`LocalOrganismToolRuntime` + `ToolLoopCompletionProvider` + `WorkerCoreExecutor` + `coding_execution_organism(...)`), covers both top-level code turns and nested Incident Commander `repair` turns, and falls back to the old handoff path if the direct runtime raises unexpectedly.
+- Current limitation: live incident side effects are still narrow and server-workflow-only; older resume-only runs still need an explicit persisted replay contract to retry with true resume semantics, browser/adapter incidents are still deterministic/handoff-only, and the direct code-runtime path is still an opt-in migration gate rather than the default for every DAN-v2 surface.

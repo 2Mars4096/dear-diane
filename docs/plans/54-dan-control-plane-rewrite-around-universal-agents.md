@@ -1,6 +1,6 @@
 # 54: DAN Control-Plane Rewrite Around Universal Agents
 
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Rebuild DAN's top control plane as durable universal-agent controllers plus bounded organisms, replacing concierge-first orchestration with a strangler migration so DAN can serve as one high-trust Mac/operator chat plane with a question-driven recurrent hierarchy instead of a collection of partial brains.
 
 ## Problem
@@ -36,10 +36,10 @@ Out of scope:
 
 ## Tasks
 
-- [ ] 1. Define the rewrite boundary and migration strategy
-  - [ ] 1-1. Keep the worker core, durable runner, tools, search, and run manager as reusable substrate rather than rewriting them
-  - [ ] 1-2. Rewrite the DAN control plane with a strangler migration, not a flag-day reset
-  - [ ] 1-3. Freeze the recurrent supervision loop as the stable architecture contract rather than hard-coding fixed chains
+- [x] 1. Define the rewrite boundary and migration strategy
+  - [x] 1-1. Keep the worker core, durable runner, tools, search, and run manager as reusable substrate rather than rewriting them
+  - [x] 1-2. Rewrite the DAN control plane with a strangler migration, not a flag-day reset
+  - [x] 1-3. Freeze the recurrent supervision loop as the stable architecture contract rather than hard-coding fixed chains
 - [ ] 2. Build the new top-level DAN durable controller via [54-1-dan-conversation-controller-and-routing-strangler](54-1-dan-conversation-controller-and-routing-strangler.md)
 - [ ] 3. Freeze the broad general-operator use-case matrix and safety envelopes via [54-4-general-mac-operator-use-case-matrix-and-safety-envelopes](54-4-general-mac-operator-use-case-matrix-and-safety-envelopes.md)
 - [ ] 4. Build the first larger production-shaped organism via [54-2-incident-commander-organism](54-2-incident-commander-organism.md)
@@ -77,3 +77,5 @@ Out of scope:
 - The broad use-case families to anchor now are: ask/research, local workspace operator, browser/download operator, desktop/messaging operator, and operational incident handling.
 - Intent should flow downward as sharper briefs; evidence, blockers, and best-next-questions should flow upward into review decisions.
 - A future follow-up can promote workflow-building / rebuilding into a larger organism too, but the first priority is replacing the top-level DAN control path with something simpler and more testable.
+- Initial landed slice: `/api/chat/message` now has a real DAN-v1 vs DAN-v2 selector seam, DAN-v2 owns top-level turn triage through `DANConversationController`, and direct DAN-v2 responses can terminate without touching concierge. Delegated execution still hands off into the shared legacy substrate while the lower lanes are migrated.
+- Third landed slice: DAN-v2 now has an `incident` lane and a durable Incident Commander controller with frozen incident scenarios, action/approval boundaries, explicit terminal states, and incident session persistence through the same control-plane metadata seam.
