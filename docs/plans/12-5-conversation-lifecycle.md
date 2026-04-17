@@ -54,6 +54,12 @@
   - [ ] 7-3. Visual: branching icon in thread list, parent-child relationship *(deferred — stretch goal)*
   - [x] 7-4. User turn action: edit a past message and resend it into a new branched thread *(landed in [12-7](12-7-chat-branching-tree.md))*
   - [x] 7-5. Assistant/result action: regenerate from the preceding user turn into a new branched thread *(landed in [12-7](12-7-chat-branching-tree.md))*
+- [x] 8. Global full-screen chat history discovery
+  - [x] 8-1. Add a backend thread-listing path that can return chat summaries across all workflows
+  - [x] 8-2. Update full-screen `ChatPanel` history/search to use cross-workflow thread results
+  - [x] 8-3. Make full-screen thread actions target the correct `(workflow_id, thread_id)` pair for select/pin/export/delete
+  - [x] 8-4. Show workflow labels in cross-workflow history rows and search results so users can tell where a thread lives
+  - [x] 8-5. Add focused regression coverage and re-run the editor build
 
 ## Decisions
 
@@ -62,13 +68,20 @@
 - **Pin storage:** Thread metadata (including `pinned` flag) stored in `.meta.json` sidecar files alongside thread JSON. This avoids modifying the `ChatThread` Pydantic model.
 - **Search:** Simple substring search (no inverted index). Sufficient for current scale. Can be upgraded later.
 - **Export format:** Markdown uses `### Role` headings with timestamps. JSON exports the full `ChatThread` model dump.
+- **Full-screen history scope:** Full-screen chat history is global across workflows; compact/sidebar history remains scoped to the active workflow.
+- **Cross-workflow thread selection:** Selecting a thread from another workflow switches the active workflow context before loading the thread so follow-up chat actions keep targeting the right graph.
+- **Cross-workflow display model:** Cross-workflow history uses a flat list in full-screen mode instead of the per-workflow branch tree to avoid mixing lineage structures from unrelated workflows.
 
 ## Notes
 
 - Stop generation (task 1) and export (task 4) are the highest-impact, lowest-effort items.
 - Message queuing (task 2) is surprisingly complex because queued messages might reference context that changes after the current response applies mutations. The simplest approach: re-resolve mentions when a queued message actually sends. **Deferred.**
 - Thread branching (task 7) is a stretch goal. **Deferred.**
-- 2026-04-04 housekeeping: the old standalone plan `48-global-chat-history-discovery.md` has been folded into [12-5-1](12-5-1-global-chat-history-discovery.md) so the numbering reflects that cross-workflow history discovery is a follow-up on this conversation-lifecycle plan rather than a separate top-level phase.
+- 2026-04-04 housekeeping: the old standalone plan `48-global-chat-history-discovery.md` was folded into this conversation-lifecycle plan so cross-workflow history discovery remains a follow-up on `12-5` rather than a separate top-level phase.
+- 2026-04-17 plan cleanup: the former third-level global-history file was merged into task 8 here to keep plan files capped at two numbering levels.
+- Backend: `GET /api/chats` returns chat thread summaries across all workflows via `ChatStore.list_all_threads()`.
+- Frontend: full-screen `ChatPanel` uses global history/search, renders workflow labels, and routes thread actions through explicit `{ workflowId, threadId }` targets.
+- Validation for global history: `pytest -q tests/test_server/test_chat_mode.py tests/test_server/test_chat_integration.py -k 'thread_create_list_get or thread_list_all_workflows or search_finds_messages or search_empty_query_returns_empty or lists_threads_across_workflows'` (`5 passed, 41 deselected`) and `cd editor && npm run build` (passed; Vite emitted the existing Node-version warning for Node `20.17.0` vs recommended `20.19+`).
 - 2026-03-16 follow-up: v1 branch-based turn rewriting now exists via [12-7](12-7-chat-branching-tree.md), but explicit parent/child branch metadata and lineage UI remain deferred.
 - Checkpoints (task 3) extend the existing `pushSnapshot` mechanism from in-memory to persistent. Only auto-checkpoint (3-1) and persistence (3-5) implemented; restore UI deferred.
 - Search scroll-to-message (5-4) and inverted index (5-2) deferred — substring search with thread-open is the MVP.

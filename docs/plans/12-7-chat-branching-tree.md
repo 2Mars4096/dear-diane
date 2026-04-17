@@ -37,6 +37,6 @@
 - Task ordering: lineage (2) → affordances (3) → tree UI (4). You need the data before the actions and the actions before the visualization.
 
 ## Notes
-- This plan replaces the earlier third-level `12-5-1` follow-up. Branch edit/regenerate shipped first; this follow-up completed the lineage-driven history affordances and tree navigation.
+- This plan replaces the earlier conversation-lifecycle follow-up for branch edit/regenerate. The former third-level global-history follow-up has been merged back into [12-5](12-5-conversation-lifecycle.md).
 - The core UX insight: **multi-path exploration from a specific answer** with visible siblings and easy backtracking, not just generic "thread branching."
 - Frontend lineage/tree derivation lives in `editor/src/lib/chatBranching.ts`, and the full-screen chat history rail now renders a collapsible branch tree while leaving the main conversation pane strictly thread-scoped.

@@ -47,7 +47,7 @@ All tracking docs live in `docs/`. Standard implementation plans live in `docs/p
 
 ### Plan Files
 
-Standard implementation plans live in `docs/plans/` with **hierarchical numbering** that mirrors the task tree:
+Standard implementation plans live in `docs/plans/` with **two-level hierarchical numbering** that mirrors the task tree without creating third-level plan files:
 
 ```
 plans/
@@ -56,10 +56,9 @@ plans/
   1-2-name.md        # another sub-plan of 1
   2-name.md          # next top-level plan
   2-1-name.md        # sub-plan of 2
-  2-1-1-name.md      # sub-sub-plan (expand only when needed)
 ```
 
-The number prefix encodes the hierarchy. Sub-plans are created just-in-time — only when you're about to start working on that piece. Future items stay as one-liners in `todo.md` marked `(not yet planned)`.
+The number prefix encodes the hierarchy. Sub-plans are created just-in-time — only when you're about to start working on that piece. Do not create `N-N-N` files; put deeper breakdowns inside the nearest `N-N` plan as nested tasks, notes, or sections. Future items stay as one-liners in `todo.md` marked `(not yet planned)`.
 
 Specialized plan folders under `docs/` may also keep their own local numbering. For example, `docs/live-test-plans/1-name.md` can coexist with `docs/plans/1-name.md`; numbering is local to each folder, not global across every plan track.
 
@@ -109,5 +108,5 @@ High-level items grouped by phase. Each links to its plan file.
 - Keep each document concise. Bullet points over paragraphs.
 - **Changelog:** Update in **descending order** — newest entries at the top. Never delete entries.
 - In `bugs.md`, never remove a failed approach — it prevents retry loops.
-- Plan numbering is hierarchical: top-level (1, 2, 3), sub-plans (1-1, 1-2), sub-sub-plans (1-1-1). Depth expands just-in-time.
+- Plan numbering is capped at two file levels: top-level (1, 2, 3) and sub-plans (1-1, 1-2). Do not create sub-sub-plan files such as `1-1-1`; merge that detail into the nearest `N-N` plan.
 - When unsure whether to update a doc, update it. The cost of a stale doc is higher than a redundant entry.

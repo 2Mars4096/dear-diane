@@ -95,5 +95,5 @@ Rationale:
 - This plan is the practical continuation of the user-facing gaps surfaced after plans 46/47: the foundations are stronger, but workflow continuity still feels more brittle than it should.
 - The best comparison point is not “is the model smart?” but “does DAN preserve the right workflow object, context, and action lane across turns?”
 - The meta-builder eval harness under plan 45 can remain useful as a benchmark, but it is not the center of this phase.
-- The old standalone chat-history housekeeping plan that previously used the `48` prefix was already renumbered under the conversation-lifecycle hierarchy as `12-5-1`, so this `48` family is intentionally focused on workflow continuity and speed.
+- The old standalone chat-history housekeeping plan that previously used the `48` prefix was already folded into the conversation-lifecycle plan [12-5](12-5-conversation-lifecycle.md), so this `48` family is intentionally focused on workflow continuity and speed.
 - Completed implementation summary: shared workflow resolver/context pack, workflow-lane stage timing, structured mutation failure attribution, timezone-aware scheduling with `/timezone`, first-run heuristic softening under `DAN_FIRST_RUN_POLICY`, and an eval baseline for workflow follow-up latency.
