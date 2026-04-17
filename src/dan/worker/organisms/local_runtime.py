@@ -100,6 +100,9 @@ def _tool_use_policy(tool_ids: Sequence[str]) -> str:
         lines.append("- Use `list_directory` for directory inspection instead of shell `ls`.")
     if "file_read" in available:
         lines.append("- Use `file_read` for file contents instead of shell `cat`, `head`, or similar fallbacks.")
+        lines.append(
+            "- Prefer explicit line windows with `start_line`/`end_line` for code inspection. Do not rely on shell `grep`/`sed`/`awk`, regex searches, or other fixed-pattern matching to locate edit sites when `file_read` is available."
+        )
         if not mutation_capable:
             lines.append(
                 "- This tool set is read-only. Do not try to create files through `file_read`, and do not pass write-like arguments such as `write` or `content` to it."
@@ -109,7 +112,10 @@ def _tool_use_policy(tool_ids: Sequence[str]) -> str:
             )
     if "file_edit" in available:
         lines.append(
-            "- Use `file_edit` for targeted line-based edits to existing files. Always include `path` and `start_line`, and include `content` for replace/insert edits. If you need multiple non-overlapping edits in the same file, prefer one `file_edit` call with `edits=[...]` over repeated single-edit calls."
+            "- Use `file_edit` for targeted line-based edits to existing files. Always include `path` and `start_line`, and include `content` for replace/insert edits. When replacing multiple lines, include `end_line` so the full target range is explicit. If you need multiple non-overlapping edits in the same file, prefer one `file_edit` call with `edits=[...]` over repeated single-edit calls."
+        )
+        lines.append(
+            "- Prefer line-based edits derived from a prior `file_read`. Do not depend on regex, shell pattern matching, or exact text-match replacement as your primary edit localization strategy."
         )
     if "file_write" in available:
         lines.append(
@@ -460,6 +466,43 @@ def _read_only_coding_worker_finalize_message(reason: str) -> str:
     )
 
 
+def _research_note_finalize_reason(
+    *,
+    request: CompletionRequest,
+    tool_ids: Sequence[str],
+    executed_tools: Sequence[dict[str, Any]],
+    round_number: int,
+) -> str | None:
+    keys = _expected_return_shape_keys(request)
+    looks_like_research_note = {
+        "findings",
+        "evidence_refs",
+        "contradictions",
+        "open_questions",
+    }.issubset(keys) and "report_readiness" not in keys
+    if not looks_like_research_note:
+        return None
+    if not _tool_ids_are_read_only(tool_ids):
+        return None
+    if round_number < 2:
+        return None
+    successful_tools = sum(1 for tool in executed_tools if tool.get("ok"))
+    if successful_tools < 2:
+        return None
+    return "grounded_note_ready_for_synthesis"
+
+
+def _research_note_finalize_message(reason: str) -> str:
+    reason_text = reason.replace("_", " ")
+    return (
+        "Controller note: stop using tools and return the compact evidence note now. "
+        f"You already have enough bounded grounding for this lane ({reason_text}). "
+        "Do not attempt the full final report. Return only the lane-level research note "
+        "with findings, evidence_refs, contradictions, open_questions, and optional "
+        "reasoning_notes/follow_up_queries derived from the evidence already gathered."
+    )
+
+
 def _provider_prompt_filter_error(exc: BaseException) -> bool:
     """Detect provider-side prompt safety/filter rejections without binding to one SDK."""
 
@@ -767,12 +810,46 @@ class LocalOrganismToolRuntime:
             return
         self._event_callback({"event": event, **payload})
 
+    def _normalize_git_tool_path(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        kwargs = dict(arguments or {})
+        raw_path = str(kwargs.get("path") or "").strip()
+        if not raw_path:
+            kwargs["path"] = str(self._workspace_root)
+            return kwargs
+        candidate = Path(raw_path).expanduser()
+        if not candidate.is_absolute():
+            kwargs["path"] = str((self._workspace_root / candidate).resolve())
+            return kwargs
+        kwargs["path"] = str(candidate.resolve())
+        return kwargs
+
     @staticmethod
     def _normalize_tool_arguments(
         tool_id: str,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
         kwargs = dict(arguments or {})
+        if tool_id == "file_read":
+            if "path" not in kwargs and str(kwargs.get("file_path") or "").strip():
+                kwargs["path"] = str(kwargs.get("file_path")).strip()
+            start_line = kwargs.get("start_line")
+            end_line = kwargs.get("end_line")
+            if start_line is None and kwargs.get("offset") is not None:
+                try:
+                    offset = int(kwargs.get("offset"))
+                except (TypeError, ValueError):
+                    offset = None
+                if offset is not None:
+                    kwargs["start_line"] = max(offset, 0) + 1
+                    start_line = kwargs["start_line"]
+            if end_line is None and start_line is not None and kwargs.get("limit") is not None:
+                try:
+                    limit = int(kwargs.get("limit"))
+                except (TypeError, ValueError):
+                    limit = None
+                if limit is not None and limit > 0:
+                    kwargs["end_line"] = int(start_line) + limit - 1
+            return kwargs
         if tool_id != "web_search":
             return kwargs
 
@@ -809,8 +886,8 @@ class LocalOrganismToolRuntime:
         kwargs = self._normalize_tool_arguments(tool_id, dict(arguments or {}))
         if tool_id == "shell_command" and not str(kwargs.get("working_directory") or "").strip():
             kwargs["working_directory"] = str(self._workspace_root)
-        elif tool_id in {"git_status", "git_diff", "git_log"} and "path" not in kwargs:
-            kwargs["path"] = str(self._workspace_root)
+        elif tool_id in {"git_status", "git_diff", "git_log"}:
+            kwargs = self._normalize_git_tool_path(kwargs)
         self._emit_event(
             "tool.started",
             tool_id=tool_id,
@@ -1081,8 +1158,9 @@ class ToolLoopCompletionProvider:
         total_tool_calls = 0
         stop_reason = "completed"
         last_result: Any = None
-        forced_read_only_finalize = False
+        forced_finalize_without_tools = False
         write_stage_first_write_nudged = False
+        research_note_finalize_nudged = False
         provider_safety_retry_attempted = False
 
         while True:
@@ -1223,8 +1301,8 @@ class ToolLoopCompletionProvider:
                 streamed=bool((getattr(last_result, "provider_metadata", None) or {}).get("streamed_response")),
                 worker_id=worker_id,
             )
-            if forced_read_only_finalize and not active_tool_schemas and tool_calls:
-                stop_reason = "read_only_finalize_guardrail_unheeded"
+            if forced_finalize_without_tools and not active_tool_schemas and tool_calls:
+                stop_reason = "forced_finalize_guardrail_unheeded"
                 self._emit_event(
                     "completion.completed",
                     model=last_result.model or model,
@@ -1370,8 +1448,8 @@ class ToolLoopCompletionProvider:
                 executed_tools=executed_tools,
                 workspace_root=self._tool_runtime.workspace_root,
             )
-            if finalize_reason is not None and not forced_read_only_finalize:
-                forced_read_only_finalize = True
+            if finalize_reason is not None and not forced_finalize_without_tools:
+                forced_finalize_without_tools = True
                 active_tool_schemas = []
                 messages.append(
                     {
@@ -1382,6 +1460,36 @@ class ToolLoopCompletionProvider:
                 self._emit_event(
                     "toolloop.read_only_finalize_forced",
                     reason=finalize_reason,
+                    tool_calls_executed=len(executed_tools),
+                    worker_id=worker_id,
+                )
+                continue
+
+            research_finalize_reason = _research_note_finalize_reason(
+                request=request,
+                tool_ids=[
+                    str(tool.get("function", {}).get("name") or "").strip()
+                    for tool in active_tool_schemas
+                    if isinstance(tool, dict)
+                ],
+                executed_tools=executed_tools,
+                round_number=rounds,
+            )
+            if research_finalize_reason is not None and not research_note_finalize_nudged:
+                research_note_finalize_nudged = True
+                forced_finalize_without_tools = True
+                active_tool_schemas = []
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": _research_note_finalize_message(
+                            research_finalize_reason
+                        ),
+                    }
+                )
+                self._emit_event(
+                    "toolloop.research_finalize_forced",
+                    reason=research_finalize_reason,
                     tool_calls_executed=len(executed_tools),
                     worker_id=worker_id,
                 )

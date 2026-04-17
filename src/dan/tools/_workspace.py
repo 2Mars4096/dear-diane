@@ -9,6 +9,16 @@ from typing import Literal
 logger = logging.getLogger(__name__)
 
 
+def _map_workspace_alias(path: str, root: str) -> str:
+    if path == "/workspace":
+        return root
+    prefix = "/workspace/"
+    if path.startswith(prefix):
+        suffix = path[len(prefix) :]
+        return os.path.join(root, suffix)
+    return path
+
+
 def _workspace_root() -> str:
     explicit = os.environ.get("DAN_WORKSPACE_ROOT")
     if explicit:
@@ -36,6 +46,10 @@ def validate_path(path: str, *, operation: Literal["read", "write", "delete"] = 
     """
     expanded = os.path.expanduser(path)
     root = os.path.realpath(_workspace_root())
+    mapped = _map_workspace_alias(expanded, root)
+    if mapped != expanded:
+        logger.info("Mapping /workspace alias to workspace root (%s): %s -> %s", operation, expanded, mapped)
+        expanded = mapped
     if os.path.isabs(expanded):
         resolved = os.path.realpath(expanded)
         inside_workspace = _is_within_workspace(resolved, root)

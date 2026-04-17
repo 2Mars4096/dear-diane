@@ -84,6 +84,7 @@ _SWEBENCH_DEFAULT_ACCEPTANCE_CRITERIA = [
     "Resolve the benchmark issue in the current checked-out repository with the smallest correct patch you can justify.",
     "Avoid unrelated refactors or cleanup outside the benchmark issue scope.",
     "Leave the resulting workspace diff intact so it can be exported as a SWE-bench prediction artifact.",
+    "If a local shell or host-Python reproduction exposes unrelated environment drift, do not patch that drift; continue focusing on the benchmark issue itself.",
 ]
 
 
@@ -599,6 +600,7 @@ def _conversation_facts(
     thinking_mode: str,
     tool_ids: Sequence[str],
     approval_mode: str,
+    benchmark_context: dict[str, Any] | None = None,
     additional_reports: Sequence[CodingOrganismReport] | None = None,
 ) -> CodingConversationFacts:
     latest_report = (
@@ -627,6 +629,7 @@ def _conversation_facts(
         latest_report_objective=str(getattr(latest_report, "objective", "") or ""),
         latest_report_target_files=list(getattr(latest_report, "target_files", []) or []),
         latest_report_error=getattr(latest_report, "error", None),
+        benchmark_mode=bool(benchmark_context),
         current_timestamp=now_context["current_timestamp"],
         current_date=now_context["current_date"],
         timezone=now_context["timezone"],
@@ -1771,6 +1774,7 @@ def _conversation_context(
     tool_ids: Sequence[str],
     approval_mode: str,
     acceptance_criteria: Sequence[str],
+    benchmark_context: dict[str, Any] | None = None,
     additional_reports: Sequence[CodingOrganismReport] | None = None,
 ) -> CodingConversationContext:
     facts = _conversation_facts(
@@ -1780,6 +1784,7 @@ def _conversation_context(
         thinking_mode=thinking_mode,
         tool_ids=tool_ids,
         approval_mode=approval_mode,
+        benchmark_context=benchmark_context,
         additional_reports=additional_reports,
     )
     session_reports = session.context_reports(limit=4)
@@ -1820,6 +1825,7 @@ def _project_planner_context(
     approval_mode: str,
     acceptance_criteria: Sequence[str],
     existing_plan: CodingProjectPlan | None,
+    benchmark_context: dict[str, Any] | None = None,
     additional_reports: Sequence[CodingOrganismReport] | None = None,
 ) -> CodingProjectPlannerContext:
     facts = _conversation_facts(
@@ -1829,6 +1835,7 @@ def _project_planner_context(
         thinking_mode=thinking_mode,
         tool_ids=tool_ids,
         approval_mode=approval_mode,
+        benchmark_context=benchmark_context,
         additional_reports=additional_reports,
     )
     session_reports = session.context_reports(limit=4)
@@ -2010,6 +2017,7 @@ async def _run_orchestrated_turn(
                 tool_ids=tool_ids,
                 approval_mode=approval_mode,
                 acceptance_criteria=acceptance_criteria,
+                benchmark_context=benchmark_context,
             ),
         )
         _store_orchestrator_session(
@@ -2078,6 +2086,7 @@ async def _run_orchestrated_turn(
                 approval_mode=approval_mode,
                 acceptance_criteria=effective_acceptance_criteria,
                 existing_plan=existing_project_plan,
+                benchmark_context=benchmark_context,
             ),
         )
         _store_project_planner_session(
@@ -2166,6 +2175,7 @@ async def _run_orchestrated_turn(
                         tool_ids=tool_ids,
                         approval_mode=approval_mode,
                         acceptance_criteria=effective_acceptance_criteria,
+                        benchmark_context=benchmark_context,
                         additional_reports=reports,
                     ),
                 )

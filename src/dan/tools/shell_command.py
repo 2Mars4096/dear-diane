@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 
 _TRUE_VALUES = {"true", "1", "yes", "on"}
 _FALSE_VALUES = {"false", "0", "no", "off"}
@@ -92,11 +93,70 @@ async def shell_command(
     **_kwargs,
 ) -> dict:
     _check_allowlist(command)
+    run_env = _prepare_shell_env(working_directory, env)
 
     if _use_sandbox():
-        return await _run_sandboxed(command, timeout, env)
+        return await _run_sandboxed(command, working_directory, timeout, run_env)
 
-    return await _run_raw(command, working_directory, timeout, env)
+    return await _run_raw(command, working_directory, timeout, run_env)
+
+
+def _dedupe_env_paths(parts: list[str]) -> str:
+    unique: list[str] = []
+    for part in parts:
+        normalized = str(part or "").strip()
+        if not normalized or normalized in unique:
+            continue
+        unique.append(normalized)
+    return os.pathsep.join(unique)
+
+
+def _prepare_shell_env(
+    working_directory: str | None,
+    env: dict | None,
+) -> dict:
+    prepared = dict(env or {})
+    path_parts: list[str] = []
+    existing_path = prepared.get("PATH") or os.environ.get("PATH", "")
+    if existing_path:
+        path_parts.extend(
+            str(part).strip()
+            for part in str(existing_path).split(os.pathsep)
+            if str(part).strip()
+        )
+    path_parts.extend(
+        [
+            "/usr/local/bin",
+            "/opt/homebrew/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+        ]
+    )
+    prepared["PATH"] = _dedupe_env_paths(path_parts)
+
+    normalized_working_directory = str(working_directory or "").strip()
+    if not normalized_working_directory:
+        return prepared
+
+    workspace_root = os.path.abspath(normalized_working_directory)
+    pythonpath_parts: list[str] = []
+    workspace_src = os.path.join(workspace_root, "src")
+    if os.path.isdir(workspace_src):
+        pythonpath_parts.append(workspace_src)
+    pythonpath_parts.append(workspace_root)
+
+    existing_pythonpath = prepared.get("PYTHONPATH") or os.environ.get("PYTHONPATH", "")
+    if existing_pythonpath:
+        pythonpath_parts.extend(
+            str(part).strip()
+            for part in str(existing_pythonpath).split(os.pathsep)
+            if str(part).strip()
+        )
+    prepared["PYTHONPATH"] = _dedupe_env_paths(pythonpath_parts)
+    prepared.setdefault("PWD", workspace_root)
+    return prepared
 
 
 async def _run_raw(
@@ -138,6 +198,7 @@ async def _run_raw(
 
 async def _run_sandboxed(
     command: str,
+    working_directory: str | None,
     timeout: int,
     env: dict | None,
 ) -> dict:
@@ -157,9 +218,15 @@ async def _run_sandboxed(
     )
 
     inputs = env or {}
+    sandbox_command = command
+    normalized_working_directory = str(working_directory or "").strip()
+    if normalized_working_directory:
+        sandbox_command = (
+            f"cd {shlex.quote(os.path.abspath(normalized_working_directory))} && {command}"
+        )
 
     runner = SandboxRunner()
-    sandbox_result, _structured = await runner.run(command, config, inputs)
+    sandbox_result, _structured = await runner.run(sandbox_command, config, inputs)
 
     return {
         "exit_code": sandbox_result.exit_code,

@@ -6,6 +6,13 @@ import asyncio
 import os
 
 
+def _git_binary() -> str:
+    system_git = "/usr/bin/git"
+    if os.path.exists(system_git):
+        return system_git
+    return "git"
+
+
 def _find_repo(start: str = ".") -> str:
     """Walk up from *start* to find the git repo root."""
     current = os.path.abspath(start)
@@ -24,7 +31,10 @@ def _find_repo(start: str = ".") -> str:
 async def _run_git(repo: str, *args: str) -> tuple[str, str, int]:
     """Run git in *repo* with *args*. Returns (stdout, stderr, returncode)."""
     proc = await asyncio.create_subprocess_exec(
-        "git", "-C", repo, *args,
+        _git_binary(),
+        "-C",
+        repo,
+        *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

@@ -195,6 +195,20 @@ def _review_requires_more_work(
     return not _report_has_material_output(report_summary)
 
 
+def _benchmark_review_should_stop(
+    report_summary: "CodingConversationReportSummary",
+    *,
+    benchmark_mode: bool,
+) -> bool:
+    if not benchmark_mode:
+        return False
+    if _clean_text(report_summary.error):
+        return False
+    if _clean_text(report_summary.status).lower() != "completed":
+        return False
+    return _report_has_material_output(report_summary)
+
+
 def _continue_review_response(report_summary: "CodingConversationReportSummary") -> str:
     if _report_has_material_output(report_summary):
         return (
@@ -658,6 +672,7 @@ class CodingConversationFacts(BaseModel):
     latest_report_objective: str = ""
     latest_report_target_files: list[str] = Field(default_factory=list)
     latest_report_error: str | None = None
+    benchmark_mode: bool = False
     current_timestamp: str = ""
     current_date: str = ""
     timezone: str = ""
@@ -1149,7 +1164,19 @@ def _fallback_review_decision(
     *,
     objective: str,
     report_summary: CodingConversationReportSummary,
+    benchmark_mode: bool = False,
 ) -> CodingConversationReviewDecision:
+    if _benchmark_review_should_stop(
+        report_summary,
+        benchmark_mode=benchmark_mode,
+    ):
+        return CodingConversationReviewDecision(
+            action="done",
+            public_response=(
+                "This bounded coding pass is done and the benchmark artifacts can be "
+                "exported now."
+            ),
+        )
     if not _review_requires_more_work(objective, report_summary):
         return CodingConversationReviewDecision(
             action="done",
@@ -1251,6 +1278,7 @@ def _normalize_review_decision(
     *,
     objective: str,
     report_summary: CodingConversationReportSummary,
+    benchmark_mode: bool = False,
 ) -> CodingConversationReviewDecision:
     normalized_payload = dict(payload or {})
     if "action" not in normalized_payload or not _clean_text(normalized_payload.get("action")):
@@ -1269,7 +1297,11 @@ def _normalize_review_decision(
     try:
         decision = CodingConversationReviewDecision.model_validate(normalized_payload)
     except Exception:
-        return _fallback_review_decision(objective=objective, report_summary=report_summary)
+        return _fallback_review_decision(
+            objective=objective,
+            report_summary=report_summary,
+            benchmark_mode=benchmark_mode,
+        )
     decision = decision.model_copy(
         update={
             "public_response": _clean_text(decision.public_response),
@@ -1279,6 +1311,21 @@ def _normalize_review_decision(
             "repair_brief": _clean_text(decision.repair_brief),
         }
     )
+    if (
+        decision.action == "continue"
+        and _benchmark_review_should_stop(
+            report_summary,
+            benchmark_mode=benchmark_mode,
+        )
+    ):
+        return CodingConversationReviewDecision(
+            action="done",
+            public_response=(
+                "This bounded coding pass is done and the benchmark artifacts can be "
+                "exported now."
+            ),
+            research_findings=_dedupe(list(decision.research_findings)),
+        )
     if _review_requires_more_work(objective, report_summary) and decision.action == "done":
         return CodingConversationReviewDecision(
             action="continue",
@@ -1293,7 +1340,11 @@ def _normalize_review_decision(
         )
     if decision.action == "clarify":
         if not decision.clarifying_question:
-            return _fallback_review_decision(objective=objective, report_summary=report_summary)
+            return _fallback_review_decision(
+                objective=objective,
+                report_summary=report_summary,
+                benchmark_mode=benchmark_mode,
+            )
         if not decision.public_response:
             return decision.model_copy(
                 update={"public_response": decision.clarifying_question}
@@ -1446,6 +1497,7 @@ class CodingConversationController:
                 payload,
                 objective=objective,
                 report_summary=report_summary,
+                benchmark_mode=bool(context.facts.benchmark_mode),
             ),
             session,
         )
@@ -1518,6 +1570,16 @@ class CodingProjectPlannerController:
         durable_session = session or self.create_session(
             metadata={"surface": "dan-code", "kind": "project-planner"}
         )
+        if bool(context.facts.benchmark_mode):
+            return (
+                _fallback_project_planner_decision(
+                    user_message=user_message,
+                    requested_objective=requested_objective,
+                    requested_acceptance_criteria=requested_acceptance_criteria,
+                    existing_plan=context.existing_plan,
+                ),
+                durable_session,
+            )
         request = ExecutionRequest.from_harness(
             task=(
                 "Plan the next DAN Code milestone. Return a short rolling project plan "

@@ -11,7 +11,8 @@ TOOL_METADATA = {
     "description": (
         "Read the contents of a file. Relative paths resolve against the workspace root; "
         "absolute and ~/ paths are allowed. Supports optional "
-        "line-range selection (1-indexed) and configurable encoding. "
+        "line-range selection (1-indexed) and configurable encoding. Prefer "
+        "line windows over shell pattern matching for code inspection. "
         "Files larger than max_size bytes are rejected to prevent memory issues."
     ),
     "parameters": {

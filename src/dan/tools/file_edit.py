@@ -12,7 +12,8 @@ TOOL_METADATA = {
         "Edit an existing text file by line range. Relative paths resolve against the "
         "workspace root; absolute and ~/ paths are allowed. Supports replacing, deleting, "
         "or inserting content relative to 1-indexed line numbers, and can batch multiple "
-        "non-overlapping edits to the same file in one call."
+        "non-overlapping edits to the same file in one call. Prefer explicit line ranges "
+        "derived from prior reads over regex or exact-text matching."
     ),
     "parameters": {
         "type": "object",
@@ -27,7 +28,12 @@ TOOL_METADATA = {
             },
             "end_line": {
                 "type": "integer",
-                "description": "Last target line for replace/delete (1-indexed, inclusive). Defaults to start_line.",
+                "description": (
+                    "Last target line for replace/delete (1-indexed, inclusive). "
+                    "Defaults to start_line for single-line edits. Multi-line replace "
+                    "calls can infer a wider range from old_string or content length "
+                    "when end_line is omitted."
+                ),
             },
             "content": {
                 "type": "string",
@@ -161,6 +167,90 @@ def _replacement_lines(content: str) -> list[str]:
     return content.splitlines(keepends=True)
 
 
+def _line_text(line: str) -> str:
+    return line.rstrip("\r\n")
+
+
+def _line_count(text: str) -> int:
+    return len(text.splitlines())
+
+
+def _find_unique_span(text: str, needle: str) -> tuple[int, int]:
+    if not needle:
+        raise ValueError("old_string must not be empty when used with file_edit compatibility mode.")
+    start_index = text.find(needle)
+    if start_index < 0:
+        raise ValueError(
+            "old_string was not found in the target file. Provide start_line/end_line explicitly."
+        )
+    duplicate_index = text.find(needle, start_index + 1)
+    if duplicate_index >= 0:
+        raise ValueError(
+            "old_string matched multiple locations in the target file. Provide start_line/end_line explicitly."
+        )
+    return start_index, start_index + len(needle)
+
+
+def _line_range_from_span(text: str, start_index: int, end_index: int) -> tuple[int, int]:
+    start_line = len(text[:start_index].splitlines()) + 1
+    end_line = max(start_line, len(text[:end_index].splitlines()))
+    return start_line, end_line
+
+
+def _normalize_replace_compatibility_args(
+    *,
+    original_text: str,
+    start_line: int | None,
+    end_line: int | None,
+    content: str | None,
+    mode: str,
+    old_string: object | None,
+    new_string: object | None,
+) -> tuple[int | None, int | None, str | None]:
+    normalized_mode = str(mode or "replace").strip()
+    normalized_content = content if content is not None else None
+    if normalized_content is None and new_string is not None:
+        normalized_content = str(new_string)
+    if normalized_mode != "replace":
+        return start_line, end_line, normalized_content
+
+    normalized_start = (
+        _normalize_line_number(start_line, name="start_line")
+        if start_line is not None
+        else None
+    )
+    normalized_end = (
+        _normalize_line_number(end_line, name="end_line")
+        if end_line is not None
+        else None
+    )
+
+    old_text = str(old_string) if old_string is not None else ""
+    if old_text:
+        if normalized_start is None:
+            match_start, match_end = _find_unique_span(original_text, old_text)
+            normalized_start, inferred_end = _line_range_from_span(
+                original_text,
+                match_start,
+                match_end,
+            )
+            if normalized_end is None:
+                normalized_end = inferred_end
+        elif normalized_end is None:
+            normalized_end = normalized_start + max(_line_count(old_text), 1) - 1
+
+    if (
+        normalized_start is not None
+        and normalized_end is None
+        and normalized_content is not None
+    ):
+        replacement_line_count = _line_count(normalized_content)
+        if replacement_line_count > 1:
+            normalized_end = normalized_start + replacement_line_count - 1
+
+    return normalized_start, normalized_end, normalized_content
+
+
 def _normalize_mode(value: str | None, *, name: str = "mode") -> str:
     normalized = str(value or "replace").strip()
     if normalized not in _EDIT_MODES:
@@ -231,6 +321,100 @@ def _validate_edit_bounds(spec: dict[str, object], *, total_lines_before: int) -
         )
 
 
+def _preserve_line_boundary(
+    spec: dict[str, object],
+    *,
+    total_lines_before: int,
+) -> dict[str, object]:
+    replacement_lines = list(spec["replacement_lines"])
+    if not replacement_lines or replacement_lines[-1].endswith("\n"):
+        return spec
+
+    mode = str(spec["mode"])
+    start_line = int(spec["start_line"])
+    end_line = int(spec["end_line"])
+    needs_trailing_newline = (
+        (mode == "replace" and end_line < total_lines_before)
+        or (mode == "insert_before" and start_line <= total_lines_before)
+        or (mode == "insert_after" and start_line < total_lines_before)
+    )
+    if not needs_trailing_newline:
+        return spec
+
+    return {
+        **spec,
+        "replacement_lines": [
+            *replacement_lines[:-1],
+            replacement_lines[-1] + "\n",
+        ],
+    }
+
+
+def _reinterpret_anchor_heavy_replace(
+    spec: dict[str, object],
+    *,
+    original_lines: list[str],
+) -> dict[str, object]:
+    if str(spec["mode"]) != "replace":
+        return spec
+
+    start_line = int(spec["start_line"])
+    end_line = int(spec["end_line"])
+    replacement_lines = list(spec["replacement_lines"])
+    target_lines = original_lines[start_line - 1 : end_line]
+    target_line_count = end_line - start_line + 1
+
+    if not replacement_lines or not target_lines or len(replacement_lines) <= target_line_count:
+        return spec
+
+    first_target_line = target_lines[0]
+    if start_line == end_line and _line_text(replacement_lines[0]) == _line_text(first_target_line):
+        return {
+            **spec,
+            "mode": "insert_after",
+            "replacement_lines": replacement_lines[1:],
+        }
+
+    if start_line <= 1 or len(replacement_lines) < 3:
+        return spec
+
+    previous_line = original_lines[start_line - 2]
+    if _line_text(replacement_lines[0]) == _line_text(previous_line):
+        trailing_lines = replacement_lines[1:]
+        for offset in range(1, len(trailing_lines)):
+            candidate_suffix = trailing_lines[offset:]
+            shared_prefix_length = 0
+            for replacement_line, target_line in zip(candidate_suffix, target_lines):
+                if _line_text(replacement_line) != _line_text(target_line):
+                    break
+                shared_prefix_length += 1
+            if (
+                shared_prefix_length >= 2
+                and shared_prefix_length == len(candidate_suffix)
+            ):
+                return {
+                    **spec,
+                    "mode": "insert_after",
+                    "start_line": start_line - 1,
+                    "end_line": start_line - 1,
+                    "replacement_lines": trailing_lines[:offset],
+                }
+
+    if (
+        _line_text(replacement_lines[0]) == _line_text(previous_line)
+        and _line_text(replacement_lines[-1]) == _line_text(first_target_line)
+    ):
+        return {
+            **spec,
+            "mode": "insert_after",
+            "start_line": start_line - 1,
+            "end_line": start_line - 1,
+            "replacement_lines": replacement_lines[1:-1],
+        }
+
+    return spec
+
+
 def _occupied_range(spec: dict[str, object]) -> tuple[int, int]:
     return int(spec["start_line"]), int(spec["end_line"])
 
@@ -299,6 +483,13 @@ async def file_edit(
     resolved = validate_path(effective_path, operation="write")
     _require_existing_file(effective_path, resolved)
 
+    with open(resolved, encoding=encoding) as f:
+        original_text = f.read()
+    original_lines = original_text.splitlines(keepends=True)
+    total_lines_before = len(original_lines)
+    if total_lines_before == 0:
+        raise ValueError("Cannot apply line-based edits to an empty file. Use file_write instead.")
+
     if edits is not None:
         if any(value is not None for value in (start_line, end_line, content)) or mode != "replace":
             raise ValueError(
@@ -320,6 +511,15 @@ async def file_edit(
                 )
             )
     else:
+        start_line, end_line, content = _normalize_replace_compatibility_args(
+            original_text=original_text,
+            start_line=start_line,
+            end_line=end_line,
+            content=content,
+            mode=mode,
+            old_string=_kwargs.get("old_string"),
+            new_string=_kwargs.get("new_string"),
+        )
         edit_specs = [
             _build_edit_spec(
                 start_line=start_line,
@@ -330,15 +530,16 @@ async def file_edit(
             )
         ]
 
-    with open(resolved, encoding=encoding) as f:
-        original_text = f.read()
-    original_lines = original_text.splitlines(keepends=True)
-    total_lines_before = len(original_lines)
-    if total_lines_before == 0:
-        raise ValueError("Cannot apply line-based edits to an empty file. Use file_write instead.")
-
+    edit_specs = [
+        _reinterpret_anchor_heavy_replace(spec, original_lines=original_lines)
+        for spec in edit_specs
+    ]
     for spec in edit_specs:
         _validate_edit_bounds(spec, total_lines_before=total_lines_before)
+    edit_specs = [
+        _preserve_line_boundary(spec, total_lines_before=total_lines_before)
+        for spec in edit_specs
+    ]
     if len(edit_specs) > 1:
         _ensure_non_overlapping_edits(edit_specs)
 
