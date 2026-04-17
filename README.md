@@ -177,22 +177,26 @@ The workspace-local product directory now includes:
 
 Only concrete investigation/verification/comparison requests launch the bounded research organ; ordinary chat turns, clarifications, and post-run review decisions stay at the durable orchestrator layer.
 
-Before the bounded run starts, DAN Research now also inserts one thin intention-breaker step at the same product seam. That planner decomposes the user ask into small concrete subproblems, records why each subproblem matters, and states what evidence would resolve it. The bounded deep-research organ still does the actual search/synthesis work; the new layer just gives it a sharper pre-search map and lets continuation passes narrow onto unresolved gaps instead of repeating another broad sweep.
+Before the bounded run starts, DAN Research now also inserts one thin intention-breaker step at the same product seam. That planner decomposes the user ask into small concrete subproblems, records why each subproblem matters, states what evidence would resolve it, and groups related subproblems into explicit parallel workstreams with aggregation hints. The bounded deep-research organ still does the actual search/synthesis work; the new layer just gives it a sharper pre-search map, lets auto-width fan-out track the planned streams more closely, and lets continuation passes narrow onto unresolved gaps instead of repeating another broad sweep.
+
+Inside the bounded organ, reader cells no longer inherit the full final-report contract. Each deep-research reader now returns one compact evidence note for its own lane, and the read-only local runtime will nudge that reader to stop searching and finalize once it already has enough bounded grounding. That keeps successful search/tool rounds from escalating away before the lead synthesis cell can assemble the final report.
 
 Research width and depth are now explicit operator controls:
 
 ```bash
 dan research --workspace . "Compare our local runtime limits with the docs"
 dan research --workspace . --research-readers 8 --depth deep
+dan research --workspace . --max-supervision-loops 3
 dan research --workspace . --show-config
 ```
 
 - width: auto-sized reader fan-out from task breadth, capped at `8` concurrent readers, with `--research-readers N` as an override
 - depth: `--depth shallow|standard|deep`, which maps to per-worker tool-loop budgets and can still be overridden directly with `--max-tool-rounds` and `--max-tool-calls`
+- continuation loop: unbounded by default, so the durable orchestrator keeps launching bounded follow-up passes until review returns `done` / `clarify` or a run fails; use `--max-supervision-loops N` or `DAN_RESEARCH_MAX_SUPERVISION_LOOPS` only when you explicitly want a cap
 - per-cell runtime budget: the research CLI now also resolves a default wall-clock ceiling per bounded cell (`60s` shallow, `120s` standard, `180s` deep) and passes it through the existing cell-budget membrane; override with `DAN_RESEARCH_MAX_RUNTIME_SECONDS`, or set it to `0`/negative to leave runtime unbounded
 - default research tool basket: `list_directory`, `file_read`, `web_search`, `git_status`, `git_diff`, `git_log`
 
-Like the thinner `--research-only` organism surface, DAN Research keeps the read-only runtime split for research workers, so it can use `web_search` plus local read tools but not write-capable tools. `web_search` now covers both discovery and grounded page reads on this surface: `search_depth="thorough"` or `fetch_content=true` fetches the top authoritative result pages internally, and a direct `url=` can be passed through the same tool name when the worker already knows the page it needs. Grounded page reads now also run concurrently with bounded fetch deadlines and reuse cache/inflight work on repeated verification-style queries, which cuts down the long quiet stretches that used to happen during current-fact rechecks.
+Like the thinner `--research-only` organism surface, DAN Research keeps the read-only runtime split for research workers, so it can use `web_search` plus local read tools but not write-capable tools. `web_search` now covers both discovery and grounded page reads on this surface: `search_depth="thorough"` or `fetch_content=true` fetches the top authoritative result pages internally, and a direct `url=` can be passed through the same tool name when the worker already knows the page it needs. Grounded page reads now also run concurrently with bounded fetch deadlines and reuse cache/inflight work on repeated verification-style queries, which cuts down the long quiet stretches that used to happen during current-fact rechecks. Behind that unchanged tool surface, Beacon Search now provides the internal broker/corpus/search-eval subsystem DAN uses for corpus-first retrieval, chunk-level evidence IDs, legacy shadow comparisons, and first-party search-state accumulation.
 
 For the same reason, wide first-pass fan-out no longer requires every reader to succeed before the retrieval tissue can continue. The deep-research organ now allows a small number of bounded reader failures on wider pools, and if the orchestrator asks for another pass without an explicit `--research-readers` override, the follow-up pass automatically narrows to a smaller reader width so targeted verification does not keep paying for another full broad sweep.
 
@@ -202,7 +206,7 @@ The standard quality gates are generic and should appear on every completed run:
 
 Before broad search starts, DAN Research now also assigns each bounded run one generic temporal frame: `current`, `historical_snapshot`, `trend`, or `timeless`. That frame is inferred from the objective plus the runtime date/timezone, passed through the bounded task and reader briefs, and then persisted on the final report so relative terms like `current`, `latest`, `recent`, or “past 6 months” have one explicit anchor instead of being left implicit.
 
-If review still says another bounded pass is required after the current supervision loop is out of passes, DAN Research now returns the artifact explicitly as `incomplete` / `blocked` instead of leaving the last report looking finished. In practice that means you either get the extra pass included in the artifact, or you get an honest incomplete result with a failing `final_status` gate telling you why it stopped.
+If review still says another bounded pass is required after an operator-configured supervision cap is exhausted, DAN Research returns the artifact explicitly as `incomplete` / `blocked` instead of leaving the last report looking finished. In practice that means the default behavior keeps looping, while an explicit cap still gives you an honest incomplete result with a failing `final_status` gate telling you why it stopped.
 
 The web discovery path is also more source-aware now. `web_search` results are ranked so regulator, exchange, issuer, and official docs/reference pages are preferred over retail quote or summary pages when both are present. The review layer refuses to finalize low-confidence or weakly-grounded runs as `done`: reports without explicit evidence refs, with conflicted critical facts, with blocking audit issues, with missing/failed quality gates, with confidence below the configured floor, or that still mark themselves `blocked` / `provisional` are pushed back for more work instead of being treated as trustworthy final output.
 
@@ -382,6 +386,8 @@ PYTHONPATH=src:. python -m tests.eval.swebench_runner \
 ```
 
 The runner caches benchmark repos under `tests/eval/results/swebench_repo_cache/`, creates one timestamped run directory under `tests/eval/results/`, writes the resolved `instance.json`, prepares a detached `workspace/` checkout at `base_commit`, and tells `dan code` to use a sibling `dan-code/` workdir. When a run exits cleanly, it also records `stdout.log`, `stderr.log`, `report.json`, and `predictions.jsonl` at the top of that run directory. It is intentionally a thin operator tool, not a full scorer or benchmark-set scheduler.
+
+The current smoke-proven path is `princeton-nlp/SWE-bench_Lite` instance `marshmallow-code__marshmallow-1359` with `kimi-k2.5`, which now exits cleanly and emits the expected one-line `swebench.patch` plus top-level `report.json` / `predictions.jsonl`.
 
 Useful options:
 

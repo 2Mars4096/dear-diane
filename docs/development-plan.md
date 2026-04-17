@@ -417,11 +417,12 @@ The paper-writing workflow already in `development-plan.md` Section 1 is the tar
 | **20** | Telegram Multi-Bot Platform | Adapter upgrade, BotFleet, MessageRouter, native features (polls, streaming edits, reactions, forum topics), `dan-bot` CLI, unified `dan` CLI | **Completed** |
 | **21** | Daily-Use QoL | Model control, visibility, capability exposure, CLI power-user features, defaults overhaul | **Completed** |
 | **22** | Workflow generation optimization | Convenience layer, intent expansion, smart defaults, domain profiles. **32-7:** Direct execution architecture — eliminated codegen→sandbox roundtrip for complex tasks. `IntentCompiler.build_graph()` constructs Graph objects in-process. | In progress |
-| **23** | Search infra incubation | Separate named search/retrieval subsystem (`Beacon Search`) behind the current `web_search` / `web_fetch` compatibility surface, with first-party corpus, ranking, and eval-gated cutover | Not started |
+| **23** | Search infra incubation | Separate named search/retrieval subsystem (`Beacon Search`) behind the current `web_search` / `web_fetch` compatibility surface, with first-party corpus, ranking, grounded fetch persistence, and eval-gated cutover while provider-backed discovery remains available | Completed |
+| **24** | Provider-independent search discovery | Vertical-first first-party discovery, refresh loops, and stricter broker gates so Tavily/Serper/Brave/DDG become cold-start fallback rather than normal operation | Not started |
 
 ---
 
-Adjacent incubation track: **Beacon Search** is intentionally named as a separate search-infrastructure effort, but the initial work should stay inside DAN until the broker contract, corpus, and eval gates are stable. During that incubation, the current `web_search` / `web_fetch` tools remain the caller-visible surface and the legacy provider-backed path stays available for fallback and comparison.
+Adjacent incubation track: **Beacon Search** is intentionally named as a separate search-infrastructure effort, but the initial work stayed inside DAN until the broker contract, corpus, and eval gates were stable. That incubation is now complete, but a live 2026-04-17 validation still returned `provider: tavily` for a broad-web `FLY` query through DAN's own `handle_web_search(...)` surface, so true provider independence remains phase 24 rather than phase 23. During that next phase, the current `web_search` / `web_fetch` tools remain the caller-visible surface while Beacon adds connector-first discovery and reduces normal-operation reliance on provider APIs.
 
 ## 8. References
 
