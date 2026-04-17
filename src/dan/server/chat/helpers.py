@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Collection
 
+from dan.search import get_default_beacon_corpus_store
 from dan.server.capability_registry import CapabilityResult, READ_ONLY_MODES
 from dan.server.search_models import (
     CitationRecord,
@@ -1237,6 +1238,25 @@ def _matching_excerpt(source_text: str, anchor_terms: list[str]) -> str | None:
     return None
 
 
+def _source_evidence_text(source: SearchResult) -> str:
+    inline = str(source.fetched_content or source.snippet or "").strip()
+    if inline:
+        return inline
+    try:
+        store = get_default_beacon_corpus_store()
+        if source.chunk_id:
+            chunk_text = store.get_chunk_text(source.chunk_id)
+            if chunk_text:
+                return chunk_text
+        if source.document_id:
+            document_text = store.get_document_text(source.document_id, chunk_id=source.chunk_id)
+            if document_text:
+                return document_text
+    except Exception:
+        logger.debug("Beacon corpus evidence lookup failed", exc_info=True)
+    return ""
+
+
 def verify_citation(
     citation: InlineCitation,
     search_results: list[SearchResult],
@@ -1251,12 +1271,14 @@ def verify_citation(
             reason=f"cited source [{citation.index}] does not exist",
         )
 
-    source_text = str(source.fetched_content or source.snippet or "").strip()
+    source_text = _source_evidence_text(source)
     if not source_text:
         return CitationVerification(
             citation_index=citation.index,
             claim_text=citation.claim_text,
             source_url=source.url,
+            document_id=source.document_id,
+            chunk_id=source.chunk_id,
             verified=False,
             confidence=0.0,
             reason="cited source has no fetched content or usable snippet",
@@ -1268,6 +1290,8 @@ def verify_citation(
             claim_text=citation.claim_text,
             source_url=source.url,
             source_excerpt_match=_matching_excerpt(source_text, [citation.claim_text]),
+            document_id=source.document_id,
+            chunk_id=source.chunk_id,
             verified=False,
             confidence=0.0,
             reason="claim is outside numeric/date verification scope",
@@ -1281,6 +1305,8 @@ def verify_citation(
             claim_text=citation.claim_text,
             source_url=source.url,
             source_excerpt_match=_matching_excerpt(source_text, numeric_terms),
+            document_id=source.document_id,
+            chunk_id=source.chunk_id,
             verified=False,
             confidence=0.0,
             reason="source does not contain the claimed numeric/date value",
@@ -1296,6 +1322,8 @@ def verify_citation(
         claim_text=citation.claim_text,
         source_url=source.url,
         source_excerpt_match=excerpt,
+        document_id=source.document_id,
+        chunk_id=source.chunk_id,
         verified=verified,
         confidence=match_ratio,
         reason="matched claim terms in source" if verified else "source only partially matches claim terms",
@@ -1360,8 +1388,11 @@ def build_citation_records(
             cited_excerpt=(
                 verification.source_excerpt_match
                 if verification is not None and verification.source_excerpt_match
-                else str(source.fetched_content or source.snippet or "")[:280]
+                else _source_evidence_text(source)[:280]
             ),
+            document_id=source.document_id,
+            chunk_id=source.chunk_id,
+            evidence_source=source.evidence_source,
             verified=verification.verified if verification is not None else None,
         ))
     return records

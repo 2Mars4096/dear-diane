@@ -491,6 +491,17 @@ class TestApplyLastMutationCapabilityRegistration:
             assert "URL: http://x" in result.message
             assert result.data["provider"] == "tavily"
             assert result.data["grounded_result_count"] == 0
+            assert result.data["search_broker"]["compatibility_membrane"] == "search_result_set_v1"
+            assert result.data["search_broker"]["requested_mode"] == "legacy"
+            assert result.data["search_broker"]["effective_mode"] == "legacy"
+            assert result.data["search_broker"]["path_counts"] == {"legacy_tool": 1}
+            assert result.data["search_broker"]["used_legacy"] is True
+            assert result.data["search_broker"]["discovery_classification"] == "provider_only"
+            assert result.data["search_broker"]["discovery_source_counts"] == {
+                "corpus": 0,
+                "connector": 0,
+                "provider": 1,
+            }
 
     @pytest.mark.asyncio
     async def test_web_search_handler_surfaces_cache_and_fallback_metadata(self):
@@ -1303,6 +1314,57 @@ class TestCitationVerification:
         assert records[0].verified is True
         assert records[1].claim_text.startswith("The company launched a new product [1]")
         assert records[1].verified is None
+
+    def test_citation_verification_uses_beacon_corpus_evidence_when_inline_text_missing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+    ):
+        from dan.search import get_default_beacon_corpus_store, reset_default_beacon_corpus_store
+        from dan.server.search_models import SearchResult
+
+        monkeypatch.setenv("DAN_BEACON_SEARCH_DB", str(tmp_path / "beacon.db"))
+        reset_default_beacon_corpus_store()
+        record = get_default_beacon_corpus_store().upsert_document(
+            url="https://example.com/report",
+            title="Report",
+            content="Revenue grew 24% in 2025. Margin was 18%.",
+            query="revenue 2025",
+            source_type="web_fetch",
+        )
+        assert record is not None
+
+        results = [
+            SearchResult(
+                index=1,
+                title="Report",
+                url="https://example.com/report",
+                snippet="",
+                fetched_content=None,
+                provider="beacon",
+                document_id=record.document_id,
+                chunk_id=record.primary_chunk_id,
+                evidence_source="corpus",
+            )
+        ]
+        verifications = verify_response_citations(
+            "Revenue grew 24% in 2025 [1].",
+            results,
+        )
+        records = build_citation_records(
+            "Revenue grew 24% in 2025 [1].",
+            results,
+            verifications=verifications,
+        )
+
+        assert len(verifications) == 1
+        assert verifications[0].verified is True
+        assert verifications[0].document_id == record.document_id
+        assert len(records) == 1
+        assert records[0].document_id == record.document_id
+        assert records[0].chunk_id == record.primary_chunk_id
+        assert "Revenue grew 24% in 2025" in records[0].cited_excerpt
+        reset_default_beacon_corpus_store()
 
     def test_search_web_satisfied_by_web_fetch(self):
         missing = _missing_action_hints(

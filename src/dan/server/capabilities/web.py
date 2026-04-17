@@ -2,12 +2,21 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re as _re
 import os
 from typing import Any
 
 import httpx
 
+from dan.search import (
+    classify_discovery_source_counts,
+    get_default_beacon_corpus_store,
+    normalize_discovery_source_counts,
+    SearchBrokerProvidersExhaustedError,
+    SearchBrokerRequest,
+    get_default_search_broker,
+)
 from dan.server.capability_registry import CapabilityContext, CapabilityResult
 from dan.server.capabilities._helpers import (
     _FILE_READ_MAX,
@@ -16,11 +25,14 @@ from dan.server.capabilities._helpers import (
     _sanitize_web_content,
 )
 from dan.server.search_models import (
+    SEARCH_RESULT_SET_CONTRACT_VERSION,
     SearchResult,
     SearchResultSet,
     canonicalize_search_url,
     domain_from_url,
 )
+
+logger = logging.getLogger(__name__)
 
 _MAX_AUTO_FETCH_RESULTS = 2
 _MAX_AUTO_FETCH_ATTEMPTS = 4
@@ -135,6 +147,105 @@ def _format_provider_failures(failures: list[dict[str, Any]] | None) -> str:
     return note
 
 
+def _sum_discovery_source_counts(items: list[dict[str, Any]]) -> dict[str, int]:
+    counts = normalize_discovery_source_counts({})
+    for item in items:
+        for key, value in normalize_discovery_source_counts(
+            dict(item or {}).get("discovery_source_counts")
+        ).items():
+            counts[key] = counts.get(key, 0) + int(value)
+    return counts
+
+
+def _summarize_broker_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    if not runs:
+        return {}
+    requested_modes = [str(item.get("requested_mode") or "") for item in runs if item]
+    effective_modes = [str(item.get("effective_mode") or "") for item in runs if item]
+    query_families = [str(item.get("query_family") or "") for item in runs if item and item.get("query_family")]
+    provider_policies = [
+        str(item.get("provider_policy") or "")
+        for item in runs
+        if item and item.get("provider_policy")
+    ]
+    path_counts: dict[str, int] = {}
+    effective_mode_counts: dict[str, int] = {}
+    comparison_mode_counts: dict[str, int] = {}
+    discovery_classification_counts: dict[str, int] = {}
+    discovery_backends: list[str] = []
+    active_stages: list[str] = []
+    fallback_count = 0
+    for item in runs:
+        if not item:
+            continue
+        path = str(item.get("path") or "").strip()
+        if path:
+            path_counts[path] = path_counts.get(path, 0) + 1
+        effective = str(item.get("effective_mode") or "").strip()
+        if effective:
+            effective_mode_counts[effective] = effective_mode_counts.get(effective, 0) + 1
+        comparison = str(item.get("comparison_mode") or "").strip() or "single_path"
+        comparison_mode_counts[comparison] = comparison_mode_counts.get(comparison, 0) + 1
+        discovery_classification = str(item.get("discovery_classification") or "").strip() or "no_results"
+        discovery_classification_counts[discovery_classification] = (
+            discovery_classification_counts.get(discovery_classification, 0) + 1
+        )
+        if str(item.get("fallback_reason") or "").strip():
+            fallback_count += 1
+        for provider in item.get("discovery_backends") or []:
+            name = str(provider or "").strip()
+            if name and name not in discovery_backends:
+                discovery_backends.append(name)
+        for stage in item.get("active_stages") or []:
+            name = str(stage or "").strip()
+            if name and name not in active_stages:
+                active_stages.append(name)
+    fallback_reasons = [
+        str(item.get("fallback_reason") or "")
+        for item in runs
+        if str(item.get("fallback_reason") or "").strip()
+    ]
+    discovery_source_counts = _sum_discovery_source_counts(runs)
+    non_empty_discovery_classes = {
+        key for key, value in discovery_classification_counts.items() if value > 0
+    }
+    if len(non_empty_discovery_classes) == 1:
+        discovery_classification = next(iter(non_empty_discovery_classes))
+    elif len(non_empty_discovery_classes) > 1:
+        discovery_classification = "mixed_paths"
+    else:
+        discovery_classification = classify_discovery_source_counts(discovery_source_counts)
+    return {
+        "compatibility_membrane": SEARCH_RESULT_SET_CONTRACT_VERSION,
+        "requested_mode": requested_modes[0] if requested_modes and len(set(requested_modes)) == 1 else None,
+        "effective_mode": effective_modes[0] if effective_modes and len(set(effective_modes)) == 1 else None,
+        "query_family": query_families[0] if query_families and len(set(query_families)) == 1 else None,
+        "provider_policy": (
+            provider_policies[0]
+            if provider_policies and len(set(provider_policies)) == 1
+            else None
+        ),
+        "provider_fallback_allowed": (
+            all(item.get("provider_fallback_allowed") is True for item in runs if item)
+            if any(item.get("provider_fallback_allowed") is not None for item in runs if item)
+            else None
+        ),
+        "used_legacy": any(bool(item.get("used_legacy")) for item in runs if item),
+        "total_runs": len(runs),
+        "fallback_count": fallback_count,
+        "fallback_reasons": fallback_reasons,
+        "path_counts": path_counts,
+        "effective_mode_counts": effective_mode_counts,
+        "comparison_mode_counts": comparison_mode_counts,
+        "discovery_classification": discovery_classification,
+        "discovery_classification_counts": discovery_classification_counts,
+        "discovery_source_counts": discovery_source_counts,
+        "discovery_backends": discovery_backends,
+        "active_stages": active_stages,
+        "runs": runs,
+    }
+
+
 def _format_fetch_header(result: dict[str, Any], *, requested_url: str) -> str:
     resolved_url = str(result.get("url", "") or "").strip() or requested_url
     parts: list[str] = []
@@ -156,6 +267,34 @@ def _format_fetch_header(result: dict[str, Any], *, requested_url: str) -> str:
     if parts:
         header += f" ({'; '.join(parts)})"
     return header
+
+
+def _persist_fetch_to_beacon_corpus(
+    *,
+    url: str,
+    title: str,
+    content: str,
+    query: str = "",
+    source_type: str,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    raw_url = str(url or "").strip()
+    body = str(content or "").strip()
+    if not raw_url or not body:
+        return None
+    try:
+        record = get_default_beacon_corpus_store().upsert_document(
+            url=raw_url,
+            title=title,
+            content=body,
+            query=query,
+            source_type=source_type,
+            metadata=metadata,
+        )
+    except Exception:
+        logger.debug("Beacon corpus persist failed for %s", raw_url, exc_info=True)
+        return None
+    return record.to_dict() if record is not None else None
 
 
 def _query_terms(query: str) -> list[str]:
@@ -484,8 +623,21 @@ def _search_result_from_item(
         result_kind=str(item.get("result_kind", "") or "organic").strip() or "organic",
         page_age=str(item.get("page_age", "") or "").strip() or None,
         source_query=source_query,
-        canonical_url=canonicalize_search_url(url) or url,
+        canonical_url=(
+            str(item.get("canonical_url", "") or "").strip()
+            or canonicalize_search_url(url)
+            or url
+        ),
         credibility_tier=_credibility_tier(url),
+        document_id=str(item.get("document_id", "") or "").strip() or None,
+        chunk_id=str(item.get("chunk_id", "") or "").strip() or None,
+        evidence_source=str(item.get("evidence_source", "") or "").strip() or None,
+        freshness_state=str(item.get("freshness_state", "") or "").strip() or None,
+        ranking_features={
+            str(key): float(value)
+            for key, value in dict(item.get("ranking_features") or {}).items()
+            if isinstance(value, (int, float))
+        },
     )
 
 
@@ -540,7 +692,9 @@ async def handle_web_search(
     budget_state = _budget_state(ctx)
     sub_queries = _decompose_query(query)
 
-    async def _run_single_query(sub_query: str) -> tuple[list[SearchResult], dict[str, Any], str | None]:
+    async def _run_single_query(
+        sub_query: str,
+    ) -> tuple[list[SearchResult], dict[str, Any], str | None, dict[str, Any]]:
         search_allowed, search_limit = _check_and_consume_budget(
             budget_state,
             used_key="web_search_calls_made",
@@ -549,19 +703,24 @@ async def handle_web_search(
         )
         if not search_allowed:
             raise RuntimeError(_budget_exhausted_message("search", search_limit))
-        from dan.tools.web_search import WebSearchProvidersExhaustedError, web_search
+
+        broker = get_default_search_broker()
 
         try:
-            raw = await web_search(
-                query=sub_query,
-                num_results=max(num, 3 if len(sub_queries) > 1 else num),
-                search_depth=search_depth,
-                allowed_domains=allowed_domains,
-                blocked_domains=blocked_domains,
-                location=location,
-                max_provider_searches=max(1, 4 // max(len(sub_queries), 1)),
+            broker_result = await broker.search(
+                SearchBrokerRequest(
+                    query=sub_query,
+                    num_results=max(num, 3 if len(sub_queries) > 1 else num),
+                    search_depth=search_depth,
+                    allowed_domains=tuple(allowed_domains),
+                    blocked_domains=tuple(blocked_domains),
+                    location=location,
+                    max_provider_searches=max(1, 4 // max(len(sub_queries), 1)),
+                )
             )
-        except WebSearchProvidersExhaustedError as exc:
+            raw = broker_result.payload
+            broker_trace = broker_result.trace.to_dict()
+        except SearchBrokerProvidersExhaustedError as exc:
             raise RuntimeError(
                 f"Web search failed after fallback attempts: {_format_provider_failures(exc.provider_failures)}"
             ) from exc
@@ -595,15 +754,18 @@ async def handle_web_search(
                 if not search_allowed:
                     reformulated = None
                 else:
-                    retry_raw = await web_search(
-                        query=reformulated,
-                        num_results=max(num, 3),
-                        search_depth=search_depth,
-                        allowed_domains=allowed_domains,
-                        blocked_domains=blocked_domains,
-                        location=location,
-                        max_provider_searches=max(1, 4 // max(len(sub_queries), 1)),
+                    retry_result = await broker.search(
+                        SearchBrokerRequest(
+                            query=reformulated,
+                            num_results=max(num, 3),
+                            search_depth=search_depth,
+                            allowed_domains=tuple(allowed_domains),
+                            blocked_domains=tuple(blocked_domains),
+                            location=location,
+                            max_provider_searches=max(1, 4 // max(len(sub_queries), 1)),
+                        )
                     )
+                    retry_raw = retry_result.payload
                     retry_results = [
                         _search_result_from_item(
                             item,
@@ -622,7 +784,8 @@ async def handle_web_search(
                     if retry_results:
                         raw = retry_raw
                         results = retry_results
-        return results, raw, reformulated
+                        broker_trace = retry_result.trace.to_dict()
+        return results, raw, reformulated, broker_trace
 
     try:
         query_runs = await asyncio.gather(*[_run_single_query(sub_query) for sub_query in sub_queries])
@@ -644,9 +807,12 @@ async def handle_web_search(
     all_provider_failures: list[dict[str, Any]] = []
     provider_names: list[str] = []
     reformulations: list[str] = []
+    broker_runs: list[dict[str, Any]] = []
+    beacon_corpus_runs: list[dict[str, Any]] = []
+    beacon_shadow_runs: list[dict[str, Any]] = []
     grouped_results: list[list[SearchResult]] = []
     cache_hit = False
-    for results, raw, reformulated in query_runs:
+    for results, raw, reformulated, broker_trace in query_runs:
         grouped_results.append(results)
         provider = str(raw.get("provider", "") or "").strip()
         if provider and provider not in provider_names:
@@ -657,8 +823,14 @@ async def handle_web_search(
                 provider_names.append(provider_name)
         all_provider_failures.extend(list(raw.get("provider_failures") or []))
         cache_hit = cache_hit or bool(raw.get("cache_hit"))
+        if isinstance(raw.get("beacon_corpus"), dict):
+            beacon_corpus_runs.append(dict(raw["beacon_corpus"]))
+        if isinstance(raw.get("beacon_shadow"), dict):
+            beacon_shadow_runs.append(dict(raw["beacon_shadow"]))
         if reformulated:
             reformulations.append(reformulated)
+        if broker_trace:
+            broker_runs.append(broker_trace)
 
     merged_results: list[SearchResult] = []
     canonical_seen: set[str] = set()
@@ -709,6 +881,7 @@ async def handle_web_search(
     _append_recent_urls(search_state, filtered_canonical_urls)
 
     fetch_records: list[dict[str, Any]] = []
+    corpus_saved_records: list[dict[str, Any]] = []
     grounded_count = 0
     fetch_attempts_made = 0
     browser_fallback_count = 0
@@ -741,11 +914,40 @@ async def handle_web_search(
                 browser_fallback=browser_fallback_enabled,
             )
             result.fetched_content = str(fetch_record.get("fetched_content") or "").strip() or None
+            if fetch_record.get("success") and result.fetched_content:
+                corpus_record = _persist_fetch_to_beacon_corpus(
+                    url=result.url,
+                    title=result.title,
+                    content=result.fetched_content,
+                    query=query,
+                    source_type="web_search_fetch",
+                    metadata={
+                        "provider": result.provider,
+                        "source_query": result.source_query or query,
+                        "result_kind": result.result_kind,
+                    },
+                )
+                if corpus_record:
+                    corpus_saved_records.append(corpus_record)
+                    fetch_record["document_id"] = corpus_record["document_id"]
+                    fetch_record["chunk_id"] = corpus_record["primary_chunk_id"]
+                    result.document_id = corpus_record["document_id"]
+                    result.chunk_id = corpus_record["primary_chunk_id"]
+                    result.evidence_source = "fetched_corpus"
+                    result.freshness_state = corpus_record["freshness_state"]
             fetch_records.append(fetch_record)
             if fetch_record.get("success"):
                 grounded_count += 1
             if fetch_record.get("fetch_via") == "browser":
                 browser_fallback_count += 1
+
+    provenance_counts: dict[str, int] = {}
+    for result in filtered_results:
+        provenance = result.evidence_source or "external"
+        provenance_counts[provenance] = provenance_counts.get(provenance, 0) + 1
+    discovery_source_counts = _sum_discovery_source_counts(broker_runs)
+    discovery_classification = classify_discovery_source_counts(discovery_source_counts)
+    broker_summary = _summarize_broker_runs(broker_runs)
 
     result_set = SearchResultSet(
         query=query,
@@ -759,6 +961,17 @@ async def handle_web_search(
         fetch_attempts_made=fetch_attempts_made,
         fetch_target_count=fetch_target_count,
         browser_fallback_count=browser_fallback_count,
+        corpus_hit_count=sum(1 for result in filtered_results if bool(result.document_id)),
+        provenance_counts=provenance_counts,
+        query_family=str(broker_summary.get("query_family", "") or "").strip() or None,
+        provider_policy=str(broker_summary.get("provider_policy", "") or "").strip() or None,
+        provider_fallback_allowed=(
+            bool(broker_summary.get("provider_fallback_allowed"))
+            if broker_summary.get("provider_fallback_allowed") is not None
+            else None
+        ),
+        discovery_classification=discovery_classification,
+        discovery_source_counts=discovery_source_counts,
     )
 
     lines = [f'Web search results for "{query}"']
@@ -822,6 +1035,31 @@ async def handle_web_search(
         "grounded_result_count": result_set.grounded_result_count,
         "fetched_results": fetch_records,
         "browser_fallback_count": result_set.browser_fallback_count,
+        "beacon_corpus": {
+            "indexed_documents": sum(int(item.get("corpus_hit_count") or 0) for item in beacon_corpus_runs),
+            "external_fill_count": sum(int(item.get("external_fill_count") or 0) for item in beacon_corpus_runs),
+            "saved_documents": len(corpus_saved_records),
+            "saved_chunks": sum(int(item.get("chunk_count") or 0) for item in corpus_saved_records),
+            "seed_domains": list(dict.fromkeys(
+                str(domain or "").strip()
+                for item in beacon_corpus_runs
+                for domain in list(item.get("seed_domains") or [])
+                if str(domain or "").strip()
+            )),
+            "corpus_hit_count": result_set.corpus_hit_count,
+            "provenance_counts": result_set.provenance_counts,
+            "query_family": result_set.query_family,
+            "provider_policy": result_set.provider_policy,
+            "provider_fallback_allowed": result_set.provider_fallback_allowed,
+            "discovery_classification": result_set.discovery_classification,
+            "discovery_source_counts": result_set.discovery_source_counts,
+            "db_path": str(get_default_beacon_corpus_store().db_path),
+        },
+        "beacon_shadow": {
+            "runs": beacon_shadow_runs,
+            "result_count": sum(int(item.get("result_count") or 0) for item in beacon_shadow_runs),
+        } if beacon_shadow_runs else {},
+        "search_broker": broker_summary,
         "search_result_set": result_set.model_dump(mode="python"),
     }
     if os.environ.get("DAN_NATIVE_CITATIONS", "0").strip() == "1":
@@ -874,8 +1112,29 @@ async def handle_web_fetch(args: dict[str, Any], ctx: CapabilityContext) -> Capa
             else:
                 content = f"No content matching '{extract_only}' found on this page."
 
+        full_content = content
         if len(content) > _FILE_READ_MAX:
             content = content[:_FILE_READ_MAX] + "\n\n[truncated]"
+        corpus_record = _persist_fetch_to_beacon_corpus(
+            url=str(result.get("url", "") or "").strip() or url,
+            title=str(result.get("title", "") or "").strip(),
+            content=full_content,
+            query=extract_only or url,
+            source_type="web_fetch",
+            metadata={
+                "content_type": str(result.get("content_type", "") or "").strip(),
+                "fetch_via": str(result.get("fetch_via", "") or "").strip(),
+            },
+        )
+        if corpus_record:
+            result["document_id"] = corpus_record["document_id"]
+            result["chunk_id"] = corpus_record["primary_chunk_id"]
+            result["beacon_corpus"] = {
+                "saved": True,
+                "document_id": corpus_record["document_id"],
+                "chunk_id": corpus_record["primary_chunk_id"],
+                "db_path": str(get_default_beacon_corpus_store().db_path),
+            }
         header = _format_fetch_header(result, requested_url=url)
         note_lines: list[str] = []
         if bool(result.get("content_requires_browser")):
