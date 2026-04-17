@@ -38,6 +38,9 @@ REQUIRED_RESEARCH_QUALITY_GATES = frozenset(
 CRITICAL_RESEARCH_QUALITY_GATES = frozenset(
     {"time_anchor", "scope_boundary", "source_authority"}
 )
+PROVISIONAL_CLOSURE_GATES = frozenset(
+    {"time_anchor", "source_authority", "numeric_reconciliation", "final_status"}
+)
 
 
 def _clean_text(value: Any) -> str:
@@ -247,7 +250,6 @@ def _review_requires_more_work(
     objective: str,
     report_summary: "ResearchConversationReportSummary",
 ) -> bool:
-    _ = objective
     if _clean_text(report_summary.error):
         return True
     if _clean_text(report_summary.status).lower() != "completed":
@@ -256,6 +258,8 @@ def _review_requires_more_work(
         return True
     if report_summary.confidence is None:
         return True
+    if _allows_explicit_unverifiable_closure(objective, report_summary):
+        return False
     if float(report_summary.confidence) < MIN_RESEARCH_REPORT_CONFIDENCE:
         return True
     if not report_summary.evidence_refs:
@@ -294,6 +298,19 @@ def _review_requires_more_work(
     ):
         return True
     return False
+
+
+def _done_review_response(
+    objective: str,
+    report_summary: "ResearchConversationReportSummary",
+) -> str:
+    if _allows_explicit_unverifiable_closure(objective, report_summary):
+        return (
+            "This bounded research pass is complete enough to stop as a provisional "
+            "report: the remaining fact gaps are explicitly marked unverifiable and the "
+            "confidence is already downgraded accordingly."
+        )
+    return "This bounded research pass is done."
 
 
 def _continue_review_response(report_summary: "ResearchConversationReportSummary") -> str:
@@ -457,6 +474,16 @@ def _quality_gate_map(
     return statuses
 
 
+def _nonpass_quality_gates(
+    report_summary: "ResearchConversationReportSummary",
+) -> set[str]:
+    return {
+        gate
+        for gate, status in _quality_gate_map(report_summary).items()
+        if status != "pass"
+    }
+
+
 def _missing_quality_gates(
     report_summary: "ResearchConversationReportSummary",
 ) -> list[str]:
@@ -484,6 +511,92 @@ def _has_critical_nonpass_quality_gate(
         statuses.get(gate) in {"warn", "not_applicable"}
         for gate in CRITICAL_RESEARCH_QUALITY_GATES
     )
+
+
+def _objective_allows_explicit_unverifiable_closure(objective: str) -> bool:
+    text = _clean_text(objective).lower()
+    if "unverifiable" not in text:
+        return False
+    closure_cues = (
+        "finalize",
+        "finalise",
+        "provisional",
+        "confidence downgrade",
+        "rather than maintaining blocked",
+        "rather than remaining blocked",
+        "rather than failing",
+        "best available evidence",
+    )
+    return any(cue in text for cue in closure_cues)
+
+
+def _report_mentions_unverifiable_closure(
+    report_summary: "ResearchConversationReportSummary",
+) -> bool:
+    verification_statuses = {
+        "unverified",
+        "unverifiable",
+        "not_verified",
+        "not_verifiable",
+    }
+    if any(status in verification_statuses for status in _verification_statuses(report_summary)):
+        return True
+
+    text_bits: list[str] = [
+        report_summary.readiness_note,
+        report_summary.recommended_change,
+        *report_summary.findings,
+        *report_summary.evidence_summary,
+        *report_summary.open_questions,
+        *report_summary.evidence_refs,
+    ]
+    for row in [*report_summary.verification_facts, *report_summary.audit_issues]:
+        if not isinstance(row, dict):
+            continue
+        text_bits.extend(str(value) for value in row.values() if isinstance(value, (str, int, float)))
+    lowered = _clean_text(" ".join(text_bits)).lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "unverifiable",
+            "unable to verify",
+            "not verifiable",
+            "source inaccessible",
+            "sources remain inaccessible",
+            "confidence downgrade",
+        )
+    )
+
+
+def _allows_explicit_unverifiable_closure(
+    objective: str,
+    report_summary: "ResearchConversationReportSummary",
+) -> bool:
+    readiness = _normalized_report_readiness(report_summary.report_readiness)
+    if readiness == "actionable":
+        return False
+    if not _objective_allows_explicit_unverifiable_closure(objective):
+        return False
+    if not _report_mentions_unverifiable_closure(report_summary):
+        return False
+    if _clean_text(report_summary.status).lower() != "completed":
+        return False
+    if not _report_has_material_output(report_summary):
+        return False
+    if report_summary.confidence is None:
+        return False
+    if not report_summary.evidence_refs:
+        return False
+    if _missing_quality_gates(report_summary):
+        return False
+    if _has_conflicted_verification_fact(report_summary):
+        return False
+    if _has_blocking_audit_issue(report_summary):
+        return False
+    if _major_audit_issue_count(report_summary) >= 2:
+        return False
+    nonpass = _nonpass_quality_gates(report_summary)
+    return not nonpass or nonpass.issubset(PROVISIONAL_CLOSURE_GATES)
 
 
 def _has_blocking_audit_issue(
@@ -820,7 +933,10 @@ def _conversation_review_contract() -> OutputContract:
             "source_authority, numeric_reconciliation, claim_object_fit, and final_status; "
             "failed or missing gates require another pass. If another bounded pass is still "
             "required, the run must remain incomplete until that additional pass is actually "
-            "included in the artifact."
+            "included in the artifact. Exception: when the objective explicitly authorizes a "
+            "best-effort provisional close after repeated attempts by marking specific facts "
+            "as unverifiable with downgraded confidence, do not keep continuing solely because "
+            "confidence or final_status stays low from those same explicitly surfaced gaps."
         ),
         expected_return_shape=json.dumps(
             {
@@ -1132,7 +1248,7 @@ def _fallback_review_decision(
     if not _review_requires_more_work(objective, report_summary):
         return ResearchConversationReviewDecision(
             action="done",
-            public_response="This bounded research pass is done.",
+            public_response=_done_review_response(objective, report_summary),
         )
     return ResearchConversationReviewDecision(
         action="continue",
@@ -1379,6 +1495,7 @@ def _normalize_review_decision(
     objective: str,
     report_summary: ResearchConversationReportSummary,
 ) -> ResearchConversationReviewDecision:
+    requires_more_work = _review_requires_more_work(objective, report_summary)
     normalized_payload = dict(payload or {})
     if "action" not in normalized_payload or not _clean_text(
         normalized_payload.get("action")
@@ -1390,7 +1507,7 @@ def _normalize_review_decision(
         elif _clean_text(normalized_payload.get("public_response")):
             normalized_payload["action"] = (
                 "continue"
-                if _review_requires_more_work(objective, report_summary)
+                if requires_more_work
                 else "done"
             )
     try:
@@ -1404,11 +1521,16 @@ def _normalize_review_decision(
             "next_objective": _clean_text(decision.next_objective),
         }
     )
-    if _review_requires_more_work(objective, report_summary) and decision.action == "done":
+    if requires_more_work and decision.action == "done":
         return ResearchConversationReviewDecision(
             action="continue",
             public_response=_continue_review_response(report_summary),
             next_objective=_clean_text(objective),
+        )
+    if not requires_more_work and decision.action == "continue":
+        return ResearchConversationReviewDecision(
+            action="done",
+            public_response=_done_review_response(objective, report_summary),
         )
     if decision.action == "clarify":
         if not decision.clarifying_question:
@@ -1433,7 +1555,7 @@ def _normalize_review_decision(
     return decision.model_copy(
         update={
             "public_response": (
-                decision.public_response or "This bounded research pass is done."
+                decision.public_response or _done_review_response(objective, report_summary)
             )
         }
     )
