@@ -51,6 +51,22 @@ _QUERY_STOP_WORDS = frozenset({
     "who",
     "why",
 })
+_HTML_HREF_RE = re.compile(
+    r"""<\s*a\b[^>]*href\s*=\s*["']([^"'#][^"']*)["']""",
+    re.IGNORECASE,
+)
+
+
+def _same_site_domain(base_domain: str, candidate_domain: str) -> bool:
+    normalized_base = str(base_domain or "").strip().lower()
+    normalized_candidate = str(candidate_domain or "").strip().lower()
+    if not normalized_base or not normalized_candidate:
+        return False
+    return (
+        normalized_candidate == normalized_base
+        or normalized_candidate.endswith("." + normalized_base)
+        or normalized_base.endswith("." + normalized_candidate)
+    )
 
 
 def _query_terms(query: str) -> list[str]:
@@ -106,7 +122,7 @@ def source_profile_for_url(url: str) -> SourceProfile:
             ttl_seconds=source_family_ttl_seconds(source_family),
             rate_limit_per_minute=30,
             requires_robots_check=True,
-            supported_ingest_methods=("sitemap", "feed", "static_docs"),
+            supported_ingest_methods=("sitemap", "feed", "static_docs", "html_links"),
         )
     if source_family == "github":
         return SourceProfile(
@@ -114,7 +130,7 @@ def source_profile_for_url(url: str) -> SourceProfile:
             ttl_seconds=source_family_ttl_seconds(source_family),
             rate_limit_per_minute=20,
             requires_robots_check=False,
-            supported_ingest_methods=("api", "feed", "static_docs"),
+            supported_ingest_methods=("api", "feed", "static_docs", "html_links"),
         )
     if source_family == "research":
         return SourceProfile(
@@ -130,7 +146,7 @@ def source_profile_for_url(url: str) -> SourceProfile:
             ttl_seconds=source_family_ttl_seconds(source_family),
             rate_limit_per_minute=15,
             requires_robots_check=True,
-            supported_ingest_methods=("sitemap", "feed"),
+            supported_ingest_methods=("sitemap", "feed", "html_links"),
         )
     if source_family == "company":
         return SourceProfile(
@@ -138,14 +154,14 @@ def source_profile_for_url(url: str) -> SourceProfile:
             ttl_seconds=source_family_ttl_seconds(source_family),
             rate_limit_per_minute=20,
             requires_robots_check=True,
-            supported_ingest_methods=("sitemap", "feed", "static_docs"),
+            supported_ingest_methods=("sitemap", "feed", "static_docs", "html_links"),
         )
     return SourceProfile(
         source_family="web",
         ttl_seconds=source_family_ttl_seconds("web"),
         rate_limit_per_minute=10,
         requires_robots_check=True,
-        supported_ingest_methods=("sitemap", "feed"),
+        supported_ingest_methods=("sitemap", "feed", "html_links"),
     )
 
 
@@ -206,12 +222,23 @@ def rank_discovery_hits(query: str, hits: list[DiscoveryHit]) -> list[DiscoveryH
     def _score(hit: DiscoveryHit) -> tuple[float, float, float]:
         title = hit.title.lower()
         snippet = hit.snippet.lower()
+        path = urlsplit(hit.canonical_url or hit.url).path.lower()
+        lexical_url = float(sum(1.5 if term in path else 0.0 for term in terms))
         lexical = float(
             sum((2.0 if term in title else 0.0) + (1.0 if term in snippet else 0.0) for term in terms)
         )
         family_priority = _SOURCE_FAMILY_PRIORITY.get(hit.source_family, 0.5)
+        path_depth = max(len([part for part in path.split("/") if part]), 0)
+        specificity = float(min(path_depth, 4)) * 0.05
+        if path in {"", "/"}:
+            specificity -= 0.2
         provider_priority = 1.0 / max(hit.provider_rank, 1)
-        return (lexical + family_priority, family_priority, provider_priority)
+        return (
+            lexical + lexical_url + family_priority + specificity,
+            lexical_url + specificity,
+            family_priority,
+            provider_priority,
+        )
 
     return sorted(hits, key=_score, reverse=True)
 
@@ -250,6 +277,33 @@ def parse_feed_xml(xml_text: str) -> list[str]:
             url = href or text
             if url and url not in urls:
                 urls.append(url)
+    return urls
+
+
+def extract_same_site_links(base_url: str, html_text: str, *, limit: int = 20) -> list[str]:
+    base = str(base_url or "").strip()
+    if not base or not str(html_text or "").strip():
+        return []
+    base_domain = domain_from_url(base)
+    if not base_domain:
+        return []
+    urls: list[str] = []
+    for match in _HTML_HREF_RE.finditer(str(html_text or "")):
+        href = str(match.group(1) or "").strip()
+        lowered = href.lower()
+        if not href or lowered.startswith(("javascript:", "mailto:", "tel:")):
+            continue
+        resolved = urljoin(base, href)
+        canonical = canonicalize_search_url(resolved) or resolved
+        if not canonical:
+            continue
+        candidate_domain = domain_from_url(canonical)
+        if not _same_site_domain(base_domain, candidate_domain):
+            continue
+        if canonical not in urls:
+            urls.append(canonical)
+        if len(urls) >= max(1, int(limit)):
+            break
     return urls
 
 

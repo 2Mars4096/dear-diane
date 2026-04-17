@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import httpx
 import re
 from typing import Any, Awaitable, Callable
 from urllib.parse import urljoin, urlsplit
 
 from dan.search.connectors import (
     DiscoveryHit,
+    extract_same_site_links,
     parse_feed_xml,
     parse_sitemap_xml,
     rank_discovery_hits,
@@ -57,6 +59,9 @@ _QUERY_FAMILY_PRIORITY = {
     "open_web_current_fact": 1,
     "general": 0,
 }
+_CONNECTOR_FETCH_USER_AGENT = (
+    "Mozilla/5.0 (compatible; deep-agent-network/0.1; +https://github.com/deep-agent-network)"
+)
 _KNOWN_GITHUB_REPOS = {
     ("openai", "python"): ("OpenAI Python", "https://github.com/openai/openai-python"),
     ("openai", "typescript"): ("OpenAI Node", "https://github.com/openai/openai-node"),
@@ -361,13 +366,23 @@ def has_connector_seed_coverage(
 
 
 async def _default_fetcher(url: str) -> dict[str, Any]:
-    from dan.tools.web_fetch import web_fetch
-
-    return await web_fetch(url=url, timeout=10, max_length=250000)
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        headers={"User-Agent": _CONNECTOR_FETCH_USER_AGENT},
+        timeout=httpx.Timeout(10.0, connect=5.0),
+    ) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        return {
+            "url": str(response.url),
+            "content": response.text[:250000],
+            "content_type": str(response.headers.get("content-type", "") or ""),
+        }
 
 
 async def _urls_from_seed(seed: ConnectorSeed, *, fetcher: FetchFn) -> list[str]:
-    urls: list[str] = seed_static_doc_urls(seed.base_url, list(seed.static_paths))
+    static_urls = seed_static_doc_urls(seed.base_url, list(seed.static_paths))
+    urls: list[str] = list(static_urls)
     profile = source_profile_for_url(seed.base_url)
 
     if "sitemap" in profile.supported_ingest_methods:
@@ -393,6 +408,20 @@ async def _urls_from_seed(seed: ConnectorSeed, *, fetcher: FetchFn) -> list[str]
             if parsed:
                 urls.extend(parsed[:25])
                 break
+
+    if "html_links" in profile.supported_ingest_methods:
+        for static_url in static_urls[:3]:
+            try:
+                fetched = await fetcher(static_url)
+            except Exception:
+                continue
+            urls.extend(
+                extract_same_site_links(
+                    str(fetched.get("url", "") or "").strip() or static_url,
+                    str(fetched.get("content", "") or ""),
+                    limit=20,
+                )
+            )
 
     deduped: list[str] = []
     seen: set[str] = set()
