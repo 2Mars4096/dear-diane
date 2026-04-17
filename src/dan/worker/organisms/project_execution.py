@@ -74,7 +74,10 @@ def build_research_orchestrator_worker(
             "to plan research, decompose the objective into small concrete subproblems, group "
             "non-conflicting ones into a few parallel workstreams, say why each part matters, "
             "say what evidence would resolve it, and say how the resulting streams should be "
-            "aggregated back into the final answer. When reviewing a "
+            "aggregated back into the final answer. Also surface explicit fact targets with "
+            "useful aliases, preferred source families or sites, acceptable proxy rules, "
+            "clear stop conditions, and a distinction between 'still not found' and "
+            "'apparently not published in that exact form'. When reviewing a "
             "bounded research run, do not stop if the run failed or returned an incomplete "
             "report."
         ),

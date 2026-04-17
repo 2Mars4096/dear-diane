@@ -10,7 +10,7 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Awaitable, Callable, Sequence, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -38,6 +38,7 @@ from dan.worker.organisms import (
     ProjectExecutionTask,
     ResearchConversationContext,
     ResearchConversationController,
+    ResearchConversationEvidenceTarget,
     ResearchConversationFacts,
     ResearchConversationIntentionPlan,
     ResearchConversationMessage,
@@ -47,6 +48,11 @@ from dan.worker.organisms import (
     ResearchConversationWorkstream,
     ResearchConversationTurnDecision,
     run_deep_research_organ_live,
+)
+from dan.worker.organisms.research_conversation import (
+    _fallback_intention_plan,
+    _fallback_review_decision,
+    _fallback_turn_decision,
 )
 from dan.worker.signaling import EvidenceRef
 
@@ -140,6 +146,7 @@ _TEMPORAL_TREND_HINTS = (
     "month over month",
     "quarter over quarter",
 )
+_CONTROL_STAGE_RESULT = TypeVar("_CONTROL_STAGE_RESULT")
 _TEMPORAL_TREND_PATTERNS = (
     r"\blast\s+\d+",
     r"\bpast\s+\d+",
@@ -369,10 +376,58 @@ def _non_empty(values: Sequence[str], defaults: Sequence[str]) -> list[str]:
     return cleaned or list(defaults)
 
 
+def _plan_evidence_target_note(
+    target: ResearchConversationEvidenceTarget,
+    *,
+    prefix: str = "Target",
+) -> str:
+    parts = [f"{prefix} {str(target.target_id or '').strip() or 'target'}: {str(target.claim).strip()}"]
+    if str(target.as_of or "").strip():
+        parts.append(f"As of: {str(target.as_of).strip()}")
+    if str(target.unit_or_format or "").strip():
+        parts.append(f"Format/unit: {str(target.unit_or_format).strip()}")
+    if str(target.geography_or_scope or "").strip():
+        parts.append(f"Scope: {str(target.geography_or_scope).strip()}")
+    families = [str(item).strip() for item in list(target.accepted_source_families or []) if str(item).strip()]
+    if families:
+        parts.append(f"Accepted sources: {', '.join(families[:3])}")
+    sites = [str(item).strip() for item in list(target.preferred_sites or []) if str(item).strip()]
+    if sites:
+        parts.append(f"Preferred sites: {', '.join(sites[:4])}")
+    aliases = [str(item).strip() for item in list(target.aliases or []) if str(item).strip()]
+    if aliases:
+        parts.append(f"Aliases: {', '.join(aliases[:5])}")
+    if str(target.acceptable_proxy or "").strip():
+        parts.append(f"Proxy rule: {str(target.acceptable_proxy).strip()}")
+    if str(target.stop_condition or "").strip():
+        parts.append(f"Stop when: {str(target.stop_condition).strip()}")
+    if str(target.not_found_guidance or "").strip():
+        parts.append(f"If still missing: {str(target.not_found_guidance).strip()}")
+    if str(target.not_available_guidance or "").strip():
+        parts.append(f"If unavailable: {str(target.not_available_guidance).strip()}")
+    return " ".join(parts)
+
+
+def _evidence_targets_by_problem_id(
+    plan: ResearchConversationIntentionPlan | None,
+) -> dict[str, list[ResearchConversationEvidenceTarget]]:
+    mapping: dict[str, list[ResearchConversationEvidenceTarget]] = {}
+    if plan is None:
+        return mapping
+    for target in plan.evidence_targets:
+        for problem_id in list(target.related_subproblem_ids or []):
+            key = str(problem_id or "").strip()
+            if not key:
+                continue
+            mapping.setdefault(key, []).append(target)
+    return mapping
+
+
 def _plan_subproblem_brief(
     subproblem: ResearchConversationSubproblem,
     *,
     index: int,
+    related_targets: Sequence[ResearchConversationEvidenceTarget] = (),
 ) -> str:
     parts = [
         f"Subproblem {str(subproblem.problem_id or f'problem-{index}').strip()}: {str(subproblem.question).strip()}",
@@ -385,6 +440,10 @@ def _plan_subproblem_brief(
     depends_on = [str(item).strip() for item in list(subproblem.depends_on or []) if str(item).strip()]
     if depends_on:
         parts.append(f"Depends on: {', '.join(depends_on)}")
+    for target in list(related_targets or [])[:2]:
+        parts.append(_plan_evidence_target_note(target))
+    if len(list(related_targets or [])) > 2:
+        parts.append(f"More targets: {len(list(related_targets or [])) - 2}")
     return " ".join(parts)
 
 
@@ -393,12 +452,22 @@ def _plan_workstream_brief(
     *,
     index: int,
     subproblems_by_id: dict[str, ResearchConversationSubproblem],
+    evidence_targets_by_problem_id: dict[str, list[ResearchConversationEvidenceTarget]],
 ) -> str:
     related = [
         subproblems_by_id[problem_id]
         for problem_id in list(workstream.subproblem_ids or [])
         if problem_id in subproblems_by_id
     ]
+    related_targets: list[ResearchConversationEvidenceTarget] = []
+    seen_target_ids: set[str] = set()
+    for problem_id in list(workstream.subproblem_ids or []):
+        for target in evidence_targets_by_problem_id.get(problem_id, []):
+            target_id = str(target.target_id or "").strip() or str(target.claim or "").strip()
+            if not target_id or target_id in seen_target_ids:
+                continue
+            seen_target_ids.add(target_id)
+            related_targets.append(target)
     parts = [
         f"Workstream {str(workstream.stream_id or f'stream-{index}').strip()}: {str(workstream.goal or workstream.title).strip()}",
         f"Why it matters: {str(workstream.why_it_matters).strip()}",
@@ -414,9 +483,14 @@ def _plan_workstream_brief(
         search_hint = str(subproblem.search_hint or "").strip()
         if search_hint:
             parts.append(f"Search hint: {search_hint}")
+        for target in evidence_targets_by_problem_id.get(str(subproblem.problem_id or "").strip(), [])[:1]:
+            parts.append(_plan_evidence_target_note(target))
     aggregation_hint = str(workstream.aggregation_hint or "").strip()
     if aggregation_hint:
         parts.append(f"Aggregate by: {aggregation_hint}")
+    if related_targets and not related:
+        for target in related_targets[:2]:
+            parts.append(_plan_evidence_target_note(target))
     return " ".join(parts)
 
 
@@ -425,6 +499,7 @@ def _plan_workstream_summary(
     *,
     index: int,
     subproblems_by_id: dict[str, ResearchConversationSubproblem],
+    evidence_targets_by_problem_id: dict[str, list[ResearchConversationEvidenceTarget]],
 ) -> str:
     related_questions = [
         str(subproblems_by_id[problem_id].question).strip()
@@ -441,6 +516,18 @@ def _plan_workstream_summary(
     aggregation_hint = str(workstream.aggregation_hint or "").strip()
     if aggregation_hint:
         parts.append(f"Aggregate by: {aggregation_hint}")
+    stream_targets: list[str] = []
+    seen_target_ids: set[str] = set()
+    for problem_id in list(workstream.subproblem_ids or []):
+        for target in evidence_targets_by_problem_id.get(problem_id, []):
+            target_key = str(target.target_id or "").strip() or str(target.claim or "").strip()
+            if not target_key or target_key in seen_target_ids:
+                continue
+            seen_target_ids.add(target_key)
+            stream_targets.append(_plan_evidence_target_note(target, prefix="Fact target"))
+    parts.extend(stream_targets[:2])
+    if len(stream_targets) > 2:
+        parts.append(f"More fact targets: {len(stream_targets) - 2}")
     return " ".join(parts)
 
 
@@ -451,6 +538,7 @@ def _plan_reader_briefs(
 ) -> list[str]:
     briefs: list[str] = []
     if plan is not None:
+        targets_by_problem_id = _evidence_targets_by_problem_id(plan)
         subproblems_by_id = {
             str(subproblem.problem_id or "").strip(): subproblem
             for subproblem in plan.subproblems
@@ -462,12 +550,20 @@ def _plan_reader_briefs(
                     workstream,
                     index=index,
                     subproblems_by_id=subproblems_by_id,
+                    evidence_targets_by_problem_id=targets_by_problem_id,
                 )
                 if brief:
                     briefs.append(brief)
         elif plan.subproblems:
             for index, subproblem in enumerate(plan.subproblems, start=1):
-                brief = _plan_subproblem_brief(subproblem, index=index)
+                brief = _plan_subproblem_brief(
+                    subproblem,
+                    index=index,
+                    related_targets=targets_by_problem_id.get(
+                        str(subproblem.problem_id or "").strip(),
+                        [],
+                    ),
+                )
                 if brief:
                     briefs.append(brief)
     if briefs:
@@ -482,6 +578,7 @@ def _plan_evidence_summaries(
     if plan is None:
         return []
     summaries: list[str] = []
+    targets_by_problem_id = _evidence_targets_by_problem_id(plan)
     if str(plan.answer_goal or "").strip():
         summaries.append(f"Answer goal: {str(plan.answer_goal).strip()}")
     if str(plan.plan_summary or "").strip():
@@ -497,10 +594,22 @@ def _plan_evidence_summaries(
                 workstream,
                 index=index,
                 subproblems_by_id=subproblems_by_id,
+                evidence_targets_by_problem_id=targets_by_problem_id,
             )
         )
     for index, subproblem in enumerate(plan.subproblems, start=1):
-        summaries.append(_plan_subproblem_brief(subproblem, index=index))
+        summaries.append(
+            _plan_subproblem_brief(
+                subproblem,
+                index=index,
+                related_targets=targets_by_problem_id.get(
+                    str(subproblem.problem_id or "").strip(),
+                    [],
+                ),
+            )
+        )
+    for target in plan.evidence_targets:
+        summaries.append(_plan_evidence_target_note(target, prefix="Fact target"))
     return _dedupe(summaries)
 
 
@@ -544,6 +653,42 @@ def _plan_payload(
                 "aggregation_hint": str(item.aggregation_hint or "").strip(),
             }
             for item in plan.workstreams
+        ],
+        "evidence_target_count": len(plan.evidence_targets),
+        "evidence_targets": [
+            {
+                "target_id": str(item.target_id or "").strip(),
+                "claim": str(item.claim or "").strip(),
+                "why_it_matters": str(item.why_it_matters or "").strip(),
+                "related_subproblem_ids": [
+                    str(problem_id).strip()
+                    for problem_id in list(item.related_subproblem_ids or [])
+                    if str(problem_id).strip()
+                ],
+                "as_of": str(item.as_of or "").strip(),
+                "unit_or_format": str(item.unit_or_format or "").strip(),
+                "geography_or_scope": str(item.geography_or_scope or "").strip(),
+                "accepted_source_families": [
+                    str(source).strip()
+                    for source in list(item.accepted_source_families or [])
+                    if str(source).strip()
+                ],
+                "preferred_sites": [
+                    str(site).strip()
+                    for site in list(item.preferred_sites or [])
+                    if str(site).strip()
+                ],
+                "aliases": [
+                    str(alias).strip()
+                    for alias in list(item.aliases or [])
+                    if str(alias).strip()
+                ],
+                "acceptable_proxy": str(item.acceptable_proxy or "").strip(),
+                "stop_condition": str(item.stop_condition or "").strip(),
+                "not_found_guidance": str(item.not_found_guidance or "").strip(),
+                "not_available_guidance": str(item.not_available_guidance or "").strip(),
+            }
+            for item in plan.evidence_targets
         ],
     }
 
@@ -1273,6 +1418,21 @@ class ResearchHeartbeatMonitor:
             self._phase = "completed"
             self._detail = str(event.get("status") or "completed")
 
+    def note_control_stage(
+        self,
+        *,
+        phase: str,
+        detail: str = "",
+        worker_id: str = "",
+    ) -> None:
+        if not self._enabled:
+            return
+        loop = asyncio.get_running_loop()
+        self._last_activity = loop.time()
+        self._worker_id = str(worker_id or "").strip()
+        self._phase = _assistant_text(phase) or "control"
+        self._detail = _truncate_text(detail, limit=160)
+
     async def start(self) -> None:
         if not self._enabled or self._task is not None:
             return
@@ -1312,6 +1472,284 @@ class ResearchHeartbeatMonitor:
                     "elapsed_seconds": int(now - self._last_activity),
                 },
             )
+
+
+def _control_stage_stall_seconds() -> float:
+    return _env_float("DAN_RESEARCH_CONTROL_STAGE_STALL_SECONDS", 20.0)
+
+
+def _control_stage_max_seconds() -> float:
+    return _env_float("DAN_RESEARCH_CONTROL_STAGE_MAX_SECONDS", 180.0)
+
+
+def _hedged_orchestrator_session(
+    controller: ResearchConversationController,
+    session: Any,
+    *,
+    stage_name: str,
+):
+    metadata = dict(getattr(session, "metadata", {}) or {})
+    metadata.setdefault("surface", "dan-research")
+    metadata["hedged_control_stage"] = stage_name
+    if session is not None:
+        metadata["hedged_from_session_id"] = getattr(session, "session_id", "")
+    return controller.create_session(metadata=metadata)
+
+
+def _fresh_control_stage_session(
+    controller: ResearchConversationController,
+    session: Any,
+    *,
+    stage_name: str,
+    reason: str,
+):
+    metadata = {
+        "surface": "dan-research",
+        "control_stage_reset": stage_name,
+        "control_stage_reset_reason": reason,
+    }
+    if session is not None:
+        metadata["reset_from_session_id"] = getattr(session, "session_id", "")
+    return controller.create_session(metadata=metadata)
+
+
+def _should_refresh_control_stage_session(
+    session: Any,
+    fallback_session: Any,
+) -> bool:
+    if fallback_session is None:
+        return True
+    session_id = getattr(session, "session_id", None)
+    fallback_session_id = getattr(fallback_session, "session_id", None)
+    if session_id and fallback_session_id and session_id == fallback_session_id:
+        return True
+    if getattr(fallback_session, "active_message_id", None) is not None:
+        return True
+    if getattr(fallback_session, "status", None) == "running":
+        return True
+    if getattr(fallback_session, "closed_at", None) is not None:
+        return True
+    return False
+
+
+def _recover_control_stage_session(
+    *,
+    controller: ResearchConversationController,
+    session: Any,
+    fallback_session: Any,
+    stage_name: str,
+    reason: str,
+    control_logger: ResearchEventLogger | None,
+    task_id: str | None,
+    trace_id: str | None,
+) -> Any:
+    if not _should_refresh_control_stage_session(session, fallback_session):
+        return fallback_session
+    refreshed_session = _fresh_control_stage_session(
+        controller,
+        session,
+        stage_name=stage_name,
+        reason=reason,
+    )
+    _log_event(
+        control_logger,
+        f"orchestrator.{stage_name}.session.reset",
+        task_id=task_id,
+        trace_id=trace_id,
+        reason=reason,
+        prior_session_id=getattr(fallback_session or session, "session_id", None),
+        new_session_id=getattr(refreshed_session, "session_id", None),
+    )
+    return refreshed_session
+
+
+async def _cancel_pending_task(task: asyncio.Task[Any]) -> None:
+    if task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+
+
+async def _run_control_stage_with_hedge(
+    *,
+    stage_name: str,
+    heartbeat_phase: str,
+    detail: str,
+    controller: ResearchConversationController,
+    session,
+    primary_call: Callable[[Any], Awaitable[tuple[_CONTROL_STAGE_RESULT, Any]]],
+    fallback_result: Callable[[], tuple[_CONTROL_STAGE_RESULT, Any]],
+    control_logger: ResearchEventLogger | None,
+    heartbeat: ResearchHeartbeatMonitor | None = None,
+    task_id: str | None = None,
+    trace_id: str | None = None,
+) -> tuple[_CONTROL_STAGE_RESULT, Any]:
+    stall_seconds = _control_stage_stall_seconds()
+    max_seconds = _control_stage_max_seconds()
+    if heartbeat is not None:
+        heartbeat.note_control_stage(phase=heartbeat_phase, detail=detail)
+
+    if stall_seconds <= 0 or max_seconds <= 0:
+        return await primary_call(session)
+
+    loop = asyncio.get_running_loop()
+    stage_started = loop.time()
+    primary_task = asyncio.create_task(primary_call(session))
+    primary_exception: Exception | None = None
+
+    try:
+        return await asyncio.wait_for(asyncio.shield(primary_task), timeout=stall_seconds)
+    except asyncio.TimeoutError:
+        backup_session = _hedged_orchestrator_session(
+            controller,
+            session,
+            stage_name=stage_name,
+        )
+        backup_task = asyncio.create_task(primary_call(backup_session))
+        _log_event(
+            control_logger,
+            f"orchestrator.{stage_name}.hedge.launched",
+            task_id=task_id,
+            trace_id=trace_id,
+            stall_seconds=stall_seconds,
+            max_seconds=max_seconds,
+            detail=detail,
+            primary_session_id=getattr(session, "session_id", None),
+            backup_session_id=getattr(backup_session, "session_id", None),
+        )
+        if heartbeat is not None:
+            heartbeat.note_control_stage(
+                phase=heartbeat_phase,
+                detail=f"{detail} (backup attempt launched)",
+            )
+        tasks: dict[asyncio.Task[Any], str] = {
+            primary_task: "primary",
+            backup_task: "backup",
+        }
+        exceptions: list[tuple[str, str]] = []
+        deadline = stage_started + max_seconds
+        winner_task: asyncio.Task[Any] | None = None
+        winner_role = ""
+        winner_result: tuple[_CONTROL_STAGE_RESULT, Any] | None = None
+
+        try:
+            while tasks:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                done, _pending = await asyncio.wait(
+                    tuple(tasks.keys()),
+                    timeout=remaining,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not done:
+                    break
+                for task in done:
+                    role = tasks.pop(task)
+                    try:
+                        result = task.result()
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception as exc:  # pragma: no cover - rare branch
+                        exceptions.append((role, f"{type(exc).__name__}: {exc}"))
+                        _log_event(
+                            control_logger,
+                            f"orchestrator.{stage_name}.hedge.failed",
+                            task_id=task_id,
+                            trace_id=trace_id,
+                            attempt=role,
+                            error_type=type(exc).__name__,
+                            error=str(exc),
+                        )
+                        if role == "primary" and primary_exception is None:
+                            primary_exception = exc
+                        continue
+                    winner_task = task
+                    winner_role = role
+                    winner_result = result
+                    break
+                if winner_result is not None:
+                    break
+
+            if winner_result is not None:
+                _log_event(
+                    control_logger,
+                    f"orchestrator.{stage_name}.hedge.accepted",
+                    task_id=task_id,
+                    trace_id=trace_id,
+                    accepted_attempt=winner_role,
+                    detail=detail,
+                )
+                for task, role in list(tasks.items()):
+                    await _cancel_pending_task(task)
+                    _log_event(
+                        control_logger,
+                        f"orchestrator.{stage_name}.hedge.cancelled",
+                        task_id=task_id,
+                        trace_id=trace_id,
+                        cancelled_attempt=role,
+                    )
+                return winner_result
+        finally:
+            if winner_task is None:
+                for task in list(tasks.keys()):
+                    await _cancel_pending_task(task)
+
+        _log_event(
+            control_logger,
+            f"orchestrator.{stage_name}.fallback",
+            task_id=task_id,
+            trace_id=trace_id,
+            reason="control_stage_timeout_or_failure",
+            detail=detail,
+            exceptions=exceptions,
+        )
+        if heartbeat is not None:
+            heartbeat.note_control_stage(
+                phase=heartbeat_phase,
+                detail=f"{detail} (timed out; using fallback)",
+            )
+        fallback_value, fallback_session = fallback_result()
+        fallback_session = _recover_control_stage_session(
+            controller=controller,
+            session=session,
+            fallback_session=fallback_session,
+            stage_name=stage_name,
+            reason="timeout_or_failure",
+            control_logger=control_logger,
+            task_id=task_id,
+            trace_id=trace_id,
+        )
+        return fallback_value, fallback_session
+    except Exception as exc:
+        await _cancel_pending_task(primary_task)
+        _log_event(
+            control_logger,
+            f"orchestrator.{stage_name}.fallback",
+            task_id=task_id,
+            trace_id=trace_id,
+            reason="control_stage_exception",
+            detail=detail,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        fallback_value, fallback_session = fallback_result()
+        fallback_session = _recover_control_stage_session(
+            controller=controller,
+            session=session,
+            fallback_session=fallback_session,
+            stage_name=stage_name,
+            reason=f"exception:{type(exc).__name__}",
+            control_logger=control_logger,
+            task_id=task_id,
+            trace_id=trace_id,
+        )
+        return fallback_value, fallback_session
 
 
 class ResearchConversationOutcome(BaseModel):
@@ -1859,21 +2297,44 @@ async def _run_orchestrated_turn(
         session=session,
         controller=controller,
     )
-    decision, orchestrator_session = await controller.decide_user_turn(
-        session=orchestrator_session,
-        user_message=objective,
+    turn_context = _conversation_context(
+        session=session,
+        workspace_root=workspace_root,
+        model=model,
+        thinking_mode=thinking_mode,
+        tool_ids=tool_ids,
+        acceptance_criteria=acceptance_criteria,
+        delivery_target=delivery_target,
+        depth_profile=depth_profile,
+        requested_reader_count=research_reader_count,
+    )
+    _log_event(
+        control_logger,
+        "orchestrator.turn.decision.started",
+        objective=objective,
         pending_clarification=session.pending_clarification,
-        context=_conversation_context(
-            session=session,
-            workspace_root=workspace_root,
-            model=model,
-            thinking_mode=thinking_mode,
-            tool_ids=tool_ids,
-            acceptance_criteria=acceptance_criteria,
-            delivery_target=delivery_target,
-            depth_profile=depth_profile,
-            requested_reader_count=research_reader_count,
+    )
+    decision, orchestrator_session = await _run_control_stage_with_hedge(
+        stage_name="turn_decision",
+        heartbeat_phase="turn-decision",
+        detail=_truncate_text(objective, limit=160),
+        controller=controller,
+        session=orchestrator_session,
+        primary_call=lambda stage_session: controller.decide_user_turn(
+            session=stage_session,
+            user_message=objective,
+            pending_clarification=session.pending_clarification,
+            context=turn_context,
         ),
+        fallback_result=lambda: (
+            _fallback_turn_decision(
+                user_message=objective,
+                pending_clarification=session.pending_clarification,
+                context=turn_context,
+            ),
+            orchestrator_session,
+        ),
+        control_logger=control_logger,
     )
     _store_orchestrator_session(
         session=session,
@@ -1944,23 +2405,50 @@ async def _run_orchestrated_turn(
         [*list(acceptance_criteria), *list(decision.acceptance_criteria)]
     ) or list(acceptance_criteria)
     base_turn_number = session.next_turn_number()
-    current_plan, orchestrator_session = await controller.plan_research_intention(
-        session=orchestrator_session,
+    initial_plan_context = _conversation_context(
+        session=session,
+        workspace_root=workspace_root,
+        model=model,
+        thinking_mode=thinking_mode,
+        tool_ids=tool_ids,
+        acceptance_criteria=effective_acceptance_criteria,
+        delivery_target=next_delivery_target,
+        depth_profile=depth_profile,
+        requested_reader_count=research_reader_count,
+    )
+    _log_event(
+        control_logger,
+        "orchestrator.plan.started",
+        planning_mode="initial",
         objective=next_objective,
         delivery_target=next_delivery_target,
-        acceptance_criteria=effective_acceptance_criteria,
-        context=_conversation_context(
-            session=session,
-            workspace_root=workspace_root,
-            model=model,
-            thinking_mode=thinking_mode,
-            tool_ids=tool_ids,
-            acceptance_criteria=effective_acceptance_criteria,
+    )
+    current_plan, orchestrator_session = await _run_control_stage_with_hedge(
+        stage_name="plan",
+        heartbeat_phase="planning",
+        detail=f"initial: {_truncate_text(next_objective, limit=140)}",
+        controller=controller,
+        session=orchestrator_session,
+        primary_call=lambda stage_session: controller.plan_research_intention(
+            session=stage_session,
+            objective=next_objective,
             delivery_target=next_delivery_target,
-            depth_profile=depth_profile,
-            requested_reader_count=research_reader_count,
+            acceptance_criteria=effective_acceptance_criteria,
+            context=initial_plan_context,
+            planning_mode="initial",
         ),
-        planning_mode="initial",
+        fallback_result=lambda: (
+            _fallback_intention_plan(
+                objective=next_objective,
+                delivery_target=next_delivery_target,
+                acceptance_criteria=effective_acceptance_criteria,
+                context=initial_plan_context,
+                planning_mode="initial",
+                previous_report=None,
+            ),
+            orchestrator_session,
+        ),
+        control_logger=control_logger,
     )
     _store_orchestrator_session(
         session=session,
@@ -2123,22 +2611,42 @@ async def _run_orchestrated_turn(
                 trace_id=report.trace_id,
                 report_status=report.status,
             )
-            review, orchestrator_session = await controller.review_research_result(
+            review_report_context = _report_context(report)
+            review_context = _conversation_context(
+                session=session,
+                workspace_root=workspace_root,
+                model=model,
+                thinking_mode=thinking_mode,
+                tool_ids=tool_ids,
+                acceptance_criteria=effective_acceptance_criteria,
+                delivery_target=next_delivery_target,
+                depth_profile=depth_profile,
+                requested_reader_count=turn_reader_count,
+                additional_reports=reports,
+            )
+            review, orchestrator_session = await _run_control_stage_with_hedge(
+                stage_name="review",
+                heartbeat_phase="review",
+                detail=f"task {task_id}: {_truncate_text(report.status, limit=60)}",
+                controller=controller,
                 session=orchestrator_session,
-                objective=next_objective,
-                report_summary=_report_context(report),
-                context=_conversation_context(
-                    session=session,
-                    workspace_root=workspace_root,
-                    model=model,
-                    thinking_mode=thinking_mode,
-                    tool_ids=tool_ids,
-                    acceptance_criteria=effective_acceptance_criteria,
-                    delivery_target=next_delivery_target,
-                    depth_profile=depth_profile,
-                    requested_reader_count=turn_reader_count,
-                    additional_reports=reports,
+                primary_call=lambda stage_session: controller.review_research_result(
+                    session=stage_session,
+                    objective=next_objective,
+                    report_summary=review_report_context,
+                    context=review_context,
                 ),
+                fallback_result=lambda: (
+                    _fallback_review_decision(
+                        objective=next_objective,
+                        report_summary=review_report_context,
+                    ),
+                    orchestrator_session,
+                ),
+                control_logger=control_logger,
+                heartbeat=heartbeat,
+                task_id=task_id,
+                trace_id=report.trace_id,
             )
             _store_orchestrator_session(
                 session=session,
@@ -2188,25 +2696,58 @@ async def _run_orchestrated_turn(
                 default_evidence_summaries = _dedupe(
                     [*list(default_evidence_summaries), _report_finding(report)]
                 )
-                current_plan, orchestrator_session = await controller.plan_research_intention(
-                    session=orchestrator_session,
+                continuation_report_context = _report_context(report)
+                continuation_plan_context = _conversation_context(
+                    session=session,
+                    workspace_root=workspace_root,
+                    model=model,
+                    thinking_mode=thinking_mode,
+                    tool_ids=tool_ids,
+                    acceptance_criteria=effective_acceptance_criteria,
+                    delivery_target=next_delivery_target,
+                    depth_profile=depth_profile,
+                    requested_reader_count=turn_reader_count,
+                    additional_reports=reports,
+                )
+                _log_event(
+                    control_logger,
+                    "orchestrator.plan.started",
+                    planning_mode="continuation",
+                    task_id=task_id,
+                    trace_id=report.trace_id,
                     objective=next_objective,
                     delivery_target=next_delivery_target,
-                    acceptance_criteria=effective_acceptance_criteria,
-                    context=_conversation_context(
-                        session=session,
-                        workspace_root=workspace_root,
-                        model=model,
-                        thinking_mode=thinking_mode,
-                        tool_ids=tool_ids,
-                        acceptance_criteria=effective_acceptance_criteria,
+                )
+                current_plan, orchestrator_session = await _run_control_stage_with_hedge(
+                    stage_name="plan",
+                    heartbeat_phase="planning",
+                    detail=f"continuation: {_truncate_text(next_objective, limit=140)}",
+                    controller=controller,
+                    session=orchestrator_session,
+                    primary_call=lambda stage_session: controller.plan_research_intention(
+                        session=stage_session,
+                        objective=next_objective,
                         delivery_target=next_delivery_target,
-                        depth_profile=depth_profile,
-                        requested_reader_count=turn_reader_count,
-                        additional_reports=reports,
+                        acceptance_criteria=effective_acceptance_criteria,
+                        context=continuation_plan_context,
+                        planning_mode="continuation",
+                        previous_report=continuation_report_context,
                     ),
-                    planning_mode="continuation",
-                    previous_report=_report_context(report),
+                    fallback_result=lambda: (
+                        _fallback_intention_plan(
+                            objective=next_objective,
+                            delivery_target=next_delivery_target,
+                            acceptance_criteria=effective_acceptance_criteria,
+                            context=continuation_plan_context,
+                            planning_mode="continuation",
+                            previous_report=continuation_report_context,
+                        ),
+                        orchestrator_session,
+                    ),
+                    control_logger=control_logger,
+                    heartbeat=heartbeat,
+                    task_id=task_id,
+                    trace_id=report.trace_id,
                 )
                 _store_orchestrator_session(
                     session=session,

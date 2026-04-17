@@ -651,6 +651,25 @@ class ResearchConversationWorkstream(BaseModel):
     aggregation_hint: str = ""
 
 
+class ResearchConversationEvidenceTarget(BaseModel):
+    """Typed fact target that helps readers search for one exact piece of evidence."""
+
+    target_id: str = ""
+    claim: str = ""
+    why_it_matters: str = ""
+    related_subproblem_ids: list[str] = Field(default_factory=list)
+    as_of: str = ""
+    unit_or_format: str = ""
+    geography_or_scope: str = ""
+    accepted_source_families: list[str] = Field(default_factory=list)
+    preferred_sites: list[str] = Field(default_factory=list)
+    aliases: list[str] = Field(default_factory=list)
+    acceptable_proxy: str = ""
+    stop_condition: str = ""
+    not_found_guidance: str = ""
+    not_available_guidance: str = ""
+
+
 class ResearchConversationIntentionPlan(BaseModel):
     """Pre-search decomposition for one bounded DAN Research run."""
 
@@ -661,6 +680,9 @@ class ResearchConversationIntentionPlan(BaseModel):
     acceptance_criteria: list[str] = Field(default_factory=list)
     subproblems: list[ResearchConversationSubproblem] = Field(default_factory=list)
     workstreams: list[ResearchConversationWorkstream] = Field(default_factory=list)
+    evidence_targets: list[ResearchConversationEvidenceTarget] = Field(
+        default_factory=list
+    )
 
 
 class ResearchConversationReviewDecision(BaseModel):
@@ -798,6 +820,41 @@ def _conversation_plan_schema() -> dict[str, Any]:
                     "required": ["goal", "why_it_matters", "subproblem_ids"],
                 },
             },
+            "evidence_targets": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "target_id": {"type": "string"},
+                        "claim": {"type": "string"},
+                        "why_it_matters": {"type": "string"},
+                        "related_subproblem_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "as_of": {"type": "string"},
+                        "unit_or_format": {"type": "string"},
+                        "geography_or_scope": {"type": "string"},
+                        "accepted_source_families": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "preferred_sites": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "aliases": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "acceptable_proxy": {"type": "string"},
+                        "stop_condition": {"type": "string"},
+                        "not_found_guidance": {"type": "string"},
+                        "not_available_guidance": {"type": "string"},
+                    },
+                    "required": ["claim", "why_it_matters"],
+                },
+            },
         },
         "required": ["answer_goal", "refined_objective", "subproblems"],
     }
@@ -850,9 +907,16 @@ def _conversation_plan_contract() -> OutputContract:
             "cleanly. Then group non-conflicting subproblems into a few parallel "
             "workstreams so evidence can be gathered at the same time and aggregated "
             "cleanly afterward. For each workstream, state why that stream exists and "
-            "how its evidence should be folded back into the final answer. When a prior "
-            "bounded report is supplied, use its unresolved issues to build a narrower "
-            "follow-up plan instead of another broad sweep."
+            "how its evidence should be folded back into the final answer. Also produce "
+            "explicit evidence targets for the exact facts that need to be pinned down: "
+            "include helpful aliases, preferred sites or source families, acceptable "
+            "proxy rules when the exact fact may publish with lag, clear stop conditions, "
+            "and separate guidance for 'I still did not find it' versus 'the likely source "
+            "family does not appear to publish this exact metric in this exact form'. "
+            "When a prior bounded report is supplied, use its unresolved issues to build "
+            "a narrower follow-up plan instead of another broad sweep, and do not reopen "
+            "facts that were already settled strongly enough unless a contradiction or "
+            "blocking audit issue explicitly reopens them."
         ),
         expected_return_shape=json.dumps(
             {
@@ -879,6 +943,24 @@ def _conversation_plan_contract() -> OutputContract:
                         "why_it_matters": "<required>",
                         "subproblem_ids": ["<required>"],
                         "aggregation_hint": "<optional>",
+                    }
+                ],
+                "evidence_targets": [
+                    {
+                        "target_id": "<optional>",
+                        "claim": "<required>",
+                        "why_it_matters": "<required>",
+                        "related_subproblem_ids": ["<optional>"],
+                        "as_of": "<optional>",
+                        "unit_or_format": "<optional>",
+                        "geography_or_scope": "<optional>",
+                        "accepted_source_families": ["<optional>"],
+                        "preferred_sites": ["<optional>"],
+                        "aliases": ["<optional>"],
+                        "acceptable_proxy": "<optional>",
+                        "stop_condition": "<optional>",
+                        "not_found_guidance": "<optional>",
+                        "not_available_guidance": "<optional>",
                     }
                 ],
             },
@@ -988,6 +1070,447 @@ def _normalize_subproblem_dependencies(value: Any) -> list[str]:
     return _dedupe([str(value)])
 
 
+def _normalize_text_items(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return _dedupe([value])
+    if isinstance(value, (list, tuple, set)):
+        return _dedupe([str(item) for item in value])
+    return _dedupe([str(value)])
+
+
+def _normalized_claim_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", _clean_text(value).lower()).strip()
+
+
+def _claim_tokens(value: Any) -> set[str]:
+    return {
+        token
+        for token in _normalized_claim_key(value).split()
+        if len(token) >= 4 and token not in {"with", "from", "that", "this", "into"}
+    }
+
+
+def _claims_overlap(left: Any, right: Any) -> bool:
+    left_key = _normalized_claim_key(left)
+    right_key = _normalized_claim_key(right)
+    if not left_key or not right_key:
+        return False
+    if min(len(left_key), len(right_key)) >= 10 and (
+        left_key in right_key or right_key in left_key
+    ):
+        return True
+    left_tokens = _claim_tokens(left_key)
+    right_tokens = _claim_tokens(right_key)
+    if not left_tokens or not right_tokens:
+        return False
+    return len(left_tokens & right_tokens) >= min(2, len(left_tokens), len(right_tokens))
+
+
+def _extract_preferred_sites(*texts: Any) -> list[str]:
+    candidates: list[str] = []
+    for text in texts:
+        cleaned = _clean_text(text)
+        if not cleaned:
+            continue
+        candidates.extend(
+            match.group(1).lower()
+            for match in re.finditer(r"\bsite:([a-z0-9.-]+\.[a-z]{2,})\b", cleaned, re.I)
+        )
+        candidates.extend(
+            match.group(1).lower()
+            for match in re.finditer(r"https?://([^/\s]+)", cleaned, re.I)
+        )
+        candidates.extend(
+            match.group(1).lower()
+            for match in re.finditer(
+                r"\b([a-z0-9.-]+\.(?:com|org|net|gov|edu|io|cn|hk|co\.uk))\b",
+                cleaned,
+                re.I,
+            )
+        )
+    return _dedupe(candidates)
+
+
+def _extract_aliases(*texts: Any) -> list[str]:
+    aliases: list[str] = []
+    for text in texts:
+        cleaned = _clean_text(text)
+        if not cleaned:
+            continue
+        aliases.append(cleaned)
+        aliases.extend(
+            _clean_text(match.group(1) or match.group(2))
+            for match in re.finditer(r'"([^"]+)"|\'([^\']+)\'', cleaned)
+            if _clean_text(match.group(1) or match.group(2))
+        )
+        if "/" in cleaned:
+            aliases.extend(
+                _clean_text(part)
+                for part in cleaned.split("/")
+                if _clean_text(part)
+            )
+        if "(" in cleaned and ")" in cleaned:
+            aliases.extend(
+                _clean_text(part)
+                for part in re.split(r"[()]", cleaned)
+                if _clean_text(part)
+            )
+    return _dedupe(aliases)
+
+
+def _infer_evidence_target_as_of(
+    *,
+    objective: str,
+    context: ResearchConversationContext,
+    previous_report: ResearchConversationReportSummary | None = None,
+    explicit: str = "",
+) -> str:
+    explicit_text = _clean_text(explicit)
+    if explicit_text:
+        return explicit_text
+    if previous_report is not None and _clean_text(previous_report.temporal_anchor):
+        return _clean_text(previous_report.temporal_anchor)
+    objective_text = _clean_text(objective)
+    if not objective_text:
+        return _clean_text(context.facts.current_date)
+    dated = re.findall(r"\b\d{4}-\d{2}-\d{2}\b", objective_text)
+    if dated:
+        return dated[-1]
+    years = re.findall(r"\b(?:19|20)\d{2}\b", objective_text)
+    if years:
+        return years[-1]
+    lowered = objective_text.lower()
+    if any(
+        cue in lowered
+        for cue in ("current", "today", "latest", "recent", "runtime", "now", "this week")
+    ):
+        return _clean_text(context.facts.current_date)
+    return ""
+
+
+def _infer_evidence_target_scope(*texts: Any) -> str:
+    lowered = " ".join(_clean_text(text).lower() for text in texts if _clean_text(text))
+    if not lowered:
+        return ""
+    if "china" in lowered or "chinese" in lowered:
+        return "China"
+    if "hong kong" in lowered or "hk" in lowered:
+        return "Hong Kong"
+    if "u.s." in lowered or "united states" in lowered or "nyse" in lowered:
+        return "United States"
+    if "global" in lowered or "world" in lowered:
+        return "Global"
+    return ""
+
+
+def _infer_evidence_target_unit(*texts: Any) -> str:
+    lowered = " ".join(_clean_text(text).lower() for text in texts if _clean_text(text))
+    if not lowered:
+        return ""
+    if "expense ratio" in lowered or "yield" in lowered or "percentage" in lowered:
+        return "percentage"
+    if "aum" in lowered or "assets under management" in lowered:
+        return "currency amount"
+    if "ticker" in lowered or "listing" in lowered or "status" in lowered:
+        return "exact identifier or status label"
+    if "price" in lowered or "settlement" in lowered or "spot" in lowered:
+        return "explicit price with currency and unit"
+    return "explicit value with as-of date"
+
+
+def _infer_source_families(*texts: Any) -> list[str]:
+    lowered = " ".join(_clean_text(text).lower() for text in texts if _clean_text(text))
+    if not lowered:
+        return ["primary source", "authoritative secondary source"]
+    if any(
+        hint in lowered
+        for hint in ("price", "settlement", "spot", "benchmark", "futures", "index")
+    ):
+        return [
+            "official exchange or benchmark",
+            "industry benchmark or issuer",
+            "authoritative market data",
+        ]
+    if any(
+        hint in lowered
+        for hint in ("etf", "fund", "aum", "expense ratio", "holdings", "distribution")
+    ):
+        return [
+            "issuer or exchange",
+            "fund fact sheet or prospectus",
+            "authoritative market data",
+        ]
+    if any(
+        hint in lowered
+        for hint in ("policy", "ndrc", "nea", "regulator", "government", "tariff")
+    ):
+        return [
+            "government or regulator",
+            "official release",
+            "authoritative secondary source",
+        ]
+    return ["primary source", "authoritative secondary source"]
+
+
+def _default_acceptable_proxy(*, as_of: str, claim: str) -> str:
+    lowered = _clean_text(claim).lower()
+    if any(hint in lowered for hint in ("price", "settlement", "spot", "close", "fixing")):
+        if as_of:
+            return (
+                f"If the exact {as_of} print is not published, accept the nearest official "
+                "prior close or the latest explicitly lagged publication within one market "
+                "or publication cycle, and label it as a proxy with the lag."
+            )
+        return (
+            "If the exact print is not published, accept the nearest official prior close "
+            "or the latest explicitly lagged publication and label it as a proxy."
+        )
+    return (
+        "If the exact fact is not published in that exact form, accept the nearest "
+        "canonical issuer/exchange/regulator disclosure or methodology-equivalent series, "
+        "and label it as a proxy rather than an exact match."
+    )
+
+
+def _default_stop_condition(*, claim: str, preferred_sites: list[str]) -> str:
+    if preferred_sites:
+        return (
+            "Stop once one preferred-site result gives a date-stamped direct match, or "
+            "once two agreeing non-preferred authoritative sources confirm the same fact."
+        )
+    lowered = _clean_text(claim).lower()
+    if any(hint in lowered for hint in ("price", "settlement", "spot", "aum", "expense ratio")):
+        return (
+            "Stop once you have one date-stamped primary or benchmark value with units, "
+            "or two agreeing authoritative secondary sources."
+        )
+    return (
+        "Stop once you have one direct authoritative source, or two agreeing authoritative "
+        "secondary sources that answer the claim cleanly."
+    )
+
+
+def _default_not_found_guidance(*, preferred_sites: list[str]) -> str:
+    if preferred_sites:
+        return (
+            "Treat this as not found only after checking the preferred sites, their obvious "
+            "aliases, and one broader authoritative fallback search without finding a match."
+        )
+    return (
+        "Treat this as not found only after alias-expanded search still fails to surface "
+        "the fact from the expected authoritative source family."
+    )
+
+
+def _default_not_available_guidance() -> str:
+    return (
+        "Treat this as not available when the likely source family appears to publish only "
+        "lagged, aggregated, or differently scoped data, or does not publish this metric in "
+        "that exact form at all; document that explicitly instead of silently broadening the claim."
+    )
+
+
+def _verification_fact_is_closed(item: dict[str, Any]) -> bool:
+    status = _clean_text(item.get("status")).lower()
+    if status == "verified":
+        return True
+    note = " ".join(
+        _clean_text(item.get(key))
+        for key in ("note", "fact", "source")
+        if _clean_text(item.get(key))
+    ).lower()
+    return any(
+        cue in note
+        for cue in (
+            "unverifiable",
+            "not available",
+            "not published",
+            "not disclosed",
+            "no public series",
+            "source inaccessible",
+        )
+    )
+
+
+def _resolved_fact_claims(
+    previous_report: ResearchConversationReportSummary | None,
+) -> list[str]:
+    if previous_report is None:
+        return []
+    return _dedupe(
+        [
+            _clean_text(item.get("fact"))
+            for item in previous_report.verification_facts
+            if isinstance(item, dict) and _verification_fact_is_closed(item)
+        ]
+    )
+
+
+def _claim_reopened_by_issue(
+    *,
+    claim: str,
+    previous_report: ResearchConversationReportSummary,
+) -> bool:
+    for row in [*previous_report.audit_issues, *previous_report.contradictions]:
+        if isinstance(row, dict):
+            if _claims_overlap(claim, row.get("affected_claim") or row.get("issue")):
+                return True
+            continue
+        if _claims_overlap(claim, row):
+            return True
+    return False
+
+
+def _matching_subproblem_ids(
+    claim: str,
+    subproblems: list[ResearchConversationSubproblem],
+) -> list[str]:
+    matches = [
+        _clean_text(item.problem_id)
+        for item in subproblems
+        if _clean_text(item.problem_id) and _claims_overlap(claim, item.question)
+    ]
+    return _dedupe(matches)
+
+
+def _fallback_evidence_target(
+    *,
+    target_id: str,
+    claim: str,
+    why_it_matters: str,
+    related_subproblem_ids: list[str],
+    objective: str,
+    context: ResearchConversationContext,
+    previous_report: ResearchConversationReportSummary | None = None,
+    search_hint: str = "",
+    explicit_as_of: str = "",
+    source_hint: str = "",
+) -> ResearchConversationEvidenceTarget:
+    preferred_sites = _extract_preferred_sites(search_hint, source_hint)
+    return ResearchConversationEvidenceTarget(
+        target_id=target_id,
+        claim=_clean_text(claim),
+        why_it_matters=_clean_text(why_it_matters)
+        or "This fact needs to be pinned down before the final answer is trustworthy.",
+        related_subproblem_ids=_normalize_subproblem_dependencies(related_subproblem_ids),
+        as_of=_infer_evidence_target_as_of(
+            objective=f"{objective} {claim} {why_it_matters}",
+            context=context,
+            previous_report=previous_report,
+            explicit=explicit_as_of,
+        ),
+        unit_or_format=_infer_evidence_target_unit(claim, why_it_matters, search_hint),
+        geography_or_scope=_infer_evidence_target_scope(objective, claim, why_it_matters),
+        accepted_source_families=_infer_source_families(
+            claim,
+            why_it_matters,
+            search_hint,
+            source_hint,
+        ),
+        preferred_sites=preferred_sites,
+        aliases=_extract_aliases(claim, search_hint, source_hint),
+        acceptable_proxy=_default_acceptable_proxy(
+            as_of=_infer_evidence_target_as_of(
+                objective=f"{objective} {claim} {why_it_matters}",
+                context=context,
+                previous_report=previous_report,
+                explicit=explicit_as_of,
+            ),
+            claim=claim,
+        ),
+        stop_condition=_default_stop_condition(
+            claim=claim,
+            preferred_sites=preferred_sites,
+        ),
+        not_found_guidance=_default_not_found_guidance(preferred_sites=preferred_sites),
+        not_available_guidance=_default_not_available_guidance(),
+    )
+
+
+def _fallback_evidence_targets(
+    *,
+    objective: str,
+    context: ResearchConversationContext,
+    subproblems: list[ResearchConversationSubproblem],
+    previous_report: ResearchConversationReportSummary | None = None,
+) -> list[ResearchConversationEvidenceTarget]:
+    targets: list[ResearchConversationEvidenceTarget] = []
+    seen_claims: set[str] = set()
+
+    def _append(target: ResearchConversationEvidenceTarget) -> None:
+        claim = _clean_text(target.claim)
+        if not claim or claim in seen_claims:
+            return
+        seen_claims.add(claim)
+        targets.append(target)
+
+    if previous_report is not None:
+        for item in previous_report.verification_facts:
+            if not isinstance(item, dict):
+                continue
+            claim = _clean_text(item.get("fact"))
+            if not claim or _verification_fact_is_closed(item):
+                continue
+            _append(
+                _fallback_evidence_target(
+                    target_id=f"target-{len(targets) + 1}",
+                    claim=claim,
+                    why_it_matters=_clean_text(item.get("note"))
+                    or "This fact was not settled strongly enough in the last bounded pass.",
+                    related_subproblem_ids=_matching_subproblem_ids(claim, subproblems),
+                    objective=objective,
+                    context=context,
+                    previous_report=previous_report,
+                    search_hint=_clean_text(item.get("source")),
+                    explicit_as_of=_clean_text(item.get("as_of")),
+                    source_hint=_clean_text(item.get("source")),
+                )
+            )
+        for item in previous_report.audit_issues:
+            if not isinstance(item, dict):
+                continue
+            claim = _clean_text(item.get("affected_claim"))
+            if not claim or claim in seen_claims:
+                continue
+            _append(
+                _fallback_evidence_target(
+                    target_id=f"target-{len(targets) + 1}",
+                    claim=claim,
+                    why_it_matters=_clean_text(item.get("issue"))
+                    or "This claim still has a blocking audit gap.",
+                    related_subproblem_ids=_matching_subproblem_ids(claim, subproblems),
+                    objective=objective,
+                    context=context,
+                    previous_report=previous_report,
+                    search_hint=_clean_text(item.get("required_follow_up")),
+                )
+            )
+
+    covered_problem_ids: set[str] = set()
+    for target in targets:
+        covered_problem_ids.update(_normalize_subproblem_dependencies(target.related_subproblem_ids))
+
+    for index, subproblem in enumerate(subproblems, start=len(targets) + 1):
+        problem_id = _clean_text(subproblem.problem_id)
+        if problem_id and problem_id in covered_problem_ids:
+            continue
+        _append(
+            _fallback_evidence_target(
+                target_id=f"target-{index}",
+                claim=subproblem.question,
+                why_it_matters=subproblem.why_it_matters,
+                related_subproblem_ids=[problem_id] if problem_id else [],
+                objective=objective,
+                context=context,
+                previous_report=previous_report,
+                search_hint=subproblem.search_hint or subproblem.evidence_to_seek,
+            )
+        )
+    return targets
+
+
 def _report_follow_up_subproblems(
     previous_report: ResearchConversationReportSummary | None,
 ) -> list[ResearchConversationSubproblem]:
@@ -996,6 +1519,7 @@ def _report_follow_up_subproblems(
 
     subproblems: list[ResearchConversationSubproblem] = []
     seen_questions: set[str] = set()
+    resolved_claims = _resolved_fact_claims(previous_report)
 
     def _append(
         *,
@@ -1003,9 +1527,18 @@ def _report_follow_up_subproblems(
         why_it_matters: str,
         evidence_to_seek: str,
         search_hint: str = "",
+        affected_claim: str = "",
     ) -> None:
         normalized_question = _clean_text(question)
         if not normalized_question or normalized_question in seen_questions:
+            return
+        if affected_claim and any(
+            _claims_overlap(affected_claim, claim) and not _claim_reopened_by_issue(
+                claim=claim,
+                previous_report=previous_report,
+            )
+            for claim in resolved_claims
+        ):
             return
         seen_questions.add(normalized_question)
         subproblems.append(
@@ -1032,6 +1565,7 @@ def _report_follow_up_subproblems(
             evidence_to_seek=follow_up
             or "Gather the evidence needed to close this gap cleanly.",
             search_hint=follow_up,
+            affected_claim=claim,
         )
         if len(subproblems) >= 6:
             return subproblems
@@ -1039,8 +1573,7 @@ def _report_follow_up_subproblems(
     for item in previous_report.verification_facts:
         if not isinstance(item, dict):
             continue
-        status = _clean_text(item.get("status")).lower()
-        if status == "verified":
+        if _verification_fact_is_closed(item):
             continue
         fact = _clean_text(item.get("fact"))
         if not fact:
@@ -1055,6 +1588,7 @@ def _report_follow_up_subproblems(
                 + (f" Prior source: {source}." if source else "")
             ),
             search_hint=source,
+            affected_claim=fact,
         )
         if len(subproblems) >= 6:
             return subproblems
@@ -1067,6 +1601,7 @@ def _report_follow_up_subproblems(
             question=normalized,
             why_it_matters="This answer is still needed to close the final response.",
             evidence_to_seek="Find enough grounded evidence to answer this directly.",
+            affected_claim=normalized,
         )
         if len(subproblems) >= 6:
             return subproblems
@@ -1079,6 +1614,7 @@ def _report_follow_up_subproblems(
             question=f"Resolve this contradiction: {normalized}",
             why_it_matters="Conflicting evidence from the prior pass still affects the answer.",
             evidence_to_seek="Identify the stronger evidence or reconcile the disagreement.",
+            affected_claim=normalized,
         )
         if len(subproblems) >= 6:
             return subproblems
@@ -1178,6 +1714,12 @@ def _fallback_intention_plan(
         subproblems,
         planning_mode=planning_mode,
     )
+    evidence_targets = _fallback_evidence_targets(
+        objective=refined_objective,
+        context=context,
+        subproblems=subproblems,
+        previous_report=previous_report,
+    )
     return ResearchConversationIntentionPlan(
         public_response=(
             "I’ll break this into smaller research questions first, then run the bounded pass."
@@ -1190,6 +1732,7 @@ def _fallback_intention_plan(
         acceptance_criteria=list(acceptance_criteria or context.acceptance_criteria),
         subproblems=subproblems,
         workstreams=workstreams,
+        evidence_targets=evidence_targets,
     )
 
 
@@ -1389,6 +1932,89 @@ def _normalize_intention_plan(
                 existing_ids=taken_workstream_ids,
             )
         )
+    cleaned_evidence_targets: list[ResearchConversationEvidenceTarget] = []
+    covered_target_problem_ids: set[str] = set()
+    seen_target_claims: set[str] = set()
+    for index, item in enumerate(plan.evidence_targets, start=1):
+        claim = _clean_text(item.claim)
+        if not claim or claim in seen_target_claims:
+            continue
+        seen_target_claims.add(claim)
+        related_subproblem_ids = [
+            problem_id
+            for problem_id in _normalize_subproblem_dependencies(item.related_subproblem_ids)
+            if problem_id in subproblems_by_id
+        ]
+        if not related_subproblem_ids:
+            related_subproblem_ids = _matching_subproblem_ids(claim, cleaned_subproblems)
+        preferred_sites = _extract_preferred_sites(*_normalize_text_items(item.preferred_sites))
+        aliases = _extract_aliases(*_normalize_text_items(item.aliases), claim)
+        cleaned_target = ResearchConversationEvidenceTarget(
+            target_id=_clean_text(item.target_id) or f"target-{index}",
+            claim=claim,
+            why_it_matters=_clean_text(item.why_it_matters)
+            or "This fact needs to be pinned down before the final answer is trustworthy.",
+            related_subproblem_ids=related_subproblem_ids,
+            as_of=_clean_text(item.as_of)
+            or _infer_evidence_target_as_of(
+                objective=f"{objective} {claim} {item.why_it_matters}",
+                context=context,
+                previous_report=previous_report,
+            ),
+            unit_or_format=_clean_text(item.unit_or_format)
+            or _infer_evidence_target_unit(
+                claim,
+                item.why_it_matters,
+            ),
+            geography_or_scope=_clean_text(item.geography_or_scope)
+            or _infer_evidence_target_scope(objective, claim, item.why_it_matters),
+            accepted_source_families=_normalize_text_items(
+                item.accepted_source_families
+            )
+            or _infer_source_families(claim, item.why_it_matters),
+            preferred_sites=preferred_sites,
+            aliases=aliases,
+            acceptable_proxy=_clean_text(item.acceptable_proxy)
+            or _default_acceptable_proxy(
+                as_of=_clean_text(item.as_of)
+                or _infer_evidence_target_as_of(
+                    objective=f"{objective} {claim} {item.why_it_matters}",
+                    context=context,
+                    previous_report=previous_report,
+                ),
+                claim=claim,
+            ),
+            stop_condition=_clean_text(item.stop_condition)
+            or _default_stop_condition(
+                claim=claim,
+                preferred_sites=preferred_sites,
+            ),
+            not_found_guidance=_clean_text(item.not_found_guidance)
+            or _default_not_found_guidance(
+                preferred_sites=preferred_sites
+            ),
+            not_available_guidance=_clean_text(item.not_available_guidance)
+            or _default_not_available_guidance(),
+        )
+        cleaned_evidence_targets.append(cleaned_target)
+        covered_target_problem_ids.update(cleaned_target.related_subproblem_ids)
+    if not cleaned_evidence_targets or any(
+        _clean_text(subproblem.problem_id) not in covered_target_problem_ids
+        for subproblem in cleaned_subproblems
+        if _clean_text(subproblem.problem_id)
+    ):
+        fallback_targets = _fallback_evidence_targets(
+            objective=refined_objective or answer_goal or objective,
+            context=context,
+            subproblems=cleaned_subproblems,
+            previous_report=previous_report,
+        )
+        for target in fallback_targets:
+            claim = _clean_text(target.claim)
+            if not claim or claim in seen_target_claims:
+                continue
+            seen_target_claims.add(claim)
+            cleaned_evidence_targets.append(target)
     return ResearchConversationIntentionPlan(
         public_response=_clean_text(plan.public_response),
         answer_goal=answer_goal or _clean_text(objective),
@@ -1399,6 +2025,7 @@ def _normalize_intention_plan(
         ),
         subproblems=cleaned_subproblems,
         workstreams=cleaned_workstreams,
+        evidence_targets=cleaned_evidence_targets,
     )
 
 
@@ -1765,6 +2392,7 @@ class ResearchConversationController:
 __all__ = [
     "ResearchConversationContext",
     "ResearchConversationController",
+    "ResearchConversationEvidenceTarget",
     "ResearchConversationFacts",
     "ResearchConversationIntentionPlan",
     "ResearchConversationMessage",
