@@ -126,6 +126,7 @@ pnpm-debug.log*
 /tests/test_server/*
 !/tests/test_server/test_paths.py
 !/tests/test_server/test_misc_health.py
+!/tests/test_server/test_control_plane_runtime.py
 !/tests/test_server/test_router_dependencies.py
 !/tests/test_server/test_run_manager.py
 !/tests/test_server/test_scoped_run.py
@@ -167,6 +168,9 @@ pnpm-debug.log*
 /tests/test_worker/*
 !/tests/test_worker/test_builder.py
 !/tests/test_worker/test_capability_manifest.py
+!/tests/test_worker/test_dan_conversation.py
+!/tests/test_worker/test_incident_conversation.py
+!/tests/test_worker/test_incident_execution.py
 !/tests/test_worker/test_core_executor.py
 !/tests/test_worker/test_equivalence.py
 !/tests/test_worker/test_executor.py
