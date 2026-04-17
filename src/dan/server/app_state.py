@@ -44,6 +44,7 @@ class AppState:
     # -- Concierge / dispatch ------------------------------------------------
     concierge: Any = None
     dispatcher: Any = None
+    dan_v2_runtime: Any = None
 
     # -- MCP -----------------------------------------------------------------
     mcp_bridge: Any = None

@@ -6,6 +6,13 @@ from typing import Any, AsyncIterator
 import pytest
 
 from dan.server.chat_manager import ChatCompleteEvent
+from dan.server.control_plane import DANV2TurnOutcome
+from dan.worker.organisms.dan_conversation import (
+    DANConversationTurnDecision,
+    ReviewDecision,
+    SupervisorBrief,
+    WorkerReport,
+)
 import dan.server.routers.chat as chat_router
 
 
@@ -74,6 +81,16 @@ class _ProgressAckChatManager(_FakeChatManager):
             context_window=0,
             graph_revision="",
         )
+
+
+class _FakeDANV2Runtime:
+    def __init__(self, outcome: DANV2TurnOutcome) -> None:
+        self.outcome = outcome
+        self.calls: list[dict[str, Any]] = []
+
+    async def triage_user_turn(self, **kwargs: Any) -> DANV2TurnOutcome:
+        self.calls.append(kwargs)
+        return self.outcome
 
 
 @pytest.mark.asyncio
@@ -232,3 +249,140 @@ async def test_chat_message_non_concierge_passes_attachment_context_once(
     call = manager.calls[0]
     assert "Primary attached file path" in call["prompt_context"]
     assert "extra_system_instructions" not in call
+
+
+@pytest.mark.asyncio
+async def test_chat_message_v2_control_plane_direct_response_skips_legacy_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _FakeChatManager()
+    graph_store = _FakeGraphStore()
+    runtime = _FakeDANV2Runtime(
+        DANV2TurnOutcome(
+            turn_decision=DANConversationTurnDecision(
+                action="respond",
+                public_response="Answered from DAN-v2.",
+            ),
+            supervisor_brief=None,
+            worker_report=WorkerReport(
+                lane="controller",
+                status="responded",
+                summary="Answered from DAN-v2.",
+            ),
+            review_decision=ReviewDecision(
+                action="stop",
+                public_response="Answered from DAN-v2.",
+                reason="direct",
+            ),
+            direct_response="Answered from DAN-v2.",
+            controller_session_payload={"session": "v2"},
+        )
+    )
+    chat_router._chat_streams.clear()
+
+    monkeypatch.setattr(chat_router, "get_chat_manager", lambda: manager)
+    monkeypatch.setattr(chat_router, "get_graph_store", lambda: graph_store)
+    monkeypatch.setattr(chat_router, "get_chat_store", lambda: None)
+    monkeypatch.setattr(chat_router, "get_concierge", lambda: None)
+    monkeypatch.setattr(chat_router, "get_dispatcher", lambda: None)
+    monkeypatch.setattr(chat_router, "get_control_plane_mode", lambda *_args, **_kwargs: "v2")
+    monkeypatch.setattr(chat_router, "get_dan_v2_runtime", lambda *_args, **_kwargs: runtime)
+
+    req = chat_router.ChatMessageRequest(
+        workflow_id="wf-1",
+        message="How should we route this?",
+        mode="agent",
+    )
+
+    response = await chat_router.chat_message(req, concierge=True)
+    channel_id = response["stream_channel_id"]
+    queue = chat_router._chat_streams[channel_id][0]
+
+    events: list[dict[str, Any]] = []
+    while True:
+        item = await asyncio.wait_for(queue.get(), timeout=1.0)
+        if item is None:
+            break
+        events.append(item)
+
+    assert runtime.calls
+    assert manager.calls == []
+    assert [event["type"] for event in events] == ["chat_complete"]
+    assert events[0]["content"] == "Answered from DAN-v2."
+
+
+@pytest.mark.asyncio
+async def test_chat_message_v2_control_plane_handoff_uses_legacy_runtime_with_supervisor_brief(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _FakeChatManager()
+    graph_store = _FakeGraphStore()
+    runtime = _FakeDANV2Runtime(
+        DANV2TurnOutcome(
+            turn_decision=DANConversationTurnDecision(
+                action="delegate",
+                public_response="Routing through DAN Code.",
+                selected_lane="code",
+                why_now="The user asked for a repo change.",
+                desired_delta="Implement the requested repo change.",
+                success_criteria=["Make the smallest concrete edit."],
+            ),
+            supervisor_brief=SupervisorBrief(
+                lane="code",
+                why_now="The user asked for a repo change.",
+                desired_delta="Implement the requested repo change.",
+                success_criteria=["Make the smallest concrete edit."],
+            ),
+            worker_report=WorkerReport(
+                lane="code",
+                status="ready",
+                summary="Routing through DAN Code.",
+                objective="Implement the requested repo change.",
+                acceptance_criteria=["Make the smallest concrete edit."],
+            ),
+            review_decision=ReviewDecision(
+                action="continue",
+                public_response="Routing through DAN Code.",
+                reason="handoff",
+                next_lane="code",
+            ),
+            direct_response=None,
+            handoff_prompt_context="DAN-v2 supervisor brief:\n- Lane: code",
+            handoff_metadata={"selected_lane": "code"},
+            controller_session_payload={"session": "v2"},
+            code_session_payload={"session": "code"},
+        )
+    )
+    chat_router._chat_streams.clear()
+
+    monkeypatch.setattr(chat_router, "get_chat_manager", lambda: manager)
+    monkeypatch.setattr(chat_router, "get_graph_store", lambda: graph_store)
+    monkeypatch.setattr(chat_router, "get_chat_store", lambda: None)
+    monkeypatch.setattr(chat_router, "get_concierge", lambda: None)
+    monkeypatch.setattr(chat_router, "get_dispatcher", lambda: None)
+    monkeypatch.setattr(chat_router, "get_control_plane_mode", lambda *_args, **_kwargs: "v2")
+    monkeypatch.setattr(chat_router, "get_dan_v2_runtime", lambda *_args, **_kwargs: runtime)
+
+    req = chat_router.ChatMessageRequest(
+        workflow_id="wf-1",
+        message="Build a simple chain",
+        mode="build",
+    )
+
+    response = await chat_router.chat_message(req, concierge=True)
+    channel_id = response["stream_channel_id"]
+    queue = chat_router._chat_streams[channel_id][0]
+
+    events: list[dict[str, Any]] = []
+    while True:
+        item = await asyncio.wait_for(queue.get(), timeout=1.0)
+        if item is None:
+            break
+        events.append(item)
+
+    assert runtime.calls
+    assert manager.calls
+    assert "DAN-v2 supervisor brief" in manager.calls[0]["prompt_context"]
+    assert manager.calls[0]["mode"] == "build"
+    assert [event["type"] for event in events] == ["chat_complete"]
+    assert events[0]["content"] == "Built directly."

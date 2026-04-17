@@ -7,9 +7,11 @@ import logging
 import os
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, AsyncIterator
 
 from dan.agent_runtime.graph_summary import compute_graph_revision
+from dan.server.control_plane import resolve_control_plane_mode
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,7 @@ class LocalChatRuntime:
 
     def __init__(self) -> None:
         self._services: Any | None = None
+        self._app_state: Any | None = None
         self._initialized = False
         self._pending_streams: dict[str, asyncio.Queue[dict[str, Any] | None]] = {}
         self._stream_queue_maxsize = 1024
@@ -55,6 +58,19 @@ class LocalChatRuntime:
             workspace_root=str(Path.cwd()),
             project_store_base_dir=local_root / "projects",
             surface="local",
+        )
+        from dan.server.app_state import AppState
+
+        self._app_state = AppState(
+            graph_store=self._services.graph_store,
+            chat_store=self._services.chat_store,
+            run_manager=self._services.run_manager,
+            chat_manager=self._services.chat_manager,
+            mention_resolver=self._services.mention_resolver,
+            concierge=self._services.concierge,
+            dispatcher=self._services.dispatcher,
+            engine_config=self._services.engine_config,
+            graphs_dir=str(graphs_dir),
         )
         if self._services.graph_store.get_graph("_scratch") is None:
             self._services.graph_store.save_graph(
@@ -98,6 +114,11 @@ class LocalChatRuntime:
                 self._pending_streams.pop(channel_id, None)
 
         asyncio.create_task(_cleanup_later())
+
+    def _build_request_proxy(self) -> Any:
+        return SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(dan=self._app_state))
+        )
 
     # ------------------------------------------------------------------
     # ChatClient-compatible interface
@@ -152,6 +173,23 @@ class LocalChatRuntime:
         mode: str = "build",
     ) -> dict[str, Any]:
         await self._ensure_init()
+        if resolve_control_plane_mode() == "v2":
+            from dan.server.routers.chat import ChatMessageRequest, chat_message
+
+            req = ChatMessageRequest(
+                workflow_id=workflow_id,
+                message=message,
+                history=history or [],
+                thread_id=thread_id,
+                session_id=thread_id,
+                client_graph_revision=client_graph_revision,
+                mode=mode,
+                surface="cli:local",
+                surface_type="cli",
+                surface_id="local",
+            )
+            return await chat_message(self._build_request_proxy(), req, concierge=True)
+
         s = self._services
         from dan.server.chat_manager import (
             build_debug_context,
@@ -272,6 +310,12 @@ class LocalChatRuntime:
         self,
         channel_id: str,
     ) -> AsyncIterator[dict[str, Any]]:
+        if channel_id.startswith("chat-"):
+            from dan.server.routers.chat import iter_local_chat_stream_events
+
+            async for item in iter_local_chat_stream_events(channel_id):
+                yield item
+            return
         queue = self._pending_streams.get(channel_id)
         if queue is None:
             return

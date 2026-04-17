@@ -29,6 +29,7 @@ from dan.adapters.wechat_official_account_adapter import (
     validate_callback_encrypt_type,
     verify_signature,
 )
+from dan.server.control_plane import resolve_control_plane_mode
 from dan.server.capabilities.config import _update_env_file
 from dan.server.routers.dependencies import (
     get_concierge,
@@ -1053,6 +1054,36 @@ def _build_wechat_chat_request_body(
     }
 
 
+def _build_adapter_chat_request_body(
+    *,
+    adapter_id: str,
+    surface: str,
+    external_id: str,
+    message_text: str,
+) -> dict[str, Any]:
+    surface_id = str(adapter_id or surface or "adapter").strip() or "adapter"
+    surface_type = str(surface or "adapter").strip() or "adapter"
+    session_id = str(external_id or surface_id).strip() or surface_id
+    return {
+        "workflow_id": "_scratch",
+        "message": message_text,
+        "history": [],
+        "thread_id": session_id,
+        "session_id": session_id,
+        "mode": "auto",
+        "surface": f"{surface_type}:{surface_id}",
+        "surface_type": surface_type,
+        "surface_id": surface_id,
+        "surface_context": {
+            "adapter": {
+                "adapter_id": adapter_id,
+                "external_id": external_id,
+                "surface": surface_type,
+            }
+        },
+    }
+
+
 async def _ensure_wechat_adapter_session(
     *,
     adapter_id: str,
@@ -1541,7 +1572,8 @@ def _run_adapter_message_handler(
         return
 
     _dispatcher = get_dispatcher()
-    if _dispatcher is not None:
+    _concierge = get_concierge()
+    if _dispatcher is not None or _concierge is not None:
         asyncio.create_task(
             _run_adapter_concierge(adapter_id, adapter, surface, external_id, message_text),
             name=f"adapter-{adapter_id}-dispatch",
@@ -1572,14 +1604,21 @@ async def _run_adapter_concierge(
     from dan.server.concierge.models import SurfaceMessage
 
     _dispatcher = get_dispatcher()
+    _concierge = get_concierge()
+    control_plane_mode = resolve_control_plane_mode()
+
+    def _event_value(event: Any, field: str, default: Any = "") -> Any:
+        if isinstance(event, dict):
+            return event.get(field, default)
+        return getattr(event, field, default)
 
     async def _relay_adapter_event(event: Any) -> None:
-        evt_type = getattr(event, "type", "")
+        evt_type = str(_event_value(event, "type", "") or "")
         if (
             evt_type == "chat_complete"
-            and getattr(event, "detected_mode", None) == "progress_ack"
+            and _event_value(event, "detected_mode", None) == "progress_ack"
         ):
-            phase_label = getattr(event, "phase_label", None) or ""
+            phase_label = str(_event_value(event, "phase_label", "") or "")
             if not phase_label:
                 return
             now = time.monotonic()
@@ -1589,26 +1628,27 @@ async def _run_adapter_concierge(
             await _send_adapter_text(adapter, external_id, phase_label)
             return
         if evt_type in {"chat_complete", "chat_mutation", "chat_interrupted"}:
-            content = getattr(event, "content", "")
+            content = str(_event_value(event, "content", "") or "")
             if content:
                 await _send_adapter_text(adapter, external_id, content)
             return
         if evt_type == "chat_error":
-            error = getattr(event, "error", "")
+            error = str(_event_value(event, "error", "") or "")
             if error:
                 await _send_adapter_text(adapter, external_id, error)
             return
         if evt_type == "chat_multi_part":
-            for part in getattr(event, "parts", []) or []:
+            for part in (_event_value(event, "parts", []) or []):
                 if part:
                     await _send_adapter_text(adapter, external_id, part)
             return
-        if evt_type == "chat_queued" and _dispatcher is not None:
-            queue_position = max(int(getattr(event, "queue_position", 0) or 0), 1)
+        if evt_type == "chat_queued":
+            queue_position = max(int(_event_value(event, "queue_position", 0) or 0), 1)
             queued_text = f"Queued (position {queue_position}) — I'll reply when ready."
             await _send_adapter_text(adapter, external_id, queued_text)
-
-            queued_channel = str(getattr(event, "stream_channel_id", "") or "").strip()
+            if control_plane_mode != "v1" or _dispatcher is None:
+                return
+            queued_channel = str(_event_value(event, "stream_channel_id", "") or "").strip()
             if not queued_channel:
                 return
             bus = _dispatcher.get_response_bus(queued_channel)
@@ -1623,6 +1663,40 @@ async def _run_adapter_concierge(
             finally:
                 _dispatcher.cleanup_response_bus(queued_channel)
 
+    if control_plane_mode == "v2":
+        from dan.server.routers.chat import (
+            ChatMessageRequest,
+            chat_message,
+            iter_local_chat_stream_events,
+        )
+
+        req = ChatMessageRequest.model_validate(
+            _build_adapter_chat_request_body(
+                adapter_id=adapter_id,
+                surface=surface,
+                external_id=external_id,
+                message_text=message_text,
+            )
+        )
+        try:
+            response = await chat_message(req, concierge=True)
+            channel_id = str(response.get("stream_channel_id") or "").strip()
+            if not channel_id:
+                return
+            async for event in iter_local_chat_stream_events(channel_id):
+                await _relay_adapter_event(event)
+        except Exception:
+            logger.exception("Adapter %s DAN-v2 chat relay failed", adapter_id)
+            try:
+                await _send_adapter_text(
+                    adapter,
+                    external_id,
+                    "Something went wrong. Please try again.",
+                )
+            except Exception:
+                pass
+        return
+
     msg = SurfaceMessage(
         surface=surface,
         external_id=external_id,
@@ -1630,7 +1704,13 @@ async def _run_adapter_concierge(
         metadata={"adapter_id": adapter_id},
     )
     try:
-        async for event in _dispatcher.dispatch(msg):
+        if _dispatcher is not None:
+            event_stream = _dispatcher.dispatch(msg)
+        elif _concierge is not None:
+            event_stream = _concierge.process(msg)
+        else:
+            return
+        async for event in event_stream:
             await _relay_adapter_event(event)
     except Exception:
         logger.exception("Adapter %s concierge dispatch failed", adapter_id)

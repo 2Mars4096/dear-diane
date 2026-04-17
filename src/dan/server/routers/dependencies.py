@@ -7,11 +7,14 @@ Direct callers without a request fall back to the live startup-owned
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
+
+from dan.server.control_plane import build_dan_v2_runtime, resolve_control_plane_mode
 
 
 _PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
@@ -109,6 +112,20 @@ def get_dispatcher(connection: Any | None = None):
     if state is not None and state.dispatcher is not None:
         return state.dispatcher
     return _get_legacy_app_attr("_dispatcher")
+
+
+def get_dan_v2_runtime(connection: Any | None = None):
+    state = _require_app_state(connection)
+    if state.dan_v2_runtime is None:
+        state.dan_v2_runtime = build_dan_v2_runtime(
+            chat_manager=state.require_chat_manager(),
+            run_manager=state.run_manager,
+        )
+    return state.dan_v2_runtime
+
+
+def get_control_plane_mode(_connection: Any | None = None):
+    return resolve_control_plane_mode(os.environ.get("DAN_CONTROL_PLANE"))
 
 
 def get_mention_resolver(connection: Any | None = None):

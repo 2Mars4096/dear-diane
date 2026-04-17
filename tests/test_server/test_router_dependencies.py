@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from types import SimpleNamespace
 
 from dan.server.app_state import AppState
@@ -21,6 +20,7 @@ def test_request_backed_dependencies_prefer_typed_app_state(monkeypatch) -> None
         block_registry=object(),
         concierge=object(),
         dispatcher=object(),
+        dan_v2_runtime=object(),
         mention_resolver=object(),
         engine_config=object(),
         graphs_dir="/tmp/dan-graphs",
@@ -38,6 +38,7 @@ def test_request_backed_dependencies_prefer_typed_app_state(monkeypatch) -> None
     assert dependencies.get_block_registry(request) is state.block_registry
     assert dependencies.get_concierge(request) is state.concierge
     assert dependencies.get_dispatcher(request) is state.dispatcher
+    assert dependencies.get_dan_v2_runtime(request) is state.dan_v2_runtime
     assert dependencies.get_mention_resolver(request) is state.mention_resolver
     assert dependencies.get_engine_config(request) is state.engine_config
     assert dependencies.get_graphs_dir(request) == "/tmp/dan-graphs"
@@ -56,6 +57,7 @@ def test_no_request_dependencies_use_active_app_state(monkeypatch) -> None:
         block_registry=object(),
         concierge=object(),
         dispatcher=object(),
+        dan_v2_runtime=object(),
         mention_resolver=object(),
         engine_config=object(),
         graphs_dir="/tmp/dan-graphs",
@@ -75,6 +77,7 @@ def test_no_request_dependencies_use_active_app_state(monkeypatch) -> None:
     assert dependencies.get_block_registry() is state.block_registry
     assert dependencies.get_concierge() is state.concierge
     assert dependencies.get_dispatcher() is state.dispatcher
+    assert dependencies.get_dan_v2_runtime() is state.dan_v2_runtime
     assert dependencies.get_mention_resolver() is state.mention_resolver
     assert dependencies.get_engine_config() is state.engine_config
     assert dependencies.get_graphs_dir() == "/tmp/dan-graphs"
@@ -124,3 +127,35 @@ def test_request_backed_run_manager_honors_explicit_global_override(monkeypatch)
     monkeypatch.setattr("dan.server.app._run_manager", legacy_run_manager)
 
     assert dependencies.get_run_manager(request) is legacy_run_manager
+
+
+def test_get_dan_v2_runtime_passes_optional_run_manager(monkeypatch) -> None:
+    state = AppState(
+        chat_manager=object(),
+        run_manager=object(),
+    )
+    request = _request_with_state(state)
+    built: dict[str, object] = {}
+    runtime = object()
+
+    def _build_runtime(*, chat_manager, run_manager=None):
+        built["chat_manager"] = chat_manager
+        built["run_manager"] = run_manager
+        return runtime
+
+    monkeypatch.setattr(dependencies, "build_dan_v2_runtime", _build_runtime)
+
+    assert dependencies.get_dan_v2_runtime(request) is runtime
+    assert state.dan_v2_runtime is runtime
+    assert built == {
+        "chat_manager": state.chat_manager,
+        "run_manager": state.run_manager,
+    }
+
+
+def test_get_control_plane_mode_normalizes_env(monkeypatch) -> None:
+    monkeypatch.setenv("DAN_CONTROL_PLANE", "new")
+    assert dependencies.get_control_plane_mode() == "v2"
+
+    monkeypatch.setenv("DAN_CONTROL_PLANE", "legacy")
+    assert dependencies.get_control_plane_mode() == "v1"

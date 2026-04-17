@@ -46,6 +46,8 @@ from dan.server.routers.dependencies import (
     get_run_manager,
     get_chat_manager,
     get_chat_store,
+    get_control_plane_mode,
+    get_dan_v2_runtime,
     get_dispatcher,
     get_concierge,
 )
@@ -67,6 +69,9 @@ def _resolve_service(getter: Any, connection: Any | None):
 
 
 _RUN_MANAGER_MISSING = object()
+_CHAT_STORE_MISSING = object()
+_CONTROL_PLANE_META_KEY = "control_plane"
+_CONTROL_PLANE_MAX_RECENT_REPORTS = 4
 
 
 # ------------------------------------------------------------------
@@ -202,6 +207,78 @@ class EditorCompletionRequest(BaseModel):
     language: str = "text"
     filePath: str | None = None
     maxTokens: int = 100
+
+
+def _combine_prompt_context(*parts: str) -> str:
+    cleaned = [str(part).strip() for part in parts if str(part or "").strip()]
+    return "\n\n".join(cleaned)
+
+
+def _load_control_plane_state(
+    chat_store: Any | None,
+    *,
+    workflow_id: str,
+    thread_id: str | None,
+) -> dict[str, Any]:
+    if chat_store is None or not str(thread_id or "").strip():
+        return {}
+    thread = chat_store.get_thread(workflow_id, str(thread_id))
+    if thread is None:
+        return {}
+    meta = chat_store.get_thread_meta(workflow_id, str(thread_id))
+    payload = meta.get(_CONTROL_PLANE_META_KEY)
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _persist_control_plane_state(
+    chat_store: Any | None,
+    *,
+    workflow_id: str,
+    thread_id: str | None,
+    selected_mode: str,
+    outcome: Any,
+) -> None:
+    if chat_store is None or not str(thread_id or "").strip():
+        return
+    thread = chat_store.get_thread(workflow_id, str(thread_id))
+    if thread is None:
+        return
+    meta = chat_store.get_thread_meta(workflow_id, str(thread_id))
+    payload = meta.get(_CONTROL_PLANE_META_KEY)
+    control_plane = dict(payload) if isinstance(payload, dict) else {}
+    dan_v2 = dict(control_plane.get("dan_v2") or {})
+    recent_reports = [
+        dict(item)
+        for item in list(dan_v2.get("recent_worker_reports") or [])
+        if isinstance(item, dict)
+    ]
+    worker_report = getattr(outcome, "worker_report", None)
+    if worker_report is not None:
+        recent_reports.append(worker_report.model_dump(mode="json"))
+        recent_reports = recent_reports[-_CONTROL_PLANE_MAX_RECENT_REPORTS:]
+    dan_v2.update(
+        {
+            "controller_session": dict(getattr(outcome, "controller_session_payload", None) or {}),
+            "code_session": dict(getattr(outcome, "code_session_payload", None) or {}),
+            "research_session": dict(getattr(outcome, "research_session_payload", None) or {}),
+            "incident_session": dict(getattr(outcome, "incident_session_payload", None) or {}),
+            "last_turn": {
+                "turn_decision": getattr(outcome, "turn_decision").model_dump(mode="json"),
+                "supervisor_brief": (
+                    getattr(outcome, "supervisor_brief").model_dump(mode="json")
+                    if getattr(outcome, "supervisor_brief", None) is not None
+                    else None
+                ),
+                "worker_report": getattr(outcome, "worker_report").model_dump(mode="json"),
+                "review_decision": getattr(outcome, "review_decision").model_dump(mode="json"),
+            },
+            "recent_worker_reports": recent_reports,
+        }
+    )
+    control_plane["selected_mode"] = str(selected_mode or "v1")
+    control_plane["dan_v2"] = dan_v2
+    meta[_CONTROL_PLANE_META_KEY] = control_plane
+    chat_store.set_thread_meta(workflow_id, str(thread_id), meta)
 
 
 def _attachment_tool_hint(path: str, kind: str | None = None) -> str:
@@ -403,6 +480,7 @@ async def chat_message(
     cm = _resolve_service(get_chat_manager, request)
     gs = _resolve_service(get_graph_store, request)
     run_manager: Any = _RUN_MANAGER_MISSING
+    chat_store: Any = _CHAT_STORE_MISSING
 
     def _optional_run_manager() -> Any | None:
         nonlocal run_manager
@@ -412,6 +490,15 @@ async def chat_message(
             except HTTPException:
                 run_manager = None
         return run_manager
+
+    def _optional_chat_store() -> Any | None:
+        nonlocal chat_store
+        if chat_store is _CHAT_STORE_MISSING:
+            try:
+                chat_store = _resolve_service(get_chat_store, request)
+            except HTTPException:
+                chat_store = None
+        return chat_store
 
     _reap_stale_chat_streams()
 
@@ -461,6 +548,79 @@ async def chat_message(
                 },
             )
 
+        def _legacy_event_stream(
+            *,
+            normalized_mode: str,
+            effective_mode: str,
+            debug_ctx: str,
+            prompt_context_prefix: str = "",
+            metadata_overrides: dict[str, Any] | None = None,
+            force_concierge: bool | None = None,
+        ):
+            combined_prompt_context = _combine_prompt_context(
+                prompt_context_prefix,
+                attachment_prompt_context,
+            )
+            extra_metadata = dict(metadata_overrides or {})
+            should_use_concierge = (
+                concierge if force_concierge is None else bool(force_concierge)
+            )
+            if should_use_concierge and (_dispatcher is not None or _concierge is not None):
+                from dan.server.concierge import SurfaceMessage
+
+                surface_metadata = {
+                    "workflow_id": req.workflow_id,
+                    "thread_id": req.thread_id,
+                    "request_history": req.history,
+                    "client_graph_revision": req.client_graph_revision,
+                    "mode": normalized_mode,
+                    "requested_mode": req.mode,
+                    "debug_context": debug_ctx,
+                    "mentions": structured_mentions,
+                    "cancel_event": cancel_event,
+                    "selected_path": req.attachment_path,
+                    "attachment_prompt_context": combined_prompt_context,
+                    "surface_context": surface_context,
+                    "stream_channel_id": stream_channel_id,
+                }
+                surface_metadata.update(extra_metadata)
+                surface_msg = SurfaceMessage(
+                    surface=req.surface or "server",
+                    surface_type=req.surface_type or "",
+                    surface_id=req.surface_id or "",
+                    session_id=req.session_id or req.thread_id or "",
+                    external_id=req.session_id or req.thread_id or req.workflow_id or "server-chat",
+                    text=req.message,
+                    metadata=surface_metadata,
+                )
+                if _dispatcher is not None:
+                    return _dispatcher.dispatch(surface_msg)
+                return _concierge.process(surface_msg)
+
+            graph_dict = gs.get_graph(req.workflow_id)
+            use_tools = graph_dict is not None and effective_mode not in ("ask", "plan")
+            send = cm.send_message_with_tools if use_tools else cm.send_message
+            extra_kwargs: dict[str, Any] = {}
+            if use_tools:
+                extra_kwargs["stream_channel_id"] = stream_channel_id
+            if combined_prompt_context:
+                extra_kwargs["prompt_context"] = combined_prompt_context
+            if surface_context:
+                extra_kwargs["surface_context"] = surface_context
+            return send(
+                workflow_id=req.workflow_id,
+                message=req.message,
+                history=req.history,
+                thread_id=req.session_id or req.thread_id,
+                client_graph_revision=req.client_graph_revision,
+                mode=effective_mode,
+                cancel_event=cancel_event,
+                mentions=structured_mentions,
+                debug_context=debug_ctx,
+                surface=req.surface or "server",
+                **extra_kwargs,
+            )
+
         try:
             normalized_mode = normalize_chat_mode(req.mode)
             effective_mode = req.mode if req.mode in ("build", "mutate") else normalized_mode
@@ -493,63 +653,74 @@ async def chat_message(
                         req.workflow_id,
                     )
 
-            if concierge and (_dispatcher is not None or _concierge is not None):
-                from dan.server.concierge import SurfaceMessage
+            control_plane_mode = _resolve_service(get_control_plane_mode, request)
+            use_v2_control_plane = concierge and control_plane_mode == "v2"
 
-                _surface_msg = SurfaceMessage(
-                    surface=req.surface or "server",
-                    surface_type=req.surface_type or "",
-                    surface_id=req.surface_id or "",
-                    session_id=req.session_id or req.thread_id or "",
-                    external_id=req.session_id or req.thread_id or req.workflow_id or "server-chat",
-                    text=req.message,
-                    metadata={
-                        "workflow_id": req.workflow_id,
-                        "thread_id": req.thread_id,
-                        "request_history": req.history,
-                        "client_graph_revision": req.client_graph_revision,
-                        "mode": normalized_mode,
-                        "requested_mode": req.mode,
-                        "debug_context": debug_ctx,
-                        "mentions": structured_mentions,
-                        "cancel_event": cancel_event,
-                        "selected_path": req.attachment_path,
-                        "attachment_prompt_context": attachment_prompt_context,
-                        "surface_context": surface_context,
-                        "stream_channel_id": stream_channel_id,
-                    },
-                )
-                if _dispatcher is not None:
-                    event_stream = _dispatcher.dispatch(_surface_msg)
-                else:
-                    event_stream = _concierge.process(_surface_msg)
-            else:
-                use_tools = graph_dict is not None and effective_mode not in ("ask", "plan")
-
-                send = (
-                    cm.send_message_with_tools
-                    if use_tools
-                    else cm.send_message
-                )
-                extra_kwargs: dict[str, Any] = {}
-                if use_tools:
-                    extra_kwargs["stream_channel_id"] = stream_channel_id
-                if attachment_prompt_context:
-                    extra_kwargs["prompt_context"] = attachment_prompt_context
-                if surface_context:
-                    extra_kwargs["surface_context"] = surface_context
-                event_stream = send(
+            if use_v2_control_plane:
+                v2_runtime = _resolve_service(get_dan_v2_runtime, request)
+                control_plane_state = _load_control_plane_state(
+                    _optional_chat_store(),
                     workflow_id=req.workflow_id,
-                    message=req.message,
-                    history=req.history,
-                    thread_id=req.session_id or req.thread_id,
-                    client_graph_revision=req.client_graph_revision,
-                    mode=effective_mode,
-                    cancel_event=cancel_event,
-                    mentions=structured_mentions,
-                    debug_context=debug_ctx,
-                    surface=req.surface or "server",
-                    **extra_kwargs,
+                    thread_id=req.thread_id,
+                )
+                dan_v2_state = dict(control_plane_state.get("dan_v2") or {})
+                outcome = await v2_runtime.triage_user_turn(
+                    req=req,
+                    normalized_mode=normalized_mode,
+                    controller_session_payload=dan_v2_state.get("controller_session"),
+                    code_session_payload=dan_v2_state.get("code_session"),
+                    research_session_payload=dan_v2_state.get("research_session"),
+                    incident_session_payload=dan_v2_state.get("incident_session"),
+                    recent_worker_reports_payload=dan_v2_state.get("recent_worker_reports"),
+                )
+                _persist_control_plane_state(
+                    _optional_chat_store(),
+                    workflow_id=req.workflow_id,
+                    thread_id=req.thread_id,
+                    selected_mode="v2",
+                    outcome=outcome,
+                )
+                if outcome.direct_response is not None:
+                    from dan.server.chat_manager import ChatCompleteEvent
+
+                    async def _direct_v2_stream():
+                        yield ChatCompleteEvent(
+                            message_id=uuid.uuid4().hex[:12],
+                            content=outcome.direct_response,
+                            token_usage={},
+                            context_window=0,
+                            graph_revision=compute_graph_revision(graph_dict) if graph_dict is not None else "",
+                        )
+
+                    event_stream = _direct_v2_stream()
+                else:
+                    handoff_metadata = dict(outcome.handoff_metadata or {})
+                    event_stream = _legacy_event_stream(
+                        normalized_mode=normalized_mode,
+                        effective_mode=effective_mode,
+                        debug_ctx=debug_ctx,
+                        prompt_context_prefix=outcome.handoff_prompt_context,
+                        metadata_overrides={
+                            "control_plane_mode": "v2",
+                            **handoff_metadata,
+                            "selected_lane": handoff_metadata.get("selected_lane", ""),
+                            "control_plane_turn": {
+                                "turn_decision": outcome.turn_decision.model_dump(mode="json"),
+                                "supervisor_brief": (
+                                    outcome.supervisor_brief.model_dump(mode="json")
+                                    if outcome.supervisor_brief is not None
+                                    else None
+                                ),
+                                "worker_report": outcome.worker_report.model_dump(mode="json"),
+                                "review_decision": outcome.review_decision.model_dump(mode="json"),
+                            },
+                        },
+                    )
+            else:
+                event_stream = _legacy_event_stream(
+                    normalized_mode=normalized_mode,
+                    effective_mode=effective_mode,
+                    debug_ctx=debug_ctx,
                 )
             async for event in event_stream:
                 payload = event.model_dump()
@@ -683,6 +854,83 @@ async def chat_message(
     produce_task = asyncio.create_task(_produce())
     _register_chat_stream(stream_channel_id, queue, task=produce_task)
     return {"message_id": uuid.uuid4().hex[:12], "stream_channel_id": stream_channel_id, "status": "processing"}
+
+
+async def iter_local_chat_stream_events(channel_id: str):
+    """Iterate a local in-process chat stream, following queued redirects."""
+    from dan.server.chat_stream_buffer import should_preserve_chat_stream
+
+    next_channel = str(channel_id or "").strip()
+    seen_channels: set[str] = set()
+
+    while next_channel:
+        current_channel = next_channel
+        next_channel = ""
+        if current_channel in seen_channels:
+            logger.warning(
+                "Skipping repeated queued channel redirect for local stream %s",
+                current_channel,
+            )
+            break
+        seen_channels.add(current_channel)
+
+        entry = _chat_streams.get(current_channel)
+        if entry is None:
+            logger.debug("Local chat stream %s is no longer available", current_channel)
+            break
+
+        queue, _ = entry
+        current_event: Any | None = None
+        queue.attach_consumer()
+        task = _chat_produce_tasks.get(current_channel)
+        queue.prime_reconnect_snapshot(
+            producer_running=task is not None and not task.done()
+        )
+        try:
+            while True:
+                current_event = await queue.get()
+                if current_event is None:
+                    current_event = None
+                    break
+                _touch_chat_stream(current_channel)
+                if not isinstance(current_event, dict):
+                    current_event = None
+                    continue
+                evt_type = str(current_event.get("type") or "").strip()
+                redirected = (
+                    str(current_event.get("stream_channel_id") or "").strip()
+                    if evt_type == "chat_queued"
+                    else ""
+                )
+                yield dict(current_event)
+                current_event = None
+                if evt_type == "chat_queued":
+                    if redirected and redirected not in seen_channels:
+                        next_channel = redirected
+                        break
+        except Exception:
+            if current_event is not None:
+                queue.requeue_front(current_event)
+                current_event = None
+                _touch_chat_stream(current_channel)
+            raise
+        finally:
+            queue.detach_consumer()
+            task = _chat_produce_tasks.get(current_channel)
+            producer_running = task is not None and not task.done()
+            preserve_stream = should_preserve_chat_stream(
+                queue,
+                producer_running=producer_running,
+            )
+            if preserve_stream:
+                _chat_streams[current_channel] = (queue, time.monotonic())
+                if not producer_running:
+                    _chat_produce_tasks.pop(current_channel, None)
+            else:
+                _chat_streams.pop(current_channel, None)
+                task = _chat_produce_tasks.pop(current_channel, None)
+                if task is not None and not task.done():
+                    task.cancel()
 
 
 # ------------------------------------------------------------------
