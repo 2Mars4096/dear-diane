@@ -114,6 +114,10 @@ TOOL_METADATA = {
             },
         },
         "required": [],
+        "anyOf": [
+            {"required": ["query"]},
+            {"required": ["url"]},
+        ],
     },
     "examples": [
         {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import os
 
 from dan.tools._workspace import validate_path
@@ -430,6 +431,103 @@ def _ensure_non_overlapping_edits(specs: list[dict[str, object]]) -> None:
         previous_end = end_line
 
 
+def _guard_suspicious_bulk_replace(
+    spec: dict[str, object],
+    *,
+    path: str,
+    original_text: str,
+    original_lines: list[str],
+) -> None:
+    if str(spec["mode"]) != "replace":
+        return
+
+    start_line = int(spec["start_line"])
+    end_line = int(spec["end_line"])
+    target_lines = original_lines[start_line - 1 : end_line]
+    target_line_count = len(target_lines)
+    if target_line_count < 20:
+        return
+
+    replacement_text = "".join(list(spec["replacement_lines"])).strip()
+    replacement_line_count = len(replacement_text.splitlines())
+    replacement_char_count = len(replacement_text)
+    target_char_count = max(len("".join(target_lines).strip()), 1)
+    char_ratio = replacement_char_count / target_char_count
+
+    if (
+        replacement_line_count <= 3
+        and replacement_char_count <= 120
+        and char_ratio <= 0.1
+    ):
+        raise ValueError(
+            "Suspicious bulk replace: the requested replacement collapses a large line range "
+            f"({start_line}-{end_line}) into very little content. Use smaller targeted edits, "
+            "or use delete mode plus a separate insert when intentionally removing a large block."
+        )
+
+    if not path.endswith(".py"):
+        return
+
+    if target_line_count < 20:
+        return
+
+    updated_lines = _apply_edit_to_lines(
+        list(original_lines),
+        mode="replace",
+        start_line=start_line,
+        end_line=end_line,
+        replacement_lines=list(spec["replacement_lines"]),
+    )
+
+    try:
+        original_tree = ast.parse(original_text)
+        updated_tree = ast.parse("".join(updated_lines))
+    except SyntaxError:
+        return
+
+    def _top_level_named_blocks(tree: ast.Module) -> list[tuple[str, int, int]]:
+        blocks: list[tuple[str, int, int]] = []
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                name = node.name
+            elif isinstance(node, ast.Assign):
+                if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+                    continue
+                name = node.targets[0].id
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                name = node.target.id
+            else:
+                continue
+
+            node_start = getattr(node, "lineno", None)
+            node_end = getattr(node, "end_lineno", None)
+            if node_start is None or node_end is None:
+                continue
+            blocks.append((name, node_start, node_end))
+        return blocks
+
+    original_blocks = _top_level_named_blocks(original_tree)
+    intersecting_blocks = [
+        name
+        for name, block_start, block_end in original_blocks
+        if not (block_end < start_line or block_start > end_line)
+    ]
+    if len(intersecting_blocks) < 2:
+        return
+
+    updated_block_names = {name for name, _, _ in _top_level_named_blocks(updated_tree)}
+    removed_blocks = [
+        name for name in intersecting_blocks if name not in updated_block_names
+    ]
+    if removed_blocks:
+        removed_preview = ", ".join(removed_blocks[:3])
+        raise ValueError(
+            "Suspicious structural replace: the requested replacement spans multiple "
+            f"top-level Python blocks and removes {removed_preview}. Use smaller targeted "
+            "edits so adjacent definitions remain intact."
+        )
+
+
 def _apply_edit_to_lines(
     lines: list[str],
     *,
@@ -542,6 +640,13 @@ async def file_edit(
     ]
     if len(edit_specs) > 1:
         _ensure_non_overlapping_edits(edit_specs)
+    for spec in edit_specs:
+        _guard_suspicious_bulk_replace(
+            spec,
+            path=effective_path,
+            original_text=original_text,
+            original_lines=original_lines,
+        )
 
     updated_lines = list(original_lines)
     for spec in sorted(edit_specs, key=lambda spec: _occupied_range(spec), reverse=True):

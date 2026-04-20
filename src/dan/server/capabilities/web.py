@@ -887,59 +887,106 @@ async def handle_web_search(
     browser_fallback_count = 0
     fetch_target_count = min(_MAX_AUTO_FETCH_RESULTS, len(filtered_results))
     if fetch_content:
-        for result in filtered_results:
-            if grounded_count >= fetch_target_count:
-                break
-            if fetch_attempts_made >= _MAX_AUTO_FETCH_ATTEMPTS:
+        candidate_index = 0
+        while (
+            grounded_count < fetch_target_count
+            and fetch_attempts_made < _MAX_AUTO_FETCH_ATTEMPTS
+            and candidate_index < len(filtered_results)
+        ):
+            remaining_needed = fetch_target_count - grounded_count
+            remaining_attempts = _MAX_AUTO_FETCH_ATTEMPTS - fetch_attempts_made
+            remaining_budget = max(
+                0,
+                int(
+                    budget_state.get(
+                        "max_web_fetch_attempts_per_turn",
+                        _DEFAULT_MAX_WEB_FETCH_ATTEMPTS_PER_TURN,
+                    )
+                    or _DEFAULT_MAX_WEB_FETCH_ATTEMPTS_PER_TURN
+                )
+                - int(budget_state.get("web_fetch_attempts_made", 0) or 0),
+            )
+            batch_size = min(
+                remaining_needed,
+                remaining_attempts,
+                remaining_budget,
+                len(filtered_results) - candidate_index,
+            )
+            if batch_size <= 0:
+                fetch_limit = int(
+                    budget_state.get(
+                        "max_web_fetch_attempts_per_turn",
+                        _DEFAULT_MAX_WEB_FETCH_ATTEMPTS_PER_TURN,
+                    )
+                    or _DEFAULT_MAX_WEB_FETCH_ATTEMPTS_PER_TURN
+                )
+                next_result = filtered_results[candidate_index]
+                fetch_records.append({
+                    "index": next_result.index,
+                    "url": next_result.url,
+                    "success": False,
+                    "error": _budget_exhausted_message("fetch", fetch_limit),
+                    "fetched_content": f"[Fetch failed: {_budget_exhausted_message('fetch', fetch_limit)}]",
+                })
                 break
             allowed, fetch_limit = _check_and_consume_budget(
                 budget_state,
                 used_key="web_fetch_attempts_made",
                 limit_key="max_web_fetch_attempts_per_turn",
                 default_limit=_DEFAULT_MAX_WEB_FETCH_ATTEMPTS_PER_TURN,
+                amount=batch_size,
             )
             if not allowed:
+                next_result = filtered_results[candidate_index]
                 fetch_records.append({
-                    "index": result.index,
-                    "url": result.url,
+                    "index": next_result.index,
+                    "url": next_result.url,
                     "success": False,
                     "error": _budget_exhausted_message("fetch", fetch_limit),
                     "fetched_content": f"[Fetch failed: {_budget_exhausted_message('fetch', fetch_limit)}]",
                 })
                 break
-            fetch_attempts_made += 1
-            fetch_record = await _fetch_grounding_excerpt(
-                result,
-                query,
-                browser_fallback=browser_fallback_enabled,
+            batch_results = filtered_results[candidate_index : candidate_index + batch_size]
+            candidate_index += batch_size
+            fetch_attempts_made += batch_size
+            batch_records = await asyncio.gather(
+                *[
+                    _fetch_grounding_excerpt(
+                        result,
+                        query,
+                        browser_fallback=browser_fallback_enabled,
+                    )
+                    for result in batch_results
+                ]
             )
-            result.fetched_content = str(fetch_record.get("fetched_content") or "").strip() or None
-            if fetch_record.get("success") and result.fetched_content:
-                corpus_record = _persist_fetch_to_beacon_corpus(
-                    url=result.url,
-                    title=result.title,
-                    content=result.fetched_content,
-                    query=query,
-                    source_type="web_search_fetch",
-                    metadata={
-                        "provider": result.provider,
-                        "source_query": result.source_query or query,
-                        "result_kind": result.result_kind,
-                    },
-                )
-                if corpus_record:
-                    corpus_saved_records.append(corpus_record)
-                    fetch_record["document_id"] = corpus_record["document_id"]
-                    fetch_record["chunk_id"] = corpus_record["primary_chunk_id"]
-                    result.document_id = corpus_record["document_id"]
-                    result.chunk_id = corpus_record["primary_chunk_id"]
-                    result.evidence_source = "fetched_corpus"
-                    result.freshness_state = corpus_record["freshness_state"]
-            fetch_records.append(fetch_record)
-            if fetch_record.get("success"):
-                grounded_count += 1
-            if fetch_record.get("fetch_via") == "browser":
-                browser_fallback_count += 1
+            for result, fetch_record in zip(batch_results, batch_records):
+                result.fetched_content = str(fetch_record.get("fetched_content") or "").strip() or None
+                if fetch_record.get("success") and result.fetched_content:
+                    corpus_record = _persist_fetch_to_beacon_corpus(
+                        url=result.url,
+                        title=result.title,
+                        content=result.fetched_content,
+                        query=query,
+                        source_type="web_search_fetch",
+                        metadata={
+                            "provider": result.provider,
+                            "source_query": result.source_query or query,
+                            "result_kind": result.result_kind,
+                        },
+                    )
+                    if corpus_record:
+                        corpus_saved_records.append(corpus_record)
+                        fetch_record["document_id"] = corpus_record["document_id"]
+                        fetch_record["chunk_id"] = corpus_record["primary_chunk_id"]
+                        result.document_id = corpus_record["document_id"]
+                        result.chunk_id = corpus_record["primary_chunk_id"]
+                        result.evidence_source = "fetched_corpus"
+                        result.freshness_state = corpus_record["freshness_state"]
+                fetch_records.append(fetch_record)
+                if fetch_record.get("success"):
+                    grounded_count += 1
+                if fetch_record.get("fetch_via") == "browser":
+                    browser_fallback_count += 1
 
     provenance_counts: dict[str, int] = {}
     for result in filtered_results:
