@@ -1,5 +1,9 @@
 import { contextBridge, ipcRenderer } from "electron";
 
+const previewBridgePreloadPath = `${__dirname}${
+  __dirname.endsWith("/") || __dirname.endsWith("\\") ? "" : "/"
+}previewBridgePreload.cjs`;
+
 /**
  * Exposes native APIs to the renderer process through a safe bridge.
  * The renderer accesses these via window.electronAPI.
@@ -24,5 +28,22 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.invoke("fs:writeTempAttachment", payload),
     readDir: (dirPath: string) => ipcRenderer.invoke("fs:readDir", dirPath),
     stat: (filePath: string) => ipcRenderer.invoke("fs:stat", filePath),
+  },
+
+  shell: {
+    openPath: (filePath: string) => ipcRenderer.invoke("shell:openPath", filePath),
+    openExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url),
+  },
+
+  contentPreview: {
+    bridgePreloadPath: previewBridgePreloadPath,
+    getStatus: (projectRoot: string) => ipcRenderer.invoke("contentPreview:getStatus", projectRoot),
+    start: (projectRoot: string) => ipcRenderer.invoke("contentPreview:start", projectRoot),
+    stop: (projectRoot: string) => ipcRenderer.invoke("contentPreview:stop", projectRoot),
+    restart: (projectRoot: string) => ipcRenderer.invoke("contentPreview:restart", projectRoot),
+  },
+
+  contentBootstrap: {
+    getRoots: () => ipcRenderer.invoke("content:getBootstrapRoots"),
   },
 });

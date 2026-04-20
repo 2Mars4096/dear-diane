@@ -32,13 +32,13 @@ import {
 
 const ChatMode = lazy(() => import("../modes/ChatMode"));
 const CodeMode = lazy(() => import("../modes/CodeMode"));
+const ContentMode = lazy(() => import("../modes/ContentMode"));
 const ResearchMode = lazy(() => import("../modes/ResearchMode"));
 const OperationsMode = lazy(() => import("../modes/OperationsMode"));
 
-const PLACEHOLDER_MODES = ["analytics", "content"] as const;
+const PLACEHOLDER_MODES = ["analytics"] as const;
 const MODE_LABELS: Record<string, string> = {
   analytics: "Analytics Mode",
-  content: "Content Mode",
 };
 const activatedModesByWorkspace = new Map<string, Set<string>>();
 
@@ -102,6 +102,8 @@ function useDefaultWorkspace() {
     if (workspaces.length === 0) {
       if (activeMode === "research") {
         createWorkspace(undefined, "research");
+      } else if (activeMode === "content") {
+        createWorkspace(undefined, "content");
       } else {
         createWorkspace("Scratch");
       }
@@ -237,6 +239,17 @@ export default function AppShell() {
           <ErrorBoundary name="Development" isActive={activeMode === "development"}>
             <Suspense fallback={<EditorSkeleton />}>
               <CodeMode />
+            </Suspense>
+          </ErrorBoundary>
+        </ModePanel>
+        <ModePanel
+          workspaceKey={workspaceRenderKey}
+          modeKey="content"
+          isActive={activeMode === "content"}
+        >
+          <ErrorBoundary name="Content" isActive={activeMode === "content"}>
+            <Suspense fallback={<EditorSkeleton />}>
+              <ContentMode />
             </Suspense>
           </ErrorBoundary>
         </ModePanel>

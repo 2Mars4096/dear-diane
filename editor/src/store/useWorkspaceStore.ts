@@ -62,6 +62,8 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           defaultName = name;
         } else if (mode === "research") {
           defaultName = "Research Project";
+        } else if (mode === "content") {
+          defaultName = "Content Project";
         } else {
           defaultName = `Workspace ${get().workspaces.length + 1}`;
         }

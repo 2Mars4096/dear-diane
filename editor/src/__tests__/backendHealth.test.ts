@@ -2,7 +2,11 @@ import { EventEmitter } from "node:events";
 import http from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { probeBackendHealth, waitForBackendHealth } from "../../electron/backendHealth";
+import {
+  probeBackendHealth,
+  waitForBackendHealth,
+  waitForBackendHealthOrRelease,
+} from "../../electron/backendHealth";
 
 class FakeIncomingMessage extends EventEmitter {
   statusCode: number;
@@ -91,5 +95,49 @@ describe("backendHealth", () => {
     });
 
     expect(healthy).toBe(false);
+  });
+
+  it("returns released when an unhealthy listener disappears", async () => {
+    let checks = 0;
+
+    const result = await waitForBackendHealthOrRelease({
+      totalTimeoutMs: 100,
+      probeIntervalMs: 0,
+      probeFn: async () => false,
+      portInUseFn: async () => {
+        checks += 1;
+        return checks < 3;
+      },
+    });
+
+    expect(result).toBe("released");
+    expect(checks).toBe(3);
+  });
+
+  it("prefers healthy reuse when the backend becomes healthy before release", async () => {
+    let attempts = 0;
+
+    const result = await waitForBackendHealthOrRelease({
+      totalTimeoutMs: 100,
+      probeIntervalMs: 0,
+      probeFn: async () => {
+        attempts += 1;
+        return attempts >= 2;
+      },
+      portInUseFn: async () => true,
+    });
+
+    expect(result).toBe("healthy");
+  });
+
+  it("returns timeout when the port stays occupied and never becomes healthy", async () => {
+    const result = await waitForBackendHealthOrRelease({
+      totalTimeoutMs: 20,
+      probeIntervalMs: 5,
+      probeFn: async () => false,
+      portInUseFn: async () => true,
+    });
+
+    expect(result).toBe("timeout");
   });
 });

@@ -15,7 +15,7 @@ export const MODE_CONFIGS: ModeConfig[] = [
   { id: "research", label: "Research", shortcut: "2", icon: "GraduationCap", enabled: true },
   { id: "development", label: "Development", shortcut: "3", icon: "Code", enabled: true },
   { id: "analytics", label: "Analytics", shortcut: "4", icon: "BarChart3", enabled: false },
-  { id: "content", label: "Content", shortcut: "5", icon: "PenTool", enabled: false },
+  { id: "content", label: "Content", shortcut: "5", icon: "PenTool", enabled: true },
   { id: "operations", label: "Operations", shortcut: "6", icon: "Workflow", enabled: true },
 ];
 

@@ -29,6 +29,10 @@ vi.mock("../../code/GitPanel", () => ({
   default: () => React.createElement("div", null, "git-panel"),
 }));
 
+vi.mock("../../code/DevelopmentTimelinePanel", () => ({
+  default: () => React.createElement("div", null, "development-timeline-panel"),
+}));
+
 vi.mock("../DevelopmentModePanels", () => ({
   PREVIEW_ONLY_CODE_PANELS: new Set([
     "explorer",
@@ -143,6 +147,25 @@ describe("DevelopmentModeShell", () => {
 
     expect(container.textContent).toContain("git-panel");
     expect(container.textContent).not.toContain("preview:git");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("routes the timeline sidebar to the development timeline panel in Electron", async () => {
+    const { container, root } = await renderNode(
+      React.createElement(DevelopmentSidebarSurface, {
+        panel: "timeline",
+        electron: true,
+      }),
+    );
+
+    await act(async () => {
+      await vi.dynamicImportSettled();
+    });
+
+    expect(container.textContent).toContain("development-timeline-panel");
 
     await act(async () => {
       root.unmount();

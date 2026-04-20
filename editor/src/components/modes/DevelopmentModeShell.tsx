@@ -41,7 +41,9 @@ const GitPanel = lazy(() => import("../code/GitPanel"));
 const ExtensionsPanel = lazy(() => import("../code/ExtensionsPanel"));
 const TaskRunner = lazy(() => import("../code/TaskRunner"));
 const TestExplorer = lazy(() => import("../code/TestExplorer"));
-const LocalHistoryPanel = lazy(() => import("../code/LocalHistoryPanel"));
+const DevelopmentTimelinePanel = lazy(
+  () => import("../code/DevelopmentTimelinePanel"),
+);
 const OutlineView = lazy(() => import("../code/OutlineView"));
 const DebugPanel = lazy(() => import("../code/DebugPanel"));
 const DebugConsole = lazy(() => import("../code/DebugConsole"));
@@ -372,7 +374,7 @@ export function DevelopmentSidebarSurface({
     case "timeline":
       return (
         <Suspense fallback={<PanelLoadingState label="timeline" />}>
-          <LocalHistoryPanel />
+          <DevelopmentTimelinePanel />
         </Suspense>
       );
     case "outline":

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef } from "react";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
 import { useAppStore } from "../store/useAppStore";
 import { useCodeStore } from "../store/useCodeStore";
+import { useContentStore } from "../store/useContentStore";
 import { useResearchStore } from "../store/useResearchStore";
 import { nativeFs, nativeTerminal } from "../lib/electronBridge";
 import {
@@ -90,6 +91,14 @@ function applyResearchSession(research: WorkspaceSession["research"]) {
   });
 }
 
+function applyContentSession(content: WorkspaceSession["content"]) {
+  useContentStore.setState({
+    activeProjectRoot: content.activeProjectRoot ?? null,
+    activePagePath: content.activePagePath ?? null,
+    draftsByPath: content.draftsByPath ?? {},
+  });
+}
+
 function clearCodeState() {
   useCodeStore.setState({
     pinnedRoots: [],
@@ -128,6 +137,10 @@ function clearResearchState() {
   });
 }
 
+function clearContentState() {
+  useContentStore.getState().clearWorkspaceState();
+}
+
 export function useWorkspaceSession() {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const prevWsId = useRef<string | null>(null);
@@ -142,6 +155,7 @@ export function useWorkspaceSession() {
       if (session) {
         applyCodeSession(session.code);
         applyResearchSession(session.research);
+        applyContentSession(session.content);
       }
       useAppStore.getState().setMode(resolveWorkspaceMode(activeWorkspaceId, session));
       prevWsId.current = activeWorkspaceId;
@@ -157,11 +171,13 @@ export function useWorkspaceSession() {
 
       clearCodeState();
       clearResearchState();
+      clearContentState();
 
       const newSession = loadSession(activeWorkspaceId);
       if (newSession) {
         applyCodeSession(newSession.code);
         applyResearchSession(newSession.research);
+        applyContentSession(newSession.content);
       }
       useAppStore.getState().setMode(resolveWorkspaceMode(activeWorkspaceId, newSession));
     }

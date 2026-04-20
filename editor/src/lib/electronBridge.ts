@@ -25,7 +25,18 @@ interface ElectronAPI {
   };
   shell: {
     openPath: (filePath: string) => Promise<boolean>;
+    openExternal: (url: string) => Promise<boolean>;
     run: (opts: { command: string; args: string[]; cwd: string }) => Promise<{ stdout: string; stderr: string; code: number | null }>;
+  };
+  contentPreview: {
+    bridgePreloadPath: string;
+    getStatus: (projectRoot: string) => Promise<ContentPreviewStatus>;
+    start: (projectRoot: string) => Promise<ContentPreviewStatus>;
+    stop: (projectRoot: string) => Promise<ContentPreviewStatus>;
+    restart: (projectRoot: string) => Promise<ContentPreviewStatus>;
+  };
+  contentBootstrap: {
+    getRoots: () => Promise<string[]>;
   };
   search: {
     ripgrep: (opts: { query: string; cwd: string; glob?: string; caseSensitive?: boolean; maxResults?: number }) => Promise<string>;
@@ -222,6 +233,21 @@ export interface DownloadProgress {
   bytesPerSecond: number;
   total: number;
   transferred: number;
+}
+
+export interface ContentPreviewStatus {
+  projectRoot: string;
+  lifecycle: "unsupported" | "stopped" | "starting" | "running" | "error";
+  hugoAvailable: boolean;
+  hasHugoConfig: boolean;
+  hasContentDir: boolean;
+  ready: boolean;
+  port: number | null;
+  baseUrl: string | null;
+  pid: number | null;
+  lastError: string | null;
+  recentLogs: string[];
+  updatedAt: number;
 }
 
 declare global {
@@ -822,11 +848,75 @@ export const nativeShell = {
     }
   },
 
+  async openExternal(url: string): Promise<boolean> {
+    if (window.electronAPI) {
+      return window.electronAPI.shell.openExternal(url);
+    }
+    try {
+      window.open(url, "_blank", "noopener,noreferrer");
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
   async run(opts: { command: string; args: string[]; cwd: string }): Promise<{ stdout: string; stderr: string; code: number | null }> {
     if (window.electronAPI) {
       return window.electronAPI.shell.run(opts);
     }
     return { stdout: "", stderr: "Not in Electron", code: -1 };
+  },
+};
+
+export const nativeContentPreview = {
+  getBridgePreloadPath(): string | null {
+    return window.electronAPI?.contentPreview.bridgePreloadPath ?? null;
+  },
+  async getStatus(projectRoot: string): Promise<ContentPreviewStatus> {
+    if (window.electronAPI) {
+      return window.electronAPI.contentPreview.getStatus(projectRoot);
+    }
+    return {
+      projectRoot,
+      lifecycle: "unsupported",
+      hugoAvailable: false,
+      hasHugoConfig: false,
+      hasContentDir: false,
+      ready: false,
+      port: null,
+      baseUrl: null,
+      pid: null,
+      lastError: "Managed content preview requires Electron desktop runtime.",
+      recentLogs: [],
+      updatedAt: Date.now(),
+    };
+  },
+  async start(projectRoot: string): Promise<ContentPreviewStatus> {
+    if (window.electronAPI) {
+      return window.electronAPI.contentPreview.start(projectRoot);
+    }
+    return this.getStatus(projectRoot);
+  },
+  async stop(projectRoot: string): Promise<ContentPreviewStatus> {
+    if (window.electronAPI) {
+      return window.electronAPI.contentPreview.stop(projectRoot);
+    }
+    return this.getStatus(projectRoot);
+  },
+  async restart(projectRoot: string): Promise<ContentPreviewStatus> {
+    if (window.electronAPI) {
+      return window.electronAPI.contentPreview.restart(projectRoot);
+    }
+    return this.getStatus(projectRoot);
+  },
+};
+
+export const nativeContentBootstrap = {
+  async getRoots(): Promise<string[]> {
+    if (window.electronAPI) {
+      return window.electronAPI.contentBootstrap.getRoots();
+    }
+    return [];
   },
 };
 

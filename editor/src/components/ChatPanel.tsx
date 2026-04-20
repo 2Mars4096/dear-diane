@@ -1325,6 +1325,7 @@ export default function ChatPanel({
         : content;
 
       try {
+        const surfaceId = `chat-panel:${threadId}`;
         const res = await fetch("/api/chat/message", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1339,9 +1340,13 @@ export default function ChatPanel({
               ),
             ),
             thread_id: threadId,
+            session_id: threadId,
             client_graph_revision: clientGraphRevision,
             mode: modeOverride || useGraphStore.getState().chatMode,
             attachment_path: firstAttachmentPath,
+            surface: `editor:${surfaceId}`,
+            surface_type: "editor",
+            surface_id: surfaceId,
             surface_context: {
               appended_attachments: attachmentDrafts.map((attachment) => ({
                 kind: attachment.kind,

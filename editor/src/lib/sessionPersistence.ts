@@ -1,4 +1,5 @@
 import { useCodeStore } from "../store/useCodeStore";
+import { useContentStore } from "../store/useContentStore";
 import {
   useResearchStore,
   type ResearchNote,
@@ -42,6 +43,11 @@ export interface ResearchSession {
 export interface WorkspaceSession {
   code: EditorSession;
   research: ResearchSession;
+  content: {
+    activeProjectRoot: string | null;
+    activePagePath: string | null;
+    draftsByPath: Record<string, string>;
+  };
   lastActiveMode: AppMode;
   savedAt: number;
 }
@@ -59,6 +65,7 @@ function coerceAppMode(value: unknown): AppMode {
 export function saveSession(workspaceId?: string, lastActiveMode: AppMode = "chat"): void {
   const codeState = useCodeStore.getState();
   const researchState = useResearchStore.getState();
+  const contentState = useContentStore.getState();
 
   const session: WorkspaceSession = {
     code: {
@@ -86,6 +93,11 @@ export function saveSession(workspaceId?: string, lastActiveMode: AppMode = "cha
       showContextPanel: researchState.showContextPanel,
       activeRailSection: researchState.activeRailSection,
     },
+    content: {
+      activeProjectRoot: contentState.activeProjectRoot,
+      activePagePath: contentState.activePagePath,
+      draftsByPath: contentState.draftsByPath,
+    },
     lastActiveMode,
     savedAt: Date.now(),
   };
@@ -108,6 +120,11 @@ export function loadSession(workspaceId?: string): WorkspaceSession | null {
     if (parsed.code) {
       return {
         ...parsed,
+        content: parsed.content ?? {
+          activeProjectRoot: null,
+          activePagePath: null,
+          draftsByPath: {},
+        },
         lastActiveMode: coerceAppMode(parsed.lastActiveMode),
       } as WorkspaceSession;
     }
@@ -126,6 +143,11 @@ export function loadSession(workspaceId?: string): WorkspaceSession | null {
           showSecondary: false,
           showContextPanel: false,
           activeRailSection: "library",
+        },
+        content: {
+          activeProjectRoot: null,
+          activePagePath: null,
+          draftsByPath: {},
         },
         lastActiveMode: "chat",
         savedAt: parsed.savedAt ?? Date.now(),

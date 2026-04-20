@@ -14,15 +14,21 @@ import { commandExists } from "./commandExists";
 import { LspManager } from "./lspManager";
 import { DebugManager } from "./debugManager";
 import { ExtensionHost } from "./extensionHost";
+import { HugoPreviewManager } from "./hugoPreviewManager";
 import { runCommand, type CommandResult } from "./runCommand";
-import { waitForBackendHealth } from "./backendHealth";
+import {
+  waitForBackendHealth,
+  waitForBackendHealthOrRelease,
+} from "./backendHealth";
 import { buildBackendLaunchEnv } from "./backendLaunch";
+import { resolveContentBootstrapRoots } from "./contentBootstrap";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 const lspManager = new LspManager();
 const debugManager = new DebugManager();
 const extensionHost = new ExtensionHost();
+const hugoPreviewManager = new HugoPreviewManager();
 
 const isDev = !app.isPackaged;
 const VITE_DEV_URL = "http://localhost:5173";
@@ -144,21 +150,27 @@ let backendOwnedByUs = false;
 async function startBackend(): Promise<void> {
   const alreadyRunning = await isPortInUse(BACKEND_PORT);
   if (alreadyRunning) {
-    const healthy = await waitForBackendHealth({
+    const portResolution = await waitForBackendHealthOrRelease({
       port: BACKEND_PORT,
       totalTimeoutMs: 5000,
       probeIntervalMs: 250,
       requestTimeoutMs: 1000,
+      portInUseFn: () => isPortInUse(BACKEND_PORT),
     });
-    if (!healthy) {
+    if (portResolution === "healthy") {
+      console.log(`Backend already running on port ${BACKEND_PORT}, reusing.`);
+      backendOwnedByUs = false;
+      backendReady = true;
+      return;
+    }
+    if (portResolution === "timeout") {
       throw new Error(
-        `Port ${BACKEND_PORT} is already in use, but no healthy DAN backend responded at /api/health.`,
+        `Port ${BACKEND_PORT} stayed in use, but no healthy DAN backend responded at /api/health.`,
       );
     }
-    console.log(`Backend already running on port ${BACKEND_PORT}, reusing.`);
-    backendOwnedByUs = false;
-    backendReady = true;
-    return;
+    console.warn(
+      `Port ${BACKEND_PORT} was briefly occupied by an unhealthy listener, then cleared. Starting a fresh DAN backend.`,
+    );
   }
 
   const danServe = process.env.DAN_SERVE_CMD;
@@ -381,6 +393,8 @@ function createWindow() {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false,
+      webviewTag: true,
     },
   });
 
@@ -451,6 +465,20 @@ function getWorkspaceRoot(): string {
   return process.env.DAN_WORKSPACE_ROOT || process.cwd();
 }
 
+function resolveExistingContentBootstrapRoots() {
+  return resolveContentBootstrapRoots({
+    env: process.env,
+    cwd: process.cwd(),
+    appPath: app.getAppPath(),
+  }).filter((candidate) => {
+    try {
+      return fs.existsSync(path.join(candidate, "content"));
+    } catch {
+      return false;
+    }
+  });
+}
+
 function isStrictSandbox(): boolean {
   const val = (process.env.DAN_STRICT_SANDBOX || "").trim().toLowerCase();
   return val === "1" || val === "true";
@@ -473,6 +501,29 @@ function validateWritePath(filePath: string): string {
   return resolved;
 }
 
+async function writeFileAtomically(
+  filePath: string,
+  content: string | Buffer,
+  encoding?: BufferEncoding,
+) {
+  const dir = path.dirname(filePath);
+  const base = path.basename(filePath);
+  const tempPath = path.join(
+    dir,
+    `.${base}.dan-tmp-${process.pid}-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`,
+  );
+
+  if (typeof content === "string") {
+    await fs.promises.writeFile(tempPath, content, encoding ?? "utf-8");
+  } else {
+    await fs.promises.writeFile(tempPath, content);
+  }
+
+  await fs.promises.rename(tempPath, filePath);
+}
+
 ipcMain.handle("fs:readFile", async (_event, filePath: string) => {
   try {
     return await fs.promises.readFile(expandHome(filePath), "utf-8");
@@ -484,7 +535,7 @@ ipcMain.handle("fs:readFile", async (_event, filePath: string) => {
 
 ipcMain.handle("fs:writeFile", async (_event, filePath: string, content: string) => {
   const resolved = validateWritePath(filePath);
-  await fs.promises.writeFile(resolved, content, "utf-8");
+  await writeFileAtomically(resolved, content, "utf-8");
 });
 
 ipcMain.handle(
@@ -563,15 +614,47 @@ ipcMain.handle("shell:openPath", async (_event, filePath: string) => {
   return error === "";
 });
 
+ipcMain.handle("shell:openExternal", async (_event, url: string) => {
+  try {
+    await shell.openExternal(url);
+    return true;
+  } catch {
+    return false;
+  }
+});
+
+ipcMain.handle("contentPreview:getStatus", async (_event, projectRoot: string) => {
+  return hugoPreviewManager.getStatus(expandHome(projectRoot));
+});
+
+ipcMain.handle("contentPreview:start", async (_event, projectRoot: string) => {
+  return hugoPreviewManager.start(expandHome(projectRoot));
+});
+
+ipcMain.handle("contentPreview:stop", async (_event, projectRoot: string) => {
+  return hugoPreviewManager.stop(expandHome(projectRoot));
+});
+
+ipcMain.handle("contentPreview:restart", async (_event, projectRoot: string) => {
+  return hugoPreviewManager.restart(expandHome(projectRoot));
+});
+
+ipcMain.handle("content:getBootstrapRoots", async () => {
+  return resolveExistingContentBootstrapRoots();
+});
+
 // --- IPC Handlers: file watching ---
 
 ipcMain.handle("watch:start", async (_event, filePath: string) => {
   if (fileWatchers.has(filePath)) return;
   try {
-    const watcher = fs.watch(filePath, (eventType) => {
-      if (eventType === "change") {
-        mainWindow?.webContents.send("watch:changed", filePath);
-      }
+    const expandedPath = expandHome(filePath);
+    const dirPath = path.dirname(expandedPath);
+    const targetName = path.basename(expandedPath);
+    const watcher = fs.watch(dirPath, (_eventType, changedName) => {
+      const normalizedName = changedName == null ? null : String(changedName);
+      if (normalizedName && normalizedName !== targetName) return;
+      mainWindow?.webContents.send("watch:changed", filePath);
     });
     watcher.on("error", () => {
       fileWatchers.delete(filePath);
@@ -2007,6 +2090,7 @@ app.on("before-quit", () => {
     proc.kill();
   }
   mcpProcesses.clear();
+  hugoPreviewManager.stopAll();
 
   if (prodServer) {
     prodServer.close();

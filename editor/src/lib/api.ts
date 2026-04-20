@@ -364,6 +364,138 @@ export const listDocs = () =>
 export const listCodeRefs = (workflowId: string) =>
   request<{ refs: string[] }>(`/code-refs/${workflowId}`);
 
+export interface OrganismLogSummary {
+  path: string;
+  root_path: string;
+  relative_path: string;
+  display_name: string;
+  product: string;
+  stream_kind: string;
+  session_id: string;
+  turn_id: string;
+  task_id: string;
+  trace_id: string;
+  organism_id: string;
+  organ_id: string;
+  schema_version: string;
+  event_count: number;
+  span_count: number;
+  size_bytes: number;
+  updated_at: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+}
+
+export interface OrganismLogLaneAnalysis {
+  lane_id: string;
+  label: string;
+  started_at: string;
+  ended_at: string;
+  span_ids: string[];
+}
+
+export interface OrganismLogSpanAnalysis {
+  span_id: string;
+  label: string;
+  lane_id: string;
+  lane_label: string;
+  parent_span_id: string;
+  span_kind: string;
+  event: string;
+  event_family: string;
+  status: string;
+  summary: string;
+  worker_id: string;
+  tool_id: string;
+  tool_call_id: string;
+  model_call_id: string;
+  contract_id: string;
+  start_timestamp: string;
+  end_timestamp: string;
+  start_ms: number | null;
+  end_ms: number | null;
+  duration_ms: number | null;
+  exclusive_duration_ms: number | null;
+  waiting_duration_ms: number | null;
+  direct_blocker_span_ids: string[];
+  dependent_span_ids: string[];
+  critical_path_rank: number | null;
+}
+
+export interface OrganismLogDependencyEdge {
+  edge_id: string;
+  source_span_id: string;
+  target_span_id: string;
+  relationship: "blocked_by" | "lane_sequence" | "parent";
+  lag_ms: number | null;
+}
+
+export interface OrganismLogBlockingChain {
+  target_span_id: string;
+  direct_blocker_span_ids: string[];
+  blocker_chain_span_ids: string[];
+  waiting_duration_ms: number | null;
+  status: string;
+  wait_reason: string;
+}
+
+export interface OrganismLogAnalysis {
+  schema_version: string;
+  event_count: number;
+  span_count: number;
+  timeline: {
+    started_at: string;
+    ended_at: string;
+    duration_ms: number | null;
+    max_parallel_spans: number;
+    lanes: OrganismLogLaneAnalysis[];
+    spans: OrganismLogSpanAnalysis[];
+  };
+  graph: {
+    nodes: OrganismLogSpanAnalysis[];
+    edges: OrganismLogDependencyEdge[];
+    blocker_chains: OrganismLogBlockingChain[];
+    critical_path_span_ids: string[];
+    critical_path_duration_ms: number | null;
+  };
+}
+
+export interface OrganismLogListResponse {
+  root_path: string;
+  logs: OrganismLogSummary[];
+}
+
+export interface OrganismLogAnalysisResponse {
+  path: string;
+  log: OrganismLogSummary;
+  analysis: OrganismLogAnalysis;
+}
+
+export const fetchOrganismLogs = (
+  rootPath: string,
+  options: { limit?: number } = {},
+) => {
+  const params = new URLSearchParams();
+  params.set("root_path", rootPath);
+  if (options.limit != null) params.set("limit", String(options.limit));
+  return request<OrganismLogListResponse>(
+    `/organism-logs?${params.toString()}`,
+  );
+};
+
+export const fetchOrganismLogAnalysis = (
+  path: string,
+  options: { rootPath?: string } = {},
+) => {
+  const params = new URLSearchParams();
+  params.set("path", path);
+  if (options.rootPath) params.set("root_path", options.rootPath);
+  return request<OrganismLogAnalysisResponse>(
+    `/organism-logs/analyze?${params.toString()}`,
+    { timeoutMs: 20000 },
+  );
+};
+
 // -- Chat --------------------------------------------------------------------
 
 export interface ChatMessageResponse {

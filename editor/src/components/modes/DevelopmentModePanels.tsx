@@ -76,7 +76,7 @@ const PREVIEW_PANEL_COPY: Record<
     eyebrow: "Desktop runtime",
     title: "Local history follows real files",
     body:
-      "Timeline and history views are most useful once DAN can read and watch files from the desktop app.",
+      "Timeline now includes organism-log traces alongside local file history, and both are most useful once DAN can read and watch files from the desktop app.",
   },
   tasks: {
     eyebrow: "Desktop runtime",

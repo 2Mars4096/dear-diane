@@ -1,5 +1,9 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
+const previewBridgePreloadPath = `${__dirname}${
+  __dirname.endsWith("/") || __dirname.endsWith("\\") ? "" : "/"
+}previewBridgePreload.cjs`;
+
 contextBridge.exposeInMainWorld("electronAPI", {
   isElectron: true,
 
@@ -24,7 +28,20 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   shell: {
     openPath: (filePath) => ipcRenderer.invoke("shell:openPath", filePath),
+    openExternal: (url) => ipcRenderer.invoke("shell:openExternal", url),
     run: (opts) => ipcRenderer.invoke("shell:run", opts),
+  },
+
+  contentPreview: {
+    bridgePreloadPath: previewBridgePreloadPath,
+    getStatus: (projectRoot) => ipcRenderer.invoke("contentPreview:getStatus", projectRoot),
+    start: (projectRoot) => ipcRenderer.invoke("contentPreview:start", projectRoot),
+    stop: (projectRoot) => ipcRenderer.invoke("contentPreview:stop", projectRoot),
+    restart: (projectRoot) => ipcRenderer.invoke("contentPreview:restart", projectRoot),
+  },
+
+  contentBootstrap: {
+    getRoots: () => ipcRenderer.invoke("content:getBootstrapRoots"),
   },
 
   search: {
