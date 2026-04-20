@@ -1,6 +1,6 @@
 # 1: DAN Custom UI — Master Specification
 
-**Status:** in-progress (Phases 1–4 complete, Phases 5–6 not yet planned)
+**Status:** in-progress (Phases 1–5.6 are defined and largely landed; Content mode now has the shell, managed Hugo preview, autosave, validation, and conflict-recovery slices; Analytics and broader polish remain for later)
 **Goal:** Build a workspace-based desktop app that is as convenient as ChatGPT for simple tasks, as powerful as Cursor/VS Code for coding, and fully leverages DAN's workflow orchestration for complex tail tasks.
 
 ## Vision
@@ -88,7 +88,7 @@ The UI should not fall back to VS Code's single-root restriction, but it still n
 - **Outside pinned roots = explicit confirmation**: the first mutating action outside trusted roots asks for confirmation or offers to pin that location into the workspace
 - **System/private paths are not ambient suggestions**: DAN does not proactively surface sensitive/system directories unless the user explicitly navigates there
 
-## The 5 Layout Modes
+## The 6 Layout Modes
 
 ### Chat (Default)
 
@@ -111,6 +111,13 @@ For: academic papers, literature reviews, systematic investigations.
 
 **Central artifact:** A document being authored, plus a long-running domain knowledge distillation track when needed.
 **Layout:** Function-first internal surfaces with one-word labels: **Desk** (center, active work with **Editor** / **PDF Reader** / **Furnace** tabs), **Library** (PDFs/files/notes), **Plan** (outline/planning), **Training** (long-running recipe distillation → opens Furnace). Terminal panel (shared with Development mode) replaces old bottom dock. See [1-7-research-simplification](1-7-research-simplification.md).
+
+### Content
+
+For: local knowledge bases, note gardens, and Markdown/Hugo publishing workflows.
+
+**Central artifact:** A page being edited against its real rendered output.
+**Layout:** content library (left) + writing desk (center, frontmatter + markdown editor) + live site preview (right) + quiet diagnostics/chat sidecar. The first implementation slices are now landed in DAN with project discovery, page browsing, markdown drafting, debounced autosave plus explicit Save/`Cmd+S`, managed Hugo preview, validation, and external-change recovery; Phase 1 still stays page-level and Hugo-first rather than block-native.
 
 ### Analytics
 
@@ -138,7 +145,7 @@ For: pipeline management, workflow editing, monitoring, scheduled tasks.
 │ │ [Debug auth] [Prompt refactor] [Scratch] [+]            │ │
 │ └─────────────────────────────────────────────────────────┘ │
 │ ┌─ Mode Bar ──────────────────────────────────────────────┐ │
-│ │ Chat │ Code │ Research │ Analytics │ Operations          │ │
+│ │ Chat │ Code │ Research │ Content │ Analytics │ Operations│ │
 │ └─────────────────────────────────────────────────────────┘ │
 │ ┌─ Sidebar ──────┬─ Workspace ────────────────────────────┐ │
 │ │ Mode Sidebar   │                                        │ │
@@ -156,7 +163,7 @@ For: pipeline management, workflow editing, monitoring, scheduled tasks.
 
 | Concept | What It Controls | User Sees | How Selected |
 |---|---|---|---|
-| **Layout mode** (Chat/Code/Research/...) | Panel arrangement, visible surfaces | Mode bar at top | Click or Cmd+1..5 |
+| **Layout mode** (Chat/Code/Research/...) | Panel arrangement, visible surfaces | Mode bar at top | Click or Cmd+1..6 |
 | **Behavioral mode** (`ask` / `conversation` / `agent` / `plan` / `debug`) | Tool availability, prompt tuning | Subtle badge (optional) | Auto-detected from message; override via `/ask`, `/agent`, etc. |
 
 The backend modes are wired to:
@@ -212,7 +219,7 @@ See [1-5-marketplace-extensions](1-5-marketplace-extensions.md) for detailed pla
 2. Task needs tools → tool outputs render inline with rich formatting
 3. Task needs multiple steps → plan sidebar appears showing progress
 4. Task needs specialized workspace → system suggests mode switch ("This looks like a coding task. Switch to Code mode?")
-5. User can always manually switch modes via mode bar or Cmd+1..5
+5. User can always manually switch modes via mode bar or Cmd+1..6
 
 ## Development Phases
 
@@ -248,19 +255,23 @@ Kill redundant shell chrome, give every mode its own persistent chat sidebar, ad
 Add app-global Telegram/WhatsApp controls to the shell, with first-run affordances and in-app WhatsApp QR pairing.
 - [1-10-messaging-onboarding-and-controls](1-10-messaging-onboarding-and-controls.md) — settings-based messaging controls, shell status button, provider-aware first-run onboarding, Telegram token/helper flow, WhatsApp Web QR pairing/reset, and dependency-aware setup guidance *(implementation is largely landed; broader UI coverage + manual smoke remain)*
 
-### Phase 6: Analytics + Operations
+### Phase 6: Content Mode + Live Preview — planned
+Knowledge-base/Markdown publishing workspace with page-level editing, managed Hugo preview, and safe autosave/validation.
+- [3-content-mode-and-live-preview](3-content-mode-and-live-preview.md) — Content mode shell, markdown/frontmatter editing, Hugo preview bridge, and safe save/validation loop
+
+### Phase 7: Analytics + Operations
 Data science workspace + workflow management.
 - Analytics mode (data tables, code cells, charts, experiment tracker)
 - Operations mode (evolve current workflow editor into operations workspace)
 
-### Phase 7: Polish + Custom Modes
+### Phase 8: Polish + Custom Modes
 User-configurable layouts. Mode auto-detection. Domain learning integration. Recipe marketplace. If the long-running recipe/distillation tab outgrows Research mode, it can later become its own dedicated surface.
 
 ## Design Principles
 
 1. **Zero-config start** — Open the app, start typing. Chat mode is the default.
 2. **Progressive disclosure** — Simple tasks look simple. Complexity appears only when the task demands it.
-3. **Keyboard-first** — Cmd+Shift+P for command palette, Cmd+P for quick open, Cmd+1..5 for modes, `/` for slash, `@` for mentions. Reserve Cmd+K for context-sensitive inline AI actions inside editor-like surfaces.
+3. **Keyboard-first** — Cmd+Shift+P for command palette, Cmd+P for quick open, Cmd+1..6 for modes, `/` for slash, `@` for mentions. Reserve Cmd+K for context-sensitive inline AI actions inside editor-like surfaces.
 4. **Memory-aware** — Remembers preferences, past work, style. No re-configuring every session.
 5. **Context carries** — Switching modes keeps workspace, memory, and threads. No data loss.
 6. **The workflow is accessible, not mandatory** — "Show pipeline" toggle reveals the underlying graph.

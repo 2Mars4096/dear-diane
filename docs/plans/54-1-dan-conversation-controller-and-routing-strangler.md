@@ -6,13 +6,13 @@
 
 ## Tasks
 
-- [ ] 1. Freeze the new top-level DAN-v2 control contract
+- [x] 1. Freeze the new top-level DAN-v2 control contract
   - [x] 1-1. Define the primary turn decision schema (`respond`, `clarify`, `delegate` + selected lane `code|research|incident|legacy`)
   - [x] 1-2. Define the shared DAN facts/context packet passed to that controller
-  - [ ] 1-3. Include current surface, workspace root, platform, approval mode, and available adapters/tool families in that packet
+  - [x] 1-3. Include current surface, workspace root, platform, approval mode, and available adapters/tool families in that packet
   - [x] 1-4. Define `SupervisorBrief` fields such as `why_now`, `requested_delta`, `success_test`, `avoid`, and `stop_and_ask_if`
-  - [ ] 1-5. Define `WorkerReport` fields such as `what_changed`, `evidence`, `artifacts`, `blockers`, `confidence`, and `best_next_question`
-  - [ ] 1-6. Define `ReviewDecision` fields such as `continue`, `sharpen`, `redirect`, `escalate`, or `stop`, plus the next brief delta when continuing
+  - [x] 1-5. Define `WorkerReport` fields such as `what_changed`, `evidence`, `artifacts`, `blockers`, `confidence`, and `best_next_question`
+  - [x] 1-6. Define `ReviewDecision` fields such as `continue`, `sharpen`, `redirect`, `escalate`, or `stop`, plus the next brief delta when continuing
 - [x] 2. Build the durable controller on `DurableAgentRunner`
   - [x] 2-1. Add `src/dan/worker/organisms/dan_conversation.py`
   - [x] 2-2. Reuse structured output contracts and hedge behavior where they already work for `dan code` / `dan research`
@@ -53,4 +53,5 @@
 - Landed first slice: `src/dan/worker/organisms/dan_conversation.py` defines the durable DAN-v2 top controller, `src/dan/server/control_plane.py` bridges that controller into the app chat plane, and `/api/chat/message` now persists controller/code/research session state plus the latest brief/report/decision triple in chat-thread metadata.
 - Landed second slice: `LocalChatRuntime` and the in-process adapter concierge bridge now honor the same `DAN_CONTROL_PLANE` selector and reuse the shared chat-router control-plane path instead of bypassing it.
 - Landed third slice: the top-level controller now accepts `selected_lane=incident`, routes operational-failure cues into a durable Incident Commander controller, and persists incident session payloads alongside controller/code/research sessions.
+- Landed fourth slice: the shared DAN-v2 membrane is now richer and closer to the target recurrent contract. `DANConversationFacts` now carries workspace root, platform, approval mode, and surfaced adapter/tool-family availability, while `WorkerReport` / `ReviewDecision` now persist structured `what_changed`, `evidence`, `artifacts`, `confidence`, `best_next_question`, and `next_delta` fields through `src/dan/server/control_plane.py` instead of only terse summary/status strings.
 - Current limitation: delegated execution still falls through to the shared legacy runtime after DAN-v2 and the specialist controller shape the handoff, and not every external surface has been migrated yet.
