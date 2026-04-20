@@ -10,7 +10,7 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Sequence, TypeVar
+from typing import Any, Awaitable, Callable, Literal, Sequence, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -33,6 +33,12 @@ from dan.cli.research_product import (
 from dan.providers import LLMProvider
 from dan.providers.factory import build_provider_registry
 from dan.server.runtime_config import build_engine_config_from_env
+from dan.worker.organism_log import (
+    ORGANISM_LOG_SCHEMA_VERSION,
+    OrganismLogContext,
+    OrganismLogWriter,
+    new_trace_id,
+)
 from dan.worker.organisms import (
     MAX_DEEP_RESEARCH_READERS,
     ProjectExecutionTask,
@@ -50,6 +56,7 @@ from dan.worker.organisms import (
     run_deep_research_organ_live,
 )
 from dan.worker.organisms.research_conversation import (
+    _allows_best_effort_final_closure,
     _fallback_intention_plan,
     _fallback_review_decision,
     _fallback_turn_decision,
@@ -66,13 +73,13 @@ DEFAULT_RESEARCH_ACCEPTANCE_CRITERIA = [
     "When concrete external entities materially affect the conclusion, verify their current identity, status, version, or availability from an authoritative source or mark them explicitly unverified.",
     "Include a compact verification appendix for the critical facts, marking each one as verified, unverified, or conflicted.",
     "Include a compact audit appendix for unresolved logic, freshness, source-authority, methodology, or scope-fit gaps, and mark the overall report readiness explicitly.",
-    "Include standard quality_gates rows for time_anchor, scope_boundary, source_authority, numeric_reconciliation, claim_object_fit, and final_status; mark unresolved blocking gates as fail instead of hiding them in prose.",
     "Before broad search, choose a temporal frame (current-as-of-runtime, historical snapshot, trend over time, or timeless/default), anchor relative-time language to the runtime date/timezone when relevant, and keep the report consistent with that frame.",
     "Exclusivity, absence, availability, or status claims must state the searched scope/universe and use primary/authoritative sources when possible.",
     "Material numeric conflicts should be reconciled with an explicit method when possible, such as deriving totals from components before accepting vendor aggregates.",
-    "Do not present the report as actionable when critical facts remain unverified/conflicted or when material audit issues remain unresolved.",
+    "When important facts remain available only through proxies or cannot be verified in public sources, say so directly and make the recommendation provisional instead of launching endless follow-up passes.",
     "Keep the report bounded and inspectable.",
 ]
+DEFAULT_RESEARCH_MAX_SUPERVISION_LOOPS = 3
 DEFAULT_RESEARCH_HARD_CONSTRAINTS = [
     "Stay bounded and inspectable.",
     "Prefer direct evidence over speculation.",
@@ -81,12 +88,9 @@ DEFAULT_RESEARCH_SOFT_CONSTRAINTS = [
     "Prefer the smallest sufficient search surface that still grounds the answer.",
 ]
 DEFAULT_RESEARCH_TOOL_IDS = [
-    "list_directory",
-    "file_read",
     "web_search",
-    "git_status",
-    "git_diff",
-    "git_log",
+    "file_read",
+    "list_directory",
 ]
 _RESEARCH_TOOL_EXCLUSIONS = frozenset(
     {
@@ -350,7 +354,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--json",
         action="store_true",
-        help="Print the full research report or config payload as JSON.",
+        help="Print the full structured research report or config payload as JSON.",
     )
     parser.add_argument(
         "--output",
@@ -382,6 +386,14 @@ def _plan_evidence_target_note(
     prefix: str = "Target",
 ) -> str:
     parts = [f"{prefix} {str(target.target_id or '').strip() or 'target'}: {str(target.claim).strip()}"]
+    if str(target.entity_type or "").strip():
+        parts.append(f"Entity type: {str(target.entity_type).strip()}")
+    if str(target.metric_kind or "").strip():
+        parts.append(f"Metric kind: {str(target.metric_kind).strip()}")
+    if str(target.series_kind or "").strip():
+        parts.append(f"Series kind: {str(target.series_kind).strip()}")
+    if str(target.comparison_basis or "").strip():
+        parts.append(f"Comparison basis: {str(target.comparison_basis).strip()}")
     if str(target.as_of or "").strip():
         parts.append(f"As of: {str(target.as_of).strip()}")
     if str(target.unit_or_format or "").strip():
@@ -659,6 +671,10 @@ def _plan_payload(
             {
                 "target_id": str(item.target_id or "").strip(),
                 "claim": str(item.claim or "").strip(),
+                "entity_type": str(item.entity_type or "").strip(),
+                "metric_kind": str(item.metric_kind or "").strip(),
+                "series_kind": str(item.series_kind or "").strip(),
+                "comparison_basis": str(item.comparison_basis or "").strip(),
                 "why_it_matters": str(item.why_it_matters or "").strip(),
                 "related_subproblem_ids": [
                     str(problem_id).strip()
@@ -978,7 +994,7 @@ def _effective_max_supervision_loops(
     if candidate is None:
         candidate = os.environ.get("DAN_RESEARCH_MAX_SUPERVISION_LOOPS")
     if candidate is None:
-        return None
+        return DEFAULT_RESEARCH_MAX_SUPERVISION_LOOPS
     if isinstance(candidate, int):
         value = candidate
     else:
@@ -1168,6 +1184,8 @@ class ResearchProgressRenderer:
     def __init__(self, *, enabled: bool, show_model_trace: bool = False) -> None:
         self._enabled = bool(enabled)
         self._show_model_trace = bool(show_model_trace)
+        self._open_model_streams: dict[tuple[str, str], bool] = {}
+        self._completed_model_streams: dict[tuple[str, str], bool] = {}
 
     @staticmethod
     def _scope_label(value: Any) -> str:
@@ -1178,10 +1196,75 @@ class ResearchProgressRenderer:
             return text.split(".", 1)[1]
         return text
 
+    def _stream_prefix(self, channel: str, event: dict[str, Any]) -> str:
+        scope = self._scope_label(event.get("worker_id"))
+        if scope:
+            return f"[{scope}][{channel}]"
+        return f"[{channel}]"
+
+    @staticmethod
+    def _stream_key(event: dict[str, Any]) -> tuple[str, str]:
+        return (
+            str(event.get("worker_id") or ""),
+            str(event.get("round") or ""),
+        )
+
+    def _flush_open_model_streams(self) -> None:
+        if not self._open_model_streams:
+            return
+        if any(self._open_model_streams.values()):
+            print()
+        self._completed_model_streams.update(self._open_model_streams)
+        self._open_model_streams.clear()
+
+    @staticmethod
+    def _format_timeout_seconds(value: Any) -> str | None:
+        try:
+            timeout = float(value)
+        except (TypeError, ValueError):
+            return None
+        if timeout <= 0:
+            return None
+        if timeout.is_integer():
+            return f"{int(timeout)}s"
+        return f"{timeout:.1f}s"
+
     def __call__(self, event: dict[str, Any]) -> None:
         if not self._enabled:
             return
         name = str(event.get("event") or "")
+        if name == "model.stream.started":
+            if not self._show_model_trace:
+                return
+            key = self._stream_key(event)
+            if key in self._open_model_streams:
+                return
+            self._completed_model_streams.pop(key, None)
+            self._open_model_streams[key] = False
+            return
+        if name == "model.stream.delta":
+            if not self._show_model_trace:
+                return
+            key = self._stream_key(event)
+            if key not in self._open_model_streams or not self._open_model_streams[key]:
+                prefix = self._stream_prefix("model", event)
+                print(f"{prefix} stream: ", end="", flush=True)
+            self._open_model_streams[key] = True
+            delta = str(event.get("delta") or "").replace("\r", "").replace("\n", "\\n")
+            if delta:
+                print(delta, end="", flush=True)
+            return
+        if name == "model.stream.completed":
+            if not self._show_model_trace:
+                return
+            key = self._stream_key(event)
+            had_visible_output = bool(self._open_model_streams.pop(key, False))
+            self._completed_model_streams[key] = had_visible_output
+            if had_visible_output:
+                print()
+            return
+        if name not in {"model.stream.started", "model.stream.delta"}:
+            self._flush_open_model_streams()
         if name == "assistant.message":
             text = str(event.get("message") or "").strip()
             if text:
@@ -1227,11 +1310,33 @@ class ResearchProgressRenderer:
                 return
             scope = self._scope_label(event.get("worker_id"))
             prefix = f"[{scope}][model]" if scope else "[model]"
+            extras: list[str] = [f"tools={event.get('tool_count', 0)}"]
+            if event.get("message_count") is not None:
+                extras.append(f"msgs={event.get('message_count')}")
+            if event.get("total_input_chars") is not None:
+                extras.append(f"chars={event.get('total_input_chars')}")
+            if event.get("max_tokens") is not None:
+                extras.append(f"max_tokens={event.get('max_tokens')}")
+            timeout = self._format_timeout_seconds(event.get("request_timeout_seconds"))
+            if timeout:
+                extras.append(f"timeout={timeout}")
+            if event.get("request_mode"):
+                extras.append(f"mode={event.get('request_mode')}")
+            if event.get("hedged"):
+                extras.append("hedged=yes")
+            if event.get("override_reasoning_enabled") is not None:
+                extras.append(
+                    "reasoning="
+                    + ("enabled" if event.get("override_reasoning_enabled") else "disabled")
+                )
+            override_thinking = str(event.get("override_thinking_type") or "").strip()
+            if override_thinking:
+                extras.append(f"thinking={override_thinking}")
             print(
                 f"{prefix} request: "
                 f"round={event.get('round', '?')} "
                 f"model={event.get('model') or '(unknown)'} "
-                f"tools={event.get('tool_count', 0)}"
+                f"{' '.join(extras)}"
             )
             return
         if name == "model.responded":
@@ -1251,7 +1356,21 @@ class ResearchProgressRenderer:
             )
             if tool_calls:
                 summary += f" tool_calls={', '.join(tool_calls)}"
+            finish_reason = str(event.get("finish_reason") or "").strip()
+            if finish_reason:
+                summary += f" finish_reason={finish_reason}"
+            if event.get("usage_total_tokens") is not None:
+                summary += f" tokens={event.get('usage_total_tokens')}"
+            if event.get("usage_cached_input_tokens") is not None:
+                summary += f" cached={event.get('usage_cached_input_tokens')}"
+            if event.get("text_chars") is not None:
+                summary += f" chars={event.get('text_chars')}"
+            if event.get("hedged"):
+                summary += " hedged=yes"
             print(summary)
+            stream_key = self._stream_key(event)
+            if event.get("streamed") and self._completed_model_streams.pop(stream_key, False):
+                return
             text = _truncate_text(str(event.get("text") or ""), limit=220)
             if text:
                 print(f"{prefix} preview: {text}")
@@ -1294,30 +1413,47 @@ def _emit_research_event(event_callback, event: dict[str, Any]) -> None:
 class ResearchEventLogger:
     """Persist timestamped DAN Research events to one JSONL file."""
 
-    def __init__(self, *, path: Path) -> None:
-        self.path = path.resolve()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._sequence = 0
-        if self.path.exists():
-            with self.path.open("r", encoding="utf-8") as existing:
-                self._sequence = sum(1 for _line in existing)
-        self._handle = self.path.open("a", encoding="utf-8")
+    def __init__(
+        self,
+        *,
+        path: Path,
+        stream_kind: Literal["bounded_run", "control_plane"] = "bounded_run",
+        session_id: str = "",
+        turn_id: str = "",
+        task_id: str = "",
+        organism_id: str = "",
+        organ_id: str = "",
+        trace_id: str = "",
+    ) -> None:
+        self._writer = OrganismLogWriter(
+            path=path,
+            context=OrganismLogContext(
+                product="dan_research",
+                stream_kind=stream_kind,
+                session_id=session_id,
+                turn_id=turn_id,
+                task_id=task_id,
+                trace_id=trace_id,
+                organism_id=organism_id,
+                organ_id=organ_id,
+            ),
+        )
+        self.path = self._writer.path
 
     def emit(self, event: dict[str, Any]) -> None:
-        self._sequence += 1
-        payload = {
-            "timestamp": _event_timestamp_iso(),
-            "sequence": self._sequence,
-            **dict(event),
-        }
-        self._handle.write(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
-        )
-        self._handle.write("\n")
-        self._handle.flush()
+        self._writer.emit(event)
+
+    def emit_stage_records(self, stage_records: Sequence[dict[str, Any]]) -> None:
+        self._writer.emit_stage_records(stage_records)
+
+    def emit_trace_rows(self, trace_rows: Sequence[dict[str, Any]]) -> None:
+        self._writer.emit_trace_rows(trace_rows)
+
+    def update_context(self, **updates: Any) -> None:
+        self._writer.update_context(**updates)
 
     def close(self) -> None:
-        self._handle.close()
+        self._writer.close()
 
 
 def _log_event(logger: ResearchEventLogger | None, event: str, **payload: Any) -> None:
@@ -1759,9 +1895,28 @@ class ResearchConversationOutcome(BaseModel):
     assistant_messages: list[str] = Field(default_factory=list)
     question: str | None = None
     reports: list[ResearchOrganismReport] = Field(default_factory=list)
+    response_kind: Literal["chat_reply", "report_reply", "clarification"] = "chat_reply"
+    artifact_title: str = ""
+    artifact_markdown: str = ""
+    artifact_path: str | None = None
 
 
-def _assistant_text(message: str) -> str:
+def _assistant_block_text(message: str) -> str:
+    text = str(message or "")
+    if not text:
+        return ""
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    cleaned_lines = [line.rstrip() for line in lines]
+    while cleaned_lines and not cleaned_lines[0].strip():
+        cleaned_lines.pop(0)
+    while cleaned_lines and not cleaned_lines[-1].strip():
+        cleaned_lines.pop()
+    return "\n".join(cleaned_lines)
+
+
+def _assistant_text(message: str, *, preserve_formatting: bool = False) -> str:
+    if preserve_formatting:
+        return _assistant_block_text(message)
     return " ".join(str(message or "").strip().split())
 
 
@@ -1786,6 +1941,12 @@ def _report_context(report: ResearchOrganismReport) -> ResearchConversationRepor
             else dict(fact)
             for fact in report.verification_facts
         ],
+        evidence_integrity=[
+            row.model_dump(mode="json")
+            if hasattr(row, "model_dump")
+            else dict(row)
+            for row in report.evidence_integrity
+        ],
         audit_issues=[
             issue.model_dump(mode="json")
             if hasattr(issue, "model_dump")
@@ -1799,6 +1960,7 @@ def _report_context(report: ResearchOrganismReport) -> ResearchConversationRepor
             for gate in report.quality_gates
         ],
         report_readiness=report.report_readiness,
+        artifact_mode=report.artifact_mode,
         readiness_note=report.readiness_note,
         confidence=report.confidence,
         recommended_change=report.recommended_change,
@@ -1827,11 +1989,29 @@ def _set_report_quality_gate(
     summary: str,
     required_follow_up: str = "",
     evidence_ref: str = "",
+    allow_downgrade: bool = False,
 ) -> None:
+    severity_rank = {
+        "not_applicable": -1,
+        "pass": 0,
+        "warn": 1,
+        "fail": 2,
+    }
+    normalized_status = str(status or "").strip().lower()
     for item in report.quality_gates:
         if str(getattr(item, "gate", "") or "").strip() != gate:
             continue
-        item.status = status
+        existing_status = str(getattr(item, "status", "") or "").strip().lower()
+        if (
+            not allow_downgrade
+            and severity_rank.get(existing_status, 0) > severity_rank.get(normalized_status, 0)
+        ):
+            if required_follow_up and not str(item.required_follow_up or "").strip():
+                item.required_follow_up = required_follow_up
+            if evidence_ref and not str(item.evidence_ref or "").strip():
+                item.evidence_ref = evidence_ref
+            return
+        item.status = normalized_status
         item.summary = summary
         item.required_follow_up = required_follow_up
         item.evidence_ref = evidence_ref
@@ -1839,7 +2019,7 @@ def _set_report_quality_gate(
     report.quality_gates.append(
         ResearchQualityGate(
             gate=gate,
-            status=status,
+            status=normalized_status,
             summary=summary,
             required_follow_up=required_follow_up,
             evidence_ref=evidence_ref,
@@ -1881,6 +2061,7 @@ def _mark_report_incomplete(
     follow_up = "Run another bounded research pass and include that pass before treating the artifact as finished."
     report.status = "incomplete"
     report.report_readiness = "blocked"
+    report.artifact_mode = "blocker_report"
     if reason not in str(report.readiness_note or ""):
         report.readiness_note = (
             f"{str(report.readiness_note).strip()} {reason}".strip()
@@ -1902,6 +2083,227 @@ def _mark_report_incomplete(
         affected_claim="final report closure",
         required_follow_up=follow_up,
     )
+
+
+def _mark_report_provisional_close(
+    report: ResearchOrganismReport,
+    *,
+    reason: str,
+) -> None:
+    follow_up = (
+        "Treat the memo as provisional only: refresh the remaining stale or disputed "
+        "facts before relying on it as a final report."
+    )
+    report.status = "completed"
+    report.report_readiness = "provisional"
+    report.artifact_mode = "provisional_report"
+    if reason not in str(report.readiness_note or ""):
+        report.readiness_note = (
+            f"{str(report.readiness_note).strip()} {reason}".strip()
+            if str(report.readiness_note or "").strip()
+            else reason
+        )
+    _set_report_quality_gate(
+        report,
+        gate="final_status",
+        status="warn",
+        summary=reason,
+        required_follow_up=follow_up,
+        allow_downgrade=True,
+    )
+
+
+def _summarize_evidence_integrity(report: ResearchOrganismReport) -> str:
+    counts = {
+        "accepted": 0,
+        "accepted_with_proxy": 0,
+        "conflicted": 0,
+        "unverifiable": 0,
+        "pending": 0,
+    }
+    for row in report.evidence_integrity:
+        key = str(getattr(row, "status", "") or "").strip().lower()
+        if key in counts:
+            counts[key] += 1
+    parts: list[str] = []
+    if counts["accepted"]:
+        parts.append(f"{counts['accepted']} accepted")
+    if counts["accepted_with_proxy"]:
+        parts.append(f"{counts['accepted_with_proxy']} proxy/caveated")
+    if counts["unverifiable"]:
+        parts.append(f"{counts['unverifiable']} unverifiable")
+    if counts["pending"]:
+        parts.append(f"{counts['pending']} still unresolved")
+    if counts["conflicted"]:
+        parts.append(f"{counts['conflicted']} conflicted")
+    return ", ".join(parts)
+
+
+def _set_readiness_if_weaker(
+    report: ResearchOrganismReport,
+    *,
+    readiness: str,
+) -> None:
+    order = {
+        "blocked": 0,
+        "provisional": 1,
+        "grounded": 2,
+        "actionable": 3,
+    }
+    current = str(report.report_readiness or "").strip().lower()
+    if order.get(readiness, 0) < order.get(current, 0):
+        report.report_readiness = readiness
+        if readiness == "blocked":
+            report.artifact_mode = "blocker_report"
+        elif readiness == "provisional" and report.artifact_mode == "final_report":
+            report.artifact_mode = "provisional_report"
+
+
+def _apply_evidence_integrity_pass(report: ResearchOrganismReport) -> None:
+    if not report.evidence_integrity:
+        return
+
+    rows = list(report.evidence_integrity)
+    conflicted_rows = [row for row in rows if row.status == "conflicted"]
+    pending_rows = [row for row in rows if row.status == "pending"]
+    caveated_rows = [
+        row
+        for row in rows
+        if row.status in {"accepted_with_proxy", "unverifiable"}
+    ]
+    source_identity_gaps = [
+        row
+        for row in rows
+        if row.status != "accepted" and row.source_identity in {"unclear", "missing"}
+    ]
+    metric_gaps = [
+        row
+        for row in rows
+        if row.status != "accepted"
+        and (
+            row.metric_identity in {"unclear", "missing"}
+            or row.unit_scale_consistency in {"unclear", "missing"}
+            or row.same_source_consistency in {"unclear", "missing"}
+        )
+    ]
+    time_gaps = [
+        row
+        for row in rows
+        if row.status != "accepted" and row.time_alignment in {"unclear", "missing"}
+    ]
+    scope_gaps = [
+        row
+        for row in rows
+        if row.status != "accepted" and row.scope_alignment in {"unclear", "missing"}
+    ]
+
+    if source_identity_gaps:
+        _set_report_quality_gate(
+            report,
+            gate="source_authority",
+            status="warn",
+            summary=(
+                "Evidence integrity pass found claim-level source-identity gaps that still "
+                "need authoritative or better-matched sourcing."
+            ),
+            required_follow_up=(
+                "Confirm the cited URL/title/date/entity for the unresolved claims before "
+                "treating them as settled."
+            ),
+        )
+    if metric_gaps:
+        _set_report_quality_gate(
+            report,
+            gate="numeric_reconciliation",
+            status="warn",
+            summary=(
+                "Evidence integrity pass found claim-level metric, unit/scale, or "
+                "same-source consistency gaps."
+            ),
+            required_follow_up=(
+                "Normalize the metric identity and units/scale for the unresolved claims "
+                "before treating them as clean numeric facts."
+            ),
+        )
+    if time_gaps:
+        _set_report_quality_gate(
+            report,
+            gate="time_anchor",
+            status="warn",
+            summary=(
+                "Evidence integrity pass found claims that still lack a clean as-of date "
+                "or time alignment."
+            ),
+            required_follow_up=(
+                "Add explicit as-of dates or explain the publication lag for the unresolved claims."
+            ),
+        )
+    if scope_gaps:
+        _set_report_quality_gate(
+            report,
+            gate="scope_boundary",
+            status="warn",
+            summary=(
+                "Evidence integrity pass found claims whose geography, market, or scope "
+                "boundary is still unclear."
+            ),
+            required_follow_up=(
+                "Clarify the market/geography/scope for the unresolved claims before "
+                "treating them as interchangeable."
+            ),
+        )
+
+    if conflicted_rows:
+        summary = _summarize_evidence_integrity(report)
+        _set_readiness_if_weaker(report, readiness="blocked")
+        _set_report_quality_gate(
+            report,
+            gate="final_status",
+            status="fail",
+            summary=(
+                "Evidence integrity pass still has conflicted core claims. "
+                f"Current integrity summary: {summary}."
+            ),
+            required_follow_up=(
+                "Resolve or explicitly retire the conflicted claims before treating the artifact as finished."
+            ),
+        )
+        for row in conflicted_rows[:3]:
+            _append_report_audit_issue(
+                report,
+                kind="conflict",
+                severity="major",
+                issue=(
+                    "Evidence integrity pass still sees this claim as conflicted: "
+                    f"{row.claim}."
+                ),
+                affected_claim=row.claim,
+                required_follow_up=(
+                    row.rationale
+                    or "Find stronger evidence or state explicitly that the claim remains conflicted."
+                ),
+            )
+    elif pending_rows or caveated_rows:
+        summary = _summarize_evidence_integrity(report)
+        _set_readiness_if_weaker(report, readiness="provisional")
+        _set_report_quality_gate(
+            report,
+            gate="final_status",
+            status="warn",
+            summary=(
+                "Evidence integrity pass found unresolved or caveated claims, so the "
+                f"artifact should stay provisional. Current integrity summary: {summary}."
+            ),
+            required_follow_up=(
+                "Either resolve the remaining pending claims or keep them explicitly caveated in the final memo."
+            ),
+        )
+
+    summary = _summarize_evidence_integrity(report)
+    if summary and summary not in str(report.readiness_note or ""):
+        prefix = str(report.readiness_note or "").strip()
+        integrity_note = f"Evidence integrity: {summary}."
+        report.readiness_note = f"{prefix} {integrity_note}".strip() if prefix else integrity_note
 
 
 def _conversation_facts(
@@ -2003,6 +2405,12 @@ def _conversation_context(
             for entry in session.conversation[-8:]
         ],
         recent_reports=recent_reports[-6:],
+        claim_ledger=[
+            fact.model_dump(mode="json")
+            if hasattr(fact, "model_dump")
+            else dict(fact)
+            for fact in session.claim_ledger
+        ],
     )
 
 
@@ -2096,6 +2504,7 @@ async def run_research_organism_live(
     thinking_mode: str = "auto",
     event_callback=None,
     session_context: dict[str, Any] | None = None,
+    trace_id: str | None = None,
 ) -> ResearchOrganismReport:
     now_context = _now_context()
     frame_current_date = str(
@@ -2137,6 +2546,7 @@ async def run_research_organism_live(
         research_reader_count=research_reader_count,
         research_reader_briefs=list(reader_briefs or []),
         event_callback=event_callback,
+        trace_id=trace_id,
     )
     if hasattr(result, "model_dump"):
         payload = result.model_dump(mode="json")
@@ -2168,6 +2578,7 @@ async def run_research_organism_live(
         audit_issues=final_output.get("audit_issues"),
         quality_gates=final_output.get("quality_gates"),
         report_readiness=final_output.get("report_readiness") or default_readiness,
+        artifact_mode=final_output.get("artifact_mode"),
         readiness_note=final_output.get("readiness_note"),
         confidence=final_output.get("confidence"),
         recommended_change=str(final_output.get("recommended_change") or ""),
@@ -2181,6 +2592,7 @@ async def run_research_organism_live(
         signal_count=int(payload.get("signal_count") or 0),
         error=str(payload.get("error") or "") or None,
         stage_records=payload.get("stage_records"),
+        trace_rows=payload.get("trace_rows"),
     )
 
 
@@ -2207,6 +2619,7 @@ async def _run_research_turn(
     max_runtime_seconds: int | None,
     thinking_mode: str,
     event_callback=None,
+    trace_id: str | None = None,
 ) -> ResearchOrganismReport:
     session_context = _build_runtime_context(
         workspace_root=workspace_root,
@@ -2242,14 +2655,18 @@ async def _run_research_turn(
         thinking_mode=thinking_mode,
         event_callback=event_callback,
         session_context=session_context,
+        trace_id=trace_id,
     )
     if isinstance(result, ResearchOrganismReport):
-        return result
-    if hasattr(result, "model_dump"):
-        return ResearchOrganismReport.model_validate(result.model_dump(mode="json"))
-    if isinstance(result, dict):
-        return ResearchOrganismReport.model_validate(result)
-    raise TypeError(f"Unsupported research report result: {type(result).__name__}")
+        report = result
+    elif hasattr(result, "model_dump"):
+        report = ResearchOrganismReport.model_validate(result.model_dump(mode="json"))
+    elif isinstance(result, dict):
+        report = ResearchOrganismReport.model_validate(result)
+    else:
+        raise TypeError(f"Unsupported research report result: {type(result).__name__}")
+    _apply_evidence_integrity_pass(report)
+    return report
 
 
 async def _run_orchestrated_turn(
@@ -2283,6 +2700,7 @@ async def _run_orchestrated_turn(
     reports: list[ResearchOrganismReport] = []
     question: str | None = None
     current_event_callback = progress_renderer
+    current_control_heartbeat: ResearchHeartbeatMonitor | None = None
     session.record_message(role="user", text=objective)
     _log_event(
         control_logger,
@@ -2292,6 +2710,15 @@ async def _run_orchestrated_turn(
         pending_clarification=session.pending_clarification,
         prior_turns=len(session.turns),
     )
+
+    def _control_event_callback(event: dict[str, Any]) -> None:
+        if current_control_heartbeat is not None:
+            current_control_heartbeat.observe(event)
+        _emit_research_event(progress_renderer, event)
+        if control_logger is not None:
+            control_logger.emit(event)
+
+    controller.set_event_callback(_control_event_callback)
 
     orchestrator_session = _load_orchestrator_session(
         session=session,
@@ -2345,14 +2772,20 @@ async def _run_orchestrated_turn(
         control_logger,
         "orchestrator.turn.decision",
         action=decision.action,
+        response_kind=decision.response_kind,
         public_response=decision.public_response,
         research_objective=decision.research_objective,
         delivery_target=decision.delivery_target,
         acceptance_criteria_count=len(decision.acceptance_criteria),
     )
 
-    def _record_assistant(text: str, *, kind: str = "message") -> None:
-        cleaned = _assistant_text(text)
+    def _record_assistant(
+        text: str,
+        *,
+        kind: str = "message",
+        preserve_formatting: bool = False,
+    ) -> None:
+        cleaned = _assistant_text(text, preserve_formatting=preserve_formatting)
         if not cleaned:
             return
         assistant_messages.append(cleaned)
@@ -2360,7 +2793,11 @@ async def _run_orchestrated_turn(
         _emit_assistant_message(current_event_callback, cleaned)
 
     if decision.public_response:
-        _record_assistant(decision.public_response)
+        _record_assistant(
+            decision.public_response,
+            kind="report" if decision.response_kind == "report_reply" else "message",
+            preserve_formatting=decision.response_kind == "report_reply",
+        )
 
     if decision.action == "respond":
         session.pending_clarification = None
@@ -2369,12 +2806,16 @@ async def _run_orchestrated_turn(
             "orchestrator.turn.completed",
             status="responded",
             report_count=0,
+            response_kind=decision.response_kind,
         )
         return ResearchConversationOutcome(
             status="responded",
             assistant_messages=assistant_messages,
             question=None,
             reports=[],
+            response_kind=decision.response_kind,
+            artifact_title=decision.artifact_title,
+            artifact_markdown=decision.artifact_markdown,
         )
 
     if decision.action == "clarify":
@@ -2396,6 +2837,7 @@ async def _run_orchestrated_turn(
             assistant_messages=assistant_messages,
             question=question,
             reports=[],
+            response_kind="clarification",
         )
 
     session.pending_clarification = None
@@ -2493,12 +2935,29 @@ async def _run_orchestrated_turn(
         report_turn_number = base_turn_number + len(reports)
         task_id = f"{args.task_id}:{report_turn_number}"
         workdir = run_root / f"turn-{report_turn_number:02d}"
-        event_logger = ResearchEventLogger(path=workdir / "events.jsonl")
+        run_trace_id = new_trace_id()
+        event_logger = ResearchEventLogger(
+            path=workdir / "events.jsonl",
+            stream_kind="bounded_run",
+            session_id=session.session_id,
+            turn_id=str(report_turn_number),
+            task_id=task_id,
+            organism_id=args.organism_id,
+            organ_id="deep-research",
+            trace_id=run_trace_id,
+        )
         run_completed = False
 
         def _run_event_callback(event: dict[str, Any]) -> None:
             heartbeat.observe(event)
             _emit_research_event(progress_renderer, event)
+            trace_row = event.get("trace_row")
+            if (
+                str(event.get("event") or "").strip() == "trace.row"
+                and isinstance(trace_row, dict)
+            ):
+                event_logger.emit_trace_rows([trace_row])
+                return
             event_logger.emit(event)
 
         heartbeat = ResearchHeartbeatMonitor(
@@ -2512,6 +2971,7 @@ async def _run_orchestrated_turn(
         current_event_callback = _run_event_callback
         try:
             await heartbeat.start()
+            current_control_heartbeat = heartbeat
             _log_event(
                 control_logger,
                 "run.turn.started",
@@ -2531,6 +2991,7 @@ async def _run_orchestrated_turn(
             event_logger.emit(
                 {
                     "event": "run.log.started",
+                    "trace_id": run_trace_id,
                     "task_id": task_id,
                     "turn_number": report_turn_number,
                     "objective": next_objective,
@@ -2552,6 +3013,7 @@ async def _run_orchestrated_turn(
                 _run_event_callback,
                 {
                     "event": "research.started",
+                    "trace_id": run_trace_id,
                     "objective": next_objective,
                     "delivery_target": next_delivery_target,
                     "depth_profile": depth_profile,
@@ -2581,8 +3043,16 @@ async def _run_orchestrated_turn(
                 max_runtime_seconds=max_runtime_seconds,
                 thinking_mode=thinking_mode,
                 event_callback=_run_event_callback,
+                trace_id=run_trace_id,
             )
-            report.event_log_path = str(event_logger.path)
+            report = report.model_copy(
+                update={
+                    "event_log_path": str(event_logger.path),
+                    "event_log_schema": ORGANISM_LOG_SCHEMA_VERSION,
+                }
+            )
+            event_logger.update_context(trace_id=report.trace_id)
+            event_logger.emit_stage_records(report.stage_records)
             reports.append(report)
             _emit_research_event(
                 _run_event_callback,
@@ -2653,6 +3123,23 @@ async def _run_orchestrated_turn(
                 controller=controller,
                 durable_session=orchestrator_session,
             )
+            hit_supervision_cap = review.action == "continue" and not (
+                max_supervision_loops is None
+                or continuation_index + 1 < max_supervision_loops
+            )
+            if hit_supervision_cap and _allows_best_effort_final_closure(
+                next_objective, review_report_context
+            ):
+                override_reason = (
+                    "This was the explicitly final bounded research pass, so the artifact "
+                    "is closing as a provisional report with explicit caveats instead of "
+                    "asking for another pass."
+                )
+                _mark_report_provisional_close(report, reason=override_reason)
+                review = ResearchConversationReviewDecision(
+                    action="done",
+                    public_response=override_reason,
+                )
             _log_event(
                 control_logger,
                 "orchestrator.review.completed",
@@ -2717,37 +3204,15 @@ async def _run_orchestrated_turn(
                     trace_id=report.trace_id,
                     objective=next_objective,
                     delivery_target=next_delivery_target,
+                    strategy="deterministic_follow_up",
                 )
-                current_plan, orchestrator_session = await _run_control_stage_with_hedge(
-                    stage_name="plan",
-                    heartbeat_phase="planning",
-                    detail=f"continuation: {_truncate_text(next_objective, limit=140)}",
-                    controller=controller,
-                    session=orchestrator_session,
-                    primary_call=lambda stage_session: controller.plan_research_intention(
-                        session=stage_session,
-                        objective=next_objective,
-                        delivery_target=next_delivery_target,
-                        acceptance_criteria=effective_acceptance_criteria,
-                        context=continuation_plan_context,
-                        planning_mode="continuation",
-                        previous_report=continuation_report_context,
-                    ),
-                    fallback_result=lambda: (
-                        _fallback_intention_plan(
-                            objective=next_objective,
-                            delivery_target=next_delivery_target,
-                            acceptance_criteria=effective_acceptance_criteria,
-                            context=continuation_plan_context,
-                            planning_mode="continuation",
-                            previous_report=continuation_report_context,
-                        ),
-                        orchestrator_session,
-                    ),
-                    control_logger=control_logger,
-                    heartbeat=heartbeat,
-                    task_id=task_id,
-                    trace_id=report.trace_id,
+                current_plan = _fallback_intention_plan(
+                    objective=next_objective,
+                    delivery_target=next_delivery_target,
+                    acceptance_criteria=effective_acceptance_criteria,
+                    context=continuation_plan_context,
+                    planning_mode="continuation",
+                    previous_report=continuation_report_context,
                 )
                 _store_orchestrator_session(
                     session=session,
@@ -2764,6 +3229,7 @@ async def _run_orchestrated_turn(
                     workstream_count=len(current_plan.workstreams),
                     plan_summary=current_plan.plan_summary,
                     prior_trace_id=report.trace_id,
+                    strategy="deterministic_follow_up",
                 )
                 next_objective = _assistant_text(
                     current_plan.refined_objective or next_objective
@@ -2829,6 +3295,7 @@ async def _run_orchestrated_turn(
                     assistant_messages=assistant_messages,
                     question=question,
                     reports=reports,
+                    response_kind="clarification",
                 )
             event_logger.emit(
                 {
@@ -2871,6 +3338,7 @@ async def _run_orchestrated_turn(
             raise
         finally:
             await heartbeat.stop()
+            current_control_heartbeat = None
             current_event_callback = progress_renderer
             event_logger.close()
 
@@ -2891,37 +3359,129 @@ async def _run_orchestrated_turn(
 
 
 def _print_research_report(report: dict[str, object]) -> None:
-    print(f"Status: {report['status']}")
-    print(f"Run ID: {report['trace_id']}")
-    print(f"Task ID: {report['task_id']}")
-    print(f"Objective: {report['objective']}")
+    status = str(report.get("status") or "").strip().lower()
+    readiness = str(report.get("report_readiness") or "").strip().lower()
+    artifact_mode = str(report.get("artifact_mode") or "").strip().lower()
+    if not artifact_mode:
+        if status != "completed" or readiness == "blocked":
+            artifact_mode = "blocker_report"
+        elif readiness == "provisional":
+            artifact_mode = "provisional_report"
+        else:
+            artifact_mode = "final_report"
+
+    title = {
+        "blocker_report": "Research Blocker Report",
+        "provisional_report": "Provisional Research Report",
+    }.get(artifact_mode, "Research Report")
+    print(title)
+    print()
+
+    objective = str(report.get("objective") or "").strip()
+    if objective:
+        print(f"Objective: {objective}")
     temporal_mode = str(report.get("temporal_mode") or "").strip()
     temporal_anchor = str(report.get("temporal_anchor") or "").strip()
     temporal_window = str(report.get("temporal_window") or "").strip()
     temporal_guidance = str(report.get("temporal_guidance") or "").strip()
     if temporal_mode:
         detail = temporal_anchor or temporal_window or "-"
-        print(f"Temporal Frame: {temporal_mode} ({detail})")
+        print(f"Temporal frame: {temporal_mode} ({detail})")
     if temporal_guidance:
-        print(f"Temporal Note: {temporal_guidance}")
-    print(f"Delivery: {report.get('delivery_target') or '(none)'}")
-    print(f"Readers: {report.get('selected_reader_count') or '(auto)'}")
-    print(f"Depth: {report.get('depth_profile') or 'standard'}")
-    readiness = str(report.get("report_readiness") or "").strip()
-    if readiness:
-        print(f"Readiness: {readiness}")
+        print(f"Temporal note: {temporal_guidance}")
+    if objective or temporal_mode or temporal_guidance:
+        print()
+
+    error = str(report.get("error") or "").strip()
     readiness_note = str(report.get("readiness_note") or "").strip()
-    if readiness_note:
-        print(f"Readiness Note: {readiness_note}")
-    if report.get("confidence") is not None:
-        print(f"Confidence: {float(report['confidence']):.2f}")
-    event_log_path = str(report.get("event_log_path") or "").strip()
-    if event_log_path:
-        print(f"Event Log: {event_log_path}")
-    control_log_path = str(report.get("control_log_path") or "").strip()
-    if control_log_path:
-        print(f"Control Log: {control_log_path}")
-    print(f"Activity: {report.get('handoff_count')} handoffs, {report.get('signal_count')} signals")
+
+    def _row_dict(item: object) -> dict[str, object]:
+        if hasattr(item, "model_dump"):
+            return item.model_dump(mode="json")
+        if isinstance(item, dict):
+            return dict(item)
+        return {}
+
+    verification_rows = [_row_dict(item) for item in (report.get("verification_facts") or [])]
+    integrity_rows = [_row_dict(item) for item in (report.get("evidence_integrity") or [])]
+    audit_rows = [_row_dict(item) for item in (report.get("audit_issues") or [])]
+    quality_gate_rows = [_row_dict(item) for item in (report.get("quality_gates") or [])]
+
+    if artifact_mode == "blocker_report":
+        blockers: list[str] = []
+        if readiness_note:
+            blockers.append(readiness_note)
+        if error:
+            blockers.append(error)
+        for row in quality_gate_rows:
+            if str(row.get("status") or "").strip().lower() != "fail":
+                continue
+            gate = str(row.get("gate") or "").strip()
+            summary = str(row.get("summary") or "").strip()
+            follow_up = str(row.get("required_follow_up") or "").strip()
+            text = f"{gate}: {summary}" if gate and summary else summary or gate
+            if follow_up:
+                text = f"{text}. Follow-up: {follow_up}".strip()
+            if text:
+                blockers.append(text)
+        for row in audit_rows:
+            severity = str(row.get("severity") or "").strip().lower()
+            if severity not in {"critical", "major", "blocking"}:
+                continue
+            issue = str(row.get("issue") or "").strip()
+            follow_up = str(row.get("required_follow_up") or "").strip()
+            text = issue
+            if follow_up:
+                text = f"{text}. Follow-up: {follow_up}".strip()
+            if text:
+                blockers.append(text)
+        for row in verification_rows:
+            status_label = str(row.get("status") or "").strip().lower()
+            if status_label == "verified":
+                continue
+            fact = str(row.get("fact") or "").strip()
+            note = str(row.get("note") or "").strip()
+            if fact:
+                blockers.append(f"{status_label or 'unverified'}: {fact}. {note}".strip())
+        for row in integrity_rows:
+            status_label = str(row.get("status") or "").strip().lower()
+            if status_label not in {"conflicted", "pending"}:
+                continue
+            claim = str(row.get("claim") or "").strip()
+            rationale = str(row.get("rationale") or "").strip()
+            if claim:
+                blockers.append(f"{status_label}: {claim}. {rationale}".strip())
+        if blockers:
+            print("Why it is blocked:")
+            seen: set[str] = set()
+            shown = 0
+            for item in blockers:
+                cleaned = " ".join(str(item).split()).strip()
+                if not cleaned or cleaned in seen:
+                    continue
+                seen.add(cleaned)
+                print(f"- {cleaned}")
+                shown += 1
+                if shown >= 8:
+                    break
+            print()
+    else:
+        if error:
+            print("Report could not be completed:")
+            print(error)
+            print()
+
+        recommended_change = str(report.get("recommended_change") or "").strip()
+        if recommended_change:
+            print("Recommendation:")
+            print(recommended_change)
+            print()
+
+        if readiness_note:
+            print("Scope note:")
+            print(readiness_note)
+            print()
+
     for label, key in (
         ("Findings", "findings"),
         ("Evidence Summary", "evidence_summary"),
@@ -2937,84 +3497,432 @@ def _print_research_report(report: dict[str, object]) -> None:
             print(f"- {item}")
         if len(values) > 8:
             print(f"- (+{len(values) - 8} more)")
-    verification_facts = report.get("verification_facts") or []
-    if verification_facts:
-        print("Verification Appendix:")
-        print("status       fact                                   source                         as_of")
-        for item in verification_facts[:8]:
-            row = (
-                item.model_dump(mode="json")
-                if hasattr(item, "model_dump")
-                else dict(item) if isinstance(item, dict) else {}
-            )
-            status = str(row.get("status") or "").strip() or "unverified"
-            fact = str(row.get("fact") or "").strip()
-            source = str(row.get("source") or "").strip() or "-"
-            as_of = str(row.get("as_of") or "").strip() or "-"
-            note = str(row.get("note") or "").strip()
-            print(
-                f"{status[:12]:12} "
-                f"{fact[:38]:38} "
-                f"{source[:29]:29} "
-                f"{as_of[:16]}"
-            )
-            if note:
-                print(f"note: {note}")
-        if len(verification_facts) > 8:
-            print(f"(+{len(verification_facts) - 8} more verification rows)")
-    audit_issues = report.get("audit_issues") or []
-    if audit_issues:
-        print("Audit Appendix:")
-        print("severity     kind         issue                                              affected_claim")
-        for item in audit_issues[:8]:
-            row = (
-                item.model_dump(mode="json")
-                if hasattr(item, "model_dump")
-                else dict(item) if isinstance(item, dict) else {}
-            )
-            severity = str(row.get("severity") or "").strip() or "minor"
-            kind = str(row.get("kind") or "").strip() or "logic"
-            issue = str(row.get("issue") or "").strip()
-            affected_claim = str(row.get("affected_claim") or "").strip() or "-"
+        print()
+
+    if artifact_mode == "blocker_report":
+        next_steps: list[str] = []
+        for row in [*quality_gate_rows, *audit_rows]:
             follow_up = str(row.get("required_follow_up") or "").strip()
-            print(
-                f"{severity[:12]:12} "
-                f"{kind[:12]:12} "
-                f"{issue[:50]:50} "
-                f"{affected_claim[:32]}"
-            )
             if follow_up:
-                print(f"follow-up: {follow_up}")
-        if len(audit_issues) > 8:
-            print(f"(+{len(audit_issues) - 8} more audit rows)")
-    quality_gates = report.get("quality_gates") or []
-    if quality_gates:
-        print("Quality Gates:")
-        print("status       gate                   summary")
-        for item in quality_gates[:8]:
-            row = (
-                item.model_dump(mode="json")
-                if hasattr(item, "model_dump")
-                else dict(item) if isinstance(item, dict) else {}
-            )
-            status = str(row.get("status") or "").strip() or "warn"
-            gate = str(row.get("gate") or "").strip() or "final_status"
-            summary = str(row.get("summary") or "").strip()
-            evidence_ref = str(row.get("evidence_ref") or "").strip()
-            follow_up = str(row.get("required_follow_up") or "").strip()
-            print(f"{status[:12]:12} {gate[:22]:22} {summary[:72]}")
-            if evidence_ref:
-                print(f"evidence: {evidence_ref}")
-            if follow_up:
-                print(f"follow-up: {follow_up}")
-        if len(quality_gates) > 8:
-            print(f"(+{len(quality_gates) - 8} more quality gate rows)")
-    recommended_change = str(report.get("recommended_change") or "").strip()
-    if recommended_change:
-        print(f"Recommended Change: {recommended_change}")
+                next_steps.append(follow_up)
+        if next_steps:
+            print("Next steps:")
+            seen: set[str] = set()
+            shown = 0
+            for item in next_steps:
+                cleaned = " ".join(str(item).split()).strip()
+                if not cleaned or cleaned in seen:
+                    continue
+                seen.add(cleaned)
+                print(f"- {cleaned}")
+                shown += 1
+                if shown >= 6:
+                    break
+            print()
+        return
+
+    caveats: list[str] = []
+    if readiness in {"blocked", "provisional"} and not readiness_note:
+        caveats.append(
+            "The report should be treated as provisional because some material facts "
+            "or source checks remain incomplete."
+        )
+    for row in verification_rows:
+        status_label = str(row.get("status") or "").strip().lower() or "unverified"
+        if status_label == "verified":
+            continue
+        fact = str(row.get("fact") or "").strip()
+        if not fact:
+            continue
+        note = str(row.get("note") or "").strip()
+        source = str(row.get("source") or "").strip()
+        suffix = f" Source: {source}." if source else ""
+        caveats.append(f"{status_label}: {fact}.{suffix} {note}".strip())
+    for row in integrity_rows:
+        status_label = str(row.get("status") or "").strip().lower()
+        if status_label not in {"accepted_with_proxy", "unverifiable"}:
+            continue
+        claim = str(row.get("claim") or "").strip()
+        rationale = str(row.get("rationale") or "").strip()
+        source = str(row.get("source") or "").strip()
+        suffix = f" Source: {source}." if source else ""
+        if claim:
+            caveats.append(f"{status_label}: {claim}.{suffix} {rationale}".strip())
+    for row in audit_rows:
+        severity = str(row.get("severity") or "").strip().lower() or "minor"
+        if severity not in {"blocking", "major", "critical"}:
+            continue
+        issue = str(row.get("issue") or "").strip()
+        if not issue:
+            continue
+        follow_up = str(row.get("required_follow_up") or "").strip()
+        suffix = f" Follow-up: {follow_up}" if follow_up else ""
+        caveats.append(f"{severity}: {issue}.{suffix}".strip())
+    if caveats:
+        print("Caveats:")
+        for item in caveats[:8]:
+            print(f"- {item}")
+        if len(caveats) > 8:
+            print(f"- (+{len(caveats) - 8} more)")
+
+
+def _report_row_dict(item: object) -> dict[str, object]:
+    if hasattr(item, "model_dump"):
+        return item.model_dump(mode="json")
+    if isinstance(item, dict):
+        return dict(item)
+    return {}
+
+
+def _markdown_bullet_lines(values: Sequence[str]) -> list[str]:
+    lines: list[str] = []
+    for value in values:
+        cleaned = " ".join(str(value or "").split()).strip()
+        if cleaned:
+            lines.append(f"- {cleaned}")
+    return lines
+
+
+def _looks_like_markdown_block(value: str) -> bool:
+    stripped = str(value or "").lstrip()
+    return (
+        "\n" in str(value or "")
+        or stripped.startswith(("#", "- ", "* ", "> ", "```"))
+        or bool(re.match(r"\d+\.\s", stripped))
+    )
+
+
+def _markdown_section_lines(
+    title: str,
+    values: Sequence[str],
+    *,
+    preserve_blocks: bool = False,
+) -> list[str]:
+    rendered: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        if preserve_blocks and _looks_like_markdown_block(text):
+            rendered.extend(line.rstrip() for line in text.splitlines())
+        else:
+            rendered.append(f"- {text}")
+    if not rendered:
+        return []
+    return [f"## {title}", "", *rendered, ""]
+
+
+def _unique_clean_values(values: Sequence[str], *, limit: int | None = None) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = " ".join(str(value or "").split()).strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        unique.append(cleaned)
+        if limit is not None and len(unique) >= limit:
+            break
+    return unique
+
+
+def _render_report_markdown(report: dict[str, object]) -> str:
+    status = str(report.get("status") or "").strip().lower()
+    readiness = str(report.get("report_readiness") or "").strip().lower()
+    artifact_mode = str(report.get("artifact_mode") or "").strip().lower()
+    if not artifact_mode:
+        if status != "completed" or readiness == "blocked":
+            artifact_mode = "blocker_report"
+        elif readiness == "provisional":
+            artifact_mode = "provisional_report"
+        else:
+            artifact_mode = "final_report"
+
+    title = {
+        "blocker_report": "Research Blocker Report",
+        "provisional_report": "Provisional Research Report",
+    }.get(artifact_mode, "Research Report")
+    lines: list[str] = [f"# {title}", ""]
+
+    objective = str(report.get("objective") or "").strip()
+    if objective:
+        lines.append(f"**Objective:** {objective}")
+    temporal_mode = str(report.get("temporal_mode") or "").strip()
+    temporal_anchor = str(report.get("temporal_anchor") or "").strip()
+    temporal_window = str(report.get("temporal_window") or "").strip()
+    temporal_guidance = str(report.get("temporal_guidance") or "").strip()
+    if temporal_mode:
+        detail = temporal_anchor or temporal_window or "-"
+        lines.append(f"**Temporal Frame:** {temporal_mode} ({detail})")
+    if temporal_guidance:
+        lines.append(f"**Temporal Note:** {temporal_guidance}")
+    lines.append("")
+
     error = str(report.get("error") or "").strip()
-    if error:
-        print(f"Error: {error}")
+    readiness_note = str(report.get("readiness_note") or "").strip()
+    recommended_change = str(report.get("recommended_change") or "").strip()
+
+    verification_rows = [
+        _report_row_dict(item) for item in (report.get("verification_facts") or [])
+    ]
+    integrity_rows = [
+        _report_row_dict(item) for item in (report.get("evidence_integrity") or [])
+    ]
+    audit_rows = [_report_row_dict(item) for item in (report.get("audit_issues") or [])]
+    quality_gate_rows = [
+        _report_row_dict(item) for item in (report.get("quality_gates") or [])
+    ]
+
+    if artifact_mode == "blocker_report":
+        blockers: list[str] = []
+        if readiness_note:
+            blockers.append(readiness_note)
+        if error:
+            blockers.append(error)
+        for row in quality_gate_rows:
+            if str(row.get("status") or "").strip().lower() != "fail":
+                continue
+            gate = str(row.get("gate") or "").strip()
+            summary = str(row.get("summary") or "").strip()
+            follow_up = str(row.get("required_follow_up") or "").strip()
+            text = f"{gate}: {summary}" if gate and summary else summary or gate
+            if follow_up:
+                text = f"{text}. Follow-up: {follow_up}".strip()
+            if text:
+                blockers.append(text)
+        for row in audit_rows:
+            severity = str(row.get("severity") or "").strip().lower()
+            if severity not in {"critical", "major", "blocking"}:
+                continue
+            issue = str(row.get("issue") or "").strip()
+            follow_up = str(row.get("required_follow_up") or "").strip()
+            text = issue
+            if follow_up:
+                text = f"{text}. Follow-up: {follow_up}".strip()
+            if text:
+                blockers.append(text)
+        for row in verification_rows:
+            status_label = str(row.get("status") or "").strip().lower()
+            if status_label == "verified":
+                continue
+            fact = str(row.get("fact") or "").strip()
+            note = str(row.get("note") or "").strip()
+            if fact:
+                blockers.append(f"{status_label or 'unverified'}: {fact}. {note}".strip())
+        for row in integrity_rows:
+            status_label = str(row.get("status") or "").strip().lower()
+            if status_label not in {"conflicted", "pending"}:
+                continue
+            claim = str(row.get("claim") or "").strip()
+            rationale = str(row.get("rationale") or "").strip()
+            if claim:
+                blockers.append(f"{status_label}: {claim}. {rationale}".strip())
+        if blockers:
+            lines.extend(
+                [
+                    "## Why It Is Blocked",
+                    "",
+                    *_markdown_bullet_lines(_unique_clean_values(blockers, limit=8)),
+                    "",
+                ]
+            )
+    else:
+        if recommended_change:
+            lines.extend(["## Recommendation", "", recommended_change, ""])
+        if readiness_note:
+            lines.extend(["## Scope Note", "", readiness_note, ""])
+        if error:
+            lines.extend(["## Error", "", error, ""])
+
+    findings = [str(item).strip() for item in (report.get("findings") or []) if str(item).strip()]
+    if findings:
+        lines.extend(_markdown_section_lines("Findings", findings, preserve_blocks=True))
+
+    evidence_summary = [
+        str(item).strip() for item in (report.get("evidence_summary") or []) if str(item).strip()
+    ]
+    if evidence_summary:
+        lines.extend(_markdown_section_lines("Evidence Summary", evidence_summary))
+
+    evidence_refs = [
+        str(item).strip() for item in (report.get("evidence_refs") or []) if str(item).strip()
+    ]
+    if evidence_refs:
+        lines.extend(_markdown_section_lines("Sources", evidence_refs))
+
+    contradictions = [
+        str(item).strip() for item in (report.get("contradictions") or []) if str(item).strip()
+    ]
+    if contradictions:
+        lines.extend(_markdown_section_lines("Contradictions", contradictions))
+
+    open_questions = [
+        str(item).strip() for item in (report.get("open_questions") or []) if str(item).strip()
+    ]
+    if open_questions:
+        lines.extend(_markdown_section_lines("Open Questions", open_questions))
+
+    if artifact_mode == "blocker_report":
+        next_steps: list[str] = []
+        for row in [*quality_gate_rows, *audit_rows]:
+            follow_up = str(row.get("required_follow_up") or "").strip()
+            if follow_up:
+                next_steps.append(follow_up)
+        if next_steps:
+            lines.extend(_markdown_section_lines("Next Steps", _unique_clean_values(next_steps, limit=6)))
+    else:
+        caveats: list[str] = []
+        if readiness in {"blocked", "provisional"} and not readiness_note:
+            caveats.append(
+                "The report should be treated as provisional because some material facts "
+                "or source checks remain incomplete."
+            )
+        for row in verification_rows:
+            status_label = str(row.get("status") or "").strip().lower() or "unverified"
+            if status_label == "verified":
+                continue
+            fact = str(row.get("fact") or "").strip()
+            if not fact:
+                continue
+            note = str(row.get("note") or "").strip()
+            source = str(row.get("source") or "").strip()
+            suffix = f" Source: {source}." if source else ""
+            caveats.append(f"{status_label}: {fact}.{suffix} {note}".strip())
+        for row in integrity_rows:
+            status_label = str(row.get("status") or "").strip().lower()
+            if status_label not in {"accepted_with_proxy", "unverifiable"}:
+                continue
+            claim = str(row.get("claim") or "").strip()
+            rationale = str(row.get("rationale") or "").strip()
+            source = str(row.get("source") or "").strip()
+            suffix = f" Source: {source}." if source else ""
+            if claim:
+                caveats.append(f"{status_label}: {claim}.{suffix} {rationale}".strip())
+        for row in audit_rows:
+            severity = str(row.get("severity") or "").strip().lower() or "minor"
+            if severity not in {"blocking", "major", "critical"}:
+                continue
+            issue = str(row.get("issue") or "").strip()
+            if not issue:
+                continue
+            follow_up = str(row.get("required_follow_up") or "").strip()
+            suffix = f" Follow-up: {follow_up}" if follow_up else ""
+            caveats.append(f"{severity}: {issue}.{suffix}".strip())
+        if caveats:
+            lines.extend(_markdown_section_lines("Caveats", _unique_clean_values(caveats, limit=8)))
+
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines) + "\n"
+
+
+def _write_text_output(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _default_markdown_report_path(report: ResearchOrganismReport) -> Path | None:
+    event_log_path = str(report.event_log_path or "").strip()
+    if not event_log_path:
+        return None
+    return Path(event_log_path).expanduser().resolve().with_name("report.md")
+
+
+def _attach_default_markdown_report(
+    report: ResearchOrganismReport,
+) -> ResearchOrganismReport:
+    destination = _default_markdown_report_path(report)
+    if destination is None:
+        return report
+    markdown = _render_report_markdown(report.model_dump(mode="json"))
+    _write_text_output(destination, markdown)
+    report_path = str(destination)
+    if str(report.markdown_report_path or "").strip() == report_path:
+        return report
+    return report.model_copy(update={"markdown_report_path": report_path})
+
+
+def _default_reply_markdown_artifact_path(
+    *,
+    product_paths: ResearchProductPaths,
+    session: ResearchCliSession,
+) -> Path:
+    reply_index = sum(
+        1
+        for entry in list(session.conversation or [])
+        if str(getattr(entry, "role", "") or "").strip() == "user"
+    )
+    if reply_index <= 0:
+        reply_index = len(list(session.turns or [])) + 1
+    return (
+        Path(product_paths.runs_dir).expanduser().resolve() / f"reply-{reply_index:02d}" / "report.md"
+    )
+
+
+def _attach_orchestrator_report_artifact(
+    outcome: ResearchConversationOutcome,
+    *,
+    product_paths: ResearchProductPaths,
+    session: ResearchCliSession,
+) -> ResearchConversationOutcome:
+    if outcome.response_kind != "report_reply":
+        return outcome
+    artifact_source = str(outcome.artifact_markdown or "").strip()
+    if not artifact_source and outcome.assistant_messages:
+        artifact_source = outcome.assistant_messages[-1]
+    markdown = _assistant_block_text(artifact_source)
+    if not markdown:
+        return outcome
+    destination = _default_reply_markdown_artifact_path(
+        product_paths=product_paths,
+        session=session,
+    )
+    _write_text_output(destination, markdown)
+    report_path = str(destination)
+    session.orchestrator_state = {
+        **dict(session.orchestrator_state),
+        "latest_response_artifact": {
+            "kind": "report_reply",
+            "title": str(outcome.artifact_title or "").strip(),
+            "path": report_path,
+            "conversation_turn_count": sum(
+                1
+                for entry in list(session.conversation or [])
+                if str(getattr(entry, "role", "") or "").strip() == "user"
+            ),
+        },
+    }
+    return outcome.model_copy(
+        update={
+            "artifact_markdown": markdown,
+            "artifact_path": report_path,
+        }
+    )
+
+
+def _render_outcome_payload(
+    outcome: ResearchConversationOutcome,
+    *,
+    as_json: bool,
+    output_path: str | None,
+    workspace_root: Path,
+) -> None:
+    payload = outcome.model_dump(mode="json")
+    if output_path:
+        destination = _resolve_user_path(output_path, base_dir=workspace_root)
+        if (
+            outcome.response_kind == "report_reply"
+            and str(outcome.artifact_markdown or "").strip()
+            and destination.suffix.lower() in {".md", ".markdown"}
+        ):
+            _write_text_output(destination, outcome.artifact_markdown)
+        else:
+            _write_text_output(
+                destination,
+                json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True),
+            )
+    if as_json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
 
 
 def _render_report(
@@ -3026,8 +3934,13 @@ def _render_report(
 ) -> None:
     if output_path:
         destination = _resolve_user_path(output_path, base_dir=workspace_root)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+        if destination.suffix.lower() in {".md", ".markdown"}:
+            _write_text_output(
+                destination,
+                _render_report_markdown(report.model_dump(mode="json")),
+            )
+        else:
+            _write_text_output(destination, report.model_dump_json(indent=2))
     if as_json:
         print(report.model_dump_json(indent=2))
     else:
@@ -3503,8 +4416,15 @@ def _interactive_loop(
             )
         )
         if outcome.reports:
-            for report in outcome.reports:
-                report.control_log_path = str(product_paths.control_log)
+            for index, report in enumerate(outcome.reports):
+                report = _attach_default_markdown_report(report)
+                report = report.model_copy(
+                    update={
+                        "control_log_path": str(product_paths.control_log),
+                        "control_log_schema": ORGANISM_LOG_SCHEMA_VERSION,
+                    }
+                )
+                outcome.reports[index] = report
                 session.record_turn(report)
                 if persist_session:
                     _persist_session(product_paths=product_paths, session=session, report=report)
@@ -3529,15 +4449,36 @@ def _interactive_loop(
                 report_count=len(outcome.reports),
                 final_report_status=outcome.reports[-1].status,
             )
-        elif persist_session:
-            save_research_product_session(product_paths, session)
-            _log_event(
-                control_logger,
-                "session.persisted",
-                session_id=session.session_id,
-                report_count=0,
-                control_log_path=str(product_paths.control_log),
-            )
+        else:
+            if outcome.response_kind == "report_reply":
+                outcome = _attach_orchestrator_report_artifact(
+                    outcome,
+                    product_paths=product_paths,
+                    session=session,
+                )
+                _log_event(
+                    control_logger,
+                    "orchestrator.report_artifact.persisted",
+                    artifact_kind=outcome.response_kind,
+                    artifact_path=outcome.artifact_path,
+                    report_count=0,
+                )
+                if args.output:
+                    _render_outcome_payload(
+                        outcome,
+                        as_json=bool(args.json),
+                        output_path=args.output,
+                        workspace_root=workspace_root,
+                    )
+            if persist_session:
+                save_research_product_session(product_paths, session)
+                _log_event(
+                    control_logger,
+                    "session.persisted",
+                    session_id=session.session_id,
+                    report_count=0,
+                    control_log_path=str(product_paths.control_log),
+                )
         if not args.json and outcome.reports:
             _print_session_rollup(session)
             print()
@@ -3565,7 +4506,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         workspace_root,
         session_file=args.session_file,
     )
-    control_logger = ResearchEventLogger(path=Path(product_paths.control_log))
+    control_logger = ResearchEventLogger(
+        path=Path(product_paths.control_log),
+        stream_kind="control_plane",
+    )
     _log_event(
         control_logger,
         "cli.started",
@@ -3601,6 +4545,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         new_session=bool(args.new_session),
         persist_session=persist_session,
     )
+    control_logger.update_context(session_id=session.session_id)
     _log_event(
         control_logger,
         "session.load.completed",
@@ -3844,8 +4789,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         control_logger.close()
         raise
-    for report in outcome.reports:
-        report.control_log_path = str(product_paths.control_log)
+    for index, report in enumerate(outcome.reports):
+        report = _attach_default_markdown_report(report)
+        report = report.model_copy(
+            update={
+                "control_log_path": str(product_paths.control_log),
+                "control_log_schema": ORGANISM_LOG_SCHEMA_VERSION,
+            }
+        )
+        outcome.reports[index] = report
         session.record_turn(report)
         if persist_session:
             _persist_session(product_paths=product_paths, session=session, report=report)
@@ -3857,6 +4809,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 event_log_path=report.event_log_path,
                 control_log_path=report.control_log_path,
             )
+    if not outcome.reports and outcome.response_kind == "report_reply":
+        outcome = _attach_orchestrator_report_artifact(
+            outcome,
+            product_paths=product_paths,
+            session=session,
+        )
+        _log_event(
+            control_logger,
+            "orchestrator.report_artifact.persisted",
+            artifact_kind=outcome.response_kind,
+            artifact_path=outcome.artifact_path,
+            report_count=0,
+        )
     if persist_session and not outcome.reports:
         save_research_product_session(product_paths, session)
         _log_event(
@@ -3886,17 +4851,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         control_logger.close()
         return exit_code
 
-    payload = outcome.model_dump(mode="json")
-    if args.output:
-        destination = _resolve_user_path(args.output, base_dir=workspace_root)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True),
-            encoding="utf-8",
-        )
-    if args.json:
-        print(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
-    elif not outcome.assistant_messages and outcome.question:
+    _render_outcome_payload(
+        outcome,
+        as_json=bool(args.json),
+        output_path=args.output,
+        workspace_root=workspace_root,
+    )
+    if not args.json and not outcome.assistant_messages and outcome.question:
         print(f"[assistant] {outcome.question}")
     _log_event(
         control_logger,

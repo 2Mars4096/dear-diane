@@ -22,8 +22,7 @@ from dan.worker.runner import DurableAgentRunner, DurableAgentSessionState
 from dan.worker.structured_payload import parse_jsonish_payload
 
 DEFAULT_RESEARCH_CONTROL_HEDGE_MAX_ATTEMPTS = 2
-DEFAULT_RESEARCH_CONTROL_HEDGE_DELAY_SECONDS = 2.0
-MIN_RESEARCH_REPORT_CONFIDENCE = 0.55
+DEFAULT_RESEARCH_CONTROL_HEDGE_DELAY_SECONDS = 10.0
 MIN_RESEARCH_CONFIDENCE_WITH_CONTRADICTIONS = 0.75
 REQUIRED_RESEARCH_QUALITY_GATES = frozenset(
     {
@@ -35,16 +34,29 @@ REQUIRED_RESEARCH_QUALITY_GATES = frozenset(
         "final_status",
     }
 )
-CRITICAL_RESEARCH_QUALITY_GATES = frozenset(
-    {"time_anchor", "scope_boundary", "source_authority"}
-)
 PROVISIONAL_CLOSURE_GATES = frozenset(
     {"time_anchor", "source_authority", "numeric_reconciliation", "final_status"}
+)
+BEST_EFFORT_FINAL_CLOSURE_GATES = frozenset(
+    {*PROVISIONAL_CLOSURE_GATES, "scope_boundary"}
 )
 
 
 def _clean_text(value: Any) -> str:
     return " ".join(str(value or "").strip().split())
+
+
+def _clean_block_text(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    cleaned_lines = [line.rstrip() for line in lines]
+    while cleaned_lines and not cleaned_lines[0].strip():
+        cleaned_lines.pop(0)
+    while cleaned_lines and not cleaned_lines[-1].strip():
+        cleaned_lines.pop()
+    return "\n".join(cleaned_lines)
 
 
 _DECISION_KEYS = frozenset(
@@ -54,6 +66,9 @@ _DECISION_KEYS = frozenset(
         "clarifying_question",
         "research_objective",
         "next_objective",
+        "response_kind",
+        "artifact_title",
+        "artifact_markdown",
     }
 )
 
@@ -192,6 +207,7 @@ def _report_has_material_output(report_summary: "ResearchConversationReportSumma
         report_summary.findings
         or report_summary.evidence_refs
         or report_summary.verification_facts
+        or report_summary.evidence_integrity
         or report_summary.audit_issues
         or report_summary.quality_gates
         or _clean_text(report_summary.recommended_change)
@@ -247,7 +263,6 @@ def _latest_resumable_report_summary(
 
 
 def _review_requires_more_work(
-    objective: str,
     report_summary: "ResearchConversationReportSummary",
 ) -> bool:
     if _clean_text(report_summary.error):
@@ -256,45 +271,18 @@ def _review_requires_more_work(
         return True
     if not _report_has_material_output(report_summary):
         return True
-    if report_summary.confidence is None:
-        return True
-    if _allows_explicit_unverifiable_closure(objective, report_summary):
-        return False
-    if float(report_summary.confidence) < MIN_RESEARCH_REPORT_CONFIDENCE:
-        return True
     if not report_summary.evidence_refs:
-        return True
-    if _missing_quality_gates(report_summary):
-        return True
-    if _has_failed_quality_gate(report_summary):
-        return True
-    if _has_critical_nonpass_quality_gate(report_summary):
-        return True
-    readiness = _normalized_report_readiness(report_summary.report_readiness)
-    if readiness in {"blocked", "provisional"}:
         return True
     if _has_conflicted_verification_fact(report_summary):
         return True
     if _has_blocking_audit_issue(report_summary):
         return True
-    if _major_audit_issue_count(report_summary) >= 2:
-        return True
-    if (
-        readiness == "actionable"
-        and _has_non_verified_verification_fact(report_summary)
-    ):
-        return True
-    if (
-        readiness == "actionable"
-        and _major_audit_issue_count(report_summary) >= 1
-    ):
-        return True
-    if readiness == "actionable" and _has_warn_quality_gate(report_summary):
-        return True
     if (
         report_summary.contradictions
-        and float(report_summary.confidence)
-        < MIN_RESEARCH_CONFIDENCE_WITH_CONTRADICTIONS
+        and (
+            report_summary.confidence is None
+            or float(report_summary.confidence) < MIN_RESEARCH_CONFIDENCE_WITH_CONTRADICTIONS
+        )
     ):
         return True
     return False
@@ -310,111 +298,62 @@ def _done_review_response(
             "report: the remaining fact gaps are explicitly marked unverifiable and the "
             "confidence is already downgraded accordingly."
         )
+    if _allows_best_effort_final_closure(objective, report_summary):
+        return (
+            "This bounded research pass is complete enough to stop as a provisional "
+            "report: the objective explicitly capped further passes and the remaining "
+            "caveats are already spelled out."
+        )
+    readiness = _normalized_report_readiness(report_summary.report_readiness)
+    if readiness in {"blocked", "provisional"}:
+        return (
+            "This bounded research pass is complete enough to stop as a provisional "
+            "report with explicit caveats."
+        )
     return "This bounded research pass is done."
 
 
 def _continue_review_response(report_summary: "ResearchConversationReportSummary") -> str:
+    status = _clean_text(report_summary.status).lower()
     if not _report_has_material_output(report_summary):
         return (
             "This bounded research pass did not produce a concrete grounded report yet, "
             "so I need another bounded pass."
         )
-    if report_summary.confidence is None:
+    if status != "completed":
         return (
-            "This bounded research pass produced material output, but confidence is still "
-            "unset, so I need another bounded pass before I should stop."
-        )
-    if float(report_summary.confidence) < MIN_RESEARCH_REPORT_CONFIDENCE:
-        return (
-            "This bounded research pass produced material output, but confidence is still "
-            "too low to stop yet, so I need one more bounded pass."
+            "This bounded research pass surfaced some material output, but it did not "
+            "finish cleanly, so I need another bounded pass."
         )
     if not report_summary.evidence_refs:
         return (
             "This bounded research pass produced material output, but it still lacks explicit "
             "evidence references, so I need another bounded pass."
         )
-    missing_gates = _missing_quality_gates(report_summary)
-    if missing_gates:
-        return (
-            "This bounded research pass is missing required quality gates "
-            f"({', '.join(missing_gates)}), so I need another bounded pass."
-        )
-    if _has_failed_quality_gate(report_summary):
-        return (
-            "This bounded research pass still has failed quality gates for time anchoring, "
-            "scope, source authority, reconciliation, fit, or final status, so I need "
-            "another bounded pass."
-        )
-    if _has_critical_nonpass_quality_gate(report_summary):
-        return (
-            "This bounded research pass still has unresolved non-pass states in critical gates "
-            "such as time anchoring, scope, or source authority, so I need another bounded pass."
-        )
-    readiness = _normalized_report_readiness(report_summary.report_readiness)
-    if readiness == "blocked":
-        return (
-            "This bounded research pass still marks itself blocked rather than ready, "
-            "so I need another bounded pass."
-        )
-    if readiness == "provisional":
-        return (
-            "This bounded research pass is still provisional rather than grounded enough "
-            "to stop, so I need one more bounded pass."
-        )
     if _has_conflicted_verification_fact(report_summary):
         return (
             "This bounded research pass still has conflicted critical facts in the "
             "verification appendix, so I need another bounded pass."
-        )
-    if (
-        readiness == "actionable"
-        and _has_non_verified_verification_fact(report_summary)
-    ):
-        return (
-            "This bounded research pass tries to be actionable while some critical facts "
-            "remain unverified, so I need another bounded pass."
         )
     if _has_blocking_audit_issue(report_summary):
         return (
             "This bounded research pass still carries blocking audit issues around logic, "
             "freshness, sourcing, or scope fit, so I need another bounded pass."
         )
-    if _major_audit_issue_count(report_summary) >= 2:
-        return (
-            "This bounded research pass still carries multiple major audit issues, so I "
-            "need another bounded pass."
-        )
-    if (
-        readiness == "actionable"
-        and _major_audit_issue_count(report_summary) >= 1
-    ):
-        return (
-            "This bounded research pass still labels itself actionable while material audit "
-            "issues remain, so I need another bounded pass."
-        )
-    if readiness == "actionable" and _has_warn_quality_gate(report_summary):
-        return (
-            "This bounded research pass labels itself actionable while standard quality "
-            "gates still carry warnings, so I need another bounded pass."
-        )
     if (
         report_summary.contradictions
-        and float(report_summary.confidence)
-        < MIN_RESEARCH_CONFIDENCE_WITH_CONTRADICTIONS
+        and (
+            report_summary.confidence is None
+            or float(report_summary.confidence) < MIN_RESEARCH_CONFIDENCE_WITH_CONTRADICTIONS
+        )
     ):
         return (
             "This bounded research pass surfaced material contradictions that are not resolved "
             "strongly enough yet, so I need one more bounded pass."
         )
-    if _report_has_material_output(report_summary):
-        return (
-            "This bounded research pass produced material output, but it is not stable "
-            "enough to stop yet, so I need one more bounded pass."
-        )
     return (
-        "This bounded research pass did not produce a concrete grounded report yet, "
-        "so I need another bounded pass."
+        "This bounded research pass produced material output, but it is not stable "
+        "enough to stop yet, so I need one more bounded pass."
     )
 
 
@@ -437,11 +376,10 @@ def _has_conflicted_verification_fact(
     return any(status == "conflicted" for status in _verification_statuses(report_summary))
 
 
-def _has_non_verified_verification_fact(
+def _conflicted_verification_fact_count(
     report_summary: "ResearchConversationReportSummary",
-) -> bool:
-    statuses = _verification_statuses(report_summary)
-    return any(status != "verified" for status in statuses) if statuses else False
+) -> int:
+    return sum(status == "conflicted" for status in _verification_statuses(report_summary))
 
 
 def _audit_rows(report_summary: "ResearchConversationReportSummary") -> list[dict[str, Any]]:
@@ -491,28 +429,6 @@ def _missing_quality_gates(
     return sorted(REQUIRED_RESEARCH_QUALITY_GATES - present)
 
 
-def _has_failed_quality_gate(
-    report_summary: "ResearchConversationReportSummary",
-) -> bool:
-    return any(status == "fail" for status in _quality_gate_map(report_summary).values())
-
-
-def _has_warn_quality_gate(
-    report_summary: "ResearchConversationReportSummary",
-) -> bool:
-    return any(status == "warn" for status in _quality_gate_map(report_summary).values())
-
-
-def _has_critical_nonpass_quality_gate(
-    report_summary: "ResearchConversationReportSummary",
-) -> bool:
-    statuses = _quality_gate_map(report_summary)
-    return any(
-        statuses.get(gate) in {"warn", "not_applicable"}
-        for gate in CRITICAL_RESEARCH_QUALITY_GATES
-    )
-
-
 def _objective_allows_explicit_unverifiable_closure(objective: str) -> bool:
     text = _clean_text(objective).lower()
     if "unverifiable" not in text:
@@ -528,6 +444,40 @@ def _objective_allows_explicit_unverifiable_closure(objective: str) -> bool:
         "best available evidence",
     )
     return any(cue in text for cue in closure_cues)
+
+
+def _objective_allows_best_effort_final_closure(objective: str) -> bool:
+    text = _clean_text(objective).lower()
+    if not text:
+        return False
+    final_pass_cues = (
+        "final bounded research pass",
+        "final bounded pass",
+        "final pass",
+        "last pass",
+        "no fifth pass",
+        "no sixth pass",
+        "no more passes",
+        "no further passes",
+        "after this pass",
+    )
+    close_cues = (
+        "provisional report",
+        "provisional memo",
+        "finalize provisionally",
+        "finalise provisionally",
+        "close provisionally",
+        "explicit caveat",
+        "explicit caveats",
+        "available fragments",
+        "best available",
+        "best effort",
+        "accept headlines",
+        "accept snippets",
+    )
+    return any(cue in text for cue in final_pass_cues) and any(
+        cue in text for cue in close_cues
+    )
 
 
 def _report_mentions_unverifiable_closure(
@@ -568,6 +518,40 @@ def _report_mentions_unverifiable_closure(
     )
 
 
+def _report_mentions_best_effort_final_closure(
+    report_summary: "ResearchConversationReportSummary",
+) -> bool:
+    text_bits: list[str] = [
+        report_summary.readiness_note,
+        report_summary.recommended_change,
+        *report_summary.findings,
+        *report_summary.evidence_summary,
+        *report_summary.open_questions,
+        *report_summary.evidence_refs,
+    ]
+    for row in [*report_summary.verification_facts, *report_summary.audit_issues]:
+        if not isinstance(row, dict):
+            continue
+        text_bits.extend(
+            str(value) for value in row.values() if isinstance(value, (str, int, float))
+        )
+    lowered = _clean_text(" ".join(text_bits)).lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "provisional",
+            "caveat",
+            "caveats",
+            "unverifiable",
+            "not actionable",
+            "stale",
+            "lag",
+            "intraday snapshot",
+            "not the official",
+        )
+    )
+
+
 def _allows_explicit_unverifiable_closure(
     objective: str,
     report_summary: "ResearchConversationReportSummary",
@@ -599,6 +583,41 @@ def _allows_explicit_unverifiable_closure(
     return not nonpass or nonpass.issubset(PROVISIONAL_CLOSURE_GATES)
 
 
+def _allows_best_effort_final_closure(
+    objective: str,
+    report_summary: "ResearchConversationReportSummary",
+) -> bool:
+    if _allows_explicit_unverifiable_closure(objective, report_summary):
+        return True
+    readiness = _normalized_report_readiness(report_summary.report_readiness)
+    if readiness == "actionable":
+        return False
+    if not _objective_allows_best_effort_final_closure(objective):
+        return False
+    if not _report_mentions_best_effort_final_closure(report_summary):
+        return False
+    if _clean_text(report_summary.error):
+        return False
+    if _clean_text(report_summary.status).lower() != "completed":
+        return False
+    if not _report_has_material_output(report_summary):
+        return False
+    if report_summary.confidence is None:
+        return False
+    if not report_summary.evidence_refs:
+        return False
+    if _missing_quality_gates(report_summary):
+        return False
+    if _has_blocking_audit_issue(report_summary):
+        return False
+    if _major_audit_issue_count(report_summary) >= 3:
+        return False
+    if _conflicted_verification_fact_count(report_summary) > 1:
+        return False
+    nonpass = _nonpass_quality_gates(report_summary)
+    return not nonpass or nonpass.issubset(BEST_EFFORT_FINAL_CLOSURE_GATES)
+
+
 def _has_blocking_audit_issue(
     report_summary: "ResearchConversationReportSummary",
 ) -> bool:
@@ -622,11 +641,14 @@ class ResearchConversationTurnDecision(BaseModel):
     """Orchestrator decision for one user-authored research turn."""
 
     action: Literal["respond", "clarify", "research"] = "research"
+    response_kind: Literal["chat_reply", "report_reply", "clarification"] = "chat_reply"
     public_response: str = ""
     clarifying_question: str = ""
     research_objective: str = ""
     acceptance_criteria: list[str] = Field(default_factory=list)
     delivery_target: str = ""
+    artifact_title: str = ""
+    artifact_markdown: str = ""
 
 
 class ResearchConversationSubproblem(BaseModel):
@@ -656,6 +678,10 @@ class ResearchConversationEvidenceTarget(BaseModel):
 
     target_id: str = ""
     claim: str = ""
+    entity_type: str = ""
+    metric_kind: str = ""
+    series_kind: str = ""
+    comparison_basis: str = ""
     why_it_matters: str = ""
     related_subproblem_ids: list[str] = Field(default_factory=list)
     as_of: str = ""
@@ -719,9 +745,11 @@ class ResearchConversationReportSummary(BaseModel):
     contradictions: list[str] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
     verification_facts: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_integrity: list[dict[str, Any]] = Field(default_factory=list)
     audit_issues: list[dict[str, Any]] = Field(default_factory=list)
     quality_gates: list[dict[str, Any]] = Field(default_factory=list)
     report_readiness: str = "grounded"
+    artifact_mode: str = "final_report"
     readiness_note: str = ""
     confidence: float | None = None
     recommended_change: str = ""
@@ -770,6 +798,7 @@ class ResearchConversationContext(BaseModel):
     facts: ResearchConversationFacts
     recent_conversation: list[ResearchConversationMessage] = Field(default_factory=list)
     recent_reports: list[ResearchConversationReportSummary] = Field(default_factory=list)
+    claim_ledger: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def _conversation_plan_schema() -> dict[str, Any]:
@@ -827,6 +856,10 @@ def _conversation_plan_schema() -> dict[str, Any]:
                     "properties": {
                         "target_id": {"type": "string"},
                         "claim": {"type": "string"},
+                        "entity_type": {"type": "string"},
+                        "metric_kind": {"type": "string"},
+                        "series_kind": {"type": "string"},
+                        "comparison_basis": {"type": "string"},
                         "why_it_matters": {"type": "string"},
                         "related_subproblem_ids": {
                             "type": "array",
@@ -868,6 +901,10 @@ def _conversation_turn_schema() -> dict[str, Any]:
                 "type": "string",
                 "enum": ["respond", "clarify", "research"],
             },
+            "response_kind": {
+                "type": "string",
+                "enum": ["chat_reply", "report_reply", "clarification"],
+            },
             "public_response": {"type": "string"},
             "clarifying_question": {"type": "string"},
             "research_objective": {"type": "string"},
@@ -876,6 +913,8 @@ def _conversation_turn_schema() -> dict[str, Any]:
                 "items": {"type": "string"},
             },
             "delivery_target": {"type": "string"},
+            "artifact_title": {"type": "string"},
+            "artifact_markdown": {"type": "string"},
         },
         "required": ["action", "public_response"],
     }
@@ -909,14 +948,17 @@ def _conversation_plan_contract() -> OutputContract:
             "cleanly afterward. For each workstream, state why that stream exists and "
             "how its evidence should be folded back into the final answer. Also produce "
             "explicit evidence targets for the exact facts that need to be pinned down: "
-            "include helpful aliases, preferred sites or source families, acceptable "
-            "proxy rules when the exact fact may publish with lag, clear stop conditions, "
-            "and separate guidance for 'I still did not find it' versus 'the likely source "
-            "family does not appear to publish this exact metric in this exact form'. "
-            "When a prior bounded report is supplied, use its unresolved issues to build "
-            "a narrower follow-up plan instead of another broad sweep, and do not reopen "
-            "facts that were already settled strongly enough unless a contradiction or "
-            "blocking audit issue explicitly reopens them."
+            "include typed identity fields for entity_type, metric_kind, series_kind, "
+            "and comparison_basis whenever the claim is about a product, fund, policy, "
+            "or numeric series. Include helpful aliases, preferred sites or source "
+            "families, acceptable proxy rules when the exact fact may publish with lag, "
+            "clear stop conditions, and separate guidance for 'I still did not find it' "
+            "versus 'the likely source family does not appear to publish this exact metric "
+            "in this exact form'. When a prior bounded report or frozen claim ledger is "
+            "supplied, use unresolved issues to build a narrower follow-up plan instead "
+            "of another broad sweep, and do not reopen facts that were already settled "
+            "strongly enough unless a contradiction or blocking audit issue explicitly "
+            "reopens them."
         ),
         expected_return_shape=json.dumps(
             {
@@ -949,6 +991,10 @@ def _conversation_plan_contract() -> OutputContract:
                     {
                         "target_id": "<optional>",
                         "claim": "<required>",
+                        "entity_type": "<optional>",
+                        "metric_kind": "<optional>",
+                        "series_kind": "<optional>",
+                        "comparison_basis": "<optional>",
                         "why_it_matters": "<required>",
                         "related_subproblem_ids": ["<optional>"],
                         "as_of": "<optional>",
@@ -982,16 +1028,25 @@ def _conversation_turn_contract() -> OutputContract:
             "verification, or evidence-gathering request. Before choosing action=research, "
             "use context.facts.current_date, timezone, and time_awareness_policy to "
             "classify the request into one temporal frame: current-as-of-runtime, "
-            "historical snapshot, trend over time, or timeless/default."
+            "historical snapshot, trend over time, or timeless/default. When the user is "
+            "asking you to turn already-grounded work into a final memo/report without "
+            "launching another bounded run, keep action=respond, set "
+            "response_kind=report_reply, and put the full Markdown artifact in "
+            "artifact_markdown. If artifact_markdown is omitted because public_response "
+            "already contains the final Markdown, the product will reuse public_response "
+            "as the saved report artifact."
         ),
         expected_return_shape=json.dumps(
             {
                 "action": "respond|clarify|research",
+                "response_kind": "chat_reply|report_reply|clarification",
                 "public_response": "<required>",
                 "clarifying_question": "<optional>",
                 "research_objective": "<optional>",
                 "acceptance_criteria": ["<optional>"],
                 "delivery_target": "<optional>",
+                "artifact_title": "<optional>",
+                "artifact_markdown": "<optional>",
             },
             sort_keys=True,
         ),
@@ -1004,21 +1059,22 @@ def _conversation_review_contract() -> OutputContract:
         definition_of_done=(
             "Review the bounded deep-research run and decide whether to stop, continue "
             "with one more bounded research pass, or ask one clarifying question. Do not "
-            "declare done when the run failed, returned no concrete grounded report, has "
-            "low confidence, lacks explicit evidence refs, or makes a conclusion about a "
-            "concrete external entity whose current identity, status, version, or availability "
-            "has not been verified strongly enough from authoritative evidence. Also do not "
-            "declare done when the report remains provisional/blocked, when the verification "
-            "appendix still contains conflicted critical facts, or when the audit appendix still "
-            "shows blocking logic/freshness/authority/scope-fit issues. Every completed report "
-            "must also carry standard quality gates for time_anchor, scope_boundary, "
-            "source_authority, numeric_reconciliation, claim_object_fit, and final_status; "
-            "failed or missing gates require another pass. If another bounded pass is still "
-            "required, the run must remain incomplete until that additional pass is actually "
-            "included in the artifact. Exception: when the objective explicitly authorizes a "
-            "best-effort provisional close after repeated attempts by marking specific facts "
-            "as unverifiable with downgraded confidence, do not keep continuing solely because "
-            "confidence or final_status stays low from those same explicitly surfaced gaps."
+            "declare done when the run failed, returned no material report, lacks explicit "
+            "evidence refs, still contains conflicted critical facts in the verification "
+            "appendix, still carries blocking audit issues, or leaves material contradictions "
+            "resolved only weakly. Treat evidence_integrity as the canonicalized pre-synthesis "
+            "fact table: accepted claims can support the memo, accepted_with_proxy or "
+            "unverifiable claims must stay caveated, and conflicted claims should not be "
+            "treated as settled. Use confidence, report_readiness, verification/audit "
+            "details, evidence_integrity, and quality_gates as context for judging whether "
+            "the report is solid enough or should stop provisionally with caveats, but do not "
+            "keep continuing solely because those metadata fields are imperfect. If another "
+            "bounded pass is still required, the run must remain incomplete until that "
+            "additional pass is actually included in the artifact. Exception: when the "
+            "objective explicitly authorizes a best-effort provisional close after repeated "
+            "attempts by marking specific facts as unverifiable with downgraded confidence, "
+            "do not keep continuing solely because that already-surfaced gap leaves the "
+            "report provisional."
         ),
         expected_return_shape=json.dumps(
             {
@@ -1037,27 +1093,98 @@ def _objective_facets(objective: str) -> list[str]:
     cleaned = _clean_text(objective)
     if not cleaned:
         return []
+    numbered_facets = _numbered_objective_facets(cleaned)
+    if numbered_facets:
+        return numbered_facets[:4]
     clauses = [
-        _clean_text(part)
+        _clean_objective_facet(part)
         for part in re.split(r"[;\n]+", cleaned)
-        if _clean_text(part)
+        if _clean_objective_facet(part)
     ]
     if len(clauses) <= 1:
         clauses = [
-            _clean_text(part)
+            _clean_objective_facet(part)
             for part in re.split(
                 r"\b(?:and|plus|versus|vs\.?|compare|including)\b",
                 cleaned,
                 maxsplit=3,
                 flags=re.IGNORECASE,
             )
-            if _clean_text(part)
+            if _clean_objective_facet(part)
         ]
     facets: list[str] = []
     for clause in clauses:
-        if clause and clause not in facets:
+        if clause and not _is_control_only_facet(clause) and clause not in facets:
             facets.append(clause)
     return facets[:4]
+
+
+def _numbered_objective_facets(objective: str) -> list[str]:
+    matches = list(
+        re.finditer(
+            r"(?:(?<=^)|(?<=[\s;:.]))(?:\(\d{1,2}\)|\d{1,2}[.)]|Priority\s+\d{1,2}(?:\s*\([^)]*\))?\s*:)",
+            objective,
+            flags=re.IGNORECASE,
+        )
+    )
+    if not matches:
+        return []
+    facets: list[str] = []
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(objective)
+        facet = _clean_objective_facet(objective[start:end])
+        if facet and not _is_control_only_facet(facet) and facet not in facets:
+            facets.append(facet)
+    return facets
+
+
+def _clean_objective_facet(value: str) -> str:
+    text = _clean_text(value)
+    if not text:
+        return ""
+    text = re.sub(
+        r"^(?:priority\s+\d+\s*)?(?:\([^)]*\)\s*)?[:.)\-\s]+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"^(?:blocking|best effort|deferred|optional|secondary)\s*[:.)\-\s]+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    for pattern in (
+        r"\b(?:return|populate)\s+(?:explicit\s+)?verification appendix\b.*$",
+        r"\b(?:return|populate)\s+(?:the\s+)?audit appendix\b.*$",
+        r"\bdo not return empty results\b.*$",
+        r"\bmandatory\s*:\s*.*$",
+        r"\bre-synthesize\b.*\bquality gates?\b.*$",
+        r"\bprioriti[sz]e\b.*\b(?:claim_object_fit|final_status|quality gates?)\b.*$",
+    ):
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip(" ;,.-")
+    return _clean_text(text)
+
+
+def _is_control_only_facet(value: str) -> bool:
+    text = _clean_text(value).lower()
+    if not text:
+        return True
+    if any(token in text for token in ("claim_object_fit", "final_status", "quality gate")):
+        return True
+    if "verification appendix" in text and not re.search(
+        r"\b(?:retrieve|obtain|verify|search|query|identify|catalog|extract|list|perform|resolve)\b",
+        text,
+    ):
+        return True
+    if "unverifiable" in text and re.search(
+        r"\b(?:rather than|instead of|not)\s+fail", text
+    ):
+        return True
+    if text.startswith("if ") and "mark" in text and "unverifiable" in text:
+        return True
+    return False
 
 
 def _normalize_subproblem_dependencies(value: Any) -> list[str]:
@@ -1194,6 +1321,16 @@ def _infer_evidence_target_scope(*texts: Any) -> str:
     lowered = " ".join(_clean_text(text).lower() for text in texts if _clean_text(text))
     if not lowered:
         return ""
+    if "stock connect" in lowered:
+        return "China / Hong Kong Stock Connect"
+    if "shanghai" in lowered or ".sh" in lowered:
+        return "Shanghai"
+    if "shenzhen" in lowered or ".sz" in lowered:
+        return "Shenzhen"
+    if ("china" in lowered or "chinese" in lowered) and (
+        "hong kong" in lowered or " hk " in f" {lowered} "
+    ):
+        return "China / Hong Kong"
     if "china" in lowered or "chinese" in lowered:
         return "China"
     if "hong kong" in lowered or "hk" in lowered:
@@ -1218,6 +1355,124 @@ def _infer_evidence_target_unit(*texts: Any) -> str:
     if "price" in lowered or "settlement" in lowered or "spot" in lowered:
         return "explicit price with currency and unit"
     return "explicit value with as-of date"
+
+
+def _infer_entity_type(*texts: Any) -> str:
+    lowered = " ".join(_clean_text(text).lower() for text in texts if _clean_text(text))
+    if not lowered:
+        return ""
+    if any(
+        token in lowered
+        for token in ("etf", "fund", "nav", "aum", "expense ratio", "holdings", "ticker")
+    ):
+        return "fund_or_etf"
+    if any(
+        token in lowered
+        for token in (
+            "brent",
+            "wti",
+            "coal",
+            "commodity",
+            "spot",
+            "settlement",
+            "futures",
+            "benchmark",
+            "index price",
+        )
+    ):
+        return "commodity_or_benchmark"
+    if any(
+        token in lowered
+        for token in (
+            "policy",
+            "regulator",
+            "government",
+            "ministry",
+            "ndrc",
+            "nea",
+            "sec",
+            "filing",
+            "rule",
+            "law",
+        )
+    ):
+        return "policy_or_regulatory_source"
+    if any(
+        token in lowered
+        for token in ("company", "stock", "shares", "equity", "market cap", "listed issuer")
+    ):
+        return "company_or_security"
+    return ""
+
+
+def _infer_metric_kind(*texts: Any) -> str:
+    lowered = " ".join(_clean_text(text).lower() for text in texts if _clean_text(text))
+    if not lowered:
+        return ""
+    metric_rules = (
+        ("trading_status", ("trading status", "status", "halt", "liquidated", "delisted", "active trading")),
+        ("expense_ratio", ("expense ratio", "ter")),
+        ("total_net_assets", ("total net assets",)),
+        ("aum", ("assets under management", "aum")),
+        ("market_cap", ("market cap", "market capitalization")),
+        ("nav", ("nav", "net asset value")),
+        ("holdings", ("holdings", "top holdings", "constituents", "weights")),
+        ("correlation", ("correlation", "pearson", "spearman", "regression")),
+        ("inventory", ("inventory", "stocks", "stockpile")),
+        ("volume", ("volume", "turnover", "shares/day")),
+        ("yield", ("yield", "distribution")),
+        ("settlement_price", ("settlement", "close price", "closing price")),
+        ("spot_price", ("spot price", "physical price", "fob")),
+        ("price", ("price", "quote", "benchmark")),
+    )
+    for label, cues in metric_rules:
+        if any(cue in lowered for cue in cues):
+            return label
+    return ""
+
+
+def _infer_series_kind(*texts: Any) -> str:
+    lowered = " ".join(_clean_text(text).lower() for text in texts if _clean_text(text))
+    if not lowered:
+        return ""
+    if "futures" in lowered or "front-month" in lowered or "settlement" in lowered:
+        return "futures_contract_series"
+    if "spot" in lowered or "physical" in lowered or "fob" in lowered:
+        return "physical_spot_assessment"
+    if "dated brent" in lowered or "benchmark" in lowered or "index" in lowered:
+        return "benchmark_series"
+    if "nav" in lowered:
+        return "fund_nav_series"
+    if "aum" in lowered or "market cap" in lowered or "expense ratio" in lowered:
+        return "fund_structural_metric"
+    return ""
+
+
+def _infer_comparison_basis(*texts: Any) -> str:
+    lowered = " ".join(_clean_text(text).lower() for text in texts if _clean_text(text))
+    metric_kind = _infer_metric_kind(*texts)
+    series_kind = _infer_series_kind(*texts)
+    entity_type = _infer_entity_type(*texts)
+    if metric_kind in {"aum", "total_net_assets", "market_cap", "nav"}:
+        return (
+            "Keep field names explicit; do not compare AUM, total net assets, market cap, "
+            "and NAV as if they were the same metric."
+        )
+    if series_kind in {
+        "futures_contract_series",
+        "physical_spot_assessment",
+        "benchmark_series",
+    }:
+        return (
+            "Keep physical spot, futures, dated benchmarks, and regional grades labeled "
+            "separately before reconciling prices."
+        )
+    if entity_type == "fund_or_etf" and any(token in lowered for token in ("china", "coal")):
+        return (
+            "Check thesis-to-vehicle fit explicitly; a live fund can still be a weak proxy "
+            "for the requested geography, commodity, or instrument."
+        )
+    return ""
 
 
 def _infer_source_families(*texts: Any) -> list[str]:
@@ -1336,16 +1591,23 @@ def _verification_fact_is_closed(item: dict[str, Any]) -> bool:
 
 def _resolved_fact_claims(
     previous_report: ResearchConversationReportSummary | None,
+    *,
+    context: ResearchConversationContext | None = None,
 ) -> list[str]:
-    if previous_report is None:
-        return []
-    return _dedupe(
-        [
+    resolved: list[str] = []
+    if context is not None:
+        resolved.extend(
+            _clean_text(item.get("fact"))
+            for item in context.claim_ledger
+            if isinstance(item, dict) and _verification_fact_is_closed(item)
+        )
+    if previous_report is not None:
+        resolved.extend(
             _clean_text(item.get("fact"))
             for item in previous_report.verification_facts
             if isinstance(item, dict) and _verification_fact_is_closed(item)
-        ]
-    )
+        )
+    return _dedupe([claim for claim in resolved if claim])
 
 
 def _claim_reopened_by_issue(
@@ -1389,9 +1651,24 @@ def _fallback_evidence_target(
     source_hint: str = "",
 ) -> ResearchConversationEvidenceTarget:
     preferred_sites = _extract_preferred_sites(search_hint, source_hint)
+    entity_type = _infer_entity_type(claim, why_it_matters, search_hint, source_hint)
+    metric_kind = _infer_metric_kind(claim, why_it_matters, search_hint, source_hint)
+    series_kind = _infer_series_kind(claim, why_it_matters, search_hint, source_hint)
     return ResearchConversationEvidenceTarget(
         target_id=target_id,
         claim=_clean_text(claim),
+        entity_type=entity_type,
+        metric_kind=metric_kind,
+        series_kind=series_kind,
+        comparison_basis=_infer_comparison_basis(
+            claim,
+            why_it_matters,
+            search_hint,
+            source_hint,
+            entity_type,
+            metric_kind,
+            series_kind,
+        ),
         why_it_matters=_clean_text(why_it_matters)
         or "This fact needs to be pinned down before the final answer is trustworthy.",
         related_subproblem_ids=_normalize_subproblem_dependencies(related_subproblem_ids),
@@ -1438,6 +1715,7 @@ def _fallback_evidence_targets(
 ) -> list[ResearchConversationEvidenceTarget]:
     targets: list[ResearchConversationEvidenceTarget] = []
     seen_claims: set[str] = set()
+    resolved_claims = _resolved_fact_claims(previous_report, context=context)
 
     def _append(target: ResearchConversationEvidenceTarget) -> None:
         claim = _clean_text(target.claim)
@@ -1452,6 +1730,15 @@ def _fallback_evidence_targets(
                 continue
             claim = _clean_text(item.get("fact"))
             if not claim or _verification_fact_is_closed(item):
+                continue
+            if any(
+                _claims_overlap(claim, resolved_claim)
+                and not _claim_reopened_by_issue(
+                    claim=resolved_claim,
+                    previous_report=previous_report,
+                )
+                for resolved_claim in resolved_claims
+            ):
                 continue
             _append(
                 _fallback_evidence_target(
@@ -1496,6 +1783,15 @@ def _fallback_evidence_targets(
         problem_id = _clean_text(subproblem.problem_id)
         if problem_id and problem_id in covered_problem_ids:
             continue
+        if previous_report is not None and any(
+            _claims_overlap(subproblem.question, resolved_claim)
+            and not _claim_reopened_by_issue(
+                claim=resolved_claim,
+                previous_report=previous_report,
+            )
+            for resolved_claim in resolved_claims
+        ):
+            continue
         _append(
             _fallback_evidence_target(
                 target_id=f"target-{index}",
@@ -1513,13 +1809,15 @@ def _fallback_evidence_targets(
 
 def _report_follow_up_subproblems(
     previous_report: ResearchConversationReportSummary | None,
+    *,
+    context: ResearchConversationContext | None = None,
 ) -> list[ResearchConversationSubproblem]:
     if previous_report is None:
         return []
 
     subproblems: list[ResearchConversationSubproblem] = []
     seen_questions: set[str] = set()
-    resolved_claims = _resolved_fact_claims(previous_report)
+    resolved_claims = _resolved_fact_claims(previous_report, context=context)
 
     def _append(
         *,
@@ -1669,7 +1967,7 @@ def _fallback_intention_plan(
 ) -> ResearchConversationIntentionPlan:
     _ = delivery_target
     refined_objective = _clean_text(objective) or "Investigate the user's research request."
-    subproblems = _report_follow_up_subproblems(previous_report)
+    subproblems = _report_follow_up_subproblems(previous_report, context=context)
     if not subproblems:
         facets = _objective_facets(refined_objective)
         if len(facets) > 1:
@@ -1788,7 +2086,12 @@ def _fallback_review_decision(
     objective: str,
     report_summary: ResearchConversationReportSummary,
 ) -> ResearchConversationReviewDecision:
-    if not _review_requires_more_work(objective, report_summary):
+    if _allows_best_effort_final_closure(objective, report_summary):
+        return ResearchConversationReviewDecision(
+            action="done",
+            public_response=_done_review_response(objective, report_summary),
+        )
+    if not _review_requires_more_work(report_summary):
         return ResearchConversationReviewDecision(
             action="done",
             public_response=_done_review_response(objective, report_summary),
@@ -1949,9 +2252,32 @@ def _normalize_intention_plan(
             related_subproblem_ids = _matching_subproblem_ids(claim, cleaned_subproblems)
         preferred_sites = _extract_preferred_sites(*_normalize_text_items(item.preferred_sites))
         aliases = _extract_aliases(*_normalize_text_items(item.aliases), claim)
+        entity_type = _clean_text(item.entity_type) or _infer_entity_type(
+            claim,
+            item.why_it_matters,
+        )
+        metric_kind = _clean_text(item.metric_kind) or _infer_metric_kind(
+            claim,
+            item.why_it_matters,
+        )
+        series_kind = _clean_text(item.series_kind) or _infer_series_kind(
+            claim,
+            item.why_it_matters,
+        )
         cleaned_target = ResearchConversationEvidenceTarget(
             target_id=_clean_text(item.target_id) or f"target-{index}",
             claim=claim,
+            entity_type=entity_type,
+            metric_kind=metric_kind,
+            series_kind=series_kind,
+            comparison_basis=_clean_text(item.comparison_basis)
+            or _infer_comparison_basis(
+                claim,
+                item.why_it_matters,
+                entity_type,
+                metric_kind,
+                series_kind,
+            ),
             why_it_matters=_clean_text(item.why_it_matters)
             or "This fact needs to be pinned down before the final answer is trustworthy.",
             related_subproblem_ids=related_subproblem_ids,
@@ -2037,6 +2363,10 @@ def _normalize_turn_decision(
     context: ResearchConversationContext,
 ) -> ResearchConversationTurnDecision:
     normalized_payload = dict(payload or {})
+    raw_public_response = _clean_block_text(normalized_payload.get("public_response"))
+    raw_artifact_markdown = _clean_block_text(normalized_payload.get("artifact_markdown"))
+    if raw_artifact_markdown and not _clean_text(normalized_payload.get("response_kind")):
+        normalized_payload["response_kind"] = "report_reply"
     if "action" not in normalized_payload or not _clean_text(
         normalized_payload.get("action")
     ):
@@ -2056,11 +2386,22 @@ def _normalize_turn_decision(
         )
     decision = decision.model_copy(
         update={
-            "public_response": _clean_text(decision.public_response),
+            "response_kind": (
+                "clarification"
+                if decision.action == "clarify"
+                else decision.response_kind
+            ),
+            "public_response": (
+                raw_public_response
+                if decision.response_kind == "report_reply"
+                else _clean_text(decision.public_response)
+            ),
             "clarifying_question": _clean_text(decision.clarifying_question),
             "research_objective": _clean_text(decision.research_objective),
             "acceptance_criteria": _dedupe(list(decision.acceptance_criteria)),
             "delivery_target": _clean_text(decision.delivery_target),
+            "artifact_title": _clean_text(decision.artifact_title),
+            "artifact_markdown": raw_artifact_markdown,
         }
     )
     if decision.action == "clarify":
@@ -2072,16 +2413,30 @@ def _normalize_turn_decision(
             )
         if not decision.public_response:
             return decision.model_copy(
-                update={"public_response": decision.clarifying_question}
+                update={
+                    "public_response": decision.clarifying_question,
+                    "response_kind": "clarification",
+                    "artifact_title": "",
+                    "artifact_markdown": "",
+                }
             )
-        return decision
+        return decision.model_copy(
+            update={
+                "response_kind": "clarification",
+                "artifact_title": "",
+                "artifact_markdown": "",
+            }
+        )
     if decision.action == "respond" and not decision.clarifying_question and _looks_like_user_question(
         decision.public_response
     ):
         return decision.model_copy(
             update={
                 "action": "clarify",
+                "response_kind": "clarification",
                 "clarifying_question": decision.public_response,
+                "artifact_title": "",
+                "artifact_markdown": "",
             }
         )
     if decision.action == "research":
@@ -2104,14 +2459,30 @@ def _normalize_turn_decision(
                     decision.delivery_target
                     or _clean_text(context.default_delivery_target)
                 ),
+                "response_kind": "chat_reply",
+                "artifact_title": "",
+                "artifact_markdown": "",
             }
         )
+    artifact_markdown = decision.artifact_markdown
+    if decision.response_kind == "report_reply" and not artifact_markdown:
+        artifact_markdown = raw_public_response
     return decision.model_copy(
         update={
+            "response_kind": (
+                "report_reply"
+                if decision.response_kind == "report_reply"
+                else "chat_reply"
+            ),
             "public_response": (
                 decision.public_response
-                or "I can help with research. Ask me to investigate, compare, verify, or summarize something concrete."
-            )
+                or (
+                    artifact_markdown
+                    if decision.response_kind == "report_reply"
+                    else "I can help with research. Ask me to investigate, compare, verify, or summarize something concrete."
+                )
+            ),
+            "artifact_markdown": artifact_markdown,
         }
     )
 
@@ -2122,7 +2493,10 @@ def _normalize_review_decision(
     objective: str,
     report_summary: ResearchConversationReportSummary,
 ) -> ResearchConversationReviewDecision:
-    requires_more_work = _review_requires_more_work(objective, report_summary)
+    requires_more_work = _review_requires_more_work(report_summary)
+    allows_best_effort_final_closure = _allows_best_effort_final_closure(
+        objective, report_summary
+    )
     normalized_payload = dict(payload or {})
     if "action" not in normalized_payload or not _clean_text(
         normalized_payload.get("action")
@@ -2130,11 +2504,13 @@ def _normalize_review_decision(
         if _clean_text(normalized_payload.get("clarifying_question")):
             normalized_payload["action"] = "clarify"
         elif _clean_text(normalized_payload.get("next_objective")):
-            normalized_payload["action"] = "continue"
+            normalized_payload["action"] = (
+                "done" if allows_best_effort_final_closure else "continue"
+            )
         elif _clean_text(normalized_payload.get("public_response")):
             normalized_payload["action"] = (
                 "continue"
-                if requires_more_work
+                if requires_more_work and not allows_best_effort_final_closure
                 else "done"
             )
     try:
@@ -2148,11 +2524,24 @@ def _normalize_review_decision(
             "next_objective": _clean_text(decision.next_objective),
         }
     )
-    if requires_more_work and decision.action == "done":
+    if (
+        requires_more_work
+        and decision.action == "done"
+        and not allows_best_effort_final_closure
+    ):
         return ResearchConversationReviewDecision(
             action="continue",
             public_response=_continue_review_response(report_summary),
             next_objective=_clean_text(objective),
+        )
+    if (
+        requires_more_work
+        and decision.action == "continue"
+        and allows_best_effort_final_closure
+    ):
+        return ResearchConversationReviewDecision(
+            action="done",
+            public_response=_done_review_response(objective, report_summary),
         )
     if not requires_more_work and decision.action == "continue":
         return ResearchConversationReviewDecision(
@@ -2206,20 +2595,22 @@ class ResearchConversationController:
             worker_id="dan-research.orchestrator",
             model=str(model),
         )
+        self._completion_adapter = ProviderCompletionAdapter(
+            provider=provider,
+            default_model=str(model),
+            stream_text_responses=stream_text_responses,
+            provider_request_overrides=provider_request_overrides,
+            hedge_max_attempts=_resolve_control_hedge_max_attempts(
+                hedge_max_attempts
+            ),
+            hedge_delay_seconds=_resolve_control_hedge_delay_seconds(
+                hedge_delay_seconds
+            ),
+            event_callback=event_callback,
+        )
         self._runner = DurableAgentRunner(
-            completion_provider=ProviderCompletionAdapter(
-                provider=provider,
-                default_model=str(model),
-                stream_text_responses=stream_text_responses,
-                provider_request_overrides=provider_request_overrides,
-                hedge_max_attempts=_resolve_control_hedge_max_attempts(
-                    hedge_max_attempts
-                ),
-                hedge_delay_seconds=_resolve_control_hedge_delay_seconds(
-                    hedge_delay_seconds
-                ),
-                event_callback=event_callback,
-            )
+            completion_provider=self._completion_adapter,
+            event_callback=event_callback,
         )
 
     def create_session(
@@ -2238,6 +2629,10 @@ class ResearchConversationController:
     @staticmethod
     def dump_session(session: DurableAgentSessionState) -> dict[str, Any]:
         return session.model_dump(mode="json")
+
+    def set_event_callback(self, event_callback) -> None:
+        self._completion_adapter.set_event_callback(event_callback)
+        self._runner.set_event_callback(event_callback)
 
     async def decide_user_turn(
         self,

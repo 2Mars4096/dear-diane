@@ -61,7 +61,8 @@ def build_research_orchestrator_worker(
             "worker substrate. Treat the user as another agent in the system and respond "
             "directly, concretely, and briefly. Use the current task plus output contract "
             "to decide whether you are answering a durable conversation turn, reviewing the "
-            "last bounded deep-research run, planning the next bounded research pass, or "
+            "last bounded deep-research run, planning the first bounded research pass, or "
+            "deriving the next narrow follow-up pass, or "
             "routing that pass. "
             "Only launch research when the request is a concrete investigation, grounding, "
             "comparison, verification, or evidence-gathering task. For status questions, "
@@ -78,8 +79,12 @@ def build_research_orchestrator_worker(
             "useful aliases, preferred source families or sites, acceptable proxy rules, "
             "clear stop conditions, and a distinction between 'still not found' and "
             "'apparently not published in that exact form'. When reviewing a "
-            "bounded research run, do not stop if the run failed or returned an incomplete "
-            "report."
+            "bounded research run, do not stop if the run failed, returned no material "
+            "report, lacks evidence refs, still contains conflicted critical facts or "
+            "blocking audit issues, or leaves material contradictions unresolved. Do not "
+            "keep continuing solely because confidence, readiness, or quality-gate "
+            "metadata is imperfect when the report is otherwise complete enough to stop "
+            "with explicit caveats."
         ),
         model=model,
     )
