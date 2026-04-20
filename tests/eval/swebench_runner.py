@@ -404,6 +404,7 @@ def run_swebench_instance(
         proc = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
         error = str(exc)
 
+    stdout_path.parent.mkdir(parents=True, exist_ok=True)
     stdout_path.write_text(str(proc.stdout or ""), encoding="utf-8")
     stderr_payload = str(proc.stderr or "")
     if error:

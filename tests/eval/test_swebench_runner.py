@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 import subprocess
 
 from dan.cli.code import SweBenchInstance
@@ -172,6 +173,67 @@ def test_run_swebench_instance_records_paths_and_status(tmp_path, monkeypatch) -
     assert record.patch_artifact_path is not None
 
 
+def test_run_swebench_instance_recreates_log_dir_before_writing(
+    tmp_path, monkeypatch
+) -> None:
+    instance = SweBenchInstance.model_validate(
+        {
+            "instance_id": "astropy__astropy-14995",
+            "repo": "astropy/astropy",
+            "base_commit": "abc123",
+            "problem_statement": "Fix mask propagation.",
+        }
+    )
+    repo_cache_dir = tmp_path / "cache"
+    results_root = tmp_path / "results"
+
+    monkeypatch.setattr(
+        "tests.eval.swebench_runner._ensure_repo_cache",
+        lambda repo, repo_cache_dir: repo_cache_dir / repo.replace("/", "__"),
+    )
+    monkeypatch.setattr(
+        "tests.eval.swebench_runner._ensure_commit",
+        lambda cache_path, commit: None,
+    )
+    monkeypatch.setattr(
+        "tests.eval.swebench_runner._prepare_workspace",
+        lambda cache_path, workspace_root, commit: workspace_root.mkdir(parents=True, exist_ok=True),
+    )
+
+    def _fake_subprocess_run(command, cwd, text, capture_output, env, timeout=None):
+        del cwd, text, capture_output, env, timeout
+        report_path = Path(command[command.index("--output") + 1])
+        shutil.rmtree(report_path.parent, ignore_errors=True)
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout='{"status":"completed"}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        "tests.eval.swebench_runner.subprocess.run",
+        _fake_subprocess_run,
+    )
+
+    record = run_swebench_instance(
+        instance=instance,
+        dataset_repo="princeton-nlp/SWE-bench_Lite",
+        split="test",
+        results_root=results_root,
+        repo_cache_dir=repo_cache_dir,
+        model="kimi-k2.5",
+        thinking_mode="disabled",
+        completion_timeout_seconds=60.0,
+        max_tool_rounds=None,
+        run_timeout_seconds=None,
+    )
+
+    assert record.exit_code == 0
+    assert Path(record.stdout_path).exists()
+    assert Path(record.stderr_path).exists()
+
+
 def test_batch_runner_seeds_and_skips_completed_predictions(tmp_path, monkeypatch) -> None:
     catalog = tmp_path / "instances.jsonl"
     catalog.write_text(
@@ -211,6 +273,7 @@ def test_batch_runner_seeds_and_skips_completed_predictions(tmp_path, monkeypatc
     )
 
     def _fake_run_swebench_instance(**kwargs):
+        assert kwargs["run_timeout_seconds"] is None
         instance = kwargs["instance"]
         run_dir = tmp_path / "run" / instance.instance_id
         predictions_path = run_dir / "predictions.jsonl"

@@ -63,6 +63,15 @@ def _read_attempted_instance_ids(path: Path) -> set[str]:
     return attempted
 
 
+def _normalize_optional_timeout(value: float | None) -> float | None:
+    if value is None:
+        return None
+    normalized = float(value)
+    if normalized <= 0:
+        return None
+    return normalized
+
+
 def _append_prediction_once(
     *,
     source_path: Path,
@@ -191,8 +200,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--run-timeout-seconds",
         type=float,
-        default=900.0,
-        help="Wall-clock timeout for each dan code subprocess.",
+        default=None,
+        help=(
+            "Optional wall-clock timeout for each dan code subprocess. "
+            "Unset or <=0 disables the outer per-instance cap."
+        ),
     )
     parser.add_argument(
         "--repo-cache-dir",
@@ -266,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
         "completed_prediction_count": len(completed_ids),
         "attempted_instance_count": len(attempted_ids),
         "seeded_prediction_ids": copied_seed_ids,
+        "run_timeout_seconds": _normalize_optional_timeout(args.run_timeout_seconds),
     }
     _write_json(manifest_path, manifest)
 
@@ -292,11 +305,7 @@ def main(argv: list[str] | None = None) -> int:
                 else None
             ),
             max_tool_rounds=args.max_tool_rounds,
-            run_timeout_seconds=(
-                float(args.run_timeout_seconds)
-                if args.run_timeout_seconds is not None
-                else None
-            ),
+            run_timeout_seconds=_normalize_optional_timeout(args.run_timeout_seconds),
         )
         appended_id = _append_prediction_once(
             source_path=Path(record.predictions_path),
