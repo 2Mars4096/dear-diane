@@ -39,12 +39,14 @@ class HandoffExecution:
 class CrossCellTraceLog:
     """Append-only trace log for point-to-point packets and supervisory signals."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, event_callback=None) -> None:
         self._entries: list[CellHandoffPacket | SupervisorySignalBase] = []
+        self._event_callback = event_callback
 
     def record_handoff(self, packet: CellHandoffPacket) -> CellHandoffPacket:
         stored = packet.model_copy(deep=True)
         self._entries.append(stored)
+        self._emit(stored)
         return stored
 
     def record_signal(self, signal: SupervisorySignalBase) -> SupervisorySignalBase:
@@ -54,6 +56,7 @@ class CrossCellTraceLog:
             )
         stored = signal.model_copy(deep=True)
         self._entries.append(stored)
+        self._emit(stored)
         return stored
 
     @property
@@ -79,35 +82,48 @@ class CrossCellTraceLog:
         for entry in self._entries:
             if entry.trace.trace_id != trace_id:
                 continue
-            if isinstance(entry, CellHandoffPacket):
-                rows.append(
-                    {
-                        "kind": "handoff",
-                        "message_id": entry.packet_id,
-                        "trace_id": trace_id,
-                        "sender_cell_id": entry.sender.cell_id,
-                        "recipient_cell_id": entry.recipient.cell_id,
-                        "task_id": entry.task.task_id,
-                        "evidence_refs": [ref.ref_id for ref in entry.evidence_refs],
-                        "created_at": entry.created_at,
-                    }
-                )
-                continue
-            rows.append(
-                {
-                    "kind": "signal",
-                    "message_id": entry.signal_id,
-                    "trace_id": trace_id,
-                    "signal_type": entry.signal_type,
-                    "source_cell_id": entry.source.cell_id,
-                    "topic": entry.topic,
-                    "broadcast_scope": entry.broadcast_scope.value,
-                    "related_packet_id": entry.related_packet_id,
-                    "summary": entry.summary,
-                    "emitted_at": entry.emitted_at,
-                }
-            )
+            rows.append(self._trace_row(entry))
         return rows
+
+    def _emit(self, entry: CellHandoffPacket | SupervisorySignalBase) -> None:
+        if self._event_callback is None:
+            return
+        self._event_callback(
+            {
+                "event": "trace.row",
+                "trace_row": self._trace_row(entry),
+            }
+        )
+
+    @staticmethod
+    def _trace_row(entry: CellHandoffPacket | SupervisorySignalBase) -> dict[str, Any]:
+        if isinstance(entry, CellHandoffPacket):
+            return {
+                "kind": "handoff",
+                "message_id": entry.packet_id,
+                "trace_id": entry.trace.trace_id,
+                "root_task_id": entry.trace.root_task_id,
+                "parent_packet_id": entry.trace.parent_packet_id,
+                "parent_signal_id": entry.trace.parent_signal_id,
+                "sender_cell_id": entry.sender.cell_id,
+                "recipient_cell_id": entry.recipient.cell_id,
+                "task_id": entry.task.task_id,
+                "evidence_refs": [ref.ref_id for ref in entry.evidence_refs],
+                "created_at": entry.created_at,
+            }
+        return {
+            "kind": "signal",
+            "message_id": entry.signal_id,
+            "trace_id": entry.trace.trace_id,
+            "root_task_id": entry.trace.root_task_id,
+            "signal_type": entry.signal_type,
+            "source_cell_id": entry.source.cell_id,
+            "topic": entry.topic,
+            "broadcast_scope": entry.broadcast_scope.value,
+            "related_packet_id": entry.related_packet_id,
+            "summary": entry.summary,
+            "emitted_at": entry.emitted_at,
+        }
 
 
 def _signal_trace(packet: CellHandoffPacket) -> SignalTrace:

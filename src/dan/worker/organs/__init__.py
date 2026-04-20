@@ -92,8 +92,13 @@ _DEEP_RESEARCH_READER_BASE_INSTRUCTION = (
     "read-only tools. Keep the output anchored to concrete evidence. Before using "
     "tools, inspect any temporal_mode, temporal_anchor, temporal_window, or "
     "temporal_guidance in the input and keep relative-time language consistent "
-    "with that frame. Return only one compact evidence note for your lane; do not "
-    "attempt the full final report or a final recommendation."
+    "with that frame. When live external facts matter and `web_search` is available, "
+    "prefer one targeted search query as the first step. Every `web_search` call must "
+    "include exactly one concrete `query` string or one concrete `url`; never emit an "
+    "empty `{}` tool call. If you still cannot form a concrete search, do not call a "
+    "tool yet; instead return compact `follow_up_queries` that name the missing search "
+    "terms. Return only one compact evidence note for your lane; do not attempt the "
+    "full final report or a final recommendation."
 )
 
 
@@ -1013,8 +1018,10 @@ def coding_aggregation_organ(
             role="coding_aggregator",
             instruction=(
                 "Merge worker outputs into one bounded coding candidate with explicit files, focused validation, "
-                "and risks. Prefer structured file tools for edits and avoid shell-based file creation when a "
-                "direct file-writing tool is available."
+                "and risks. This stage should materialize the chosen patch, not rediscover the repository. If "
+                "worker results already identify the target file or edit, read only that concrete file if needed "
+                "and then use `file_edit` or `file_write` directly. Prefer structured file tools for edits and "
+                "avoid shell-based file creation when a direct file-writing tool is available."
             ),
             model=model,
         ),
@@ -1022,8 +1029,10 @@ def coding_aggregation_organ(
             "Merge the worker outputs into one bounded candidate. Reuse the strongest "
             "parts, keep the change narrow, perform concrete edits with the most specific "
             "structured tools available, and return explicit target files, focused validation, "
-            "and inspectable risks. If the workspace already satisfies the brief and no mutation "
-            "is needed, say that explicitly in the change summary instead of implying a fix."
+            "and inspectable risks. Do not repeat broad repo discovery or git archaeology unless "
+            "the worker outputs still leave the target file genuinely unknown. If the workspace "
+            "already satisfies the brief and no mutation is needed, say that explicitly in the "
+            "change summary instead of implying a fix."
         ),
         boundary_contract=OrganBoundaryContract(
             required_input_keys=[

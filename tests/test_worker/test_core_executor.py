@@ -380,12 +380,21 @@ class _SequentialCompletionProvider:
         )
 
 
+class _RecordingEventSink:
+    def __init__(self) -> None:
+        self.events: list[dict[str, object]] = []
+
+    async def record(self, event: str, payload: dict[str, object]) -> None:
+        self.events.append({"event": event, **dict(payload)})
+
+
 @pytest.mark.asyncio
 async def test_worker_core_repairs_structured_output_against_output_schema() -> None:
     provider = _SequentialCompletionProvider(
         '{"action":"respond"}',
         '{"action":"respond","public_response":"latest run status: failed"}',
     )
+    sink = _RecordingEventSink()
     worker = WorkerDefinition(id="structured-worker", model="stub-model")
     request = ExecutionRequest.from_harness(
         task="Answer with a structured turn decision.",
@@ -409,7 +418,10 @@ async def test_worker_core_repairs_structured_output_against_output_schema() -> 
         },
     )
 
-    result = await WorkerCoreExecutor(completion_provider=provider).execute(worker, request)
+    result = await WorkerCoreExecutor(
+        completion_provider=provider,
+        event_sink=sink,
+    ).execute(worker, request)
 
     assert result.status == "completed"
     assert result.outputs["result"] == {
@@ -420,6 +432,25 @@ async def test_worker_core_repairs_structured_output_against_output_schema() -> 
     assert len(provider.requests) == 2
     assert "Output schema (JSON Schema):" in provider.requests[0].system_prompt
     assert "Validation errors:" in provider.requests[1].user_prompt
+    assert [event["event"] for event in sink.events] == [
+        "worker.started",
+        "contract.validation.started",
+        "contract.validation.completed",
+        "worker.structured_output.repair_requested",
+        "contract.repair.started",
+        "contract.validation.started",
+        "contract.validation.completed",
+        "contract.repair.completed",
+        "worker.structured_output.repair_succeeded",
+        "worker.completed",
+    ]
+    assert sink.events[2]["status"] == "invalid"
+    assert sink.events[2]["validation_phase"] == "initial"
+    assert sink.events[2]["normalization_mode"] == "jsonish_payload"
+    assert sink.events[6]["status"] == "valid"
+    assert sink.events[6]["validation_phase"] == "repair"
+    assert sink.events[6]["repair_round"] == 1
+    assert sink.events[7]["status"] == "repaired"
 
 
 @pytest.mark.asyncio
@@ -428,6 +459,7 @@ async def test_worker_core_fails_when_structured_output_repair_stays_invalid() -
         '{"action":"respond"}',
         '{"action":"respond"}',
     )
+    sink = _RecordingEventSink()
     worker = WorkerDefinition(id="structured-worker", model="stub-model")
     request = ExecutionRequest.from_harness(
         task="Answer with a structured turn decision.",
@@ -451,12 +483,30 @@ async def test_worker_core_fails_when_structured_output_repair_stays_invalid() -
         },
     )
 
-    result = await WorkerCoreExecutor(completion_provider=provider).execute(worker, request)
+    result = await WorkerCoreExecutor(
+        completion_provider=provider,
+        event_sink=sink,
+    ).execute(worker, request)
 
     assert result.status == "failed"
     assert "Structured output validation failed after one repair pass" in (result.error or "")
     assert result.metadata["structured_output"]["repaired"] is True
     assert len(provider.requests) == 2
+    assert [event["event"] for event in sink.events] == [
+        "worker.started",
+        "contract.validation.started",
+        "contract.validation.completed",
+        "worker.structured_output.repair_requested",
+        "contract.repair.started",
+        "contract.validation.started",
+        "contract.validation.completed",
+        "contract.repair.failed",
+        "worker.structured_output.repair_failed",
+        "worker.failed",
+    ]
+    assert sink.events[2]["status"] == "invalid"
+    assert sink.events[6]["status"] == "invalid"
+    assert sink.events[7]["repair_round"] == 1
 
 
 @pytest.mark.asyncio
@@ -713,6 +763,37 @@ async def test_durable_agent_runner_bounded_policy_reduces_to_one_message() -> N
 
     with pytest.raises(ValueError, match="already closed"):
         runner.enqueue_message(session, ExecutionRequest.from_harness(task="Second turn should be rejected."))
+
+
+@pytest.mark.asyncio
+async def test_durable_agent_runner_event_callback_emits_mailbox_lifecycle_metadata() -> None:
+    emitted_events: list[dict[str, object]] = []
+    runner = DurableAgentRunner(
+        completion_provider=_RecordingCompletionProvider(),
+        event_callback=emitted_events.append,
+    )
+    worker = WorkerDefinition(id="callback-agent", model="stub-model")
+    session = runner.create_session(worker, metadata={"surface": "callback-test"})
+    message = runner.enqueue_message(
+        session,
+        ExecutionRequest.from_harness(task="Handle one callback-observed turn."),
+    )
+
+    turn = await runner.process_next(worker, session)
+
+    assert turn is not None
+    started_event = next(
+        event for event in emitted_events if event["event"] == "agent.mailbox.started"
+    )
+    completed_event = next(
+        event for event in emitted_events if event["event"] == "agent.mailbox.completed"
+    )
+
+    assert started_event["agent_id"] == worker.id
+    assert started_event["agent_session_id"] == session.session_id
+    assert started_event["worker_session_id"] == session.worker_session.session_id
+    assert started_event["message_id"] == message.message_id
+    assert completed_event["message_id"] == message.message_id
 
 
 @pytest.mark.asyncio

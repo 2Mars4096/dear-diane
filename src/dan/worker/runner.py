@@ -642,8 +642,10 @@ class DurableAgentRunner:
         memory_provider: MemoryProvider | None = None,
         acquisition_provider: AcquisitionProvider | None = None,
         default_policy: DurableAgentPolicy | None = None,
+        event_callback=None,
     ) -> None:
         self._default_policy = default_policy or DurableAgentPolicy()
+        self._event_callback = event_callback
         self._standalone_runner = StandaloneWorkerRunner(
             completion_provider=completion_provider,
             tool_provider=tool_provider,
@@ -652,6 +654,9 @@ class DurableAgentRunner:
             default_policy=self._default_policy.standalone_policy,
         )
         self._background_handles: dict[str, dict[str, asyncio.Task[None]]] = {}
+
+    def set_event_callback(self, event_callback) -> None:
+        self._event_callback = event_callback
 
     def create_session(
         self,
@@ -973,14 +978,27 @@ class DurableAgentRunner:
                 f"'{session.agent_id}', not '{worker.id}'."
             )
 
-    @staticmethod
     def _record_agent_event(
+        self,
         session: DurableAgentSessionState,
         event: str,
         *,
         payload: dict[str, Any] | None = None,
-    ) -> None:
-        session.events.append(StandaloneRunEvent(event=event, payload=dict(payload or {})))
+    ) -> StandaloneRunEvent:
+        entry = StandaloneRunEvent(event=event, payload=dict(payload or {}))
+        session.events.append(entry)
+        if self._event_callback is not None:
+            self._event_callback(
+                {
+                    "event": entry.event,
+                    "timestamp": entry.timestamp,
+                    "agent_id": session.agent_id,
+                    "agent_session_id": session.session_id,
+                    "worker_session_id": session.worker_session.session_id,
+                    **dict(entry.payload),
+                }
+            )
+        return entry
 
     @staticmethod
     def _active_background_count(session: DurableAgentSessionState) -> int:

@@ -13,6 +13,7 @@ from dan.worker.composition import CrossCellTraceLog
 from dan.worker.core.executor import WorkerCoreExecutor
 from dan.worker.core.contracts import OutputContract
 from dan.worker.core.interfaces import CompletionRequest, CompletionResponse
+from dan.worker.organism_log import new_trace_id
 from dan.worker.organisms.local_runtime import (
     DEFAULT_LIVE_ORGANISM_TOOL_IDS,
     LocalOrganismToolRuntime,
@@ -108,6 +109,7 @@ class DeepResearchOrganDemoReport(BaseModel):
     output_ref_ids: list[str] = Field(default_factory=list)
     final_output: dict[str, Any] = Field(default_factory=dict)
     stage_records: list[dict[str, Any]] = Field(default_factory=list)
+    trace_rows: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def _build_report(execution: ProjectExecutionOrganismExecution) -> ReferenceOrganismDemoReport:
@@ -180,6 +182,7 @@ def _build_research_report(
         output_ref_ids=[ref.ref_id for ref in execution.result.output_refs],
         final_output=dict(execution.result.outputs),
         stage_records=stage_records,
+        trace_rows=trace_rows,
     )
 
 
@@ -189,9 +192,11 @@ def _deep_research_packet(
     organ_id: str,
     task: ProjectExecutionTask,
     max_runtime_seconds: int | None = None,
+    trace_id: str | None = None,
 ) -> CellHandoffPacket:
     return CellHandoffPacket(
         trace=SignalTrace(
+            trace_id=trace_id or new_trace_id(),
             root_task_id=task.task_id,
             lineage=[f"organism:{organism_id}", "surface:research-only"],
         ),
@@ -657,6 +662,7 @@ async def run_reference_organism_live(
     max_tool_calls: int = 24,
     research_reader_count: int | None = None,
     research_reader_briefs: list[str] | tuple[str, ...] | None = None,
+    event_callback=None,
 ) -> ReferenceOrganismDemoReport:
     """Run the bounded reference organism against a live provider and local tools."""
 
@@ -664,6 +670,7 @@ async def run_reference_organism_live(
     tool_runtime = LocalOrganismToolRuntime(
         tool_ids=tool_ids or DEFAULT_LIVE_ORGANISM_TOOL_IDS,
         workspace_root=workspace_root,
+        event_callback=event_callback,
     )
     completion_provider = ToolLoopCompletionProvider(
         provider=llm_provider,
@@ -671,6 +678,7 @@ async def run_reference_organism_live(
         default_model=model,
         max_rounds=max_tool_rounds,
         max_tool_calls=max_tool_calls,
+        event_callback=event_callback,
     )
     executor = WorkerCoreExecutor(completion_provider=completion_provider)
     organism = attach_local_tooling_to_reference_organism(
@@ -683,7 +691,7 @@ async def run_reference_organism_live(
         ),
         tool_ids=tool_runtime.tool_ids,
     )
-    trace_log = CrossCellTraceLog()
+    trace_log = CrossCellTraceLog(event_callback=event_callback)
     execution = await execute_project_execution_organism(
         executor=executor,
         organism=organism,
@@ -708,6 +716,7 @@ async def run_deep_research_organ_live(
     research_reader_count: int | None = None,
     research_reader_briefs: list[str] | tuple[str, ...] | None = None,
     event_callback=None,
+    trace_id: str | None = None,
 ) -> DeepResearchOrganDemoReport:
     """Run only the bounded deep-research organ against a live provider and local tools."""
 
@@ -736,12 +745,13 @@ async def run_deep_research_organ_live(
         ),
         tool_ids=tool_runtime.tool_ids,
     )
-    trace_log = CrossCellTraceLog()
+    trace_log = CrossCellTraceLog(event_callback=event_callback)
     packet = _deep_research_packet(
         organism_id=organism_id,
         organ_id=organism.research_organ.organ_id,
         task=effective_task,
         max_runtime_seconds=max_runtime_seconds,
+        trace_id=trace_id,
     )
     execution = await execute_organ_pattern(
         executor=executor,

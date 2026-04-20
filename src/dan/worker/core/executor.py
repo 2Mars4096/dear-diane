@@ -44,10 +44,12 @@ from dan.worker.core.interfaces import (
 from dan.worker.core.memory import build_memory_sources, working_memory_evidence
 from dan.worker.core.model import CompletionHints, WorkerDefinition
 from dan.worker.core.structured_output import (
+    StructuredOutputValidation,
     has_structured_output_schema,
     render_output_schema,
     validate_structured_output,
 )
+from dan.worker.organism_log import organism_event_context
 
 
 def _stringify(value: Any) -> str:
@@ -114,7 +116,7 @@ class WorkerCoreExecutor:
         await self._emit(
             "worker.started",
             {
-                "worker_id": worker.id,
+                **self._execution_event_context(worker=worker, request=effective_request),
                 "has_model": bool(worker.model),
                 "tool_count": len(tool_ids),
                 "acquisition_source_count": len(
@@ -157,8 +159,9 @@ class WorkerCoreExecutor:
         await self._emit(
             f"worker.{result.status}",
             {
-                "worker_id": worker.id,
+                **self._execution_event_context(worker=worker, request=effective_request),
                 "error": result.error,
+                "status": result.status,
             },
         )
         return result
@@ -273,7 +276,7 @@ class WorkerCoreExecutor:
                 await self._emit(
                     "worker.acquisition.discovered",
                     {
-                        "worker_id": worker.id,
+                        **self._execution_event_context(worker=worker, request=request),
                         "source_id": source.source_id,
                         "family": family_name(source.family),
                         "item_count": len(response.catalog.items),
@@ -330,7 +333,7 @@ class WorkerCoreExecutor:
                 await self._emit(
                     "worker.acquisition.selected",
                     {
-                        "worker_id": worker.id,
+                        **self._execution_event_context(worker=worker, request=request),
                         "source_id": source.source_id,
                         "family": family,
                         "refs": [selection.ref_id for selection in added],
@@ -385,7 +388,7 @@ class WorkerCoreExecutor:
                 await self._emit(
                     "worker.acquisition.expanded",
                     {
-                        "worker_id": worker.id,
+                        **self._execution_event_context(worker=worker, request=request),
                         "source_id": source.source_id,
                         "family": family,
                         "refs": [context.ref_id for context in response.expanded_context],
@@ -439,7 +442,10 @@ class WorkerCoreExecutor:
             evidence=list(request.evidence),
             continuation=request.continuation,
             output_contract=request.output_contract,
-            metadata={"worker_id": worker.id, **request.metadata},
+            metadata={
+                **request.metadata,
+                **self._execution_event_context(worker=worker, request=request),
+            },
         )
         response = await self._completion_provider.complete(completion_request)
         outputs: dict[str, Any] = {
@@ -448,7 +454,12 @@ class WorkerCoreExecutor:
         }
         metadata: dict[str, Any] = {"raw_response": response.raw}
         if has_structured_output_schema(request.output_contract):
-            validation = validate_structured_output(response.text, request.output_contract)
+            validation = await self._validate_structured_output(
+                worker=worker,
+                request=request,
+                raw=response.text,
+                validation_phase="initial",
+            )
             if validation.valid:
                 outputs["result"] = validation.parsed
                 metadata["structured_output"] = {
@@ -460,22 +471,69 @@ class WorkerCoreExecutor:
                 await self._emit(
                     "worker.structured_output.repair_requested",
                     {
-                        "worker_id": worker.id,
+                        **self._execution_event_context(worker=worker, request=request),
                         "errors": list(validation.errors),
                     },
                 )
-                repair_response = await self._repair_structured_output(
-                    worker=worker,
-                    request=completion_request,
-                    invalid_response=response,
-                    validation_errors=validation.errors,
+                repair_round = 1
+                await self._emit(
+                    "contract.repair.started",
+                    {
+                        **self._contract_event_context(
+                            worker=worker,
+                            request=request,
+                            validation_phase="repair",
+                            repair_round=repair_round,
+                        ),
+                        "errors": list(validation.errors),
+                    },
                 )
-                repaired = validate_structured_output(repair_response.text, request.output_contract)
+                try:
+                    repair_response = await self._repair_structured_output(
+                        worker=worker,
+                        request=completion_request,
+                        invalid_response=response,
+                        validation_errors=validation.errors,
+                    )
+                except Exception as exc:
+                    await self._emit(
+                        "contract.repair.failed",
+                        {
+                            **self._contract_event_context(
+                                worker=worker,
+                                request=request,
+                                validation_phase="repair",
+                                repair_round=repair_round,
+                            ),
+                            "errors": list(validation.errors),
+                            "error": f"{type(exc).__name__}: {exc}",
+                        },
+                    )
+                    raise
+                repaired = await self._validate_structured_output(
+                    worker=worker,
+                    request=request,
+                    raw=repair_response.text,
+                    validation_phase="repair",
+                    repair_round=repair_round,
+                )
                 if not repaired.valid:
+                    await self._emit(
+                        "contract.repair.failed",
+                        {
+                            **self._contract_event_context(
+                                worker=worker,
+                                request=request,
+                                validation_phase="repair",
+                                repair_round=repair_round,
+                            ),
+                            "errors": list(repaired.errors),
+                        },
+                    )
                     await self._emit(
                         "worker.structured_output.repair_failed",
                         {
-                            "worker_id": worker.id,
+                            **self._execution_event_context(worker=worker, request=request),
                             "errors": list(repaired.errors),
                         },
                     )
@@ -497,9 +555,21 @@ class WorkerCoreExecutor:
                         },
                     )
                 await self._emit(
+                    "contract.repair.completed",
+                    {
+                        **self._contract_event_context(
+                            worker=worker,
+                            request=request,
+                            validation_phase="repair",
+                            repair_round=repair_round,
+                        ),
+                        "status": "repaired",
+                    },
+                )
+                await self._emit(
                     "worker.structured_output.repair_succeeded",
                     {
-                        "worker_id": worker.id,
+                        **self._execution_event_context(worker=worker, request=request),
                     },
                 )
                 outputs["text"] = repair_response.text
@@ -696,6 +766,54 @@ class WorkerCoreExecutor:
             },
         )
         return await self._completion_provider.complete(repair_request)
+
+    async def _validate_structured_output(
+        self,
+        *,
+        worker: WorkerDefinition,
+        request: ExecutionRequest,
+        raw: Any,
+        validation_phase: str,
+        repair_round: int | None = None,
+    ) -> StructuredOutputValidation:
+        event_context = self._contract_event_context(
+            worker=worker,
+            request=request,
+            validation_phase=validation_phase,
+            repair_round=repair_round,
+        )
+        await self._emit(
+            "contract.validation.started",
+            {
+                **event_context,
+                "normalization_mode": "jsonish_payload",
+            },
+        )
+        validation = validate_structured_output(raw, request.output_contract)
+        await self._emit(
+            "contract.validation.completed",
+            {
+                **event_context,
+                "status": "valid" if validation.valid else "invalid",
+                "errors": list(validation.errors),
+                "normalization_mode": "jsonish_payload",
+            },
+        )
+        return validation
+
+    def _contract_event_context(
+        self,
+        *,
+        worker: WorkerDefinition,
+        request: ExecutionRequest,
+        validation_phase: str,
+        repair_round: int | None = None,
+    ) -> dict[str, Any]:
+        return {
+            **self._execution_event_context(worker=worker, request=request),
+            "validation_phase": str(validation_phase or "").strip() or "initial",
+            "repair_round": repair_round,
+        }
 
     @staticmethod
     def _render_catalog(catalog: DiscoveryCatalog) -> str:
@@ -1060,3 +1178,18 @@ class WorkerCoreExecutor:
         if self._event_sink is None:
             return
         await self._event_sink.record(event, payload)
+
+    @staticmethod
+    def _execution_event_context(
+        *,
+        worker: WorkerDefinition,
+        request: ExecutionRequest,
+    ) -> dict[str, Any]:
+        return {
+            **organism_event_context(
+                metadata=request.metadata,
+                output_contract=request.output_contract,
+                worker_id=worker.id,
+            ),
+            "worker_id": worker.id,
+        }

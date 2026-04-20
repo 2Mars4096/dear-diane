@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from dan.worker.core.capabilities import CapabilityManifest
 from dan.worker.core.contracts import (
@@ -140,6 +140,18 @@ class AcquisitionProvider(Protocol):
 class EventSink(Protocol):
     async def record(self, event: str, payload: dict[str, Any]) -> None:
         """Receive best-effort execution lifecycle events."""
+
+
+class CallbackEventSink:
+    """Adapt a plain event callback onto the ``EventSink`` protocol."""
+
+    def __init__(self, callback: Callable[[dict[str, Any]], None] | None) -> None:
+        self._callback = callback
+
+    async def record(self, event: str, payload: dict[str, Any]) -> None:
+        if self._callback is None:
+            return
+        self._callback({"event": event, **dict(payload)})
 
 
 class WorkerDefinition(Protocol):
