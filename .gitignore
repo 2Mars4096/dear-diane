@@ -85,6 +85,7 @@ checkpoints/
 .agent-subsessions/
 .codex-subsessions/
 .dan-code/
+.dan-research/
 
 # Memory store (runtime-generated, not source-controlled)
 memory/
@@ -130,6 +131,12 @@ pnpm-debug.log*
 !/tests/test_server/test_router_dependencies.py
 !/tests/test_server/test_run_manager.py
 !/tests/test_server/test_scoped_run.py
+!/tests/test_server/test_chat_local_auto_mode.py
+!/tests/test_server/test_adapter_concierge_bridge.py
+!/tests/test_server/test_chat_request_validation.py
+!/tests/test_cli/
+!/tests/test_cli/test_chat.py
+!/tests/test_cli/test_organism_logs.py
 !/tests/test_server/test_run_manager_reflection.py
 !/tests/test_server/test_run_manager_telemetry.py
 !/tests/test_mutation_duplicate_add_repair.py
@@ -171,6 +178,7 @@ pnpm-debug.log*
 !/tests/test_worker/test_dan_conversation.py
 !/tests/test_worker/test_incident_conversation.py
 !/tests/test_worker/test_incident_execution.py
+!/tests/test_worker/test_organism_log.py
 !/tests/test_worker/test_core_executor.py
 !/tests/test_worker/test_equivalence.py
 !/tests/test_worker/test_executor.py

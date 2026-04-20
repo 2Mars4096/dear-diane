@@ -57,6 +57,7 @@ dan-bot = "dan.cli.bot:main"
 dan-editor = "dan.cli.editor:main"
 dan-furnace = "dan.cli.furnace:main"
 dan-organism = "dan.cli.organism:main"
+dan-organism-log = "dan.cli.organism_log:main"
 
 [project.optional-dependencies]
 pdf = ["pypdf>=4.0", "pymupdf>=1.24"]
