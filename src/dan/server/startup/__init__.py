@@ -14,6 +14,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, TYPE_CHECKING
 
 from dan.server.app_state import AppState
@@ -1155,26 +1156,6 @@ async def init_integrations(state: AppState, app: FastAPI) -> None:
 
 async def init_background(state: AppState, app: FastAPI) -> None:
     """Phase 6: scheduler, follow-ups, consolidation loop, skill store, feature log."""
-    from dan.server.terminal_output import collect_terminal_content
-
-    # Build scheduled-action dispatch closure
-    async def _collect_concierge_terminal_content(surface_msg: Any) -> str:
-        if state.dispatcher is not None:
-            event_stream = state.dispatcher.dispatch(surface_msg)
-        elif state.concierge is not None:
-            event_stream = state.concierge.process(surface_msg)
-        else:
-            return ""
-        reassurance_messages = (
-            set(getattr(state.concierge, "_REASSURANCE_MESSAGES", []))
-            if state.concierge is not None
-            else set()
-        )
-        return await collect_terminal_content(
-            event_stream,
-            reassurance_messages=reassurance_messages,
-        )
-
     async def _dispatch_scheduled_action(
         action: str,
         trigger_context: Any,
@@ -1226,30 +1207,12 @@ async def init_background(state: AppState, app: FastAPI) -> None:
                 )
             return f"Started workflow `{scheduled_workflow_id}` as run `{record.run_id}`."
 
-        from dan.server.concierge.models import SurfaceMessage
-
-        surface_msg = SurfaceMessage(
-            surface=delivery_target.surface
-            or trigger_context.source_surface
-            or "schedule",
-            external_id=str(
-                delivery_target.conversation_key
-                or delivery_target.user_id
-                or trigger_context.user_id
-                or trigger_context.task_id
-                or delivery_target.project_id
-                or "scheduled-task"
-            ),
-            text=action,
-            metadata={
-                "thread_id": delivery_target.thread_key
-                or trigger_context.thread_key,
-                "scheduled_trigger": True,
-                "trigger_context": trigger_context.model_dump(mode="json"),
-                "delivery_target": delivery_target.model_dump(mode="json"),
-            },
+        return await _dispatch_scheduled_chat_action_via_router(
+            state,
+            action,
+            trigger_context,
+            delivery_target,
         )
-        return await _collect_concierge_terminal_content(surface_msg)
 
     # 31-7: Scheduled task background loop
     state.task_scheduler = None
@@ -1597,6 +1560,110 @@ async def init_adapters(app: FastAPI) -> None:
             _start_adapter_safe(adapter_type, config),
             name=f"autostart-{adapter_type}",
         )
+
+
+def _scheduled_surface_type(trigger_context: Any, delivery_target: Any) -> str:
+    return str(
+        getattr(delivery_target, "surface", "")
+        or getattr(trigger_context, "source_surface", "")
+        or "schedule"
+    ).strip() or "schedule"
+
+
+def _scheduled_surface_id(trigger_context: Any, delivery_target: Any) -> str:
+    return str(
+        getattr(delivery_target, "conversation_key", "")
+        or getattr(delivery_target, "user_id", "")
+        or getattr(trigger_context, "thread_key", "")
+        or getattr(trigger_context, "user_id", "")
+        or getattr(trigger_context, "task_id", "")
+        or getattr(delivery_target, "project_id", "")
+        or "scheduled-task"
+    ).strip() or "scheduled-task"
+
+
+def _build_scheduled_chat_request(
+    action: str,
+    trigger_context: Any,
+    delivery_target: Any,
+):
+    from dan.server.routers.chat import ChatMessageRequest
+
+    surface_type = _scheduled_surface_type(trigger_context, delivery_target)
+    surface_id = _scheduled_surface_id(trigger_context, delivery_target)
+    thread_id = str(
+        getattr(delivery_target, "thread_key", "")
+        or getattr(trigger_context, "thread_key", "")
+        or surface_id
+    ).strip() or surface_id
+    trigger_payload = (
+        trigger_context.model_dump(mode="json")
+        if hasattr(trigger_context, "model_dump")
+        else {}
+    )
+    delivery_payload = (
+        delivery_target.model_dump(mode="json")
+        if hasattr(delivery_target, "model_dump")
+        else {}
+    )
+    return ChatMessageRequest(
+        workflow_id="_scratch",
+        message=str(action or ""),
+        history=[],
+        thread_id=thread_id,
+        session_id=thread_id,
+        mode="auto",
+        surface=f"{surface_type}:{surface_id}",
+        surface_type=surface_type,
+        surface_id=surface_id,
+        surface_context={
+            "scheduled_trigger": True,
+            "trigger_context": trigger_payload,
+            "delivery_target": delivery_payload,
+        },
+    )
+
+
+def _build_state_request_proxy(state: AppState) -> Any:
+    return SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(dan=state))
+    )
+
+
+async def _dispatch_scheduled_chat_action_via_router(
+    state: AppState,
+    action: str,
+    trigger_context: Any,
+    delivery_target: Any,
+) -> str:
+    from dan.server.routers.chat import (
+        chat_message,
+        iter_local_chat_stream_events,
+    )
+    from dan.server.terminal_output import collect_terminal_content
+
+    req = _build_scheduled_chat_request(
+        action,
+        trigger_context,
+        delivery_target,
+    )
+    response = await chat_message(
+        _build_state_request_proxy(state),
+        req,
+        concierge=True,
+    )
+    channel_id = str(response.get("stream_channel_id") or "").strip()
+    if not channel_id:
+        raise RuntimeError("Scheduled action did not produce a response stream")
+    reassurance_messages = (
+        set(getattr(state.concierge, "_REASSURANCE_MESSAGES", []))
+        if getattr(state, "concierge", None) is not None
+        else set()
+    )
+    return await collect_terminal_content(
+        iter_local_chat_stream_events(channel_id),
+        reassurance_messages=reassurance_messages,
+    )
 
 
 def _persist_adapter_state() -> None:

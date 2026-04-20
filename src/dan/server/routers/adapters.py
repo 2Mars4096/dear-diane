@@ -8,6 +8,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -29,6 +30,7 @@ from dan.adapters.wechat_official_account_adapter import (
     validate_callback_encrypt_type,
     verify_signature,
 )
+from dan.server.control_plane import parse_control_plane_mode
 from dan.server.control_plane import resolve_control_plane_mode
 from dan.server.capabilities.config import _update_env_file
 from dan.server.routers.dependencies import (
@@ -77,6 +79,35 @@ class AdapterStartRequest(BaseModel):
     type: str
     workflow_path: str = ""
     config: dict[str, Any] = {}
+
+
+def _control_plane_env_key_suffix(*parts: str) -> str:
+    joined = "_".join(str(part or "").strip() for part in parts if str(part or "").strip())
+    return re.sub(r"[^A-Z0-9]+", "_", joined.upper()).strip("_")
+
+
+def _adapter_control_plane_override(adapter_id: str, surface: str) -> str | None:
+    candidates: list[str] = []
+    for value in (
+        _control_plane_env_key_suffix(surface),
+        _control_plane_env_key_suffix(adapter_id),
+        _control_plane_env_key_suffix(surface, adapter_id),
+    ):
+        if value and value not in candidates:
+            candidates.append(value)
+    for suffix in candidates:
+        try:
+            parsed = parse_control_plane_mode(
+                os.environ.get(f"DAN_{suffix}_CONTROL_PLANE"),
+            )
+        except ValueError:
+            continue
+        if parsed is not None:
+            return parsed
+    try:
+        return parse_control_plane_mode(os.environ.get("DAN_ADAPTERS_CONTROL_PLANE"))
+    except ValueError:
+        return None
 
 
 class AdapterStopRequest(BaseModel):
@@ -1033,6 +1064,7 @@ def _build_wechat_chat_request_body(
     message_text: str,
     account_id: str,
     session_id: str | None = None,
+    control_plane_mode: str | None = None,
 ) -> dict[str, Any]:
     surface_id, surface_context = _wechat_surface_identity(
         adapter_id=adapter_id,
@@ -1040,7 +1072,7 @@ def _build_wechat_chat_request_body(
         external_id=external_id,
         account_id=account_id,
     )
-    return {
+    payload = {
         "workflow_id": "_scratch",
         "message": message_text,
         "history": [],
@@ -1052,6 +1084,9 @@ def _build_wechat_chat_request_body(
         "surface_id": surface_id,
         "surface_context": surface_context,
     }
+    if control_plane_mode is not None:
+        payload["control_plane_mode"] = control_plane_mode
+    return payload
 
 
 def _build_adapter_chat_request_body(
@@ -1060,11 +1095,12 @@ def _build_adapter_chat_request_body(
     surface: str,
     external_id: str,
     message_text: str,
+    control_plane_mode: str | None = None,
 ) -> dict[str, Any]:
     surface_id = str(adapter_id or surface or "adapter").strip() or "adapter"
     surface_type = str(surface or "adapter").strip() or "adapter"
     session_id = str(external_id or surface_id).strip() or surface_id
-    return {
+    payload = {
         "workflow_id": "_scratch",
         "message": message_text,
         "history": [],
@@ -1082,6 +1118,9 @@ def _build_adapter_chat_request_body(
             }
         },
     }
+    if control_plane_mode is not None:
+        payload["control_plane_mode"] = control_plane_mode
+    return payload
 
 
 async def _ensure_wechat_adapter_session(
@@ -1132,6 +1171,7 @@ async def _start_wechat_chat_stream(
 ) -> str | None:
     from dan.server.routers.chat import ChatMessageRequest, chat_message
 
+    control_plane_override = _adapter_control_plane_override(adapter_id, "wechat")
     body = _build_wechat_chat_request_body(
         adapter_id=adapter_id,
         adapter=adapter,
@@ -1139,6 +1179,7 @@ async def _start_wechat_chat_stream(
         message_text=message_text,
         account_id=account_id,
         session_id=session_id,
+        control_plane_mode=control_plane_override,
     )
     relay_server_url = str(server_url or "").strip().rstrip("/")
     if relay_server_url:
@@ -1601,11 +1642,13 @@ async def _run_adapter_concierge(
     external_id: str,
     message_text: str,
 ) -> None:
-    from dan.server.concierge.models import SurfaceMessage
+    from dan.server.routers.chat import (
+        ChatMessageRequest,
+        chat_message,
+        iter_local_chat_stream_events,
+    )
 
-    _dispatcher = get_dispatcher()
-    _concierge = get_concierge()
-    control_plane_mode = resolve_control_plane_mode()
+    control_plane_override = _adapter_control_plane_override(adapter_id, surface)
 
     def _event_value(event: Any, field: str, default: Any = "") -> Any:
         if isinstance(event, dict):
@@ -1646,74 +1689,26 @@ async def _run_adapter_concierge(
             queue_position = max(int(_event_value(event, "queue_position", 0) or 0), 1)
             queued_text = f"Queued (position {queue_position}) — I'll reply when ready."
             await _send_adapter_text(adapter, external_id, queued_text)
-            if control_plane_mode != "v1" or _dispatcher is None:
-                return
-            queued_channel = str(_event_value(event, "stream_channel_id", "") or "").strip()
-            if not queued_channel:
-                return
-            bus = _dispatcher.get_response_bus(queued_channel)
-            if bus is None:
-                return
-            try:
-                while True:
-                    queued_event = await bus.get()
-                    if queued_event is None:
-                        break
-                    await _relay_adapter_event(queued_event)
-            finally:
-                _dispatcher.cleanup_response_bus(queued_channel)
+            return
 
-    if control_plane_mode == "v2":
-        from dan.server.routers.chat import (
-            ChatMessageRequest,
-            chat_message,
-            iter_local_chat_stream_events,
+    req = ChatMessageRequest.model_validate(
+        _build_adapter_chat_request_body(
+            adapter_id=adapter_id,
+            surface=surface,
+            external_id=external_id,
+            message_text=message_text,
+            control_plane_mode=control_plane_override,
         )
-
-        req = ChatMessageRequest.model_validate(
-            _build_adapter_chat_request_body(
-                adapter_id=adapter_id,
-                surface=surface,
-                external_id=external_id,
-                message_text=message_text,
-            )
-        )
-        try:
-            response = await chat_message(req, concierge=True)
-            channel_id = str(response.get("stream_channel_id") or "").strip()
-            if not channel_id:
-                return
-            async for event in iter_local_chat_stream_events(channel_id):
-                await _relay_adapter_event(event)
-        except Exception:
-            logger.exception("Adapter %s DAN-v2 chat relay failed", adapter_id)
-            try:
-                await _send_adapter_text(
-                    adapter,
-                    external_id,
-                    "Something went wrong. Please try again.",
-                )
-            except Exception:
-                pass
-        return
-
-    msg = SurfaceMessage(
-        surface=surface,
-        external_id=external_id,
-        text=message_text,
-        metadata={"adapter_id": adapter_id},
     )
     try:
-        if _dispatcher is not None:
-            event_stream = _dispatcher.dispatch(msg)
-        elif _concierge is not None:
-            event_stream = _concierge.process(msg)
-        else:
+        response = await chat_message(req, concierge=True)
+        channel_id = str(response.get("stream_channel_id") or "").strip()
+        if not channel_id:
             return
-        async for event in event_stream:
+        async for event in iter_local_chat_stream_events(channel_id):
             await _relay_adapter_event(event)
     except Exception:
-        logger.exception("Adapter %s concierge dispatch failed", adapter_id)
+        logger.exception("Adapter %s chat relay failed", adapter_id)
         try:
             await _send_adapter_text(
                 adapter, external_id, "Something went wrong. Please try again.",

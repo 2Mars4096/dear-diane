@@ -144,6 +144,12 @@ def build_dan_conversation_worker(
             "for operational failures that need triage, diagnosis, bounded remediation, verification, "
             "and an explicit terminal state. Use selected_lane=legacy for general operator tasks outside "
             "code/research/incident, such as browser control, app control, or broad desktop automation. "
+            "Respect the operator_use_case_pack, operator_safety_envelope, operator_supervision_policy, "
+            "operator_stop_conditions, operator_execution_target, "
+            "operator_deterministic_capability_sets, operator_deterministic_adapters, "
+            "operator_shared_control_membrane, and operator_non_goals facts when deciding whether "
+            "the next step can keep going, must stop for approval, stay inside bounded operator lanes, "
+            "or needs a sharper target. "
             "When delegating, define the smallest meaningful delta, why it matters now, concrete success "
             "criteria, what to avoid, and when the worker should ask back."
         ),
@@ -162,10 +168,24 @@ class DANConversationFacts(BaseModel):
     thread_id: str = ""
     session_id: str = ""
     surface: str = ""
+    workspace_root: str = ""
+    platform: str = ""
+    approval_mode: str = ""
     active_model: str = ""
     requested_mode: str = ""
     normalized_mode: str = ""
+    operator_use_case_pack: str = ""
+    operator_safety_envelope: str = ""
+    operator_supervision_policy: str = ""
+    operator_stop_conditions: list[str] = Field(default_factory=list)
+    operator_execution_target: str = ""
+    operator_deterministic_capability_sets: list[str] = Field(default_factory=list)
+    operator_deterministic_adapters: list[str] = Field(default_factory=list)
+    operator_shared_control_membrane: str = ""
+    operator_non_goals: list[str] = Field(default_factory=list)
     available_organisms: list[str] = Field(default_factory=list)
+    available_adapters: list[str] = Field(default_factory=list)
+    available_tool_families: list[str] = Field(default_factory=list)
     pending_clarification: str | None = None
     recent_lane: str = ""
     recent_status: str = ""
@@ -208,7 +228,12 @@ class WorkerReport(BaseModel):
     summary: str = ""
     objective: str = ""
     acceptance_criteria: list[str] = Field(default_factory=list)
+    what_changed: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    artifacts: dict[str, Any] = Field(default_factory=dict)
     blockers: list[str] = Field(default_factory=list)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    best_next_question: str = ""
 
 
 class ReviewDecision(BaseModel):
@@ -216,6 +241,7 @@ class ReviewDecision(BaseModel):
     public_response: str = ""
     reason: str = ""
     next_lane: str = ""
+    next_delta: str = ""
 
 
 class DANConversationTurnDecision(BaseModel):
@@ -505,7 +531,10 @@ class DANConversationController:
             provider_request_overrides=provider_request_overrides,
             event_callback=event_callback,
         )
-        self._runner = DurableAgentRunner(completion_provider=self._completion_adapter)
+        self._runner = DurableAgentRunner(
+            completion_provider=self._completion_adapter,
+            event_callback=event_callback,
+        )
 
     def create_session(self, *, metadata: dict[str, Any] | None = None) -> DurableAgentSessionState:
         return self._runner.create_session(self._worker, metadata=metadata)
@@ -519,6 +548,10 @@ class DANConversationController:
     @staticmethod
     def dump_session(session: DurableAgentSessionState) -> dict[str, Any]:
         return session.model_dump(mode="json")
+
+    def set_event_callback(self, event_callback) -> None:
+        self._completion_adapter.set_event_callback(event_callback)
+        self._runner.set_event_callback(event_callback)
 
     async def decide_user_turn(
         self,

@@ -6,6 +6,7 @@ import inspect
 import logging
 import os
 import re
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -79,17 +80,263 @@ _CONTROL_PLANE_ALIASES = {
 
 logger = logging.getLogger(__name__)
 
+_SHARED_OPERATOR_CONTROL_MEMBRANE = "supervisor_brief_worker_report_review_v1"
+_OPERATOR_V1_NON_GOALS = (
+    "No raw unrestricted AppleScript surface.",
+    "No unsandboxed system-administration autonomy.",
+    "No silent outbound messaging.",
+    "No pseudo-motivational filler instead of concrete direction.",
+)
+
+_KNOWN_ADAPTER_SURFACES = (
+    "telegram",
+    "wechat",
+    "whatsapp-web",
+    "whatsapp",
+    "email",
+)
+
+_LOCAL_OPERATOR_ACTION_CUES = (
+    "create",
+    "edit",
+    "write",
+    "patch",
+    "fix",
+    "repair",
+    "implement",
+    "refactor",
+    "run",
+    "test",
+    "build",
+    "branch",
+    "commit",
+)
+_LOCAL_MUTATION_CUES = _LOCAL_OPERATOR_ACTION_CUES + (
+    "delete",
+    "rename",
+    "move",
+    "apply",
+)
+_BROWSER_DOWNLOAD_CUES = (
+    "browser",
+    "page",
+    "site",
+    "url",
+    "navigate",
+    "open the page",
+    "open the site",
+    "download",
+    "screenshot",
+    "screen capture",
+    "extract text",
+    "scrape",
+    "form",
+)
+_BROWSER_INPUT_CUES = (
+    "click",
+    "fill",
+    "submit",
+    "type into",
+    "log in",
+    "login",
+)
+_DESKTOP_ACTION_CUES = (
+    "desktop",
+    "focus app",
+    "open app",
+    "window",
+    "clipboard",
+    "file dialog",
+    "press key",
+    "hotkey",
+)
+_MESSAGING_ACTION_CUES = (
+    "send email",
+    "email",
+    "telegram",
+    "wechat",
+    "whatsapp",
+    "message",
+    "reply",
+    "notify",
+    "post",
+)
+
+
+@dataclass(frozen=True)
+class OperatorEnvelopeProfile:
+    use_case_pack: str
+    safety_envelope: str
+    supervision_policy: str
+    stop_conditions: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class OperatorExecutionBoundary:
+    execution_target: str
+    deterministic_capability_sets: tuple[str, ...]
+    deterministic_adapters: tuple[str, ...]
+    shared_control_membrane: str = _SHARED_OPERATOR_CONTROL_MEMBRANE
+    non_goals: tuple[str, ...] = _OPERATOR_V1_NON_GOALS
+
+
+def classify_operator_profile(
+    *,
+    message: str,
+    requested_mode: str = "",
+) -> OperatorEnvelopeProfile:
+    normalized_message = _clean_text(message).lower()
+    normalized_mode = _clean_text(requested_mode).lower()
+
+    local_action = normalized_mode in {"build", "mutate"} or _contains_any(
+        normalized_message,
+        _LOCAL_OPERATOR_ACTION_CUES,
+    )
+    browser_action = _contains_any(normalized_message, _BROWSER_DOWNLOAD_CUES)
+    desktop_action = _contains_any(normalized_message, _DESKTOP_ACTION_CUES)
+    messaging_action = _contains_any(normalized_message, _MESSAGING_ACTION_CUES)
+
+    active_domains = sum(
+        1
+        for flag in (
+            local_action,
+            browser_action,
+            desktop_action or messaging_action,
+        )
+        if flag
+    )
+    if active_domains >= 2:
+        use_case_pack = "cross_surface_operator"
+    elif desktop_action or messaging_action:
+        use_case_pack = "desktop_messaging"
+    elif browser_action:
+        use_case_pack = "browser_download"
+    elif local_action:
+        use_case_pack = "local_operator"
+    else:
+        use_case_pack = "knowledge_local_context"
+
+    external_side_effect = (
+        _contains_any(normalized_message, _BROWSER_INPUT_CUES)
+        or desktop_action
+        or messaging_action
+    )
+    local_mutation = (
+        normalized_mode in {"build", "mutate"}
+        or _contains_any(normalized_message, _LOCAL_MUTATION_CUES)
+        or "download" in normalized_message
+    )
+    if external_side_effect:
+        return OperatorEnvelopeProfile(
+            use_case_pack=use_case_pack,
+            safety_envelope="external_side_effect",
+            supervision_policy="approval_gate_for_external_side_effects",
+            stop_conditions=(
+                "Stop for explicit approval before browser input, desktop input, or outbound messaging.",
+                "Stop and ask when the target app, account, page, or recipient is ambiguous.",
+            ),
+        )
+    if local_mutation:
+        return OperatorEnvelopeProfile(
+            use_case_pack=use_case_pack,
+            safety_envelope="local_mutation",
+            supervision_policy="continue_with_local_guards",
+            stop_conditions=(
+                "Stop and ask when the target repo, file, command, or desired delta is ambiguous.",
+            ),
+        )
+    return OperatorEnvelopeProfile(
+        use_case_pack=use_case_pack,
+        safety_envelope="read_only",
+        supervision_policy="continue_with_evidence",
+        stop_conditions=(
+            "Stop and ask when the scope, evidence target, or comparison frame is ambiguous.",
+        ),
+    )
+
+
+def resolve_operator_execution_boundary(
+    *,
+    profile: OperatorEnvelopeProfile,
+    available_tool_families: list[str] | None = None,
+    available_adapters: list[str] | None = None,
+) -> OperatorExecutionBoundary:
+    tool_families = {
+        text.lower()
+        for text in _normalize_text_list(available_tool_families)
+    }
+    adapters = tuple(
+        adapter
+        for adapter in _dedupe_texts(
+            [text.lower() for text in _normalize_text_list(available_adapters)]
+        )
+        if adapter in _KNOWN_ADAPTER_SURFACES
+    )
+
+    capability_sets: list[str] = []
+    use_case_pack = profile.use_case_pack
+    if use_case_pack == "knowledge_local_context":
+        capability_sets.append("local_context_readers")
+        if not tool_families or tool_families & {"web", "browser", "research"}:
+            capability_sets.append("grounded_web_readers")
+    elif use_case_pack == "local_operator":
+        capability_sets.append("workspace_mutation")
+        if not tool_families or tool_families & {"shell", "git"}:
+            capability_sets.append("shell_git")
+    elif use_case_pack == "browser_download":
+        capability_sets.extend(["browser_navigation", "artifact_downloads"])
+    elif use_case_pack == "desktop_messaging":
+        capability_sets.append("desktop_control")
+        if adapters or "adapters" in tool_families:
+            capability_sets.append("messaging_adapters")
+    elif use_case_pack == "cross_surface_operator":
+        if not tool_families or tool_families & {"files", "shell", "git", "code"}:
+            capability_sets.append("workspace_mutation")
+        if not tool_families or tool_families & {"shell", "git"}:
+            capability_sets.append("shell_git")
+        if not tool_families or tool_families & {"browser", "web"}:
+            capability_sets.append("browser_navigation")
+        if not tool_families or tool_families & {"browser", "files"}:
+            capability_sets.append("artifact_downloads")
+        if not tool_families or tool_families & {"desktop"}:
+            capability_sets.append("desktop_control")
+        if adapters or "adapters" in tool_families:
+            capability_sets.append("messaging_adapters")
+
+    execution_target = (
+        "inline_or_specialist"
+        if profile.use_case_pack == "knowledge_local_context"
+        and profile.safety_envelope == "read_only"
+        else "bounded_operator_lane"
+    )
+    return OperatorExecutionBoundary(
+        execution_target=execution_target,
+        deterministic_capability_sets=tuple(_dedupe_texts(capability_sets)),
+        deterministic_adapters=adapters,
+    )
+
+
+def parse_control_plane_mode(value: Any | None) -> ControlPlaneMode | None:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    normalized = _CONTROL_PLANE_ALIASES.get(raw, raw)
+    if normalized not in {"v1", "v2"}:
+        raise ValueError("control plane mode must resolve to `v1` or `v2`")
+    return "v2" if normalized == "v2" else "v1"
+
 
 def resolve_control_plane_mode(value: Any | None = None) -> ControlPlaneMode:
-    raw = str(
+    raw = (
         value
         if value is not None
         else os.environ.get("DAN_CONTROL_PLANE", DEFAULT_CONTROL_PLANE_MODE)
-    ).strip().lower()
-    if not raw:
+    )
+    try:
+        parsed = parse_control_plane_mode(raw)
+    except ValueError:
         return DEFAULT_CONTROL_PLANE_MODE
-    normalized = _CONTROL_PLANE_ALIASES.get(raw, raw)
-    return "v2" if normalized == "v2" else "v1"
+    return parsed or DEFAULT_CONTROL_PLANE_MODE
 
 
 def _timestamp_parts() -> tuple[str, str, str]:
@@ -174,6 +421,21 @@ def _is_truthy(value: Any) -> bool:
     return text in {"1", "true", "yes", "on", "enabled", "direct"}
 
 
+def _contains_any(text: str, cues: tuple[str, ...]) -> bool:
+    lowered = str(text or "").strip().lower()
+    for cue in cues:
+        normalized_cue = str(cue or "").strip().lower()
+        if not normalized_cue:
+            continue
+        if " " in normalized_cue:
+            if normalized_cue in lowered:
+                return True
+            continue
+        if re.search(rf"(?<![a-z0-9]){re.escape(normalized_cue)}(?![a-z0-9])", lowered):
+            return True
+    return False
+
+
 def _normalize_text_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -189,6 +451,46 @@ def _normalize_text_list(value: Any) -> list[str]:
         if text:
             normalized.append(text)
     return normalized
+
+
+def _normalize_texts(*parts: Any) -> list[str]:
+    normalized: list[str] = []
+    for part in parts:
+        if part is None:
+            continue
+        if isinstance(part, (list, tuple, set)):
+            normalized.extend(_normalize_text_list(part))
+            continue
+        text = _clean_text(part)
+        if text:
+            normalized.append(text)
+    return _dedupe_texts(normalized)
+
+
+def _compact_artifacts(raw: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+    payload = dict(raw or {})
+    payload.update(kwargs)
+    compact: dict[str, Any] = {}
+    for key, value in payload.items():
+        if value is None:
+            continue
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                compact[key] = text
+            continue
+        if isinstance(value, dict):
+            nested = _compact_artifacts(value)
+            if nested:
+                compact[key] = nested
+            continue
+        if isinstance(value, (list, tuple, set)):
+            items = _normalize_text_list(value)
+            if items:
+                compact[key] = items
+            continue
+        compact[key] = value
+    return compact
 
 
 @dataclass
@@ -300,6 +602,8 @@ class DANV2Runtime:
     ) -> DANConversationContext:
         current_timestamp, current_date, timezone_name = _timestamp_parts()
         last_report = recent_worker_reports[-1] if recent_worker_reports else None
+        operator_profile = self._operator_profile(req)
+        operator_boundary = self._operator_execution_boundary(req)
         return DANConversationContext(
             workflow_id=str(req.workflow_id),
             model=self._model,
@@ -311,10 +615,35 @@ class DANV2Runtime:
                 thread_id=str(req.thread_id or ""),
                 session_id=str(req.session_id or req.thread_id or ""),
                 surface=str(req.surface or ""),
+                workspace_root=self._workspace_root(req),
+                platform=str(
+                    (
+                        req.surface_context.get("platform")
+                        if isinstance(req.surface_context, dict)
+                        else ""
+                    )
+                    or sys.platform
+                ),
+                approval_mode=self._approval_mode(req),
                 active_model=self._model,
                 requested_mode=str(req.mode or ""),
                 normalized_mode=str(normalized_mode or ""),
+                operator_use_case_pack=operator_profile.use_case_pack,
+                operator_safety_envelope=operator_profile.safety_envelope,
+                operator_supervision_policy=operator_profile.supervision_policy,
+                operator_stop_conditions=list(operator_profile.stop_conditions),
+                operator_execution_target=operator_boundary.execution_target,
+                operator_deterministic_capability_sets=list(
+                    operator_boundary.deterministic_capability_sets
+                ),
+                operator_deterministic_adapters=list(
+                    operator_boundary.deterministic_adapters
+                ),
+                operator_shared_control_membrane=operator_boundary.shared_control_membrane,
+                operator_non_goals=list(operator_boundary.non_goals),
                 available_organisms=["code", "research", "incident", "legacy"],
+                available_adapters=self._available_adapters(req),
+                available_tool_families=self._available_tool_families(req),
                 recent_lane=str(last_report.lane) if last_report is not None else "",
                 recent_status=str(last_report.status) if last_report is not None else "",
                 recent_objective=str(last_report.objective) if last_report is not None else "",
@@ -331,11 +660,403 @@ class DANV2Runtime:
         root = str(surface_context.get("workspace_root") or surface_context.get("cwd") or os.getcwd()).strip()
         return root or os.getcwd()
 
+    def _approval_mode(self, req: Any) -> str:
+        surface_context = req.surface_context if isinstance(req.surface_context, dict) else {}
+        text = str(
+            surface_context.get("approval_mode")
+            or getattr(req, "approval_mode", "")
+            or "server"
+        ).strip()
+        return text or "server"
+
+    def _available_adapters(self, req: Any) -> list[str]:
+        surface_context = req.surface_context if isinstance(req.surface_context, dict) else {}
+        return _normalize_text_list(
+            surface_context.get("available_adapters") or surface_context.get("adapters")
+        )
+
+    def _available_tool_families(self, req: Any) -> list[str]:
+        surface_context = req.surface_context if isinstance(req.surface_context, dict) else {}
+        explicit = _normalize_text_list(
+            surface_context.get("available_tool_families")
+            or surface_context.get("tool_families")
+        )
+        if explicit:
+            return explicit
+        inferred = [
+            "files",
+            "shell",
+            "git",
+            "web",
+            "code",
+            "research",
+            "incident",
+        ]
+        if self._run_manager is not None:
+            inferred.append("workflow_runs")
+        if self._available_adapters(req):
+            inferred.append("adapters")
+        return _dedupe_texts(inferred)
+
+    def _enabled_tools(self, req: Any) -> list[str]:
+        surface_context = req.surface_context if isinstance(req.surface_context, dict) else {}
+        explicit = _normalize_text_list(
+            surface_context.get("enabled_tools")
+            or surface_context.get("tool_ids")
+        )
+        if explicit:
+            return explicit
+        return self._available_tool_families(req)
+
+    def _operator_profile(self, req: Any) -> OperatorEnvelopeProfile:
+        return classify_operator_profile(
+            message=str(getattr(req, "message", "") or ""),
+            requested_mode=str(getattr(req, "mode", "") or ""),
+        )
+
+    def _operator_profile_payload(self, req: Any) -> dict[str, Any]:
+        profile = self._operator_profile(req)
+        return {
+            "operator_use_case_pack": profile.use_case_pack,
+            "operator_safety_envelope": profile.safety_envelope,
+            "operator_supervision_policy": profile.supervision_policy,
+            "operator_stop_conditions": list(profile.stop_conditions),
+        }
+
+    def _operator_execution_boundary(self, req: Any) -> OperatorExecutionBoundary:
+        return resolve_operator_execution_boundary(
+            profile=self._operator_profile(req),
+            available_tool_families=self._available_tool_families(req),
+            available_adapters=self._available_adapters(req),
+        )
+
+    def _operator_execution_boundary_payload(self, req: Any) -> dict[str, Any]:
+        boundary = self._operator_execution_boundary(req)
+        return {
+            "operator_execution_target": boundary.execution_target,
+            "operator_deterministic_capability_sets": list(
+                boundary.deterministic_capability_sets
+            ),
+            "operator_deterministic_adapters": list(
+                boundary.deterministic_adapters
+            ),
+            "operator_shared_control_membrane": boundary.shared_control_membrane,
+            "operator_non_goals": list(boundary.non_goals),
+        }
+
+    def _operator_contract_payload(self, req: Any) -> dict[str, Any]:
+        return {
+            **self._operator_profile_payload(req),
+            **self._operator_execution_boundary_payload(req),
+        }
+
     def _direct_code_execution_enabled(self, req: Any) -> bool:
         surface_context = req.surface_context if isinstance(req.surface_context, dict) else {}
         if "direct_code_execution" in surface_context:
             return _is_truthy(surface_context.get("direct_code_execution"))
-        return _is_truthy(os.environ.get("DAN_V2_DIRECT_CODE_RUNTIME"))
+        env_value = os.environ.get("DAN_V2_DIRECT_CODE_RUNTIME")
+        if str(env_value or "").strip():
+            return _is_truthy(env_value)
+        return True
+
+    async def _list_live_adapter_snapshots(self) -> list[dict[str, Any]]:
+        lister = getattr(self, "_adapter_snapshot_lister", None)
+        if callable(lister):
+            result = lister()
+            if inspect.isawaitable(result):
+                result = await result
+            return [dict(item) for item in list(result or []) if isinstance(item, dict)]
+        try:
+            from dan.server.routers import adapters as adapters_router
+        except Exception:
+            logger.debug("Failed to import adapter router for incident inspection", exc_info=True)
+            return []
+        status_reader = getattr(adapters_router, "adapter_status", None)
+        if not callable(status_reader):
+            return []
+        try:
+            result = status_reader()
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception:
+            logger.debug("Failed to inspect live adapters for incident evidence", exc_info=True)
+            return []
+        return [dict(item) for item in list(result or []) if isinstance(item, dict)]
+
+    async def _adapter_config_summary(self, surface_type: str) -> dict[str, Any]:
+        loader = getattr(self, "_adapter_config_summary_loader", None)
+        if callable(loader):
+            result = loader(surface_type)
+            if inspect.isawaitable(result):
+                result = await result
+            return dict(result or {})
+        try:
+            from dan.server.routers import adapters as adapters_router
+        except Exception:
+            logger.debug("Failed to import adapter router for config lookup", exc_info=True)
+            return {}
+        summary_builders = {
+            "telegram": "_build_telegram_config_summary",
+            "whatsapp-web": "_build_whatsapp_web_config_summary",
+            "wechat": "_build_wechat_official_account_config_summary",
+        }
+        builder_name = summary_builders.get(str(surface_type or "").strip().lower())
+        if not builder_name:
+            return {}
+        builder = getattr(adapters_router, builder_name, None)
+        if not callable(builder):
+            return {}
+        try:
+            result = builder()
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception:
+            logger.debug("Failed to build adapter config summary for %s", surface_type, exc_info=True)
+            return {}
+        return dict(result or {})
+
+    async def _stop_live_adapter(self, adapter_id: str, *, missing_ok: bool = False) -> bool:
+        stopper = getattr(self, "_adapter_stop_runner", None)
+        if callable(stopper):
+            result = stopper(adapter_id, missing_ok=missing_ok)
+            if inspect.isawaitable(result):
+                result = await result
+            return bool(result)
+        try:
+            from dan.server.routers import adapters as adapters_router
+        except Exception:
+            logger.debug("Failed to import adapter router for stop action", exc_info=True)
+            return False
+        stop_active = getattr(adapters_router, "_stop_active_adapter", None)
+        if not callable(stop_active):
+            return False
+        try:
+            result = stop_active(adapter_id, missing_ok=missing_ok)
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception:
+            logger.debug("Failed to stop live adapter %s", adapter_id, exc_info=True)
+            return False
+        return bool(result)
+
+    async def _restart_live_adapter(
+        self,
+        *,
+        surface_type: str,
+        adapter_id: str = "",
+    ) -> dict[str, Any]:
+        runner = getattr(self, "_adapter_restart_runner", None)
+        if callable(runner):
+            result = runner(surface_type, adapter_id=adapter_id)
+            if inspect.isawaitable(result):
+                result = await result
+            return dict(result or {})
+        normalized_surface = _clean_text(surface_type).lower()
+        if normalized_surface not in {"telegram", "whatsapp-web", "wechat"}:
+            raise RuntimeError(
+                f"live retry is not supported for adapter surface `{normalized_surface or 'unknown'}`"
+            )
+        config_summary = await self._adapter_config_summary(normalized_surface)
+        if not config_summary.get("configured"):
+            raise RuntimeError(
+                f"stored adapter config is missing for `{normalized_surface}`"
+            )
+        if adapter_id:
+            await self._stop_live_adapter(adapter_id, missing_ok=True)
+        try:
+            from dan.server.routers.adapters import AdapterStartRequest, start_adapter
+        except Exception as exc:
+            raise RuntimeError("adapter runtime is unavailable for live retry") from exc
+        result = start_adapter(
+            AdapterStartRequest(
+                type=normalized_surface,
+                config={},
+            )
+        )
+        if inspect.isawaitable(result):
+            result = await result
+        return dict(result or {})
+
+    @staticmethod
+    def _adapter_snapshot_sort_key(snapshot: dict[str, Any]) -> tuple[int, float, float]:
+        state = _clean_text(snapshot.get("connection_state")).lower()
+        last_error = _clean_text(snapshot.get("last_error"))
+        priority = 0
+        if last_error or state == "error":
+            priority = 4
+        elif state in {"reconnecting", "pairing", "starting"}:
+            priority = 3
+        elif state == "disconnected":
+            priority = 2
+        elif snapshot.get("paired") is False:
+            priority = 1
+        return (
+            priority,
+            _coerce_timestamp(snapshot.get("session_count")),
+            _coerce_timestamp(snapshot.get("uptime_seconds")),
+        )
+
+    def _preferred_adapter_surfaces(
+        self,
+        *,
+        req: Any,
+        incident_decision: IncidentConversationTurnDecision,
+        execution_request: IncidentExecutionRequest | None = None,
+    ) -> list[str]:
+        surface_context = req.surface_context if isinstance(req.surface_context, dict) else {}
+        adapter_context = (
+            dict(surface_context.get("adapter"))
+            if isinstance(surface_context.get("adapter"), dict)
+            else {}
+        )
+        known = set(_KNOWN_ADAPTER_SURFACES)
+        explicit = _dedupe_texts(
+            [
+                *(
+                    item
+                    for item in self._available_adapters(req)
+                    if _clean_text(item).lower() in known
+                ),
+                str(adapter_context.get("surface") or ""),
+                str(execution_request.evidence.get("adapter_type") or "")
+                if execution_request is not None
+                else "",
+            ]
+        )
+        cue_text = _clean_text(
+            " ".join(
+                part
+                for part in [
+                    str(req.message or ""),
+                    incident_decision.desired_delta,
+                    str(execution_request.target or "") if execution_request is not None else "",
+                ]
+                if _clean_text(part)
+            )
+        ).lower()
+        mentioned = [surface for surface in _KNOWN_ADAPTER_SURFACES if surface in cue_text]
+        return _dedupe_texts([*explicit, *mentioned])
+
+    async def _select_failed_surface_snapshot(
+        self,
+        *,
+        req: Any,
+        incident_decision: IncidentConversationTurnDecision,
+        execution_request: IncidentExecutionRequest | None = None,
+        preferred_states: tuple[str, ...] = (),
+    ) -> dict[str, Any] | None:
+        snapshots = await self._list_live_adapter_snapshots()
+        if not snapshots:
+            return None
+        surface_context = req.surface_context if isinstance(req.surface_context, dict) else {}
+        adapter_context = (
+            dict(surface_context.get("adapter"))
+            if isinstance(surface_context.get("adapter"), dict)
+            else {}
+        )
+        preferred_surfaces = set(
+            self._preferred_adapter_surfaces(
+                req=req,
+                incident_decision=incident_decision,
+                execution_request=execution_request,
+            )
+        )
+        preferred_states_set = {str(item).strip().lower() for item in preferred_states if str(item).strip()}
+        requested_adapter_id = _clean_text(
+            adapter_context.get("adapter_id")
+            or (execution_request.evidence.get("adapter_id") if execution_request is not None else "")
+        )
+        cue_text = _clean_text(
+            " ".join(
+                part
+                for part in [
+                    str(req.message or ""),
+                    incident_decision.desired_delta,
+                    str(execution_request.target or "") if execution_request is not None else "",
+                    requested_adapter_id,
+                ]
+                if _clean_text(part)
+            )
+        ).lower()
+        candidates = [
+            snapshot
+            for snapshot in snapshots
+            if not preferred_surfaces
+            or _clean_text(snapshot.get("type")).lower() in preferred_surfaces
+        ]
+        if requested_adapter_id:
+            exact = [
+                snapshot
+                for snapshot in candidates
+                if _clean_text(snapshot.get("adapter_id")) == requested_adapter_id
+            ]
+            if exact:
+                return sorted(exact, key=self._adapter_snapshot_sort_key, reverse=True)[0]
+        direct_matches = [
+            snapshot
+            for snapshot in candidates
+            if (
+                _clean_text(snapshot.get("adapter_id")).lower()
+                and _clean_text(snapshot.get("adapter_id")).lower() in cue_text
+            )
+            or (
+                _clean_text(snapshot.get("type")).lower()
+                and _clean_text(snapshot.get("type")).lower() in cue_text
+            )
+        ]
+        if preferred_states_set:
+            preferred_direct = [
+                snapshot
+                for snapshot in direct_matches
+                if _clean_text(snapshot.get("connection_state")).lower() in preferred_states_set
+            ]
+            if preferred_direct:
+                return sorted(preferred_direct, key=self._adapter_snapshot_sort_key, reverse=True)[0]
+        if direct_matches:
+            return sorted(direct_matches, key=self._adapter_snapshot_sort_key, reverse=True)[0]
+        if preferred_states_set:
+            preferred = [
+                snapshot
+                for snapshot in candidates
+                if _clean_text(snapshot.get("connection_state")).lower() in preferred_states_set
+            ]
+            if preferred:
+                return sorted(preferred, key=self._adapter_snapshot_sort_key, reverse=True)[0]
+        concerning = [
+            snapshot
+            for snapshot in candidates
+            if _clean_text(snapshot.get("last_error"))
+            or _clean_text(snapshot.get("connection_state")).lower()
+            in {"error", "reconnecting", "pairing", "starting", "disconnected"}
+            or snapshot.get("paired") is False
+        ]
+        if not concerning:
+            return None
+        return sorted(concerning, key=self._adapter_snapshot_sort_key, reverse=True)[0]
+
+    def _surface_snapshot_evidence(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        evidence: dict[str, Any] = {}
+        adapter_id = _clean_text(snapshot.get("adapter_id"))
+        surface_type = _clean_text(snapshot.get("type"))
+        connection_state = _clean_text(snapshot.get("connection_state"))
+        last_error = _clean_text(snapshot.get("last_error"))
+        if adapter_id:
+            evidence["adapter_id"] = adapter_id
+        if surface_type:
+            evidence["adapter_type"] = surface_type
+        if connection_state:
+            evidence["connection_state"] = connection_state
+            evidence["current_status"] = connection_state
+            evidence["latest_status"] = connection_state
+        if last_error:
+            evidence["last_error"] = last_error
+        if "running" in snapshot:
+            evidence["running"] = bool(snapshot.get("running"))
+        if "paired" in snapshot and snapshot.get("paired") is not None:
+            evidence["paired"] = bool(snapshot.get("paired"))
+        if snapshot.get("session_count") is not None:
+            evidence["session_count"] = snapshot.get("session_count")
+        return evidence
 
     async def _run_direct_code_execution(
         self,
@@ -356,6 +1077,10 @@ class DANV2Runtime:
                 repair_brief=repair_brief,
                 workspace_root=self._workspace_root(req),
                 model=self._model,
+                approval_mode=self._approval_mode(req),
+                enabled_tools=self._enabled_tools(req),
+                available_tool_families=self._available_tool_families(req),
+                available_adapters=self._available_adapters(req),
             )
             if inspect.isawaitable(result):
                 result = await result
@@ -408,6 +1133,10 @@ class DANV2Runtime:
                 "workflow_id": str(getattr(req, "workflow_id", "") or ""),
                 "thread_id": str(getattr(req, "thread_id", "") or ""),
                 "session_id": str(getattr(req, "session_id", "") or ""),
+                "approval_mode": self._approval_mode(req),
+                "enabled_tools": self._enabled_tools(req),
+                "available_tool_families": self._available_tool_families(req),
+                "available_adapters": self._available_adapters(req),
             },
         )
         trace_log = CrossCellTraceLog()
@@ -468,6 +1197,35 @@ class DANV2Runtime:
         if risks:
             lines.append("Risks: " + "; ".join(risks[:3]))
         return "\n\n".join(line for line in lines if line)
+
+    @staticmethod
+    def _build_incident_response(
+        *,
+        public_response: str,
+        execution_report: IncidentExecutionReport,
+        execution_mode: str,
+    ) -> str:
+        lines = _dedupe_texts(
+            [
+                public_response,
+                execution_report.public_summary,
+                f"Action: {execution_report.action_id} via {execution_mode}.",
+                execution_report.action_result.summary,
+                (
+                    "Verification: "
+                    + _clean_text(execution_report.verification_result.summary)
+                )
+                if _clean_text(execution_report.verification_result.summary)
+                else "",
+                (
+                    "Follow-up: "
+                    + "; ".join(execution_report.verification_result.required_follow_up)
+                )
+                if execution_report.verification_result.required_follow_up
+                else "",
+            ]
+        )
+        return "\n\n".join(lines)
 
     def _list_run_snapshots(self) -> list[dict[str, Any]]:
         run_manager = getattr(self, "_run_manager", None)
@@ -619,6 +1377,45 @@ class DANV2Runtime:
                 f"Confirm the latest status for run `{run_id}`."
                 if run_id
                 else "",
+            ]
+        )
+        return IncidentExecutionRequest(
+            scenario_id=incident_decision.incident_scenario_id,
+            action_id=incident_decision.chosen_action,
+            target=target,
+            objective=_clean_text(incident_decision.desired_delta)
+            or _clean_text(req.message)
+            or target,
+            preferred_lane=incident_decision.action_lane or "legacy",
+            evidence=evidence,
+            verification_checks=verification_checks,
+        )
+
+    async def _build_failed_surface_execution_request(
+        self,
+        *,
+        req: Any,
+        incident_decision: IncidentConversationTurnDecision,
+    ) -> IncidentExecutionRequest | None:
+        if incident_decision.incident_scenario_id != "failed_external_surface_session":
+            return None
+        if incident_decision.chosen_action != "investigate":
+            return None
+        snapshot = await self._select_failed_surface_snapshot(
+            req=req,
+            incident_decision=incident_decision,
+            preferred_states=("error", "reconnecting", "pairing", "starting", "disconnected"),
+        )
+        if snapshot is None:
+            return None
+        evidence = self._surface_snapshot_evidence(snapshot)
+        adapter_id = _clean_text(snapshot.get("adapter_id"))
+        surface_type = _clean_text(snapshot.get("type"))
+        target = adapter_id or surface_type or _clean_text(req.message)
+        verification_checks = _dedupe_texts(
+            [
+                *list(incident_decision.verification_checks),
+                f"Confirm the live connection state for `{adapter_id or surface_type or 'the adapter surface'}`.",
             ]
         )
         return IncidentExecutionRequest(
@@ -964,7 +1761,289 @@ class DANV2Runtime:
             scenario_id=incident_decision.incident_scenario_id,
         )
 
-    def _build_incident_execution_request(
+    async def _execute_live_surface_incident_action(
+        self,
+        *,
+        req: Any,
+        incident_decision: IncidentConversationTurnDecision,
+        execution_request: IncidentExecutionRequest | None,
+    ) -> IncidentExecutionReport | None:
+        if incident_decision.incident_scenario_id != "failed_external_surface_session":
+            return None
+        if incident_decision.chosen_action not in {"contain", "pause"}:
+            return None
+        boundary = resolve_incident_action_boundary(
+            incident_decision.chosen_action,
+            preferred_lane=incident_decision.action_lane or "legacy",
+        )
+        snapshot = await self._select_failed_surface_snapshot(
+            req=req,
+            incident_decision=incident_decision,
+            execution_request=execution_request,
+        )
+        if snapshot is None:
+            return None
+        surface_type = _clean_text(snapshot.get("type"))
+        adapter_id = _clean_text(snapshot.get("adapter_id"))
+        connection_state = _clean_text(snapshot.get("connection_state")).lower()
+        running = bool(snapshot.get("running"))
+        target = adapter_id or surface_type or _clean_text(req.message)
+        evidence = (
+            dict(execution_request.evidence)
+            if execution_request is not None
+            else {}
+        )
+        evidence.update(self._surface_snapshot_evidence(snapshot))
+        request_payload = (
+            execution_request.model_copy(
+                update={
+                    "scenario_id": incident_decision.incident_scenario_id,
+                    "action_id": incident_decision.chosen_action,
+                    "target": execution_request.target or target,
+                    "objective": execution_request.objective
+                    or incident_decision.desired_delta
+                    or str(req.message or "")
+                    or target,
+                    "preferred_lane": execution_request.preferred_lane
+                    or incident_decision.action_lane
+                    or "legacy",
+                    "evidence": evidence,
+                    "verification_checks": list(
+                        execution_request.verification_checks
+                        or incident_decision.verification_checks
+                    ),
+                }
+            )
+            if execution_request is not None
+            else IncidentExecutionRequest(
+                scenario_id=incident_decision.incident_scenario_id,
+                action_id=incident_decision.chosen_action,
+                target=target,
+                objective=incident_decision.desired_delta
+                or str(req.message or "")
+                or target,
+                preferred_lane=incident_decision.action_lane or "legacy",
+                evidence=evidence,
+                verification_checks=list(incident_decision.verification_checks),
+            )
+        )
+        result_key = (
+            "pause_result" if incident_decision.chosen_action == "pause" else "containment_result"
+        )
+        if connection_state == "disconnected" or not running:
+            request_payload.evidence[result_key] = "disconnected"
+            request_payload.evidence["post_action_status"] = "disconnected"
+            action_result = IncidentActionResult(
+                action_id=boundary.action_id,
+                lane=boundary.lane,
+                status="completed",
+                summary=(
+                    f"Adapter `{adapter_id or surface_type or target}` was already stopped, so the surface session is contained."
+                ),
+                evidence=[
+                    f"adapter_id: {adapter_id}" if adapter_id else "",
+                    f"adapter_type: {surface_type}" if surface_type else "",
+                    "post_action_status: disconnected",
+                ],
+                artifacts={"adapter_id": adapter_id, "adapter_type": surface_type},
+            )
+            return finalize_incident_execution(
+                request_payload,
+                boundary=boundary,
+                action_result=action_result,
+                scenario_id=incident_decision.incident_scenario_id,
+            )
+        stopped = await self._stop_live_adapter(adapter_id, missing_ok=False) if adapter_id else False
+        if not stopped:
+            action_result = IncidentActionResult(
+                action_id=boundary.action_id,
+                lane=boundary.lane,
+                status="blocked",
+                summary=(
+                    f"Attempted to {boundary.action_id} `{target}`, but the live adapter could not be stopped."
+                ),
+                evidence=[
+                    f"adapter_id: {adapter_id}" if adapter_id else "",
+                    f"adapter_type: {surface_type}" if surface_type else "",
+                    f"connection_state: {connection_state}" if connection_state else "",
+                ],
+                blockers=["the adapter state changed before containment completed"],
+            )
+            return finalize_incident_execution(
+                request_payload,
+                boundary=boundary,
+                action_result=action_result,
+                scenario_id=incident_decision.incident_scenario_id,
+            )
+        request_payload.evidence[result_key] = "disconnected"
+        request_payload.evidence["post_action_status"] = "disconnected"
+        action_result = IncidentActionResult(
+            action_id=boundary.action_id,
+            lane=boundary.lane,
+            status="completed",
+            summary=(
+                f"Stopped adapter `{adapter_id or surface_type}` to {boundary.action_id} the failed surface session."
+            ),
+            changed_state=True,
+            evidence=[
+                f"adapter_id: {adapter_id}" if adapter_id else "",
+                f"adapter_type: {surface_type}" if surface_type else "",
+                "post_action_status: disconnected",
+            ],
+            artifacts={"adapter_id": adapter_id, "adapter_type": surface_type},
+        )
+        return finalize_incident_execution(
+            request_payload,
+            boundary=boundary,
+            action_result=action_result,
+            scenario_id=incident_decision.incident_scenario_id,
+        )
+
+    async def _execute_live_surface_retry(
+        self,
+        *,
+        req: Any,
+        incident_decision: IncidentConversationTurnDecision,
+        execution_request: IncidentExecutionRequest | None,
+    ) -> IncidentExecutionReport | None:
+        if incident_decision.incident_scenario_id != "failed_external_surface_session":
+            return None
+        if incident_decision.chosen_action != "retry":
+            return None
+        boundary = resolve_incident_action_boundary(
+            incident_decision.chosen_action,
+            preferred_lane=incident_decision.action_lane or "legacy",
+        )
+        snapshot = await self._select_failed_surface_snapshot(
+            req=req,
+            incident_decision=incident_decision,
+            execution_request=execution_request,
+        )
+        if snapshot is None:
+            return None
+        surface_type = _clean_text(snapshot.get("type")).lower()
+        adapter_id = _clean_text(snapshot.get("adapter_id"))
+        connection_state = _clean_text(snapshot.get("connection_state")).lower()
+        last_error = _clean_text(snapshot.get("last_error"))
+        target = adapter_id or surface_type or _clean_text(req.message)
+        evidence = (
+            dict(execution_request.evidence)
+            if execution_request is not None
+            else {}
+        )
+        evidence.update(self._surface_snapshot_evidence(snapshot))
+        request_payload = (
+            execution_request.model_copy(
+                update={
+                    "scenario_id": incident_decision.incident_scenario_id,
+                    "action_id": incident_decision.chosen_action,
+                    "target": execution_request.target or target,
+                    "objective": execution_request.objective
+                    or incident_decision.desired_delta
+                    or str(req.message or "")
+                    or target,
+                    "preferred_lane": execution_request.preferred_lane
+                    or incident_decision.action_lane
+                    or "legacy",
+                    "evidence": evidence,
+                    "verification_checks": list(
+                        execution_request.verification_checks
+                        or incident_decision.verification_checks
+                    ),
+                }
+            )
+            if execution_request is not None
+            else IncidentExecutionRequest(
+                scenario_id=incident_decision.incident_scenario_id,
+                action_id=incident_decision.chosen_action,
+                target=target,
+                objective=incident_decision.desired_delta
+                or str(req.message or "")
+                or target,
+                preferred_lane=incident_decision.action_lane or "legacy",
+                evidence=evidence,
+                verification_checks=list(incident_decision.verification_checks),
+            )
+        )
+        if connection_state == "connected" and not last_error:
+            action_result = IncidentActionResult(
+                action_id=boundary.action_id,
+                lane=boundary.lane,
+                status="blocked",
+                summary=(
+                    f"Cannot retry `{target}` because the latest adapter state is healthy (`connected`)."
+                ),
+                evidence=[
+                    f"adapter_id: {adapter_id}" if adapter_id else "",
+                    f"adapter_type: {surface_type}" if surface_type else "",
+                    "connection_state: connected",
+                ],
+                blockers=["choose investigate, contain, or escalate instead of retry"],
+            )
+            return finalize_incident_execution(
+                request_payload,
+                boundary=boundary,
+                action_result=action_result,
+                scenario_id=incident_decision.incident_scenario_id,
+            )
+        try:
+            replay_record = await self._restart_live_adapter(
+                surface_type=surface_type,
+                adapter_id=adapter_id,
+            )
+        except Exception as exc:
+            action_result = IncidentActionResult(
+                action_id=boundary.action_id,
+                lane=boundary.lane,
+                status="blocked",
+                summary=f"Retry for `{target}` could not start: {_clean_text(exc)}",
+                evidence=[
+                    f"adapter_id: {adapter_id}" if adapter_id else "",
+                    f"adapter_type: {surface_type}" if surface_type else "",
+                    f"connection_state: {connection_state}" if connection_state else "",
+                ],
+                blockers=[
+                    "stored adapter config is missing or the adapter runtime could not restart",
+                ],
+            )
+            return finalize_incident_execution(
+                request_payload,
+                boundary=boundary,
+                action_result=action_result,
+                scenario_id=incident_decision.incident_scenario_id,
+            )
+        retry_adapter_id = _clean_text(replay_record.get("adapter_id"))
+        request_payload.evidence["retry_result"] = "pending"
+        request_payload.evidence["post_action_status"] = "pending"
+        if retry_adapter_id:
+            request_payload.evidence["retry_adapter_id"] = retry_adapter_id
+        action_result = IncidentActionResult(
+            action_id=boundary.action_id,
+            lane=boundary.lane,
+            status="completed",
+            summary=(
+                f"Retried `{target}` by restarting `{retry_adapter_id or surface_type or 'the adapter surface'}`."
+            ),
+            changed_state=True,
+            evidence=[
+                f"adapter_id: {adapter_id}" if adapter_id else "",
+                f"retry_adapter_id: {retry_adapter_id}" if retry_adapter_id else "",
+                "post_action_status: pending",
+            ],
+            artifacts={
+                "source_adapter_id": adapter_id,
+                "retry_adapter_id": retry_adapter_id,
+                "adapter_type": surface_type,
+            },
+        )
+        return finalize_incident_execution(
+            request_payload,
+            boundary=boundary,
+            action_result=action_result,
+            scenario_id=incident_decision.incident_scenario_id,
+        )
+
+    async def _build_incident_execution_request(
         self,
         *,
         req: Any,
@@ -998,7 +2077,13 @@ class DANV2Runtime:
                     if str(item).strip()
                 ],
             )
-        return self._build_failed_workflow_execution_request(
+        workflow_request = self._build_failed_workflow_execution_request(
+            req=req,
+            incident_decision=incident_decision,
+        )
+        if workflow_request is not None:
+            return workflow_request
+        return await self._build_failed_surface_execution_request(
             req=req,
             incident_decision=incident_decision,
         )
@@ -1028,8 +2113,8 @@ class DANV2Runtime:
                 session_id=str(req.session_id or req.thread_id or req.workflow_id),
                 active_model=self._model,
                 thinking_mode="standard",
-                approval_mode="server",
-                enabled_tools=[],
+                approval_mode=self._approval_mode(req),
+                enabled_tools=self._enabled_tools(req),
                 coding_turn_count=sum(1 for report in recent_worker_reports if report.lane == "code"),
                 conversation_message_count=len(req.history),
                 latest_report_status=str(last_code_report.status) if last_code_report is not None else "",
@@ -1070,7 +2155,7 @@ class DANV2Runtime:
                 session_id=str(req.session_id or req.thread_id or req.workflow_id),
                 active_model=self._model,
                 thinking_mode="standard",
-                enabled_tools=[],
+                enabled_tools=self._enabled_tools(req),
                 research_turn_count=research_turn_count,
                 conversation_message_count=len(req.history),
                 default_delivery_target="chat answer",
@@ -1163,6 +2248,8 @@ class DANV2Runtime:
                 lane="controller",
                 status="responded",
                 summary=response,
+                what_changed=["The DAN-v2 controller answered directly without delegation."],
+                confidence=0.9,
             )
             review = ReviewDecision(
                 action="stop",
@@ -1191,6 +2278,9 @@ class DANV2Runtime:
                 status="clarify",
                 summary=response,
                 blockers=[turn_decision.clarifying_question] if turn_decision.clarifying_question else [],
+                what_changed=["The DAN-v2 controller stopped for one concrete clarification."],
+                confidence=0.3,
+                best_next_question=_clean_text(turn_decision.clarifying_question),
             )
             review = ReviewDecision(
                 action="stop",
@@ -1217,6 +2307,8 @@ class DANV2Runtime:
                 lane="controller",
                 status="clarify",
                 summary=response,
+                what_changed=["The DAN-v2 controller could not produce a valid delegation brief."],
+                confidence=0.1,
             )
             review = ReviewDecision(
                 action="stop",
@@ -1306,18 +2398,27 @@ class DANV2Runtime:
                 recent_worker_reports=recent_worker_reports,
             )
 
+        operator_boundary = self._operator_execution_boundary(req)
         worker_report = WorkerReport(
             lane="legacy",
             status="handoff",
             summary=turn_decision.public_response or "Routing this through the general operator lane.",
             objective=brief.desired_delta,
             acceptance_criteria=list(brief.success_criteria),
+            what_changed=["Selected the general operator lane for this turn."],
+            evidence=_normalize_texts(brief.why_now, turn_decision.public_response),
+            artifacts=_compact_artifacts(
+                selected_lane="legacy",
+                **self._operator_contract_payload(req),
+            ),
+            confidence=0.65,
         )
         review = ReviewDecision(
             action="continue",
             public_response=turn_decision.public_response or "Routing this through the general operator lane.",
             reason="The request needs the shared legacy execution substrate.",
             next_lane="legacy",
+            next_delta=brief.desired_delta,
         )
         return DANV2TurnOutcome(
             turn_decision=turn_decision,
@@ -1325,8 +2426,25 @@ class DANV2Runtime:
             worker_report=worker_report,
             review_decision=review,
             direct_response=None,
-            handoff_prompt_context=brief.render_prompt_context(),
-            handoff_metadata={"selected_lane": "legacy"},
+            handoff_prompt_context=_merge_prompt_context(
+                brief.render_prompt_context(),
+                "Operator lane boundary:",
+                f"- Execution target: {operator_boundary.execution_target}",
+                "- Deterministic capability sets: "
+                + "; ".join(operator_boundary.deterministic_capability_sets)
+                if operator_boundary.deterministic_capability_sets
+                else "",
+                "- Deterministic adapters: "
+                + "; ".join(operator_boundary.deterministic_adapters)
+                if operator_boundary.deterministic_adapters
+                else "",
+                f"- Shared control membrane: {operator_boundary.shared_control_membrane}",
+                "- Non-goals: " + "; ".join(operator_boundary.non_goals),
+            ),
+            handoff_metadata={
+                "selected_lane": "legacy",
+                **self._operator_contract_payload(req),
+            },
             controller_session_payload=self._controller.dump_session(controller_session),
             code_session_payload=code_session_payload,
             research_session_payload=research_session_payload,
@@ -1351,6 +2469,8 @@ class DANV2Runtime:
                 lane="code",
                 status="responded",
                 summary=response,
+                what_changed=["DAN Code answered directly without launching execution."],
+                confidence=0.75,
             )
             review = ReviewDecision(
                 action="stop",
@@ -1379,6 +2499,9 @@ class DANV2Runtime:
                 status="clarify",
                 summary=response,
                 blockers=[code_decision.clarifying_question] if code_decision.clarifying_question else [],
+                what_changed=["DAN Code stopped for one concrete clarification before execution."],
+                confidence=0.3,
+                best_next_question=_clean_text(code_decision.clarifying_question),
             )
             review = ReviewDecision(
                 action="stop",
@@ -1444,7 +2567,27 @@ class DANV2Runtime:
                         summary=direct_response,
                         objective=objective or str(req.message or "").strip(),
                         acceptance_criteria=list(success_criteria),
+                        what_changed=_normalize_texts(
+                            report.get("change_summary")
+                            or "DAN Code completed one bounded pass inside the DAN-v2 runtime."
+                        ),
+                        evidence=_normalize_texts(
+                            report.get("target_files"),
+                            report.get("test_plan"),
+                            report.get("risks"),
+                        ),
+                        artifacts=_compact_artifacts(
+                            trace_id=report.get("trace_id"),
+                            candidate_id=report.get("candidate_id"),
+                            target_files=report.get("target_files"),
+                            test_plan=report.get("test_plan"),
+                        ),
                         blockers=blockers,
+                        confidence=(
+                            0.85
+                            if str(report.get("status") or "").strip().lower() == "completed"
+                            else 0.45
+                        ),
                     ),
                     review_decision=ReviewDecision(
                         action="stop",
@@ -1478,12 +2621,20 @@ class DANV2Runtime:
             summary=public_response,
             objective=objective or str(req.message or "").strip(),
             acceptance_criteria=list(success_criteria),
+            what_changed=["Prepared one bounded coding objective for downstream execution."],
+            evidence=_normalize_texts(code_decision.research_findings, brief.why_now),
+            artifacts=_compact_artifacts(
+                selected_lane="code",
+                repair_brief=code_decision.repair_brief,
+            ),
+            confidence=0.7,
         )
         review = ReviewDecision(
             action="continue",
             public_response=public_response,
             reason="DAN Code shaped the task and the shared execution substrate should run it next.",
             next_lane="code",
+            next_delta=objective or str(req.message or "").strip(),
         )
         return DANV2TurnOutcome(
             turn_decision=turn_decision,
@@ -1522,6 +2673,8 @@ class DANV2Runtime:
                 lane="research",
                 status="responded",
                 summary=response,
+                what_changed=["DAN Research answered directly without launching a bounded run."],
+                confidence=0.75,
             )
             review = ReviewDecision(
                 action="stop",
@@ -1550,6 +2703,9 @@ class DANV2Runtime:
                 status="clarify",
                 summary=response,
                 blockers=[research_decision.clarifying_question] if research_decision.clarifying_question else [],
+                what_changed=["DAN Research stopped for one concrete clarification before execution."],
+                confidence=0.3,
+                best_next_question=_clean_text(research_decision.clarifying_question),
             )
             review = ReviewDecision(
                 action="stop",
@@ -1589,12 +2745,20 @@ class DANV2Runtime:
             summary=public_response,
             objective=objective or str(req.message or "").strip(),
             acceptance_criteria=list(success_criteria),
+            what_changed=["Prepared one bounded research objective for downstream execution."],
+            evidence=_normalize_texts(research_decision.delivery_target, brief.why_now),
+            artifacts=_compact_artifacts(
+                selected_lane="research",
+                delivery_target=research_decision.delivery_target,
+            ),
+            confidence=0.72,
         )
         review = ReviewDecision(
             action="continue",
             public_response=public_response,
             reason="DAN Research shaped the task and the shared execution substrate should run it next.",
             next_lane="research",
+            next_delta=objective or str(req.message or "").strip(),
         )
         return DANV2TurnOutcome(
             turn_decision=turn_decision,
@@ -1640,6 +2804,12 @@ class DANV2Runtime:
                 summary=response,
                 objective=incident_decision.desired_delta,
                 acceptance_criteria=list(incident_decision.success_criteria),
+                what_changed=["Incident Commander stopped with an explicit terminal state."],
+                evidence=_normalize_texts(
+                    incident_decision.terminal_state,
+                    incident_decision.chosen_action,
+                ),
+                confidence=0.75,
             )
             review = ReviewDecision(
                 action="stop",
@@ -1675,6 +2845,9 @@ class DANV2Runtime:
                 blockers=[incident_decision.clarifying_question]
                 if incident_decision.clarifying_question
                 else [],
+                what_changed=["Incident Commander stopped for one concrete clarification."],
+                confidence=0.3,
+                best_next_question=_clean_text(incident_decision.clarifying_question),
             )
             review = ReviewDecision(
                 action="stop",
@@ -1707,6 +2880,8 @@ class DANV2Runtime:
                 summary=response,
                 objective=incident_decision.desired_delta,
                 acceptance_criteria=list(incident_decision.success_criteria),
+                what_changed=["Incident Commander could not choose a valid downstream action brief."],
+                confidence=0.1,
             )
             review = ReviewDecision(
                 action="stop",
@@ -1725,7 +2900,7 @@ class DANV2Runtime:
                 incident_session_payload=incident_session_payload,
             )
 
-        execution_request = self._build_incident_execution_request(
+        execution_request = await self._build_incident_execution_request(
             req=req,
             incident_decision=incident_decision,
         )
@@ -1745,6 +2920,22 @@ class DANV2Runtime:
             )
             if execution_report is not None:
                 execution_mode = "live"
+        if execution_report is None:
+            execution_report = await self._execute_live_surface_retry(
+                req=req,
+                incident_decision=incident_decision,
+                execution_request=execution_request,
+            )
+            if execution_report is not None:
+                execution_mode = "live"
+        if execution_report is None:
+            execution_report = await self._execute_live_surface_incident_action(
+                req=req,
+                incident_decision=incident_decision,
+                execution_request=execution_request,
+            )
+            if execution_report is not None:
+                execution_mode = "live"
         if execution_report is None and execution_request is not None:
             execution_report = execute_incident_action(execution_request)
             execution_mode = "deterministic"
@@ -1754,12 +2945,18 @@ class DANV2Runtime:
             and execution_report.action_id == "retry"
             and execution_report.terminal_state == "open"
         ):
-            response = _compose_user_response(
-                incident_decision.public_response,
-                execution_report.public_summary,
+            response = self._build_incident_response(
+                public_response=incident_decision.public_response,
+                execution_report=execution_report,
+                execution_mode=execution_mode,
             )
             retry_run_id = str(
-                execution_report.action_result.artifacts.get("retry_run_id")
+                execution_report.action_result.artifacts.get("retry_run_id") or ""
+                if isinstance(execution_report.action_result.artifacts, dict)
+                else ""
+            ).strip()
+            retry_adapter_id = str(
+                execution_report.action_result.artifacts.get("retry_adapter_id") or ""
                 if isinstance(execution_report.action_result.artifacts, dict)
                 else ""
             ).strip()
@@ -1769,7 +2966,19 @@ class DANV2Runtime:
                 summary=response,
                 objective=execution_report.objective,
                 acceptance_criteria=list(incident_brief.success_criteria),
+                what_changed=[
+                    "Launched a live retry and left the incident open until the new run settles."
+                ],
+                evidence=_normalize_texts(
+                    execution_report.public_summary,
+                    execution_report.verification_result.required_follow_up,
+                ),
+                artifacts=_compact_artifacts(
+                    getattr(execution_report.action_result, "artifacts", None),
+                    retry_run_id=retry_run_id,
+                ),
                 blockers=list(execution_report.verification_result.required_follow_up),
+                confidence=0.78,
             )
             review = ReviewDecision(
                 action="stop",
@@ -1784,6 +2993,8 @@ class DANV2Runtime:
             }
             if retry_run_id:
                 handoff_metadata["retry_run_id"] = retry_run_id
+            if retry_adapter_id:
+                handoff_metadata["retry_adapter_id"] = retry_adapter_id
             return DANV2TurnOutcome(
                 turn_decision=turn_decision,
                 supervisor_brief=incident_brief,
@@ -1797,9 +3008,10 @@ class DANV2Runtime:
                 incident_session_payload=incident_session_payload,
             )
         if execution_report is not None and execution_report.terminal_state != "open":
-            response = _compose_user_response(
-                incident_decision.public_response,
-                execution_report.public_summary,
+            response = self._build_incident_response(
+                public_response=incident_decision.public_response,
+                execution_report=execution_report,
+                execution_mode=execution_mode,
             )
             worker_report = WorkerReport(
                 lane="incident",
@@ -1807,7 +3019,23 @@ class DANV2Runtime:
                 summary=response,
                 objective=execution_report.objective,
                 acceptance_criteria=list(incident_brief.success_criteria),
+                what_changed=_normalize_texts(
+                    execution_report.public_summary
+                    or f"Incident Commander ended with terminal_state={execution_report.terminal_state}."
+                ),
+                evidence=_normalize_texts(
+                    execution_report.verification_result.required_follow_up,
+                    execution_report.action_result.evidence,
+                ),
+                artifacts=_compact_artifacts(
+                    getattr(execution_report.action_result, "artifacts", None)
+                ),
                 blockers=list(execution_report.verification_result.required_follow_up),
+                confidence=(
+                    0.82
+                    if execution_report.terminal_state in {"resolved", "contained"}
+                    else 0.55
+                ),
             )
             review = ReviewDecision(
                 action="stop",
@@ -1926,12 +3154,26 @@ class DANV2Runtime:
             summary=public_response,
             objective=incident_brief.desired_delta or str(req.message or "").strip(),
             acceptance_criteria=list(incident_brief.success_criteria),
+            what_changed=["Incident Commander selected the next bounded remediation lane."],
+            evidence=_normalize_texts(
+                incident_decision.incident_scenario_id,
+                incident_decision.chosen_action,
+                incident_decision.verification_checks,
+                execution_report.public_summary if execution_report is not None else "",
+            ),
+            artifacts=_compact_artifacts(
+                selected_lane="incident",
+                incident_action_lane=incident_brief.lane,
+                incident_execution_mode=execution_mode,
+            ),
+            confidence=0.7,
         )
         review = ReviewDecision(
             action="continue",
             public_response=public_response,
             reason="Incident Commander chose the next bounded remediation lane.",
             next_lane=incident_brief.lane,
+            next_delta=incident_brief.desired_delta or str(req.message or "").strip(),
         )
         return DANV2TurnOutcome(
             turn_decision=turn_decision,
@@ -1971,5 +3213,6 @@ __all__ = [
     "DANV2TurnOutcome",
     "DEFAULT_CONTROL_PLANE_MODE",
     "build_dan_v2_runtime",
+    "parse_control_plane_mode",
     "resolve_control_plane_mode",
 ]

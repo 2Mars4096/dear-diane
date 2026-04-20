@@ -521,7 +521,10 @@ class IncidentCommanderController:
             provider_request_overrides=provider_request_overrides,
             event_callback=event_callback,
         )
-        self._runner = DurableAgentRunner(completion_provider=self._completion_adapter)
+        self._runner = DurableAgentRunner(
+            completion_provider=self._completion_adapter,
+            event_callback=event_callback,
+        )
 
     def create_session(self, *, metadata: dict[str, Any] | None = None) -> DurableAgentSessionState:
         return self._runner.create_session(self._worker, metadata=metadata)
@@ -535,6 +538,10 @@ class IncidentCommanderController:
     @staticmethod
     def dump_session(session: DurableAgentSessionState) -> dict[str, Any]:
         return session.model_dump(mode="json")
+
+    def set_event_callback(self, event_callback) -> None:
+        self._completion_adapter.set_event_callback(event_callback)
+        self._runner.set_event_callback(event_callback)
 
     async def decide_user_turn(
         self,

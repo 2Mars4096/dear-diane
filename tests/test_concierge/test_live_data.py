@@ -533,8 +533,15 @@ class TestApplyLastMutationCapabilityRegistration:
             ],
             "provider": "tavily",
         }
+        active_fetches = 0
+        max_active_fetches = 0
 
         async def _fake_fetch(*, url: str):
+            nonlocal active_fetches, max_active_fetches
+            active_fetches += 1
+            max_active_fetches = max(max_active_fetches, active_fetches)
+            await asyncio.sleep(0)
+            active_fetches -= 1
             return {"content": f"content for {url}"}
 
         with (
@@ -548,6 +555,7 @@ class TestApplyLastMutationCapabilityRegistration:
 
         assert result.success
         assert mock_fetch.await_count == 2
+        assert max_active_fetches == 2
         assert "Fetched page excerpts (bounded fetch attempts over top-ranked results)" in result.message
         assert "[1] Fetched content from http://x1" in result.message
         assert "[2] Fetched content from http://x2" in result.message

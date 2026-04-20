@@ -36,6 +36,32 @@ _DEFAULT_URL = "http://127.0.0.1:8000"
 _PING_TIMEOUT = 3.0
 
 
+def _parse_control_plane_override(
+    value: str | None,
+    *,
+    strict: bool = False,
+) -> str | None:
+    from dan.server.control_plane import parse_control_plane_mode
+
+    try:
+        return parse_control_plane_mode(value)
+    except ValueError:
+        if strict:
+            raise
+        return None
+
+
+def _cli_control_plane_override(explicit: str | None = None) -> str | None:
+    parsed = _parse_control_plane_override(explicit, strict=explicit is not None)
+    if parsed is not None:
+        return parsed
+    for env_key in ("DAN_CLI_CONTROL_PLANE", "DAN_CHAT_CONTROL_PLANE"):
+        parsed = _parse_control_plane_override(os.environ.get(env_key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def _format_api_key_status_label() -> str:
     status = get_llm_api_key_status()
     if status == "configured":
@@ -219,6 +245,7 @@ class ChatClient:
         thread_id: str | None = None,
         client_graph_revision: str | None = None,
         mode: str = "build",
+        control_plane_mode: str | None = None,
     ) -> dict[str, Any]:
         """POST /api/chat/message. Returns {message_id, stream_channel_id} or run_started payload."""
         body: dict[str, Any] = {
@@ -230,6 +257,9 @@ class ChatClient:
             "mode": mode,
             "surface": "cli",
         }
+        control_plane_override = _cli_control_plane_override(control_plane_mode)
+        if control_plane_override is not None:
+            body["control_plane_mode"] = control_plane_override
         http = await self._get_http()
         try:
             resp = await http.post("/api/chat/message", json=body)

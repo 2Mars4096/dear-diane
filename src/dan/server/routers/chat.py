@@ -6,9 +6,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 import time
 import uuid
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -51,6 +54,7 @@ from dan.server.routers.dependencies import (
     get_dispatcher,
     get_concierge,
 )
+from dan.server.control_plane import parse_control_plane_mode
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +76,27 @@ _RUN_MANAGER_MISSING = object()
 _CHAT_STORE_MISSING = object()
 _CONTROL_PLANE_META_KEY = "control_plane"
 _CONTROL_PLANE_MAX_RECENT_REPORTS = 4
+_INTERNAL_CONTROL_PLANE_SURFACES = {
+    "server",
+    "cli",
+    "editor",
+    "browser",
+    "desktop",
+    "local",
+}
+_EXTERNAL_CONTROL_PLANE_SURFACES = {
+    "telegram",
+    "wechat",
+    "whatsapp",
+    "whatsapp-web",
+    "email",
+}
+
+
+@dataclass(frozen=True)
+class _ControlPlaneSelection:
+    mode: str
+    source: str
 
 
 # ------------------------------------------------------------------
@@ -98,6 +123,7 @@ class ChatMessageRequest(BaseModel):
     session_id: str | None = None
     attachment_path: str | None = None
     surface_context: dict[str, Any] = Field(default_factory=dict)
+    control_plane_mode: str | None = None
 
     @model_validator(mode="after")
     def _normalize_identifiers(self) -> "ChatMessageRequest":
@@ -198,6 +224,21 @@ class ChatMessageRequest(BaseModel):
             )
             self.history = filtered
 
+        explicit_control_plane = parse_control_plane_mode(self.control_plane_mode)
+        surface_context = self.surface_context if isinstance(self.surface_context, dict) else {}
+        surface_control_plane = parse_control_plane_mode(
+            surface_context.get("control_plane_mode") or surface_context.get("control_plane")
+        )
+        if (
+            explicit_control_plane is not None
+            and surface_control_plane is not None
+            and explicit_control_plane != surface_control_plane
+        ):
+            raise ValueError(
+                "control_plane_mode conflicts with surface_context control plane override",
+            )
+        self.control_plane_mode = explicit_control_plane or surface_control_plane
+
         return self
 
 
@@ -230,12 +271,36 @@ def _load_control_plane_state(
     return dict(payload) if isinstance(payload, dict) else {}
 
 
+def _persist_control_plane_selection(
+    chat_store: Any | None,
+    *,
+    workflow_id: str,
+    thread_id: str | None,
+    selected_mode: str,
+    selected_mode_source: str | None = None,
+) -> None:
+    if chat_store is None or not str(thread_id or "").strip():
+        return
+    thread = chat_store.get_thread(workflow_id, str(thread_id))
+    if thread is None:
+        return
+    meta = chat_store.get_thread_meta(workflow_id, str(thread_id))
+    payload = meta.get(_CONTROL_PLANE_META_KEY)
+    control_plane = dict(payload) if isinstance(payload, dict) else {}
+    control_plane["selected_mode"] = str(selected_mode or "v1")
+    if selected_mode_source:
+        control_plane["selected_mode_source"] = str(selected_mode_source)
+    meta[_CONTROL_PLANE_META_KEY] = control_plane
+    chat_store.set_thread_meta(workflow_id, str(thread_id), meta)
+
+
 def _persist_control_plane_state(
     chat_store: Any | None,
     *,
     workflow_id: str,
     thread_id: str | None,
     selected_mode: str,
+    selected_mode_source: str | None,
     outcome: Any,
 ) -> None:
     if chat_store is None or not str(thread_id or "").strip():
@@ -275,10 +340,134 @@ def _persist_control_plane_state(
             "recent_worker_reports": recent_reports,
         }
     )
-    control_plane["selected_mode"] = str(selected_mode or "v1")
     control_plane["dan_v2"] = dan_v2
     meta[_CONTROL_PLANE_META_KEY] = control_plane
     chat_store.set_thread_meta(workflow_id, str(thread_id), meta)
+    _persist_control_plane_selection(
+        chat_store,
+        workflow_id=workflow_id,
+        thread_id=thread_id,
+        selected_mode=selected_mode,
+        selected_mode_source=selected_mode_source,
+    )
+
+
+def _persist_selected_control_plane(
+    chat_store: Any | None,
+    *,
+    workflow_id: str,
+    thread_id: str | None,
+    selection: _ControlPlaneSelection,
+    outcome: Any | None = None,
+) -> None:
+    if outcome is None:
+        _persist_control_plane_selection(
+            chat_store,
+            workflow_id=workflow_id,
+            thread_id=thread_id,
+            selected_mode=selection.mode,
+            selected_mode_source=selection.source,
+        )
+        return
+    _persist_control_plane_state(
+        chat_store,
+        workflow_id=workflow_id,
+        thread_id=thread_id,
+        selected_mode=selection.mode,
+        selected_mode_source=selection.source,
+        outcome=outcome,
+    )
+
+
+def _control_plane_env_suffix(value: str | None) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "_", str(value or "").strip().upper()).strip("_")
+
+
+def _surface_control_plane_mode(req: ChatMessageRequest) -> tuple[str | None, str | None]:
+    surface_type = str(req.surface_type or "").strip().lower()
+    if not surface_type:
+        surface = str(req.surface or "").strip()
+        if ":" in surface:
+            surface_type = surface.split(":", 1)[0].strip().lower()
+        elif surface:
+            surface_type = surface.lower()
+    env_candidates: list[tuple[str, str]] = []
+    if surface_type:
+        suffix = _control_plane_env_suffix(surface_type)
+        if suffix:
+            env_candidates.append((f"DAN_{suffix}_CONTROL_PLANE", "surface_env"))
+        if surface_type in _INTERNAL_CONTROL_PLANE_SURFACES:
+            env_candidates.append(("DAN_INTERNAL_CONTROL_PLANE", "surface_group_env"))
+        elif surface_type in _EXTERNAL_CONTROL_PLANE_SURFACES:
+            env_candidates.append(("DAN_ADAPTERS_CONTROL_PLANE", "adapter_group_env"))
+            env_candidates.append(("DAN_EXTERNAL_CONTROL_PLANE", "surface_group_env"))
+    for env_key, source in env_candidates:
+        try:
+            parsed = parse_control_plane_mode(os.environ.get(env_key))
+        except ValueError:
+            continue
+        if parsed is not None:
+            return parsed, source
+    return None, None
+
+
+def _selected_control_plane(
+    req: ChatMessageRequest,
+    request: Request | None,
+) -> _ControlPlaneSelection:
+    requested = parse_control_plane_mode(req.control_plane_mode)
+    if requested is not None:
+        return _ControlPlaneSelection(mode=requested, source="request")
+    surface_selected, surface_source = _surface_control_plane_mode(req)
+    if surface_selected is not None and surface_source is not None:
+        return _ControlPlaneSelection(mode=surface_selected, source=surface_source)
+    return _ControlPlaneSelection(
+        mode=_resolve_service(get_control_plane_mode, request),
+        source="env",
+    )
+
+
+def _control_plane_turn_payload(outcome: Any) -> dict[str, Any]:
+    return {
+        "turn_decision": getattr(outcome, "turn_decision").model_dump(mode="json"),
+        "supervisor_brief": (
+            getattr(outcome, "supervisor_brief").model_dump(mode="json")
+            if getattr(outcome, "supervisor_brief", None) is not None
+            else None
+        ),
+        "worker_report": getattr(outcome, "worker_report").model_dump(mode="json"),
+        "review_decision": getattr(outcome, "review_decision").model_dump(mode="json"),
+    }
+
+
+def _control_plane_handoff_metadata(
+    outcome: Any,
+    *,
+    selection: _ControlPlaneSelection,
+) -> dict[str, Any]:
+    handoff_metadata = dict(getattr(outcome, "handoff_metadata", None) or {})
+    return {
+        "control_plane_mode": selection.mode,
+        "control_plane_mode_source": selection.source,
+        **handoff_metadata,
+        "selected_lane": handoff_metadata.get("selected_lane", ""),
+        "control_plane_turn": _control_plane_turn_payload(outcome),
+    }
+
+
+def _direct_v2_event_stream(outcome: Any, graph_dict: dict[str, Any] | None):
+    from dan.server.chat_manager import ChatCompleteEvent
+
+    async def _stream():
+        yield ChatCompleteEvent(
+            message_id=uuid.uuid4().hex[:12],
+            content=outcome.direct_response,
+            token_usage={},
+            context_window=0,
+            graph_revision=compute_graph_revision(graph_dict) if graph_dict is not None else "",
+        )
+
+    return _stream()
 
 
 def _attachment_tool_hint(path: str, kind: str | None = None) -> str:
@@ -522,6 +711,7 @@ async def chat_message(
 
     _concierge = _resolve_service(get_concierge, request)
     _dispatcher = _resolve_service(get_dispatcher, request)
+    selected_control_plane = _selected_control_plane(req, request)
 
     async def _produce():
         terminal_event_emitted = False
@@ -621,6 +811,62 @@ async def chat_message(
                 **extra_kwargs,
             )
 
+        async def _build_selected_event_stream(
+            *,
+            normalized_mode: str,
+            effective_mode: str,
+            debug_ctx: str,
+            graph_dict: dict[str, Any] | None,
+        ):
+            if not (concierge and selected_control_plane.mode == "v2"):
+                _persist_selected_control_plane(
+                    _optional_chat_store(),
+                    workflow_id=req.workflow_id,
+                    thread_id=req.thread_id,
+                    selection=selected_control_plane,
+                )
+                return _legacy_event_stream(
+                    normalized_mode=normalized_mode,
+                    effective_mode=effective_mode,
+                    debug_ctx=debug_ctx,
+                )
+
+            v2_runtime = _resolve_service(get_dan_v2_runtime, request)
+            control_plane_state = _load_control_plane_state(
+                _optional_chat_store(),
+                workflow_id=req.workflow_id,
+                thread_id=req.thread_id,
+            )
+            dan_v2_state = dict(control_plane_state.get("dan_v2") or {})
+            outcome = await v2_runtime.triage_user_turn(
+                req=req,
+                normalized_mode=normalized_mode,
+                controller_session_payload=dan_v2_state.get("controller_session"),
+                code_session_payload=dan_v2_state.get("code_session"),
+                research_session_payload=dan_v2_state.get("research_session"),
+                incident_session_payload=dan_v2_state.get("incident_session"),
+                recent_worker_reports_payload=dan_v2_state.get("recent_worker_reports"),
+            )
+            _persist_selected_control_plane(
+                _optional_chat_store(),
+                workflow_id=req.workflow_id,
+                thread_id=req.thread_id,
+                selection=selected_control_plane,
+                outcome=outcome,
+            )
+            if outcome.direct_response is not None:
+                return _direct_v2_event_stream(outcome, graph_dict)
+            return _legacy_event_stream(
+                normalized_mode=normalized_mode,
+                effective_mode=effective_mode,
+                debug_ctx=debug_ctx,
+                prompt_context_prefix=outcome.handoff_prompt_context,
+                metadata_overrides=_control_plane_handoff_metadata(
+                    outcome,
+                    selection=selected_control_plane,
+                ),
+            )
+
         try:
             normalized_mode = normalize_chat_mode(req.mode)
             effective_mode = req.mode if req.mode in ("build", "mutate") else normalized_mode
@@ -653,75 +899,12 @@ async def chat_message(
                         req.workflow_id,
                     )
 
-            control_plane_mode = _resolve_service(get_control_plane_mode, request)
-            use_v2_control_plane = concierge and control_plane_mode == "v2"
-
-            if use_v2_control_plane:
-                v2_runtime = _resolve_service(get_dan_v2_runtime, request)
-                control_plane_state = _load_control_plane_state(
-                    _optional_chat_store(),
-                    workflow_id=req.workflow_id,
-                    thread_id=req.thread_id,
-                )
-                dan_v2_state = dict(control_plane_state.get("dan_v2") or {})
-                outcome = await v2_runtime.triage_user_turn(
-                    req=req,
-                    normalized_mode=normalized_mode,
-                    controller_session_payload=dan_v2_state.get("controller_session"),
-                    code_session_payload=dan_v2_state.get("code_session"),
-                    research_session_payload=dan_v2_state.get("research_session"),
-                    incident_session_payload=dan_v2_state.get("incident_session"),
-                    recent_worker_reports_payload=dan_v2_state.get("recent_worker_reports"),
-                )
-                _persist_control_plane_state(
-                    _optional_chat_store(),
-                    workflow_id=req.workflow_id,
-                    thread_id=req.thread_id,
-                    selected_mode="v2",
-                    outcome=outcome,
-                )
-                if outcome.direct_response is not None:
-                    from dan.server.chat_manager import ChatCompleteEvent
-
-                    async def _direct_v2_stream():
-                        yield ChatCompleteEvent(
-                            message_id=uuid.uuid4().hex[:12],
-                            content=outcome.direct_response,
-                            token_usage={},
-                            context_window=0,
-                            graph_revision=compute_graph_revision(graph_dict) if graph_dict is not None else "",
-                        )
-
-                    event_stream = _direct_v2_stream()
-                else:
-                    handoff_metadata = dict(outcome.handoff_metadata or {})
-                    event_stream = _legacy_event_stream(
-                        normalized_mode=normalized_mode,
-                        effective_mode=effective_mode,
-                        debug_ctx=debug_ctx,
-                        prompt_context_prefix=outcome.handoff_prompt_context,
-                        metadata_overrides={
-                            "control_plane_mode": "v2",
-                            **handoff_metadata,
-                            "selected_lane": handoff_metadata.get("selected_lane", ""),
-                            "control_plane_turn": {
-                                "turn_decision": outcome.turn_decision.model_dump(mode="json"),
-                                "supervisor_brief": (
-                                    outcome.supervisor_brief.model_dump(mode="json")
-                                    if outcome.supervisor_brief is not None
-                                    else None
-                                ),
-                                "worker_report": outcome.worker_report.model_dump(mode="json"),
-                                "review_decision": outcome.review_decision.model_dump(mode="json"),
-                            },
-                        },
-                    )
-            else:
-                event_stream = _legacy_event_stream(
-                    normalized_mode=normalized_mode,
-                    effective_mode=effective_mode,
-                    debug_ctx=debug_ctx,
-                )
+            event_stream = await _build_selected_event_stream(
+                normalized_mode=normalized_mode,
+                effective_mode=effective_mode,
+                debug_ctx=debug_ctx,
+                graph_dict=graph_dict,
+            )
             async for event in event_stream:
                 payload = event.model_dump()
                 evt_type = payload.get("type", "")
@@ -853,7 +1036,13 @@ async def chat_message(
 
     produce_task = asyncio.create_task(_produce())
     _register_chat_stream(stream_channel_id, queue, task=produce_task)
-    return {"message_id": uuid.uuid4().hex[:12], "stream_channel_id": stream_channel_id, "status": "processing"}
+    return {
+        "message_id": uuid.uuid4().hex[:12],
+        "stream_channel_id": stream_channel_id,
+        "status": "processing",
+        "control_plane_mode": selected_control_plane.mode,
+        "control_plane_mode_source": selected_control_plane.source,
+    }
 
 
 async def iter_local_chat_stream_events(channel_id: str):

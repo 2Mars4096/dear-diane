@@ -692,6 +692,8 @@ class BotFleet:
             await bot.adapter.set_reaction(ctx.chat_id, ctx.message_id, "⏳")
 
         surface = f"telegram:{bot.name}"
+        surface_type = "telegram"
+        surface_id = bot.name
         user_turn: dict[str, str] | None = None
 
         try:
@@ -746,6 +748,8 @@ class BotFleet:
                 "session_id": lane_key,
                 "mode": "auto",
                 "surface": surface,
+                "surface_type": surface_type,
+                "surface_id": surface_id,
                 "surface_context": self._build_surface_context(bot),
             }
             if att_path:

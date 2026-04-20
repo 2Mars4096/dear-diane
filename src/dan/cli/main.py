@@ -25,6 +25,7 @@ _SUBCOMMANDS = {
     "editor": ("dan.cli.editor", "main"),
     "furnace": ("dan.cli.furnace", "main"),
     "organism": ("dan.cli.organism", "main"),
+    "organism-log": ("dan.cli.organism_log", "main"),
 }
 
 
@@ -63,6 +64,7 @@ def _print_help() -> None:
     print("  editor     Start server + visual editor")
     print("  furnace    Direct furnace control CLI")
     print("  organism   Run the local bounded organism demo CLI")
+    print("  organism-log Import or summarize organism_log_v1 traces")
     print("  service    Manage background services")
     print("  status     Show server status")
     print("  logs       View server logs")

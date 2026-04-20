@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 from typing import get_type_hints
 
 import pytest
@@ -23,6 +24,7 @@ from dan.server.concierge.tiered_dispatch import TieredDispatcher
 from dan.server.run_finalization import RunFinalizer
 from dan.server.run_manager import RunManager
 from dan.server.startup import (
+    _dispatch_scheduled_chat_action_via_router,
     _record_startup_degradation,
     get_llm_api_key_status,
     get_startup_degradation_summary,
@@ -30,6 +32,7 @@ from dan.server.startup import (
     log_startup_configuration_warnings,
     log_startup_degradation_summary,
 )
+from dan.server.terminal_output import collect_terminal_content
 from dan.tools._workspace import validate_path
 from dan.tools.shell_command import _use_sandbox, shell_sandbox_explicitly_disabled
 
@@ -208,6 +211,89 @@ def test_split_module_type_hints_resolve() -> None:
     assert "app" in get_type_hints(lifespan)
     assert "record" in get_type_hints(RunFinalizer.finalize)
     assert "learning_bundle" in get_type_hints(Concierge.__init__)
+
+
+@pytest.mark.asyncio
+async def test_collect_terminal_content_accepts_router_dict_events() -> None:
+    async def _events():
+        yield {"type": "chat_complete", "detected_mode": "progress_ack", "phase_label": "Thinking"}
+        yield {"type": "chat_notice", "content": "ignore me"}
+        yield {"type": "chat_complete", "content": "Delivered from shared router."}
+
+    assert await collect_terminal_content(_events()) == "Delivered from shared router."
+
+
+@pytest.mark.asyncio
+async def test_scheduled_chat_dispatch_uses_shared_router(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def _fake_chat_message(request, req, concierge=True):
+        captured["request"] = request
+        captured["req"] = req
+        captured["concierge"] = concierge
+        return {"stream_channel_id": "chat-schedule-1"}
+
+    async def _fake_iter_local_chat_stream_events(channel_id: str):
+        assert channel_id == "chat-schedule-1"
+        yield {"type": "chat_complete", "detected_mode": "progress_ack", "phase_label": "Queued"}
+        yield {"type": "chat_complete", "content": "Scheduled reply delivered."}
+
+    monkeypatch.setattr("dan.server.routers.chat.chat_message", _fake_chat_message)
+    monkeypatch.setattr(
+        "dan.server.routers.chat.iter_local_chat_stream_events",
+        _fake_iter_local_chat_stream_events,
+    )
+
+    trigger_context = SimpleNamespace(
+        source_surface="schedule",
+        thread_key="thread-1",
+        user_id="user-1",
+        task_id="task-1",
+        model_dump=lambda mode="json": {
+            "source_surface": "schedule",
+            "thread_key": "thread-1",
+            "user_id": "user-1",
+            "task_id": "task-1",
+        },
+    )
+    delivery_target = SimpleNamespace(
+        surface="telegram",
+        conversation_key="chat-123",
+        user_id="telegram-user",
+        project_id="proj-1",
+        thread_key="thread-1",
+        model_dump=lambda mode="json": {
+            "surface": "telegram",
+            "conversation_key": "chat-123",
+            "user_id": "telegram-user",
+            "project_id": "proj-1",
+            "thread_key": "thread-1",
+        },
+    )
+    state = SimpleNamespace(concierge=None)
+
+    result = await _dispatch_scheduled_chat_action_via_router(
+        state,
+        "check on deployment status",
+        trigger_context,
+        delivery_target,
+    )
+
+    req = captured["req"]
+    assert result == "Scheduled reply delivered."
+    assert captured["concierge"] is True
+    assert captured["request"].app.state.dan is state
+    assert req.workflow_id == "_scratch"
+    assert req.thread_id == "thread-1"
+    assert req.session_id == "thread-1"
+    assert req.surface == "telegram:chat-123"
+    assert req.surface_type == "telegram"
+    assert req.surface_id == "chat-123"
+    assert req.surface_context["scheduled_trigger"] is True
+    assert req.surface_context["trigger_context"]["task_id"] == "task-1"
+    assert req.surface_context["delivery_target"]["conversation_key"] == "chat-123"
 
 
 def test_sqlite_backend_rejects_adversarial_json_filter_key(tmp_path: Path) -> None:

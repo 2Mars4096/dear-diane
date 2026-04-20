@@ -8,11 +8,14 @@ import re
 import time
 import uuid
 import logging
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
 from dan.server.capabilities.config import _update_env_file
+from dan.server.paths import resolve_workspace_root
 from dan.server.routers.dependencies import (
     get_app_state,
     get_run_manager,
@@ -24,6 +27,12 @@ from dan.server.routers.dependencies import (
     resolve_cache_dir,
     validate_path_segment,
 )
+from dan.worker.organism_log import (
+    read_organism_log,
+    read_organism_log_rows,
+    readable_organism_log_v1_rows,
+)
+from dan.worker.organism_log_analysis import analyze_organism_log
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +56,13 @@ _RESTART_REQUIRED_CONFIG_KEYS = {
     "DAN_TELEMETRY",
     "DAN_LEARNING_MODE",
 }
+
+_ORGANISM_LOG_DISCOVERY_PATTERNS = (
+    ".dan-code/runs/**/events.jsonl",
+    ".dan-research/runs/**/events.jsonl",
+    ".dan-research/control-plane-events.jsonl",
+)
+_MAX_ORGANISM_LOG_DISCOVER_LIMIT = 100
 
 
 def _normalize_env_bool(key: str, default: bool) -> str:
@@ -80,6 +96,158 @@ def _request_app_state(request: Request | None) -> Any | None:
     if request is None:
         return None
     return getattr(getattr(request.app, "state", None), "dan", None)
+
+
+def _isoformat_utc(timestamp: float | None) -> str | None:
+    if timestamp is None:
+        return None
+    return (
+        datetime.fromtimestamp(float(timestamp), tz=timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _resolve_organism_log_root(root_path: str | None = None) -> Path:
+    raw = str(root_path or resolve_workspace_root()).strip()
+    candidate = Path(raw).expanduser().resolve()
+    if not candidate.exists() or not candidate.is_dir():
+        raise HTTPException(status_code=404, detail=f"Workspace root not found: {candidate}")
+    return candidate
+
+
+def _resolve_organism_log_path(
+    raw_path: str,
+    *,
+    root_path: Path | None = None,
+) -> Path:
+    text = str(raw_path or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Provide a log file path.")
+    candidate = Path(text).expanduser()
+    if not candidate.is_absolute():
+        candidate = (root_path or _resolve_organism_log_root()) / candidate
+    resolved = candidate.resolve()
+    if not resolved.exists() or not resolved.is_file():
+        raise HTTPException(status_code=404, detail=f"Log file not found: {resolved}")
+    return resolved
+
+
+def _path_relative_to_root(path: Path, root_path: Path) -> str:
+    try:
+        return str(path.relative_to(root_path))
+    except ValueError:
+        return str(path)
+
+
+def _organism_log_display_name(relative_path: str, *, product: str, stream_kind: str) -> str:
+    if relative_path.endswith(".dan-research/control-plane-events.jsonl"):
+        return "Research control plane"
+    match = re.search(r"(?:^|/)(turn-[^/]+)/events\.jsonl$", relative_path)
+    if match and product == "dan_code":
+        return f"Code {match.group(1)}"
+    if match and product == "dan_research":
+        return f"Research {match.group(1)}"
+    file_name = Path(relative_path).name
+    if stream_kind == "control_plane":
+        return f"{product or 'organism'} control plane"
+    return file_name
+
+
+def _summarize_organism_log_file(path: Path, *, root_path: Path) -> dict[str, Any] | None:
+    try:
+        raw_rows = readable_organism_log_v1_rows(read_organism_log(path))
+    except Exception as exc:
+        logger.warning("Failed to read organism log %s: %s", path, exc)
+        return None
+    if not raw_rows:
+        return None
+
+    try:
+        normalized = read_organism_log_rows(path)
+    except Exception as exc:
+        logger.warning("Failed to normalize organism log %s: %s", path, exc)
+        return None
+    if not normalized:
+        return None
+
+    spans = [row for row in normalized if row.record_kind == "span"]
+    events = [row for row in normalized if row.record_kind == "event"]
+    first = normalized[0]
+    last = normalized[-1]
+    stat = path.stat()
+    relative_path = _path_relative_to_root(path, root_path)
+    started_at = next(
+        (
+            row.start_timestamp or row.timestamp
+            for row in spans
+            if (row.start_timestamp or row.timestamp)
+        ),
+        first.timestamp or None,
+    )
+    ended_at = next(
+        (
+            row.end_timestamp or row.timestamp
+            for row in reversed(spans)
+            if (row.end_timestamp or row.timestamp)
+        ),
+        last.timestamp or None,
+    )
+    return {
+        "path": str(path),
+        "root_path": str(root_path),
+        "relative_path": relative_path,
+        "display_name": _organism_log_display_name(
+            relative_path,
+            product=first.product,
+            stream_kind=first.stream_kind,
+        ),
+        "product": first.product,
+        "stream_kind": first.stream_kind,
+        "session_id": first.session_id,
+        "turn_id": first.turn_id,
+        "task_id": first.task_id,
+        "trace_id": first.trace_id,
+        "organism_id": first.organism_id,
+        "organ_id": first.organ_id,
+        "schema_version": first.schema_version,
+        "event_count": len(events),
+        "span_count": len(spans),
+        "size_bytes": stat.st_size,
+        "updated_at": _isoformat_utc(stat.st_mtime),
+        "started_at": started_at,
+        "ended_at": ended_at,
+    }
+
+
+def _discover_organism_log_files(root_path: Path, *, limit: int) -> list[dict[str, Any]]:
+    requested_limit = max(1, min(int(limit), _MAX_ORGANISM_LOG_DISCOVER_LIMIT))
+    candidates: dict[str, Path] = {}
+    for pattern in _ORGANISM_LOG_DISCOVERY_PATTERNS:
+        for candidate in root_path.glob(pattern):
+            if not candidate.is_file():
+                continue
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            candidates[str(resolved)] = resolved
+
+    ordered = sorted(
+        candidates.values(),
+        key=lambda candidate: candidate.stat().st_mtime,
+        reverse=True,
+    )
+
+    summaries: list[dict[str, Any]] = []
+    for candidate in ordered:
+        summary = _summarize_organism_log_file(candidate, root_path=root_path)
+        if summary is None:
+            continue
+        summaries.append(summary)
+        if len(summaries) >= requested_limit:
+            break
+    return summaries
 
 
 # ------------------------------------------------------------------
@@ -280,6 +448,44 @@ async def list_workspace_files(request: Request):
         raise HTTPException(status_code=503, detail="Server not fully initialised")
     files = resolver.file_resolver.list_files()
     return {"files": files}
+
+
+@router.get("/api/organism-logs")
+async def list_organism_logs(
+    root_path: str | None = None,
+    limit: int = 25,
+) -> dict[str, Any]:
+    """Discover known organism-log files under one workspace root."""
+
+    resolved_root = _resolve_organism_log_root(root_path)
+    logs = _discover_organism_log_files(resolved_root, limit=limit)
+    return {
+        "root_path": str(resolved_root),
+        "logs": logs,
+    }
+
+
+@router.get("/api/organism-logs/analyze")
+async def analyze_organism_log_file(
+    path: str,
+    root_path: str | None = None,
+) -> dict[str, Any]:
+    """Analyze one organism-log file into timeline and dependency payloads."""
+
+    resolved_root = _resolve_organism_log_root(root_path)
+    resolved_path = _resolve_organism_log_path(path, root_path=resolved_root)
+    summary = _summarize_organism_log_file(resolved_path, root_path=resolved_root)
+    if summary is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Selected file is not a readable organism_log_v1 JSONL trace.",
+        )
+    analysis = analyze_organism_log(resolved_path)
+    return {
+        "path": str(resolved_path),
+        "log": summary,
+        "analysis": analysis.model_dump(mode="json"),
+    }
 
 
 @router.get("/api/docs/list")

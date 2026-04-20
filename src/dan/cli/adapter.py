@@ -47,6 +47,16 @@ def _surface_name_for_adapter_type(adapter_type: str) -> str:
     return adapter_type if adapter_type in known else "server"
 
 
+def _canonical_surface_identity_for_adapter_type(adapter_type: str) -> tuple[str, str, str]:
+    surface = _surface_name_for_adapter_type(adapter_type)
+    if ":" in surface:
+        surface_type, surface_id = surface.split(":", 1)
+        return surface, surface_type, surface_id
+    surface_type = surface or "server"
+    surface_id = surface_type
+    return f"{surface_type}:{surface_id}", surface_type, surface_id
+
+
 # ---------------------------------------------------------------------------
 # Chat stream helpers
 # ---------------------------------------------------------------------------
@@ -300,6 +310,9 @@ async def _run_adapter_chat_mode(adapter: Any, config: Any, adapter_type: str = 
     async def _dispatch_to_server(ext_id: str, txt: str, att_path: str | None = None) -> None:
         try:
             wf_id = await _ensure_scratch(shared_http, ext_id)
+            surface, surface_type, surface_id = _canonical_surface_identity_for_adapter_type(
+                adapter_type,
+            )
 
             history = list(conversation_history.get(ext_id, []))
             user_turn = {"role": "user", "content": txt}
@@ -317,7 +330,9 @@ async def _run_adapter_chat_mode(adapter: Any, config: Any, adapter_type: str = 
                 "history": history,
                 "thread_id": str(ext_id),
                 "mode": "auto",
-                "surface": _surface_name_for_adapter_type(adapter_type),
+                "surface": surface,
+                "surface_type": surface_type,
+                "surface_id": surface_id,
                 "surface_context": {
                     "identity": {
                         "name": _bot,
