@@ -92,6 +92,7 @@ class CodingOrganismReport(BaseModel):
     candidate_id: str | None = None
     change_summary: str = ""
     event_log_path: str | None = None
+    event_log_schema: str | None = None
     target_files: list[str] = Field(default_factory=list)
     test_plan: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
@@ -307,6 +308,7 @@ def append_code_product_transcript(
         "status": report.status,
         "candidate_id": report.candidate_id,
         "event_log_path": report.event_log_path,
+        "event_log_schema": report.event_log_schema,
         "target_files": list(report.target_files),
         "test_plan": list(report.test_plan),
         "risks": list(report.risks),

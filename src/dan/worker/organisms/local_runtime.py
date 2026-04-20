@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 from pathlib import Path
+import tempfile
 from typing import Any, Callable, Sequence
 
 from dan.providers import CompletionResult, LLMProvider, apply_cache_hints
@@ -13,6 +15,7 @@ from dan.tools import get_all_tools
 from dan.tools._git_helpers import _find_repo
 from dan.worker.core.interfaces import CompletionRequest, CompletionResponse
 from dan.worker.core.model import WorkerDefinition
+from dan.worker.organism_log import organism_event_context, stable_output_contract_id
 from dan.worker.organisms.coding_execution import CodingOrganism
 from dan.worker.organisms.project_execution import ProjectExecutionOrganism
 from dan.worker.organs import OrganPattern
@@ -34,13 +37,50 @@ DEFAULT_LIVE_ORGANISM_TOOL_IDS = [
 # current standalone shell tool accepts arbitrary commands rather than a
 # constrained read-only subset.
 _READ_ONLY_TOOL_EXCLUSIONS = frozenset({"file_edit", "file_write", "shell_command"})
+_DISCOVERY_ONLY_TOOL_IDS = frozenset(
+    {"list_directory", "file_read", "web_search", "git_status", "git_diff", "git_log"}
+)
+_RESEARCH_TOOL_PREFERRED_ORDER = ("web_search", "file_read", "list_directory")
+_RESEARCH_TOOL_EXCLUSIONS = frozenset({"git_status", "git_diff", "git_log"})
+_CODING_AGGREGATION_TOOL_PREFERRED_ORDER = (
+    "file_read",
+    "file_edit",
+    "file_write",
+    "git_diff",
+)
+_CODING_AGGREGATION_TOOL_EXCLUSIONS = frozenset(
+    {"list_directory", "shell_command", "web_search", "git_status", "git_log"}
+)
 _INTERNAL_WORKSPACE_DIR_NAMES = frozenset({".dan-code", ".git", ".pytest_cache", "__pycache__"})
 _GREENFIELD_OPERATOR_ARTIFACTS = frozenset({"prompt.md", "acceptance.md", "report.json"})
 ToolRuntimeEventCallback = Callable[[dict[str, Any]], None]
 ToolApprovalCallback = Callable[[str, dict[str, Any], dict[str, Any]], bool]
-_CODING_CANDIDATE_REQUIRED_KEYS = frozenset(
-    {"candidate_id", "change_summary", "target_files", "test_plan", "risks"}
+_CODING_OUTPUT_COMMON_REQUIRED_KEYS = frozenset(
+    {"change_summary", "target_files", "test_plan", "risks"}
 )
+_CODING_CANDIDATE_REQUIRED_KEYS = frozenset({"candidate_id"}) | _CODING_OUTPUT_COMMON_REQUIRED_KEYS
+_CODING_WORKER_REQUIRED_KEYS = frozenset({"candidate_fragment"}) | _CODING_OUTPUT_COMMON_REQUIRED_KEYS
+_VALIDATION_REPORT_REQUIRED_KEYS = frozenset(
+    {
+        "passed",
+        "overall_score",
+        "dimension_scores",
+        "repair_brief",
+        "missing_requirements",
+        "comparison_note",
+    }
+)
+_BLOCKED_TOOL_DISABLE_THRESHOLD = 2
+_TOOL_PROMPT_TEXT_LIMIT = 2000
+
+
+def _event_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _compact_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in payload.items() if value is not None}
 
 
 def _dedupe(values: Sequence[str]) -> list[str]:
@@ -55,8 +95,104 @@ def _dedupe(values: Sequence[str]) -> list[str]:
     return ordered
 
 
+def _truncate_prompt_text(value: str, *, limit: int = _TOOL_PROMPT_TEXT_LIMIT) -> tuple[str, bool]:
+    if len(value) <= limit:
+        return value, False
+    clipped = max(limit - 64, 0)
+    omitted = max(len(value) - clipped, 0)
+    suffix = f"\n...[truncated {omitted} chars for prompt]..."
+    return value[:clipped] + suffix, True
+
+
+def _compact_prompt_value(value: Any) -> tuple[Any, bool]:
+    if isinstance(value, str):
+        return _truncate_prompt_text(value)
+    if isinstance(value, list):
+        changed = False
+        compacted: list[Any] = []
+        for item in value:
+            compact_item, item_changed = _compact_prompt_value(item)
+            compacted.append(compact_item)
+            changed = changed or item_changed
+        return compacted, changed
+    if isinstance(value, dict):
+        changed = False
+        compacted: dict[str, Any] = {}
+        for key, item in value.items():
+            compact_item, item_changed = _compact_prompt_value(item)
+            compacted[str(key)] = compact_item
+            changed = changed or item_changed
+        return compacted, changed
+    return value, False
+
+
+def _compact_tool_payload_for_prompt(tool_payload: dict[str, Any]) -> dict[str, Any]:
+    compacted, changed = _compact_prompt_value(tool_payload)
+    if not isinstance(compacted, dict):
+        return dict(tool_payload)
+    if changed:
+        compacted["prompt_payload_compacted"] = True
+    return compacted
+
+
+def _tool_schema_name(tool: dict[str, Any]) -> str:
+    if not isinstance(tool, dict):
+        return ""
+    function = tool.get("function")
+    if not isinstance(function, dict):
+        return ""
+    return str(function.get("name") or "").strip()
+
+
+def _enabled_tool_schemas(
+    tool_schemas: Sequence[dict[str, Any]],
+    *,
+    disabled_tool_ids: Sequence[str],
+) -> list[dict[str, Any]]:
+    disabled = set(_dedupe(disabled_tool_ids))
+    if not disabled:
+        return [dict(tool) for tool in tool_schemas if isinstance(tool, dict)]
+    return [
+        dict(tool)
+        for tool in tool_schemas
+        if isinstance(tool, dict) and _tool_schema_name(tool) not in disabled
+    ]
+
+
 def _read_only_tool_ids(tool_ids: Sequence[str]) -> list[str]:
     return [tool_id for tool_id in _dedupe(tool_ids) if tool_id not in _READ_ONLY_TOOL_EXCLUSIONS]
+
+
+def _research_read_only_tool_ids(tool_ids: Sequence[str]) -> list[str]:
+    read_only = _read_only_tool_ids(tool_ids)
+    preferred = [
+        tool_id
+        for tool_id in _RESEARCH_TOOL_PREFERRED_ORDER
+        if tool_id in read_only
+    ]
+    extras = [
+        tool_id
+        for tool_id in read_only
+        if tool_id not in preferred and tool_id not in _RESEARCH_TOOL_EXCLUSIONS
+    ]
+    narrowed = preferred + extras
+    return narrowed or read_only
+
+
+def _coding_aggregation_tool_ids(tool_ids: Sequence[str]) -> list[str]:
+    available = _dedupe(tool_ids)
+    preferred = [
+        tool_id
+        for tool_id in _CODING_AGGREGATION_TOOL_PREFERRED_ORDER
+        if tool_id in available
+    ]
+    extras = [
+        tool_id
+        for tool_id in available
+        if tool_id not in preferred and tool_id not in _CODING_AGGREGATION_TOOL_EXCLUSIONS
+    ]
+    narrowed = preferred + extras
+    return narrowed or available
 
 
 def _tool_ids_are_read_only(tool_ids: Sequence[str]) -> bool:
@@ -166,17 +302,193 @@ def _tool_use_policy(tool_ids: Sequence[str]) -> str:
     return "\n".join(lines)
 
 
+def _missing_required_tool_arguments(
+    metadata: dict[str, Any],
+    arguments: dict[str, Any],
+) -> list[str]:
+    parameters = metadata.get("parameters") if isinstance(metadata, dict) else None
+    if not isinstance(parameters, dict):
+        return []
+    required = parameters.get("required")
+    if not isinstance(required, (list, tuple)):
+        return []
+    missing: list[str] = []
+    for name in required:
+        key = str(name or "").strip()
+        if not key:
+            continue
+        if _tool_argument_is_missing(arguments, key):
+            missing.append(key)
+    return missing
+
+
+def _tool_argument_is_missing(arguments: dict[str, Any], key: str) -> bool:
+    if key not in arguments:
+        return True
+    value = arguments.get(key)
+    if value is None:
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    return False
+
+
+def _missing_alternative_required_tool_argument_groups(
+    metadata: dict[str, Any],
+    arguments: dict[str, Any],
+) -> list[list[str]]:
+    parameters = metadata.get("parameters") if isinstance(metadata, dict) else None
+    if not isinstance(parameters, dict):
+        return []
+
+    alternative_groups: list[list[str]] = []
+    for keyword in ("anyOf", "oneOf"):
+        variants = parameters.get(keyword)
+        if not isinstance(variants, (list, tuple)):
+            continue
+        for variant in variants:
+            if not isinstance(variant, dict):
+                continue
+            required = variant.get("required")
+            if not isinstance(required, (list, tuple)):
+                continue
+            group = [str(name or "").strip() for name in required if str(name or "").strip()]
+            if group:
+                alternative_groups.append(group)
+
+    if not alternative_groups:
+        return []
+    if any(all(not _tool_argument_is_missing(arguments, key) for key in group) for group in alternative_groups):
+        return []
+    return alternative_groups
+
+
+def _tool_argument_validation_error(
+    tool_id: str,
+    missing_required: Sequence[str],
+    alternative_required_groups: Sequence[Sequence[str]] | None = None,
+) -> str:
+    detail_parts: list[str] = []
+    required_text = ", ".join(str(name).strip() for name in missing_required if str(name).strip())
+    if required_text:
+        detail_parts.append(required_text)
+    if alternative_required_groups:
+        rendered_groups = []
+        for group in alternative_required_groups:
+            names = [str(name).strip() for name in group if str(name).strip()]
+            if not names:
+                continue
+            rendered_groups.append(f"({', '.join(names)})")
+        if rendered_groups:
+            detail_parts.append(f"one of {' or '.join(rendered_groups)}")
+    return (
+        f"tool_arguments_invalid: missing required arguments for {tool_id}: "
+        f"{'; '.join(detail_parts) or 'unknown'}"
+    )
+
+
+def _tool_argument_failure_nudge(tool_id: str, error_text: str) -> str | None:
+    marker = "tool_arguments_invalid:"
+    if marker not in error_text:
+        return None
+    detail = error_text.split(marker, 1)[1].strip()
+    if not detail:
+        detail = f"invalid arguments for {tool_id}"
+    extra_guidance = ""
+    if tool_id == "web_search":
+        extra_guidance = (
+            ' For `web_search`, retry with exactly one concrete JSON object such as '
+            '`{"query":"Brent crude oil price April 2026"}` or `{"url":"https://example.com/page"}`. '
+            "Do not send `{}` and do not batch multiple empty `web_search` calls in the same round."
+        )
+    return (
+        f"Tool correction: the previous `{tool_id}` call failed because {detail}. "
+        "Retry only with a complete JSON argument object that satisfies the tool schema exactly. "
+        "If you do not know the missing values yet, use a different valid tool call first."
+        f"{extra_guidance}"
+    )
+
+
+def _stable_tool_value(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        return str(value)
+
+
+def _is_repeated_tool_call(
+    previous_tool: dict[str, Any] | None,
+    current_tool: dict[str, Any],
+) -> bool:
+    if not isinstance(previous_tool, dict):
+        return False
+    if str(previous_tool.get("tool_id") or "").strip() != str(current_tool.get("tool_id") or "").strip():
+        return False
+    if _stable_tool_value(previous_tool.get("arguments")) != _stable_tool_value(current_tool.get("arguments")):
+        return False
+    if bool(previous_tool.get("ok")) != bool(current_tool.get("ok")):
+        return False
+    payload_key = "result" if current_tool.get("ok") else "error"
+    return _stable_tool_value(previous_tool.get(payload_key)) == _stable_tool_value(current_tool.get(payload_key))
+
+
+def _repeated_tool_call_nudge(tool_id: str, arguments: dict[str, Any]) -> str:
+    rendered_arguments = _stable_tool_value(arguments)
+    if len(rendered_arguments) > 160:
+        rendered_arguments = rendered_arguments[:157] + "..."
+    return (
+        f"Tool correction: you already executed `{tool_id}` with the same arguments "
+        f"{rendered_arguments}. Do not repeat that same discovery call. "
+        "Use the existing result to choose a more specific next step or return your current conclusion."
+    )
+
+
+def _register_temporarily_disabled_tools(
+    tool_ids: Sequence[str],
+    *,
+    blocked_tool_counts: dict[str, int],
+    disabled_tool_ids: set[str],
+    enabled_tool_ids: Sequence[str],
+) -> list[str]:
+    enabled = set(_dedupe(enabled_tool_ids))
+    newly_disabled: list[str] = []
+    for tool_id in _dedupe(tool_ids):
+        if tool_id not in enabled:
+            continue
+        blocked_tool_counts[tool_id] = blocked_tool_counts.get(tool_id, 0) + 1
+        if blocked_tool_counts[tool_id] < _BLOCKED_TOOL_DISABLE_THRESHOLD:
+            continue
+        if tool_id in disabled_tool_ids:
+            continue
+        disabled_tool_ids.add(tool_id)
+        newly_disabled.append(tool_id)
+    return newly_disabled
+
+
+def _temporarily_disabled_tool_message(tool_ids: Sequence[str]) -> str:
+    names = [f"`{tool_id}`" for tool_id in _dedupe(tool_ids)]
+    rendered = ", ".join(names) if names else "the repeated tool"
+    verb = "is" if len(names) == 1 else "are"
+    return (
+        f"Tool correction: {rendered} {verb} temporarily disabled for the rest of this turn "
+        "because you repeated invalid or redundant calls. Use a different enabled tool with "
+        "concrete arguments, or return your current conclusion."
+    )
+
+
 def _relative_workspace_path(path: Any, *, workspace_root: Path) -> str | None:
     text = str(path or "").strip()
     if not text:
         return None
+    candidate = Path(text).expanduser()
     try:
-        candidate = Path(text).expanduser()
         resolved = candidate if candidate.is_absolute() else workspace_root / candidate
         relative = resolved.resolve().relative_to(workspace_root.resolve())
         rendered = relative.as_posix()
         return rendered or "."
     except Exception:
+        if candidate.is_absolute():
+            return None
         parts = [part for part in Path(text).parts if part not in {"", "."}]
         if not parts:
             return "."
@@ -260,8 +572,43 @@ def _tool_is_web_search(tool: dict[str, Any]) -> bool:
     return str(tool.get("tool_id") or "").strip() == "web_search"
 
 
+def _coding_output_kind(request: CompletionRequest) -> str | None:
+    keys = _expected_return_shape_keys(request)
+    if _CODING_CANDIDATE_REQUIRED_KEYS.issubset(keys):
+        return "candidate"
+    if _CODING_WORKER_REQUIRED_KEYS.issubset(keys):
+        return "candidate_fragment"
+    return None
+
+
+def _read_only_finalize_mode(request: CompletionRequest) -> str | None:
+    system_prompt = str(request.system_prompt or "")
+    lowered_system_prompt = system_prompt.lower()
+    expected_shape = str(getattr(request.output_contract, "expected_return_shape", "") or "")
+    worker_id = str(request.metadata.get("worker_id") or "").strip()
+    keys = _expected_return_shape_keys(request)
+
+    looks_like_coding_worker = (
+        "Role: coding_worker" in system_prompt
+        or "candidate_fragment" in expected_shape
+        or worker_id.startswith("coding-build.worker")
+    )
+    if looks_like_coding_worker:
+        return "coding_worker"
+
+    looks_like_validator = (
+        _VALIDATION_REPORT_REQUIRED_KEYS.issubset(keys)
+        or "role: validator_" in lowered_system_prompt
+        or ".validator" in worker_id
+    )
+    if looks_like_validator:
+        return "validator"
+
+    return None
+
+
 def _request_expects_coding_candidate(request: CompletionRequest) -> bool:
-    return _CODING_CANDIDATE_REQUIRED_KEYS.issubset(_expected_return_shape_keys(request))
+    return _coding_output_kind(request) == "candidate"
 
 
 def _tool_argument_path(tool: dict[str, Any]) -> str:
@@ -275,7 +622,31 @@ def _tool_argument_path(tool: dict[str, Any]) -> str:
     ).strip()
 
 
-def _successful_mutation_paths(executed_tools: Sequence[dict[str, Any]]) -> list[str]:
+def _normalized_tool_path(path: Any, *, workspace_root: Path | None = None) -> str | None:
+    text = str(path or "").strip()
+    if not text:
+        return None
+    if workspace_root is not None:
+        relative = _relative_workspace_path(text, workspace_root=workspace_root)
+        if relative:
+            return relative
+    candidate = Path(text).expanduser()
+    if candidate.is_absolute():
+        try:
+            return str(candidate.resolve())
+        except Exception:
+            return str(candidate)
+    parts = [part for part in candidate.parts if part not in {"", "."}]
+    if not parts:
+        return "."
+    return Path(*parts).as_posix()
+
+
+def _successful_workspace_mutation_paths(
+    executed_tools: Sequence[dict[str, Any]],
+    *,
+    workspace_root: Path,
+) -> list[str]:
     paths: list[str] = []
     seen: set[str] = set()
     for tool in executed_tools:
@@ -284,7 +655,94 @@ def _successful_mutation_paths(executed_tools: Sequence[dict[str, Any]]) -> list
         tool_id = str(tool.get("tool_id") or "").strip()
         if tool_id not in {"file_write", "file_edit"}:
             continue
-        path = _tool_argument_path(tool)
+        relative = _relative_workspace_path(
+            _tool_argument_path(tool),
+            workspace_root=workspace_root,
+        )
+        if not relative or relative in seen:
+            continue
+        seen.add(relative)
+        paths.append(relative)
+    return paths
+
+
+def _temporary_path_roots() -> list[Path]:
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for raw in (
+        tempfile.gettempdir(),
+        os.environ.get("TMPDIR"),
+        os.environ.get("TEMP"),
+        os.environ.get("TMP"),
+    ):
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        try:
+            resolved = Path(text).expanduser().resolve()
+        except Exception:
+            continue
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(resolved)
+    return roots
+
+
+def _is_temporary_external_path(path: Any, *, workspace_root: Path) -> bool:
+    text = str(path or "").strip()
+    if not text:
+        return False
+    if _relative_workspace_path(text, workspace_root=workspace_root) is not None:
+        return False
+    try:
+        resolved = Path(text).expanduser().resolve()
+    except Exception:
+        return False
+    return any(resolved == root or root in resolved.parents for root in _temporary_path_roots())
+
+
+def _tool_mutates_temporary_external_path(
+    tool: dict[str, Any],
+    *,
+    workspace_root: Path,
+) -> bool:
+    if not tool.get("ok"):
+        return False
+    tool_id = str(tool.get("tool_id") or "").strip()
+    if tool_id not in {"file_write", "file_edit"}:
+        return False
+    return _is_temporary_external_path(
+        _tool_argument_path(tool),
+        workspace_root=workspace_root,
+    )
+
+
+def _successful_mutation_paths(
+    executed_tools: Sequence[dict[str, Any]],
+    *,
+    workspace_root: Path | None = None,
+) -> list[str]:
+    if workspace_root is not None:
+        workspace_paths = _successful_workspace_mutation_paths(
+            executed_tools,
+            workspace_root=workspace_root,
+        )
+        if workspace_paths:
+            return workspace_paths
+    paths: list[str] = []
+    seen: set[str] = set()
+    for tool in executed_tools:
+        if not tool.get("ok"):
+            continue
+        tool_id = str(tool.get("tool_id") or "").strip()
+        if tool_id not in {"file_write", "file_edit"}:
+            continue
+        path = _normalized_tool_path(
+            _tool_argument_path(tool),
+            workspace_root=workspace_root,
+        )
         if not path or path in seen:
             continue
         seen.add(path)
@@ -324,17 +782,64 @@ def _successful_verification_commands(executed_tools: Sequence[dict[str, Any]]) 
     return commands
 
 
+def _last_successful_mutation_index(executed_tools: Sequence[dict[str, Any]]) -> int | None:
+    last_index: int | None = None
+    for index, tool in enumerate(executed_tools):
+        if not tool.get("ok"):
+            continue
+        tool_id = str(tool.get("tool_id") or "").strip()
+        if tool_id in {"file_write", "file_edit"}:
+            last_index = index
+    return last_index
+
+
+def _successful_discovery_tool_count(executed_tools: Sequence[dict[str, Any]]) -> int:
+    count = 0
+    for tool in executed_tools:
+        if not tool.get("ok"):
+            continue
+        if str(tool.get("tool_id") or "").strip() in _DISCOVERY_ONLY_TOOL_IDS:
+            count += 1
+    return count
+
+
+def _successful_read_paths(
+    executed_tools: Sequence[dict[str, Any]],
+    *,
+    workspace_root: Path | None = None,
+) -> list[str]:
+    paths: list[str] = []
+    for tool in executed_tools:
+        if not tool.get("ok"):
+            continue
+        if str(tool.get("tool_id") or "").strip() != "file_read":
+            continue
+        result = dict(tool.get("result") or {})
+        path = _normalized_tool_path(
+            result.get("path") or dict(tool.get("arguments") or {}).get("path"),
+            workspace_root=workspace_root,
+        )
+        if path:
+            paths.append(path)
+    return paths
+
+
 def _partial_coding_candidate_from_tool_evidence(
     *,
     request: CompletionRequest,
     executed_tools: Sequence[dict[str, Any]],
     stop_reason: str,
     existing_text: str | None = None,
+    workspace_root: Path | None = None,
 ) -> dict[str, Any] | None:
-    if not _request_expects_coding_candidate(request):
+    output_kind = _coding_output_kind(request)
+    if output_kind is None:
         return None
 
-    target_files = _successful_mutation_paths(executed_tools)
+    target_files = _successful_mutation_paths(
+        executed_tools,
+        workspace_root=workspace_root,
+    )
     if not target_files:
         return None
 
@@ -347,7 +852,10 @@ def _partial_coding_candidate_from_tool_evidence(
     verification_commands = _successful_verification_commands(executed_tools)
 
     payload = dict(base_payload)
-    payload.setdefault("candidate_id", "partial-candidate-from-tool-evidence")
+    if output_kind == "candidate":
+        payload.setdefault("candidate_id", "partial-candidate-from-tool-evidence")
+    else:
+        payload.setdefault("candidate_fragment", {})
     payload["change_summary"] = str(
         payload.get("change_summary")
         or (
@@ -366,7 +874,8 @@ def _partial_coding_candidate_from_tool_evidence(
         f"The provider completion timed out before the final candidate payload was returned, so this result was synthesized from successful write-tool evidence after {reason_text}.",
         "Review the materialized files and rerun the bounded repair/validation loop before treating this as done.",
     ]
-    payload["workspace_effect"] = "modified"
+    if output_kind == "candidate":
+        payload["workspace_effect"] = "modified"
     payload["synthesized_from_tool_evidence"] = True
     payload["fallback_reason"] = stop_reason
     return payload
@@ -379,27 +888,97 @@ def _write_capable_coding_stage_first_write_nudge_reason(
     executed_tools: Sequence[dict[str, Any]],
     workspace_root: Path,
 ) -> str | None:
-    if not _request_expects_coding_candidate(request):
+    if _coding_output_kind(request) is None:
         return None
     if _tool_ids_are_read_only(tool_ids):
         return None
-    if _successful_mutation_paths(executed_tools):
+    if _successful_workspace_mutation_paths(
+        executed_tools,
+        workspace_root=workspace_root,
+    ):
         return None
     for tool in executed_tools:
         if _tool_confirms_effectively_empty_workspace(tool, workspace_root=workspace_root):
             return "first_write_after_empty_workspace"
+    if len(_successful_read_paths(executed_tools, workspace_root=workspace_root)) >= 6:
+        return "stalled_analysis_before_first_write"
     return None
 
 
 def _write_capable_coding_stage_first_write_nudge_message(reason: str) -> str:
     reason_text = reason.replace("_", " ")
     return (
-        "Controller note: this write-capable coding stage has already confirmed an effectively empty workspace "
+        "Controller note: this write-capable coding stage is still read-only after initial discovery "
         f"({reason_text}). Stop auditing and make the first concrete project write now using the direct file tools "
         "that are already enabled. The next tool call should be `file_write` or `file_edit`, not another read, search, "
         "or final prose-only answer. Create one or two small real files first, then continue incrementally. Prefer a "
         "minimal runnable slice over a complete project in one giant tool call. If you truly cannot materialize any "
         "bounded file set in this turn, return an explicit blocked candidate now instead of doing more discovery."
+    )
+
+
+def _write_capable_coding_stage_finalize_reason(
+    *,
+    request: CompletionRequest,
+    tool_ids: Sequence[str],
+    executed_tools: Sequence[dict[str, Any]],
+    workspace_root: Path,
+) -> str | None:
+    if _coding_output_kind(request) is None:
+        return None
+    if _tool_ids_are_read_only(tool_ids):
+        return None
+
+    workspace_mutation_paths = _successful_workspace_mutation_paths(
+        executed_tools,
+        workspace_root=workspace_root,
+    )
+    if not workspace_mutation_paths:
+        return None
+    for tool in executed_tools:
+        if _tool_mutates_temporary_external_path(tool, workspace_root=workspace_root):
+            return "temporary_external_write_after_workspace_patch"
+
+    last_mutation_index = _last_successful_mutation_index(executed_tools)
+    if last_mutation_index is None:
+        return None
+
+    successful_post_mutation = [
+        tool for tool in executed_tools[last_mutation_index + 1 :] if tool.get("ok")
+    ]
+    if not successful_post_mutation:
+        return None
+
+    saw_verification = False
+    successful_post_verification_count = 0
+    for tool in successful_post_mutation:
+        tool_id = str(tool.get("tool_id") or "").strip()
+        if tool_id == "shell_command":
+            command = str(dict(tool.get("arguments") or {}).get("command") or "").strip()
+            if command and _verification_like_command(command):
+                saw_verification = True
+                successful_post_verification_count += 1
+                continue
+            if saw_verification:
+                return "non_verification_shell_after_verification"
+            continue
+        if saw_verification:
+            successful_post_verification_count += 1
+
+    if saw_verification and successful_post_verification_count >= 4:
+        return "extended_post_write_analysis_after_verification"
+    return None
+
+
+def _write_capable_coding_stage_finalize_message(reason: str) -> str:
+    reason_text = reason.replace("_", " ")
+    return (
+        "Controller note: this write-capable coding stage already materialized a bounded patch and the current turn "
+        f"has crossed the point where more tool work is low value ({reason_text}). Stop using tools and return the "
+        "required structured coding result now. "
+        "Reuse only the current workspace diff plus the successful checks already gathered in this turn. Do not spend "
+        "more time on environment/package probing, extra repo discovery, or optional validation churn. If validation "
+        "is still incomplete, say that directly in `test_plan` and `risks`, but finalize the candidate now."
     )
 
 
@@ -413,24 +992,41 @@ def _direct_write_tool_schemas(tool_schemas: Sequence[dict[str, Any]]) -> list[d
     return direct_write_tools
 
 
-def _read_only_coding_worker_finalize_reason(
+def _read_only_finalize_reason(
     *,
     request: CompletionRequest,
     tool_ids: Sequence[str],
     executed_tools: Sequence[dict[str, Any]],
     workspace_root: Path,
 ) -> str | None:
-    system_prompt = str(request.system_prompt or "")
-    expected_shape = str(getattr(request.output_contract, "expected_return_shape", "") or "")
-    worker_id = str(request.metadata.get("worker_id") or "").strip()
-    looks_like_coding_worker = (
-        "Role: coding_worker" in system_prompt
-        or "candidate_fragment" in expected_shape
-        or worker_id.startswith("coding-build.worker")
-    )
-    if not looks_like_coding_worker:
+    mode = _read_only_finalize_mode(request)
+    if mode is None:
         return None
     if not _tool_ids_are_read_only(tool_ids):
+        return None
+
+    normalized_read_paths = _successful_read_paths(
+        executed_tools,
+        workspace_root=workspace_root,
+    )
+
+    if mode == "validator":
+        saw_git_diff = any(
+            tool.get("ok")
+            and str(tool.get("tool_id") or "").strip() == "git_diff"
+            for tool in executed_tools
+        )
+        if saw_git_diff and len(normalized_read_paths) >= 3:
+            counts: dict[str, int] = {}
+            for path in normalized_read_paths:
+                counts[path] = counts.get(path, 0) + 1
+            if any(count >= 2 for count in counts.values()):
+                return "repeated_validator_reread_after_grounding"
+
+    if _successful_discovery_tool_count(executed_tools) >= 6:
+        return "stalled_analysis_in_checked_out_repo"
+
+    if mode != "coding_worker":
         return None
 
     empty_workspace_index: int | None = None
@@ -453,11 +1049,19 @@ def _read_only_coding_worker_finalize_reason(
     return None
 
 
-def _read_only_coding_worker_finalize_message(reason: str) -> str:
+def _read_only_finalize_message(reason: str, *, mode: str) -> str:
     reason_text = reason.replace("_", " ")
+    if mode == "validator":
+        return (
+            "Controller note: stop using tools in this read-only validation round. "
+            f"You already have enough bounded grounding to return the required validation output now ({reason_text}). "
+            "Use only the evidence already gathered in this turn. If your contract expects a brief verdict, emit it "
+            "directly; if it expects a structured validation report, fill those fields from the evidence already in "
+            "hand. Do not call more tools."
+        )
     return (
         "Controller note: stop using tools in this read-only coding worker round. "
-        f"The empty-workspace probe has already confirmed a no-progress pattern ({reason_text}). "
+        f"You already have enough bounded grounding to return the structured contribution now ({reason_text}). "
         "Return the required structured response now. If new files are needed, emit a concrete "
         "`candidate_fragment` that a later write-capable aggregation stage can materialize. If you "
         "already used one quick external lookup, incorporate only what you learned so far and finalize "
@@ -604,6 +1208,20 @@ def _provider_safety_fallback_payload(request: CompletionRequest) -> dict[str, A
             "confidence": 0.0,
             "recommended_change": "No substantive recommendation was generated because provider safety filtering blocked synthesis.",
         }
+    elif _VALIDATION_REPORT_REQUIRED_KEYS.issubset(keys):
+        payload = {
+            "passed": False,
+            "overall_score": 0.0,
+            "dimension_scores": {},
+            "repair_brief": (
+                "Provider safety filtering blocked the validation synthesis prompt before a substantive verdict was "
+                "generated. Retry validation on the current candidate."
+            ),
+            "missing_requirements": [
+                "Validation synthesis was blocked by provider safety filtering before a substantive verdict was produced."
+            ],
+            "comparison_note": "Provider safety filtering blocked the validation synthesis prompt.",
+        }
     elif "candidate_fragment" in keys:
         payload = {
             "candidate_fragment": {},
@@ -702,6 +1320,20 @@ def _provider_timeout_fallback_payload(request: CompletionRequest) -> dict[str, 
             "readiness_note": "The provider timed out before the final synthesis completed.",
             "confidence": 0.0,
             "recommended_change": "No substantive recommendation was generated because the provider timed out before completion.",
+        }
+    elif _VALIDATION_REPORT_REQUIRED_KEYS.issubset(keys):
+        payload = {
+            "passed": False,
+            "overall_score": 0.0,
+            "dimension_scores": {},
+            "repair_brief": (
+                "The provider timed out before validation synthesis completed. Retry validation on the current "
+                "candidate."
+            ),
+            "missing_requirements": [
+                "Validation synthesis timed out before a substantive verdict was produced."
+            ],
+            "comparison_note": "The provider timed out before validation synthesis completed.",
         }
     elif "candidate_fragment" in keys:
         payload = {
@@ -870,6 +1502,14 @@ class LocalOrganismToolRuntime:
             query = next((item.strip() for item in candidates if item.strip()), "")
         if str(query or "").strip():
             kwargs["query"] = str(query).strip()
+        url = kwargs.get("url")
+        if isinstance(url, (list, tuple)):
+            url = next(
+                (str(item).strip() for item in url if str(item).strip()),
+                "",
+            )
+        if str(url or "").strip():
+            kwargs["url"] = str(url).strip()
         return kwargs
 
     async def call(
@@ -878,12 +1518,23 @@ class LocalOrganismToolRuntime:
         arguments: dict[str, Any] | None = None,
         *,
         worker_id: str | None = None,
+        tool_call_id: str | None = None,
+        parent_model_call_id: str | None = None,
+        event_context: dict[str, Any] | None = None,
     ) -> Any:
         if tool_id not in self._tools:
             raise KeyError(f"Tool '{tool_id}' is not enabled for this runtime")
 
         function, metadata = self._tools[tool_id]
         kwargs = self._normalize_tool_arguments(tool_id, dict(arguments or {}))
+        shared_context = _compact_event_payload(
+            {
+                **dict(event_context or {}),
+                "tool_call_id": _event_text(tool_call_id),
+                "parent_model_call_id": _event_text(parent_model_call_id),
+                "worker_id": str(worker_id or "").strip() or None,
+            }
+        )
         if tool_id == "shell_command" and not str(kwargs.get("working_directory") or "").strip():
             kwargs["working_directory"] = str(self._workspace_root)
         elif tool_id in {"git_status", "git_diff", "git_log"}:
@@ -894,8 +1545,28 @@ class LocalOrganismToolRuntime:
             arguments=dict(kwargs),
             metadata=dict(metadata),
             workspace_root=str(self._workspace_root),
-            worker_id=str(worker_id or "").strip() or None,
+            **shared_context,
         )
+        missing_required = _missing_required_tool_arguments(dict(metadata), kwargs)
+        missing_alternatives = _missing_alternative_required_tool_argument_groups(
+            dict(metadata),
+            kwargs,
+        )
+        if missing_required or missing_alternatives:
+            error_text = _tool_argument_validation_error(
+                tool_id,
+                missing_required,
+                missing_alternatives,
+            )
+            self._emit_event(
+                "tool.failed",
+                tool_id=tool_id,
+                arguments=dict(kwargs),
+                metadata=dict(metadata),
+                error=error_text,
+                **shared_context,
+            )
+            raise ValueError(error_text)
         if self._approval_callback is not None:
             approved = self._approval_callback(tool_id, dict(kwargs), dict(metadata))
             if not approved:
@@ -904,7 +1575,7 @@ class LocalOrganismToolRuntime:
                     tool_id=tool_id,
                     arguments=dict(kwargs),
                     metadata=dict(metadata),
-                    worker_id=str(worker_id or "").strip() or None,
+                    **shared_context,
                 )
                 raise PermissionError(f"tool_call_denied:{tool_id}")
         prior_workspace = os.environ.get("DAN_WORKSPACE_ROOT")
@@ -918,7 +1589,7 @@ class LocalOrganismToolRuntime:
                 arguments=dict(kwargs),
                 metadata=dict(metadata),
                 error=f"{type(exc).__name__}: {exc}",
-                worker_id=str(worker_id or "").strip() or None,
+                **shared_context,
             )
             raise
         finally:
@@ -932,7 +1603,7 @@ class LocalOrganismToolRuntime:
             arguments=dict(kwargs),
             metadata=dict(metadata),
             result=result,
-            worker_id=str(worker_id or "").strip() or None,
+            **shared_context,
         )
         return result
 
@@ -970,11 +1641,34 @@ class ToolLoopCompletionProvider:
         self._stream_text_responses = bool(stream_text_responses)
         self._provider_request_overrides = dict(provider_request_overrides or {})
         self._event_callback = event_callback
+        self._model_call_counter = 0
 
     def _emit_event(self, event: str, **payload: Any) -> None:
         if self._event_callback is None:
             return
         self._event_callback({"event": event, **payload})
+
+    def _next_model_call_id(self) -> str:
+        self._model_call_counter += 1
+        return f"model-call:{self._model_call_counter:04d}"
+
+    @staticmethod
+    def _event_context(
+        request: CompletionRequest,
+        *,
+        worker_id: str | None,
+    ) -> dict[str, Any]:
+        return _compact_event_payload(
+            {
+                **organism_event_context(
+                    metadata=request.metadata,
+                    output_contract=request.output_contract,
+                    worker_id=worker_id,
+                ),
+                "worker_id": _event_text(worker_id),
+                "contract_id": stable_output_contract_id(request.output_contract),
+            }
+        )
 
     async def _complete_text_response(
         self,
@@ -985,6 +1679,8 @@ class ToolLoopCompletionProvider:
         provider_kwargs: dict[str, Any],
         round_number: int,
         worker_id: str | None,
+        model_call_id: str,
+        event_context: dict[str, Any],
     ) -> CompletionResult:
         if not self._stream_text_responses:
             return await self._provider.complete(
@@ -1018,7 +1714,8 @@ class ToolLoopCompletionProvider:
             "model.stream.started",
             model=model,
             round=round_number,
-            worker_id=worker_id,
+            model_call_id=model_call_id,
+            **event_context,
         )
         try:
             async for chunk in stream_method(
@@ -1057,16 +1754,18 @@ class ToolLoopCompletionProvider:
                         "model.stream.delta",
                         model=model,
                         round=round_number,
+                        model_call_id=model_call_id,
                         delta=delta,
                         accumulated=accumulated,
-                        worker_id=worker_id,
+                        **event_context,
                     )
             self._emit_event(
                 "model.stream.completed",
                 model=model,
                 round=round_number,
+                model_call_id=model_call_id,
                 usage=usage,
-                worker_id=worker_id,
+                **event_context,
             )
             if raw_assistant_message is None:
                 raw_assistant_message = {
@@ -1106,6 +1805,8 @@ class ToolLoopCompletionProvider:
         provider_kwargs: dict[str, Any],
         round_number: int,
         worker_id: str | None,
+        model_call_id: str,
+        event_context: dict[str, Any],
     ) -> CompletionResult:
         if self._completion_timeout_seconds is None:
             return await self._complete_text_response(
@@ -1115,6 +1816,8 @@ class ToolLoopCompletionProvider:
                 provider_kwargs=provider_kwargs,
                 round_number=round_number,
                 worker_id=worker_id,
+                model_call_id=model_call_id,
+                event_context=event_context,
             )
         try:
             async with asyncio.timeout(self._completion_timeout_seconds):
@@ -1125,6 +1828,8 @@ class ToolLoopCompletionProvider:
                     provider_kwargs=provider_kwargs,
                     round_number=round_number,
                     worker_id=worker_id,
+                    model_call_id=model_call_id,
+                    event_context=event_context,
                 )
         except TimeoutError as exc:
             raise TimeoutError(
@@ -1136,6 +1841,7 @@ class ToolLoopCompletionProvider:
         if not model:
             raise ValueError("Tool-loop completion provider requires a concrete model")
         worker_id = str(request.metadata.get("worker_id") or "").strip() or None
+        event_context = self._event_context(request, worker_id=worker_id)
 
         tool_schemas = self._resolve_tool_schemas(request.tools)
         active_tool_schemas = list(tool_schemas)
@@ -1162,17 +1868,33 @@ class ToolLoopCompletionProvider:
         write_stage_first_write_nudged = False
         research_note_finalize_nudged = False
         provider_safety_retry_attempted = False
+        blocked_by_tool_call_ids: list[str] = []
+        blocked_tool_counts: dict[str, int] = {}
+        disabled_tool_ids: set[str] = set()
 
         while True:
+            request_tool_schemas = _enabled_tool_schemas(
+                active_tool_schemas,
+                disabled_tool_ids=sorted(disabled_tool_ids),
+            )
+            request_tool_ids = [
+                _tool_schema_name(tool)
+                for tool in request_tool_schemas
+                if _tool_schema_name(tool)
+            ]
+            model_call_id = self._next_model_call_id()
             self._emit_event(
                 "model.requested",
                 model=model,
                 round=rounds + 1,
-                tool_count=len(active_tool_schemas),
-                worker_id=worker_id,
+                tool_count=len(request_tool_schemas),
+                model_call_id=model_call_id,
+                blocked_by_tool_call_ids=list(blocked_by_tool_call_ids) or None,
+                **event_context,
             )
+            blocked_by_tool_call_ids = []
             provider_kwargs = {
-                "tools": active_tool_schemas or None,
+                "tools": request_tool_schemas or None,
                 **self._provider_request_overrides,
             }
             try:
@@ -1183,6 +1905,8 @@ class ToolLoopCompletionProvider:
                     provider_kwargs=provider_kwargs,
                     round_number=rounds + 1,
                     worker_id=worker_id,
+                    model_call_id=model_call_id,
+                    event_context=event_context,
                 )
             except Exception as exc:
                 if _provider_timeout_error(exc):
@@ -1191,16 +1915,18 @@ class ToolLoopCompletionProvider:
                         "model.timeout",
                         model=model,
                         round=rounds + 1,
+                        model_call_id=model_call_id,
                         timeout_seconds=timeout_seconds,
-                        tool_count=len(active_tool_schemas),
+                        tool_count=len(request_tool_schemas),
                         error_type=type(exc).__name__,
-                        worker_id=worker_id,
+                        **event_context,
                     )
                     stop_reason = "provider_completion_timeout"
                     partial_candidate = _partial_coding_candidate_from_tool_evidence(
                         request=request,
                         executed_tools=executed_tools,
                         stop_reason=stop_reason,
+                        workspace_root=self._tool_runtime.workspace_root,
                     )
                     fallback_text = (
                         json.dumps(partial_candidate, ensure_ascii=False, sort_keys=True)
@@ -1210,9 +1936,10 @@ class ToolLoopCompletionProvider:
                     self._emit_event(
                         "completion.completed",
                         model=model,
+                        model_call_id=model_call_id,
                         stop_reason=stop_reason,
                         tool_calls_executed=len(executed_tools),
-                        worker_id=worker_id,
+                        **event_context,
                     )
                     return CompletionResponse(
                         text=fallback_text,
@@ -1242,9 +1969,10 @@ class ToolLoopCompletionProvider:
                     "model.provider_prompt_rejected",
                     model=model,
                     round=rounds + 1,
+                    model_call_id=model_call_id,
                     error_type=type(exc).__name__,
                     retry=not provider_safety_retry_attempted,
-                    worker_id=worker_id,
+                    **event_context,
                 )
                 if provider_safety_retry_attempted:
                     stop_reason = "provider_prompt_rejected_after_safety_retry"
@@ -1252,9 +1980,10 @@ class ToolLoopCompletionProvider:
                     self._emit_event(
                         "completion.completed",
                         model=model,
+                        model_call_id=model_call_id,
                         stop_reason=stop_reason,
                         tool_calls_executed=len(executed_tools),
-                        worker_id=worker_id,
+                        **event_context,
                     )
                     return CompletionResponse(
                         text=fallback_text,
@@ -1278,13 +2007,15 @@ class ToolLoopCompletionProvider:
                     )
                 provider_safety_retry_attempted = True
                 active_tool_schemas = []
+                disabled_tool_ids.clear()
                 messages = _provider_safety_retry_messages(request)
                 stop_reason = "completed_after_provider_safety_retry"
                 self._emit_event(
                     "model.provider_safety_retry",
                     model=model,
                     round=rounds + 1,
-                    worker_id=worker_id,
+                    model_call_id=model_call_id,
+                    **event_context,
                 )
                 continue
             assistant_message = self._assistant_message(last_result)
@@ -1295,29 +2026,46 @@ class ToolLoopCompletionProvider:
                 "model.responded",
                 model=last_result.model or model,
                 round=rounds + 1,
+                model_call_id=model_call_id,
                 tool_calls=[call.get("function", {}).get("name") or call.get("name") for call in tool_calls if isinstance(call, dict)],
                 finish_reason=getattr(last_result, "finish_reason", None),
                 text=(last_result.text or "")[:400],
                 streamed=bool((getattr(last_result, "provider_metadata", None) or {}).get("streamed_response")),
-                worker_id=worker_id,
+                **event_context,
             )
-            if forced_finalize_without_tools and not active_tool_schemas and tool_calls:
+            if forced_finalize_without_tools and not request_tool_schemas and tool_calls:
                 stop_reason = "forced_finalize_guardrail_unheeded"
+                partial_candidate = _partial_coding_candidate_from_tool_evidence(
+                    request=request,
+                    executed_tools=executed_tools,
+                    stop_reason=stop_reason,
+                    existing_text=last_result.text or "",
+                    workspace_root=self._tool_runtime.workspace_root,
+                )
+                fallback_text = (
+                    json.dumps(partial_candidate, ensure_ascii=False, sort_keys=True)
+                    if partial_candidate is not None
+                    else (last_result.text or "")
+                )
                 self._emit_event(
                     "completion.completed",
                     model=last_result.model or model,
+                    model_call_id=model_call_id,
                     stop_reason=stop_reason,
                     tool_calls_executed=len(executed_tools),
-                    worker_id=worker_id,
+                    **event_context,
                 )
                 return CompletionResponse(
-                    text=last_result.text or "",
+                    text=fallback_text,
                     raw={
                         "provider_result": {
                             "model": last_result.model,
                             "finish_reason": last_result.finish_reason,
                             "usage": last_result.usage,
-                            "provider_metadata": last_result.provider_metadata,
+                            "provider_metadata": {
+                                **dict(last_result.provider_metadata or {}),
+                                "tool_evidence_fallback": partial_candidate is not None,
+                            },
                         },
                         "assistant_message": assistant_message,
                         "executed_tools": executed_tools,
@@ -1328,9 +2076,10 @@ class ToolLoopCompletionProvider:
                 self._emit_event(
                     "completion.completed",
                     model=last_result.model or model,
+                    model_call_id=model_call_id,
                     stop_reason=stop_reason,
                     tool_calls_executed=len(executed_tools),
-                    worker_id=worker_id,
+                    **event_context,
                 )
                 return CompletionResponse(
                     text=last_result.text,
@@ -1355,6 +2104,7 @@ class ToolLoopCompletionProvider:
                     executed_tools=executed_tools,
                     stop_reason=stop_reason,
                     existing_text=last_result.text or "",
+                    workspace_root=self._tool_runtime.workspace_root,
                 )
                 fallback_text = (
                     json.dumps(partial_candidate, ensure_ascii=False, sort_keys=True)
@@ -1364,9 +2114,10 @@ class ToolLoopCompletionProvider:
                 self._emit_event(
                     "completion.completed",
                     model=last_result.model or model,
+                    model_call_id=model_call_id,
                     stop_reason=stop_reason,
                     tool_calls_executed=len(executed_tools),
-                    worker_id=worker_id,
+                    **event_context,
                 )
                 return CompletionResponse(
                     text=fallback_text,
@@ -1385,10 +2136,14 @@ class ToolLoopCompletionProvider:
                         "stop_reason": stop_reason,
                     },
                 )
-
+            round_tool_call_ids: list[str] = []
+            invalid_tool_argument_nudges: list[tuple[str, str]] = []
+            repeated_tool_call_nudges: list[tuple[str, str]] = []
+            newly_disabled_tool_ids: list[str] = []
             for raw_call in tool_calls:
                 total_tool_calls += 1
                 tool_id, tool_call_id, arguments = self._parse_tool_call(raw_call)
+                round_tool_call_ids.append(tool_call_id)
                 if total_tool_calls > self._max_tool_calls:
                     tool_payload = {
                         "ok": False,
@@ -1399,12 +2154,20 @@ class ToolLoopCompletionProvider:
                         "ok": False,
                         "error": f"tool_not_enabled:{tool_id}",
                     }
+                elif tool_id not in request_tool_ids:
+                    tool_payload = {
+                        "ok": False,
+                        "error": f"tool_temporarily_disabled:{tool_id}",
+                    }
                 else:
                     try:
                         result = await self._tool_runtime.call(
                             tool_id,
                             arguments,
                             worker_id=worker_id,
+                            tool_call_id=tool_call_id,
+                            parent_model_call_id=model_call_id,
+                            event_context=event_context,
                         )
                     except Exception as exc:
                         tool_payload = {
@@ -1421,28 +2184,134 @@ class ToolLoopCompletionProvider:
                     {
                         "tool_id": tool_id,
                         "tool_call_id": tool_call_id,
+                        "model_call_id": model_call_id,
                         "arguments": arguments,
                         **tool_payload,
                     }
                 )
+                current_tool = executed_tools[-1]
+                if (
+                    current_tool.get("ok")
+                    and len(executed_tools) >= 2
+                    and _is_repeated_tool_call(executed_tools[-2], current_tool)
+                ):
+                    repeated_tool_call_nudges.append(
+                        (tool_id, _repeated_tool_call_nudge(tool_id, arguments))
+                    )
                 messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": tool_call_id,
                         "name": tool_id,
                         "content": json.dumps(
-                            tool_payload,
+                            _compact_tool_payload_for_prompt(tool_payload),
                             ensure_ascii=False,
                             sort_keys=True,
                             default=str,
                         ),
                     }
                 )
-            finalize_reason = _read_only_coding_worker_finalize_reason(
+                if not tool_payload.get("ok"):
+                    error_text = str(tool_payload.get("error") or "").strip()
+                    followup_message = _tool_argument_failure_nudge(tool_id, error_text)
+                    if followup_message:
+                        invalid_tool_argument_nudges.append((tool_id, followup_message))
+                        # Stop immediately after the first schema-invalid tool call so the
+                        # model gets the repair hint before we burn the rest of the round on
+                        # more malformed calls from the same batch.
+                        break
+            if invalid_tool_argument_nudges:
+                unique_messages: list[str] = []
+                seen_messages: set[str] = set()
+                affected_tool_ids: list[str] = []
+                for tool_id, message in invalid_tool_argument_nudges:
+                    affected_tool_ids.append(tool_id)
+                    if message in seen_messages:
+                        continue
+                    seen_messages.add(message)
+                    unique_messages.append(message)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "\n".join(unique_messages),
+                    }
+                )
+                self._emit_event(
+                    "toolloop.invalid_tool_arguments_nudged",
+                    tool_ids=_dedupe(affected_tool_ids),
+                    blocked_by_tool_call_ids=list(round_tool_call_ids) or None,
+                    tool_calls_executed=len(executed_tools),
+                    **event_context,
+                )
+                newly_disabled_tool_ids.extend(
+                    _register_temporarily_disabled_tools(
+                        affected_tool_ids,
+                        blocked_tool_counts=blocked_tool_counts,
+                        disabled_tool_ids=disabled_tool_ids,
+                        enabled_tool_ids=request_tool_ids,
+                    )
+                )
+            if repeated_tool_call_nudges:
+                unique_messages = []
+                seen_messages: set[str] = set()
+                affected_tool_ids: list[str] = []
+                for tool_id, message in repeated_tool_call_nudges:
+                    affected_tool_ids.append(tool_id)
+                    if message in seen_messages:
+                        continue
+                    seen_messages.add(message)
+                    unique_messages.append(message)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "\n".join(unique_messages),
+                    }
+                )
+                self._emit_event(
+                    "toolloop.repeated_tool_call_nudged",
+                    tool_ids=_dedupe(affected_tool_ids),
+                    blocked_by_tool_call_ids=list(round_tool_call_ids) or None,
+                    tool_calls_executed=len(executed_tools),
+                    **event_context,
+                )
+                newly_disabled_tool_ids.extend(
+                    _register_temporarily_disabled_tools(
+                        affected_tool_ids,
+                        blocked_tool_counts=blocked_tool_counts,
+                        disabled_tool_ids=disabled_tool_ids,
+                        enabled_tool_ids=request_tool_ids,
+                    )
+                )
+            if newly_disabled_tool_ids:
+                enabled_after_disable = [
+                    _tool_schema_name(tool)
+                    for tool in _enabled_tool_schemas(
+                        active_tool_schemas,
+                        disabled_tool_ids=sorted(disabled_tool_ids),
+                    )
+                    if _tool_schema_name(tool)
+                ]
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": _temporarily_disabled_tool_message(newly_disabled_tool_ids),
+                    }
+                )
+                self._emit_event(
+                    "toolloop.temporarily_disabled_tools",
+                    tool_ids=_dedupe(newly_disabled_tool_ids),
+                    enabled_tools=enabled_after_disable,
+                    blocked_by_tool_call_ids=list(round_tool_call_ids) or None,
+                    tool_calls_executed=len(executed_tools),
+                    **event_context,
+                )
+            blocked_by_tool_call_ids = list(round_tool_call_ids)
+            finalize_mode = _read_only_finalize_mode(request)
+            finalize_reason = _read_only_finalize_reason(
                 request=request,
                 tool_ids=[
                     str(tool.get("function", {}).get("name") or "").strip()
-                    for tool in active_tool_schemas
+                    for tool in request_tool_schemas
                     if isinstance(tool, dict)
                 ],
                 executed_tools=executed_tools,
@@ -1454,14 +2323,19 @@ class ToolLoopCompletionProvider:
                 messages.append(
                     {
                         "role": "user",
-                        "content": _read_only_coding_worker_finalize_message(finalize_reason),
+                        "content": _read_only_finalize_message(
+                            finalize_reason,
+                            mode=finalize_mode or "coding_worker",
+                        ),
                     }
                 )
                 self._emit_event(
                     "toolloop.read_only_finalize_forced",
+                    finalize_mode=finalize_mode,
                     reason=finalize_reason,
                     tool_calls_executed=len(executed_tools),
-                    worker_id=worker_id,
+                    blocked_by_tool_call_ids=list(blocked_by_tool_call_ids) or None,
+                    **event_context,
                 )
                 continue
 
@@ -1469,7 +2343,7 @@ class ToolLoopCompletionProvider:
                 request=request,
                 tool_ids=[
                     str(tool.get("function", {}).get("name") or "").strip()
-                    for tool in active_tool_schemas
+                    for tool in request_tool_schemas
                     if isinstance(tool, dict)
                 ],
                 executed_tools=executed_tools,
@@ -1491,7 +2365,8 @@ class ToolLoopCompletionProvider:
                     "toolloop.research_finalize_forced",
                     reason=research_finalize_reason,
                     tool_calls_executed=len(executed_tools),
-                    worker_id=worker_id,
+                    blocked_by_tool_call_ids=list(blocked_by_tool_call_ids) or None,
+                    **event_context,
                 )
                 continue
 
@@ -1499,7 +2374,7 @@ class ToolLoopCompletionProvider:
                 request=request,
                 tool_ids=[
                     str(tool.get("function", {}).get("name") or "").strip()
-                    for tool in active_tool_schemas
+                    for tool in request_tool_schemas
                     if isinstance(tool, dict)
                 ],
                 executed_tools=executed_tools,
@@ -1507,9 +2382,10 @@ class ToolLoopCompletionProvider:
             )
             if write_nudge_reason is not None and not write_stage_first_write_nudged:
                 write_stage_first_write_nudged = True
-                direct_write_tool_schemas = _direct_write_tool_schemas(active_tool_schemas)
+                direct_write_tool_schemas = _direct_write_tool_schemas(request_tool_schemas)
                 if direct_write_tool_schemas:
                     active_tool_schemas = direct_write_tool_schemas
+                    disabled_tool_ids.clear()
                 messages.append(
                     {
                         "role": "user",
@@ -1527,17 +2403,68 @@ class ToolLoopCompletionProvider:
                         for tool in active_tool_schemas
                         if isinstance(tool, dict)
                     ],
-                    worker_id=worker_id,
+                    blocked_by_tool_call_ids=list(blocked_by_tool_call_ids) or None,
+                        **event_context,
+                    )
+            write_finalize_reason = _write_capable_coding_stage_finalize_reason(
+                request=request,
+                tool_ids=[
+                    str(tool.get("function", {}).get("name") or "").strip()
+                    for tool in request_tool_schemas
+                    if isinstance(tool, dict)
+                ],
+                executed_tools=executed_tools,
+                workspace_root=self._tool_runtime.workspace_root,
+            )
+            if write_finalize_reason is not None and not forced_finalize_without_tools:
+                forced_finalize_without_tools = True
+                active_tool_schemas = []
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": _write_capable_coding_stage_finalize_message(
+                            write_finalize_reason
+                        ),
+                    }
                 )
+                self._emit_event(
+                    "toolloop.write_stage_finalize_forced",
+                    reason=write_finalize_reason,
+                    tool_calls_executed=len(executed_tools),
+                    blocked_by_tool_call_ids=list(blocked_by_tool_call_ids) or None,
+                    **event_context,
+                )
+                continue
 
     def _resolve_tool_schemas(self, request_tools: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
         allowed = set(self._tool_runtime.tool_ids)
         filtered: list[dict[str, Any]] = []
+        seen: set[str] = set()
         for tool in request_tools:
             function = tool.get("function") if isinstance(tool, dict) else None
             name = str(function.get("name") or "").strip() if isinstance(function, dict) else ""
             if name and name in allowed:
-                filtered.append(tool)
+                if name in seen:
+                    continue
+                seen.add(name)
+                filtered.append(
+                    {
+                        "type": str(tool.get("type") or "function") if isinstance(tool, dict) else "function",
+                        "function": {
+                            "name": name,
+                            "description": str(
+                                self._tool_runtime.metadata_for(name).get("description")
+                                or function.get("description")
+                                or name
+                            ).strip(),
+                            "parameters": copy.deepcopy(
+                                self._tool_runtime.metadata_for(name).get("parameters")
+                                or function.get("parameters")
+                                or {"type": "object", "properties": {}}
+                            ),
+                        },
+                    }
+                )
         return filtered
 
     @staticmethod
@@ -1626,13 +2553,14 @@ def attach_local_tooling_to_reference_organism(
 
     full_tool_ids = _dedupe(tool_ids or DEFAULT_LIVE_ORGANISM_TOOL_IDS)
     read_only_tool_ids = _read_only_tool_ids(full_tool_ids)
+    research_tool_ids = _research_read_only_tool_ids(full_tool_ids)
     return organism.model_copy(
         update={
             "planner_worker": _worker_with_tool_ids(organism.planner_worker, []),
             "research_organ": _organ_with_tool_ids(
                 organism.research_organ,
-                member_tool_ids=read_only_tool_ids,
-                lead_tool_ids=read_only_tool_ids,
+                member_tool_ids=research_tool_ids,
+                lead_tool_ids=research_tool_ids,
             ),
             "validator_organ": _organ_with_tool_ids(
                 organism.validator_organ,
@@ -1662,14 +2590,16 @@ def attach_local_tooling_to_coding_organism(
 
     full_tool_ids = _dedupe(tool_ids or DEFAULT_LIVE_ORGANISM_TOOL_IDS)
     read_only_tool_ids = _read_only_tool_ids(full_tool_ids)
+    aggregation_tool_ids = _coding_aggregation_tool_ids(full_tool_ids)
     return organism.model_copy(
         update={
             "orchestrator_worker": _worker_with_tool_ids(organism.orchestrator_worker, []),
-            "worker_tool_ids": list(read_only_tool_ids),
+            "worker_tool_ids": list(full_tool_ids),
+            "parallel_worker_tool_ids": list(read_only_tool_ids),
             "aggregator_organ": _organ_with_tool_ids(
                 organism.aggregator_organ,
-                member_tool_ids=full_tool_ids,
-                lead_tool_ids=full_tool_ids,
+                member_tool_ids=aggregation_tool_ids,
+                lead_tool_ids=aggregation_tool_ids,
             ),
             "validator_organ": _organ_with_tool_ids(
                 organism.validator_organ,

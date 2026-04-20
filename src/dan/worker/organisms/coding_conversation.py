@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
@@ -22,6 +23,7 @@ from dan.worker.core.structured_output import (
     has_structured_output_schema,
     validate_structured_output,
 )
+from dan.worker.organism_log import organism_event_context, stable_output_contract_id
 from dan.worker.organisms.coding_execution import build_coding_orchestrator_worker
 from dan.worker.runner import DurableAgentRunner, DurableAgentSessionState
 from dan.worker.structured_payload import parse_jsonish_payload
@@ -200,13 +202,13 @@ def _benchmark_review_should_stop(
     *,
     benchmark_mode: bool,
 ) -> bool:
+    _ = report_summary
     if not benchmark_mode:
         return False
-    if _clean_text(report_summary.error):
-        return False
-    if _clean_text(report_summary.status).lower() != "completed":
-        return False
-    return _report_has_material_output(report_summary)
+    # Benchmark mode must not turn "a patch exists" into permission to export.
+    # The review model has to explicitly stop; otherwise the CLI should keep
+    # iterating or return an incomplete result without writing predictions.
+    return False
 
 
 def _continue_review_response(report_summary: "CodingConversationReportSummary") -> str:
@@ -266,6 +268,7 @@ class ProviderCompletionAdapter:
         self._hedge_max_attempts = max(1, int(hedge_max_attempts))
         self._hedge_delay_seconds = max(0.0, float(hedge_delay_seconds))
         self._event_callback = event_callback
+        self._model_call_counter = 0
 
     def _emit(self, event: str, **payload: Any) -> None:
         if self._event_callback is None:
@@ -274,6 +277,169 @@ class ProviderCompletionAdapter:
 
     def set_event_callback(self, event_callback) -> None:
         self._event_callback = event_callback
+
+    def _next_model_call_id(self) -> str:
+        self._model_call_counter += 1
+        return f"model-call:{self._model_call_counter:04d}"
+
+    @staticmethod
+    def _stringify_message_content(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return json.dumps(content, ensure_ascii=False, default=str)
+        if content is None:
+            return ""
+        return str(content)
+
+    @classmethod
+    def _message_stats(cls, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        counts = {
+            "system": 0,
+            "user": 0,
+            "assistant": 0,
+            "tool": 0,
+            "other": 0,
+        }
+        char_counts = {key: 0 for key in counts}
+        for message in messages:
+            role = str(message.get("role") or "other").strip().lower() or "other"
+            if role not in counts:
+                role = "other"
+            text = cls._stringify_message_content(message.get("content"))
+            counts[role] += 1
+            char_counts[role] += len(text)
+        return {
+            "message_count": sum(counts.values()),
+            "system_message_count": counts["system"],
+            "user_message_count": counts["user"],
+            "assistant_message_count": counts["assistant"],
+            "tool_message_count": counts["tool"],
+            "other_message_count": counts["other"],
+            "total_input_chars": sum(char_counts.values()),
+            "system_chars": char_counts["system"],
+            "user_chars": char_counts["user"],
+            "assistant_chars": char_counts["assistant"],
+            "tool_chars": char_counts["tool"],
+            "other_chars": char_counts["other"],
+        }
+
+    def _provider_identity_stats(self) -> dict[str, Any]:
+        provider_name = type(self._provider).__name__
+        timeout_seconds = getattr(self._provider, "_timeout_seconds", None)
+        base_url_host: str | None = None
+        client = getattr(self._provider, "_client", None)
+        base_url = getattr(client, "base_url", None)
+        if base_url is not None:
+            parsed = urlparse(str(base_url))
+            base_url_host = parsed.netloc or None
+        return {
+            "provider_name": provider_name,
+            "provider_base_url_host": base_url_host,
+            "request_timeout_seconds": timeout_seconds,
+        }
+
+    def _override_stats(self) -> dict[str, Any]:
+        extra_body = dict(self._provider_request_overrides.get("extra_body") or {})
+        thinking = self._provider_request_overrides.get("thinking", extra_body.get("thinking"))
+        reasoning = self._provider_request_overrides.get("reasoning", extra_body.get("reasoning"))
+        payload: dict[str, Any] = {}
+        if isinstance(thinking, dict):
+            thinking_type = str(thinking.get("type") or "").strip()
+            if thinking_type:
+                payload["override_thinking_type"] = thinking_type
+        elif thinking is not None:
+            payload["override_thinking_type"] = str(thinking)
+        if isinstance(reasoning, dict):
+            if "enabled" in reasoning:
+                payload["override_reasoning_enabled"] = bool(reasoning.get("enabled"))
+            reasoning_type = str(reasoning.get("type") or "").strip()
+            if reasoning_type:
+                payload["override_reasoning_type"] = reasoning_type
+        elif reasoning is not None:
+            payload["override_reasoning_enabled"] = bool(reasoning)
+        if extra_body:
+            payload["override_extra_body_keys"] = sorted(str(key) for key in extra_body)
+        return payload
+
+    def _request_event_stats(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        request: CompletionRequest,
+        request_mode: str,
+    ) -> dict[str, Any]:
+        return {
+            **self._message_stats(messages),
+            **self._provider_identity_stats(),
+            **self._override_stats(),
+            "request_mode": request_mode,
+            "temperature": request.temperature,
+            "max_tokens": request.max_tokens,
+        }
+
+    @staticmethod
+    def _result_usage_stats(usage: Any) -> dict[str, Any]:
+        if not isinstance(usage, dict):
+            return {}
+        return {
+            "usage_prompt_tokens": usage.get("prompt_tokens"),
+            "usage_completion_tokens": usage.get("completion_tokens"),
+            "usage_total_tokens": usage.get("total_tokens"),
+            "usage_cached_input_tokens": usage.get("cached_input_tokens"),
+        }
+
+    @staticmethod
+    def _provider_metadata_stats(provider_metadata: Any) -> dict[str, Any]:
+        if not isinstance(provider_metadata, dict):
+            return {}
+        payload: dict[str, Any] = {
+            "provider_metadata_keys": sorted(str(key) for key in provider_metadata),
+        }
+        request_details = provider_metadata.get("request_details")
+        if isinstance(request_details, dict):
+            for key in (
+                "provider_name",
+                "provider_base_url_host",
+                "request_timeout_seconds",
+                "request_mode",
+                "effective_temperature",
+                "effective_max_tokens",
+                "tool_schema_count",
+                "reasoning_enabled",
+                "thinking_type",
+            ):
+                if key in request_details:
+                    payload[key] = request_details.get(key)
+        family = provider_metadata.get("family")
+        if family is not None:
+            payload["provider_family"] = family
+        return payload
+
+    @classmethod
+    def _response_event_stats(cls, result: Any) -> dict[str, Any]:
+        return {
+            "text_chars": len(str(getattr(result, "text", "") or "")),
+            "tool_call_count": len(list(getattr(result, "tool_calls", None) or [])),
+            **cls._result_usage_stats(getattr(result, "usage", None)),
+            **cls._provider_metadata_stats(getattr(result, "provider_metadata", None)),
+        }
+
+    @staticmethod
+    def _event_context(
+        request: CompletionRequest,
+        *,
+        worker_id: str | None,
+    ) -> dict[str, Any]:
+        return {
+            **organism_event_context(
+                metadata=request.metadata,
+                output_contract=request.output_contract,
+                worker_id=worker_id,
+            ),
+            "worker_id": str(worker_id or "").strip() or None,
+            "contract_id": stable_output_contract_id(request.output_contract),
+        }
 
     def _is_acceptable_response(
         self,
@@ -296,14 +462,22 @@ class ProviderCompletionAdapter:
         worker_id: str | None,
         messages: list[dict[str, Any]],
         attempt_index: int,
+        model_call_id: str,
+        event_context: dict[str, Any],
     ) -> CompletionResponse:
         self._emit(
             "model.requested",
             model=model,
             round=attempt_index,
             tool_count=0,
-            worker_id=worker_id,
+            model_call_id=model_call_id,
             hedged=attempt_index > 1,
+            **self._request_event_stats(
+                messages=messages,
+                request=request,
+                request_mode="complete",
+            ),
+            **event_context,
         )
         result = await self._provider.complete(
             messages=messages,
@@ -316,12 +490,14 @@ class ProviderCompletionAdapter:
             "model.responded",
             model=result.model or model,
             round=attempt_index,
+            model_call_id=model_call_id,
             tool_calls=[],
             finish_reason=getattr(result, "finish_reason", None),
             text=(result.text or "")[:400],
             streamed=False,
-            worker_id=worker_id,
             hedged=attempt_index > 1,
+            **self._response_event_stats(result),
+            **event_context,
         )
         return CompletionResponse(
             text=result.text or "",
@@ -342,6 +518,7 @@ class ProviderCompletionAdapter:
         *,
         worker_id: str | None,
         winner_attempt: int,
+        event_context: dict[str, Any],
     ) -> None:
         pending_attempts = sorted(
             attempt_index
@@ -351,9 +528,9 @@ class ProviderCompletionAdapter:
         if pending_attempts:
             self._emit(
                 "model.hedge.cancelled",
-                worker_id=worker_id,
                 cancelled_attempts=pending_attempts,
                 winner_attempt=winner_attempt,
+                **event_context,
             )
         for attempt_index, task in tasks.items():
             if attempt_index == winner_attempt or task.done():
@@ -369,6 +546,7 @@ class ProviderCompletionAdapter:
         model: str,
         worker_id: str | None,
         messages: list[dict[str, Any]],
+        event_context: dict[str, Any],
     ) -> CompletionResponse:
         active_tasks: dict[int, asyncio.Task[CompletionResponse]] = {}
         launched_attempts = 0
@@ -380,14 +558,16 @@ class ProviderCompletionAdapter:
         def _launch_attempt(attempt_index: int) -> None:
             nonlocal launched_attempts, next_launch_deadline
             launched_attempts = max(launched_attempts, attempt_index)
+            model_call_id = self._next_model_call_id()
             if attempt_index > 1:
                 self._emit(
                     "model.hedge.launched",
                     model=model,
-                    worker_id=worker_id,
                     attempt=attempt_index,
                     launched_attempts=launched_attempts,
                     hedge_delay_seconds=self._hedge_delay_seconds,
+                    model_call_id=model_call_id,
+                    **event_context,
                 )
             active_tasks[attempt_index] = asyncio.create_task(
                 self._complete_attempt(
@@ -396,6 +576,8 @@ class ProviderCompletionAdapter:
                     worker_id=worker_id,
                     messages=messages,
                     attempt_index=attempt_index,
+                    model_call_id=model_call_id,
+                    event_context=event_context,
                 )
             )
             next_launch_deadline = (
@@ -440,15 +622,16 @@ class ProviderCompletionAdapter:
                     self._emit(
                         "model.hedge.accepted",
                         model=model,
-                        worker_id=worker_id,
                         accepted_attempt=attempt_index,
                         launched_attempts=launched_attempts,
                         used_fallback=False,
+                        **event_context,
                     )
                     await self._cancel_pending_attempts(
                         active_tasks,
                         worker_id=worker_id,
                         winner_attempt=attempt_index,
+                        event_context=event_context,
                     )
                     return response
             if not active_tasks and launched_attempts < self._hedge_max_attempts:
@@ -458,10 +641,10 @@ class ProviderCompletionAdapter:
             self._emit(
                 "model.hedge.accepted",
                 model=model,
-                worker_id=worker_id,
                 accepted_attempt=None,
                 launched_attempts=launched_attempts,
                 used_fallback=True,
+                **event_context,
             )
             return fallback_response
         if first_exception is not None:
@@ -473,19 +656,27 @@ class ProviderCompletionAdapter:
         if not model:
             raise ValueError("Coding conversation controller requires a concrete model")
         worker_id = str(request.metadata.get("worker_id") or "").strip() or None
-        self._emit(
-            "model.requested",
-            model=model,
-            round=1,
-            tool_count=0,
-            worker_id=worker_id,
-        )
+        event_context = self._event_context(request, worker_id=worker_id)
         messages: list[dict[str, Any]] = []
         if request.system_prompt:
             messages.append({"role": "system", "content": request.system_prompt})
         messages.append({"role": "user", "content": request.user_prompt})
         stream_method = getattr(self._provider, "stream", None)
         if self._stream_text_responses and callable(stream_method):
+            model_call_id = self._next_model_call_id()
+            self._emit(
+                "model.requested",
+                model=model,
+                round=1,
+                tool_count=0,
+                model_call_id=model_call_id,
+                **self._request_event_stats(
+                    messages=messages,
+                    request=request,
+                    request_mode="stream",
+                ),
+                **event_context,
+            )
             accumulated = ""
             usage: dict[str, Any] | None = None
             emitted_delta = False
@@ -493,7 +684,8 @@ class ProviderCompletionAdapter:
                 "model.stream.started",
                 model=model,
                 round=1,
-                worker_id=worker_id,
+                model_call_id=model_call_id,
+                **event_context,
             )
             try:
                 async for chunk in stream_method(
@@ -516,34 +708,41 @@ class ProviderCompletionAdapter:
                             "model.stream.delta",
                             model=model,
                             round=1,
+                            model_call_id=model_call_id,
                             delta=delta,
                             accumulated=accumulated,
-                            worker_id=worker_id,
+                            **event_context,
                         )
                 self._emit(
                     "model.stream.completed",
                     model=model,
                     round=1,
+                    model_call_id=model_call_id,
                     usage=usage,
-                    worker_id=worker_id,
+                    **self._result_usage_stats(usage),
+                    **event_context,
                 )
-                streamed = True
                 self._emit(
                     "model.responded",
                     model=model,
                     round=1,
+                    model_call_id=model_call_id,
                     tool_calls=[],
                     finish_reason="stream",
                     text=accumulated[:400],
                     streamed=True,
-                    worker_id=worker_id,
+                    text_chars=len(accumulated),
+                    tool_call_count=0,
+                    **self._result_usage_stats(usage),
+                    **event_context,
                 )
                 self._emit(
                     "completion.completed",
                     model=model,
+                    model_call_id=model_call_id,
                     stop_reason="completed",
                     tool_calls_executed=0,
-                    worker_id=worker_id,
+                    **event_context,
                 )
                 return CompletionResponse(
                     text=accumulated,
@@ -564,27 +763,34 @@ class ProviderCompletionAdapter:
                 if emitted_delta:
                     raise
 
+        completion_model_call_id: str | None = None
         if self._hedge_max_attempts > 1 and self._hedge_delay_seconds >= 0:
             response = await self._hedged_complete(
                 request=request,
                 model=model,
                 worker_id=worker_id,
                 messages=messages,
+                event_context=event_context,
             )
         else:
+            model_call_id = self._next_model_call_id()
+            completion_model_call_id = model_call_id
             response = await self._complete_attempt(
                 request=request,
                 model=model,
                 worker_id=worker_id,
                 messages=messages,
                 attempt_index=1,
+                model_call_id=model_call_id,
+                event_context=event_context,
             )
         self._emit(
             "completion.completed",
             model=model,
+            model_call_id=completion_model_call_id,
             stop_reason="completed",
             tool_calls_executed=0,
-            worker_id=worker_id,
+            **event_context,
         )
         return response
 
@@ -812,7 +1018,14 @@ def _conversation_review_contract() -> OutputContract:
             "Review the bounded coding run and decide whether to declare done, continue "
             "with one more bounded coding pass, or ask one clarifying question. Do not "
             "declare done when the run failed, produced no validated candidate, or for "
-            "build-style tasks failed to produce concrete material output such as files."
+            "build-style tasks failed to produce concrete material output such as files. "
+            "If report_summary already shows a completed run with concrete material output "
+            "and no blocking error, choose action=done rather than reopening the loop. "
+            "When context.facts.benchmark_mode=true, prefer action=done once the run is "
+            "completed, produced a concrete candidate/material code change, and you "
+            "cannot name a specific unmet contract or blocking validation failure from "
+            "report_summary or context. Do not continue only for optional extra "
+            "validation, broader exploration, or environment/package cleanup."
         ),
         expected_return_shape=json.dumps(
             {
@@ -1338,6 +1551,17 @@ def _normalize_review_decision(
             ),
             research_findings=_dedupe(list(decision.research_findings)),
         )
+    if not _review_requires_more_work(objective, report_summary) and decision.action == "continue":
+        return CodingConversationReviewDecision(
+            action="done",
+            public_response=(
+                "This bounded coding pass is done and the benchmark artifacts can be "
+                "exported now."
+                if benchmark_mode
+                else "This bounded coding pass is done."
+            ),
+            research_findings=_dedupe(list(decision.research_findings)),
+        )
     if decision.action == "clarify":
         if not decision.clarifying_question:
             return _fallback_review_decision(
@@ -1404,7 +1628,8 @@ class CodingConversationController:
             event_callback=event_callback,
         )
         self._runner = DurableAgentRunner(
-            completion_provider=self._completion_adapter
+            completion_provider=self._completion_adapter,
+            event_callback=event_callback,
         )
 
     def create_session(self, *, metadata: dict[str, Any] | None = None) -> DurableAgentSessionState:
@@ -1422,6 +1647,7 @@ class CodingConversationController:
 
     def set_event_callback(self, event_callback) -> None:
         self._completion_adapter.set_event_callback(event_callback)
+        self._runner.set_event_callback(event_callback)
 
     async def decide_user_turn(
         self,
@@ -1535,7 +1761,8 @@ class CodingProjectPlannerController:
             event_callback=event_callback,
         )
         self._runner = DurableAgentRunner(
-            completion_provider=self._completion_adapter
+            completion_provider=self._completion_adapter,
+            event_callback=event_callback,
         )
 
     def create_session(
@@ -1557,6 +1784,7 @@ class CodingProjectPlannerController:
 
     def set_event_callback(self, event_callback) -> None:
         self._completion_adapter.set_event_callback(event_callback)
+        self._runner.set_event_callback(event_callback)
 
     async def plan_project(
         self,

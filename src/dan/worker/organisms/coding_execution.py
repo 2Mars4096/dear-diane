@@ -13,6 +13,7 @@ from dan.worker.core.contracts import OutputContract
 from dan.worker.core.executor import WorkerCoreExecutor
 from dan.worker.core.model import WorkerDefinition
 from dan.worker.model import WorkerAuthority
+from dan.worker.organism_log import new_trace_id
 from dan.worker.outcomes import (
     ExecutionEffect as WorkspaceEffect,
     StructuredOutcomeView as CodingCandidateView,
@@ -173,9 +174,12 @@ def build_coding_orchestrator_worker(
             "implementation task. For social chatter, acknowledgements, meta discussion, or ambiguous "
             "turns, respond conversationally or ask one clarifying question. When planning a coding "
             "attempt, keep the pool small, purposeful, bounded, and non-overlapping; default to one "
-            "worker unless multiple distinct paths are materially useful. When reviewing a bounded run, "
-            "treat validator output as evidence rather than final authority, and do not stop when the run "
-            "failed or produced no concrete material output."
+            "worker unless multiple distinct paths are materially useful. Prefer one worker when one "
+            "bounded owner can materialize the change directly, and reserve multi-worker plans for true "
+            "alternative paths or separable sub-problems. When reviewing a bounded run, treat a validator-"
+            "passing completed candidate with concrete material output as the default stopping point. "
+            "Do not plan another pass after a completed validated candidate just for optional extra "
+            "exploration, environment cleanup, or stylistic polish."
         ),
         model=model,
     )
@@ -274,18 +278,22 @@ class CodingOrganism(BaseModel):
     worker_instruction: str = (
         "Produce one bounded coding contribution for the assigned brief. Prefer the most specific structured tool "
         "available, avoid redundant repo-wide discovery, and inspect only what the brief needs. Return "
-        "candidate_fragment, change_summary, target_files, test_plan, and risks. This worker stage is read-only: do "
-        "not try to create files directly, do not pass write-like arguments to read tools, and do not repeatedly "
-        "probe paths that do not exist just because you intend to create them. If the workspace is empty or the "
-        "brief requires new files, inspect only enough context to confirm that and then return a concrete "
-        "candidate_fragment that the later aggregation stage can materialize. Do not turn an empty-workspace "
-        "greenfield brief into generic architecture or best-practice research. Use external search only when "
-        "the brief explicitly depends on current external facts, library documentation, or version-specific "
-        "behavior; otherwise finalize the bounded candidate from local context. If inspection shows the workspace "
-        "already satisfies the brief, say 'No code changes required' explicitly in change_summary."
+        "candidate_fragment, change_summary, target_files, test_plan, and risks. When you are the only coding "
+        "worker and write-capable tools are enabled, materialize the smallest correct patch directly instead of "
+        "deferring it to a later stage. When multiple coding workers are running in parallel, stay read-only and "
+        "return a concrete candidate_fragment for later reconciliation instead of mutating the shared workspace. "
+        "Do not pass write-like arguments to read tools, and do not repeatedly probe paths that do not exist just "
+        "because you intend to create them. If the workspace is empty or the brief requires new files, inspect "
+        "only enough context to confirm that and then either materialize the first bounded slice directly when you "
+        "own the write path or return a concrete candidate_fragment for later materialization. Do not turn an "
+        "empty-workspace greenfield brief into generic architecture or best-practice research. Use external search "
+        "only when the brief explicitly depends on current external facts, library documentation, or version-"
+        "specific behavior; otherwise finalize the bounded candidate from local context. If inspection shows the "
+        "workspace already satisfies the brief, say 'No code changes required' explicitly in change_summary."
     )
     worker_model: str | None = None
     worker_tool_ids: list[str] = Field(default_factory=list)
+    parallel_worker_tool_ids: list[str] = Field(default_factory=list)
     aggregator_organ: OrganPattern
     validator_organ: OrganPattern
     default_worker_count: int = Field(default=1, ge=1)
@@ -359,8 +367,17 @@ def _user_address(organism_id: str) -> CellAddress:
     return CellAddress(cell_id="user.request", organism_id=organism_id)
 
 
-def _trace(root_task_id: str, organism_id: str) -> SignalTrace:
-    return SignalTrace(root_task_id=root_task_id, lineage=[f"organism:{organism_id}"])
+def _trace(
+    root_task_id: str,
+    organism_id: str,
+    *,
+    trace_id: str | None = None,
+) -> SignalTrace:
+    return SignalTrace(
+        trace_id=trace_id or new_trace_id(),
+        root_task_id=root_task_id,
+        lineage=[f"organism:{organism_id}"],
+    )
 
 
 def _record(
@@ -463,9 +480,10 @@ def _root_orchestrator_packet(
     *,
     organism: CodingOrganism,
     task: CodingTask,
+    trace_id: str | None = None,
 ) -> CellHandoffPacket:
     return CellHandoffPacket(
-        trace=_trace(task.task_id, organism.organism_id),
+        trace=_trace(task.task_id, organism.organism_id, trace_id=trace_id),
         sender=_user_address(organism.organism_id),
         recipient=organism.orchestrator_address.model_copy(deep=True),
         task=HandoffTask(
@@ -546,6 +564,27 @@ def _repair_orchestrator_packet(
     )
 
 
+def _benchmark_validator_focus_addendum(task: CodingTask) -> str:
+    benchmark_context = {}
+    if isinstance(task.session_context, dict):
+        raw = task.session_context.get("benchmark_context")
+        if isinstance(raw, dict):
+            benchmark_context = raw
+    if not benchmark_context:
+        return ""
+    return (
+        " For benchmark tasks, reject candidates that miss the exact checked-out "
+        "branch contract for warning/error ids, message text, severity, visible "
+        "stdout or warning side effects, deprecation behavior, or protected "
+        "surrounding behavior, even if the general fix direction seems plausible. "
+        "Treat issue examples and repro snippets as illustrative rather than "
+        "exhaustive. Reject candidates that fix one literal example while leaving "
+        "adjacent checked-out tests, helpers, parametrizations, or symmetric "
+        "parser/read/write/round-trip paths inconsistent with the same public "
+        "contract."
+    )
+
+
 def _normalize_worker_briefs(
     *,
     worker_count: int,
@@ -596,10 +635,15 @@ def _normalize_orchestrator_plan(
         worker_briefs=distinct_briefs,
         objective=_clean_text(repair_brief) or task.objective,
     )
+    validator_focus = _clean_text(plan.validator_focus)
+    benchmark_validator_focus = _benchmark_validator_focus_addendum(task)
+    if benchmark_validator_focus and benchmark_validator_focus not in validator_focus:
+        validator_focus = (validator_focus + benchmark_validator_focus).strip()
     return plan.model_copy(
         update={
             "worker_count": worker_count,
             "worker_briefs": worker_briefs,
+            "validator_focus": validator_focus or plan.validator_focus,
         }
     )
 
@@ -611,6 +655,7 @@ def _worker_member(
     index: int,
     tissue_id: str,
     brief: str,
+    tool_ids: list[str],
 ) -> TissueMember:
     member_id = f"worker-{index}"
     cell_id = f"{organism.base_id}.{member_id}"
@@ -627,7 +672,7 @@ def _worker_member(
             role=organism.worker_role,
             instruction=organism.worker_instruction,
             model=organism.worker_model,
-            tool_ids=list(organism.worker_tool_ids),
+            tool_ids=list(tool_ids),
         ),
         instruction_suffix=f"Assigned brief:\n{brief}",
         input_payload_overrides={
@@ -640,6 +685,18 @@ def _worker_member(
             "worker_role": organism.worker_role,
         },
     )
+
+
+def _worker_tool_ids_for_plan(
+    *,
+    organism: CodingOrganism,
+    plan: CodingOrchestratorPlan,
+) -> list[str]:
+    if plan.worker_count <= 1:
+        return list(organism.worker_tool_ids)
+    if organism.parallel_worker_tool_ids:
+        return list(organism.parallel_worker_tool_ids)
+    return list(organism.worker_tool_ids)
 
 
 def _worker_pool_pattern(
@@ -655,6 +712,7 @@ def _worker_pool_pattern(
         organ_id=f"{organism.base_id}.worker-pool",
         organism_id=organism.organism_id,
     )
+    worker_tool_ids = _worker_tool_ids_for_plan(organism=organism, plan=plan)
     members = [
         _worker_member(
             organism=organism,
@@ -662,6 +720,7 @@ def _worker_pool_pattern(
             index=index,
             tissue_id=tissue_id,
             brief=brief,
+            tool_ids=worker_tool_ids,
         )
         for index, brief in enumerate(plan.worker_briefs, start=1)
     ]
@@ -690,15 +749,32 @@ def _completion_output_refs(signals: list[Any]) -> list[EvidenceRef]:
 
 
 def _executed_tools_from_execution(execution: OrganExecution | None) -> list[dict[str, Any]] | None:
-    if execution is None or execution.lead_execution is None:
+    if execution is None:
         return None
-    raw_response = execution.lead_execution.result.metadata.get("raw_response")
+    return _executed_tools_from_handoff_execution(execution.lead_execution)
+
+
+def _executed_tools_from_handoff_execution(execution: HandoffExecution | None) -> list[dict[str, Any]] | None:
+    if execution is None:
+        return None
+    raw_response = execution.result.metadata.get("raw_response")
     if not isinstance(raw_response, dict):
         return None
     executed_tools = raw_response.get("executed_tools")
     if not isinstance(executed_tools, list):
         return None
     return [dict(tool) for tool in executed_tools if isinstance(tool, dict)]
+
+
+def _worker_execution_map(worker_execution: TissueExecution) -> dict[str, HandoffExecution]:
+    return {
+        member.member_id: execution
+        for member, execution in zip(
+            worker_execution.pattern.members,
+            worker_execution.member_executions,
+            strict=True,
+        )
+    }
 
 
 def _looks_like_mutating_shell_command(command: Any) -> bool:
@@ -725,17 +801,16 @@ def _looks_like_mutating_shell_command(command: Any) -> bool:
     return any(marker in text for marker in mutation_markers)
 
 
-def _aggregation_requires_mutation_evidence(
+def _candidate_requires_mutation_evidence(
     *,
     payload: dict[str, Any],
-    execution: OrganExecution | None,
+    executed_tools: list[dict[str, Any]] | None,
 ) -> tuple[str, dict[str, Any]] | None:
     candidate = _candidate_view(payload)
     claimed_files = list(candidate.target_files)
     if not claimed_files:
         return None
 
-    executed_tools = _executed_tools_from_execution(execution)
     if executed_tools is None:
         return None
 
@@ -773,6 +848,72 @@ def _aggregation_requires_mutation_evidence(
     )
 
 
+def _aggregation_requires_mutation_evidence(
+    *,
+    payload: dict[str, Any],
+    execution: OrganExecution | None,
+) -> tuple[str, dict[str, Any]] | None:
+    return _candidate_requires_mutation_evidence(
+        payload=payload,
+        executed_tools=_executed_tools_from_execution(execution),
+    )
+
+
+def _promote_single_worker_candidate(
+    *,
+    attempt: int,
+    worker_execution: TissueExecution,
+) -> tuple[str, dict[str, Any]] | None:
+    successful_member_ids = list(worker_execution.result.metadata.get("successful_member_ids") or [])
+    if len(successful_member_ids) != 1:
+        return None
+
+    member_id = successful_member_ids[0]
+    member_results = dict(worker_execution.result.outputs.get("member_results") or {})
+    member_payload = _parse_payload(dict(member_results.get(member_id) or {}))
+    if not _has_material_candidate_output(member_payload):
+        return None
+
+    candidate_payload: dict[str, Any] = {
+        "candidate_id": _clean_text(member_payload.get("candidate_id")) or f"candidate-{attempt}-{member_id}",
+        "change_summary": member_payload.get("change_summary"),
+        "target_files": list(member_payload.get("target_files") or []),
+        "test_plan": list(member_payload.get("test_plan") or []),
+        "risks": list(member_payload.get("risks") or []),
+    }
+    if member_payload.get("workspace_effect") is not None:
+        candidate_payload["workspace_effect"] = member_payload.get("workspace_effect")
+
+    member_execution = _worker_execution_map(worker_execution).get(member_id)
+    executed_tools = _executed_tools_from_handoff_execution(member_execution)
+    if executed_tools is None:
+        return None
+    if executed_tools is not None:
+        has_mutation_evidence = False
+        for tool in executed_tools:
+            if not tool.get("ok"):
+                continue
+            tool_id = str(tool.get("tool_id") or "").strip()
+            if tool_id in {"file_edit", "file_write"}:
+                has_mutation_evidence = True
+                break
+            if tool_id == "shell_command":
+                command = dict(tool.get("arguments") or {}).get("command")
+                if _looks_like_mutating_shell_command(command):
+                    has_mutation_evidence = True
+                    break
+        if has_mutation_evidence and "workspace_effect" not in candidate_payload:
+            candidate_payload["workspace_effect"] = "modified"
+
+    candidate_payload = _candidate_payload(candidate_payload)
+    if _candidate_requires_mutation_evidence(
+        payload=candidate_payload,
+        executed_tools=executed_tools,
+    ) is not None:
+        return None
+    return member_id, candidate_payload
+
+
 def coding_execution_organism(
     *,
     organism_id: str = "coding-organism",
@@ -807,7 +948,7 @@ def coding_execution_organism(
             review_tie_break_priority=["repair", "pass"],
         ),
         metadata={
-            "coding_flow": "orchestrator -> worker pool -> aggregator -> validator",
+            "coding_flow": "orchestrator -> worker pool -> direct single-worker candidate or aggregation fallback -> validator",
         },
     )
 
@@ -819,6 +960,7 @@ async def execute_coding_organism(
     task: CodingTask,
     trace_log: CrossCellTraceLog | None = None,
     event_callback: OrganismEventCallback | None = None,
+    trace_id: str | None = None,
 ) -> CodingOrganismExecution:
     """Run the coding organism end to end."""
 
@@ -861,6 +1003,10 @@ async def execute_coding_organism(
 
     best_score = -1.0
     best_attempt: int | None = None
+    best_candidate_output: dict[str, Any] = {}
+    best_candidate_source: str | None = None
+    latest_candidate_output: dict[str, Any] = {}
+    latest_candidate_source: str | None = None
     best_aggregation: OrganExecution | None = None
     best_validation: OrganExecution | None = None
     best_pass_threshold: float | None = None
@@ -869,8 +1015,10 @@ async def execute_coding_organism(
     prior_signal_id: str | None = None
     repair_brief = task.repair_brief
     previous_validation_payload: dict[str, Any] = {}
+    resolved_trace_id = trace_id or _trace(task.task_id, organism.organism_id).trace_id
     _emit(
         "organism.started",
+        trace_id=resolved_trace_id,
         organism_id=organism.organism_id,
         task_id=task.task_id,
         objective=task.objective,
@@ -880,12 +1028,19 @@ async def execute_coding_organism(
     for attempt in range(1, organism.max_repair_rounds + 2):
         _emit(
             "attempt.started",
+            trace_id=resolved_trace_id,
+            organism_id=organism.organism_id,
+            task_id=task.task_id,
             attempt=attempt,
             reason=("initial" if attempt == 1 else "repair"),
             repair_brief=repair_brief,
         )
         if attempt == 1:
-            orchestrator_packet = _root_orchestrator_packet(organism=organism, task=task)
+            orchestrator_packet = _root_orchestrator_packet(
+                organism=organism,
+                task=task,
+                trace_id=resolved_trace_id,
+            )
         else:
             assert prior_packet is not None and prior_signal_id is not None
             orchestrator_packet = _repair_orchestrator_packet(
@@ -901,6 +1056,9 @@ async def execute_coding_organism(
 
         _emit(
             "stage.started",
+            trace_id=resolved_trace_id,
+            organism_id=organism.organism_id,
+            task_id=task.task_id,
             stage="orchestration",
             attempt=attempt,
             message=(
@@ -1063,129 +1221,191 @@ async def execute_coding_organism(
                 test_plan=list(member_candidate.test_plan),
             )
 
+        direct_worker_candidate: tuple[str, dict[str, Any]] | None = None
+        if plan.worker_count == 1:
+            direct_worker_candidate = _promote_single_worker_candidate(
+                attempt=attempt,
+                worker_execution=worker_execution,
+            )
+
         _emit(
             "stage.started",
             stage="aggregation",
             attempt=attempt,
             message="Merging worker output into one bounded candidate.",
         )
-        aggregation_packet = _child_packet(
-            sender=worker_packet.recipient,
-            recipient=organism.aggregator_organ.boundary_address,
-            parent_packet=worker_packet,
-            parent_signal_id=worker_execution.signals[-1].signal_id,
-            lineage_suffix=f"organ:{organism.aggregator_organ.organ_id}",
-            task_id=f"{task.task_id}:aggregate:{attempt}",
-            instruction=plan.aggregation_focus,
-            scope="coding-organism.aggregate",
-            hard_constraints=list(task.hard_constraints),
-            soft_constraints=list(task.soft_constraints),
-            input_payload={
-                "objective": task.objective,
-                "acceptance_criteria": list(task.acceptance_criteria),
-                "research_findings": list(task.research_findings),
-                "repair_brief": repair_brief,
-                "session_context": dict(task.session_context),
-                "orchestration_plan": plan.model_dump(mode="json"),
-                "worker_results": dict(worker_execution.result.outputs.get("member_results") or {}),
-            },
-            evidence_refs=[
-                *task.evidence_refs,
-                *_completion_output_refs(worker_execution.signals),
-            ],
-            output_contract=OutputContract(
-                definition_of_done="Return the aggregated bounded coding candidate.",
-                expected_return_shape=json.dumps(
-                    {
-                        "candidate_id": "<required>",
-                        "change_summary": "<required>",
-                        "target_files": "<required>",
-                        "test_plan": "<required>",
-                        "risks": "<required>",
-                        "workspace_effect": "<optional: modified|verified>",
-                    },
-                    sort_keys=True,
-                ),
-            ),
-            authority=WorkerAuthority.DELEGATE,
-            metadata={
-                "organism_id": organism.organism_id,
-                "organism_stage": "aggregation",
-                "organ_id": organism.aggregator_organ.organ_id,
-            },
-        )
-        aggregation_execution = await execute_organ_pattern(
-            executor=executor,
-            pattern=organism.aggregator_organ,
-            packet=aggregation_packet,
-            trace_log=trace_log,
-        )
-        aggregation_executions.append(aggregation_execution)
-        if aggregation_execution.result.outputs:
-            aggregation_execution.result.outputs = _candidate_payload(dict(aggregation_execution.result.outputs))
-        if aggregation_execution.result.status == "completed":
-            evidence_failure = _aggregation_requires_mutation_evidence(
-                payload=dict(aggregation_execution.result.outputs),
-                execution=aggregation_execution,
+        candidate_payload: dict[str, Any] = {}
+        candidate_source = "aggregation"
+        candidate_output_refs: list[EvidenceRef] = []
+        validation_parent_packet = worker_packet
+        validation_parent_signal_id = worker_execution.signals[-1].signal_id
+
+        if direct_worker_candidate is not None:
+            direct_member_id, candidate_payload = direct_worker_candidate
+            candidate_source = "worker"
+            aggregation_candidate = _candidate_view(candidate_payload)
+            stage_records.append(
+                _record(
+                    stage="aggregation",
+                    attempt=attempt,
+                    packet=worker_packet,
+                    status="completed",
+                    summary=f"Promoted {direct_member_id} as the direct bounded candidate.",
+                    organ_id=f"{organism.base_id}.worker-pool",
+                    output_keys=sorted(candidate_payload),
+                )
             )
-            if evidence_failure is not None:
-                error_text, extra_metadata = evidence_failure
-                aggregation_execution.result.status = "failed"
-                aggregation_execution.result.error = error_text
-                aggregation_execution.result.metadata = {
-                    **dict(aggregation_execution.result.metadata),
-                    **dict(extra_metadata),
-                }
-        stage_records.append(
-            _record(
+            _emit(
+                "stage.completed",
                 stage="aggregation",
                 attempt=attempt,
-                packet=aggregation_packet,
-                status=aggregation_execution.result.status,
-                summary=(
-                    aggregation_execution.result.error
-                    if aggregation_execution.result.status != "completed" and aggregation_execution.result.error
-                    else aggregation_execution.signals[-1].summary
-                ),
-                organ_id=organism.aggregator_organ.organ_id,
-                output_keys=sorted(aggregation_execution.result.outputs),
+                status="completed",
+                candidate_source=candidate_source,
+                candidate_id=aggregation_candidate.candidate_id,
+                target_files=list(aggregation_candidate.target_files),
+                test_plan=list(aggregation_candidate.test_plan),
+                workspace_effect=_candidate_workspace_effect(aggregation_candidate),
+                message="Using the single-worker candidate directly.",
             )
-        )
-        aggregation_candidate = _candidate_view(dict(aggregation_execution.result.outputs))
-        _emit(
-            "stage.completed",
-            stage="aggregation",
-            attempt=attempt,
-            status=aggregation_execution.result.status,
-            candidate_id=aggregation_candidate.candidate_id,
-            target_files=list(aggregation_candidate.target_files),
-            test_plan=list(aggregation_candidate.test_plan),
-            workspace_effect=_candidate_workspace_effect(aggregation_candidate),
-            message=(
-                "Prepared one bounded coding candidate."
-                if aggregation_execution.result.status == "completed"
-                else "Could not prepare a candidate."
-            ),
-        )
-        _emit_status_update(
-            actor="aggregator",
-            phase="aggregation",
-            attempt=attempt,
-            status=(
-                "completed"
-                if aggregation_execution.result.status == "completed"
-                else aggregation_execution.result.status
-            ),
-            message=_aggregation_status_message(dict(aggregation_execution.result.outputs)),
-            candidate_id=aggregation_candidate.candidate_id,
-            target_files=list(aggregation_candidate.target_files),
-            test_plan=list(aggregation_candidate.test_plan),
-            workspace_effect=_candidate_workspace_effect(aggregation_candidate),
-        )
-        if aggregation_execution.result.status != "completed":
-            prior_packet = aggregation_packet
-            prior_signal_id = aggregation_execution.signals[-1].signal_id
-            break
+            _emit_status_update(
+                actor="aggregator",
+                phase="aggregation",
+                attempt=attempt,
+                status="completed",
+                message=f"Using {direct_member_id} as the bounded candidate.",
+                candidate_source=candidate_source,
+                candidate_id=aggregation_candidate.candidate_id,
+                target_files=list(aggregation_candidate.target_files),
+                test_plan=list(aggregation_candidate.test_plan),
+                workspace_effect=_candidate_workspace_effect(aggregation_candidate),
+            )
+        else:
+            aggregation_packet = _child_packet(
+                sender=worker_packet.recipient,
+                recipient=organism.aggregator_organ.boundary_address,
+                parent_packet=worker_packet,
+                parent_signal_id=worker_execution.signals[-1].signal_id,
+                lineage_suffix=f"organ:{organism.aggregator_organ.organ_id}",
+                task_id=f"{task.task_id}:aggregate:{attempt}",
+                instruction=plan.aggregation_focus,
+                scope="coding-organism.aggregate",
+                hard_constraints=list(task.hard_constraints),
+                soft_constraints=list(task.soft_constraints),
+                input_payload={
+                    "objective": task.objective,
+                    "acceptance_criteria": list(task.acceptance_criteria),
+                    "research_findings": list(task.research_findings),
+                    "repair_brief": repair_brief,
+                    "session_context": dict(task.session_context),
+                    "orchestration_plan": plan.model_dump(mode="json"),
+                    "worker_results": dict(worker_execution.result.outputs.get("member_results") or {}),
+                },
+                evidence_refs=[
+                    *task.evidence_refs,
+                    *_completion_output_refs(worker_execution.signals),
+                ],
+                output_contract=OutputContract(
+                    definition_of_done="Return the aggregated bounded coding candidate.",
+                    expected_return_shape=json.dumps(
+                        {
+                            "candidate_id": "<required>",
+                            "change_summary": "<required>",
+                            "target_files": "<required>",
+                            "test_plan": "<required>",
+                            "risks": "<required>",
+                            "workspace_effect": "<optional: modified|verified>",
+                        },
+                        sort_keys=True,
+                    ),
+                ),
+                authority=WorkerAuthority.DELEGATE,
+                metadata={
+                    "organism_id": organism.organism_id,
+                    "organism_stage": "aggregation",
+                    "organ_id": organism.aggregator_organ.organ_id,
+                },
+            )
+            aggregation_execution = await execute_organ_pattern(
+                executor=executor,
+                pattern=organism.aggregator_organ,
+                packet=aggregation_packet,
+                trace_log=trace_log,
+            )
+            aggregation_executions.append(aggregation_execution)
+            if aggregation_execution.result.outputs:
+                aggregation_execution.result.outputs = _candidate_payload(dict(aggregation_execution.result.outputs))
+            if aggregation_execution.result.status == "completed":
+                evidence_failure = _aggregation_requires_mutation_evidence(
+                    payload=dict(aggregation_execution.result.outputs),
+                    execution=aggregation_execution,
+                )
+                if evidence_failure is not None:
+                    error_text, extra_metadata = evidence_failure
+                    aggregation_execution.result.status = "failed"
+                    aggregation_execution.result.error = error_text
+                    aggregation_execution.result.metadata = {
+                        **dict(aggregation_execution.result.metadata),
+                        **dict(extra_metadata),
+                    }
+            stage_records.append(
+                _record(
+                    stage="aggregation",
+                    attempt=attempt,
+                    packet=aggregation_packet,
+                    status=aggregation_execution.result.status,
+                    summary=(
+                        aggregation_execution.result.error
+                        if aggregation_execution.result.status != "completed" and aggregation_execution.result.error
+                        else aggregation_execution.signals[-1].summary
+                    ),
+                    organ_id=organism.aggregator_organ.organ_id,
+                    output_keys=sorted(aggregation_execution.result.outputs),
+                )
+            )
+            aggregation_candidate = _candidate_view(dict(aggregation_execution.result.outputs))
+            _emit(
+                "stage.completed",
+                stage="aggregation",
+                attempt=attempt,
+                status=aggregation_execution.result.status,
+                candidate_source=candidate_source,
+                candidate_id=aggregation_candidate.candidate_id,
+                target_files=list(aggregation_candidate.target_files),
+                test_plan=list(aggregation_candidate.test_plan),
+                workspace_effect=_candidate_workspace_effect(aggregation_candidate),
+                message=(
+                    "Prepared one bounded coding candidate."
+                    if aggregation_execution.result.status == "completed"
+                    else "Could not prepare a candidate."
+                ),
+            )
+            _emit_status_update(
+                actor="aggregator",
+                phase="aggregation",
+                attempt=attempt,
+                status=(
+                    "completed"
+                    if aggregation_execution.result.status == "completed"
+                    else aggregation_execution.result.status
+                ),
+                message=_aggregation_status_message(dict(aggregation_execution.result.outputs)),
+                candidate_source=candidate_source,
+                candidate_id=aggregation_candidate.candidate_id,
+                target_files=list(aggregation_candidate.target_files),
+                test_plan=list(aggregation_candidate.test_plan),
+                workspace_effect=_candidate_workspace_effect(aggregation_candidate),
+            )
+            if aggregation_execution.result.status != "completed":
+                prior_packet = aggregation_packet
+                prior_signal_id = aggregation_execution.signals[-1].signal_id
+                break
+            candidate_payload = dict(aggregation_execution.result.outputs)
+            candidate_output_refs = list(aggregation_execution.result.output_refs)
+            validation_parent_packet = aggregation_packet
+            validation_parent_signal_id = aggregation_execution.signals[-1].signal_id
+
+        latest_candidate_output = dict(candidate_payload)
+        latest_candidate_source = candidate_source
 
         _emit(
             "stage.started",
@@ -1194,10 +1414,10 @@ async def execute_coding_organism(
             message="Validating the aggregated candidate.",
         )
         validation_packet = _child_packet(
-            sender=aggregation_packet.recipient,
+            sender=validation_parent_packet.recipient,
             recipient=organism.validator_organ.boundary_address,
-            parent_packet=aggregation_packet,
-            parent_signal_id=aggregation_execution.signals[-1].signal_id,
+            parent_packet=validation_parent_packet,
+            parent_signal_id=validation_parent_signal_id,
             lineage_suffix=f"organ:{organism.validator_organ.organ_id}",
             task_id=f"{task.task_id}:validate:{attempt}",
             instruction=plan.validator_focus,
@@ -1205,8 +1425,10 @@ async def execute_coding_organism(
             hard_constraints=list(task.hard_constraints),
             soft_constraints=list(task.soft_constraints),
             input_payload={
-                "candidate": dict(aggregation_execution.result.outputs),
+                "candidate": dict(candidate_payload),
                 "acceptance_criteria": list(task.acceptance_criteria),
+                "research_findings": list(task.research_findings),
+                "session_context": dict(task.session_context),
                 "quality_bar": float(plan.pass_threshold),
                 "comparison_context": {
                     "attempt": attempt,
@@ -1218,7 +1440,7 @@ async def execute_coding_organism(
             evidence_refs=[
                 *task.evidence_refs,
                 *_completion_output_refs(worker_execution.signals),
-                *aggregation_execution.result.output_refs,
+                *candidate_output_refs,
             ],
             output_contract=OutputContract(
                 definition_of_done="Return the validation result for the aggregated coding candidate.",
@@ -1309,7 +1531,10 @@ async def execute_coding_organism(
         if score is not None and score > best_score:
             best_score = score
             best_attempt = attempt
-            best_aggregation = aggregation_execution
+            best_candidate_output = dict(candidate_payload)
+            best_candidate_source = candidate_source
+            if candidate_source == "aggregation":
+                best_aggregation = aggregation_execution
             best_validation = validation_execution
             best_pass_threshold = float(plan.pass_threshold)
 
@@ -1320,7 +1545,7 @@ async def execute_coding_organism(
                 "attempt": attempt,
                 "worker_count": plan.worker_count,
                 "worker_briefs": list(plan.worker_briefs),
-                "candidate_id": aggregation_execution.result.outputs.get("candidate_id"),
+                "candidate_id": candidate_payload.get("candidate_id"),
                 "score": score,
                 "passed": passed,
                 "pass_threshold": float(plan.pass_threshold),
@@ -1349,7 +1574,7 @@ async def execute_coding_organism(
     trace_id = (
         orchestrator_runs[0].packet.trace.trace_id
         if orchestrator_runs
-        else _trace(task.task_id, organism.organism_id).trace_id
+        else resolved_trace_id
     )
     observability = OrganismObservability(
         trace_id=trace_id,
@@ -1367,13 +1592,16 @@ async def execute_coding_organism(
     error: str | None = None
     selected_score = best_score if best_score >= 0 else None
     selected_pass_threshold = best_pass_threshold
-    fallback_candidate_output = _salvage_candidate_output(
-        best_aggregation if best_aggregation is not None else (aggregation_executions[-1] if aggregation_executions else None)
+    fallback_candidate_output = (
+        dict(best_candidate_output)
+        or dict(latest_candidate_output)
+        or _salvage_candidate_output(
+            best_aggregation if best_aggregation is not None else (aggregation_executions[-1] if aggregation_executions else None)
+        )
     )
-    if best_aggregation is not None and best_validation is not None:
+    if best_validation is not None and fallback_candidate_output:
         final_output = {
-            **fallback_candidate_output,
-            **dict(best_aggregation.result.outputs),
+            **dict(best_candidate_output or fallback_candidate_output),
             "validation_report": dict(best_validation.result.outputs),
             "repair_history": list(repair_history),
         }
@@ -1464,10 +1692,12 @@ async def execute_coding_organism(
             "validation_attempts": len(validation_executions),
             "coding_flow": organism.metadata.get("coding_flow"),
             "selected_pass_threshold": selected_pass_threshold,
+            "selected_candidate_source": best_candidate_source or latest_candidate_source,
         },
     )
     _emit(
         "organism.completed",
+        trace_id=trace_id,
         organism_id=organism.organism_id,
         task_id=task.task_id,
         status=result.status,

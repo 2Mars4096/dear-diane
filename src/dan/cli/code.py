@@ -32,6 +32,13 @@ from dan.providers.factory import build_provider_registry
 from dan.server.runtime_config import build_engine_config_from_env
 from dan.worker.composition import CrossCellTraceLog
 from dan.worker.core.executor import WorkerCoreExecutor
+from dan.worker.core.interfaces import CallbackEventSink
+from dan.worker.organism_log import (
+    ORGANISM_LOG_SCHEMA_VERSION,
+    OrganismLogContext,
+    OrganismLogWriter,
+    new_trace_id,
+)
 from dan.worker.organisms import (
     CodingConversationFacts,
     CodingConversationContext,
@@ -83,9 +90,17 @@ RISKY_TOOL_IDS = frozenset(
 _SWEBENCH_DEFAULT_ACCEPTANCE_CRITERIA = [
     "Resolve the benchmark issue in the current checked-out repository with the smallest correct patch you can justify.",
     "Avoid unrelated refactors or cleanup outside the benchmark issue scope.",
+    "Match the checked-out branch's public contract exactly when the fix affects warnings, exceptions, messages, identifiers, deprecation behavior, or visible side effects.",
+    "Preserve surrounding compatibility behavior in the checked-out branch while fixing the target issue.",
+    "Treat issue examples and reproduction snippets as illustrative rather than exhaustive; inspect nearby tests, helpers, parametrizations, and symmetric code paths so the final patch covers the checked-out branch's full contract.",
+    "Use benchmark tests for validation, but keep the final prediction patch focused on product/source changes rather than adding or editing benchmark test files.",
     "Leave the resulting workspace diff intact so it can be exported as a SWE-bench prediction artifact.",
     "If a local shell or host-Python reproduction exposes unrelated environment drift, do not patch that drift; continue focusing on the benchmark issue itself.",
+    "Converge quickly once the smallest correct patch is in place; do not spend extra turns on optional validation, broader cleanup, or environment/package repair unless they directly block confirming the target contract.",
 ]
+
+_DEFAULT_SUPERVISION_LOOPS = 2
+_BENCHMARK_SUPERVISION_LOOPS = 4
 
 
 def _stringify_context_value(value: Any) -> str | None:
@@ -124,6 +139,18 @@ def _normalize_context_list(value: Any) -> list[str]:
         if cleaned:
             normalized.append(cleaned)
     return normalized
+
+
+def _markdown_bullets(
+    title: str,
+    items: Sequence[str],
+    *,
+    limit: int = 50,
+) -> str | None:
+    normalized = [str(item).strip() for item in items if str(item).strip()]
+    if not normalized:
+        return None
+    return f"{title}\n\n- " + "\n- ".join(normalized[:limit])
 
 
 class SweBenchInstance(BaseModel):
@@ -468,6 +495,8 @@ def _build_swebench_context(
     operator_objective: str | None,
     task_id_base: str,
 ) -> SweBenchRunContext:
+    fail_to_pass = list(instance.fail_to_pass)
+    pass_to_pass = list(instance.pass_to_pass)
     evidence_summaries = [
         "\n".join(
             line
@@ -495,9 +524,30 @@ def _build_swebench_context(
             "# SWE-bench selected tests\n\n- "
             + "\n- ".join(instance.selected_test_files_to_run[:50])
         )
+    fail_to_pass_summary = _markdown_bullets(
+        "# SWE-bench FAIL_TO_PASS tests",
+        fail_to_pass,
+    )
+    if fail_to_pass_summary is not None:
+        evidence_summaries.append(fail_to_pass_summary)
+    pass_to_pass_summary = _markdown_bullets(
+        "# SWE-bench PASS_TO_PASS tests",
+        pass_to_pass,
+    )
+    if pass_to_pass_summary is not None:
+        evidence_summaries.append(pass_to_pass_summary)
     if instance.before_repo_set_cmd:
         evidence_summaries.append(
             f"# SWE-bench setup/reset command\n\n{instance.before_repo_set_cmd}"
+        )
+    acceptance_criteria = list(_SWEBENCH_DEFAULT_ACCEPTANCE_CRITERIA)
+    if fail_to_pass:
+        acceptance_criteria.append(
+            "Make the benchmark's FAIL_TO_PASS coverage pass; treat it as the exact target contract."
+        )
+    if pass_to_pass:
+        acceptance_criteria.append(
+            "Keep the benchmark's PASS_TO_PASS coverage green while fixing the target behavior."
         )
     return SweBenchRunContext(
         instance=instance,
@@ -506,7 +556,7 @@ def _build_swebench_context(
             operator_objective=operator_objective,
         ),
         task_id_base=task_id_base,
-        acceptance_criteria=list(_SWEBENCH_DEFAULT_ACCEPTANCE_CRITERIA),
+        acceptance_criteria=acceptance_criteria,
         evidence_summaries=evidence_summaries,
         benchmark_context={
             "benchmark_name": "SWE-bench",
@@ -514,6 +564,8 @@ def _build_swebench_context(
             "repo": instance.repo,
             "base_commit": instance.base_commit,
             "selected_test_files_to_run": list(instance.selected_test_files_to_run),
+            "fail_to_pass": fail_to_pass,
+            "pass_to_pass": pass_to_pass,
         },
         instance_file=str(instance_file),
         predictions_path=str(predictions_path) if predictions_path is not None else None,
@@ -527,9 +579,71 @@ def _append_jsonl_record(path: Path, payload: dict[str, Any]) -> None:
         handle.write("\n")
 
 
-def _capture_workspace_patch_text(workspace_root: Path) -> str:
+def _normalize_patch_path(value: str) -> str:
+    return str(value or "").strip().replace("\\", "/").lstrip("./")
+
+
+def _swebench_prediction_excluded_paths(instance: SweBenchInstance) -> list[str]:
+    excluded: list[str] = []
+    for value in (
+        *list(instance.selected_test_files_to_run),
+        *list(instance.fail_to_pass),
+        *list(instance.pass_to_pass),
+    ):
+        path = _normalize_patch_path(str(value).split("::", 1)[0])
+        if path:
+            excluded.append(path)
+    return sorted(set(excluded))
+
+
+def _diff_section_path(header: str) -> str | None:
+    parts = str(header or "").strip().split()
+    if len(parts) < 4 or parts[0] != "diff" or parts[1] != "--git":
+        return None
+    for raw_path in (parts[3], parts[2]):
+        path = _normalize_patch_path(raw_path)
+        if path.startswith("b/") or path.startswith("a/"):
+            path = path[2:]
+        if path:
+            return path
+    return None
+
+
+def _filter_diff_excluding_paths(
+    patch_text: str,
+    excluded_paths: Sequence[str],
+) -> str:
+    excluded = {_normalize_patch_path(path) for path in excluded_paths if path}
+    if not excluded:
+        return patch_text
+
+    kept: list[str] = []
+    current: list[str] = []
+
+    def _flush_current() -> None:
+        if not current:
+            return
+        header_path = _diff_section_path(current[0])
+        if header_path not in excluded:
+            kept.extend(current)
+        current.clear()
+
+    for line in patch_text.splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            _flush_current()
+        current.append(line)
+    _flush_current()
+    return "".join(kept)
+
+
+def _capture_workspace_patch_text(
+    workspace_root: Path,
+    *,
+    excluded_paths: Sequence[str] | None = None,
+) -> str:
     result = asyncio.run(git_diff_tool(path=str(workspace_root)))
-    return str(result.get("diff_text") or "")
+    patch_text = str(result.get("diff_text") or "")
+    return _filter_diff_excluding_paths(patch_text, excluded_paths or [])
 
 
 def _write_swebench_artifacts(
@@ -548,7 +662,11 @@ def _write_swebench_artifacts(
     instance_artifact_path = artifact_dir / "swebench-instance.json"
     patch_artifact_path = artifact_dir / "swebench.patch"
     prediction_artifact_path = artifact_dir / "swebench-prediction.json"
-    patch_text = _capture_workspace_patch_text(workspace_root)
+    excluded_patch_paths = _swebench_prediction_excluded_paths(swebench.instance)
+    patch_text = _capture_workspace_patch_text(
+        workspace_root,
+        excluded_paths=excluded_patch_paths,
+    )
     prediction_payload = {
         "instance_id": swebench.instance.instance_id,
         "model_name_or_path": model,
@@ -578,6 +696,7 @@ def _write_swebench_artifacts(
             "predictions_path": swebench.predictions_path,
             "model_name_or_path": model,
             "patch_bytes": len(patch_text.encode("utf-8")),
+            "excluded_patch_paths": excluded_patch_paths,
         }
     )
     report.outputs["swebench"] = swebench_output
@@ -665,6 +784,92 @@ def _build_runtime_context(
     if benchmark_context:
         payload["benchmark_context"] = dict(benchmark_context)
     return payload
+
+
+def _benchmark_task_guidance(
+    benchmark_context: dict[str, Any] | None,
+) -> tuple[list[str], list[str], list[str]]:
+    if not isinstance(benchmark_context, dict) or not benchmark_context:
+        return [], [], []
+
+    benchmark_name = str(
+        benchmark_context.get("benchmark_name") or "Benchmark"
+    ).strip()
+    fail_to_pass = _normalize_context_list(benchmark_context.get("fail_to_pass"))
+    pass_to_pass = _normalize_context_list(benchmark_context.get("pass_to_pass"))
+    selected_test_files = _normalize_context_list(
+        benchmark_context.get("selected_test_files_to_run")
+    )
+
+    research_findings = [
+        (
+            f"{benchmark_name} tasks are graded against branch-specific tests and "
+            "compatibility expectations; inspect nearby tests and existing "
+            "implementation patterns before finalizing public-contract details."
+        ),
+        (
+            "Issue examples are often narrower than the real checked-out contract; "
+            "read nearby tests, helpers, and parametrizations, and inspect symmetric "
+            "paths such as read/write or parser/serializer pairs before finalizing "
+            "the patch."
+        ),
+        (
+            f"For {benchmark_name} speed, stop once the minimal source patch satisfies "
+            "the target contract; extra cleanup, wider exploration, or local "
+            "environment surgery usually hurts convergence."
+        ),
+    ]
+    fail_to_pass_summary = _markdown_bullets(
+        "These FAIL_TO_PASS tests define the exact target behavior change:",
+        fail_to_pass,
+        limit=25,
+    )
+    if fail_to_pass_summary is not None:
+        research_findings.append(fail_to_pass_summary)
+    pass_to_pass_summary = _markdown_bullets(
+        "These PASS_TO_PASS tests protect surrounding behavior and compatibility:",
+        pass_to_pass,
+        limit=25,
+    )
+    if pass_to_pass_summary is not None:
+        research_findings.append(pass_to_pass_summary)
+    selected_tests_summary = _markdown_bullets(
+        "These selected test files are high-signal sources for the local contract and compatibility style:",
+        selected_test_files,
+        limit=25,
+    )
+    if selected_tests_summary is not None:
+        research_findings.append(selected_tests_summary)
+    if fail_to_pass or pass_to_pass:
+        research_findings.append(
+            "If a listed benchmark test id is not present in the local checkout, treat it as harness-supplied contract evidence and infer the intended behavior from the issue plus nearby existing tests rather than adding that missing test to the repo."
+        )
+
+    hard_constraints = [
+        "Do not invent new warning/error identifiers, messages, stdout side effects, or compatibility behavior unless nearby tests or existing branch conventions justify them.",
+        "Do not replace a warning or deprecation path with an immediate hard failure unless the checked-out branch already expects that stricter behavior.",
+        "Do not silently absorb or delete conflicting state when the intended contract requires a visible warning, audit message, or migration notice.",
+        "Do not stop at one literal repro string when nearby tests or helper code imply equivalent variants belong to the same contract (for example case variants, sibling grammar tokens, or symmetric read/write behavior).",
+        "Do not add or edit benchmark test files as part of the final prediction patch; use them only to understand and validate the required behavior.",
+        "Do not add missing benchmark test ids or parametrizations to the repo just because the instance metadata names them; assume the benchmark harness may supply them separately.",
+        "Do not spend benchmark turns on package install/downgrade, interpreter rebuild, or broad environment repair unless that step is directly required by the checked-out repo to validate the target contract.",
+    ]
+    if fail_to_pass:
+        hard_constraints.append(
+            "Treat the listed FAIL_TO_PASS tests as the exact target contract, not merely a hint."
+        )
+    if pass_to_pass:
+        hard_constraints.append(
+            "Keep the listed PASS_TO_PASS behavior green while fixing the target contract."
+        )
+
+    soft_constraints = [
+        "Prefer the smallest compatibility-preserving fix that reuses nearby implementation and test conventions.",
+        "For edge cases, preserve input/output shape and public API semantics, not just non-crashing behavior.",
+        "When touching parsers, serializers, or format adapters, inspect neighboring helpers and round-trip tests so the minimal fix generalizes across equivalent tokens and I/O directions.",
+        "If the minimal fix is already present in the workspace, inspect and validate that state instead of re-planning or re-applying the same edit.",
+    ]
+    return research_findings, hard_constraints, soft_constraints
 
 
 def _truncate_text(value: str, *, limit: int = 120) -> str:
@@ -1377,25 +1582,43 @@ class CodeHeartbeatMonitor:
 class CodeRunEventLogger:
     """Persist the live DAN Code event stream for one bounded coding run."""
 
-    def __init__(self, *, path: Path) -> None:
-        self.path = path.resolve()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._handle = self.path.open("a", encoding="utf-8")
-        self._sequence = 0
+    def __init__(
+        self,
+        *,
+        path: Path,
+        session_id: str = "",
+        turn_id: str = "",
+        task_id: str = "",
+        organism_id: str = "",
+        organ_id: str = "",
+        trace_id: str = "",
+    ) -> None:
+        self._writer = OrganismLogWriter(
+            path=path,
+            context=OrganismLogContext(
+                product="dan_code",
+                stream_kind="bounded_run",
+                session_id=session_id,
+                turn_id=turn_id,
+                task_id=task_id,
+                trace_id=trace_id,
+                organism_id=organism_id,
+                organ_id=organ_id,
+            ),
+        )
+        self.path = self._writer.path
 
     def emit(self, event: dict[str, Any]) -> None:
-        self._sequence += 1
-        payload = {
-            "timestamp": _event_timestamp_iso(),
-            "sequence": self._sequence,
-            **dict(event),
-        }
-        self._handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str))
-        self._handle.write("\n")
-        self._handle.flush()
+        self._writer.emit(event)
+
+    def emit_trace_rows(self, trace_rows: Sequence[dict[str, Any]]) -> None:
+        self._writer.emit_trace_rows(trace_rows)
+
+    def update_context(self, **updates: Any) -> None:
+        self._writer.update_context(**updates)
 
     def close(self) -> None:
-        self._handle.close()
+        self._writer.close()
 
 
 def _effective_live_tool_ids(
@@ -1574,6 +1797,8 @@ async def run_coding_organism_live(
     organism_id: str = "coding-organism",
     acceptance_criteria: Sequence[str] | None = None,
     research_findings: Sequence[str] | None = None,
+    hard_constraints: Sequence[str] | None = None,
+    soft_constraints: Sequence[str] | None = None,
     repair_brief: str = "",
     evidence_summaries: Sequence[str] | None = None,
     tool_ids: Sequence[str] | None = None,
@@ -1586,7 +1811,13 @@ async def run_coding_organism_live(
     approval_callback=None,
     event_callback=None,
     session_context: dict[str, Any] | None = None,
+    trace_id: str | None = None,
 ) -> CodingOrganismReport:
+    benchmark_context = None
+    if isinstance(session_context, dict):
+        raw_benchmark_context = session_context.get("benchmark_context")
+        if isinstance(raw_benchmark_context, dict) and raw_benchmark_context:
+            benchmark_context = dict(raw_benchmark_context)
     tool_runtime = LocalOrganismToolRuntime(
         tool_ids=tool_ids or DEFAULT_LIVE_ORGANISM_TOOL_IDS,
         workspace_root=workspace_root,
@@ -1607,13 +1838,23 @@ async def run_coding_organism_live(
         ),
         event_callback=event_callback,
     )
-    executor = WorkerCoreExecutor(completion_provider=completion_provider)
-    organism = attach_local_tooling_to_coding_organism(
-        coding_execution_organism(
+    executor = WorkerCoreExecutor(
+        completion_provider=completion_provider,
+        event_sink=CallbackEventSink(event_callback),
+    )
+    organism = coding_execution_organism(
             organism_id=organism_id,
             model=model,
             base_id=organ_id,
-        ),
+        )
+    if benchmark_context:
+        organism = organism.model_copy(
+            update={
+                "max_repair_rounds": max(int(organism.max_repair_rounds), 2),
+            }
+        )
+    organism = attach_local_tooling_to_coding_organism(
+        organism,
         tool_ids=tool_runtime.tool_ids,
     )
     evidence_refs = _build_evidence_refs(workdir, evidence_summaries or [])
@@ -1622,18 +1863,23 @@ async def run_coding_organism_live(
         objective=objective,
         acceptance_criteria=acceptance_criteria or DEFAULT_CODING_ACCEPTANCE_CRITERIA,
         research_findings=list(research_findings or []),
+        hard_constraints=list(hard_constraints or []),
+        soft_constraints=list(soft_constraints or []),
         repair_brief=repair_brief,
         evidence_refs=[ref.model_copy(deep=True) for ref in evidence_refs],
         session_context=dict(session_context or {}),
     )
-    trace_log = CrossCellTraceLog()
-    execution = await execute_coding_organism(
-        executor=executor,
-        organism=organism,
-        task=task,
-        trace_log=trace_log,
-        event_callback=event_callback,
-    )
+    trace_log = CrossCellTraceLog(event_callback=event_callback)
+    execute_kwargs = {
+        "executor": executor,
+        "organism": organism,
+        "task": task,
+        "trace_log": trace_log,
+        "event_callback": event_callback,
+    }
+    if trace_id is not None:
+        execute_kwargs["trace_id"] = trace_id
+    execution = await execute_coding_organism(**execute_kwargs)
     assert execution.result is not None
     trace_rows = list(execution.result.observability.trace_rows)
     outputs = dict(execution.result.final_output)
@@ -1736,6 +1982,32 @@ class CodeConversationOutcome(BaseModel):
 
 def _assistant_text(message: str) -> str:
     return " ".join(str(message or "").strip().split())
+
+
+def _mark_benchmark_continuation_exhausted(
+    report: CodingOrganismReport,
+    *,
+    review,
+    loop_count: int,
+) -> CodingOrganismReport:
+    next_work = _assistant_text(
+        getattr(review, "repair_brief", None)
+        or getattr(review, "next_objective", None)
+        or getattr(review, "public_response", None)
+        or "The benchmark reviewer requested another repair or validation pass."
+    )
+    reason = (
+        f"Benchmark review requested continuation after {loop_count} supervised "
+        "coding passes; refusing to export an unfinished SWE-bench prediction."
+    )
+    if next_work:
+        reason = f"{reason} Next requested work: {next_work}"
+    report.status = "incomplete"
+    report.error = reason
+    risks = list(getattr(report, "risks", None) or [])
+    if reason not in risks:
+        report.risks = [*risks, reason]
+    return report
 
 
 def _report_context(report: CodingOrganismReport) -> CodingConversationReportSummary:
@@ -1981,11 +2253,22 @@ async def _run_orchestrated_turn(
     reports: list[CodingOrganismReport] = []
     question: str | None = None
     current_event_logger: CodeRunEventLogger | None = None
+    current_trace_rows_streamed = False
     session.record_message(role="user", text=objective)
 
     def _run_event_callback(event: dict[str, Any]) -> None:
+        nonlocal current_trace_rows_streamed
         heartbeat.observe(event)
         _emit_code_event(progress_renderer, event)
+        trace_row = event.get("trace_row")
+        if (
+            current_event_logger is not None
+            and str(event.get("event") or "").strip() == "trace.row"
+            and isinstance(trace_row, dict)
+        ):
+            current_trace_rows_streamed = True
+            current_event_logger.emit_trace_rows([trace_row])
+            return
         if current_event_logger is not None:
             current_event_logger.emit(event)
 
@@ -2110,21 +2393,36 @@ async def _run_orchestrated_turn(
                 *list(planner_decision.active_acceptance_criteria),
             ]
         ) or list(effective_acceptance_criteria)
-        max_supervision_loops = 2
+        max_supervision_loops = (
+            _BENCHMARK_SUPERVISION_LOOPS
+            if benchmark_context
+            else _DEFAULT_SUPERVISION_LOOPS
+        )
         base_turn_number = session.next_turn_number()
 
         for continuation_index in range(max_supervision_loops):
             report_turn_number = base_turn_number + len(reports)
             task_id = f"{task_id_base}:{report_turn_number}"
             workdir = _build_run_workdir(run_root, turn_number=report_turn_number)
-            event_logger = CodeRunEventLogger(path=workdir / "events.jsonl")
+            run_trace_id = new_trace_id()
+            event_logger = CodeRunEventLogger(
+                path=workdir / "events.jsonl",
+                session_id=session.session_id,
+                turn_id=str(report_turn_number),
+                task_id=task_id,
+                organism_id=args.organism_id,
+                organ_id=args.organ_id,
+                trace_id=run_trace_id,
+            )
             current_event_logger = event_logger
+            current_trace_rows_streamed = False
             run_completed = False
             try:
                 _emit_code_event(
                     _run_event_callback,
                     {
                         "event": "run.log.started",
+                        "trace_id": run_trace_id,
                         "task_id": task_id,
                         "turn_number": report_turn_number,
                         "objective": next_objective,
@@ -2159,8 +2457,21 @@ async def _run_orchestrated_turn(
                     stream_model_trace=bool(args.show_model_trace),
                     approval_callback=approval_callback,
                     event_callback=_run_event_callback,
+                    trace_id=run_trace_id,
                 )
-                report.event_log_path = str(event_logger.path)
+                report = report.model_copy(
+                    update={
+                        "event_log_path": str(event_logger.path),
+                        "event_log_schema": ORGANISM_LOG_SCHEMA_VERSION,
+                    }
+                )
+                if (
+                    current_event_logger is not None
+                    and not current_trace_rows_streamed
+                    and list(report.trace_rows or [])
+                ):
+                    current_event_logger.emit_trace_rows(list(report.trace_rows or []))
+                event_logger.update_context(trace_id=report.trace_id)
                 reports.append(report)
 
                 review, orchestrator_session = await controller.review_coding_result(
@@ -2187,7 +2498,54 @@ async def _run_orchestrated_turn(
                 if review.public_response:
                     _record_assistant(review.public_response)
 
-                if review.action == "continue" and continuation_index + 1 < max_supervision_loops:
+                if review.action == "continue":
+                    next_objective = _assistant_text(review.next_objective or next_objective)
+                    next_repair_brief = _assistant_text(
+                        review.repair_brief or report.error or next_repair_brief
+                    )
+                    next_research_findings = _dedupe(
+                        [
+                            *next_research_findings,
+                            _report_finding(report),
+                            *list(review.research_findings),
+                        ]
+                    )
+                    if continuation_index + 1 >= max_supervision_loops and benchmark_context:
+                        report = _mark_benchmark_continuation_exhausted(
+                            report,
+                            review=review,
+                            loop_count=max_supervision_loops,
+                        )
+                        reports[-1] = report
+                        _emit_code_event(
+                            _run_event_callback,
+                            {
+                                "event": "run.log.completed",
+                                "task_id": task_id,
+                                "trace_id": report.trace_id,
+                                "status": report.status,
+                                "review_action": review.action,
+                                "candidate_id": report.candidate_id,
+                                "event_log_path": report.event_log_path,
+                            },
+                        )
+                        run_completed = True
+                        break
+                    if continuation_index + 1 >= max_supervision_loops:
+                        _emit_code_event(
+                            _run_event_callback,
+                            {
+                                "event": "run.log.completed",
+                                "task_id": task_id,
+                                "trace_id": report.trace_id,
+                                "status": report.status,
+                                "review_action": review.action,
+                                "candidate_id": report.candidate_id,
+                                "event_log_path": report.event_log_path,
+                            },
+                        )
+                        run_completed = True
+                        break
                     _emit_code_event(
                         _run_event_callback,
                         {
@@ -2201,17 +2559,6 @@ async def _run_orchestrated_turn(
                         },
                     )
                     run_completed = True
-                    next_objective = _assistant_text(review.next_objective or next_objective)
-                    next_repair_brief = _assistant_text(
-                        review.repair_brief or report.error or next_repair_brief
-                    )
-                    next_research_findings = _dedupe(
-                        [
-                            *next_research_findings,
-                            _report_finding(report),
-                            *list(review.research_findings),
-                        ]
-                    )
                     continue
 
                 if review.action == "clarify":
@@ -2307,6 +2654,7 @@ async def _run_coding_turn(
     stream_model_trace: bool = False,
     approval_callback=None,
     event_callback=None,
+    trace_id: str | None = None,
 ) -> CodingOrganismReport:
     session_context = _build_runtime_context(
         workspace_root=workspace_root,
@@ -2317,6 +2665,11 @@ async def _run_coding_turn(
         task_id=task_id,
         benchmark_context=benchmark_context,
     )
+    (
+        benchmark_research_findings,
+        benchmark_hard_constraints,
+        benchmark_soft_constraints,
+    ) = _benchmark_task_guidance(benchmark_context)
     result = await run_coding_organism_live(
         workdir,
         llm_provider=llm_provider,
@@ -2326,7 +2679,13 @@ async def _run_coding_turn(
         organ_id=str(args.organ_id),
         organism_id=str(args.organism_id),
         acceptance_criteria=acceptance_criteria,
-        research_findings=_dedupe(list(args.research_findings) + list(research_findings)),
+        research_findings=_dedupe(
+            list(args.research_findings)
+            + list(research_findings)
+            + benchmark_research_findings
+        ),
+        hard_constraints=benchmark_hard_constraints,
+        soft_constraints=benchmark_soft_constraints,
         repair_brief=str(repair_brief),
         evidence_summaries=_dedupe(list(args.evidence_summaries) + list(evidence_summaries)),
         tool_ids=tool_ids,
@@ -2339,6 +2698,7 @@ async def _run_coding_turn(
         approval_callback=approval_callback,
         event_callback=event_callback,
         session_context=session_context,
+        trace_id=trace_id,
     )
     if isinstance(result, CodingOrganismReport):
         return result
@@ -2968,10 +3328,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             progress_renderer=progress_renderer,
         )
     )
-    if swebench is not None:
-        for report in outcome.reports:
+    if swebench is not None and outcome.reports:
+        final_report = outcome.reports[-1]
+        if outcome.status == "completed" and final_report.status == "completed":
             _write_swebench_artifacts(
-                report,
+                final_report,
                 swebench=swebench,
                 workspace_root=workspace_root,
                 model=live_model,
