@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import inspect
+import json
 import httpx
+import os
 from typing import Any, AsyncIterator
+from urllib.parse import urlparse
 
 import openai
 from openai import (
@@ -30,6 +34,7 @@ class OpenAIProvider:
     supports_required_tool_choice = True
     assistant_replay_mode = "raw"
     _CONNECT_TIMEOUT_CAP_SECONDS = 10.0
+    _SDK_MAX_RETRIES = 0
     _IMPORTED_ASYNC_OPENAI = AsyncOpenAI
 
     @classmethod
@@ -52,26 +57,60 @@ class OpenAIProvider:
         return module_async_openai
 
     def __init__(self, config: ProviderConfig) -> None:
+        self._api_key = config.api_key
+        self._base_url = config.base_url
         self._timeout_seconds = resolve_provider_timeout(config)
         self._request_timeout = self._build_request_timeout(self._timeout_seconds)
-        client_cls = self._resolve_async_openai_cls()
-        self._client = client_cls(
-            api_key=config.api_key,
-            base_url=config.base_url,
-            timeout=self._request_timeout,
-        )
+        self._client_factory = self._build_client
+        self._client = self._build_client()
 
     @classmethod
     def from_client(cls, client: AsyncOpenAI) -> OpenAIProvider:
         """Wrap an existing AsyncOpenAI client (for backward compat / test injection)."""
         instance = object.__new__(cls)
         instance._client = client
+        instance._client_factory = None
+        instance._api_key = ""
+        instance._base_url = getattr(client, "base_url", None)
         timeout = getattr(client, "timeout", None)
         instance._request_timeout = timeout
         instance._timeout_seconds = (
             float(timeout) if isinstance(timeout, (int, float)) else None
         )
         return instance
+
+    def _build_client(self) -> AsyncOpenAI:
+        client_cls = self._resolve_async_openai_cls()
+        return client_cls(
+            api_key=self._api_key,
+            base_url=self._base_url,
+            timeout=self._request_timeout,
+            max_retries=self._SDK_MAX_RETRIES,
+        )
+
+    @staticmethod
+    async def _close_client_quietly(client: Any) -> None:
+        for attr_name in ("close", "aclose"):
+            closer = getattr(client, attr_name, None)
+            if not callable(closer):
+                continue
+            try:
+                result = closer()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                return
+            return
+
+    async def recover_from_error(self, exc: BaseException) -> None:
+        _ = exc
+        factory = getattr(self, "_client_factory", None)
+        if not callable(factory):
+            return
+        old_client = getattr(self, "_client", None)
+        self._client = factory()
+        if old_client is not None:
+            await self._close_client_quietly(old_client)
 
     @classmethod
     def _build_request_timeout(
@@ -85,6 +124,88 @@ class OpenAIProvider:
         if connect_timeout >= timeout_seconds:
             return timeout_seconds
         return httpx.Timeout(timeout_seconds, connect=connect_timeout)
+
+    @classmethod
+    def _request_message_stats(cls, messages: list[dict[str, Any]]) -> dict[str, int]:
+        counts = {
+            "system": 0,
+            "user": 0,
+            "assistant": 0,
+            "tool": 0,
+            "other": 0,
+        }
+        chars = {key: 0 for key in counts}
+        for message in messages:
+            role = str(message.get("role") or "other").strip().lower() or "other"
+            if role not in counts:
+                role = "other"
+            content = message.get("content")
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                text = json.dumps(
+                    cls._serialize_jsonish(content),
+                    ensure_ascii=False,
+                    default=str,
+                )
+            elif content is None:
+                text = ""
+            else:
+                text = str(content)
+            counts[role] += 1
+            chars[role] += len(text)
+        return {
+            "message_count": sum(counts.values()),
+            "system_message_count": counts["system"],
+            "user_message_count": counts["user"],
+            "assistant_message_count": counts["assistant"],
+            "tool_message_count": counts["tool"],
+            "other_message_count": counts["other"],
+            "total_input_chars": sum(chars.values()),
+            "system_chars": chars["system"],
+            "user_chars": chars["user"],
+            "assistant_chars": chars["assistant"],
+            "tool_chars": chars["tool"],
+            "other_chars": chars["other"],
+        }
+
+    def _request_details(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        call_kwargs: dict[str, Any],
+        effective_temperature: float | None,
+        request_mode: str,
+    ) -> dict[str, Any]:
+        extra_body = dict(call_kwargs.get("extra_body") or {})
+        reasoning = call_kwargs.get("reasoning", extra_body.get("reasoning"))
+        thinking = call_kwargs.get("thinking", extra_body.get("thinking"))
+        base_url_host: str | None = None
+        base_url = getattr(self._client, "base_url", None)
+        if base_url is not None:
+            parsed = urlparse(str(base_url))
+            base_url_host = parsed.netloc or None
+        details: dict[str, Any] = {
+            "provider_name": type(self).__name__,
+            "provider_base_url_host": base_url_host,
+            "request_timeout_seconds": self._timeout_seconds,
+            "request_mode": request_mode,
+            "effective_temperature": effective_temperature,
+            "effective_max_tokens": call_kwargs.get("max_tokens"),
+            "tool_schema_count": len(list(call_kwargs.get("tools") or [])),
+            **self._request_message_stats(messages),
+        }
+        if isinstance(reasoning, dict) and "enabled" in reasoning:
+            details["reasoning_enabled"] = bool(reasoning.get("enabled"))
+        elif reasoning is not None:
+            details["reasoning_enabled"] = bool(reasoning)
+        if isinstance(thinking, dict):
+            thinking_type = str(thinking.get("type") or "").strip()
+            if thinking_type:
+                details["thinking_type"] = thinking_type
+        elif thinking is not None:
+            details["thinking_type"] = str(thinking)
+        return details
 
     @classmethod
     def get_model_behavior(cls, model: str) -> ModelBehaviorProfile:
@@ -144,6 +265,20 @@ class OpenAIProvider:
         - For Moonshot/Kimi exact/required tool requests, disable thinking so
           the model can emit the requested tool call promptly.
         """
+        reasoning_override = (
+            os.environ.get("DAN_OPENAI_COMPAT_REASONING")
+            or os.environ.get("DAN_OPENROUTER_REASONING")
+            or ""
+        )
+        normalized_reasoning = str(reasoning_override).strip().lower()
+        if "reasoning" not in call_kwargs:
+            existing_extra_reasoning = dict(call_kwargs.get("extra_body") or {}).get("reasoning")
+            if existing_extra_reasoning is None:
+                if normalized_reasoning in {"1", "true", "enabled", "on"}:
+                    call_kwargs["reasoning"] = {"enabled": True}
+                elif normalized_reasoning in {"0", "false", "disabled", "off"}:
+                    call_kwargs["reasoning"] = {"enabled": False}
+
         normalized = str(model or "").strip().lower()
         is_moonshot_family = normalized.startswith("moonshot-") or normalized.startswith("kimi-")
         if not is_moonshot_family:
@@ -167,7 +302,7 @@ class OpenAIProvider:
     ) -> dict[str, Any]:
         """Move provider-specific request fields into ``extra_body`` for SDK calls."""
         extra_body = dict(call_kwargs.get("extra_body") or {})
-        for field in ("thinking",):
+        for field in ("thinking", "reasoning"):
             if field in call_kwargs:
                 extra_body[field] = call_kwargs.pop(field)
         if extra_body:
@@ -188,6 +323,18 @@ class OpenAIProvider:
             if isinstance(dumped, dict):
                 return dumped
         return {}
+
+    @classmethod
+    def _serialize_jsonish(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(key): cls._serialize_jsonish(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls._serialize_jsonish(item) for item in value]
+        dumped = cls._dump_model_object(value)
+        if dumped:
+            dumped = cls._merge_model_extra(dumped, value)
+            return {str(key): cls._serialize_jsonish(item) for key, item in dumped.items()}
+        return value
 
     @staticmethod
     def _merge_model_extra(base: dict[str, Any], obj: Any) -> dict[str, Any]:
@@ -220,6 +367,13 @@ class OpenAIProvider:
         raw["role"] = "assistant"
         if getattr(message, "tool_calls", None):
             raw["tool_calls"] = [cls._serialize_tool_call(tc) for tc in message.tool_calls]
+        for field_name in ("reasoning_content", "reasoning_details"):
+            if field_name in raw:
+                raw[field_name] = cls._serialize_jsonish(raw[field_name])
+                continue
+            field_value = getattr(message, field_name, None)
+            if field_value is not None:
+                raw[field_name] = cls._serialize_jsonish(field_value)
         content = raw.get("content", getattr(message, "content", None))
         if isinstance(content, str) and not content.strip() and raw.get("tool_calls"):
             raw["content"] = None
@@ -317,6 +471,12 @@ class OpenAIProvider:
             call_kwargs.setdefault("timeout", self._request_timeout)
         call_kwargs = self._apply_compatibility_defaults(model, call_kwargs)
         call_kwargs = self._move_provider_fields_to_extra_body(call_kwargs)
+        request_details = self._request_details(
+            messages=messages,
+            call_kwargs=call_kwargs,
+            effective_temperature=effective_temperature,
+            request_mode="complete",
+        )
 
         try:
             resp = await self._client.chat.completions.create(**call_kwargs)
@@ -344,7 +504,10 @@ class OpenAIProvider:
             cached_input_tokens=cached_input,
             finish_reason=finish_reason,
             raw_assistant_message=raw_assistant_message,
-            provider_metadata={"family": "openai_compatible"},
+            provider_metadata={
+                "family": "openai_compatible",
+                "request_details": request_details,
+            },
         )
 
     async def stream(
@@ -399,6 +562,12 @@ class OpenAIProvider:
             call_kwargs.setdefault("timeout", self._request_timeout)
         call_kwargs = self._apply_compatibility_defaults(model, call_kwargs)
         call_kwargs = self._move_provider_fields_to_extra_body(call_kwargs)
+        request_details = self._request_details(
+            messages=messages,
+            call_kwargs=call_kwargs,
+            effective_temperature=effective_temperature,
+            request_mode="stream",
+        )
 
         try:
             stream = await self._client.chat.completions.create(**call_kwargs)
@@ -416,12 +585,23 @@ class OpenAIProvider:
         last_usage = None
         finish_reason = ""
         tool_calls_by_index: dict[int, dict[str, Any]] = {}
+        reasoning_content = ""
+        reasoning_details: Any = None
         async for chunk in stream:
             if chunk.choices:
                 choice = chunk.choices[0]
                 delta_obj = getattr(choice, "delta", None)
                 delta = getattr(delta_obj, "content", "") or ""
                 accumulated += delta
+                delta_reasoning_content = getattr(delta_obj, "reasoning_content", None)
+                if delta_reasoning_content not in {None, ""}:
+                    reasoning_content = cls._append_stream_text(
+                        reasoning_content,
+                        delta_reasoning_content,
+                    )
+                delta_reasoning_details = getattr(delta_obj, "reasoning_details", None)
+                if delta_reasoning_details is not None:
+                    reasoning_details = cls._serialize_jsonish(delta_reasoning_details)
                 for raw_tool_call in list(getattr(delta_obj, "tool_calls", None) or []):
                     self._merge_stream_tool_call_delta(tool_calls_by_index, raw_tool_call)
                 choice_finish_reason = getattr(choice, "finish_reason", None)
@@ -439,6 +619,10 @@ class OpenAIProvider:
         }
         if tool_calls:
             raw_assistant_message["tool_calls"] = tool_calls
+        if reasoning_content:
+            raw_assistant_message["reasoning_content"] = reasoning_content
+        if reasoning_details is not None:
+            raw_assistant_message["reasoning_details"] = reasoning_details
 
         yield StreamChunk(
             delta="",
@@ -449,7 +633,10 @@ class OpenAIProvider:
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             raw_assistant_message=raw_assistant_message,
-            provider_metadata={"family": "openai_compatible"},
+            provider_metadata={
+                "family": "openai_compatible",
+                "request_details": request_details,
+            },
         )
 
     @staticmethod

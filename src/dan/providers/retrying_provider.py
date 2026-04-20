@@ -8,6 +8,7 @@ or individual runtimes.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
@@ -161,6 +162,17 @@ class RetryingLLMProvider:
     async def _sleep_before_retry(self, attempt_index: int) -> None:
         await asyncio.sleep(self._delay_seconds(attempt_index))
 
+    async def _recover_before_retry(self, exc: BaseException) -> None:
+        recovery = getattr(self._provider, "recover_from_error", None)
+        if not callable(recovery):
+            return
+        try:
+            result = recovery(exc)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            return
+
     async def complete(
         self,
         messages: list[dict[str, Any]],
@@ -186,6 +198,7 @@ class RetryingLLMProvider:
                     or not _is_retryable_provider_exception(exc)
                 ):
                     raise
+                await self._recover_before_retry(exc)
                 await self._sleep_before_retry(attempt)
         assert last_exc is not None
         raise last_exc
@@ -227,6 +240,7 @@ class RetryingLLMProvider:
                     or not _is_retryable_provider_exception(exc)
                 ):
                     raise
+                await self._recover_before_retry(exc)
                 await self._sleep_before_retry(attempt)
         assert last_exc is not None
         raise last_exc
