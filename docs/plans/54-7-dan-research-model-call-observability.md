@@ -1,5 +1,6 @@
-# 56: DAN Research Model-Call Observability
+# 54-7: DAN Research Model-Call Observability
 
+**Parent:** [54-dan-control-plane-rewrite-around-universal-agents](54-dan-control-plane-rewrite-around-universal-agents.md)
 **Status:** completed
 **Goal:** Make DAN Research control-stage planner/review waits diagnosable by logging richer API-call stats, surfacing visible streamed output in `--show-model-trace`, and reducing overly aggressive inner hedge retries without changing the outer stall/max caps.
 

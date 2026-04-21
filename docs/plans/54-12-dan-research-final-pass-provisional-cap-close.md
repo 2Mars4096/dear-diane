@@ -1,5 +1,6 @@
-# 61: DAN Research Final-Pass Provisional Cap Close
+# 54-12: DAN Research Final-Pass Provisional Cap Close
 
+**Parent:** [54-dan-control-plane-rewrite-around-universal-agents](54-dan-control-plane-rewrite-around-universal-agents.md)
 **Status:** completed
 **Goal:** Let DAN Research close as a provisional report when an explicitly final/no-more-pass objective reaches the supervision cap with a caveated, materially grounded report, instead of always forcing an `incomplete` blocker artifact.
 

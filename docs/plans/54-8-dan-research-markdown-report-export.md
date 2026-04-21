@@ -1,5 +1,6 @@
-# 57: DAN Research Markdown Report Export
+# 54-8: DAN Research Markdown Report Export
 
+**Parent:** [54-dan-control-plane-rewrite-around-universal-agents](54-dan-control-plane-rewrite-around-universal-agents.md)
 **Status:** completed
 **Goal:** Make `dan research` leave behind a human-readable `report.md` for each bounded run and support explicit Markdown export through `--output`.
 

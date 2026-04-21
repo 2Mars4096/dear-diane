@@ -45,10 +45,29 @@ Out of scope:
 - [x] 4. Build the first larger production-shaped organism via [54-2-incident-commander-organism](54-2-incident-commander-organism.md)
 - [x] 5. Add shared universal-agent run observability via [54-5-universal-agent-organism-log-v1](54-5-universal-agent-organism-log-v1.md)
 - [x] 6. Define and execute the coexistence/cutover path via [54-3-legacy-concierge-cutover-and-surface-migration](54-3-legacy-concierge-cutover-and-surface-migration.md)
-- [ ] 7. Exit with one coherent DAN-v2 control-plane story
-  - [ ] 7-1. DAN top-level routing is owned by durable universal-agent controllers
-  - [ ] 7-2. General Mac/operator tasks route through explicit organisms or operator lanes instead of surface-specific glue
-  - [ ] 7-3. Legacy concierge is either removed from the default path or explicitly retained only for still-unmigrated surfaces
+- [x] 7. Harden the DAN Research product/report surface on the same substrate
+  - [x] 7-1. Land [54-6-dan-research-evidence-integrity-pass](54-6-dan-research-evidence-integrity-pass.md)
+  - [x] 7-2. Land [54-7-dan-research-model-call-observability](54-7-dan-research-model-call-observability.md)
+  - [x] 7-3. Land [54-8-dan-research-markdown-report-export](54-8-dan-research-markdown-report-export.md)
+  - [x] 7-4. Land [54-9-local-tool-alternative-argument-validation](54-9-local-tool-alternative-argument-validation.md)
+  - [x] 7-5. Land [54-10-dan-research-tool-schema-canonicalization-and-clipping](54-10-dan-research-tool-schema-canonicalization-and-clipping.md)
+  - [x] 7-6. Land [54-11-dan-research-human-readable-markdown-report](54-11-dan-research-human-readable-markdown-report.md)
+  - [x] 7-7. Land [54-12-dan-research-final-pass-provisional-cap-close](54-12-dan-research-final-pass-provisional-cap-close.md)
+  - [x] 7-8. Land [54-13-dan-research-orchestrator-report-artifact](54-13-dan-research-orchestrator-report-artifact.md)
+  - [x] 7-9. Land [54-14-dan-research-adaptive-answer-shape-and-coverage-prompts](54-14-dan-research-adaptive-answer-shape-and-coverage-prompts.md)
+- [x] 8. Add fast/deep task-lane policy around specialist shells
+  - [x] 8-1. Land [54-15-fast-task-lane-policy-and-control-bypass](54-15-fast-task-lane-policy-and-control-bypass.md)
+  - [x] 8-2. Land [54-16-research-task-lane-override-for-pdf-latency-ab](54-16-research-task-lane-override-for-pdf-latency-ab.md)
+- [x] 9. Add the lighter-weight DAN Reader document lane under the same broader DAN-v2 umbrella
+  - [x] 9-1. Land [54-17-dan-reader-flat-pdf-document-pipeline](54-17-dan-reader-flat-pdf-document-pipeline.md)
+  - [x] 9-2. Land [54-18-dan-reader-structure-and-contract-hardening](54-18-dan-reader-structure-and-contract-hardening.md)
+  - [x] 9-3. Land [54-19-dan-reader-vision-assisted-pdf-ingestion](54-19-dan-reader-vision-assisted-pdf-ingestion.md)
+- [x] 10. Add a deterministic large-organism showcase for the DAN-v2 story
+  - [x] 10-1. Land [54-20-super-dan-100-cell-showcase](54-20-super-dan-100-cell-showcase.md)
+- [ ] 11. Exit with one coherent DAN-v2 control-plane story
+  - [ ] 11-1. DAN top-level routing is owned by durable universal-agent controllers
+  - [ ] 11-2. General Mac/operator tasks route through explicit organisms or operator lanes instead of surface-specific glue
+  - [ ] 11-3. Legacy concierge is either removed from the default path or explicitly retained only for still-unmigrated surfaces
 
 ## Success Criteria
 
@@ -72,6 +91,7 @@ Out of scope:
 - Unsafe side effects such as browser input, desktop input, outbound messaging, or raw OS automation stay behind policy, approval, and audit boundaries instead of becoming unrestricted prompt behavior.
 - The first proving extension is `Incident Commander`, not a vague general-purpose super-organism.
 - Bounded specialist-product observability should converge on one universal-agent log contract instead of continuing separate Code/Research event dialects.
+- Recent specialist-surface, thin-product, and showcase follow-ups that deepen the same substrate should stay under `54-*` instead of minting new top-level plan roots.
 
 ## Notes
 
@@ -85,6 +105,7 @@ Out of scope:
 - Third landed slice: DAN-v2 now has an `incident` lane and a durable Incident Commander controller with frozen incident scenarios, action/approval boundaries, explicit terminal states, and incident session persistence through the same control-plane metadata seam.
 - Fourth landed slice: the shared DAN-v2 controller membrane is now richer. DAN facts now carry workspace/platform/approval/adapter/tool-family context, and the worker/review packet pair now preserves `what_changed`, `evidence`, `artifacts`, `confidence`, `best_next_question`, and `next_delta` fields for sharper recurrent review loops.
 - Fifth landed slice: `src/dan/worker/organism_log.py` now provides the first shared `organism_log_v1` substrate, and DAN Code / DAN Research run logs now converge on one comparable schema plus backend-side span/blocker projections while keeping their existing workspace file layout stable.
+- 2026-04-21 tracking reorg: the recent root plans that had grown from `55` through `67` were consolidated into `54-6` through `54-20` so this whole specialist-surface follow-up stack stays under one active DAN-v2 umbrella instead of continuing to inflate the root plan number.
 - Nineteenth landed slice: `src/dan/worker/core/executor.py` now emits timed `contract.validation.*` and `contract.repair.*` spans with explicit `validation_phase`, `repair_round`, and `normalization_mode`, `src/dan/worker/organism_log.py` classifies them as nested `output_contract_validation` / `output_contract_repair` spans under the worker span, and the direct DAN Code path now forwards those shared executor events into `.dan-code/runs/.../events.jsonl` through `CallbackEventSink` so real product runs capture the same contract seam.
 - Twentieth landed slice: [54-5-universal-agent-organism-log-v1](54-5-universal-agent-organism-log-v1.md) is now complete. Live `CrossCellTraceLog` handoff/signal callbacks stream straight into `organism_log_v1`, durable runner mailbox/session/background lifecycle events now derive `durable_*` spans with mailbox-turn parentage for worker/model/contract spans, DAN Research persists those controller callbacks on `.dan-research/control-plane-events.jsonl`, and the shared analysis/tests now prove product-shaped traces can answer both "what took time?" and "what blocked the next step?" from the unified log.
 - Sixth landed slice: the first production-shaped proving organism is now materially complete. Incident Commander can investigate live workflow and adapter failures, execute bounded live `contain` / `pause` / `retry` actions where a safe deterministic server seam exists, synthesize explicit operator-facing closeout summaries, and drive nested DAN Code repair through the default direct coding-runtime path inside DAN-v2 while keeping an explicit disable/fallback escape hatch.

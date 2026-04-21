@@ -1,5 +1,6 @@
-# 59: DAN Research Tool Schema Canonicalization And Clipping
+# 54-10: DAN Research Tool Schema Canonicalization And Clipping
 
+**Parent:** [54-dan-control-plane-rewrite-around-universal-agents](54-dan-control-plane-rewrite-around-universal-agents.md)
 **Status:** completed
 **Goal:** Make DAN Research send canonical local-tool schemas to OpenAI-compatible models and trim the research tool surface so frontier models stop falling into malformed `web_search {}` loops.
 

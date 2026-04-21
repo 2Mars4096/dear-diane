@@ -1,5 +1,6 @@
-# 58: Local Tool Alternative Argument Validation
+# 54-9: Local Tool Alternative Argument Validation
 
+**Parent:** [54-dan-control-plane-rewrite-around-universal-agents](54-dan-control-plane-rewrite-around-universal-agents.md)
 **Status:** completed
 **Goal:** Make the shared local tool loop enforce alternative JSON-schema argument sets so OpenAI-compatible models recover from malformed tool calls instead of silently no-oping.
 

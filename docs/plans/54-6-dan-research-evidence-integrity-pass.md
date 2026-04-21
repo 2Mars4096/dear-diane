@@ -1,5 +1,6 @@
-# 55: DAN Research Evidence Integrity Pass
+# 54-6: DAN Research Evidence Integrity Pass
 
+**Parent:** [54-dan-control-plane-rewrite-around-universal-agents](54-dan-control-plane-rewrite-around-universal-agents.md)
 **Status:** completed
 **Goal:** Add one generic pre-synthesis evidence-integrity layer for deep research and align grounded web fetch concurrency across research and chat/capability surfaces.
 
