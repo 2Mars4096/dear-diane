@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+import dan.worker.organisms.local_runtime as local_runtime_module
 from dan.worker.organisms.super_organism import (
     DEFAULT_SUPER_ORGANISM_ACTIVE_CELL_CAP,
     DEFAULT_SUPER_ORGANISM_CELL_COUNT,
@@ -86,9 +87,22 @@ def test_super_organism_report_shows_organized_synergy() -> None:
     assert "brain_reallocation" in report.stage_sequence
     assert report.claim_graph == []
     assert len(report.delivery_plan) == 8
+    assert report.shared_board is not None
+    assert len(report.coordination_tickets) == 8
+    assert len(report.handoff_packets) == 7
+    assert report.final_audit is not None
+    assert report.final_audit.status == "continue"
+    assert report.final_audit.satisfied is False
+    assert report.shared_board.waiting_ticket_ids == [
+        "ticket-006",
+        "ticket-007",
+        "ticket-008",
+    ]
+    assert report.shared_board.pending_packet_ids == ["packet-006", "packet-007"]
     assert len(report.reallocation_decisions) == 2
     assert sum(1 for cell in report.cells if cell.status == "retired") == 2
     assert "LangGraph" in report.final_memo
+    assert "Board tickets: 8." in report.final_memo
     assert "deterministic coordination demo" in report.caveat or "deterministic" in report.caveat
 
 
@@ -137,6 +151,15 @@ def test_universal_agent_report_uses_objective_contract_not_claim_audit() -> Non
     assert "execution_probe" in report.stage_sequence
     assert any(node.title == "Native execution lane" for node in report.delivery_plan)
     assert any(node.status == "live_build_required" for node in report.delivery_plan)
+    assert report.coordination_tickets[5].ticket_id == "ticket-006"
+    assert report.coordination_tickets[5].status == "awaiting_live_execution"
+    assert report.handoff_packets[-1].status == "pending"
+    assert report.final_audit is not None
+    assert report.final_audit.blocker_ticket_ids == [
+        "ticket-006",
+        "ticket-007",
+        "ticket-008",
+    ]
     assert "production-ready for complex agent orchestration" not in report.final_memo
     assert "accepts the objective" in report.final_memo
 
@@ -162,3 +185,46 @@ def test_active_cell_cap_controls_scheduler_waves() -> None:
     assert report.max_active_observed <= 7
     assert any(len(wave.cell_ids) == 7 for wave in report.activity_waves)
     assert any(signal.phase == "contract_immune_check" for signal in report.board_signals)
+
+
+def test_super_organism_shared_board_accounts_for_all_cells() -> None:
+    report = run_super_organism_demo("build a cool website for this product")
+
+    assert report.shared_board is not None
+    accounted = set(report.shared_board.reserve_cell_ids)
+    for ticket in report.coordination_tickets:
+        accounted.update(ticket.cell_ids)
+
+    assert accounted == {cell.cell_id for cell in report.cells}
+    assert any(ticket.owner_cell_id == "brain-001" for ticket in report.coordination_tickets[:2])
+    assert report.shared_board.reserve_cell_ids == ["scout-005"]
+
+
+def test_runtime_downshift_detects_truncated_existing_file_overwrite(tmp_path) -> None:
+    (tmp_path / "module.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    raw_arguments = (
+        '{"path":"module.py","content":"def alpha():\\n'
+        '    return 10\\n'
+    )
+    raw_call = {
+        "function": {
+            "name": "file_write",
+            "arguments": raw_arguments,
+        }
+    }
+
+    downshift = local_runtime_module._file_write_invalid_large_overwrite_downshift(
+        raw_call,
+        arguments={"raw_arguments": raw_arguments},
+        finish_reason="length",
+        workspace_root=tmp_path,
+        file_edit_available=True,
+    )
+
+    assert downshift == ("module.py", "model_output_truncated")
+    message = local_runtime_module._file_write_incremental_edit_required_message(
+        "module.py",
+        "model_output_truncated",
+    )
+    assert "`file_write` to existing file `module.py` is blocked" in message
+    assert "Downshift now: use `file_edit`" in message

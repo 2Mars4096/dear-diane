@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import inspect
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 from typing import Any, Callable, Sequence
@@ -74,6 +76,7 @@ _VALIDATION_REPORT_REQUIRED_KEYS = frozenset(
 _BLOCKED_TOOL_DISABLE_THRESHOLD = 2
 _TOOL_PROMPT_TEXT_LIMIT = 2000
 _PREWRITE_SHELL_ANALYSIS_NUDGE_THRESHOLD = 4
+_FILE_WRITE_RAW_ARGUMENT_RISKY_LENGTH = 4000
 
 
 def _event_text(value: Any) -> str | None:
@@ -435,7 +438,10 @@ def _tool_argument_failure_nudge(tool_id: str, error_text: str) -> str | None:
         extra_guidance = (
             ' For `file_write`, retry with exactly one complete JSON object such as '
             '`{"path":"website/index.html","content":"<!doctype html>..."}`. '
-            "Do not omit `path` or `content`, and do not send prose instead of the JSON arguments."
+            "Do not omit `path` or `content`, and do not send prose instead of the JSON arguments. "
+            "Treat large monolithic writes as risky: if the intended content is above roughly 1200 words or 200 lines, "
+            "split it into smaller coherent chunks or switch to `file_edit` for incremental updates to an existing file. "
+            "After one failed large write, do not resend the same giant payload."
         )
     elif tool_id == "file_edit":
         extra_guidance = (
@@ -486,6 +492,52 @@ def _stable_tool_value(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
     except Exception:
         return str(value)
+
+
+def _raw_tool_call_arguments_text(
+    raw_call: dict[str, Any],
+    *,
+    arguments: dict[str, Any] | None = None,
+) -> str | None:
+    if isinstance(arguments, dict):
+        raw_text = arguments.get("raw_arguments")
+        if isinstance(raw_text, str) and raw_text.strip():
+            return raw_text
+    function = raw_call.get("function") if isinstance(raw_call, dict) else None
+    raw_arguments = function.get("arguments") if isinstance(function, dict) else raw_call.get("arguments")
+    if isinstance(raw_arguments, str) and raw_arguments.strip():
+        return raw_arguments
+    if isinstance(raw_arguments, dict):
+        try:
+            return json.dumps(raw_arguments, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            return None
+    return None
+
+
+def _extract_jsonish_string_field(raw_text: str, field_name: str) -> str | None:
+    text = str(raw_text or "")
+    if not text.strip():
+        return None
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        parsed = None
+    if isinstance(parsed, dict):
+        value = parsed.get(field_name)
+        if isinstance(value, str) and value.strip():
+            return value
+    pattern = re.compile(
+        rf'"{re.escape(field_name)}"\s*:\s*"((?:[^"\\]|\\.)*)"',
+        re.DOTALL,
+    )
+    match = pattern.search(text)
+    if not match:
+        return None
+    try:
+        return json.loads(f'"{match.group(1)}"')
+    except Exception:
+        return match.group(1)
 
 
 def _is_repeated_tool_call(
@@ -735,6 +787,81 @@ def _tool_argument_path(tool: dict[str, Any]) -> str:
         or arguments.get("file_path")
         or ""
     ).strip()
+
+
+def _file_write_target_path(
+    raw_call: dict[str, Any],
+    *,
+    arguments: dict[str, Any],
+    workspace_root: Path,
+) -> str | None:
+    path_value = arguments.get("path")
+    if not isinstance(path_value, str) or not path_value.strip():
+        raw_text = _raw_tool_call_arguments_text(raw_call, arguments=arguments)
+        if raw_text:
+            path_value = _extract_jsonish_string_field(raw_text, "path")
+    if not isinstance(path_value, str) or not path_value.strip():
+        return None
+    return _relative_workspace_path(path_value, workspace_root=workspace_root)
+
+
+def _existing_workspace_file_write_target_path(
+    raw_call: dict[str, Any],
+    *,
+    arguments: dict[str, Any],
+    workspace_root: Path,
+) -> str | None:
+    relative_path = _file_write_target_path(
+        raw_call,
+        arguments=arguments,
+        workspace_root=workspace_root,
+    )
+    if not relative_path:
+        return None
+    candidate = (workspace_root / relative_path).resolve()
+    if not candidate.is_file():
+        return None
+    return relative_path
+
+
+def _file_write_invalid_large_overwrite_downshift(
+    raw_call: dict[str, Any],
+    *,
+    arguments: dict[str, Any],
+    finish_reason: str | None,
+    workspace_root: Path,
+    file_edit_available: bool,
+) -> tuple[str, str] | None:
+    if not file_edit_available:
+        return None
+    relative_path = _existing_workspace_file_write_target_path(
+        raw_call,
+        arguments=arguments,
+        workspace_root=workspace_root,
+    )
+    if not relative_path:
+        return None
+    raw_text = _raw_tool_call_arguments_text(raw_call, arguments=arguments)
+    if not raw_text or '"content"' not in raw_text:
+        return None
+    finish_text = str(finish_reason or "").strip().lower()
+    trimmed = raw_text.rstrip()
+    if finish_text == "length":
+        return relative_path, "model_output_truncated"
+    if len(raw_text) >= _FILE_WRITE_RAW_ARGUMENT_RISKY_LENGTH and not trimmed.endswith("}"):
+        return relative_path, "oversized_payload_cut_off"
+    return None
+
+
+def _file_write_incremental_edit_required_message(path: str, reason: str) -> str:
+    reason_text = reason.replace("_", " ")
+    return (
+        f"Controller note: `file_write` to existing file `{path}` is blocked for the rest of this turn "
+        f"because an earlier whole-file payload for that file looked {reason_text}. "
+        f"Downshift now: use `file_edit` for bounded incremental updates to `{path}`. "
+        "If exact line numbers are stale, take one targeted `file_read` of that same file first, "
+        "then apply the edit. Do not resend another monolithic overwrite of the same existing file."
+    )
 
 
 def _normalized_tool_path(path: Any, *, workspace_root: Path | None = None) -> str | None:
@@ -2465,6 +2592,7 @@ class ToolLoopCompletionProvider:
         blocked_by_tool_call_ids: list[str] = []
         blocked_tool_counts: dict[str, int] = {}
         disabled_tool_ids: set[str] = set()
+        file_write_incremental_edit_paths: dict[str, str] = {}
 
         def _completion_raw(
             *,
@@ -2877,6 +3005,7 @@ class ToolLoopCompletionProvider:
             availability_tool_nudges: list[tuple[str, str]] = []
             repeated_tool_call_nudges: list[tuple[str, str]] = []
             write_stage_helper_path_nudges: list[tuple[str, str, str]] = []
+            file_write_downshift_nudges: list[tuple[str, str]] = []
             newly_disabled_tool_ids: list[str] = []
             write_stage_final_read_consumed = False
 
@@ -2950,6 +3079,26 @@ class ToolLoopCompletionProvider:
                         "ok": False,
                         "error": f"tool_temporarily_disabled:{tool_id}",
                     }
+                elif (
+                    tool_id == "file_write"
+                    and (
+                        target_path := _existing_workspace_file_write_target_path(
+                            raw_call,
+                            arguments=arguments,
+                            workspace_root=self._tool_runtime.workspace_root,
+                        )
+                    )
+                    is not None
+                    and (
+                        downshift_reason := file_write_incremental_edit_paths.get(target_path)
+                    )
+                    is not None
+                ):
+                    tool_payload = {
+                        "ok": False,
+                        "error": f"file_write_downshift_required:{downshift_reason}",
+                    }
+                    file_write_downshift_nudges.append((target_path, downshift_reason))
                 elif (
                     tool_id in {"file_edit", "file_write"}
                     and (write_stage_first_write_nudged or write_stage_direct_write_required)
@@ -3045,6 +3194,26 @@ class ToolLoopCompletionProvider:
                     break
                 if not tool_payload.get("ok"):
                     error_text = str(tool_payload.get("error") or "").strip()
+                    if tool_id == "file_write":
+                        downshift = _file_write_invalid_large_overwrite_downshift(
+                            raw_call,
+                            arguments=arguments,
+                            finish_reason=last_result.finish_reason,
+                            workspace_root=self._tool_runtime.workspace_root,
+                            file_edit_available="file_edit" in request_tool_ids,
+                        )
+                        if downshift is not None:
+                            downshift_path, downshift_reason = downshift
+                            file_write_incremental_edit_paths[downshift_path] = downshift_reason
+                            file_write_downshift_nudges.append(
+                                (downshift_path, downshift_reason)
+                            )
+                    if error_text.startswith("file_write_downshift_required:"):
+                        _skip_remaining_tool_calls(
+                            tool_calls[call_index + 1 :],
+                            reason="file_write_downshift_required",
+                        )
+                        break
                     followup_message = _tool_argument_failure_nudge(tool_id, error_text)
                     if followup_message:
                         invalid_tool_argument_nudges.append((tool_id, followup_message))
@@ -3071,6 +3240,34 @@ class ToolLoopCompletionProvider:
                         # model sees the narrowed tool basket before it burns the rest of the
                         # round on more unavailable calls.
                         break
+            if file_write_downshift_nudges:
+                unique_messages = []
+                seen_messages: set[str] = set()
+                affected_paths: list[str] = []
+                reasons: list[str] = []
+                for path, reason in file_write_downshift_nudges:
+                    affected_paths.append(path)
+                    reasons.append(reason)
+                    message = _file_write_incremental_edit_required_message(path, reason)
+                    if message in seen_messages:
+                        continue
+                    seen_messages.add(message)
+                    unique_messages.append(message)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "\n".join(unique_messages),
+                    }
+                )
+                self._emit_event(
+                    "toolloop.file_write_downshift_nudged",
+                    paths=_dedupe(affected_paths),
+                    reasons=_dedupe(reasons),
+                    enabled_tools=list(request_tool_ids),
+                    blocked_by_tool_call_ids=list(round_tool_call_ids) or None,
+                    tool_calls_executed=len(executed_tools),
+                    **event_context,
+                )
             if write_stage_helper_path_nudges:
                 unique_messages = []
                 seen_messages: set[str] = set()
