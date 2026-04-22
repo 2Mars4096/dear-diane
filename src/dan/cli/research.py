@@ -16,6 +16,10 @@ from pydantic import BaseModel, Field
 
 from dan.cli import load_env, normalize_workspace_root, resolve_config
 from dan.cli import live_gateway
+from dan.cli.task_lanes import (
+    classify_research_task_lane,
+    override_task_lane_policy,
+)
 from dan.cli.research_product import (
     RESEARCH_PRODUCT_NAME,
     ResearchAuditIssue,
@@ -281,6 +285,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Research depth profile. Maps onto tool-loop budgets and falls back to "
             "workspace config, DAN_RESEARCH_DEPTH, then standard."
+        ),
+    )
+    parser.add_argument(
+        "--task-lane",
+        choices=["auto", "fast", "deep"],
+        default="auto",
+        help=(
+            "Task-lane override. auto classifies from the objective, fast bypasses "
+            "extra plan/review turns for bounded document-review asks, and deep "
+            "forces the full control shell."
         ),
     )
     parser.add_argument(
@@ -634,6 +648,12 @@ def _plan_payload(
         "answer_goal": str(plan.answer_goal or "").strip(),
         "refined_objective": str(plan.refined_objective or "").strip(),
         "plan_summary": str(plan.plan_summary or "").strip(),
+        "recommended_answer_shape": str(plan.recommended_answer_shape or "").strip(),
+        "coverage_priorities": [
+            str(item).strip()
+            for item in list(plan.coverage_priorities or [])
+            if str(item).strip()
+        ],
         "subproblem_count": len(plan.subproblems),
         "workstream_count": len(plan.workstreams),
         "subproblems": [
@@ -2686,6 +2706,7 @@ async def _run_orchestrated_turn(
     research_reader_count: int | None,
     max_supervision_loops: int | None,
     depth_profile: str,
+    task_lane_override: str,
     max_tool_rounds: int | None,
     max_tool_calls: int,
     max_runtime_seconds: int | None,
@@ -2841,6 +2862,16 @@ async def _run_orchestrated_turn(
     session.pending_clarification = None
     next_objective = _assistant_text(decision.research_objective or objective)
     next_delivery_target = _assistant_text(decision.delivery_target or delivery_target)
+    task_lane_policy = override_task_lane_policy(
+        classify_research_task_lane(
+            user_message=objective,
+            research_objective=next_objective,
+            pending_clarification=bool(session.pending_clarification),
+            depth_profile=depth_profile,
+            requested_reader_count=research_reader_count,
+        ),
+        override=task_lane_override,
+    )
     effective_acceptance_criteria = _dedupe(
         [*list(acceptance_criteria), *list(decision.acceptance_criteria)]
     ) or list(acceptance_criteria)
@@ -2863,49 +2894,64 @@ async def _run_orchestrated_turn(
         objective=next_objective,
         delivery_target=next_delivery_target,
     )
-    current_plan, orchestrator_session = await _run_control_stage_with_hedge(
-        stage_name="plan",
-        heartbeat_phase="planning",
-        detail=f"initial: {_truncate_text(next_objective, limit=140)}",
-        controller=controller,
-        session=orchestrator_session,
-        primary_call=lambda stage_session: controller.plan_research_intention(
-            session=stage_session,
+    if task_lane_policy.use_fallback_pre_run_planner:
+        current_plan = _fallback_intention_plan(
             objective=next_objective,
             delivery_target=next_delivery_target,
             acceptance_criteria=effective_acceptance_criteria,
             context=initial_plan_context,
             planning_mode="initial",
-        ),
-        fallback_result=lambda: (
-            _fallback_intention_plan(
+            previous_report=None,
+        )
+    else:
+        current_plan, orchestrator_session = await _run_control_stage_with_hedge(
+            stage_name="plan",
+            heartbeat_phase="planning",
+            detail=f"initial: {_truncate_text(next_objective, limit=140)}",
+            controller=controller,
+            session=orchestrator_session,
+            primary_call=lambda stage_session: controller.plan_research_intention(
+                session=stage_session,
                 objective=next_objective,
                 delivery_target=next_delivery_target,
                 acceptance_criteria=effective_acceptance_criteria,
                 context=initial_plan_context,
                 planning_mode="initial",
-                previous_report=None,
             ),
-            orchestrator_session,
-        ),
-        control_logger=control_logger,
-    )
-    _store_orchestrator_session(
-        session=session,
-        controller=controller,
-        durable_session=orchestrator_session,
-    )
+            fallback_result=lambda: (
+                _fallback_intention_plan(
+                    objective=next_objective,
+                    delivery_target=next_delivery_target,
+                    acceptance_criteria=effective_acceptance_criteria,
+                    context=initial_plan_context,
+                    planning_mode="initial",
+                    previous_report=None,
+                ),
+                orchestrator_session,
+            ),
+            control_logger=control_logger,
+        )
+        _store_orchestrator_session(
+            session=session,
+            controller=controller,
+            durable_session=orchestrator_session,
+        )
     _log_event(
         control_logger,
         "orchestrator.plan.completed",
         planning_mode="initial",
         answer_goal=current_plan.answer_goal,
         refined_objective=current_plan.refined_objective,
+        recommended_answer_shape=current_plan.recommended_answer_shape,
+        coverage_priorities=list(current_plan.coverage_priorities),
         subproblem_count=len(current_plan.subproblems),
         workstream_count=len(current_plan.workstreams),
         plan_summary=current_plan.plan_summary,
     )
     next_objective = _assistant_text(current_plan.refined_objective or next_objective)
+    next_delivery_target = _assistant_text(
+        current_plan.recommended_answer_shape or next_delivery_target
+    )
     effective_acceptance_criteria = _dedupe(
         [*list(effective_acceptance_criteria), *list(current_plan.acceptance_criteria)]
     ) or list(effective_acceptance_criteria)
@@ -3092,35 +3138,41 @@ async def _run_orchestrated_turn(
                 requested_reader_count=turn_reader_count,
                 additional_reports=reports,
             )
-            review, orchestrator_session = await _run_control_stage_with_hedge(
-                stage_name="review",
-                heartbeat_phase="review",
-                detail=f"task {task_id}: {_truncate_text(report.status, limit=60)}",
-                controller=controller,
-                session=orchestrator_session,
-                primary_call=lambda stage_session: controller.review_research_result(
-                    session=stage_session,
+            if task_lane_policy.use_fallback_post_run_review:
+                review = _fallback_review_decision(
                     objective=next_objective,
                     report_summary=review_report_context,
-                    context=review_context,
-                ),
-                fallback_result=lambda: (
-                    _fallback_review_decision(
+                )
+            else:
+                review, orchestrator_session = await _run_control_stage_with_hedge(
+                    stage_name="review",
+                    heartbeat_phase="review",
+                    detail=f"task {task_id}: {_truncate_text(report.status, limit=60)}",
+                    controller=controller,
+                    session=orchestrator_session,
+                    primary_call=lambda stage_session: controller.review_research_result(
+                        session=stage_session,
                         objective=next_objective,
                         report_summary=review_report_context,
+                        context=review_context,
                     ),
-                    orchestrator_session,
-                ),
-                control_logger=control_logger,
-                heartbeat=heartbeat,
-                task_id=task_id,
-                trace_id=report.trace_id,
-            )
-            _store_orchestrator_session(
-                session=session,
-                controller=controller,
-                durable_session=orchestrator_session,
-            )
+                    fallback_result=lambda: (
+                        _fallback_review_decision(
+                            objective=next_objective,
+                            report_summary=review_report_context,
+                        ),
+                        orchestrator_session,
+                    ),
+                    control_logger=control_logger,
+                    heartbeat=heartbeat,
+                    task_id=task_id,
+                    trace_id=report.trace_id,
+                )
+                _store_orchestrator_session(
+                    session=session,
+                    controller=controller,
+                    durable_session=orchestrator_session,
+                )
             hit_supervision_cap = review.action == "continue" and not (
                 max_supervision_loops is None
                 or continuation_index + 1 < max_supervision_loops
@@ -3223,6 +3275,8 @@ async def _run_orchestrated_turn(
                     planning_mode="continuation",
                     answer_goal=current_plan.answer_goal,
                     refined_objective=current_plan.refined_objective,
+                    recommended_answer_shape=current_plan.recommended_answer_shape,
+                    coverage_priorities=list(current_plan.coverage_priorities),
                     subproblem_count=len(current_plan.subproblems),
                     workstream_count=len(current_plan.workstreams),
                     plan_summary=current_plan.plan_summary,
@@ -3231,6 +3285,9 @@ async def _run_orchestrated_turn(
                 )
                 next_objective = _assistant_text(
                     current_plan.refined_objective or next_objective
+                )
+                next_delivery_target = _assistant_text(
+                    current_plan.recommended_answer_shape or next_delivery_target
                 )
                 effective_acceptance_criteria = _dedupe(
                     [*list(effective_acceptance_criteria), *list(current_plan.acceptance_criteria)]
@@ -4177,6 +4234,7 @@ def _resolved_config_payload(
     acceptance_criteria: Sequence[str],
     delivery_target: str,
     depth_profile: str,
+    task_lane: str,
     research_reader_count: int | None,
     max_supervision_loops: int | None,
     max_tool_rounds: int | None,
@@ -4215,6 +4273,7 @@ def _resolved_config_payload(
         "acceptance_criteria": list(acceptance_criteria),
         "delivery_target": delivery_target,
         "depth_profile": depth_profile,
+        "task_lane": task_lane,
         "research_reader_count": research_reader_count,
         "max_supervision_loops": max_supervision_loops,
         "max_tool_rounds": max_tool_rounds,
@@ -4239,6 +4298,7 @@ def _print_config_payload(payload: dict[str, Any], *, as_json: bool) -> None:
     print(f"tools: {', '.join(payload['tool_ids']) or '(none)'}")
     print(f"delivery target: {payload['delivery_target']}")
     print(f"depth: {payload['depth_profile']}")
+    print(f"task lane: {payload['task_lane']}")
     print(
         "research readers: "
         + (
@@ -4293,6 +4353,7 @@ def _interactive_loop(
     research_reader_count: int | None,
     max_supervision_loops: int | None,
     depth_profile: str,
+    task_lane_override: str,
     max_tool_rounds: int | None,
     max_tool_calls: int,
     max_runtime_seconds: int | None,
@@ -4404,6 +4465,7 @@ def _interactive_loop(
                 research_reader_count=research_reader_count,
                 max_supervision_loops=max_supervision_loops,
                 depth_profile=depth_profile,
+                task_lane_override=task_lane_override,
                 max_tool_rounds=max_tool_rounds,
                 max_tool_calls=max_tool_calls,
                 max_runtime_seconds=max_runtime_seconds,
@@ -4629,6 +4691,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 acceptance_criteria=config.acceptance_criteria,
                 delivery_target=config.delivery_target,
                 depth_profile=config.depth_profile,
+                task_lane=args.task_lane,
                 research_reader_count=config.research_reader_count,
                 max_supervision_loops=config.max_supervision_loops,
                 max_tool_rounds=config.max_tool_rounds,
@@ -4655,6 +4718,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             acceptance_criteria=acceptance_criteria,
             delivery_target=delivery_target,
             depth_profile=depth_profile,
+            task_lane=args.task_lane,
             research_reader_count=research_reader_count,
             max_supervision_loops=max_supervision_loops,
             max_tool_rounds=max_tool_rounds,
@@ -4736,6 +4800,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             research_reader_count=research_reader_count,
             max_supervision_loops=max_supervision_loops,
             depth_profile=depth_profile,
+            task_lane_override=args.task_lane,
             max_tool_rounds=max_tool_rounds,
             max_tool_calls=max_tool_calls,
             max_runtime_seconds=max_runtime_seconds,
@@ -4768,6 +4833,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 research_reader_count=research_reader_count,
                 max_supervision_loops=max_supervision_loops,
                 depth_profile=depth_profile,
+                task_lane_override=args.task_lane,
                 max_tool_rounds=max_tool_rounds,
                 max_tool_calls=max_tool_calls,
                 max_runtime_seconds=max_runtime_seconds,

@@ -7,12 +7,13 @@ import copy
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 from typing import Any, Callable, Sequence
 
 from dan.providers import CompletionResult, LLMProvider, apply_cache_hints
 from dan.tools import get_all_tools
-from dan.tools._git_helpers import _find_repo
+from dan.tools._git_helpers import _find_repo, _git_binary
 from dan.worker.core.interfaces import CompletionRequest, CompletionResponse
 from dan.worker.core.model import WorkerDefinition
 from dan.worker.organism_log import organism_event_context, stable_output_contract_id
@@ -72,6 +73,7 @@ _VALIDATION_REPORT_REQUIRED_KEYS = frozenset(
 )
 _BLOCKED_TOOL_DISABLE_THRESHOLD = 2
 _TOOL_PROMPT_TEXT_LIMIT = 2000
+_PREWRITE_SHELL_ANALYSIS_NUDGE_THRESHOLD = 4
 
 
 def _event_text(value: Any) -> str | None:
@@ -93,6 +95,34 @@ def _dedupe(values: Sequence[str]) -> list[str]:
         seen.add(text)
         ordered.append(text)
     return ordered
+
+
+def _normalize_usage_totals(raw: Any) -> dict[str, int]:
+    if not isinstance(raw, dict):
+        return {}
+    normalized: dict[str, int] = {}
+    for key, value in raw.items():
+        try:
+            normalized[str(key)] = int(value)
+        except (TypeError, ValueError):
+            continue
+    prompt = int(raw.get("prompt_tokens", raw.get("prompt", 0)) or 0)
+    completion = int(raw.get("completion_tokens", raw.get("completion", 0)) or 0)
+    total = int(raw.get("total_tokens", prompt + completion) or (prompt + completion))
+    normalized["prompt_tokens"] = prompt
+    normalized["completion_tokens"] = completion
+    normalized["total_tokens"] = total
+    return normalized
+
+
+def _merge_usage_totals(
+    total: dict[str, int] | None,
+    raw: Any,
+) -> dict[str, int]:
+    merged = dict(total or {})
+    for key, value in _normalize_usage_totals(raw).items():
+        merged[key] = int(merged.get(key, 0) or 0) + int(value)
+    return merged
 
 
 def _truncate_prompt_text(value: str, *, limit: int = _TOOL_PROMPT_TEXT_LIMIT) -> tuple[str, bool]:
@@ -401,11 +431,53 @@ def _tool_argument_failure_nudge(tool_id: str, error_text: str) -> str | None:
             '`{"query":"Brent crude oil price April 2026"}` or `{"url":"https://example.com/page"}`. '
             "Do not send `{}` and do not batch multiple empty `web_search` calls in the same round."
         )
+    elif tool_id == "file_write":
+        extra_guidance = (
+            ' For `file_write`, retry with exactly one complete JSON object such as '
+            '`{"path":"website/index.html","content":"<!doctype html>..."}`. '
+            "Do not omit `path` or `content`, and do not send prose instead of the JSON arguments."
+        )
+    elif tool_id == "file_edit":
+        extra_guidance = (
+            ' For `file_edit`, retry with `{"path":"src/app.py","start_line":12,"content":"..."}` '
+            'or `{"path":"src/app.py","edits":[...]}`. Include `path` plus one valid edit shape.'
+        )
     return (
         f"Tool correction: the previous `{tool_id}` call failed because {detail}. "
         "Retry only with a complete JSON argument object that satisfies the tool schema exactly. "
         "If you do not know the missing values yet, use a different valid tool call first."
         f"{extra_guidance}"
+    )
+
+
+def _tool_availability_failure_nudge(
+    tool_id: str,
+    error_text: str,
+    *,
+    enabled_tool_ids: Sequence[str],
+) -> str | None:
+    if error_text.startswith("tool_temporarily_disabled:"):
+        availability = "temporarily disabled"
+    elif error_text.startswith("tool_not_enabled:"):
+        availability = "not enabled"
+    else:
+        return None
+    available_tools = [
+        f"`{candidate}`"
+        for candidate in _dedupe(enabled_tool_ids)
+        if candidate and candidate != tool_id
+    ]
+    if available_tools:
+        enabled_text = (
+            "Use one of the currently enabled tools instead: "
+            + ", ".join(available_tools)
+            + "."
+        )
+    else:
+        enabled_text = "No tools are currently enabled in this round, so respond without tool calls."
+    return (
+        f"Tool correction: `{tool_id}` is {availability} in this round. "
+        f"{enabled_text} Do not call `{tool_id}` again until the available tool list changes."
     )
 
 
@@ -449,6 +521,7 @@ def _register_temporarily_disabled_tools(
     blocked_tool_counts: dict[str, int],
     disabled_tool_ids: set[str],
     enabled_tool_ids: Sequence[str],
+    request: CompletionRequest | None = None,
 ) -> list[str]:
     enabled = set(_dedupe(enabled_tool_ids))
     newly_disabled: list[str] = []
@@ -459,6 +532,15 @@ def _register_temporarily_disabled_tools(
         if blocked_tool_counts[tool_id] < _BLOCKED_TOOL_DISABLE_THRESHOLD:
             continue
         if tool_id in disabled_tool_ids:
+            continue
+        if (
+            request is not None
+            and _coding_output_kind(request) is not None
+            and tool_id in {"file_edit", "file_write"}
+        ):
+            # In write-capable coding stages, malformed direct-write calls should
+            # trigger recovery nudges, not permanently disarm the only tools that
+            # can still materialize the bounded patch in this turn.
             continue
         disabled_tool_ids.add(tool_id)
         newly_disabled.append(tool_id)
@@ -582,11 +664,13 @@ def _coding_output_kind(request: CompletionRequest) -> str | None:
 
 
 def _read_only_finalize_mode(request: CompletionRequest) -> str | None:
+    looks_like_validator = _looks_like_validator_request(request)
+    if looks_like_validator:
+        return "validator"
+
     system_prompt = str(request.system_prompt or "")
-    lowered_system_prompt = system_prompt.lower()
     expected_shape = str(getattr(request.output_contract, "expected_return_shape", "") or "")
     worker_id = str(request.metadata.get("worker_id") or "").strip()
-    keys = _expected_return_shape_keys(request)
 
     looks_like_coding_worker = (
         "Role: coding_worker" in system_prompt
@@ -596,15 +680,46 @@ def _read_only_finalize_mode(request: CompletionRequest) -> str | None:
     if looks_like_coding_worker:
         return "coding_worker"
 
-    looks_like_validator = (
+    return None
+
+
+def _looks_like_validator_request(request: CompletionRequest) -> bool:
+    system_prompt = str(request.system_prompt or "")
+    lowered_system_prompt = system_prompt.lower()
+    worker_id = str(request.metadata.get("worker_id") or "").strip().lower()
+    organism_stage = str(request.metadata.get("organism_stage") or "").strip().lower()
+    recipient = dict(request.metadata.get("recipient") or {})
+    recipient_cell_id = str(recipient.get("cell_id") or "").strip().lower()
+    keys = _expected_return_shape_keys(request)
+    return (
         _VALIDATION_REPORT_REQUIRED_KEYS.issubset(keys)
         or "role: validator_" in lowered_system_prompt
         or ".validator" in worker_id
+        or organism_stage == "validation"
+        or ".validator" in recipient_cell_id
     )
-    if looks_like_validator:
-        return "validator"
 
-    return None
+
+def _validator_read_only_tool_schemas(
+    request: CompletionRequest,
+    tool_schemas: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not _looks_like_validator_request(request):
+        return [dict(tool) for tool in tool_schemas if isinstance(tool, dict)]
+    allowed = set(
+        _read_only_tool_ids(
+            [
+                _tool_schema_name(tool)
+                for tool in tool_schemas
+                if isinstance(tool, dict) and _tool_schema_name(tool)
+            ]
+        )
+    )
+    return [
+        dict(tool)
+        for tool in tool_schemas
+        if isinstance(tool, dict) and _tool_schema_name(tool) in allowed
+    ]
 
 
 def _request_expects_coding_candidate(request: CompletionRequest) -> bool:
@@ -642,6 +757,72 @@ def _normalized_tool_path(path: Any, *, workspace_root: Path | None = None) -> s
     return Path(*parts).as_posix()
 
 
+def _looks_like_temporary_workspace_helper_path(relative_path: str) -> bool:
+    path = Path(str(relative_path or "").strip())
+    parts = [part for part in path.parts if part not in {"", "."}]
+    if len(parts) != 1:
+        return False
+    name = parts[0].lower()
+    suffix = Path(name).suffix
+    if suffix not in {".py", ".sh", ".tmp", ".txt", ".log", ".out"}:
+        return False
+    stem = Path(name).stem
+    exact_stems = {
+        "tmp",
+        "temp",
+        "scratch",
+        "debug",
+        "inspect",
+        "repro",
+        "check",
+        "read",
+        "dump",
+        "probe",
+    }
+    if stem in exact_stems:
+        return True
+    helper_prefixes = (
+        "tmp_",
+        "tmp-",
+        "temp_",
+        "temp-",
+        "scratch_",
+        "scratch-",
+        "debug_",
+        "debug-",
+        "inspect_",
+        "inspect-",
+        "repro_",
+        "repro-",
+        "check_",
+        "check-",
+        "read_",
+        "read-",
+        "dump_",
+        "dump-",
+        "probe_",
+        "probe-",
+        "script_",
+        "script-",
+        "run_dump",
+        "run-dump",
+    )
+    return stem.startswith(helper_prefixes)
+
+
+def _tool_materialized_mutation(tool: dict[str, Any]) -> bool:
+    if not tool.get("ok"):
+        return False
+    tool_id = str(tool.get("tool_id") or "").strip()
+    if tool_id not in {"file_write", "file_edit"}:
+        return False
+    if tool_id == "file_edit":
+        result = dict(tool.get("result") or {})
+        if result.get("changed") is False or result.get("no_op") is True:
+            return False
+    return True
+
+
 def _successful_workspace_mutation_paths(
     executed_tools: Sequence[dict[str, Any]],
     *,
@@ -650,16 +831,15 @@ def _successful_workspace_mutation_paths(
     paths: list[str] = []
     seen: set[str] = set()
     for tool in executed_tools:
-        if not tool.get("ok"):
-            continue
-        tool_id = str(tool.get("tool_id") or "").strip()
-        if tool_id not in {"file_write", "file_edit"}:
+        if not _tool_materialized_mutation(tool):
             continue
         relative = _relative_workspace_path(
             _tool_argument_path(tool),
             workspace_root=workspace_root,
         )
         if not relative or relative in seen:
+            continue
+        if _looks_like_temporary_workspace_helper_path(relative):
             continue
         seen.add(relative)
         paths.append(relative)
@@ -708,15 +888,28 @@ def _tool_mutates_temporary_external_path(
     *,
     workspace_root: Path,
 ) -> bool:
-    if not tool.get("ok"):
-        return False
-    tool_id = str(tool.get("tool_id") or "").strip()
-    if tool_id not in {"file_write", "file_edit"}:
+    if not _tool_materialized_mutation(tool):
         return False
     return _is_temporary_external_path(
         _tool_argument_path(tool),
         workspace_root=workspace_root,
     )
+
+
+def _tool_mutates_temporary_workspace_helper_path(
+    tool: dict[str, Any],
+    *,
+    workspace_root: Path,
+) -> bool:
+    if not _tool_materialized_mutation(tool):
+        return False
+    relative = _relative_workspace_path(
+        _tool_argument_path(tool),
+        workspace_root=workspace_root,
+    )
+    if not relative:
+        return False
+    return _looks_like_temporary_workspace_helper_path(relative)
 
 
 def _successful_mutation_paths(
@@ -725,19 +918,14 @@ def _successful_mutation_paths(
     workspace_root: Path | None = None,
 ) -> list[str]:
     if workspace_root is not None:
-        workspace_paths = _successful_workspace_mutation_paths(
+        return _successful_workspace_mutation_paths(
             executed_tools,
             workspace_root=workspace_root,
         )
-        if workspace_paths:
-            return workspace_paths
     paths: list[str] = []
     seen: set[str] = set()
     for tool in executed_tools:
-        if not tool.get("ok"):
-            continue
-        tool_id = str(tool.get("tool_id") or "").strip()
-        if tool_id not in {"file_write", "file_edit"}:
+        if not _tool_materialized_mutation(tool):
             continue
         path = _normalized_tool_path(
             _tool_argument_path(tool),
@@ -747,6 +935,39 @@ def _successful_mutation_paths(
             continue
         seen.add(path)
         paths.append(path)
+    return paths
+
+
+def _tracked_workspace_diff_paths(*, workspace_root: Path) -> list[str]:
+    try:
+        repo = Path(_find_repo(str(workspace_root))).resolve()
+        root = Path(workspace_root).resolve()
+    except Exception:
+        return []
+
+    try:
+        completed = subprocess.run(
+            [_git_binary(), "-C", str(repo), "diff", "--name-only"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return []
+    if completed.returncode != 0:
+        return []
+
+    paths: list[str] = []
+    seen: set[str] = set()
+    for line in completed.stdout.splitlines():
+        text = str(line or "").strip()
+        if not text:
+            continue
+        relative = _relative_workspace_path(str(repo / text), workspace_root=root)
+        if not relative or relative in seen:
+            continue
+        seen.add(relative)
+        paths.append(relative)
     return paths
 
 
@@ -785,10 +1006,7 @@ def _successful_verification_commands(executed_tools: Sequence[dict[str, Any]]) 
 def _last_successful_mutation_index(executed_tools: Sequence[dict[str, Any]]) -> int | None:
     last_index: int | None = None
     for index, tool in enumerate(executed_tools):
-        if not tool.get("ok"):
-            continue
-        tool_id = str(tool.get("tool_id") or "").strip()
-        if tool_id in {"file_write", "file_edit"}:
+        if _tool_materialized_mutation(tool):
             last_index = index
     return last_index
 
@@ -824,6 +1042,20 @@ def _successful_read_paths(
     return paths
 
 
+def _successful_shell_command_count(executed_tools: Sequence[dict[str, Any]]) -> int:
+    count = 0
+    for tool in executed_tools:
+        if not tool.get("ok"):
+            continue
+        if str(tool.get("tool_id") or "").strip() != "shell_command":
+            continue
+        command = str(dict(tool.get("arguments") or {}).get("command") or "").strip()
+        if not command:
+            continue
+        count += 1
+    return count
+
+
 def _partial_coding_candidate_from_tool_evidence(
     *,
     request: CompletionRequest,
@@ -840,6 +1072,14 @@ def _partial_coding_candidate_from_tool_evidence(
         executed_tools,
         workspace_root=workspace_root,
     )
+    if workspace_root is not None:
+        tracked_diff_paths = _tracked_workspace_diff_paths(workspace_root=workspace_root)
+        if tracked_diff_paths:
+            tracked_target_files = [
+                path for path in target_files if path in tracked_diff_paths
+            ]
+            if tracked_target_files:
+                target_files = tracked_target_files
     if not target_files:
         return None
 
@@ -881,6 +1121,73 @@ def _partial_coding_candidate_from_tool_evidence(
     return payload
 
 
+def _write_stage_unmaterialized_candidate_payload(
+    request: CompletionRequest,
+    *,
+    existing_text: str | None,
+    stop_reason: str,
+) -> dict[str, Any] | None:
+    output_kind = _coding_output_kind(request)
+    if output_kind is None:
+        return None
+
+    base_payload: dict[str, Any] = {}
+    parsed = parse_jsonish_payload(existing_text)
+    if isinstance(parsed, dict):
+        base_payload = dict(parsed)
+
+    payload = dict(base_payload)
+    if output_kind == "candidate":
+        candidate_id = str(payload.get("candidate_id") or "").strip()
+        payload["candidate_id"] = candidate_id or "unmaterialized-write-stage-candidate"
+        payload["workspace_effect"] = "none"
+    else:
+        payload.setdefault("candidate_fragment", {})
+
+    target_files = payload.get("target_files")
+    if isinstance(target_files, list):
+        payload["target_files"] = [
+            str(item).strip() for item in target_files if str(item).strip()
+        ]
+    else:
+        payload["target_files"] = []
+
+    test_plan = payload.get("test_plan")
+    if isinstance(test_plan, list) and any(str(item).strip() for item in test_plan):
+        payload["test_plan"] = [
+            str(item).strip() for item in test_plan if str(item).strip()
+        ]
+    else:
+        payload["test_plan"] = [
+            "Materialize the bounded workspace patch with file_edit/file_write before validation."
+        ]
+
+    change_summary = str(payload.get("change_summary") or "").strip()
+    if not change_summary:
+        payload["change_summary"] = (
+            "The model proposed a bounded change in prose but did not materialize any workspace edit after the "
+            "direct-write guardrail."
+        )
+    else:
+        payload["change_summary"] = change_summary
+
+    risks = payload.get("risks")
+    normalized_risks = (
+        [str(item).strip() for item in risks if str(item).strip()]
+        if isinstance(risks, list)
+        else []
+    )
+    for risk in (
+        "No checked-out workspace file was modified in this write-capable coding stage.",
+        "Treat this as blocked until the bounded patch is materialized with file_edit/file_write.",
+    ):
+        if risk not in normalized_risks:
+            normalized_risks.append(risk)
+    payload["risks"] = normalized_risks
+    payload["fallback_reason"] = stop_reason
+    return payload
+
+
 def _write_capable_coding_stage_first_write_nudge_reason(
     *,
     request: CompletionRequest,
@@ -902,16 +1209,28 @@ def _write_capable_coding_stage_first_write_nudge_reason(
             return "first_write_after_empty_workspace"
     if len(_successful_read_paths(executed_tools, workspace_root=workspace_root)) >= 6:
         return "stalled_analysis_before_first_write"
+    if _successful_shell_command_count(executed_tools) >= _PREWRITE_SHELL_ANALYSIS_NUDGE_THRESHOLD:
+        return "stalled_analysis_before_first_write"
     return None
 
 
-def _write_capable_coding_stage_first_write_nudge_message(reason: str) -> str:
+def _write_capable_coding_stage_first_write_nudge_message(
+    reason: str,
+    *,
+    allow_final_read: bool,
+) -> str:
     reason_text = reason.replace("_", " ")
+    final_read_sentence = (
+        " If you still need exact line grounding, you may take at most one final targeted `file_read` immediately before the first write, then stop auditing and write."
+        if allow_final_read
+        else ""
+    )
     return (
         "Controller note: this write-capable coding stage is still read-only after initial discovery "
         f"({reason_text}). Stop auditing and make the first concrete project write now using the direct file tools "
         "that are already enabled. The next tool call should be `file_write` or `file_edit`, not another read, search, "
-        "or final prose-only answer. Create one or two small real files first, then continue incrementally. Prefer a "
+        "or final prose-only answer."
+        f"{final_read_sentence} Create one or two small real files first, then continue incrementally. Prefer a "
         "minimal runnable slice over a complete project in one giant tool call. If you truly cannot materialize any "
         "bounded file set in this turn, return an explicit blocked candidate now instead of doing more discovery."
     )
@@ -923,6 +1242,7 @@ def _write_capable_coding_stage_finalize_reason(
     tool_ids: Sequence[str],
     executed_tools: Sequence[dict[str, Any]],
     workspace_root: Path,
+    disabled_tool_ids: Sequence[str] | None = None,
 ) -> str | None:
     if _coding_output_kind(request) is None:
         return None
@@ -938,6 +1258,8 @@ def _write_capable_coding_stage_finalize_reason(
     for tool in executed_tools:
         if _tool_mutates_temporary_external_path(tool, workspace_root=workspace_root):
             return "temporary_external_write_after_workspace_patch"
+        if _tool_mutates_temporary_workspace_helper_path(tool, workspace_root=workspace_root):
+            return "temporary_workspace_helper_write_after_workspace_patch"
 
     last_mutation_index = _last_successful_mutation_index(executed_tools)
     if last_mutation_index is None:
@@ -980,6 +1302,93 @@ def _write_capable_coding_stage_finalize_message(reason: str) -> str:
         "more time on environment/package probing, extra repo discovery, or optional validation churn. If validation "
         "is still incomplete, say that directly in `test_plan` and `risks`, but finalize the candidate now."
     )
+
+
+def _write_capable_coding_stage_post_final_read_message() -> str:
+    return (
+        "Controller note: you already used the final targeted `file_read` for this write stage. "
+        "The next tool call must be `file_edit` or `file_write`. Stop auditing and materialize the bounded patch now."
+    )
+
+
+def _write_capable_coding_stage_direct_write_required_reason(
+    *,
+    request: CompletionRequest,
+    tool_ids: Sequence[str],
+    executed_tools: Sequence[dict[str, Any]],
+    workspace_root: Path,
+    direct_write_required: bool,
+) -> str | None:
+    if not direct_write_required:
+        return None
+    if _coding_output_kind(request) is None:
+        return None
+    if _tool_ids_are_read_only(tool_ids):
+        return None
+    if _successful_workspace_mutation_paths(
+        executed_tools,
+        workspace_root=workspace_root,
+    ):
+        return None
+    return "returned_without_materializing_workspace_patch"
+
+
+def _write_capable_coding_stage_direct_write_required_message(reason: str) -> str:
+    reason_text = reason.replace("_", " ")
+    return (
+        "Controller note: this write-capable coding stage still has no materialized workspace patch "
+        f"({reason_text}). Returning prose-only patch instructions is not enough here. The next response must "
+        "either call `file_edit` or `file_write` to apply the bounded change directly in the checked-out "
+        "workspace, or return an explicit blocked candidate that says no bounded workspace write could be "
+        "completed. Do not propose edits without a real workspace mutation."
+    )
+
+
+def _write_stage_direct_write_helper_path_reason(
+    arguments: dict[str, Any],
+    *,
+    workspace_root: Path,
+) -> str | None:
+    path = _tool_argument_path({"arguments": arguments})
+    if _is_temporary_external_path(path, workspace_root=workspace_root):
+        return "temporary_external_helper_before_workspace_patch"
+    relative = _relative_workspace_path(path, workspace_root=workspace_root)
+    if relative and _looks_like_temporary_workspace_helper_path(relative):
+        return "temporary_workspace_helper_before_workspace_patch"
+    return None
+
+
+def _write_stage_direct_write_helper_path_message(
+    *,
+    tool_id: str,
+    reason: str,
+    arguments: dict[str, Any],
+) -> str:
+    path = _tool_argument_path({"arguments": arguments}) or "<missing path>"
+    reason_text = reason.replace("_", " ")
+    return (
+        f"Controller note: `{tool_id}` to `{path}` was blocked because direct-write mode is active and "
+        f"there is still no materialized workspace patch ({reason_text}). Do not create temporary helper "
+        "scripts or scratch files now. Use `file_edit` or `file_write` on the real checked-out project "
+        "file(s), or return an explicit blocked candidate if no bounded project write can be completed."
+    )
+
+
+def _write_stage_tool_schemas(
+    tool_schemas: Sequence[dict[str, Any]],
+    *,
+    allow_final_read: bool,
+) -> list[dict[str, Any]]:
+    preferred_names = {"file_edit", "file_write"}
+    if allow_final_read:
+        preferred_names.add("file_read")
+    narrowed: list[dict[str, Any]] = []
+    for tool in tool_schemas:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        name = str(function.get("name") or "").strip() if isinstance(function, dict) else ""
+        if name in preferred_names:
+            narrowed.append(tool)
+    return narrowed
 
 
 def _direct_write_tool_schemas(tool_schemas: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1151,6 +1560,145 @@ def _provider_safety_retry_messages(request: CompletionRequest) -> list[dict[str
         },
         {"role": "user", "content": user_prompt},
     ]
+
+
+def _timeout_recovery_tool_summary(
+    tool: dict[str, Any],
+    *,
+    workspace_root: Path,
+) -> str | None:
+    if not tool.get("ok"):
+        return None
+    tool_id = str(tool.get("tool_id") or "").strip()
+    arguments = dict(tool.get("arguments") or {})
+    result = dict(tool.get("result") or {})
+    path = _normalized_tool_path(
+        result.get("path") or arguments.get("path") or arguments.get("file_path"),
+        workspace_root=workspace_root,
+    )
+    if tool_id == "file_read":
+        start_line = arguments.get("start_line")
+        end_line = arguments.get("end_line")
+        line_text = ""
+        if start_line not in {None, ""} or end_line not in {None, ""}:
+            start_text = str(start_line or 1)
+            end_text = str(end_line or "EOF")
+            line_text = f" lines {start_text}-{end_text}"
+        return f"- file_read {path or '(unknown)'}{line_text}"
+    if tool_id in {"file_edit", "file_write"}:
+        return f"- {tool_id} {path or '(unknown)'}"
+    if tool_id == "list_directory":
+        count = result.get("count")
+        if not isinstance(count, int):
+            count = len(list(result.get("entries") or []))
+        target = path or "."
+        return f"- list_directory {target} ({count} entries)"
+    if tool_id == "git_diff":
+        files_changed = result.get("files_changed")
+        if isinstance(files_changed, int):
+            return f"- git_diff ({files_changed} files changed)"
+        return "- git_diff"
+    if tool_id == "shell_command":
+        command = str(arguments.get("command") or "").strip()
+        if command:
+            return f"- shell_command {command}"
+    if tool_id:
+        return f"- {tool_id}"
+    return None
+
+
+def _provider_timeout_recovery_messages(
+    request: CompletionRequest,
+    *,
+    tool_ids: Sequence[str],
+    executed_tools: Sequence[dict[str, Any]],
+    workspace_root: Path,
+    timeout_seconds: float | None,
+    allow_final_read: bool,
+) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    if request.system_prompt:
+        messages.append({"role": "system", "content": request.system_prompt})
+    tool_policy = _tool_use_policy(tool_ids)
+    if tool_policy:
+        messages.append({"role": "system", "content": tool_policy})
+    if request.user_prompt:
+        messages.append({"role": "user", "content": request.user_prompt})
+
+    timeout_text = ""
+    if timeout_seconds is not None:
+        timeout_text = f" after {float(timeout_seconds):.2f}s"
+    recovery_lines = [
+        f"Recovery note: the previous provider call timed out{timeout_text}.",
+        "Continue from the bounded evidence below instead of restarting broad discovery.",
+    ]
+    if allow_final_read:
+        recovery_lines.append(
+            "You may take at most one refreshed targeted `file_read` to regain exact line grounding, then the next tool call must be `file_edit` or `file_write`."
+        )
+    else:
+        recovery_lines.append(
+            "Do not restart auditing. The next tool call should be `file_edit` or `file_write`, or return the bounded result immediately if the current workspace diff is already sufficient."
+        )
+    recovery_lines.append("Keep the next step minimal and converge quickly.")
+
+    evidence_sections: list[str] = []
+    read_paths = _dedupe(
+        _successful_read_paths(executed_tools, workspace_root=workspace_root)
+    )
+    if read_paths:
+        evidence_sections.append(
+            "Grounded file paths: " + ", ".join(read_paths[-6:])
+        )
+    mutation_paths = _successful_workspace_mutation_paths(
+        executed_tools,
+        workspace_root=workspace_root,
+    )
+    if mutation_paths:
+        evidence_sections.append(
+            "Workspace mutations already materialized: " + ", ".join(mutation_paths)
+        )
+    recent_summaries: list[str] = []
+    for tool in reversed(executed_tools):
+        summary = _timeout_recovery_tool_summary(
+            tool,
+            workspace_root=workspace_root,
+        )
+        if not summary:
+            continue
+        recent_summaries.append(summary)
+        if len(recent_summaries) >= 8:
+            break
+    if recent_summaries:
+        recent_summaries.reverse()
+        evidence_sections.append(
+            "Recent successful tool evidence:\n" + "\n".join(recent_summaries)
+        )
+
+    contract_lines: list[str] = []
+    definition_of_done = str(
+        getattr(request.output_contract, "definition_of_done", "") or ""
+    ).strip()
+    expected_shape = str(
+        getattr(request.output_contract, "expected_return_shape", "") or ""
+    ).strip()
+    schema_text = str(
+        getattr(request.output_contract, "output_schema", "") or ""
+    ).strip()
+    if definition_of_done:
+        contract_lines.append(f"Definition of done: {definition_of_done}")
+    if expected_shape:
+        contract_lines.append(f"Expected return shape:\n{expected_shape}")
+    if schema_text:
+        contract_lines.append(f"Output schema:\n{schema_text}")
+    if contract_lines:
+        evidence_sections.append("\n\n".join(contract_lines))
+
+    recovery_prompt = " ".join(recovery_lines)
+    if evidence_sections:
+        recovery_prompt = f"{recovery_prompt}\n\n" + "\n\n".join(evidence_sections)
+    messages.append({"role": "user", "content": recovery_prompt})
+    return messages
 
 
 def _expected_return_shape_keys(request: CompletionRequest) -> set[str]:
@@ -1384,6 +1932,15 @@ def _provider_timeout_fallback_text(request: CompletionRequest) -> str:
         "The provider timed out before generation finished. "
         "No substantive response was produced."
     )
+
+
+def _drain_detached_asyncio_task(task: asyncio.Task[Any]) -> None:
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        return
 
 
 def available_local_organism_tools() -> dict[str, dict[str, Any]]:
@@ -1819,22 +2376,29 @@ class ToolLoopCompletionProvider:
                 model_call_id=model_call_id,
                 event_context=event_context,
             )
-        try:
-            async with asyncio.timeout(self._completion_timeout_seconds):
-                return await self._complete_text_response(
-                    messages=messages,
-                    model=model,
-                    request=request,
-                    provider_kwargs=provider_kwargs,
-                    round_number=round_number,
-                    worker_id=worker_id,
-                    model_call_id=model_call_id,
-                    event_context=event_context,
-                )
-        except TimeoutError as exc:
-            raise TimeoutError(
-                f"provider_completion_timeout:{self._completion_timeout_seconds:.2f}s"
-            ) from exc
+        completion_task = asyncio.create_task(
+            self._complete_text_response(
+                messages=messages,
+                model=model,
+                request=request,
+                provider_kwargs=provider_kwargs,
+                round_number=round_number,
+                worker_id=worker_id,
+                model_call_id=model_call_id,
+                event_context=event_context,
+            )
+        )
+        done, _pending = await asyncio.wait(
+            {completion_task},
+            timeout=self._completion_timeout_seconds,
+        )
+        if completion_task in done:
+            return await completion_task
+        completion_task.cancel()
+        completion_task.add_done_callback(_drain_detached_asyncio_task)
+        raise TimeoutError(
+            f"provider_completion_timeout:{self._completion_timeout_seconds:.2f}s"
+        )
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         model = str(request.model or self._default_model or "").strip()
@@ -1843,7 +2407,32 @@ class ToolLoopCompletionProvider:
         worker_id = str(request.metadata.get("worker_id") or "").strip() or None
         event_context = self._event_context(request, worker_id=worker_id)
 
-        tool_schemas = self._resolve_tool_schemas(request.tools)
+        requested_tool_schemas = self._resolve_tool_schemas(request.tools)
+        tool_schemas = _validator_read_only_tool_schemas(
+            request,
+            requested_tool_schemas,
+        )
+        if len(tool_schemas) != len(requested_tool_schemas):
+            self._emit_event(
+                "toolloop.validator_tools_narrowed",
+                enabled_tools=[
+                    _tool_schema_name(tool)
+                    for tool in tool_schemas
+                    if _tool_schema_name(tool)
+                ],
+                dropped_tools=[
+                    _tool_schema_name(tool)
+                    for tool in requested_tool_schemas
+                    if _tool_schema_name(tool)
+                    and _tool_schema_name(tool)
+                    not in {
+                        _tool_schema_name(candidate)
+                        for candidate in tool_schemas
+                        if _tool_schema_name(candidate)
+                    }
+                ],
+                **event_context,
+            )
         active_tool_schemas = list(tool_schemas)
         messages: list[dict[str, Any]] = []
         if request.system_prompt:
@@ -1862,15 +2451,42 @@ class ToolLoopCompletionProvider:
         executed_tools: list[dict[str, Any]] = []
         rounds = 0
         total_tool_calls = 0
+        usage_totals: dict[str, int] = {}
         stop_reason = "completed"
         last_result: Any = None
         forced_finalize_without_tools = False
         write_stage_first_write_nudged = False
+        write_stage_final_read_available = False
+        write_stage_direct_write_required = False
+        write_stage_direct_write_reprompted = False
         research_note_finalize_nudged = False
         provider_safety_retry_attempted = False
+        provider_timeout_recovery_attempted = False
         blocked_by_tool_call_ids: list[str] = []
         blocked_tool_counts: dict[str, int] = {}
         disabled_tool_ids: set[str] = set()
+
+        def _completion_raw(
+            *,
+            provider_model: Any,
+            finish_reason: Any,
+            usage: Any,
+            provider_metadata: dict[str, Any] | None,
+            assistant_message: dict[str, Any],
+            stop_reason_value: str,
+        ) -> dict[str, Any]:
+            return {
+                "provider_result": {
+                    "model": provider_model,
+                    "finish_reason": finish_reason,
+                    "usage": usage,
+                    "provider_metadata": provider_metadata,
+                },
+                "assistant_message": assistant_message,
+                "executed_tools": executed_tools,
+                "stop_reason": stop_reason_value,
+                "usage_totals": dict(usage_totals),
+            }
 
         while True:
             request_tool_schemas = _enabled_tool_schemas(
@@ -1921,6 +2537,64 @@ class ToolLoopCompletionProvider:
                         error_type=type(exc).__name__,
                         **event_context,
                     )
+                    can_retry_timeout = (
+                        not provider_timeout_recovery_attempted
+                        and _coding_output_kind(request) is not None
+                        and any(tool_id in {"file_edit", "file_write"} for tool_id in request_tool_ids)
+                        and not _successful_workspace_mutation_paths(
+                            executed_tools,
+                            workspace_root=self._tool_runtime.workspace_root,
+                        )
+                        and sum(1 for tool in executed_tools if tool.get("ok")) >= 2
+                    )
+                    if can_retry_timeout:
+                        provider_timeout_recovery_attempted = True
+                        recovered_tool_schemas = _write_stage_tool_schemas(
+                            tool_schemas,
+                            allow_final_read=True,
+                        )
+                        if recovered_tool_schemas:
+                            active_tool_schemas = recovered_tool_schemas
+                        disabled_tool_ids.clear()
+                        write_stage_first_write_nudged = True
+                        write_stage_final_read_available = any(
+                            _tool_schema_name(tool) == "file_read"
+                            for tool in active_tool_schemas
+                        )
+                        write_stage_direct_write_required = (
+                            not write_stage_final_read_available
+                        )
+                        messages = _provider_timeout_recovery_messages(
+                            request,
+                            tool_ids=[
+                                _tool_schema_name(tool)
+                                for tool in active_tool_schemas
+                                if _tool_schema_name(tool)
+                            ],
+                            executed_tools=executed_tools,
+                            workspace_root=self._tool_runtime.workspace_root,
+                            timeout_seconds=timeout_seconds,
+                            allow_final_read=write_stage_final_read_available,
+                        )
+                        recover = getattr(self._provider, "recover_from_error", None)
+                        if callable(recover):
+                            try:
+                                maybe_result = recover(exc)
+                                if inspect.isawaitable(maybe_result):
+                                    await maybe_result
+                            except Exception:
+                                pass
+                        self._emit_event(
+                            "model.timeout_recovery_retry",
+                            model=model,
+                            round=rounds + 1,
+                            model_call_id=model_call_id,
+                            timeout_seconds=timeout_seconds,
+                            allow_final_read=write_stage_final_read_available,
+                            tool_count=len(active_tool_schemas),
+                            **event_context,
+                        )
+                        continue
                     stop_reason = "provider_completion_timeout"
                     partial_candidate = _partial_coding_candidate_from_tool_evidence(
                         request=request,
@@ -1943,25 +2617,22 @@ class ToolLoopCompletionProvider:
                     )
                     return CompletionResponse(
                         text=fallback_text,
-                        raw={
-                            "provider_result": {
-                                "model": model,
-                                "finish_reason": "provider_completion_timeout",
-                                "usage": None,
-                                "provider_metadata": {
-                                    "provider_timeout_fallback": True,
-                                    "timeout_seconds": timeout_seconds,
-                                    "error_type": type(exc).__name__,
-                                    "tool_evidence_fallback": partial_candidate is not None,
-                                },
+                        raw=_completion_raw(
+                            provider_model=model,
+                            finish_reason="provider_completion_timeout",
+                            usage=None,
+                            provider_metadata={
+                                "provider_timeout_fallback": True,
+                                "timeout_seconds": timeout_seconds,
+                                "error_type": type(exc).__name__,
+                                "tool_evidence_fallback": partial_candidate is not None,
                             },
-                            "assistant_message": {
+                            assistant_message={
                                 "role": "assistant",
                                 "content": fallback_text,
                             },
-                            "executed_tools": executed_tools,
-                            "stop_reason": stop_reason,
-                        },
+                            stop_reason_value=stop_reason,
+                        ),
                     )
                 if not _provider_prompt_filter_error(exc):
                     raise
@@ -1987,23 +2658,20 @@ class ToolLoopCompletionProvider:
                     )
                     return CompletionResponse(
                         text=fallback_text,
-                        raw={
-                            "provider_result": {
-                                "model": model,
-                                "finish_reason": "provider_prompt_rejected",
-                                "usage": None,
-                                "provider_metadata": {
-                                    "provider_safety_fallback": True,
-                                    "error_type": type(exc).__name__,
-                                },
+                        raw=_completion_raw(
+                            provider_model=model,
+                            finish_reason="provider_prompt_rejected",
+                            usage=None,
+                            provider_metadata={
+                                "provider_safety_fallback": True,
+                                "error_type": type(exc).__name__,
                             },
-                            "assistant_message": {
+                            assistant_message={
                                 "role": "assistant",
                                 "content": fallback_text,
                             },
-                            "executed_tools": executed_tools,
-                            "stop_reason": stop_reason,
-                        },
+                            stop_reason_value=stop_reason,
+                        ),
                     )
                 provider_safety_retry_attempted = True
                 active_tool_schemas = []
@@ -2018,6 +2686,10 @@ class ToolLoopCompletionProvider:
                     **event_context,
                 )
                 continue
+            usage_totals = _merge_usage_totals(
+                usage_totals,
+                getattr(last_result, "usage", None),
+            )
             assistant_message = self._assistant_message(last_result)
             messages.append(assistant_message)
 
@@ -2057,22 +2729,92 @@ class ToolLoopCompletionProvider:
                 )
                 return CompletionResponse(
                     text=fallback_text,
-                    raw={
-                        "provider_result": {
-                            "model": last_result.model,
-                            "finish_reason": last_result.finish_reason,
-                            "usage": last_result.usage,
-                            "provider_metadata": {
-                                **dict(last_result.provider_metadata or {}),
-                                "tool_evidence_fallback": partial_candidate is not None,
-                            },
+                    raw=_completion_raw(
+                        provider_model=last_result.model,
+                        finish_reason=last_result.finish_reason,
+                        usage=last_result.usage,
+                        provider_metadata={
+                            **dict(last_result.provider_metadata or {}),
+                            "tool_evidence_fallback": partial_candidate is not None,
                         },
-                        "assistant_message": assistant_message,
-                        "executed_tools": executed_tools,
-                        "stop_reason": stop_reason,
-                    },
+                        assistant_message=assistant_message,
+                        stop_reason_value=stop_reason,
+                    ),
                 )
             if not tool_calls:
+                direct_write_required_reason = (
+                    _write_capable_coding_stage_direct_write_required_reason(
+                        request=request,
+                        tool_ids=request_tool_ids,
+                        executed_tools=executed_tools,
+                        workspace_root=self._tool_runtime.workspace_root,
+                        direct_write_required=write_stage_direct_write_required,
+                    )
+                )
+                if direct_write_required_reason is not None:
+                    if not write_stage_direct_write_reprompted:
+                        write_stage_direct_write_reprompted = True
+                        direct_write_tool_schemas = _direct_write_tool_schemas(
+                            tool_schemas
+                        )
+                        if direct_write_tool_schemas:
+                            active_tool_schemas = direct_write_tool_schemas
+                            disabled_tool_ids.clear()
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": _write_capable_coding_stage_direct_write_required_message(
+                                    direct_write_required_reason
+                                ),
+                            }
+                        )
+                        self._emit_event(
+                            "toolloop.write_stage_direct_write_nudged",
+                            reason=direct_write_required_reason,
+                            tool_calls_executed=len(executed_tools),
+                            enabled_tools=[
+                                str(tool.get("function", {}).get("name") or "").strip()
+                                for tool in active_tool_schemas
+                                if isinstance(tool, dict)
+                            ],
+                            blocked_by_tool_call_ids=list(blocked_by_tool_call_ids) or None,
+                            **event_context,
+                        )
+                        continue
+
+                    stop_reason = "write_stage_direct_write_guardrail_unheeded"
+                    fallback_payload = _write_stage_unmaterialized_candidate_payload(
+                        request,
+                        existing_text=last_result.text or "",
+                        stop_reason=stop_reason,
+                    )
+                    fallback_text = (
+                        json.dumps(fallback_payload, ensure_ascii=False, sort_keys=True)
+                        if fallback_payload is not None
+                        else (last_result.text or "")
+                    )
+                    self._emit_event(
+                        "completion.completed",
+                        model=last_result.model or model,
+                        model_call_id=model_call_id,
+                        stop_reason=stop_reason,
+                        tool_calls_executed=len(executed_tools),
+                        **event_context,
+                    )
+                    return CompletionResponse(
+                        text=fallback_text,
+                        raw=_completion_raw(
+                            provider_model=last_result.model,
+                            finish_reason=last_result.finish_reason,
+                            usage=last_result.usage,
+                            provider_metadata={
+                                **dict(last_result.provider_metadata or {}),
+                                "write_stage_direct_write_fallback": True,
+                            },
+                            assistant_message=assistant_message,
+                            stop_reason_value=stop_reason,
+                        ),
+                    )
                 self._emit_event(
                     "completion.completed",
                     model=last_result.model or model,
@@ -2083,17 +2825,14 @@ class ToolLoopCompletionProvider:
                 )
                 return CompletionResponse(
                     text=last_result.text,
-                    raw={
-                        "provider_result": {
-                            "model": last_result.model,
-                            "finish_reason": last_result.finish_reason,
-                            "usage": last_result.usage,
-                            "provider_metadata": last_result.provider_metadata,
-                        },
-                        "assistant_message": assistant_message,
-                        "executed_tools": executed_tools,
-                        "stop_reason": stop_reason,
-                    },
+                    raw=_completion_raw(
+                        provider_model=last_result.model,
+                        finish_reason=last_result.finish_reason,
+                        usage=last_result.usage,
+                        provider_metadata=last_result.provider_metadata,
+                        assistant_message=assistant_message,
+                        stop_reason_value=stop_reason,
+                    ),
                 )
 
             rounds += 1
@@ -2121,26 +2860,78 @@ class ToolLoopCompletionProvider:
                 )
                 return CompletionResponse(
                     text=fallback_text,
-                    raw={
-                        "provider_result": {
-                            "model": last_result.model,
-                            "finish_reason": last_result.finish_reason,
-                            "usage": last_result.usage,
-                            "provider_metadata": {
-                                **dict(last_result.provider_metadata or {}),
-                                "tool_evidence_fallback": partial_candidate is not None,
-                            },
+                    raw=_completion_raw(
+                        provider_model=last_result.model,
+                        finish_reason=last_result.finish_reason,
+                        usage=last_result.usage,
+                        provider_metadata={
+                            **dict(last_result.provider_metadata or {}),
+                            "tool_evidence_fallback": partial_candidate is not None,
                         },
-                        "assistant_message": assistant_message,
-                        "executed_tools": executed_tools,
-                        "stop_reason": stop_reason,
-                    },
+                        assistant_message=assistant_message,
+                        stop_reason_value=stop_reason,
+                    ),
                 )
             round_tool_call_ids: list[str] = []
             invalid_tool_argument_nudges: list[tuple[str, str]] = []
+            availability_tool_nudges: list[tuple[str, str]] = []
             repeated_tool_call_nudges: list[tuple[str, str]] = []
+            write_stage_helper_path_nudges: list[tuple[str, str, str]] = []
             newly_disabled_tool_ids: list[str] = []
-            for raw_call in tool_calls:
+            write_stage_final_read_consumed = False
+
+            def _record_tool_result(
+                *,
+                tool_id: str,
+                tool_call_id: str,
+                arguments: dict[str, Any],
+                tool_payload: dict[str, Any],
+            ) -> dict[str, Any]:
+                executed_tools.append(
+                    {
+                        "tool_id": tool_id,
+                        "tool_call_id": tool_call_id,
+                        "model_call_id": model_call_id,
+                        "arguments": arguments,
+                        **tool_payload,
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "name": tool_id,
+                        "content": json.dumps(
+                            _compact_tool_payload_for_prompt(tool_payload),
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            default=str,
+                        ),
+                    }
+                )
+                return executed_tools[-1]
+
+            def _skip_remaining_tool_calls(
+                remaining_calls: Sequence[dict[str, Any]],
+                *,
+                reason: str,
+            ) -> None:
+                for skipped_call in remaining_calls:
+                    skipped_tool_id, skipped_tool_call_id, skipped_arguments = self._parse_tool_call(
+                        skipped_call
+                    )
+                    round_tool_call_ids.append(skipped_tool_call_id)
+                    _record_tool_result(
+                        tool_id=skipped_tool_id,
+                        tool_call_id=skipped_tool_call_id,
+                        arguments=skipped_arguments,
+                        tool_payload={
+                            "ok": False,
+                            "error": f"tool_call_skipped:{reason}",
+                        },
+                    )
+
+            for call_index, raw_call in enumerate(tool_calls):
                 total_tool_calls += 1
                 tool_id, tool_call_id, arguments = self._parse_tool_call(raw_call)
                 round_tool_call_ids.append(tool_call_id)
@@ -2159,6 +2950,37 @@ class ToolLoopCompletionProvider:
                         "ok": False,
                         "error": f"tool_temporarily_disabled:{tool_id}",
                     }
+                elif (
+                    tool_id in {"file_edit", "file_write"}
+                    and (write_stage_first_write_nudged or write_stage_direct_write_required)
+                    and _coding_output_kind(request) is not None
+                    and not _successful_workspace_mutation_paths(
+                        executed_tools,
+                        workspace_root=self._tool_runtime.workspace_root,
+                    )
+                    and (
+                        helper_reason := _write_stage_direct_write_helper_path_reason(
+                            arguments,
+                            workspace_root=self._tool_runtime.workspace_root,
+                        )
+                    )
+                    is not None
+                ):
+                    tool_payload = {
+                        "ok": False,
+                        "error": f"write_stage_helper_path_blocked:{helper_reason}",
+                    }
+                    write_stage_helper_path_nudges.append(
+                        (
+                            tool_id,
+                            helper_reason,
+                            _write_stage_direct_write_helper_path_message(
+                                tool_id=tool_id,
+                                reason=helper_reason,
+                                arguments=arguments,
+                            ),
+                        )
+                    )
                 else:
                     try:
                         result = await self._tool_runtime.call(
@@ -2180,16 +3002,19 @@ class ToolLoopCompletionProvider:
                             "result": result,
                         }
 
-                executed_tools.append(
-                    {
-                        "tool_id": tool_id,
-                        "tool_call_id": tool_call_id,
-                        "model_call_id": model_call_id,
-                        "arguments": arguments,
-                        **tool_payload,
-                    }
+                current_tool = _record_tool_result(
+                    tool_id=tool_id,
+                    tool_call_id=tool_call_id,
+                    arguments=arguments,
+                    tool_payload=tool_payload,
                 )
-                current_tool = executed_tools[-1]
+                if write_stage_helper_path_nudges:
+                    write_stage_direct_write_required = True
+                    _skip_remaining_tool_calls(
+                        tool_calls[call_index + 1 :],
+                        reason="write_stage_helper_path_blocked",
+                    )
+                    break
                 if (
                     current_tool.get("ok")
                     and len(executed_tools) >= 2
@@ -2198,28 +3023,89 @@ class ToolLoopCompletionProvider:
                     repeated_tool_call_nudges.append(
                         (tool_id, _repeated_tool_call_nudge(tool_id, arguments))
                     )
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "name": tool_id,
-                        "content": json.dumps(
-                            _compact_tool_payload_for_prompt(tool_payload),
-                            ensure_ascii=False,
-                            sort_keys=True,
-                            default=str,
-                        ),
-                    }
-                )
+                if (
+                    write_stage_first_write_nudged
+                    and write_stage_final_read_available
+                    and current_tool.get("ok")
+                    and tool_id == "file_read"
+                    and not _successful_workspace_mutation_paths(
+                        executed_tools,
+                        workspace_root=self._tool_runtime.workspace_root,
+                    )
+                ):
+                    write_stage_final_read_available = False
+                    write_stage_final_read_consumed = True
+                    write_stage_direct_write_required = True
+                    _skip_remaining_tool_calls(
+                        tool_calls[call_index + 1 :],
+                        reason="write_stage_final_read_consumed",
+                    )
+                    # Stop immediately after the single allowed post-nudge read so the
+                    # next round is forced back into direct-write mode.
+                    break
                 if not tool_payload.get("ok"):
                     error_text = str(tool_payload.get("error") or "").strip()
                     followup_message = _tool_argument_failure_nudge(tool_id, error_text)
                     if followup_message:
                         invalid_tool_argument_nudges.append((tool_id, followup_message))
+                        _skip_remaining_tool_calls(
+                            tool_calls[call_index + 1 :],
+                            reason="invalid_tool_argument_nudge",
+                        )
                         # Stop immediately after the first schema-invalid tool call so the
                         # model gets the repair hint before we burn the rest of the round on
                         # more malformed calls from the same batch.
                         break
+                    followup_message = _tool_availability_failure_nudge(
+                        tool_id,
+                        error_text,
+                        enabled_tool_ids=request_tool_ids,
+                    )
+                    if followup_message:
+                        availability_tool_nudges.append((tool_id, followup_message))
+                        _skip_remaining_tool_calls(
+                            tool_calls[call_index + 1 :],
+                            reason="tool_availability_nudge",
+                        )
+                        # Stop immediately after the first unavailable-tool call so the
+                        # model sees the narrowed tool basket before it burns the rest of the
+                        # round on more unavailable calls.
+                        break
+            if write_stage_helper_path_nudges:
+                unique_messages = []
+                seen_messages: set[str] = set()
+                affected_tool_ids: list[str] = []
+                reasons: list[str] = []
+                for tool_id, reason, message in write_stage_helper_path_nudges:
+                    affected_tool_ids.append(tool_id)
+                    reasons.append(reason)
+                    if message in seen_messages:
+                        continue
+                    seen_messages.add(message)
+                    unique_messages.append(message)
+                direct_write_tool_schemas = _direct_write_tool_schemas(tool_schemas)
+                if direct_write_tool_schemas:
+                    active_tool_schemas = direct_write_tool_schemas
+                    disabled_tool_ids.clear()
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "\n".join(unique_messages),
+                    }
+                )
+                self._emit_event(
+                    "toolloop.write_stage_helper_path_blocked",
+                    tool_ids=_dedupe(affected_tool_ids),
+                    reasons=_dedupe(reasons),
+                    enabled_tools=[
+                        str(tool.get("function", {}).get("name") or "").strip()
+                        for tool in active_tool_schemas
+                        if isinstance(tool, dict)
+                    ],
+                    blocked_by_tool_call_ids=list(round_tool_call_ids) or None,
+                    tool_calls_executed=len(executed_tools),
+                    **event_context,
+                )
             if invalid_tool_argument_nudges:
                 unique_messages: list[str] = []
                 seen_messages: set[str] = set()
@@ -2249,7 +3135,32 @@ class ToolLoopCompletionProvider:
                         blocked_tool_counts=blocked_tool_counts,
                         disabled_tool_ids=disabled_tool_ids,
                         enabled_tool_ids=request_tool_ids,
+                        request=request,
                     )
+                )
+            if availability_tool_nudges:
+                unique_messages = []
+                seen_messages: set[str] = set()
+                affected_tool_ids: list[str] = []
+                for tool_id, message in availability_tool_nudges:
+                    affected_tool_ids.append(tool_id)
+                    if message in seen_messages:
+                        continue
+                    seen_messages.add(message)
+                    unique_messages.append(message)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "\n".join(unique_messages),
+                    }
+                )
+                self._emit_event(
+                    "toolloop.tool_availability_nudged",
+                    tool_ids=_dedupe(affected_tool_ids),
+                    enabled_tools=list(request_tool_ids),
+                    blocked_by_tool_call_ids=list(round_tool_call_ids) or None,
+                    tool_calls_executed=len(executed_tools),
+                    **event_context,
                 )
             if repeated_tool_call_nudges:
                 unique_messages = []
@@ -2280,6 +3191,7 @@ class ToolLoopCompletionProvider:
                         blocked_tool_counts=blocked_tool_counts,
                         disabled_tool_ids=disabled_tool_ids,
                         enabled_tool_ids=request_tool_ids,
+                        request=request,
                     )
                 )
             if newly_disabled_tool_ids:
@@ -2301,6 +3213,28 @@ class ToolLoopCompletionProvider:
                     "toolloop.temporarily_disabled_tools",
                     tool_ids=_dedupe(newly_disabled_tool_ids),
                     enabled_tools=enabled_after_disable,
+                    blocked_by_tool_call_ids=list(round_tool_call_ids) or None,
+                    tool_calls_executed=len(executed_tools),
+                    **event_context,
+                )
+            if write_stage_final_read_consumed:
+                direct_write_tool_schemas = _direct_write_tool_schemas(tool_schemas)
+                if direct_write_tool_schemas:
+                    active_tool_schemas = direct_write_tool_schemas
+                    disabled_tool_ids.clear()
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": _write_capable_coding_stage_post_final_read_message(),
+                    }
+                )
+                self._emit_event(
+                    "toolloop.write_stage_final_read_consumed",
+                    enabled_tools=[
+                        str(tool.get("function", {}).get("name") or "").strip()
+                        for tool in active_tool_schemas
+                        if isinstance(tool, dict)
+                    ],
                     blocked_by_tool_call_ids=list(round_tool_call_ids) or None,
                     tool_calls_executed=len(executed_tools),
                     **event_context,
@@ -2382,15 +3316,25 @@ class ToolLoopCompletionProvider:
             )
             if write_nudge_reason is not None and not write_stage_first_write_nudged:
                 write_stage_first_write_nudged = True
-                direct_write_tool_schemas = _direct_write_tool_schemas(request_tool_schemas)
-                if direct_write_tool_schemas:
-                    active_tool_schemas = direct_write_tool_schemas
+                write_stage_final_read_available = any(
+                    _tool_schema_name(tool) == "file_read"
+                    for tool in request_tool_schemas
+                    if isinstance(tool, dict)
+                )
+                write_stage_tool_schemas = _write_stage_tool_schemas(
+                    request_tool_schemas,
+                    allow_final_read=write_stage_final_read_available,
+                )
+                if write_stage_tool_schemas:
+                    active_tool_schemas = write_stage_tool_schemas
                     disabled_tool_ids.clear()
+                write_stage_direct_write_required = not write_stage_final_read_available
                 messages.append(
                     {
                         "role": "user",
                         "content": _write_capable_coding_stage_first_write_nudge_message(
-                            write_nudge_reason
+                            write_nudge_reason,
+                            allow_final_read=write_stage_final_read_available,
                         ),
                     }
                 )
@@ -2415,6 +3359,7 @@ class ToolLoopCompletionProvider:
                 ],
                 executed_tools=executed_tools,
                 workspace_root=self._tool_runtime.workspace_root,
+                disabled_tool_ids=sorted(disabled_tool_ids),
             )
             if write_finalize_reason is not None and not forced_finalize_without_tools:
                 forced_finalize_without_tools = True

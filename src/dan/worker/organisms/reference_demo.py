@@ -210,7 +210,12 @@ def _deep_research_packet(
             task_id=f"{task.task_id}:research-only",
             instruction=(
                 "Ground the task with supplied evidence and any available read-only tools. "
-                "Return a bounded deep-research report."
+                "Return a bounded deep-research answer whose user-facing shape fits the "
+                "objective and delivery_target. Ask what answer format best serves this "
+                "query, what content the user actually needs covered, and what visible "
+                "structure would just add noise. The structured output fields are internal "
+                "accountability fields, not a command to force the same visible headings "
+                "or section order every time."
             ),
             scope="project-execution.research",
             hard_constraints=list(task.hard_constraints),
@@ -230,7 +235,13 @@ def _deep_research_packet(
         ),
         evidence_refs=[ref.model_copy(deep=True) for ref in task.evidence_refs],
         output_contract=OutputContract(
-            definition_of_done=f"Return the bounded public output for organ {organ_id}.",
+            definition_of_done=(
+                f"Return the bounded public output for organ {organ_id}. Choose the answer "
+                "shape and coverage that best fit the user's query and delivery_target. "
+                "Ask what format best serves the query, what coverage is essential, and "
+                "what structure would be unnecessary overhead. Use the structured fields "
+                "for accountability, not as one rigid report template."
+            ),
             expected_return_shape=json.dumps(
                 {
                     "findings": "<required>",

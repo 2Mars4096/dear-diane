@@ -5,6 +5,7 @@ import json
 
 from dan.cli.code import CodeRunEventLogger
 from dan.cli.research import ResearchEventLogger
+from dan.cli.super_organism import SuperRunEventLogger
 from dan.worker.core.contracts import ExecutionRequest
 from dan.worker.core.executor import WorkerCoreExecutor
 from dan.worker.core.interfaces import CallbackEventSink, CompletionRequest, CompletionResponse
@@ -58,6 +59,35 @@ def test_research_event_logger_supports_shared_control_plane_stream(tmp_path) ->
     assert rows[0].product == "dan_research"
     assert rows[0].stream_kind == "control_plane"
     assert rows[0].session_id == "research-session-1"
+    assert any(
+        row.record_kind == "span" and row.event_family == "provider_build"
+        for row in rows
+    )
+
+
+def test_super_run_event_logger_uses_shared_bounded_run_schema(tmp_path) -> None:
+    logger = SuperRunEventLogger(
+        path=tmp_path / "super-events.jsonl",
+        session_id="super-session-1",
+        turn_id="1",
+        task_id="super-task-1",
+        organism_id="super-dan-20",
+        organ_id="super-dan.live",
+        trace_id="trace:super-1",
+    )
+
+    logger.emit({"event": "run.log.started", "objective": "Build the website."})
+    logger.emit({"event": "provider.build.started", "model": "gpt-test"})
+    logger.emit({"event": "provider.build.completed", "model": "gpt-test"})
+    logger.emit({"event": "run.log.completed", "status": "completed"})
+    logger.close()
+
+    rows = read_organism_log_rows(logger.path)
+
+    assert rows[0].product == "dan_super"
+    assert rows[0].stream_kind == "bounded_run"
+    assert rows[0].session_id == "super-session-1"
+    assert rows[0].trace_id == "trace:super-1"
     assert any(
         row.record_kind == "span" and row.event_family == "provider_build"
         for row in rows

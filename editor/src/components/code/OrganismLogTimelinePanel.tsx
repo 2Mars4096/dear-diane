@@ -355,8 +355,9 @@ export default function OrganismLogTimelinePanel() {
           {pinnedRoots.length === 0 && (
             <div className="text-[11px] leading-5 text-amber-700 dark:text-amber-200">
               Pin this repo as a workspace root if you want to open relative paths like
-              ` .dan-research/runs/turn-01/events.jsonl `. Without a pinned root, paste an
-              absolute path instead.
+              ` .dan-super/runs/turn-01/events.jsonl ` or
+              ` .dan-research/runs/turn-01/events.jsonl `. Without a pinned root, paste
+              an absolute path instead.
             </div>
           )}
         </div>
@@ -373,8 +374,8 @@ export default function OrganismLogTimelinePanel() {
             onChange={(event) => setManualPath(event.target.value)}
             placeholder={
               selectedRoot
-                ? ".dan-research/runs/turn-01/events.jsonl"
-                : "/absolute/path/to/.dan-research/runs/turn-01/events.jsonl"
+                ? ".dan-super/runs/turn-01/events.jsonl"
+                : "/absolute/path/to/.dan-super/runs/turn-01/events.jsonl"
             }
             className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-xs text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-blue-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 dark:placeholder:text-gray-500"
           />
@@ -411,7 +412,7 @@ export default function OrganismLogTimelinePanel() {
               {logs.length === 0 ? (
                 <EmptyState
                   title="No DAN logs discovered yet"
-                  body="Auto-discovery looks under `.dan-code/runs` and `.dan-research`. You can still paste a log path above, or normalize a foreign trace first with `dan-organism-log import`."
+                  body="Auto-discovery looks under `.dan-code/runs`, `.dan-super/runs`, and `.dan-research`. You can still paste a log path above, or normalize a foreign trace first with `dan-organism-log import`."
                 />
               ) : (
                 <div className="space-y-2">

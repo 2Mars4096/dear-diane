@@ -299,6 +299,7 @@ class CodingOrganism(BaseModel):
     default_worker_count: int = Field(default=1, ge=1)
     max_worker_count: int = Field(default=4, ge=1)
     max_repair_rounds: int = Field(default=1, ge=0)
+    delivery_pass_tolerance: float = Field(default=0.03, ge=0.0, le=0.25)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -808,7 +809,18 @@ def _candidate_requires_mutation_evidence(
 ) -> tuple[str, dict[str, Any]] | None:
     candidate = _candidate_view(payload)
     claimed_files = list(candidate.target_files)
+    workspace_effect = _candidate_workspace_effect(candidate)
     if not claimed_files:
+        if workspace_effect == "modified":
+            return (
+                "Candidate claimed a modified workspace but did not name target files.",
+                {
+                    "mutation_evidence_required": True,
+                    "target_files_required": True,
+                    "claimed_target_files": claimed_files,
+                    "workspace_effect": workspace_effect,
+                },
+            )
         return None
 
     if executed_tools is None:
@@ -833,7 +845,6 @@ def _candidate_requires_mutation_evidence(
     if successful_mutation_tools:
         return None
 
-    workspace_effect = _candidate_workspace_effect(candidate)
     if not _mutation_claim_requires_evidence(candidate):
         return None
 
@@ -1592,6 +1603,7 @@ async def execute_coding_organism(
     error: str | None = None
     selected_score = best_score if best_score >= 0 else None
     selected_pass_threshold = best_pass_threshold
+    delivery_pass_tolerance = float(organism.delivery_pass_tolerance)
     fallback_candidate_output = (
         dict(best_candidate_output)
         or dict(latest_candidate_output)
@@ -1600,19 +1612,29 @@ async def execute_coding_organism(
         )
     )
     if best_validation is not None and fallback_candidate_output:
+        validator_passed = bool(best_validation.result.outputs.get("passed"))
+        within_delivery_tolerance = (
+            validator_passed
+            and selected_score is not None
+            and selected_pass_threshold is not None
+            and selected_score < selected_pass_threshold
+            and (selected_pass_threshold - selected_score) <= delivery_pass_tolerance
+        )
         final_output = {
             **dict(best_candidate_output or fallback_candidate_output),
             "validation_report": dict(best_validation.result.outputs),
             "repair_history": list(repair_history),
         }
         if (
-            bool(best_validation.result.outputs.get("passed"))
+            validator_passed
             and selected_score is not None
             and selected_pass_threshold is not None
             and selected_score >= selected_pass_threshold
         ):
             status = "completed"
-        elif bool(best_validation.result.outputs.get("passed")):
+        elif within_delivery_tolerance:
+            status = "completed"
+        elif validator_passed:
             error = (
                 "The best candidate passed the validator verdict but stayed below the "
                 f"required pass threshold ({selected_score:.2f} < {selected_pass_threshold:.2f})."
@@ -1692,6 +1714,13 @@ async def execute_coding_organism(
             "validation_attempts": len(validation_executions),
             "coding_flow": organism.metadata.get("coding_flow"),
             "selected_pass_threshold": selected_pass_threshold,
+            "delivery_pass_tolerance": delivery_pass_tolerance,
+            "selected_within_delivery_tolerance": (
+                status == "completed"
+                and selected_score is not None
+                and selected_pass_threshold is not None
+                and selected_score < selected_pass_threshold
+            ),
             "selected_candidate_source": best_candidate_source or latest_candidate_source,
         },
     )

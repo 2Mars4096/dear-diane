@@ -496,6 +496,7 @@ class OrganismLogWriter:
         self._base_context = resolved_context
         self._open_spans: dict[str, dict[str, Any]] = {}
         self._sequence = 0
+        self._write_failed = False
         if self.path.exists():
             with self.path.open("r", encoding="utf-8") as existing:
                 self._sequence = sum(1 for _line in existing)
@@ -610,19 +611,35 @@ class OrganismLogWriter:
             self._write(row)
 
     def close(self) -> None:
-        self._handle.close()
+        handle = self._handle
+        self._handle = None
+        if handle is None:
+            return
+        try:
+            handle.close()
+        except OSError:
+            # Logging must never be able to crash the main coding run during teardown.
+            self._write_failed = True
 
     def _write(self, payload: dict[str, Any]) -> None:
-        self._sequence += 1
+        if self._write_failed or self._handle is None:
+            return
+        next_sequence = self._sequence + 1
         row = {
             **payload,
-            "sequence": self._sequence,
+            "sequence": next_sequence,
         }
-        self._handle.write(
-            json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)
-        )
-        self._handle.write("\n")
-        self._handle.flush()
+        try:
+            self._handle.write(
+                json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)
+            )
+            self._handle.write("\n")
+            self._handle.flush()
+        except OSError:
+            self._write_failed = True
+            self.close()
+            return
+        self._sequence = next_sequence
 
     def _classify_event(self, row: dict[str, Any]) -> dict[str, Any]:
         event = str(row.get("event") or "").strip()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import os
 
 from dan.tools._workspace import validate_path
@@ -54,6 +55,87 @@ TOOL_METADATA = {
 }
 
 
+def _tool_argument_error(detail: str) -> ValueError:
+    message = str(detail or "").strip() or "invalid arguments for file_write"
+    if message.startswith("tool_arguments_invalid:"):
+        return ValueError(message)
+    return ValueError(f"tool_arguments_invalid: {message}")
+
+
+def _top_level_named_blocks(tree: ast.Module) -> list[tuple[str, int, int]]:
+    blocks: list[tuple[str, int, int]] = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            name = node.name
+        elif isinstance(node, ast.Assign):
+            if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+                continue
+            name = node.targets[0].id
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+        else:
+            continue
+
+        node_start = getattr(node, "lineno", None)
+        node_end = getattr(node, "end_lineno", None)
+        if node_start is None or node_end is None:
+            continue
+        blocks.append((name, node_start, node_end))
+    return blocks
+
+
+def _guard_suspicious_python_overwrite(
+    *,
+    resolved_path: str,
+    content: str,
+    mode: str,
+    encoding: str,
+) -> None:
+    if mode != "overwrite" or not resolved_path.endswith(".py") or not os.path.exists(resolved_path):
+        return
+
+    try:
+        with open(resolved_path, "r", encoding=encoding) as existing_file:
+            original_text = existing_file.read()
+    except Exception:
+        return
+    if not original_text.strip():
+        return
+
+    try:
+        original_tree = ast.parse(original_text)
+    except SyntaxError:
+        return
+
+    try:
+        updated_tree = ast.parse(content)
+    except SyntaxError as exc:
+        raise _tool_argument_error(
+            "invalid content for file_write: overwriting an existing Python file would leave it syntactically "
+            f"invalid ({exc.msg}). Use file_edit for smaller grounded edits or provide the full corrected file content."
+        ) from None
+
+    original_blocks = _top_level_named_blocks(original_tree)
+    if len(original_blocks) < 4:
+        return
+
+    updated_block_names = {name for name, _, _ in _top_level_named_blocks(updated_tree)}
+    removed_blocks = [
+        name for name, _, _ in original_blocks if name not in updated_block_names
+    ]
+    if len(removed_blocks) < max(3, len(original_blocks) // 2):
+        return
+
+    if len(content.strip()) >= len(original_text.strip()) * 0.75:
+        return
+
+    removed_preview = ", ".join(removed_blocks[:3])
+    raise _tool_argument_error(
+        "invalid content for file_write: suspicious full-file overwrite removes multiple existing Python definitions "
+        f"({removed_preview}). Use file_edit for localized edits or provide the complete intended module rewrite."
+    )
+
+
 async def file_write(
     path: str | None = None,
     content: str | None = None,
@@ -74,6 +156,13 @@ async def file_write(
         raise ValueError(
             f"Invalid mode '{mode}'. Use 'overwrite' or 'append'."
         )
+
+    _guard_suspicious_python_overwrite(
+        resolved_path=resolved,
+        content=content,
+        mode=mode,
+        encoding=encoding,
+    )
 
     os.makedirs(os.path.dirname(resolved), exist_ok=True)
 

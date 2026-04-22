@@ -41,6 +41,12 @@ from dan.worker.organisms import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_code_env(monkeypatch) -> None:
+    monkeypatch.setenv("DAN_CODE_THINKING_MODE", "")
+    monkeypatch.setenv("DAN_CODE_COMPLETION_TIMEOUT_SECONDS", "")
+
+
 def test_build_parser_defaults() -> None:
     parser = build_parser()
     args = parser.parse_args([])
@@ -307,6 +313,105 @@ def test_main_json_uses_coding_organism_runner(tmp_path, capsys, monkeypatch) ->
     )
     transcript_lines = (tmp_path / "workspace" / ".dan-code" / "transcript.jsonl").read_text().strip().splitlines()
     assert len(transcript_lines) == 1
+
+
+def test_main_fast_lane_bypasses_project_planner_and_review_calls(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    async def _fake_runner(*_args, **kwargs):
+        return {
+            "status": "completed",
+            "trace_id": "trace-fast-code",
+            "organism_id": "coding-organism",
+            "organ_id": "coding-build",
+            "task_id": "coding-organ-task:1",
+            "objective": kwargs["objective"],
+            "candidate_id": "candidate-fast",
+            "change_summary": "No code changes required; summarized the current issues.",
+            "target_files": ["src/example.py"],
+            "test_plan": ["pytest -q"],
+            "risks": [],
+            "outputs": {"candidate_id": "candidate-fast"},
+            "handoff_count": 2,
+            "signal_count": 4,
+            "error": None,
+            "trace_rows": [],
+        }
+
+    class _FakeReport:
+        def __init__(self, payload):
+            self._payload = dict(payload)
+            self.status = self._payload["status"]
+            for key, value in self._payload.items():
+                setattr(self, key, value)
+
+        def model_dump(self, mode="json"):
+            return dict(self._payload)
+
+        def model_dump_json(self, indent=2):
+            return json.dumps(self._payload, indent=indent)
+
+    monkeypatch.setattr("dan.cli.code._build_live_provider", lambda *args, **kwargs: object())
+
+    async def _fake_decide(self, *, session, user_message, pending_clarification, context):
+        durable_session = session or self.create_session(metadata={"surface": "test"})
+        return (
+            CodingConversationTurnDecision(
+                action="code",
+                public_response="Starting one bounded coding review run.",
+                coding_objective=user_message,
+            ),
+            durable_session,
+        )
+
+    async def _unexpected_plan(*_args, **_kwargs):
+        raise AssertionError("fast lane should bypass project planner calls")
+
+    async def _unexpected_review(*_args, **_kwargs):
+        raise AssertionError("fast lane should bypass review controller calls")
+
+    monkeypatch.setattr(
+        "dan.cli.code.CodingConversationController.decide_user_turn",
+        _fake_decide,
+    )
+    monkeypatch.setattr(
+        "dan.cli.code.CodingProjectPlannerController.plan_project",
+        _unexpected_plan,
+    )
+    monkeypatch.setattr(
+        "dan.cli.code.CodingConversationController.review_coding_result",
+        _unexpected_review,
+    )
+
+    async def _wrapped_runner(*args, **kwargs):
+        return _FakeReport(await _fake_runner(*args, **kwargs))
+
+    monkeypatch.setattr("dan.cli.code.run_coding_organism_live", _wrapped_runner)
+
+    exit_code = main(
+        [
+            "--model",
+            "gpt-test",
+            "--workspace",
+            str(tmp_path / "workspace"),
+            "--workdir",
+            str(tmp_path / "workdir"),
+            "--json",
+            "Review the current project and summarize the main issues across these scripts.",
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["trace_id"] == "trace-fast-code"
+    session_payload = json.loads(
+        (tmp_path / "workspace" / ".dan-code" / "session.json").read_text()
+    )
+    assert (
+        session_payload["orchestrator_state"]["project_plan"]["active_milestone_id"]
+        == "m1"
+    )
+    assert "project_planner_session" not in session_payload["orchestrator_state"]
 
 
 def test_main_json_persists_per_run_event_log(tmp_path, capsys, monkeypatch) -> None:

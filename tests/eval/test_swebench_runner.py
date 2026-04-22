@@ -121,7 +121,7 @@ def test_run_swebench_instance_records_paths_and_status(tmp_path, monkeypatch) -
         predictions_path.parent.mkdir(parents=True, exist_ok=True)
         prediction_payload = {
             "instance_id": instance.instance_id,
-            "model_name_or_path": "kimi-k2.5",
+            "model_name_or_path": "kimi-k2.6",
             "model_patch": "diff --git a/file.py b/file.py\n",
         }
         predictions_path.write_text(
@@ -156,7 +156,7 @@ def test_run_swebench_instance_records_paths_and_status(tmp_path, monkeypatch) -
         split="dev",
         results_root=results_root,
         repo_cache_dir=repo_cache_dir,
-        model="kimi-k2.5",
+        model="kimi-k2.6",
         thinking_mode="disabled",
         completion_timeout_seconds=60.0,
         max_tool_rounds=8,
@@ -222,7 +222,7 @@ def test_run_swebench_instance_recreates_log_dir_before_writing(
         split="test",
         results_root=results_root,
         repo_cache_dir=repo_cache_dir,
-        model="kimi-k2.5",
+        model="kimi-k2.6",
         thinking_mode="disabled",
         completion_timeout_seconds=60.0,
         max_tool_rounds=None,
@@ -264,7 +264,7 @@ def test_batch_runner_seeds_and_skips_completed_predictions(tmp_path, monkeypatc
         json.dumps(
             {
                 "instance_id": "first",
-                "model_name_or_path": "kimi-k2.5",
+                "model_name_or_path": "kimi-k2.6",
                 "model_patch": "diff --git a/a.py b/a.py\n",
             }
         )
@@ -282,7 +282,7 @@ def test_batch_runner_seeds_and_skips_completed_predictions(tmp_path, monkeypatc
             json.dumps(
                 {
                     "instance_id": instance.instance_id,
-                    "model_name_or_path": "kimi-k2.5",
+                    "model_name_or_path": "kimi-k2.6",
                     "model_patch": "diff --git a/b.py b/b.py\n",
                 },
                 ensure_ascii=False,
@@ -295,7 +295,7 @@ def test_batch_runner_seeds_and_skips_completed_predictions(tmp_path, monkeypatc
             instance_id=instance.instance_id,
             repo=str(instance.repo or ""),
             base_commit=str(instance.base_commit or ""),
-            model="kimi-k2.5",
+            model="kimi-k2.6",
             dataset_repo=None,
             split=None,
             started_at="2026-04-17T00:00:00+00:00",
@@ -394,7 +394,7 @@ def test_batch_runner_skips_previously_attempted_failures_by_default(
             json.dumps(
                 {
                     "instance_id": instance.instance_id,
-                    "model_name_or_path": "kimi-k2.5",
+                    "model_name_or_path": "kimi-k2.6",
                     "model_patch": "diff --git a/c.py b/c.py\n",
                 },
                 ensure_ascii=False,
@@ -407,7 +407,7 @@ def test_batch_runner_skips_previously_attempted_failures_by_default(
             instance_id=instance.instance_id,
             repo=str(instance.repo or ""),
             base_commit=str(instance.base_commit or ""),
-            model="kimi-k2.5",
+            model="kimi-k2.6",
             dataset_repo=None,
             split=None,
             started_at="2026-04-17T00:00:00+00:00",

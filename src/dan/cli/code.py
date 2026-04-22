@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from dan.cli import load_env, normalize_workspace_root, resolve_config
 from dan.cli import live_gateway
+from dan.cli.task_lanes import classify_code_task_lane
 from dan.cli.code_product import (
     CODE_PRODUCT_NAME,
     CodeProductConfig,
@@ -58,6 +59,10 @@ from dan.worker.organisms.local_runtime import (
     ToolLoopCompletionProvider,
     attach_local_tooling_to_coding_organism,
     available_local_organism_tools,
+)
+from dan.worker.organisms.coding_conversation import (
+    _fallback_project_planner_decision,
+    _fallback_review_decision,
 )
 from dan.worker.signaling import EvidenceRef
 from dan.tools.git_diff import git_diff as git_diff_tool
@@ -2349,32 +2354,54 @@ async def _run_orchestrated_turn(
             [*list(acceptance_criteria), *list(decision.acceptance_criteria)]
         ) or list(acceptance_criteria)
         existing_project_plan = _load_project_plan(session)
-        project_planner_session = _load_project_planner_session(
-            session=session,
-            planner=project_planner,
-        )
-        planner_decision, project_planner_session = await project_planner.plan_project(
-            session=project_planner_session,
+        task_lane_policy = classify_code_task_lane(
             user_message=objective,
-            requested_objective=next_objective,
-            requested_acceptance_criteria=effective_acceptance_criteria,
-            context=_project_planner_context(
-                session=session,
-                workspace_root=workspace_root,
-                model=model,
-                thinking_mode=thinking_mode,
-                tool_ids=tool_ids,
-                approval_mode=approval_mode,
-                acceptance_criteria=effective_acceptance_criteria,
-                existing_plan=existing_project_plan,
-                benchmark_context=benchmark_context,
+            coding_objective=next_objective,
+            benchmark_mode=benchmark_context is not None,
+            pending_clarification=bool(session.pending_clarification),
+            existing_plan_milestones=(
+                len(existing_project_plan.milestones)
+                if existing_project_plan is not None
+                else 0
             ),
         )
-        _store_project_planner_session(
-            session=session,
-            planner=project_planner,
-            durable_session=project_planner_session,
-        )
+        if task_lane_policy.use_fallback_pre_run_planner:
+            planner_decision = _fallback_project_planner_decision(
+                user_message=objective,
+                requested_objective=next_objective,
+                requested_acceptance_criteria=list(effective_acceptance_criteria),
+                existing_plan=existing_project_plan,
+            )
+            orchestrator_state = dict(session.orchestrator_state)
+            orchestrator_state.pop("project_planner_session", None)
+            session.orchestrator_state = orchestrator_state
+        else:
+            project_planner_session = _load_project_planner_session(
+                session=session,
+                planner=project_planner,
+            )
+            planner_decision, project_planner_session = await project_planner.plan_project(
+                session=project_planner_session,
+                user_message=objective,
+                requested_objective=next_objective,
+                requested_acceptance_criteria=effective_acceptance_criteria,
+                context=_project_planner_context(
+                    session=session,
+                    workspace_root=workspace_root,
+                    model=model,
+                    thinking_mode=thinking_mode,
+                    tool_ids=tool_ids,
+                    approval_mode=approval_mode,
+                    acceptance_criteria=effective_acceptance_criteria,
+                    existing_plan=existing_project_plan,
+                    benchmark_context=benchmark_context,
+                ),
+            )
+            _store_project_planner_session(
+                session=session,
+                planner=project_planner,
+                durable_session=project_planner_session,
+            )
         project_plan = CodingProjectPlan(
             project_goal=planner_decision.project_goal,
             plan_summary=planner_decision.plan_summary,
@@ -2472,27 +2499,35 @@ async def _run_orchestrated_turn(
                 event_logger.update_context(trace_id=report.trace_id)
                 reports.append(report)
 
-                review, orchestrator_session = await controller.review_coding_result(
-                    session=orchestrator_session,
-                    objective=next_objective,
-                    report_summary=_report_context(report),
-                    context=_conversation_context(
+                review_report_context = _report_context(report)
+                if task_lane_policy.use_fallback_post_run_review:
+                    review = _fallback_review_decision(
+                        objective=next_objective,
+                        report_summary=review_report_context,
+                        benchmark_mode=benchmark_context is not None,
+                    )
+                else:
+                    review, orchestrator_session = await controller.review_coding_result(
+                        session=orchestrator_session,
+                        objective=next_objective,
+                        report_summary=review_report_context,
+                        context=_conversation_context(
+                            session=session,
+                            workspace_root=workspace_root,
+                            model=model,
+                            thinking_mode=thinking_mode,
+                            tool_ids=tool_ids,
+                            approval_mode=approval_mode,
+                            acceptance_criteria=effective_acceptance_criteria,
+                            benchmark_context=benchmark_context,
+                            additional_reports=reports,
+                        ),
+                    )
+                    _store_orchestrator_session(
                         session=session,
-                        workspace_root=workspace_root,
-                        model=model,
-                        thinking_mode=thinking_mode,
-                        tool_ids=tool_ids,
-                        approval_mode=approval_mode,
-                        acceptance_criteria=effective_acceptance_criteria,
-                        benchmark_context=benchmark_context,
-                        additional_reports=reports,
-                    ),
-                )
-                _store_orchestrator_session(
-                    session=session,
-                    controller=controller,
-                    durable_session=orchestrator_session,
-                )
+                        controller=controller,
+                        durable_session=orchestrator_session,
+                    )
                 if review.public_response:
                     _record_assistant(review.public_response)
 

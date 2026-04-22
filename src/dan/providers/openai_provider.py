@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import inspect
 import json
 import httpx
@@ -26,6 +27,20 @@ from dan.providers import (
 )
 
 
+@dataclass(frozen=True)
+class _OpenAICompatibilityProfile:
+    """Backend behavior knobs for OpenAI-compatible endpoints."""
+
+    family: str = "generic"
+    supports_exact_tool_choice: bool = True
+    supports_required_tool_choice: bool = True
+    forced_temperature: float | None = None
+    disable_thinking_for_explicit_tool_choice: bool = False
+    low_budget_text_thinking_threshold: int | None = None
+    disabled_thinking_temperature: float | None = None
+    stream_via_complete: bool = False
+
+
 class OpenAIProvider:
     """Provider for OpenAI and any OpenAI-compatible endpoint (e.g. vectorengine.ai)."""
 
@@ -36,6 +51,7 @@ class OpenAIProvider:
     _CONNECT_TIMEOUT_CAP_SECONDS = 10.0
     _SDK_MAX_RETRIES = 0
     _IMPORTED_ASYNC_OPENAI = AsyncOpenAI
+    _MOONSHOT_HOSTS = frozenset({"api.moonshot.ai"})
 
     @classmethod
     def _resolve_async_openai_cls(cls) -> type[Any]:
@@ -180,11 +196,7 @@ class OpenAIProvider:
         extra_body = dict(call_kwargs.get("extra_body") or {})
         reasoning = call_kwargs.get("reasoning", extra_body.get("reasoning"))
         thinking = call_kwargs.get("thinking", extra_body.get("thinking"))
-        base_url_host: str | None = None
-        base_url = getattr(self._client, "base_url", None)
-        if base_url is not None:
-            parsed = urlparse(str(base_url))
-            base_url_host = parsed.netloc or None
+        base_url_host = self._base_url_host()
         details: dict[str, Any] = {
             "provider_name": type(self).__name__,
             "provider_base_url_host": base_url_host,
@@ -207,14 +219,58 @@ class OpenAIProvider:
             details["thinking_type"] = str(thinking)
         return details
 
+    @staticmethod
+    def _normalize_model_name(model: str) -> str:
+        return str(model or "").strip().lower()
+
     @classmethod
-    def get_model_behavior(cls, model: str) -> ModelBehaviorProfile:
-        normalized = str(model or "").strip().lower()
-        is_kimi = normalized.startswith("kimi-")
+    def _normalize_base_url_host(cls, base_url: Any) -> str | None:
+        if base_url is None:
+            return None
+        parsed = urlparse(str(base_url))
+        host = str(parsed.netloc or parsed.path or "").strip().lower()
+        return host or None
+
+    def _base_url_host(self) -> str | None:
+        host = self._normalize_base_url_host(getattr(self, "_base_url", None))
+        if host:
+            return host
+        client = getattr(self, "_client", None)
+        return self._normalize_base_url_host(getattr(client, "base_url", None))
+
+    def _compatibility_profile(self, model: str) -> _OpenAICompatibilityProfile:
+        normalized = self._normalize_model_name(model)
+        host = self._base_url_host()
+        is_moonshot_host = bool(
+            host
+            and (host in self._MOONSHOT_HOSTS or any(host.endswith(f".{value}") for value in self._MOONSHOT_HOSTS))
+        )
+        is_moonshot_like = (
+            is_moonshot_host
+            or normalized.startswith("moonshot-")
+            or normalized.startswith("kimi-")
+        )
+        if not is_moonshot_like:
+            return _OpenAICompatibilityProfile()
+
+        low_budget_threshold = 16_000 if normalized.startswith("kimi-k2") else None
+        return _OpenAICompatibilityProfile(
+            family="moonshot",
+            supports_exact_tool_choice=False,
+            supports_required_tool_choice=False,
+            forced_temperature=1.0 if normalized.startswith("kimi-") else None,
+            disable_thinking_for_explicit_tool_choice=True,
+            low_budget_text_thinking_threshold=low_budget_threshold,
+            disabled_thinking_temperature=0.6,
+            stream_via_complete=normalized.startswith("kimi-"),
+        )
+
+    def get_model_behavior(self, model: str) -> ModelBehaviorProfile:
+        profile = self._compatibility_profile(model)
         return ModelBehaviorProfile(
             supports_tool_calls=True,
-            supports_exact_tool_choice=not is_kimi,
-            supports_required_tool_choice=not is_kimi,
+            supports_exact_tool_choice=profile.supports_exact_tool_choice,
+            supports_required_tool_choice=profile.supports_required_tool_choice,
             assistant_replay_mode="raw",
         )
 
@@ -234,35 +290,36 @@ class OpenAIProvider:
             (system if m.get("role") == "system" else non_system).append(m)
         return system + non_system
 
-    @staticmethod
-    def _normalize_temperature(model: str, temperature: float | None) -> float | None:
+    def _normalize_temperature(self, model: str, temperature: float | None) -> float | None:
         """Normalize provider-specific temperature constraints for compatible backends.
 
-        Some Kimi models exposed via OpenAI-compatible endpoints reject any
-        temperature other than ``1``. Coerce those requests here so higher-level
-        chat/runtime code can keep its provider-agnostic defaults.
+        Some Moonshot/Kimi-compatible routes reject any temperature other than
+        ``1``. Coerce those requests here so higher-level chat/runtime code can
+        keep provider-agnostic defaults.
         """
         if temperature is None:
             return None
-        if str(model or "").strip().lower().startswith("kimi-"):
-            return 1.0
+        forced_temperature = self._compatibility_profile(model).forced_temperature
+        if forced_temperature is not None:
+            return forced_temperature
         return temperature
 
-    @staticmethod
     def _apply_compatibility_defaults(
+        self,
         model: str,
         call_kwargs: dict[str, Any],
     ) -> dict[str, Any]:
-        """Apply provider-specific request defaults for compatible backends.
+        """Apply backend-specific request defaults for compatible backends.
 
-        Moonshot/Kimi models may enable thinking by default. That can either
+        Moonshot-style backends may enable thinking by default. That can either
         consume the entire output budget before visible text is returned or
         delay explicit tool calls unnecessarily. When callers have *not*
-        explicitly opted into thinking:
+        explicitly opted into thinking, normalize the request at this provider
+        seam instead of duplicating model-specific fixes at call sites.
 
-        - For low-budget plain-text ``kimi-k2.5`` calls, disable thinking so
-          the output budget is reserved for final content.
-        - For Moonshot/Kimi exact/required tool requests, disable thinking so
+        - For low-budget plain-text K2-family calls, disable thinking so the
+          output budget is reserved for final content.
+        - For Moonshot-style exact/required tool requests, disable thinking so
           the model can emit the requested tool call promptly.
         """
         reasoning_override = (
@@ -279,21 +336,32 @@ class OpenAIProvider:
                 elif normalized_reasoning in {"0", "false", "disabled", "off"}:
                     call_kwargs["reasoning"] = {"enabled": False}
 
-        normalized = str(model or "").strip().lower()
-        is_moonshot_family = normalized.startswith("moonshot-") or normalized.startswith("kimi-")
-        if not is_moonshot_family:
-            return call_kwargs
+        profile = self._compatibility_profile(model)
         if "thinking" not in call_kwargs:
             tool_choice = call_kwargs.get("tool_choice")
-            if call_kwargs.get("tools") and tool_choice not in (None, "", "auto"):
+            if (
+                profile.disable_thinking_for_explicit_tool_choice
+                and call_kwargs.get("tools")
+                and tool_choice not in (None, "", "auto")
+            ):
                 call_kwargs["thinking"] = {"type": "disabled"}
-            elif normalized.startswith("kimi-k2.5") and not call_kwargs.get("tools"):
+            elif (
+                profile.low_budget_text_thinking_threshold is not None
+                and not call_kwargs.get("tools")
+            ):
                 max_tokens = call_kwargs.get("max_tokens")
-                if isinstance(max_tokens, int) and 0 < max_tokens < 16000:
+                if (
+                    isinstance(max_tokens, int)
+                    and 0 < max_tokens < profile.low_budget_text_thinking_threshold
+                ):
                     call_kwargs["thinking"] = {"type": "disabled"}
         thinking = call_kwargs.get("thinking")
-        if isinstance(thinking, dict) and thinking.get("type") == "disabled":
-            call_kwargs["temperature"] = 0.6
+        if (
+            isinstance(thinking, dict)
+            and thinking.get("type") == "disabled"
+            and profile.disabled_thinking_temperature is not None
+        ):
+            call_kwargs["temperature"] = profile.disabled_thinking_temperature
         return call_kwargs
 
     @staticmethod
@@ -308,6 +376,138 @@ class OpenAIProvider:
         if extra_body:
             call_kwargs["extra_body"] = extra_body
         return call_kwargs
+
+    @classmethod
+    def _normalize_json_schema_for_openai_compatibility(cls, schema: Any) -> Any:
+        """Normalize JSON Schema for stricter OpenAI-compatible backends.
+
+        Some backends reject schemas that combine a parent-level ``type`` with
+        ``anyOf`` / ``oneOf`` variants that only contribute ``required`` keys.
+        Preserve the existing schema semantics by recursively moving the parent
+        ``type`` onto variants that do not already declare one.
+        """
+        if isinstance(schema, list):
+            return [cls._normalize_json_schema_for_openai_compatibility(item) for item in schema]
+        if not isinstance(schema, dict):
+            return schema
+
+        normalized = {
+            key: cls._normalize_json_schema_for_openai_compatibility(value)
+            for key, value in schema.items()
+        }
+
+        parent_type = normalized.get("type")
+        parent_required = normalized.get("required")
+        parent_properties = normalized.get("properties")
+        parent_additional_properties = normalized.get("additionalProperties")
+        parent_items = normalized.get("items")
+        if isinstance(parent_required, list):
+            parent_required = [
+                str(name).strip() for name in parent_required if str(name).strip()
+            ]
+        else:
+            parent_required = None
+
+        moved_parent_type = False
+        moved_parent_required = False
+        moved_parent_properties = False
+        moved_parent_additional_properties = False
+        moved_parent_items = False
+        for keyword in ("anyOf", "oneOf"):
+            variants = normalized.get(keyword)
+            if not isinstance(variants, list):
+                continue
+            rebuilt_variants: list[Any] = []
+            moved_for_keyword = False
+            for variant in variants:
+                if not isinstance(variant, dict):
+                    rebuilt_variants.append(variant)
+                    continue
+                rebuilt_variant = dict(variant)
+                if isinstance(parent_type, str) and "type" not in rebuilt_variant:
+                    rebuilt_variant["type"] = parent_type
+                    moved_parent_type = True
+                    moved_for_keyword = True
+                if parent_type == "object":
+                    if isinstance(parent_properties, dict) and "properties" not in rebuilt_variant:
+                        rebuilt_variant["properties"] = dict(parent_properties)
+                        moved_for_keyword = True
+                        moved_parent_properties = True
+                    if (
+                        parent_additional_properties is not None
+                        and "additionalProperties" not in rebuilt_variant
+                    ):
+                        rebuilt_variant["additionalProperties"] = (
+                            cls._normalize_json_schema_for_openai_compatibility(
+                                parent_additional_properties
+                            )
+                        )
+                        moved_for_keyword = True
+                        moved_parent_additional_properties = True
+                elif parent_type == "array":
+                    if parent_items is not None and "items" not in rebuilt_variant:
+                        rebuilt_variant["items"] = cls._normalize_json_schema_for_openai_compatibility(
+                            parent_items
+                        )
+                        moved_for_keyword = True
+                        moved_parent_items = True
+                if parent_required is not None:
+                    variant_required = rebuilt_variant.get("required")
+                    if isinstance(variant_required, list):
+                        merged_required = [
+                            *parent_required,
+                            *[
+                                str(name).strip()
+                                for name in variant_required
+                                if str(name).strip() and str(name).strip() not in parent_required
+                            ],
+                        ]
+                    else:
+                        merged_required = list(parent_required)
+                    rebuilt_variant["required"] = merged_required
+                    moved_parent_required = True
+                    moved_for_keyword = True
+                rebuilt_variants.append(rebuilt_variant)
+            if moved_for_keyword:
+                normalized[keyword] = rebuilt_variants
+        if moved_parent_type:
+            normalized.pop("type", None)
+        if moved_parent_required:
+            normalized.pop("required", None)
+        if moved_parent_properties:
+            normalized.pop("properties", None)
+        if moved_parent_additional_properties:
+            normalized.pop("additionalProperties", None)
+        if moved_parent_items:
+            normalized.pop("items", None)
+
+        return normalized
+
+    @classmethod
+    def _normalize_tool_schemas_for_openai_compatibility(
+        cls,
+        tools: Any,
+    ) -> Any:
+        if not isinstance(tools, list):
+            return tools
+
+        normalized_tools: list[Any] = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                normalized_tools.append(tool)
+                continue
+            normalized_tool = dict(tool)
+            function_payload = normalized_tool.get("function")
+            if isinstance(function_payload, dict):
+                normalized_function = dict(function_payload)
+                parameters = normalized_function.get("parameters")
+                if isinstance(parameters, dict):
+                    normalized_function["parameters"] = (
+                        cls._normalize_json_schema_for_openai_compatibility(parameters)
+                    )
+                normalized_tool["function"] = normalized_function
+            normalized_tools.append(normalized_tool)
+        return normalized_tools
 
     @staticmethod
     def _dump_model_object(obj: Any) -> dict[str, Any]:
@@ -463,6 +663,10 @@ class OpenAIProvider:
             "messages": messages,
             **kwargs,
         }
+        if "tools" in call_kwargs:
+            call_kwargs["tools"] = self._normalize_tool_schemas_for_openai_compatibility(
+                call_kwargs.get("tools")
+            )
         if effective_temperature is not None:
             call_kwargs["temperature"] = effective_temperature
         if max_tokens is not None:
@@ -518,11 +722,10 @@ class OpenAIProvider:
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[StreamChunk]:
-        # Some Kimi/OpenAI-compatible endpoints accept streaming requests but
-        # emit empty text deltas, which leaves downstream workflows with blank
-        # outputs despite non-zero completion tokens. Fall back to a regular
+        # Some OpenAI-compatible routes emit empty text deltas for models that
+        # otherwise return valid completion text. Fall back to a regular
         # completion call and surface the full text as a synthetic stream.
-        if str(model or "").strip().lower().startswith("kimi-"):
+        if self._compatibility_profile(model).stream_via_complete:
             result = await self.complete(
                 messages=messages,
                 model=model,
@@ -554,6 +757,10 @@ class OpenAIProvider:
             "stream_options": {"include_usage": True},
             **kwargs,
         }
+        if "tools" in call_kwargs:
+            call_kwargs["tools"] = self._normalize_tool_schemas_for_openai_compatibility(
+                call_kwargs.get("tools")
+            )
         if effective_temperature is not None:
             call_kwargs["temperature"] = effective_temperature
         if max_tokens is not None:

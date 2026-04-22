@@ -76,6 +76,20 @@ DAN_ENABLE_TIER_POLICY=1 # Auto-assign models by task difficulty
 
 For DAN control-plane migration testing, you can also set `DAN_CONTROL_PLANE=v1` or `DAN_CONTROL_PLANE=v2`. `v2` switches the server chat surface onto the new DAN-v2 top-level controller with Code, Research, and Incident Commander lanes. Inside DAN-v2, code turns and Incident Commander repair turns now use the dedicated coding organism directly by default instead of always falling through to the shared legacy substrate; if that direct runtime raises, the request falls back to the old handoff path. Use `DAN_V2_DIRECT_CODE_RUNTIME=0` to force the legacy handoff path globally, `surface_context["direct_code_execution"]=false` to disable the direct runtime for one surface/request, or `/api/chat/message` `control_plane_mode=v1|v2` to override the DAN-v1 vs DAN-v2 selector per request during migration testing. For staged rollout, remote/local chat clients now honor `DAN_CLI_CONTROL_PLANE` / `DAN_CHAT_CONTROL_PLANE`, adapter-originated chat now honors `DAN_ADAPTERS_CONTROL_PLANE` plus surface-specific env keys such as `DAN_TELEGRAM_CONTROL_PLANE` or `DAN_WECHAT_CONTROL_PLANE` whether it comes through the in-process bridge or a direct adapter POST path, the local in-process chat runtime now routes both chat and `/run` requests through the same shared router/stream seam instead of keeping its own legacy branch, and the server router itself now supports `DAN_<SURFACE_TYPE>_CONTROL_PLANE` plus `DAN_INTERNAL_CONTROL_PLANE` / `DAN_EXTERNAL_CONTROL_PLANE` so editor/browser-style chat can move ahead of messaging transports without per-caller patching.
 
+Gateway-backed live/product surfaces now also share one in-process API dispatch broker. `dan code`, `dan research`, `dan reader`, `dan organism`, and `dan super-organism --live` all enter that same gateway-backed provider seam, so you can limit queue depth, in-flight calls, and optional request pacing centrally instead of patching each organism separately:
+
+```env
+DAN_LLM_GATEWAY_DISPATCH_ENABLED=1
+DAN_LLM_GATEWAY_MAX_IN_FLIGHT=4
+DAN_LLM_GATEWAY_MAX_QUEUE_SIZE=32
+DAN_LLM_GATEWAY_MAX_REQUESTS_PER_SECOND=0
+DAN_LLM_GATEWAY_QUEUE_TIMEOUT_SECONDS=30
+# Optional: isolate one runtime onto its own broker group
+# DAN_LLM_GATEWAY_DISPATCH_GROUP=default
+```
+
+Set `DAN_LLM_GATEWAY_MAX_REQUESTS_PER_SECOND` only when you want explicit pacing; `0` leaves pacing off while keeping the shared queue and in-flight cap.
+
 ### Run the Visual Editor
 
 ```bash
@@ -90,6 +104,32 @@ cd editor && npm run dev
 Open `http://localhost:5173`. The editor connects to the backend at `localhost:8000`.
 
 **Chat: build + run a workflow** — Open a workflow tab, set chat to **Agent**, use `plan_graph_mutations` to edit, then ask the model to **`start_run`** with any `inputs` (e.g. `watchlist_path`). **Author equity/watchlist workflows in DAN (Agent chat), not by pasting large generated graphs/code from outside.** Prompts: [`docs/chat-equity-workflow-cookbook.md`](docs/chat-equity-workflow-cookbook.md).
+
+### Run the Super DAN Organism
+
+This is a Super DAN CLI for the "organized organism" story. The default path is deterministic and no-server: it now runs the cheaper 20-cell operator mode across brain, scout, claim, immune, memory, experiment, and synthesis organs, accepts the user request as the objective, then emits a traceable universal-agent contract with board heartbeats, state deltas, resource requests, reallocations, native execution nodes, and a final verdict. For website objectives it materializes a self-contained static website artifact under `./website` unless `--plan-only` or `--json` is used, and the default terminal output leads with the built files. Use `--cell-count 100 --active-cell-cap 20 --organism-id super-dan-100` only when you want the larger showcase.
+
+Use `--live` when you want the organism to actually run a model/tool execution lane. Live Super DAN now supports both website-like objectives and general coding/build objectives in the current workspace, uses the shared `WorkerCoreExecutor` plus local tools to inspect/mutate files, runs a separate read-only validator pass before reporting success, surfaces aggregate token usage for the build plus validator lanes when the provider returns it, persists a full shared-schema run log under `.dan-super/runs/turn-XX/events.jsonl`, and does **not** call the separate DAN Code or DAN Research product shells internally.
+
+```bash
+dan super-organism
+# or
+dan super-organism "please build our product website with cool animation"
+# or
+dan super-organism "please build our product website with cool animation" --plan-only
+# or
+dan super-organism "please build our product website with cool animation" --verbose
+# or
+dan super-organism "please build our product website with cool animation" --live --model "$DAN_LLM_MODEL"
+# or
+dan super-organism "implement a small feature for this project" --live --model "$DAN_LLM_MODEL"
+# or
+dan super-organism "build a cool website for this product" --cell-count 100 --active-cell-cap 20 --organism-id super-dan-100
+# or
+dan-super-organism "LangGraph" --json
+```
+
+The default text output is compact and build-first for terminal readability. Use `--verbose` or `--json` for the full deterministic report, which is explicitly labeled `mode="deterministic_demo"`. Live mode requires normal DAN LLM configuration (`DAN_LLM_API_KEY` / base URL / model, or matching CLI overrides). For website objectives it writes `index.html`, `styles.css`, `app.js`, and `README.md`, then requires actual file changes plus a passing read-only validation round before success. For general coding/build objectives it reports success only after the native tool loop makes real workspace file mutations and the validator approves the result. When the provider reports usage, the live CLI now shows aggregate prompt/completion/total tokens for the full build plus validator pass. Every live run now also prints its `Event Log:` path and writes a replayable `.dan-super/runs/turn-XX/events.jsonl` trace using the same shared `organism_log_v1` schema as DAN Code and DAN Research.
 
 ### Run the Reference Coding Organism
 
@@ -181,7 +221,7 @@ The workspace-local product directory now includes:
 
 Only concrete investigation/verification/comparison requests launch the bounded research organ; ordinary chat turns, clarifications, and post-run review decisions stay at the durable orchestrator layer.
 
-Before the first bounded run starts, DAN Research inserts one thin intention-breaker step at the same product seam. That planner decomposes the user ask into small concrete subproblems, records why each subproblem matters, states what evidence would resolve it, groups related subproblems into explicit parallel workstreams with aggregation hints, and emits typed `evidence_targets` for exact unresolved facts with aliases, preferred sites/source families, acceptable proxy rules, explicit stop conditions, separate `not_found` vs `not_available` guidance, and the newer `entity_type` / `metric_kind` / `series_kind` / `comparison_basis` hints that help the model keep futures vs spot series, AUM vs market-cap-style fields, and thesis-to-vehicle fit separate. The bounded deep-research organ still does the actual search/synthesis work; the thin planner just gives it a sharper first-pass map. Follow-up passes are now intentionally simpler: they narrow deterministically from the latest report/review context instead of paying for another heavyweight continuation-planner LLM call every turn, and a session-level frozen-claim ledger keeps already-settled facts from being reopened casually in later retries.
+Before the first bounded run starts, DAN Research inserts one thin intention-breaker step at the same product seam. That planner decomposes the user ask into small concrete subproblems, records why each subproblem matters, states what evidence would resolve it, groups related subproblems into explicit parallel workstreams with aggregation hints, and emits typed `evidence_targets` for exact unresolved facts with aliases, preferred sites/source families, acceptable proxy rules, explicit stop conditions, separate `not_found` vs `not_available` guidance, and the newer `entity_type` / `metric_kind` / `series_kind` / `comparison_basis` hints that help the model keep futures vs spot series, AUM vs market-cap-style fields, and thesis-to-vehicle fit separate. That same planner now also asks, explicitly, what answer format best serves the query and what coverage is actually needed, so DAN Research can choose a comparison brief, trend snapshot, verification note, buyer's guide, investment memo, or blocker note from the ask itself instead of inheriting one visible house template. The bounded deep-research organ still does the actual search/synthesis work; the thin planner just gives it a sharper first-pass map. Follow-up passes are now intentionally simpler: they narrow deterministically from the latest report/review context instead of paying for another heavyweight continuation-planner LLM call every turn, and a session-level frozen-claim ledger keeps already-settled facts from being reopened casually in later retries.
 
 Inside the bounded organ, reader cells no longer inherit the full final-report contract. Each deep-research reader now returns one compact evidence note for its own lane, and the read-only local runtime will nudge that reader to stop searching and finalize once it already has enough bounded grounding. That keeps successful search/tool rounds from escalating away before the lead synthesis cell can assemble the final report.
 
@@ -190,15 +230,70 @@ Research width and depth are now explicit operator controls:
 ```bash
 dan research --workspace . "Compare our local runtime limits with the docs"
 dan research --workspace . --research-readers 8 --depth deep
+dan research --workspace . --tool pdf_read --task-lane fast "Review this PDF and summarize the main arguments by section"
+dan research --workspace . --tool pdf_read --task-lane deep "Review this PDF and summarize the main arguments by section"
 dan research --workspace . --max-supervision-loops 3
 dan research --workspace . --show-config
 ```
 
 - width: auto-sized reader fan-out from task breadth, capped at `8` concurrent readers, with `--research-readers N` as an override
 - depth: `--depth shallow|standard|deep`, which maps to per-worker tool-loop budgets and can still be overridden directly with `--max-tool-rounds` and `--max-tool-calls`
+- task lane: `--task-lane auto|fast|deep`, which controls whether DAN Research uses the deterministic planner/review bypass (`fast`) or keeps the full control shell (`deep`) without abusing `--depth` just to force the old serial path
 - continuation loop: capped at `3` bounded passes by default so bad follow-up framing cannot loop forever; use `--max-supervision-loops N` or `DAN_RESEARCH_MAX_SUPERVISION_LOOPS` to tune it, and set the value to `0` / `unbounded` only when you explicitly want no cap
 - per-cell runtime budget: the research CLI now also resolves a default wall-clock ceiling per bounded cell (`60s` shallow, `120s` standard, `180s` deep) and passes it through the existing cell-budget membrane; override with `DAN_RESEARCH_MAX_RUNTIME_SECONDS`, or set it to `0`/negative to leave runtime unbounded
-- default research tool basket: `list_directory`, `file_read`, `web_search`, `git_status`, `git_diff`, `git_log`
+- default research tool basket: `list_directory`, `file_read`, `web_search`
+
+For local PDF review, add `--tool pdf_read` explicitly. The default DAN Research tool basket does not include `pdf_read` unless you opt into it.
+
+### Run DAN Reader
+
+If the job is document understanding rather than open-ended research, use the flatter `DAN Reader` surface instead of the deep-research product shell:
+
+```bash
+dan read summarize /abs/path/to/paper.pdf
+dan read extract /abs/path/to/paper.pdf --format json
+dan reader convert /abs/path/to/paper.pdf --format latex --output paper.tex
+
+# direct console script aliases
+dan-read summarize /abs/path/to/paper.pdf
+dan-reader summarize /abs/path/to/paper.pdf
+danread summarize /abs/path/to/paper.pdf
+danreader summarize /abs/path/to/paper.pdf
+```
+
+`DAN Reader` is intentionally stateless in this first pass. It does not create a `.dan-reader/` workspace directory or run a planner/reviewer loop. The pipeline is:
+
+- direct text-first PDF extraction by default, with optional shared `pdf_read` reuse through `--pdf-mode hybrid|vision`
+- lightweight section splitting from paper-style headings, with parent/child path preservation on real journal PDFs
+- cleaned section text that strips common download/header boilerplate and repairs line-break hyphenation before summaries run
+- optional parallel section summarization when a model is configured, with one reusable section packet contract (`span_id`, `section_path`, `quotes`, `claims`, `confidence`, follow-up flags)
+- direct Markdown / LaTeX / JSON rendering
+
+Supported actions:
+
+- `summarize` — section-by-section summaries with page refs
+- `extract` — metadata, abstract, and heading/page-range extraction
+- `convert` — structured PDF-to-Markdown or PDF-to-LaTeX export
+
+Useful flags:
+
+- `--format md|latex|json`
+- `--pdf-mode text|hybrid|vision`
+- `--start-page N --end-page M` to bound extraction to a page window
+- `--vision-model MODEL` and `--vision-prompt ...` when using `hybrid` or `vision`
+- `--no-llm` to force deterministic snippet summaries
+- `--parallelism N` to control concurrent section summaries
+- `--include-backmatter` to keep sections like `References` in summarize output
+
+Examples:
+
+```bash
+dan read extract /abs/path/to/paper.pdf --pdf-mode hybrid --format json
+dan read summarize /abs/path/to/paper.pdf --pdf-mode hybrid --vision-model openai/gpt-4o-mini
+dan read extract /abs/path/to/paper.pdf --pdf-mode vision --start-page 20 --end-page 22 --format json
+```
+
+For journal-style PDFs, `--pdf-mode hybrid` is currently the best default. It keeps the stronger text-derived outline and uses the shared vision-backed path where needed. Pure `--pdf-mode vision` is usable for bounded page slices, especially on image-heavy content, but its heading recovery is currently weaker on papers.
 
 Like the thinner `--research-only` organism surface, DAN Research keeps the read-only runtime split for research workers, so it can use `web_search` plus local read tools but not write-capable tools. `web_search` now covers both discovery and grounded page reads on this surface: `search_depth="thorough"` or `fetch_content=true` fetches the top authoritative result pages internally, and a direct `url=` can be passed through the same tool name when the worker already knows the page it needs. Grounded page reads now also run concurrently with bounded fetch deadlines and reuse cache/inflight work on repeated verification-style queries, which cuts down the long quiet stretches that used to happen during current-fact rechecks. The generic capability-layer `web_search(fetch_content=true)` path now batches those top-result fetches in parallel too, so chat/capability callers and DAN Research both get the same concurrent grounding behavior instead of one surface staying serial. Behind that unchanged tool surface, Beacon Search now provides the internal broker/corpus/search-eval subsystem DAN uses for corpus-first retrieval, chunk-level evidence IDs, legacy shadow comparisons, and first-party search-state accumulation.
 

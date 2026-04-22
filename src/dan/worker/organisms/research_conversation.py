@@ -703,6 +703,8 @@ class ResearchConversationIntentionPlan(BaseModel):
     answer_goal: str = ""
     refined_objective: str = ""
     plan_summary: str = ""
+    recommended_answer_shape: str = ""
+    coverage_priorities: list[str] = Field(default_factory=list)
     acceptance_criteria: list[str] = Field(default_factory=list)
     subproblems: list[ResearchConversationSubproblem] = Field(default_factory=list)
     workstreams: list[ResearchConversationWorkstream] = Field(default_factory=list)
@@ -809,6 +811,11 @@ def _conversation_plan_schema() -> dict[str, Any]:
             "answer_goal": {"type": "string"},
             "refined_objective": {"type": "string"},
             "plan_summary": {"type": "string"},
+            "recommended_answer_shape": {"type": "string"},
+            "coverage_priorities": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
             "acceptance_criteria": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -958,7 +965,12 @@ def _conversation_plan_contract() -> OutputContract:
             "supplied, use unresolved issues to build a narrower follow-up plan instead "
             "of another broad sweep, and do not reopen facts that were already settled "
             "strongly enough unless a contradiction or blocking audit issue explicitly "
-            "reopens them."
+            "reopens them. Also choose the answer shape that best fits the user's query "
+            "and decision need, and list the content priorities the final answer must "
+            "cover. Ask yourself explicitly: what final format would help this user most, "
+            "what content is necessary to answer the query well, and what content would be "
+            "noise or overkill for this ask. Those are synthesis cues, not a demand for "
+            "one fixed report template."
         ),
         expected_return_shape=json.dumps(
             {
@@ -966,6 +978,8 @@ def _conversation_plan_contract() -> OutputContract:
                 "answer_goal": "<required>",
                 "refined_objective": "<required>",
                 "plan_summary": "<optional>",
+                "recommended_answer_shape": "<optional>",
+                "coverage_priorities": ["<optional>"],
                 "acceptance_criteria": ["<optional>"],
                 "subproblems": [
                     {
@@ -1028,9 +1042,16 @@ def _conversation_turn_contract() -> OutputContract:
             "verification, or evidence-gathering request. Before choosing action=research, "
             "use context.facts.current_date, timezone, and time_awareness_policy to "
             "classify the request into one temporal frame: current-as-of-runtime, "
-            "historical snapshot, trend over time, or timeless/default. When the user is "
-            "asking you to turn already-grounded work into a final memo/report without "
-            "launching another bounded run, keep action=respond, set "
+            "historical snapshot, trend over time, or timeless/default. When you choose "
+            "action=research, set delivery_target to the best-fit answer shape for this "
+            "query and decision need, such as a comparison brief, trend snapshot, "
+            "verification note, buyer's guide, investment memo, or blocker note. Ask "
+            "yourself explicitly: what format best serves this query, what content must "
+            "the final answer cover to be useful, and what presentation would help the "
+            "user act on it. Treat delivery_target as synthesis guidance, not a fixed "
+            "section template. When the user is asking you to turn already-grounded work "
+            "into a final memo/report without launching another bounded run, keep "
+            "action=respond, set "
             "response_kind=report_reply, and put the full Markdown artifact in "
             "artifact_markdown. If artifact_markdown is omitted because public_response "
             "already contains the final Markdown, the product will reuse public_response "
@@ -1117,6 +1138,153 @@ def _objective_facets(objective: str) -> list[str]:
         if clause and not _is_control_only_facet(clause) and clause not in facets:
             facets.append(clause)
     return facets[:4]
+
+
+_GENERIC_DELIVERY_TARGETS = frozenset(
+    {
+        "",
+        "memo",
+        "brief",
+        "report",
+        "research memo",
+        "research report",
+        "research brief",
+    }
+)
+
+
+def _infer_delivery_target(
+    objective: str,
+    *,
+    default: str = "research memo",
+) -> str:
+    explicit = _clean_text(default)
+    normalized_explicit = explicit.lower()
+    text = _clean_text(objective).lower()
+    if explicit and normalized_explicit not in _GENERIC_DELIVERY_TARGETS:
+        return explicit
+    if any(
+        token in text
+        for token in (
+            "worth buying",
+            " buy ",
+            "investment",
+            "etf",
+            "valuation",
+            "bull case",
+            "bear case",
+        )
+    ):
+        return "investment thesis memo with thesis, vehicle fit, risks, and decision caveats"
+    if any(
+        token in text
+        for token in ("compare", "versus", " vs ", "difference", "which is better", "pros and cons")
+    ):
+        return "comparison brief with direct conclusion first, side-by-side evidence, and the deciding differences"
+    if any(
+        token in text
+        for token in ("trend", "over time", "timeline", "recent changes", "past ", "last ", "history of")
+    ):
+        return "trend snapshot with the time window, what changed, and the main drivers"
+    if any(
+        token in text
+        for token in (
+            "verify",
+            "is it true",
+            "current status",
+            "active or not",
+            "still available",
+            "what is the status",
+        )
+    ):
+        return "verification note with current status, authoritative source trail, and conflicts or stale data"
+    if any(token in text for token in ("recommend", "should i", "what should", "decision", "whether to")):
+        return "decision memo with options, tradeoffs, risks, and a recommended next step"
+    return explicit or "research memo with the direct answer first, strongest evidence, and caveats"
+
+
+def _infer_coverage_priorities(
+    objective: str,
+    *,
+    delivery_target: str = "",
+) -> list[str]:
+    text = _clean_text(f"{objective} {delivery_target}").lower()
+    priorities: list[str] = []
+    if any(
+        token in text
+        for token in (
+            "worth buying",
+            " buy ",
+            "investment",
+            "etf",
+            "valuation",
+            "bull case",
+            "bear case",
+        )
+    ):
+        priorities.extend(
+            [
+                "State the thesis in decision terms and say what would have to be true for it to hold.",
+                "Check thesis-to-vehicle fit so the recommended product or proxy actually matches the user's target exposure.",
+                "Cover valuation, momentum, or current drivers only to the extent they change the investment decision.",
+                "Surface the main risks, policy constraints, and what evidence would change the view.",
+            ]
+        )
+    elif any(
+        token in text
+        for token in ("compare", "versus", " vs ", "difference", "which is better", "pros and cons")
+    ):
+        priorities.extend(
+            [
+                "Answer the comparison directly before listing background detail.",
+                "Use the comparison axes that actually decide the outcome for the user.",
+                "Show the strongest evidence on each side and explain the deciding differences.",
+                "Call out mismatches in scope, series identity, or freshness that make the comparison less clean.",
+            ]
+        )
+    elif any(
+        token in text
+        for token in ("trend", "over time", "timeline", "recent changes", "past ", "last ", "history of")
+    ):
+        priorities.extend(
+            [
+                "Anchor the time window clearly and use start/end values or dates where possible.",
+                "Explain what changed and the main drivers rather than listing disconnected points.",
+                "Keep series identity and comparability explicit when multiple benchmarks or vendors differ.",
+                "State the remaining freshness or publication-lag limits that matter for the trend reading.",
+            ]
+        )
+    elif any(
+        token in text
+        for token in (
+            "verify",
+            "is it true",
+            "current status",
+            "active or not",
+            "still available",
+            "what is the status",
+        )
+    ):
+        priorities.extend(
+            [
+                "State the exact status or identity claim as of the anchored date.",
+                "Prefer the shortest authoritative source trail that closes the fact.",
+                "Resolve or caveat stale vendor pages, phantom data, or conflicting secondary sources.",
+                "Say whether the fact is safe to rely on or still needs follow-up.",
+            ]
+        )
+    else:
+        priorities.extend(
+            [
+                "Answer the user's actual question directly before supporting detail.",
+                "Lead with the strongest evidence that bears on the conclusion.",
+                "Surface the caveats that materially change how much weight the answer deserves.",
+                "End with the clearest next step or decision implication.",
+            ]
+        )
+    for facet in _objective_facets(objective)[:2]:
+        priorities.append(f"Explicitly answer this part of the query: {facet}")
+    return _dedupe(priorities)[:5]
 
 
 def _numbered_objective_facets(objective: str) -> list[str]:
@@ -1965,8 +2133,15 @@ def _fallback_intention_plan(
     planning_mode: Literal["initial", "continuation"],
     previous_report: ResearchConversationReportSummary | None = None,
 ) -> ResearchConversationIntentionPlan:
-    _ = delivery_target
     refined_objective = _clean_text(objective) or "Investigate the user's research request."
+    recommended_answer_shape = _infer_delivery_target(
+        refined_objective,
+        default=delivery_target,
+    )
+    coverage_priorities = _infer_coverage_priorities(
+        refined_objective,
+        delivery_target=recommended_answer_shape,
+    )
     subproblems = _report_follow_up_subproblems(previous_report, context=context)
     if not subproblems:
         facets = _objective_facets(refined_objective)
@@ -2027,6 +2202,8 @@ def _fallback_intention_plan(
         answer_goal=refined_objective,
         refined_objective=refined_objective,
         plan_summary=plan_summary,
+        recommended_answer_shape=recommended_answer_shape,
+        coverage_priorities=coverage_priorities,
         acceptance_criteria=list(acceptance_criteria or context.acceptance_criteria),
         subproblems=subproblems,
         workstreams=workstreams,
@@ -2161,6 +2338,19 @@ def _normalize_intention_plan(
     plan_summary = _clean_text(plan.plan_summary) or (
         "Answer the user's objective by resolving the planned subproblems in a bounded way."
     )
+    recommended_answer_shape = _clean_text(plan.recommended_answer_shape) or _infer_delivery_target(
+        refined_objective or answer_goal or objective,
+        default=delivery_target,
+    )
+    coverage_priorities = _dedupe(
+        [
+            *_normalize_text_items(getattr(plan, "coverage_priorities", [])),
+            *_infer_coverage_priorities(
+                refined_objective or answer_goal or objective,
+                delivery_target=recommended_answer_shape,
+            ),
+        ]
+    )[:5]
     subproblems_by_id = {
         _clean_text(item.problem_id): item
         for item in cleaned_subproblems
@@ -2346,6 +2536,8 @@ def _normalize_intention_plan(
         answer_goal=answer_goal or _clean_text(objective),
         refined_objective=refined_objective or _clean_text(objective),
         plan_summary=plan_summary,
+        recommended_answer_shape=recommended_answer_shape,
+        coverage_priorities=coverage_priorities,
         acceptance_criteria=_dedupe(
             [*list(acceptance_criteria), *list(plan.acceptance_criteria)]
         ),
@@ -2445,6 +2637,10 @@ def _normalize_turn_decision(
             decision.public_response
             or "I’m starting one bounded research run for this request."
         )
+        inferred_delivery_target = _infer_delivery_target(
+            research_objective,
+            default=decision.delivery_target or _clean_text(context.default_delivery_target),
+        )
         if not research_objective:
             return _fallback_turn_decision(
                 user_message=user_message,
@@ -2457,6 +2653,7 @@ def _normalize_turn_decision(
                 "public_response": public_response,
                 "delivery_target": (
                     decision.delivery_target
+                    or inferred_delivery_target
                     or _clean_text(context.default_delivery_target)
                 ),
                 "response_kind": "chat_reply",

@@ -5,7 +5,7 @@ Usage:
       --dataset-repo princeton-nlp/SWE-bench_Lite \
       --split dev \
       --instance-id marshmallow-code__marshmallow-1359 \
-      --model kimi-k2.5
+      --model kimi-k2.6
 """
 
 from __future__ import annotations
@@ -497,12 +497,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model",
-        default=os.environ.get("DAN_LLM_MODEL") or os.environ.get("DAN_MODEL") or "kimi-k2.5",
+        default=os.environ.get("DAN_LLM_MODEL") or os.environ.get("DAN_MODEL") or "kimi-k2.6",
         help="Model passed through to dan code.",
     )
     parser.add_argument(
         "--thinking-mode",
-        default="disabled",
+        default="enabled",
         choices=["auto", "enabled", "disabled"],
         help="Provider thinking mode for the dan code run.",
     )

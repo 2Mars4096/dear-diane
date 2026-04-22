@@ -59,6 +59,7 @@ _RESTART_REQUIRED_CONFIG_KEYS = {
 
 _ORGANISM_LOG_DISCOVERY_PATTERNS = (
     ".dan-code/runs/**/events.jsonl",
+    ".dan-super/runs/**/events.jsonl",
     ".dan-research/runs/**/events.jsonl",
     ".dan-research/control-plane-events.jsonl",
 )
@@ -146,6 +147,8 @@ def _organism_log_display_name(relative_path: str, *, product: str, stream_kind:
     match = re.search(r"(?:^|/)(turn-[^/]+)/events\.jsonl$", relative_path)
     if match and product == "dan_code":
         return f"Code {match.group(1)}"
+    if match and product == "dan_super":
+        return f"Super DAN {match.group(1)}"
     if match and product == "dan_research":
         return f"Research {match.group(1)}"
     file_name = Path(relative_path).name

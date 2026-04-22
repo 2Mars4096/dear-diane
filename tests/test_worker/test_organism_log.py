@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 from dan.worker.core.contracts import OutputContract
 from dan.worker.organism_log import (
     ORGANISM_LOG_SCHEMA_VERSION,
@@ -139,6 +140,64 @@ def test_organism_log_writer_projects_model_and_tool_spans(tmp_path) -> None:
     assert tool_span["duration_ms"] == 2000
     assert tool_span["parent_span_id"] == "model-call:1"
     assert tool_span["contract_id"].startswith("contract:")
+
+
+def test_organism_log_writer_disables_sink_after_write_io_error(tmp_path) -> None:
+    log_path = tmp_path / "io-failure-events.jsonl"
+    writer = OrganismLogWriter(
+        path=log_path,
+        context=OrganismLogContext(
+            product="dan_code",
+            stream_kind="bounded_run",
+            session_id="session-1",
+            turn_id="1",
+            task_id="coding-organ-task:1",
+        ),
+    )
+
+    class _FailingHandle:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def write(self, _text: str) -> int:
+            return 0
+
+        def flush(self) -> None:
+            raise OSError(errno.EIO, "Input/output error")
+
+        def close(self) -> None:
+            self.close_calls += 1
+            raise OSError(errno.EIO, "Input/output error")
+
+    failing_handle = _FailingHandle()
+    writer._handle.close()
+    writer._handle = failing_handle
+
+    writer.emit(
+        {
+            "timestamp": "2026-04-18T00:00:00Z",
+            "event": "model.requested",
+            "model": "gpt-test",
+            "model_call_id": "model-call:1",
+        }
+    )
+
+    assert writer._write_failed is True
+    assert writer._handle is None
+    assert failing_handle.close_calls == 1
+    assert log_path.read_text(encoding="utf-8") == ""
+
+    # Further emits and close() calls should become safe no-ops.
+    writer.emit(
+        {
+            "timestamp": "2026-04-18T00:00:01Z",
+            "event": "model.responded",
+            "model": "gpt-test",
+            "model_call_id": "model-call:1",
+        }
+    )
+    writer.close()
+    assert log_path.read_text(encoding="utf-8") == ""
 
 
 def test_readable_organism_log_v1_rows_uses_clean_v1_suffix(tmp_path) -> None:

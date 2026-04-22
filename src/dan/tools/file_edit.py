@@ -145,6 +145,13 @@ TOOL_METADATA = {
 _EDIT_MODES = frozenset({"replace", "insert_before", "insert_after", "delete"})
 
 
+def _tool_argument_error(detail: str) -> ValueError:
+    message = str(detail or "").strip() or "invalid arguments for file_edit"
+    if message.startswith("tool_arguments_invalid:"):
+        return ValueError(message)
+    return ValueError(f"tool_arguments_invalid: {message}")
+
+
 def _require_existing_file(path: str, resolved: str) -> None:
     if not os.path.isfile(resolved):
         raise FileNotFoundError(
@@ -154,13 +161,19 @@ def _require_existing_file(path: str, resolved: str) -> None:
 
 def _normalize_line_number(value: int | None, *, name: str) -> int:
     if value is None:
-        raise TypeError(f"file_edit() missing 1 required positional argument: '{name}'")
+        raise _tool_argument_error(
+            f"missing required arguments for file_edit: {name}"
+        )
     try:
         parsed = int(value)
     except (TypeError, ValueError):
-        raise ValueError(f"{name} must be an integer") from None
+        raise _tool_argument_error(
+            f"invalid arguments for file_edit: {name} must be an integer"
+        ) from None
     if parsed < 1:
-        raise ValueError(f"{name} must be >= 1")
+        raise _tool_argument_error(
+            f"invalid arguments for file_edit: {name} must be >= 1"
+        )
     return parsed
 
 
@@ -178,16 +191,18 @@ def _line_count(text: str) -> int:
 
 def _find_unique_span(text: str, needle: str) -> tuple[int, int]:
     if not needle:
-        raise ValueError("old_string must not be empty when used with file_edit compatibility mode.")
+        raise _tool_argument_error(
+            "invalid arguments for file_edit: old_string must not be empty when used with file_edit compatibility mode."
+        )
     start_index = text.find(needle)
     if start_index < 0:
-        raise ValueError(
-            "old_string was not found in the target file. Provide start_line/end_line explicitly."
+        raise _tool_argument_error(
+            "invalid arguments for file_edit: old_string was not found in the target file. Provide start_line/end_line explicitly."
         )
     duplicate_index = text.find(needle, start_index + 1)
     if duplicate_index >= 0:
-        raise ValueError(
-            "old_string matched multiple locations in the target file. Provide start_line/end_line explicitly."
+        raise _tool_argument_error(
+            "invalid arguments for file_edit: old_string matched multiple locations in the target file. Provide start_line/end_line explicitly."
         )
     return start_index, start_index + len(needle)
 
@@ -255,8 +270,8 @@ def _normalize_replace_compatibility_args(
 def _normalize_mode(value: str | None, *, name: str = "mode") -> str:
     normalized = str(value or "replace").strip()
     if normalized not in _EDIT_MODES:
-        raise ValueError(
-            f"Invalid {name} '{value}'. Use 'replace', 'insert_before', 'insert_after', or 'delete'."
+        raise _tool_argument_error(
+            f"invalid arguments for file_edit: invalid {name} '{value}'. Use 'replace', 'insert_before', 'insert_after', or 'delete'."
         )
     return normalized
 
@@ -274,8 +289,8 @@ def _build_edit_spec(
     anchor_line = _normalize_line_number(start_line, name=f"{field_prefix}start_line")
     replacement_text = "" if content is None else str(content)
     if normalized_mode != "delete" and content is None:
-        raise TypeError(
-            f"file_edit() missing 1 required positional argument: '{field_prefix}content'"
+        raise _tool_argument_error(
+            f"missing required arguments for file_edit: {field_prefix}content"
         )
 
     normalized_end: int
@@ -285,7 +300,9 @@ def _build_edit_spec(
             name=f"{field_prefix}end_line",
         )
         if normalized_end < anchor_line:
-            raise ValueError(f"{field_prefix}end_line must be >= {field_prefix}start_line")
+            raise _tool_argument_error(
+                f"invalid arguments for file_edit: {field_prefix}end_line must be >= {field_prefix}start_line"
+            )
     else:
         normalized_end = anchor_line
 
@@ -304,21 +321,24 @@ def _validate_edit_bounds(spec: dict[str, object], *, total_lines_before: int) -
 
     if mode in {"replace", "delete"}:
         if start_line > total_lines_before or end_line > total_lines_before:
-            raise ValueError(
-                f"Requested line range {start_line}-{end_line} is outside the file bounds 1-{total_lines_before}."
+            raise _tool_argument_error(
+                "invalid arguments for file_edit: "
+                f"requested line range {start_line}-{end_line} is outside the file bounds 1-{total_lines_before}."
             )
         return
 
     if mode == "insert_before":
         if start_line > total_lines_before + 1:
-            raise ValueError(
-                f"Cannot insert before line {start_line}; valid range is 1-{total_lines_before + 1}."
+            raise _tool_argument_error(
+                "invalid arguments for file_edit: "
+                f"cannot insert before line {start_line}; valid range is 1-{total_lines_before + 1}."
             )
         return
 
     if start_line > total_lines_before:
-        raise ValueError(
-            f"Cannot insert after line {start_line}; valid range is 1-{total_lines_before}."
+        raise _tool_argument_error(
+            "invalid arguments for file_edit: "
+            f"cannot insert after line {start_line}; valid range is 1-{total_lines_before}."
         )
 
 
@@ -425,8 +445,8 @@ def _ensure_non_overlapping_edits(specs: list[dict[str, object]]) -> None:
     for spec in sorted(specs, key=_occupied_range):
         start_line, end_line = _occupied_range(spec)
         if previous_end is not None and start_line <= previous_end:
-            raise ValueError(
-                "Batched file_edit calls require non-overlapping edits with distinct anchor ranges."
+            raise _tool_argument_error(
+                "invalid argument combination for file_edit: batched file_edit calls require non-overlapping edits with distinct anchor ranges."
             )
         previous_end = end_line
 
@@ -459,8 +479,8 @@ def _guard_suspicious_bulk_replace(
         and replacement_char_count <= 120
         and char_ratio <= 0.1
     ):
-        raise ValueError(
-            "Suspicious bulk replace: the requested replacement collapses a large line range "
+        raise _tool_argument_error(
+            "invalid edit shape for file_edit: Suspicious bulk replace: the requested replacement collapses a large line range "
             f"({start_line}-{end_line}) into very little content. Use smaller targeted edits, "
             "or use delete mode plus a separate insert when intentionally removing a large block."
         )
@@ -481,7 +501,6 @@ def _guard_suspicious_bulk_replace(
 
     try:
         original_tree = ast.parse(original_text)
-        updated_tree = ast.parse("".join(updated_lines))
     except SyntaxError:
         return
 
@@ -515,16 +534,64 @@ def _guard_suspicious_bulk_replace(
     if len(intersecting_blocks) < 2:
         return
 
+    updated_text = "".join(updated_lines)
+    try:
+        updated_tree = ast.parse(updated_text)
+    except SyntaxError:
+        raise _tool_argument_error(
+            "invalid edit shape for file_edit: Suspicious structural replace: the requested replacement spans multiple "
+            "top-level Python blocks and leaves the file syntactically invalid. Use smaller targeted edits so adjacent "
+            "definitions remain intact."
+        ) from None
+
     updated_block_names = {name for name, _, _ in _top_level_named_blocks(updated_tree)}
     removed_blocks = [
         name for name in intersecting_blocks if name not in updated_block_names
     ]
     if removed_blocks:
         removed_preview = ", ".join(removed_blocks[:3])
-        raise ValueError(
-            "Suspicious structural replace: the requested replacement spans multiple "
+        raise _tool_argument_error(
+            "invalid edit shape for file_edit: Suspicious structural replace: the requested replacement spans multiple "
             f"top-level Python blocks and removes {removed_preview}. Use smaller targeted "
             "edits so adjacent definitions remain intact."
+        )
+
+
+def _guard_placeholder_style_python_replace(
+    spec: dict[str, object],
+    *,
+    path: str,
+) -> None:
+    if not path.endswith(".py"):
+        return
+    if str(spec["mode"]) not in {"replace", "insert_before", "insert_after"}:
+        return
+
+    replacement_text = "".join(list(spec["replacement_lines"])).strip()
+    if not replacement_text:
+        return
+
+    normalized = replacement_text.lower()
+    if "shell command output placeholder" in normalized or "git restore placeholder" in normalized:
+        raise _tool_argument_error(
+            "invalid edit shape for file_edit: Suspicious placeholder-style content for Python source. "
+            "Apply the real code change instead of shell-note or restore-placeholder text."
+        )
+
+    nonempty_lines = [line.strip() for line in replacement_text.splitlines() if line.strip()]
+    if not nonempty_lines:
+        return
+    if (
+        any(line == "# placeholder" for line in nonempty_lines)
+        or (
+            "placeholder" in normalized
+            and all(line.startswith("#") for line in nonempty_lines)
+            and len(nonempty_lines) <= 3
+        )
+    ):
+        raise _tool_argument_error(
+            "invalid edit shape for file_edit: Suspicious placeholder-style content for Python source. "
+            "Apply the real code change instead of placeholder comments."
         )
 
 
@@ -563,6 +630,18 @@ def _apply_edit_to_lines(
     ]
 
 
+def _edit_spec_is_noop(
+    spec: dict[str, object],
+    *,
+    current_lines: list[str],
+) -> bool:
+    if str(spec["mode"]) != "replace":
+        return False
+    start_line = int(spec["start_line"])
+    end_line = int(spec["end_line"])
+    return current_lines[start_line - 1 : end_line] == list(spec["replacement_lines"])
+
+
 async def file_edit(
     path: str | None = None,
     start_line: int | None = None,
@@ -576,7 +655,9 @@ async def file_edit(
 ) -> dict:
     effective_path = str(path or file_path or "").strip()
     if not effective_path:
-        raise TypeError("file_edit() missing 1 required positional argument: 'path'")
+        raise _tool_argument_error(
+            "missing required arguments for file_edit: path"
+        )
 
     resolved = validate_path(effective_path, operation="write")
     _require_existing_file(effective_path, resolved)
@@ -586,19 +667,25 @@ async def file_edit(
     original_lines = original_text.splitlines(keepends=True)
     total_lines_before = len(original_lines)
     if total_lines_before == 0:
-        raise ValueError("Cannot apply line-based edits to an empty file. Use file_write instead.")
+        raise _tool_argument_error(
+            "invalid arguments for file_edit: cannot apply line-based edits to an empty file. Use file_write instead."
+        )
 
     if edits is not None:
         if any(value is not None for value in (start_line, end_line, content)) or mode != "replace":
-            raise ValueError(
-                "Use either top-level start_line/end_line/content/mode or batched edits=..., not both."
+            raise _tool_argument_error(
+                "invalid argument combination for file_edit: use either top-level start_line/end_line/content/mode or batched edits=..., not both."
             )
         if not isinstance(edits, list) or not edits:
-            raise ValueError("edits must be a non-empty list when provided.")
+            raise _tool_argument_error(
+                "invalid arguments for file_edit: edits must be a non-empty list when provided."
+            )
         edit_specs = []
         for index, edit in enumerate(edits):
             if not isinstance(edit, dict):
-                raise ValueError(f"edits[{index}] must be an object.")
+                raise _tool_argument_error(
+                    f"invalid arguments for file_edit: edits[{index}] must be an object."
+                )
             edit_specs.append(
                 _build_edit_spec(
                     start_line=edit.get("start_line"),
@@ -641,6 +728,10 @@ async def file_edit(
     if len(edit_specs) > 1:
         _ensure_non_overlapping_edits(edit_specs)
     for spec in edit_specs:
+        _guard_placeholder_style_python_replace(
+            spec,
+            path=effective_path,
+        )
         _guard_suspicious_bulk_replace(
             spec,
             path=effective_path,
@@ -649,7 +740,10 @@ async def file_edit(
         )
 
     updated_lines = list(original_lines)
+    changed = False
     for spec in sorted(edit_specs, key=lambda spec: _occupied_range(spec), reverse=True):
+        if _edit_spec_is_noop(spec, current_lines=updated_lines):
+            continue
         updated_lines = _apply_edit_to_lines(
             updated_lines,
             mode=str(spec["mode"]),
@@ -657,10 +751,12 @@ async def file_edit(
             end_line=int(spec["end_line"]),
             replacement_lines=list(spec["replacement_lines"]),
         )
+        changed = True
 
     updated_text = "".join(updated_lines)
-    with open(resolved, "w", encoding=encoding) as f:
-        f.write(updated_text)
+    if changed:
+        with open(resolved, "w", encoding=encoding) as f:
+            f.write(updated_text)
 
     if len(edit_specs) == 1:
         spec = edit_specs[0]
@@ -672,6 +768,8 @@ async def file_edit(
             "total_lines_before": total_lines_before,
             "total_lines_after": len(updated_lines),
             "bytes_written": len(updated_text.encode(encoding)),
+            "changed": changed,
+            "no_op": not changed,
         }
 
     return {
@@ -691,4 +789,6 @@ async def file_edit(
         "total_lines_before": total_lines_before,
         "total_lines_after": len(updated_lines),
         "bytes_written": len(updated_text.encode(encoding)),
+        "changed": changed,
+        "no_op": not changed,
     }

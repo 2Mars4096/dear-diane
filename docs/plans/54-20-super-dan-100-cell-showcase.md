@@ -1,8 +1,8 @@
-# 54-20: Super DAN 100-Cell Showcase
+# 54-20: Super DAN 20-Cell Default and 100-Cell Showcase
 
 **Parent:** [54-dan-control-plane-rewrite-around-universal-agents](54-dan-control-plane-rewrite-around-universal-agents.md)
 **Status:** completed
-**Goal:** Add a first deterministic Super DAN organism showcase that proves organized 100-cell coordination before any live 100-agent execution.
+**Goal:** Add a first Super DAN organism showcase that proves organized coordination, defaults to a cheaper 20-cell operator mode, preserves an explicit 100-cell showcase mode, and exposes a bounded native live execution lane for website and coding/build work without coupling DAN Code or DAN Research.
 
 ## Tasks
 - [x] 1. Define the first showcase boundary
@@ -21,28 +21,76 @@
 - [x] 4. Add focused regression coverage
   - [x] 4-1. Cover default/scaled distributions and active-cell cap behavior
   - [x] 4-2. Cover claim graph, signal counts, reallocations, and CLI output
-- [x] 5. Fix scenario routing after first operator smoke
+- [x] 5. Fix objective routing after first operator smoke
   - [x] 5-1. Route product/website build prompts to a delivery-plan organism instead of truth-audit claims
-  - [x] 5-2. Add `--scenario auto|truth-audit|website-build`
-  - [x] 5-3. Cover website-build reports and CLI text output
+  - [x] 5-2. Make the main path an objective-first universal-agent contract instead of a public scenario selector
+  - [x] 5-3. Cover website-objective reports and CLI text output
 - [x] 6. Make the no-argument showcase match the sales demo
   - [x] 6-1. Default `dan super-organism` to the universal-agent objective contract
-  - [x] 6-2. Preserve explicit truth-audit mode through `--scenario truth-audit`
+  - [x] 6-2. Remove public `--scenario` selection so the organism owns routing
   - [x] 6-3. Cover default CLI and worker behavior
-- [x] 7. Align the top-level contract with DAN Code / DAN Research
+- [x] 7. Keep Super DAN independent of DAN Code / DAN Research
   - [x] 7-1. Add `universal_agent` as the main scenario
   - [x] 7-2. Treat the prompt as an objective before selecting specialist contracts
-  - [x] 7-3. Preserve `truth-audit` and `website-build` as explicit demos
+  - [x] 7-3. Remove DAN Code / DAN Research handoff from the Super DAN CLI path
+- [x] 8. Let website objectives materialize a concrete artifact
+  - [x] 8-1. Add a native deterministic website materializer under `--workspace/--artifact-dir`
+  - [x] 8-2. Keep `--plan-only` for contract-only runs
+  - [x] 8-3. Cover materialization and no-materialization CLI paths
+- [x] 9. Harden terminal rendering for pasted multiline objectives
+  - [x] 9-1. Collapse objective whitespace before building the report
+  - [x] 9-2. Keep final memo and target display single-line for terminal readability
+  - [x] 9-3. Add regression coverage for pasted multiline website prompts
+- [x] 10. Harden terminal row rendering for real `dan` CLI output
+  - [x] 10-1. Render the text report from one buffered line list
+  - [x] 10-2. Shorten delivery rows to `node | status | cells | title`
+  - [x] 10-3. Add regression coverage that bullets stay on separate lines
+- [x] 11. Make compact output the default for terminal reliability
+  - [x] 11-1. Add `--verbose` for the full 100-cell text trace
+  - [x] 11-2. Default ordinary text output to a compact status/target/verdict/artifacts summary
+  - [x] 11-3. Cover compact and verbose CLI behavior
+- [x] 12. Make successful website runs build-first in the CLI
+  - [x] 12-1. Materialize website artifacts before compact output is rendered
+  - [x] 12-2. Lead compact output with `Build: completed`, the website entrypoint, and files
+  - [x] 12-3. Keep full organism trace behind `--verbose` / `--json`
+- [x] 13. Add native live Super DAN execution
+  - [x] 13-1. Add `--live` with model/API/base URL and tool budget flags
+  - [x] 13-2. Route live website objectives through Super DAN's own worker-core/local-tool lane
+  - [x] 13-3. Add a generic live coding/build lane for workspace mutation objectives
+  - [x] 13-4. Require actual required files or real workspace mutations before reporting live success
+  - [x] 13-5. Cover live CLI success, JSON output, generic coding live success, and invalid `--live --plan-only`
+  - [x] 13-6. Add a stronger post-run validator so live success also requires real file changes and a read-only validation pass
+  - [x] 13-7. Surface aggregate token usage for Super DAN live build and validator passes in both text and JSON output
+  - [x] 13-8. Persist Super DAN live runs under `.dan-super/runs/turn-XX/events.jsonl` and expose the log path in CLI/JSON output
+- [x] 14. Downshift the default organism size for cost control
+  - [x] 14-1. Change default CLI/report identity from `super-dan-100` to `super-dan-20`
+  - [x] 14-2. Scale organ distribution, delivery node counts, and reallocation counts from the 100-cell reference
+  - [x] 14-3. Keep the larger showcase available through `--cell-count 100 --active-cell-cap 20 --organism-id super-dan-100`
+- [x] 15. Keep the live write lane convergent after malformed direct-write calls
+  - [x] 15-1. Do not temporarily disable `file_write` / `file_edit` inside write-capable coding stages just because the model emitted malformed arguments
+  - [x] 15-2. Do not treat disabled direct-write tools as an automatic post-patch finalize reason
+  - [x] 15-3. Cover repeated-invalid-write recovery in both the local runtime and the `dan super-organism --live` CLI path
 
 ## Decisions
 - The first slice is deterministic and logical. It proves organization, not live external truth.
 - The raw `WorkerCoreExecutor` / `WorkerDefinition` primitive stays untouched.
-- The next live version should route only selected cells through real DAN Code / DAN Research / WorkerCore lanes behind a scheduler cap.
-- Scenario-specific behavior belongs in the showcase layer, not in the raw universal worker core.
-- The main command should be objective-first, like DAN Code and DAN Research. Hardcoded scenarios are examples, not the universal-agent path.
+- Live execution routes selected cells through Super DAN's own bounded worker/tool lane instead of launching 100 model calls at once.
+- The default operator path is now 20 logical cells with active cap 8. This keeps everyday live runs cheaper while preserving the 100-cell reference as an explicit showcase configuration.
+- Objective-specific behavior belongs in the showcase layer, not in the raw universal worker core.
+- The main command should be objective-first. Hardcoded scenario flags are not part of the operator-facing contract.
+- Super DAN stays independent from DAN Code and DAN Research for now; it should not call those product shells internally.
 
 ## Notes
 - The first use case is a truth-organism style credibility audit: scouts gather, claim cells atomize, memory clusters, immune cells challenge, experiment cells probe, brain cells reallocate, and synthesis cells produce a traceable verdict.
-- A website-build prompt now produces delivery nodes for narrative, visual direction, section architecture, motion, implementation handoff, copy/proof input, and QA instead of nonsensical benchmark/adoption claims.
-- `dan super-organism "<request>"` now defaults to a universal-agent objective contract; use `--scenario truth-audit` or `--scenario website-build` for the older demos.
+- A website-build prompt now produces objective-first delivery nodes and materializes a static website artifact instead of nonsensical benchmark/adoption claims.
+- `dan super-organism "<request>"` now defaults to a universal-agent objective contract; there is no public `--scenario` argument.
+- Website-like objectives write `index.html`, `styles.css`, `app.js`, and `README.md` under `--workspace/--artifact-dir` unless `--plan-only` or `--json` is used.
+- Pasted multiline shell objectives are normalized to one logical objective line before rendering or artifact generation.
+- Human-readable CLI output should favor robust short rows over denser bracketed report rows, because the showcase is often copied from narrow terminals.
+- The default CLI output is compact; the full deterministic trace remains available through `--verbose` or `--json`.
+- Default deterministic and live reports now say `super-dan-20` / `20 cells`; the deterministic website materializer also renders the configured cell count instead of hardcoding 100.
+- Website-objective output should be build-first, not report-first, so operators can see that files were actually created.
+- `--live` is the native Super DAN implementation path for website-like and general coding/build objectives. It uses the shared worker-core/local-tool substrate, requires configured LLM access, runs a separate read-only validator pass before exiting, fails if website-required files are missing or unchanged, fails for generic coding runs that finish without real workspace file mutations or validator approval, reports aggregate token usage for the build plus validator lanes when the provider returns usage, and now persists a shared-schema event log under `.dan-super/runs/turn-XX/events.jsonl`.
+- The live write lane now treats malformed `file_write` / `file_edit` calls as repairable tool-use errors inside write-capable coding stages. It keeps the direct-write basket enabled so the organism can still converge on a bounded patch in the same turn instead of self-disabling its own materialization tools and exiting early.
+- Super DAN live logs now use the same shared `organism_log_v1` substrate as DAN Code and DAN Research, and the live result surfaces `event_log_path` / `event_log_schema` so downstream tooling can analyze the trace directly.
 - The report intentionally carries `mode="deterministic_demo"` plus a caveat so showcase outputs are not mistaken for sourced live evaluations.

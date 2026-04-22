@@ -11,6 +11,8 @@ import sys
 _SUBCOMMANDS = {
     "bot": ("dan.cli.bot", "main"),
     "code": ("dan.cli.code", "main"),
+    "read": ("dan.cli.reader", "main"),
+    "reader": ("dan.cli.reader", "main"),
     "research": ("dan.cli.research", "main"),
     "serve": ("dan.server.__main__", "main"),
     "run": ("dan.cli.run", "main"),
@@ -26,6 +28,7 @@ _SUBCOMMANDS = {
     "furnace": ("dan.cli.furnace", "main"),
     "organism": ("dan.cli.organism", "main"),
     "organism-log": ("dan.cli.organism_log", "main"),
+    "super-organism": ("dan.cli.super_organism", "main"),
 }
 
 
@@ -53,6 +56,8 @@ def _print_help() -> None:
     print("Subcommands:")
     print("  bot        Manage Telegram bot fleet")
     print("  code       Run the DAN Code coding CLI")
+    print("  read       Run the DAN Reader document CLI (alias)")
+    print("  reader     Run the DAN Reader document CLI")
     print("  research   Run the DAN Research deep-research CLI")
     print("  serve      Start the DAN server")
     print("  run        Run a workflow")
@@ -65,6 +70,7 @@ def _print_help() -> None:
     print("  furnace    Direct furnace control CLI")
     print("  organism   Run the local bounded organism demo CLI")
     print("  organism-log Import or summarize organism_log_v1 traces")
+    print("  super-organism Run the deterministic Super DAN organism showcase")
     print("  service    Manage background services")
     print("  status     Show server status")
     print("  logs       View server logs")

@@ -42,6 +42,17 @@ from dan.worker.organisms import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_research_env(monkeypatch) -> None:
+    monkeypatch.setenv("DAN_RESEARCH_DEPTH", "standard")
+    monkeypatch.setenv("DAN_RESEARCH_MAX_RUNTIME_SECONDS", "")
+    monkeypatch.setenv(
+        "DAN_RESEARCH_MAX_SUPERVISION_LOOPS",
+        str(DEFAULT_RESEARCH_MAX_SUPERVISION_LOOPS),
+    )
+    monkeypatch.setenv("DAN_RESEARCH_THINKING_MODE", "")
+
+
 def _quality_gates() -> list[dict[str, str]]:
     return [
         {
@@ -72,6 +83,7 @@ def test_build_parser_defaults() -> None:
     assert args.model is None
     assert args.research_readers is None
     assert args.depth is None
+    assert args.task_lane == "auto"
     assert args.max_tool_rounds is None
     assert args.max_tool_calls is None
     assert args.max_supervision_loops is None
@@ -865,6 +877,248 @@ def test_main_json_uses_research_runner(tmp_path, capsys, monkeypatch) -> None:
         tmp_path / "workspace" / ".dan-research" / "transcript.jsonl"
     ).read_text().strip().splitlines()
     assert len(transcript_lines) == 1
+
+
+def test_main_fast_lane_bypasses_research_plan_and_review_calls(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    async def _fake_runner(*_args, **kwargs):
+        return {
+            "status": "completed",
+            "trace_id": "trace-fast-research",
+            "organism_id": "reference-project-execution",
+            "organ_id": "deep-research",
+            "task_id": kwargs["task_id"],
+            "objective": kwargs["objective"],
+            "delivery_target": kwargs["delivery_target"],
+            "findings": ["Grounded document finding."],
+            "evidence_summary": ["paper evidence"],
+            "evidence_refs": ["paper:evidence"],
+            "contradictions": [],
+            "open_questions": [],
+            "verification_facts": [],
+            "audit_issues": [],
+            "quality_gates": _quality_gates(),
+            "report_readiness": "grounded",
+            "readiness_note": "Enough evidence for a bounded grounded report.",
+            "confidence": 0.81,
+            "recommended_change": "Summarize the strongest sections directly.",
+            "selected_reader_count": kwargs["research_reader_count"],
+            "selected_reader_briefs": list(kwargs["reader_briefs"]),
+            "depth_profile": kwargs["depth_profile"],
+            "max_tool_rounds": kwargs["max_tool_rounds"],
+            "max_tool_calls": kwargs["max_tool_calls"],
+            "outputs": {"confidence": 0.81},
+            "handoff_count": 3,
+            "signal_count": 5,
+            "error": None,
+            "stage_records": [],
+        }
+
+    monkeypatch.setattr(
+        "dan.cli.research._build_live_provider", lambda *args, **kwargs: object()
+    )
+
+    async def _fake_decide(self, *, session, user_message, pending_clarification, context):
+        durable_session = session or self.create_session(metadata={"surface": "test"})
+        return (
+            ResearchConversationTurnDecision(
+                action="research",
+                public_response="Starting one bounded research review run.",
+                research_objective=user_message,
+                delivery_target="research memo",
+            ),
+            durable_session,
+        )
+
+    async def _unexpected_plan(*_args, **_kwargs):
+        raise AssertionError("fast lane should bypass research planning calls")
+
+    async def _unexpected_review(*_args, **_kwargs):
+        raise AssertionError("fast lane should bypass research review calls")
+
+    monkeypatch.setattr(
+        "dan.cli.research.ResearchConversationController.decide_user_turn",
+        _fake_decide,
+    )
+    monkeypatch.setattr(
+        "dan.cli.research.ResearchConversationController.plan_research_intention",
+        _unexpected_plan,
+    )
+    monkeypatch.setattr(
+        "dan.cli.research.ResearchConversationController.review_research_result",
+        _unexpected_review,
+    )
+    monkeypatch.setattr("dan.cli.research.run_research_organism_live", _fake_runner)
+
+    exit_code = main(
+        [
+            "--model",
+            "gpt-test",
+            "--workspace",
+            str(tmp_path / "workspace"),
+            "--workdir",
+            str(tmp_path / "workdir"),
+            "--json",
+            "Review this 80-page paper and summarize the main arguments by section.",
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["trace_id"] == "trace-fast-research"
+    session_payload = json.loads(
+        (tmp_path / "workspace" / ".dan-research" / "session.json").read_text()
+    )
+    assert session_payload["workspace_root"] == str((tmp_path / "workspace").resolve())
+
+
+def test_main_task_lane_deep_override_keeps_research_plan_and_review_calls(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    calls = {"plan": 0, "review": 0}
+    runner_calls: dict[str, object] = {}
+
+    async def _fake_runner(*_args, **kwargs):
+        runner_calls["objective"] = kwargs["objective"]
+        return {
+            "status": "completed",
+            "trace_id": "trace-deep-override",
+            "organism_id": "reference-project-execution",
+            "organ_id": "deep-research",
+            "task_id": kwargs["task_id"],
+            "objective": kwargs["objective"],
+            "delivery_target": kwargs["delivery_target"],
+            "findings": ["Grounded document finding."],
+            "evidence_summary": ["paper evidence"],
+            "evidence_refs": ["paper:evidence"],
+            "contradictions": [],
+            "open_questions": [],
+            "verification_facts": [],
+            "audit_issues": [],
+            "quality_gates": _quality_gates(),
+            "report_readiness": "grounded",
+            "readiness_note": "Enough evidence for a bounded grounded report.",
+            "confidence": 0.84,
+            "recommended_change": "Keep the planned structure.",
+            "selected_reader_count": kwargs["research_reader_count"],
+            "selected_reader_briefs": list(kwargs["reader_briefs"]),
+            "depth_profile": kwargs["depth_profile"],
+            "max_tool_rounds": kwargs["max_tool_rounds"],
+            "max_tool_calls": kwargs["max_tool_calls"],
+            "outputs": {"confidence": 0.84},
+            "handoff_count": 2,
+            "signal_count": 4,
+            "error": None,
+            "stage_records": [],
+        }
+
+    monkeypatch.setattr(
+        "dan.cli.research._build_live_provider", lambda *args, **kwargs: object()
+    )
+
+    async def _fake_decide(self, *, session, user_message, pending_clarification, context):
+        durable_session = session or self.create_session(metadata={"surface": "test"})
+        return (
+            ResearchConversationTurnDecision(
+                action="research",
+                public_response="Starting one bounded research review run.",
+                research_objective=user_message,
+                delivery_target="research memo",
+            ),
+            durable_session,
+        )
+
+    async def _fake_plan(
+        self,
+        *,
+        session,
+        objective,
+        delivery_target,
+        acceptance_criteria,
+        context,
+        planning_mode="initial",
+        previous_report=None,
+    ):
+        _ = context, planning_mode, previous_report
+        calls["plan"] += 1
+        durable_session = session or self.create_session(metadata={"surface": "test"})
+        return (
+            ResearchConversationIntentionPlan(
+                public_response="Planned explicitly.",
+                answer_goal="Review the document by section.",
+                refined_objective=f"{objective} [planned]",
+                plan_summary="Explicit planner pass retained for comparison.",
+                recommended_answer_shape=delivery_target,
+                acceptance_criteria=list(acceptance_criteria),
+                coverage_priorities=["main arguments", "section-level evidence"],
+                subproblems=[
+                    ResearchConversationSubproblem(
+                        problem_id="p1",
+                        question="What are the main arguments by section?",
+                        why_it_matters="Needed for the final review memo.",
+                    )
+                ],
+                workstreams=[
+                    ResearchConversationWorkstream(
+                        stream_id="w1",
+                        title="Section review",
+                        goal="Review the paper in section order.",
+                        why_it_matters="Keeps the synthesis grounded in the PDF.",
+                        subproblem_ids=["p1"],
+                        aggregation_hint="Merge section findings into one memo.",
+                    )
+                ],
+            ),
+            durable_session,
+        )
+
+    async def _fake_review(self, *, session, objective, report_summary, context):
+        _ = report_summary, context
+        calls["review"] += 1
+        return (
+            ResearchConversationReviewDecision(
+                action="done",
+                public_response="The deep lane review accepted the report.",
+                next_objective=objective,
+            ),
+            session,
+        )
+
+    monkeypatch.setattr(
+        "dan.cli.research.ResearchConversationController.decide_user_turn",
+        _fake_decide,
+    )
+    monkeypatch.setattr(
+        "dan.cli.research.ResearchConversationController.plan_research_intention",
+        _fake_plan,
+    )
+    monkeypatch.setattr(
+        "dan.cli.research.ResearchConversationController.review_research_result",
+        _fake_review,
+    )
+    monkeypatch.setattr("dan.cli.research.run_research_organism_live", _fake_runner)
+
+    exit_code = main(
+        [
+            "--model",
+            "gpt-test",
+            "--workspace",
+            str(tmp_path / "workspace"),
+            "--workdir",
+            str(tmp_path / "workdir"),
+            "--task-lane",
+            "deep",
+            "--json",
+            "Review this 80-page paper and summarize the main arguments by section.",
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["trace_id"] == "trace-deep-override"
+    assert calls == {"plan": 1, "review": 1}
+    assert runner_calls["objective"].endswith("[planned]")
 
 
 def test_main_uses_intention_plan_to_refine_research_run(
@@ -1943,6 +2197,164 @@ def test_main_uses_deterministic_continuation_plan_without_replanning(
     )
 
 
+def test_main_uses_planner_selected_answer_shape_for_bounded_run(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    runner_delivery_targets: list[str] = []
+
+    async def _fake_runner(*_args, **kwargs):
+        runner_delivery_targets.append(kwargs["delivery_target"])
+        return {
+            "status": "completed",
+            "trace_id": "trace-research-answer-shape",
+            "organism_id": "reference-project-execution",
+            "organ_id": "deep-research",
+            "task_id": kwargs["task_id"],
+            "objective": kwargs["objective"],
+            "temporal_mode": "current",
+            "temporal_anchor": "2026-04-17",
+            "temporal_window": "",
+            "temporal_guidance": "Temporal frame: current-as-of-runtime.",
+            "delivery_target": kwargs["delivery_target"],
+            "findings": ["Planner-selected answer shape reached the bounded run."],
+            "evidence_summary": ["repo evidence"],
+            "evidence_refs": ["repo:evidence"],
+            "contradictions": [],
+            "open_questions": [],
+            "verification_facts": [],
+            "audit_issues": [],
+            "quality_gates": _quality_gates(),
+            "report_readiness": "grounded",
+            "readiness_note": "Enough evidence for a bounded grounded note.",
+            "confidence": 0.81,
+            "recommended_change": "Keep the adaptive answer-shape guidance.",
+            "selected_reader_count": 2,
+            "selected_reader_briefs": kwargs["reader_briefs"],
+            "depth_profile": kwargs["depth_profile"],
+            "max_tool_rounds": kwargs["max_tool_rounds"],
+            "max_tool_calls": kwargs["max_tool_calls"],
+            "outputs": {"confidence": 0.81},
+            "handoff_count": 1,
+            "signal_count": 2,
+            "error": None,
+            "stage_records": [],
+        }
+
+    monkeypatch.setattr("dan.cli.research._build_live_provider", lambda *args, **kwargs: object())
+
+    async def _fake_decide(self, *, session, user_message, pending_clarification, context):
+        durable_session = session or self.create_session(metadata={"surface": "test"})
+        return (
+            ResearchConversationTurnDecision(
+                action="research",
+                public_response="Starting one bounded research run.",
+                research_objective=user_message,
+                delivery_target="research memo",
+            ),
+            durable_session,
+        )
+
+    async def _fake_plan(
+        self,
+        *,
+        session,
+        objective,
+        delivery_target,
+        acceptance_criteria,
+        context,
+        planning_mode="initial",
+        previous_report=None,
+    ):
+        _ = delivery_target, acceptance_criteria, context, planning_mode, previous_report
+        return (
+            ResearchConversationIntentionPlan(
+                answer_goal=objective,
+                refined_objective=objective,
+                plan_summary="Choose the best answer shape before search.",
+                recommended_answer_shape="comparison brief",
+                coverage_priorities=[
+                    "recent price moves",
+                    "decision-relevant drivers",
+                    "buy-versus-wait caveats",
+                ],
+                subproblems=[
+                    ResearchConversationSubproblem(
+                        problem_id="shape",
+                        question="What format best serves the user?",
+                    )
+                ],
+                workstreams=[
+                    ResearchConversationWorkstream(
+                        stream_id="shape",
+                        title="Shape stream",
+                        goal="Pick the final answer shape and required coverage.",
+                        subproblem_ids=["shape"],
+                    )
+                ],
+            ),
+            session,
+        )
+
+    async def _fake_review(self, *, session, objective, report_summary, context):
+        _ = objective, report_summary, context
+        return (
+            ResearchConversationReviewDecision(
+                action="done",
+                public_response="This bounded research pass is done.",
+            ),
+            session,
+        )
+
+    monkeypatch.setattr(
+        "dan.cli.research.ResearchConversationController.decide_user_turn",
+        _fake_decide,
+    )
+    monkeypatch.setattr(
+        "dan.cli.research.ResearchConversationController.plan_research_intention",
+        _fake_plan,
+    )
+    monkeypatch.setattr(
+        "dan.cli.research.ResearchConversationController.review_research_result",
+        _fake_review,
+    )
+    monkeypatch.setattr("dan.cli.research.run_research_organism_live", _fake_runner)
+
+    exit_code = main(
+        [
+            "--model",
+            "gpt-test",
+            "--workspace",
+            str(tmp_path / "workspace"),
+            "--json",
+            "Compare the options and tell me what matters",
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "completed"
+    assert payload["delivery_target"] == "comparison brief"
+    assert runner_delivery_targets == ["comparison brief"]
+    event_log = (
+        tmp_path / "workspace" / ".dan-research" / "runs" / "turn-01" / "events.jsonl"
+    )
+    rows = [
+        json.loads(line)
+        for line in event_log.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    plan_rows = [row for row in rows if row.get("event") == "research.plan"]
+    assert plan_rows
+    assert plan_rows[-1]["recommended_answer_shape"] == "comparison brief"
+    assert plan_rows[-1]["coverage_priorities"] == [
+        "recent price moves",
+        "decision-relevant drivers",
+        "buy-versus-wait caveats",
+    ]
+
+
 def test_main_without_objective_enters_interactive_loop(tmp_path, monkeypatch) -> None:
     calls: dict[str, object] = {}
 
@@ -1968,6 +2380,7 @@ def test_main_without_objective_enters_interactive_loop(tmp_path, monkeypatch) -
         research_reader_count,
         max_supervision_loops,
         depth_profile,
+        task_lane_override,
         max_tool_rounds,
         max_tool_calls,
         max_runtime_seconds,
@@ -1985,6 +2398,7 @@ def test_main_without_objective_enters_interactive_loop(tmp_path, monkeypatch) -
         calls["research_reader_count"] = research_reader_count
         calls["max_supervision_loops"] = max_supervision_loops
         calls["depth_profile"] = depth_profile
+        calls["task_lane_override"] = task_lane_override
         calls["max_tool_rounds"] = max_tool_rounds
         calls["max_tool_calls"] = max_tool_calls
         calls["max_runtime_seconds"] = max_runtime_seconds
@@ -2019,6 +2433,7 @@ def test_main_without_objective_enters_interactive_loop(tmp_path, monkeypatch) -
     assert calls["research_reader_count"] is None
     assert calls["max_supervision_loops"] == DEFAULT_RESEARCH_MAX_SUPERVISION_LOOPS
     assert calls["depth_profile"] == "standard"
+    assert calls["task_lane_override"] == "auto"
     assert calls["max_tool_rounds"] == 8
     assert calls["max_tool_calls"] == 24
     assert calls["persist_session"] is True
@@ -2171,6 +2586,7 @@ def test_show_config_reports_depth_and_reader_mode(tmp_path, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["product_name"] == "DAN Research"
     assert payload["depth_profile"] == "standard"
+    assert payload["task_lane"] == "auto"
     assert payload["research_reader_count"] is None
     assert payload["control_log_path"].endswith(".dan-research/control-plane-events.jsonl")
 

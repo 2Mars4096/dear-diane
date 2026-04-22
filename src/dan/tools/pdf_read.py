@@ -86,6 +86,25 @@ _EQUATION_AWARE_VISION_PROMPT = (
 _MAX_VISION_PAGES = 25
 
 
+def _page_entries(
+    pages_text: list[str],
+    *,
+    actual_start: int,
+    source_mode: str,
+    source_modes: dict[int, str] | None = None,
+) -> list[dict]:
+    entries: list[dict] = []
+    for idx, text in enumerate(pages_text):
+        entries.append(
+            {
+                "page_number": actual_start + idx + 1,
+                "text": text,
+                "source_mode": (source_modes or {}).get(idx, source_mode),
+            }
+        )
+    return entries
+
+
 def _classify_page_needs_vision(text: str) -> bool:
     if len(text.strip()) < 50:
         return True
@@ -231,6 +250,7 @@ async def read_pdf_file(
         "num_pages": total,
         "metadata": metadata,
         "mode": "text",
+        "pages": _page_entries(pages_text, actual_start=actual_start, source_mode="text"),
         "pages_requested": max(e - s, 0),
         "pages_returned": max(actual_end - actual_start, 0),
         "truncated": False,
@@ -325,12 +345,28 @@ async def _pdf_read_hybrid(
                     doc.close()
 
     parts = []
+    page_entries = []
     for i, t in enumerate(pages_text):
         page_num = actual_start + i + 1
         if i in vision_results:
-            parts.append(f"[Page {page_num}]\n{vision_results[i]}")
+            page_text = vision_results[i]
+            parts.append(f"[Page {page_num}]\n{page_text}")
+            page_entries.append(
+                {
+                    "page_number": page_num,
+                    "text": page_text,
+                    "source_mode": "vision",
+                }
+            )
         else:
             parts.append(f"[Page {page_num}]\n{t}")
+            page_entries.append(
+                {
+                    "page_number": page_num,
+                    "text": t,
+                    "source_mode": "text",
+                }
+            )
 
     structure = _extract_structure(pages_text)
 
@@ -339,6 +375,7 @@ async def _pdf_read_hybrid(
         "num_pages": total,
         "metadata": metadata,
         "mode": "hybrid",
+        "pages": page_entries,
         "pages_requested": max(e - s, 0),
         "pages_returned": max(actual_end - actual_start, 0),
         "truncated": False,
@@ -400,6 +437,7 @@ async def _pdf_read_vision(
 
         client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         parts = []
+        pages = []
         for i in range(s, e):
             page = doc[i]
             pix = page.get_pixmap(dpi=150, alpha=False)
@@ -424,6 +462,13 @@ async def _pdf_read_vision(
             )
             page_text = (response.choices[0].message.content or "").strip()
             parts.append(f"[Page {i + 1}]\n{page_text}")
+            pages.append(
+                {
+                    "page_number": i + 1,
+                    "text": page_text,
+                    "source_mode": "vision",
+                }
+            )
         combined = "\n\n".join(parts)
     finally:
         doc.close()
@@ -433,6 +478,7 @@ async def _pdf_read_vision(
         "num_pages": total,
         "metadata": metadata,
         "mode": "vision",
+        "pages": pages,
         "pages_requested": requested_pages,
         "pages_returned": max(e - s, 0),
         "truncated": truncated,

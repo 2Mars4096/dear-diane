@@ -49,6 +49,7 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "glm-5": 200_000,
     "minimax-m2.5": 204_800,
     "kimi-k2.5": 256_000,
+    "kimi-k2.6": 256_000,
     "deepseek-chat": 64_000,
     "deepseek-reasoner": 64_000,
 }
