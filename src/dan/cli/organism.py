@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Sequence
 
 from dan.cli import load_env, normalize_workspace_root, resolve_config
-from dan.providers.factory import build_provider_registry
+from dan.cli import live_gateway
 from dan.server.runtime_config import build_engine_config_from_env
 from dan.worker.organisms.reference_demo import (
     DEFAULT_LIVE_ORGANISM_TOOL_IDS,
@@ -254,13 +254,11 @@ def _resolve_live_model(requested_model: str) -> str:
 
 
 def _build_live_provider(model: str, *, api_key: str | None, base_url: str | None):
-    engine_config = build_engine_config_from_env()
-    if api_key:
-        engine_config.llm_api_key = api_key
-    if base_url:
-        engine_config.llm_base_url = base_url
-    registry = build_provider_registry(engine_config)
-    return registry.resolve(model)
+    return live_gateway.build_gateway_backed_live_provider(
+        model,
+        api_key=api_key,
+        base_url=base_url,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

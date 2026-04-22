@@ -14,6 +14,7 @@ from typing import Any, Sequence
 from pydantic import BaseModel, Field, field_validator
 
 from dan.cli import load_env, normalize_workspace_root, resolve_config
+from dan.cli import live_gateway
 from dan.cli.code_product import (
     CODE_PRODUCT_NAME,
     CodeProductConfig,
@@ -28,7 +29,6 @@ from dan.cli.code_product import (
     write_code_product_config,
 )
 from dan.providers import LLMProvider
-from dan.providers.factory import build_provider_registry
 from dan.server.runtime_config import build_engine_config_from_env
 from dan.worker.composition import CrossCellTraceLog
 from dan.worker.core.executor import WorkerCoreExecutor
@@ -1756,13 +1756,11 @@ def _maybe_resolve_live_model(
 
 
 def _build_live_provider(model: str, *, api_key: str | None, base_url: str | None) -> LLMProvider:
-    engine_config = build_engine_config_from_env()
-    if api_key:
-        engine_config.llm_api_key = api_key
-    if base_url:
-        engine_config.llm_base_url = base_url
-    registry = build_provider_registry(engine_config)
-    return registry.resolve(model)
+    return live_gateway.build_gateway_backed_live_provider(
+        model,
+        api_key=api_key,
+        base_url=base_url,
+    )
 
 
 def _build_evidence_refs(workdir: Path, evidence_summaries: Sequence[str]) -> list[EvidenceRef]:

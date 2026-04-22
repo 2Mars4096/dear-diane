@@ -13,6 +13,7 @@ import time
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
 from dan.llm_core.config import GatewayConfig
+from dan.llm_core.gateway.dispatch import get_shared_dispatcher
 from dan.llm_core.types import GatewayCall
 from dan.providers import (
     BudgetExceededError,
@@ -148,22 +149,36 @@ class ModelGateway:
                 )
 
         async def _inner_call(target_model: str) -> CompletionResult:
-            if provider_name:
-                provider = self._registry.get(provider_name)
-                if provider is None:
-                    raise KeyError(
-                        f"No provider registered under explicit name {provider_name!r}. "
-                        f"Registered providers: {sorted(self._registry.provider_names())}"
-                    )
-            else:
-                provider = self._registry.resolve(target_model)
-            return await provider.complete(
-                messages=work_messages,
-                model=target_model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                **kwargs,
+            provider, resolved_provider_name = self._resolve_provider(
+                target_model,
+                provider_name=provider_name,
             )
+            call_meta.provider_name = resolved_provider_name
+            dispatcher = get_shared_dispatcher(cfg)
+            if dispatcher is None:
+                call_meta.dispatch_attempts += 1
+                return await provider.complete(
+                    messages=work_messages,
+                    model=target_model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    **kwargs,
+                )
+            async with dispatcher.slot() as lease:
+                call_meta.dispatch_group = lease.dispatch_group
+                call_meta.dispatch_attempts += 1
+                call_meta.queue_wait_ms += lease.wait_ms
+                call_meta.queue_depth_at_submit = max(
+                    call_meta.queue_depth_at_submit,
+                    lease.queue_depth_at_submit,
+                )
+                return await provider.complete(
+                    messages=work_messages,
+                    model=target_model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    **kwargs,
+                )
 
         try:
             result = await self._with_timeout_and_retry(
@@ -175,7 +190,9 @@ class ModelGateway:
                 backoff_base=cfg.retry_backoff_base,
                 call_meta=call_meta,
             )
-        except Exception:
+        except Exception as exc:
+            if "dispatch queue is full" in str(exc):
+                call_meta.queue_rejected = True
             if cfg.fallback_model and cfg.fallback_model != model:
                 logger.warning(
                     "Primary model %s failed; falling back to %s",
@@ -241,27 +258,56 @@ class ModelGateway:
         if do_pii and pii_session is not None:
             work_messages = self._tokenize_messages(messages, pii_session)
 
-        provider = self._registry.resolve(model)
+        provider, _ = self._resolve_provider(model, provider_name=None)
+        dispatcher = get_shared_dispatcher(cfg)
 
         async def _produce() -> AsyncIterator[StreamChunk]:
-            stream_result = provider.stream(
-                messages=work_messages,
-                model=model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                **kwargs,
-            )
-            if not hasattr(stream_result, "__aiter__"):
-                stream_result = await stream_result
-            async for chunk in stream_result:
-                if do_pii and pii_session is not None and chunk.delta:
-                    chunk = StreamChunk(
-                        delta=self._detokenize_text(chunk.delta, pii_session),
-                        accumulated=self._detokenize_text(chunk.accumulated, pii_session),
-                        done=chunk.done,
-                        usage=chunk.usage,
-                    )
-                yield chunk
+            if dispatcher is None:
+                stream_result = provider.stream(
+                    messages=work_messages,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    **kwargs,
+                )
+                if not hasattr(stream_result, "__aiter__"):
+                    stream_result = await stream_result
+                async for chunk in stream_result:
+                    if do_pii and pii_session is not None and chunk.delta:
+                        chunk = StreamChunk(
+                            delta=self._detokenize_text(chunk.delta, pii_session),
+                            accumulated=self._detokenize_text(
+                                chunk.accumulated,
+                                pii_session,
+                            ),
+                            done=chunk.done,
+                            usage=chunk.usage,
+                        )
+                    yield chunk
+                return
+
+            async with dispatcher.slot():
+                stream_result = provider.stream(
+                    messages=work_messages,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    **kwargs,
+                )
+                if not hasattr(stream_result, "__aiter__"):
+                    stream_result = await stream_result
+                async for chunk in stream_result:
+                    if do_pii and pii_session is not None and chunk.delta:
+                        chunk = StreamChunk(
+                            delta=self._detokenize_text(chunk.delta, pii_session),
+                            accumulated=self._detokenize_text(
+                                chunk.accumulated,
+                                pii_session,
+                            ),
+                            done=chunk.done,
+                            usage=chunk.usage,
+                        )
+                    yield chunk
 
         if effective_timeout and effective_timeout > 0:
             gen = _produce()
@@ -296,6 +342,39 @@ class ModelGateway:
     def config(self) -> GatewayConfig:
         """Access the gateway configuration."""
         return self._config
+
+    # ------------------------------------------------------------------
+    # Provider helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_provider(
+        self,
+        model: str,
+        *,
+        provider_name: str | None,
+    ) -> tuple[LLMProvider, str | None]:
+        if provider_name:
+            provider = self._registry.get(provider_name)
+            if provider is None:
+                raise KeyError(
+                    f"No provider registered under explicit name {provider_name!r}. "
+                    f"Registered providers: {sorted(self._registry.provider_names())}"
+                )
+            return provider, provider_name
+
+        provider = self._registry.resolve(model)
+        resolved_name: str | None = None
+        resolve_name = getattr(self._registry, "resolve_name", None)
+        if callable(resolve_name):
+            try:
+                resolved_name = resolve_name(model)
+            except Exception:
+                logger.debug(
+                    "Unable to resolve provider name for model %s",
+                    model,
+                    exc_info=True,
+                )
+        return provider, resolved_name
 
     # ------------------------------------------------------------------
     # PII helpers (duck-typed)
