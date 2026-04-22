@@ -55,6 +55,8 @@ _LIVE_GENERIC_TOOL_IDS = [
     "git_log",
 ]
 _LIVE_WEBSITE_FILES = ("index.html", "styles.css", "app.js", "README.md")
+_LIVE_FILE_WRITE_SAFE_WORD_LIMIT = 1200
+_LIVE_FILE_WRITE_SAFE_LINE_LIMIT = 200
 _WEBSITE_TEMPLATE_PHRASES = (
     "execution contract",
     "objective contract",
@@ -63,6 +65,16 @@ _WEBSITE_TEMPLATE_PHRASES = (
     "acceptance synthesis",
     "super dan turns one objective into coordinated execution",
 )
+
+
+def _live_pacing_contract() -> str:
+    return (
+        "Work at organism pace: no hurry, no giant monolithic rewrites, no speculative scratch files. "
+        f"Treat single `file_write` payloads above roughly {_LIVE_FILE_WRITE_SAFE_WORD_LIMIT} words or "
+        f"{_LIVE_FILE_WRITE_SAFE_LINE_LIMIT} lines as risky and split them into smaller coherent chunks. "
+        "Prefer `file_edit` for incremental updates to existing files, and let each round land one valid slice "
+        "before attempting the next."
+    )
 
 
 class SuperRunEventLogger:
@@ -344,11 +356,53 @@ def _text_report_lines(report: SuperOrganismReport) -> list[str]:
                 f"- {node.node_id} | {node.status} | {node.assigned_cell_count} cells | "
                 f"{_display_text(node.title)}"
             )
+    if report.shared_board is not None:
+        lines.extend(["", "Board:"])
+        lines.append(
+            "- completed="
+            + str(len(report.shared_board.completed_ticket_ids))
+            + ", waiting="
+            + str(len(report.shared_board.waiting_ticket_ids))
+            + ", blocked="
+            + str(len(report.shared_board.blocked_ticket_ids))
+            + ", reserve="
+            + str(len(report.shared_board.reserve_cell_ids))
+        )
+        lines.append(
+            "- packets: published="
+            + str(len(report.shared_board.published_packet_ids))
+            + ", pending="
+            + str(len(report.shared_board.pending_packet_ids))
+        )
+    if report.coordination_tickets:
+        lines.extend(["", "Tickets:"])
+        for ticket in report.coordination_tickets:
+            lines.append(
+                f"- {ticket.ticket_id} | {ticket.status} | owner {ticket.owner_cell_id} | "
+                f"{_display_text(ticket.title)}"
+            )
+    if report.handoff_packets:
+        lines.extend(["", "Handoffs:"])
+        for packet in report.handoff_packets:
+            lines.append(
+                f"- {packet.packet_id} | {packet.status} | {packet.from_ticket_id}->{packet.to_ticket_id} | "
+                f"{packet.packet_type}"
+            )
     lines.extend(["", "Reallocations:"])
     for decision in report.reallocation_decisions:
         lines.append(
             f"- {decision.decision_id}: {decision.cell_count} "
             f"{decision.from_organ.value}->{decision.to_organ.value}; {_display_text(decision.reason)}"
+        )
+    if report.final_audit is not None:
+        lines.extend(
+            [
+                "",
+                "Final Audit:",
+                f"- {report.final_audit.status} | satisfied={str(report.final_audit.satisfied).lower()} | blockers: "
+                f"{_display_text(', '.join(report.final_audit.blocker_ticket_ids) or 'none')}",
+                _display_text(report.final_audit.summary),
+            ]
         )
     lines.extend(["", "Final Memo:", _display_text(report.final_memo)])
     lines.extend(["", f"Caveat: {_display_text(report.caveat)}"])
@@ -515,13 +569,20 @@ def _build_live_website_worker(model: str) -> WorkerDefinition:
             "You are not DAN Code and you must not call or mention DAN Code or DAN Research as an internal handoff. "
             "Turn the operator objective into a concrete static website by actually writing files with "
             "`file_write` or `file_edit` before your final answer. Do not stop after a plan. "
-            "Use the required file paths exactly unless the input payload says otherwise."
+            "Use the required file paths exactly unless the input payload says otherwise. "
+            f"{_live_pacing_contract()}"
         ),
         llm_hints=CompletionHints(
             system_prompt=(
                 "Super DAN live build contract:\n"
                 "- Build a polished static product website with distinctive layout, motion, and concise copy.\n"
                 "- Required files: index.html, styles.css, app.js, README.md at the requested artifact paths.\n"
+                "- Treat the supplied coordination tickets as the working backlog and satisfy the final audit gate.\n"
+                f"- {_live_pacing_contract()}\n"
+                "- If the required files already exist, improve them incrementally instead of replacing everything at once.\n"
+                "- After one failed or truncated large write, immediately switch to a smaller section-level strategy.\n"
+                "- Avoid rereading the same file unless the next edit truly needs exact line grounding.\n"
+                "- Do not create scratch files, marker files, or throwaway artifacts outside the required website file set.\n"
                 "- Use local file tools for every required file before finalizing.\n"
                 "- Keep dependencies zero; no package install, no external CDN requirement.\n"
                 "- The result must be inspectable by opening index.html directly."
@@ -549,6 +610,7 @@ def _build_live_website_validator(model: str) -> WorkerDefinition:
                 "Role: validator_website\n"
                 "Super DAN live website validator contract:\n"
                 "- Read the generated files directly before deciding.\n"
+                "- Judge whether the execution and acceptance tickets can actually be closed.\n"
                 "- Fail if the artifact is mostly a generic contract/demo template instead of a real product website.\n"
                 "- Fail if the artifact mainly repeats the raw operator prompt as hero copy.\n"
                 "- Prefer concrete missing requirements and repair guidance over vague critique.\n"
@@ -575,13 +637,19 @@ def _build_live_generic_worker(model: str) -> WorkerDefinition:
             "You are not DAN Code and you must not call or mention DAN Code or DAN Research as an internal handoff. "
             "Inspect the workspace, make the requested implementation directly, and actually mutate files before your final answer. "
             "Use shell_command only for focused verification or repo inspection, not for sprawling exploration. "
-            "Do not stop at a plan."
+            "Do not stop at a plan. "
+            f"{_live_pacing_contract()}"
         ),
         llm_hints=CompletionHints(
             system_prompt=(
                 "Super DAN live coding contract:\n"
                 "- Execute the operator objective in the current workspace.\n"
+                "- Treat the supplied coordination tickets as the working backlog and satisfy the final audit gate.\n"
+                f"- {_live_pacing_contract()}\n"
                 "- Inspect first, then make a bounded coherent implementation.\n"
+                "- Prefer `file_edit` over whole-file `file_write` when the target file already exists.\n"
+                "- After one failed or truncated large write, immediately switch to a smaller patch strategy.\n"
+                "- Avoid rereading the same files unless the next edit truly needs exact grounding.\n"
                 "- Actually create or edit workspace files with file_write or file_edit before finalizing.\n"
                 "- Prefer the smallest correct change that clearly advances the objective.\n"
                 "- Use shell_command only when it materially verifies or inspects the workspace.\n"
@@ -610,6 +678,7 @@ def _build_live_generic_validator(model: str) -> WorkerDefinition:
                 "Role: validator_coding\n"
                 "Super DAN live coding validator contract:\n"
                 "- Inspect the changed files and any relevant git/read-only evidence before deciding.\n"
+                "- Judge whether the execution, result handoff, and acceptance tickets can actually be closed.\n"
                 "- Fail if the run made only cosmetic, placeholder-style, or otherwise non-responsive changes.\n"
                 "- Prefer concrete missing requirements and repair guidance over vague critique.\n"
                 "- Return only the required validation JSON."
@@ -636,6 +705,10 @@ def _live_website_task(
         f"Operator objective: {report.target}. "
         f"Artifact root: {artifact_root}. "
         f"Required relative files: {files}. "
+        "Honor the supplied ticket ownership and handoff packets instead of freeforming a generic demo shell. "
+        f"{_live_pacing_contract()} "
+        "If the website files already exist, improve them incrementally instead of rewriting the whole site in one response. "
+        "Do not create extra scratch files outside the required artifact set. "
         f"The website should make the {report.cell_count}-cell Super DAN organism feel credible: "
         "show coordinated cells, organs, synchronization, live execution, and an organized payoff. "
         "Actually create the files, then return the requested compact JSON-like completion summary."
@@ -668,6 +741,8 @@ def _live_generic_task(
         "Execute the operator objective in the current workspace now. "
         f"Operator objective: {report.target}. "
         f"Workspace root: {workspace_root}. "
+        "Honor the supplied ticket ownership and handoff packets instead of freeforming a generic build summary. "
+        f"{_live_pacing_contract()} "
         "Inspect the existing project as needed, make a bounded implementation that materially advances the objective, "
         "and run focused verification if useful. Actually mutate workspace files before finalizing, then return the "
         "requested compact JSON-like completion summary."
@@ -1083,11 +1158,20 @@ async def _run_live_website_build(
             "Do not invoke the separate DAN Code or DAN Research product shells.",
             "Keep writes inside the requested workspace/artifact paths.",
             "Do not install dependencies or require a build step.",
+            "Do not create scratch or throwaway files outside the required website artifact set.",
         ],
         soft_constraints=[
             "Favor a visually distinctive, non-generic landing page.",
             "Use motion meaningfully to show cells synchronizing rather than decorative noise.",
             f"Keep copy focused on organized {report.cell_count}-cell execution and synergy.",
+            (
+                "Move at a paced incremental cadence: land one small valid section or file change at a time "
+                "instead of attempting one giant rewrite."
+            ),
+            (
+                f"Treat single file_write payloads above roughly {_LIVE_FILE_WRITE_SAFE_WORD_LIMIT} words or "
+                f"{_LIVE_FILE_WRITE_SAFE_LINE_LIMIT} lines as risky and split them."
+            ),
         ],
         evidence_blocks=[
             {
@@ -1100,6 +1184,36 @@ async def _run_live_website_build(
                 "label": "Delivery nodes",
                 "content": json.dumps(
                     [node.model_dump(mode="json") for node in report.delivery_plan],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "source": "super_organism_report",
+                "trust_label": "advisory",
+            },
+            {
+                "label": "Coordination tickets",
+                "content": json.dumps(
+                    [ticket.model_dump(mode="json") for ticket in report.coordination_tickets],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "source": "super_organism_report",
+                "trust_label": "advisory",
+            },
+            {
+                "label": "Handoff packets",
+                "content": json.dumps(
+                    [packet.model_dump(mode="json") for packet in report.handoff_packets],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "source": "super_organism_report",
+                "trust_label": "advisory",
+            },
+            {
+                "label": "Final audit gate",
+                "content": json.dumps(
+                    (report.final_audit.model_dump(mode="json") if report.final_audit is not None else {}),
                     ensure_ascii=False,
                     sort_keys=True,
                 ),
@@ -1127,6 +1241,22 @@ async def _run_live_website_build(
             "active_cell_cap": report.active_cell_cap,
             "organ_counts": dict(report.organ_counts),
             "delivery_plan": [node.model_dump(mode="json") for node in report.delivery_plan],
+            "write_pacing": {
+                "safe_file_write_word_limit": _LIVE_FILE_WRITE_SAFE_WORD_LIMIT,
+                "safe_file_write_line_limit": _LIVE_FILE_WRITE_SAFE_LINE_LIMIT,
+                "prefer_incremental_file_edit_on_existing_files": True,
+                "forbid_scratch_files_outside_required_artifacts": True,
+            },
+            "shared_board": (
+                report.shared_board.model_dump(mode="json") if report.shared_board is not None else None
+            ),
+            "coordination_tickets": [
+                ticket.model_dump(mode="json") for ticket in report.coordination_tickets
+            ],
+            "handoff_packets": [packet.model_dump(mode="json") for packet in report.handoff_packets],
+            "final_audit": (
+                report.final_audit.model_dump(mode="json") if report.final_audit is not None else None
+            ),
         },
         metadata={
             "surface": "super_organism",
@@ -1310,6 +1440,14 @@ async def _run_live_generic_execution(
             "Prefer a bounded implementation over a broad speculative rewrite.",
             "Use shell_command only when it materially verifies or inspects the workspace.",
             "Keep the final summary concise and inspectable.",
+            (
+                "Move at a paced incremental cadence: land one small valid patch at a time instead of "
+                "attempting one giant rewrite."
+            ),
+            (
+                f"Treat single file_write payloads above roughly {_LIVE_FILE_WRITE_SAFE_WORD_LIMIT} words or "
+                f"{_LIVE_FILE_WRITE_SAFE_LINE_LIMIT} lines as risky and split them."
+            ),
         ],
         evidence_blocks=[
             {
@@ -1322,6 +1460,36 @@ async def _run_live_generic_execution(
                 "label": "Delivery nodes",
                 "content": json.dumps(
                     [node.model_dump(mode="json") for node in report.delivery_plan],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "source": "super_organism_report",
+                "trust_label": "advisory",
+            },
+            {
+                "label": "Coordination tickets",
+                "content": json.dumps(
+                    [ticket.model_dump(mode="json") for ticket in report.coordination_tickets],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "source": "super_organism_report",
+                "trust_label": "advisory",
+            },
+            {
+                "label": "Handoff packets",
+                "content": json.dumps(
+                    [packet.model_dump(mode="json") for packet in report.handoff_packets],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "source": "super_organism_report",
+                "trust_label": "advisory",
+            },
+            {
+                "label": "Final audit gate",
+                "content": json.dumps(
+                    (report.final_audit.model_dump(mode="json") if report.final_audit is not None else {}),
                     ensure_ascii=False,
                     sort_keys=True,
                 ),
@@ -1355,6 +1523,21 @@ async def _run_live_generic_execution(
             "execution_family": report.execution_family,
             "organ_counts": dict(report.organ_counts),
             "delivery_plan": [node.model_dump(mode="json") for node in report.delivery_plan],
+            "write_pacing": {
+                "safe_file_write_word_limit": _LIVE_FILE_WRITE_SAFE_WORD_LIMIT,
+                "safe_file_write_line_limit": _LIVE_FILE_WRITE_SAFE_LINE_LIMIT,
+                "prefer_incremental_file_edit_on_existing_files": True,
+            },
+            "shared_board": (
+                report.shared_board.model_dump(mode="json") if report.shared_board is not None else None
+            ),
+            "coordination_tickets": [
+                ticket.model_dump(mode="json") for ticket in report.coordination_tickets
+            ],
+            "handoff_packets": [packet.model_dump(mode="json") for packet in report.handoff_packets],
+            "final_audit": (
+                report.final_audit.model_dump(mode="json") if report.final_audit is not None else None
+            ),
         },
         metadata={
             "surface": "super_organism",

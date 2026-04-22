@@ -212,6 +212,85 @@ class ReallocationDecision(BaseModel):
     outcome: str = ""
 
 
+class CoordinationTicket(BaseModel):
+    """Explicit ownership ticket on the shared organism board."""
+
+    ticket_id: str
+    node_id: str
+    title: str
+    organ: SuperOrgan
+    phase: str
+    status: Literal[
+        "completed",
+        "awaiting_live_execution",
+        "awaiting_result_handoff",
+        "awaiting_acceptance",
+        "blocked",
+    ]
+    owner_cell_id: str
+    cell_ids: list[str] = Field(default_factory=list)
+    dependency_ticket_ids: list[str] = Field(default_factory=list)
+    artifact_targets: list[str] = Field(default_factory=list)
+    acceptance_checks: list[str] = Field(default_factory=list)
+    blocker: str = ""
+    notes: list[str] = Field(default_factory=list)
+
+
+class HandoffPacket(BaseModel):
+    """Typed packet passed between tickets on the shared organism board."""
+
+    packet_id: str
+    phase: str
+    packet_type: Literal[
+        "objective",
+        "context",
+        "work_graph",
+        "risk_gate",
+        "execution",
+        "result",
+        "acceptance",
+    ]
+    status: Literal["published", "pending"]
+    from_ticket_id: str
+    to_ticket_id: str
+    from_cell_id: str
+    to_cell_id: str
+    summary: str
+    payload_keys: list[str] = Field(default_factory=list)
+    release_condition: str = ""
+
+
+class SharedBoardState(BaseModel):
+    """Compact board snapshot for the final deterministic report."""
+
+    board_id: str = "board-001"
+    objective: str
+    execution_family: str
+    memory_clusters: list[str] = Field(default_factory=list)
+    completed_ticket_ids: list[str] = Field(default_factory=list)
+    waiting_ticket_ids: list[str] = Field(default_factory=list)
+    blocked_ticket_ids: list[str] = Field(default_factory=list)
+    reserve_cell_ids: list[str] = Field(default_factory=list)
+    published_packet_ids: list[str] = Field(default_factory=list)
+    pending_packet_ids: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class FinalAuditGate(BaseModel):
+    """The organism's explicit stop/continue gate before exit."""
+
+    audit_id: str = "audit-001"
+    auditor_cell_id: str
+    reviewer_cell_ids: list[str] = Field(default_factory=list)
+    status: Literal["continue", "done", "clarify"] = "continue"
+    satisfied: bool = False
+    summary: str
+    acceptance_checks: list[str] = Field(default_factory=list)
+    blocker_ticket_ids: list[str] = Field(default_factory=list)
+    residual_risks: list[str] = Field(default_factory=list)
+    next_action: str = ""
+
+
 class SuperOrganismReport(BaseModel):
     """Final report for the deterministic organism showcase run."""
 
@@ -236,6 +315,10 @@ class SuperOrganismReport(BaseModel):
     evidence_refs: list[EvidenceRef]
     claim_graph: list[ClaimNode]
     delivery_plan: list[DeliveryNode] = Field(default_factory=list)
+    shared_board: SharedBoardState | None = None
+    coordination_tickets: list[CoordinationTicket] = Field(default_factory=list)
+    handoff_packets: list[HandoffPacket] = Field(default_factory=list)
+    final_audit: FinalAuditGate | None = None
     reallocation_decisions: list[ReallocationDecision]
     activity_waves: list[ActivityWave]
     board_signals: list[BoardSignal]
@@ -246,6 +329,52 @@ class SuperOrganismReport(BaseModel):
             raise ValueError("cell_count must match cells length")
         if self.max_active_observed > self.active_cell_cap:
             raise ValueError("activity waves exceeded active_cell_cap")
+        valid_cell_ids = {cell.cell_id for cell in self.cells}
+        valid_ticket_ids = {ticket.ticket_id for ticket in self.coordination_tickets}
+        valid_packet_ids = {packet.packet_id for packet in self.handoff_packets}
+        for ticket in self.coordination_tickets:
+            if ticket.owner_cell_id not in valid_cell_ids:
+                raise ValueError("coordination ticket owner_cell_id must reference a known cell")
+            if not ticket.cell_ids:
+                raise ValueError("coordination tickets must carry at least one assigned cell")
+            if ticket.owner_cell_id not in ticket.cell_ids:
+                raise ValueError("coordination ticket owner must appear in cell_ids")
+            if any(cell_id not in valid_cell_ids for cell_id in ticket.cell_ids):
+                raise ValueError("coordination ticket cell_ids must reference known cells")
+            if any(ticket_id not in valid_ticket_ids for ticket_id in ticket.dependency_ticket_ids):
+                raise ValueError("coordination ticket dependency ids must reference known tickets")
+        for packet in self.handoff_packets:
+            if packet.from_ticket_id not in valid_ticket_ids or packet.to_ticket_id not in valid_ticket_ids:
+                raise ValueError("handoff packet ticket ids must reference known tickets")
+            if packet.from_cell_id not in valid_cell_ids or packet.to_cell_id not in valid_cell_ids:
+                raise ValueError("handoff packet cell ids must reference known cells")
+        if self.shared_board is not None:
+            board_ticket_ids = (
+                list(self.shared_board.completed_ticket_ids)
+                + list(self.shared_board.waiting_ticket_ids)
+                + list(self.shared_board.blocked_ticket_ids)
+            )
+            if any(ticket_id not in valid_ticket_ids for ticket_id in board_ticket_ids):
+                raise ValueError("shared board ticket ids must reference known tickets")
+            if any(cell_id not in valid_cell_ids for cell_id in self.shared_board.reserve_cell_ids):
+                raise ValueError("shared board reserve_cell_ids must reference known cells")
+            board_packet_ids = list(self.shared_board.published_packet_ids) + list(
+                self.shared_board.pending_packet_ids
+            )
+            if any(packet_id not in valid_packet_ids for packet_id in board_packet_ids):
+                raise ValueError("shared board packet ids must reference known packets")
+            accounted_cells = set(self.shared_board.reserve_cell_ids)
+            for ticket in self.coordination_tickets:
+                accounted_cells.update(ticket.cell_ids)
+            if accounted_cells != valid_cell_ids:
+                raise ValueError("shared board must account for every logical cell")
+        if self.final_audit is not None:
+            if self.final_audit.auditor_cell_id not in valid_cell_ids:
+                raise ValueError("final audit auditor_cell_id must reference a known cell")
+            if any(cell_id not in valid_cell_ids for cell_id in self.final_audit.reviewer_cell_ids):
+                raise ValueError("final audit reviewer_cell_ids must reference known cells")
+            if any(ticket_id not in valid_ticket_ids for ticket_id in self.final_audit.blocker_ticket_ids):
+                raise ValueError("final audit blocker_ticket_ids must reference known tickets")
         return self
 
 
@@ -391,6 +520,12 @@ def _run_universal_agent_demo(
     stage_sequence.append("context_acquisition")
 
     delivery_plan = _build_universal_delivery_plan(target, execution_family, cell_count=cell_count)
+    shared_board, coordination_tickets, handoff_packets, final_audit = _build_universal_coordination_contract(
+        target,
+        execution_family,
+        delivery_plan,
+        by_organ=by_organ,
+    )
     contract_cells = by_organ[SuperOrgan.CLAIM]
     for index, node in enumerate(delivery_plan):
         cell = contract_cells[index % len(contract_cells)]
@@ -440,8 +575,34 @@ def _run_universal_agent_demo(
                 "risk",
                 "execution",
                 "acceptance",
-            ]
+            ],
+            "ticket_count": len(coordination_tickets),
+            "published_packet_count": len(shared_board.published_packet_ids),
+            "reserve_cell_ids": list(shared_board.reserve_cell_ids),
         },
+    )
+    signals.append(
+        BoardSignal(
+            tick=tick,
+            signal_type="state_delta",
+            source_cell_id=_first_cell_id(by_organ[SuperOrgan.MEMORY], "memory-001"),
+            organ=SuperOrgan.MEMORY,
+            phase="shared_memory_index",
+            summary=(
+                f"Memory cells indexed {len(coordination_tickets)} tickets and "
+                f"{len(handoff_packets)} typed handoff packets on the shared board."
+            ),
+            subject_id=shared_board.board_id,
+            confidence=0.81,
+            payload={
+                "namespace": "universal.shared_board",
+                "op": "upsert_board_state",
+                "completed_ticket_ids": list(shared_board.completed_ticket_ids),
+                "waiting_ticket_ids": list(shared_board.waiting_ticket_ids),
+                "published_packet_ids": list(shared_board.published_packet_ids),
+                "pending_packet_ids": list(shared_board.pending_packet_ids),
+            },
+        )
     )
     stage_sequence.append("shared_memory_index")
 
@@ -576,6 +737,10 @@ def _run_universal_agent_demo(
     final_memo = _build_universal_final_memo(
         target,
         delivery_plan,
+        shared_board,
+        coordination_tickets,
+        handoff_packets,
+        final_audit,
         readiness_score,
         final_verdict,
         execution_family,
@@ -590,6 +755,26 @@ def _run_universal_agent_demo(
         active_cell_cap=active_cell_cap,
         summary="Synthesis cells assembled the objective contract, organ allocation, execution probes, and acceptance gates.",
         payload={"final_verdict": final_verdict, "execution_readiness_score": readiness_score},
+    )
+    signals.append(
+        BoardSignal(
+            tick=tick,
+            signal_type="state_delta",
+            source_cell_id=final_audit.auditor_cell_id,
+            organ=SuperOrgan.SYNTHESIS,
+            phase="synthesis",
+            summary="Final audit left the organism in continue mode until the live execution loop publishes result and acceptance packets.",
+            subject_id=final_audit.audit_id,
+            confidence=0.87,
+            payload={
+                "namespace": "universal.final_audit",
+                "op": "set_audit_gate",
+                "status": final_audit.status,
+                "satisfied": final_audit.satisfied,
+                "blocker_ticket_ids": list(final_audit.blocker_ticket_ids),
+                "next_action": final_audit.next_action,
+            },
+        )
     )
     signals.append(
         BoardSignal(
@@ -647,6 +832,10 @@ def _run_universal_agent_demo(
         evidence_refs=evidence_refs,
         claim_graph=[],
         delivery_plan=delivery_plan,
+        shared_board=shared_board,
+        coordination_tickets=coordination_tickets,
+        handoff_packets=handoff_packets,
+        final_audit=final_audit,
         reallocation_decisions=reallocations,
         activity_waves=waves,
         board_signals=signals,
@@ -1463,6 +1652,295 @@ def _first_cell_id(cells: list[SuperOrganismCell], fallback: str) -> str:
     return cells[0].cell_id if cells else fallback
 
 
+def _cycled_cell_ids(
+    cells: list[SuperOrganismCell],
+    count: int,
+    *,
+    start: int = 0,
+) -> list[str]:
+    if not cells:
+        return []
+    return [cells[(start + offset) % len(cells)].cell_id for offset in range(max(1, count))]
+
+
+def _ticket_id_for_node(node_id: str) -> str:
+    return node_id.replace("node-", "ticket-")
+
+
+def _build_universal_coordination_contract(
+    target: str,
+    execution_family: str,
+    delivery_plan: list[DeliveryNode],
+    *,
+    by_organ: dict[SuperOrgan, list[SuperOrganismCell]],
+) -> tuple[SharedBoardState, list[CoordinationTicket], list[HandoffPacket], FinalAuditGate]:
+    phase_by_node = {
+        "node-001": "objective_intake",
+        "node-002": "objective_intake",
+        "node-003": "context_acquisition",
+        "node-004": "contract_decomposition",
+        "node-005": "contract_immune_check",
+        "node-006": "execution_probe",
+        "node-007": "shared_memory_index",
+        "node-008": "synthesis",
+    }
+    status_by_node = {
+        "node-001": "completed",
+        "node-002": "completed",
+        "node-003": "completed",
+        "node-004": "completed",
+        "node-005": "completed",
+        "node-006": "awaiting_live_execution",
+        "node-007": "awaiting_result_handoff",
+        "node-008": "awaiting_acceptance",
+    }
+    artifact_targets = {
+        "node-001": ["objective.md", "done_criteria.json"],
+        "node-002": ["authority_contract.json"],
+        "node-003": ["context_inventory.json", "missing_context.md"],
+        "node-004": ["work_graph.json"],
+        "node-005": ["risk_register.json", "approval_gate.md"],
+        "node-006": ["execution_packet.json", "tool_budget.json"],
+        "node-007": ["result_packet.json", "trace_links.json"],
+        "node-008": ["acceptance_summary.json", "residual_risks.md"],
+    }
+    acceptance_checks = {
+        "node-001": [
+            "The operator objective is preserved verbatim enough to stay faithful.",
+            "The done condition names a concrete artifact or observable result.",
+        ],
+        "node-002": [
+            "Authority boundaries are explicit.",
+            "The chosen execution lane matches the objective family.",
+        ],
+        "node-003": [
+            "Context gaps are surfaced before execution.",
+            "Required evidence lanes are indexed on the board.",
+        ],
+        "node-004": [
+            "The work graph is objective-specific rather than a canned scenario.",
+            "Dependencies and per-subtask outputs are explicit.",
+        ],
+        "node-005": [
+            "Ambiguity, safety, and weak-proof risks are challenged.",
+            "Unsafe or unbounded execution remains blocked.",
+        ],
+        "node-006": [
+            "A bounded native execution lane actually runs.",
+            "The run produces a concrete artifact or workspace mutation.",
+        ],
+        "node-007": [
+            "Execution results are written back into shared memory.",
+            "Changed files, trace links, and residual blockers are retained.",
+        ],
+        "node-008": [
+            "The final auditor can see the artifact, validator output, and residual risks.",
+            "The organism does not exit while live execution tickets remain unresolved.",
+        ],
+    }
+    blocker_by_node = {
+        "node-006": "No live execution run has happened yet.",
+        "node-007": "Result integration depends on the native execution lane publishing outputs.",
+        "node-008": "Acceptance synthesis depends on execution plus validator closure.",
+    }
+    cursor_by_organ: dict[SuperOrgan, int] = {organ: 0 for organ in SuperOrgan}
+    tickets: list[CoordinationTicket] = []
+    assigned_cells: set[str] = set()
+    for node in delivery_plan:
+        organ_cells = by_organ[node.organ]
+        start = cursor_by_organ[node.organ]
+        cell_ids = _cycled_cell_ids(organ_cells, node.assigned_cell_count, start=start)
+        if organ_cells:
+            cursor_by_organ[node.organ] = (start + min(len(organ_cells), max(1, node.assigned_cell_count))) % len(
+                organ_cells
+            )
+        assigned_cells.update(cell_ids)
+        tickets.append(
+            CoordinationTicket(
+                ticket_id=_ticket_id_for_node(node.node_id),
+                node_id=node.node_id,
+                title=node.title,
+                organ=node.organ,
+                phase=phase_by_node[node.node_id],
+                status=status_by_node[node.node_id],
+                owner_cell_id=cell_ids[0] if cell_ids else _first_cell_id(organ_cells, f"{node.organ.value}-001"),
+                cell_ids=cell_ids
+                or [_first_cell_id(organ_cells, f"{node.organ.value}-001")],
+                dependency_ticket_ids=[_ticket_id_for_node(dep) for dep in node.dependencies],
+                artifact_targets=list(artifact_targets[node.node_id]),
+                acceptance_checks=list(acceptance_checks[node.node_id]),
+                blocker=blocker_by_node.get(node.node_id, ""),
+                notes=list(node.notes),
+            )
+        )
+    ticket_by_node = {ticket.node_id: ticket for ticket in tickets}
+    all_cell_ids = {
+        cell.cell_id
+        for organ_cells in by_organ.values()
+        for cell in organ_cells
+    }
+    reserve_cell_ids = sorted(all_cell_ids - assigned_cells)
+    packets = [
+        HandoffPacket(
+            packet_id="packet-001",
+            phase="objective_intake",
+            packet_type="objective",
+            status="published",
+            from_ticket_id=ticket_by_node["node-001"].ticket_id,
+            to_ticket_id=ticket_by_node["node-002"].ticket_id,
+            from_cell_id=ticket_by_node["node-001"].owner_cell_id,
+            to_cell_id=ticket_by_node["node-002"].owner_cell_id,
+            summary="Brain cells published the raw objective contract and done condition.",
+            payload_keys=["objective", "done_condition", "operator_deliverable"],
+            release_condition="Published after objective intake completes.",
+        ),
+        HandoffPacket(
+            packet_id="packet-002",
+            phase="context_acquisition",
+            packet_type="context",
+            status="published",
+            from_ticket_id=ticket_by_node["node-002"].ticket_id,
+            to_ticket_id=ticket_by_node["node-003"].ticket_id,
+            from_cell_id=ticket_by_node["node-002"].owner_cell_id,
+            to_cell_id=ticket_by_node["node-003"].owner_cell_id,
+            summary="Authority and capability constraints were handed to scout cells.",
+            payload_keys=["execution_family", "authority_boundary", "approval_boundary"],
+            release_condition="Published after capability and authority contract closes.",
+        ),
+        HandoffPacket(
+            packet_id="packet-003",
+            phase="contract_decomposition",
+            packet_type="work_graph",
+            status="published",
+            from_ticket_id=ticket_by_node["node-003"].ticket_id,
+            to_ticket_id=ticket_by_node["node-004"].ticket_id,
+            from_cell_id=ticket_by_node["node-003"].owner_cell_id,
+            to_cell_id=ticket_by_node["node-004"].owner_cell_id,
+            summary="Scout evidence and context gaps were atomized into the work graph.",
+            payload_keys=["evidence_refs", "missing_context", "workspace_signals"],
+            release_condition="Published after scout context acquisition finishes.",
+        ),
+        HandoffPacket(
+            packet_id="packet-004",
+            phase="contract_immune_check",
+            packet_type="risk_gate",
+            status="published",
+            from_ticket_id=ticket_by_node["node-004"].ticket_id,
+            to_ticket_id=ticket_by_node["node-005"].ticket_id,
+            from_cell_id=ticket_by_node["node-004"].owner_cell_id,
+            to_cell_id=ticket_by_node["node-005"].owner_cell_id,
+            summary="The work graph was handed to immune cells for ambiguity and risk pressure.",
+            payload_keys=["subtasks", "dependencies", "acceptance_outputs"],
+            release_condition="Published after contract decomposition stabilizes.",
+        ),
+        HandoffPacket(
+            packet_id="packet-005",
+            phase="execution_probe",
+            packet_type="execution",
+            status="published",
+            from_ticket_id=ticket_by_node["node-005"].ticket_id,
+            to_ticket_id=ticket_by_node["node-006"].ticket_id,
+            from_cell_id=ticket_by_node["node-005"].owner_cell_id,
+            to_cell_id=ticket_by_node["node-006"].owner_cell_id,
+            summary="Immune gates published the bounded execution packet for the native live lane.",
+            payload_keys=["risk_list", "tool_budget", "stop_condition", "approval_boundary"],
+            release_condition="Published once the risk gate is explicit and bounded.",
+        ),
+        HandoffPacket(
+            packet_id="packet-006",
+            phase="shared_memory_index",
+            packet_type="result",
+            status="pending",
+            from_ticket_id=ticket_by_node["node-006"].ticket_id,
+            to_ticket_id=ticket_by_node["node-007"].ticket_id,
+            from_cell_id=ticket_by_node["node-006"].owner_cell_id,
+            to_cell_id=ticket_by_node["node-007"].owner_cell_id,
+            summary="The result packet is reserved for changed files, artifacts, and execution notes.",
+            payload_keys=["changed_paths", "artifact_manifest", "trace_links", "run_notes"],
+            release_condition="Publish only after the native live lane makes a real artifact or workspace change.",
+        ),
+        HandoffPacket(
+            packet_id="packet-007",
+            phase="synthesis",
+            packet_type="acceptance",
+            status="pending",
+            from_ticket_id=ticket_by_node["node-007"].ticket_id,
+            to_ticket_id=ticket_by_node["node-008"].ticket_id,
+            from_cell_id=ticket_by_node["node-007"].owner_cell_id,
+            to_cell_id=ticket_by_node["node-008"].owner_cell_id,
+            summary="The acceptance packet is reserved for validator output and final artifact judgment.",
+            payload_keys=["validation_summary", "result_summary", "residual_risks"],
+            release_condition="Publish only after result integration and validator closure.",
+        ),
+    ]
+    shared_board = SharedBoardState(
+        objective=target,
+        execution_family=execution_family,
+        memory_clusters=[
+            "objective",
+            "contracts",
+            "context",
+            "risk",
+            "execution",
+            "acceptance",
+        ],
+        completed_ticket_ids=[
+            ticket.ticket_id for ticket in tickets if ticket.status == "completed"
+        ],
+        waiting_ticket_ids=[
+            ticket.ticket_id
+            for ticket in tickets
+            if ticket.status
+            in {
+                "awaiting_live_execution",
+                "awaiting_result_handoff",
+                "awaiting_acceptance",
+            }
+        ],
+        blocked_ticket_ids=[ticket.ticket_id for ticket in tickets if ticket.status == "blocked"],
+        reserve_cell_ids=reserve_cell_ids,
+        published_packet_ids=[packet.packet_id for packet in packets if packet.status == "published"],
+        pending_packet_ids=[packet.packet_id for packet in packets if packet.status == "pending"],
+        notes=[
+            "Every logical cell is accounted for either on a ticket or in the reserve pool.",
+            "The board refuses closure until execution, result handoff, and acceptance tickets resolve in order.",
+        ],
+    )
+    final_audit = FinalAuditGate(
+        auditor_cell_id=ticket_by_node["node-008"].owner_cell_id,
+        reviewer_cell_ids=[
+            ticket_by_node["node-005"].owner_cell_id,
+            ticket_by_node["node-007"].owner_cell_id,
+        ],
+        status="continue",
+        satisfied=False,
+        summary=(
+            "The organism is internally organized and execution-ready, but the final audit stays open until "
+            "the native execution lane publishes a result packet, shared memory integrates that result, and "
+            "acceptance synthesis sees validator-backed evidence instead of only a planned contract."
+        ),
+        acceptance_checks=[
+            "Native execution ticket produced a concrete artifact or workspace mutation.",
+            "Result handoff packet was published into shared memory.",
+            "Validator-backed acceptance packet was published before exit.",
+        ],
+        blocker_ticket_ids=[
+            ticket_by_node["node-006"].ticket_id,
+            ticket_by_node["node-007"].ticket_id,
+            ticket_by_node["node-008"].ticket_id,
+        ],
+        residual_risks=[
+            "No live artifact or workspace mutation has been observed in deterministic mode.",
+            "Result integration is still a reserved packet rather than a published packet.",
+            "Acceptance synthesis would be premature without validator-backed evidence.",
+        ],
+        next_action=(
+            "Run the native execution lane, publish packet-006 and packet-007, then rerun the final audit."
+        ),
+    )
+    return shared_board, tickets, packets, final_audit
+
+
 def _build_universal_delivery_plan(
     target: str,
     execution_family: str,
@@ -1579,6 +2057,10 @@ def _build_universal_delivery_plan(
 def _build_universal_final_memo(
     target: str,
     delivery_plan: list[DeliveryNode],
+    shared_board: SharedBoardState,
+    coordination_tickets: list[CoordinationTicket],
+    handoff_packets: list[HandoffPacket],
+    final_audit: FinalAuditGate,
     readiness_score: float,
     verdict: str,
     execution_family: str,
@@ -1587,15 +2069,22 @@ def _build_universal_final_memo(
 ) -> str:
     live_nodes = [node.node_id for node in delivery_plan if node.status == "live_build_required"]
     blockers = [node.node_id for node in delivery_plan if node.status == "needs_input"]
+    reserve_cells = ", ".join(shared_board.reserve_cell_ids) or "none"
     return (
         f"Super DAN's {cell_count}-cell deterministic universal-agent organism accepts the objective "
         f"'{target}' and treats it as {verdict}. Execution family: {execution_family}. "
         f"Execution readiness score: {readiness_score:.2f}. Delivery nodes: {len(delivery_plan)}. "
+        f"Board tickets: {len(coordination_tickets)}. Handoff packets: {len(handoff_packets)}. "
         f"Live-execution nodes: {', '.join(live_nodes) or 'none'}. Input blockers: "
-        f"{', '.join(blockers) or 'none'}. The organized behavior is the point: brain cells "
+        f"{', '.join(blockers) or 'none'}. Shared board: {len(shared_board.completed_ticket_ids)} completed tickets, "
+        f"{len(shared_board.waiting_ticket_ids)} waiting tickets, {len(shared_board.published_packet_ids)} published "
+        f"handoff packets, {len(shared_board.pending_packet_ids)} pending packets, reserve cells {reserve_cells}. "
+        f"Final audit: {final_audit.status} until {', '.join(final_audit.blocker_ticket_ids) or 'none'} clear. "
+        f"The organized behavior is the point: brain cells "
         "lock objective and authority, scouts acquire context, contract cells decompose work, "
         "memory cells maintain the board, immune cells challenge ambiguity and risk, experiment "
-        "cells prepare native execution probes, and synthesis cells decide done/continue/clarify."
+        "cells prepare native execution probes, typed packets carry handoffs between tickets, "
+        "and synthesis cells decide done/continue/clarify only after the final audit gate."
     )
 
 

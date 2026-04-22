@@ -515,6 +515,49 @@ def test_build_parser_rejects_public_scenario_flag() -> None:
         parser.parse_args(["--scenario", "truth-audit"])
 
 
+def test_live_worker_contracts_include_paced_small_write_guidance() -> None:
+    website_worker = super_cli._build_live_website_worker("fake-model")
+    generic_worker = super_cli._build_live_generic_worker("fake-model")
+
+    website_text = " ".join(
+        [
+            str(website_worker.instruction or ""),
+            str(website_worker.llm_hints.system_prompt or ""),
+        ]
+    )
+    generic_text = " ".join(
+        [
+            str(generic_worker.instruction or ""),
+            str(generic_worker.llm_hints.system_prompt or ""),
+        ]
+    )
+
+    assert "1200 words" in website_text
+    assert "200 lines" in website_text
+    assert "Do not create scratch files" in website_text
+    assert "Prefer `file_edit` over whole-file `file_write`" in generic_text
+    assert "1200 words" in generic_text
+    assert "200 lines" in generic_text
+
+
+def test_live_tasks_include_paced_incremental_execution_guidance(tmp_path) -> None:
+    report = super_cli.run_super_organism_demo("build a cool website for this product")
+
+    website_task = super_cli._live_website_task(
+        report,
+        artifact_root=tmp_path / "website",
+        relative_files=["website/index.html", "website/styles.css", "website/app.js", "website/README.md"],
+    )
+    generic_task = super_cli._live_generic_task(report, workspace_root=tmp_path)
+
+    assert "1200 words" in website_task
+    assert "200 lines" in website_task
+    assert "Do not create extra scratch files" in website_task
+    assert "improve them incrementally" in website_task
+    assert "1200 words" in generic_task
+    assert "200 lines" in generic_task
+
+
 def test_unified_cli_registers_super_organism() -> None:
     assert _SUBCOMMANDS["super-organism"] == ("dan.cli.super_organism", "main")
 
@@ -539,6 +582,14 @@ def test_main_json_outputs_default_20_cell_report(tmp_path, capsys) -> None:
     assert payload["signal_counts"]["reallocation"] == 2
     assert payload["mode"] == "deterministic_demo"
     assert payload["scenario"] == "universal_agent"
+    assert payload["shared_board"]["waiting_ticket_ids"] == [
+        "ticket-006",
+        "ticket-007",
+        "ticket-008",
+    ]
+    assert payload["final_audit"]["status"] == "continue"
+    assert len(payload["coordination_tickets"]) == 8
+    assert len(payload["handoff_packets"]) == 7
 
     written = json.loads(output_path.read_text(encoding="utf-8"))
     assert written["final_verdict"] == payload["final_verdict"]
@@ -566,7 +617,11 @@ def test_main_verbose_text_summary_prints_full_trace(capsys) -> None:
     assert "Cells: 20 logical | Active cap: 9" in stdout
     assert "Organism Contract: universal_agent" in stdout
     assert "Delivery Plan:" in stdout
+    assert "Board:" in stdout
+    assert "Tickets:" in stdout
+    assert "Handoffs:" in stdout
     assert "Reallocations:" in stdout
+    assert "Final Audit:" in stdout
     assert "OpenHands" in stdout
 
 
