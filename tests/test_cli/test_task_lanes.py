@@ -29,6 +29,26 @@ def test_classify_code_task_lane_keeps_edit_work_deep() -> None:
     assert policy.lane == "deep"
 
 
+def test_classify_code_task_lane_marks_bounded_existing_file_edit_fast() -> None:
+    policy = classify_code_task_lane(
+        user_message=(
+            "Apply a bounded visual refresh, keep changes within existing files, "
+            "and avoid new dependencies."
+        ),
+        coding_objective=(
+            "Apply a bounded visual refresh, keep changes within existing files, "
+            "and avoid new dependencies."
+        ),
+        benchmark_mode=False,
+        pending_clarification=False,
+        existing_plan_milestones=0,
+    )
+
+    assert policy.lane == "fast"
+    assert policy.use_fallback_pre_run_planner is True
+    assert policy.use_fallback_post_run_review is True
+
+
 def test_classify_research_task_lane_marks_document_review_fast() -> None:
     policy = classify_research_task_lane(
         user_message="Review this 80-page paper and summarize the main arguments by section.",

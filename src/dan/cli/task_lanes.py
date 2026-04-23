@@ -46,6 +46,29 @@ _CODE_DEEP_HINTS = (
     "milestone",
     "phase ",
 )
+_CODE_BOUNDED_EDIT_HINTS = (
+    "bounded",
+    "focused",
+    "small",
+    "existing files",
+    "within existing files",
+    "keep changes within",
+    "no new dependencies",
+    "one bounded",
+    "single file",
+    "two files",
+)
+_CODE_EDIT_INTENT_HINTS = (
+    *_CODE_DEEP_HINTS,
+    "apply",
+    "update",
+    "change",
+    "switch",
+    "improve",
+    "refine",
+    "refresh",
+    "visual refresh",
+)
 _RESEARCH_FAST_HINTS = (
     "review",
     "inspect",
@@ -132,6 +155,16 @@ def classify_code_task_lane(
     text = _normalize_text(user_message, coding_objective)
     if not text:
         return TaskLanePolicy(lane="deep", reason="Empty tasks stay on the default deep lane.")
+    if _contains_any(text, _CODE_EDIT_INTENT_HINTS) and _contains_any(
+        text,
+        _CODE_BOUNDED_EDIT_HINTS,
+    ):
+        return TaskLanePolicy(
+            lane="fast",
+            reason="Bounded existing-file edit requests can use deterministic planner/review fallbacks.",
+            use_fallback_pre_run_planner=True,
+            use_fallback_post_run_review=True,
+        )
     if _contains_any(text, _CODE_DEEP_HINTS):
         return TaskLanePolicy(
             lane="deep",
