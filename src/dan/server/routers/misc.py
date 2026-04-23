@@ -58,6 +58,7 @@ _RESTART_REQUIRED_CONFIG_KEYS = {
 }
 
 _ORGANISM_LOG_DISCOVERY_PATTERNS = (
+    ".dan-code/control-plane-events.jsonl",
     ".dan-code/runs/**/events.jsonl",
     ".dan-super/runs/**/events.jsonl",
     ".dan-research/runs/**/events.jsonl",
@@ -142,6 +143,8 @@ def _path_relative_to_root(path: Path, root_path: Path) -> str:
 
 
 def _organism_log_display_name(relative_path: str, *, product: str, stream_kind: str) -> str:
+    if relative_path.endswith(".dan-code/control-plane-events.jsonl"):
+        return "Code control plane"
     if relative_path.endswith(".dan-research/control-plane-events.jsonl"):
         return "Research control plane"
     match = re.search(r"(?:^|/)(turn-[^/]+)/events\.jsonl$", relative_path)

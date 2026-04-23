@@ -15,6 +15,9 @@ from dan.cli.code import (
     _load_swebench_instance,
     _swebench_prediction_excluded_paths,
     _conversation_context,
+    _effective_coding_organism_max_repair_rounds,
+    _effective_supervision_loop_count,
+    _provider_request_overrides_for_thinking_mode,
     _project_planner_context,
     _load_or_create_session,
     _print_session_rollup,
@@ -67,6 +70,85 @@ def test_build_parser_defaults() -> None:
     assert args.json is False
     assert args.swebench_instance_file is None
     assert args.swebench_predictions_path is None
+
+
+def test_provider_request_overrides_disable_thinking_for_short_auto_timeout() -> None:
+    assert _provider_request_overrides_for_thinking_mode(
+        "auto",
+        completion_timeout_seconds=45.0,
+    ) == {"thinking": {"type": "disabled"}, "timeout": 45.0}
+
+
+def test_provider_request_overrides_preserve_explicit_thinking_mode() -> None:
+    assert _provider_request_overrides_for_thinking_mode(
+        "enabled",
+        completion_timeout_seconds=45.0,
+    ) == {"thinking": {"type": "enabled"}, "timeout": 45.0}
+
+
+def test_provider_request_overrides_keep_auto_for_long_timeout() -> None:
+    assert _provider_request_overrides_for_thinking_mode(
+        "auto",
+        completion_timeout_seconds=90.0,
+    ) == {"timeout": 90.0}
+
+
+def test_short_completion_timeout_caps_live_repair_rounds() -> None:
+    assert (
+        _effective_coding_organism_max_repair_rounds(
+            1,
+            benchmark_context=None,
+            completion_timeout_seconds=60.0,
+        )
+        == 0
+    )
+    assert (
+        _effective_coding_organism_max_repair_rounds(
+            1,
+            benchmark_context={"benchmark_name": "SWE-bench"},
+            completion_timeout_seconds=45.0,
+        )
+        == 0
+    )
+    assert (
+        _effective_coding_organism_max_repair_rounds(
+            1,
+            benchmark_context={"benchmark_name": "SWE-bench"},
+            completion_timeout_seconds=None,
+        )
+        == 2
+    )
+
+
+def test_short_completion_timeout_caps_outer_supervision_loop() -> None:
+    assert (
+        _effective_supervision_loop_count(
+            benchmark_context=None,
+            completion_timeout_seconds=45.0,
+        )
+        == 1
+    )
+    assert (
+        _effective_supervision_loop_count(
+            benchmark_context={"benchmark_name": "SWE-bench"},
+            completion_timeout_seconds=60.0,
+        )
+        == 1
+    )
+    assert (
+        _effective_supervision_loop_count(
+            benchmark_context=None,
+            completion_timeout_seconds=None,
+        )
+        == 2
+    )
+    assert (
+        _effective_supervision_loop_count(
+            benchmark_context={"benchmark_name": "SWE-bench"},
+            completion_timeout_seconds=None,
+        )
+        == 4
+    )
 
 
 def test_main_lists_local_tools(capsys) -> None:
@@ -576,9 +658,15 @@ def test_main_json_persists_per_run_event_log(tmp_path, capsys, monkeypatch) -> 
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     event_log_path = Path(payload["event_log_path"])
+    control_log_path = Path(payload["control_log_path"])
     assert payload["event_log_schema"] == ORGANISM_LOG_SCHEMA_VERSION
+    assert payload["control_log_schema"] == ORGANISM_LOG_SCHEMA_VERSION
     assert event_log_path == (tmp_path / "workdir" / "turn-01" / "events.jsonl").resolve()
+    assert control_log_path == (
+        tmp_path / "workspace" / ".dan-code" / "control-plane-events.jsonl"
+    ).resolve()
     assert event_log_path.exists()
+    assert control_log_path.exists()
 
     event_rows = [
         json.loads(line)
@@ -601,6 +689,33 @@ def test_main_json_persists_per_run_event_log(tmp_path, capsys, monkeypatch) -> 
     assert event_rows[-1]["event"] == "run.log.completed"
     assert event_rows[-1]["event_log_path"] == str(event_log_path)
 
+    control_rows = [
+        json.loads(line)
+        for line in control_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    control_events = [row["event"] for row in control_rows]
+    assert [row["sequence"] for row in control_rows] == list(
+        range(1, len(control_rows) + 1)
+    )
+    assert all(row["schema"] == ORGANISM_LOG_SCHEMA_VERSION for row in control_rows)
+    assert all(row["stream"] == "control_plane" for row in control_rows)
+    assert control_rows[0]["event"] == "cli.started"
+    assert "orchestrator.turn.started" in control_events
+    assert "orchestrator.turn.decision.started" in control_events
+    assert "orchestrator.turn.decision.completed" in control_events
+    assert "orchestrator.project_planner.started" in control_events
+    assert "orchestrator.project_planner.completed" in control_events
+    assert "run.turn.started" in control_events
+    assert "run.turn.completed" in control_events
+    assert "orchestrator.turn.completed" in control_events
+    assert control_rows[-1]["event"] == "cli.completed"
+    assert any(
+        row["event"] == "assistant.message"
+        and row["message"] == "Launching the bounded run."
+        for row in control_rows
+    )
+
     transcript_line = json.loads(
         (tmp_path / "workspace" / ".dan-code" / "transcript.jsonl")
         .read_text(encoding="utf-8")
@@ -608,6 +723,8 @@ def test_main_json_persists_per_run_event_log(tmp_path, capsys, monkeypatch) -> 
     )
     assert transcript_line["event_log_path"] == str(event_log_path)
     assert transcript_line["event_log_schema"] == ORGANISM_LOG_SCHEMA_VERSION
+    assert transcript_line["control_log_path"] == str(control_log_path)
+    assert transcript_line["control_log_schema"] == ORGANISM_LOG_SCHEMA_VERSION
 
 
 def test_main_swebench_instance_without_objective_writes_prediction_artifacts(
@@ -1145,6 +1262,7 @@ def test_main_without_objective_enters_interactive_loop(tmp_path, monkeypatch) -
         approval_state,
         approval_mode,
         progress_renderer,
+        control_logger,
     ):
         calls["objective"] = args.objective
         calls["controller"] = controller
@@ -1165,6 +1283,7 @@ def test_main_without_objective_enters_interactive_loop(tmp_path, monkeypatch) -
         calls["approval_state"] = approval_state
         calls["approval_mode"] = approval_mode
         calls["progress_renderer"] = progress_renderer
+        calls["control_logger_path"] = control_logger.path
         return 0
 
     monkeypatch.setattr("dan.cli.code._interactive_loop", _fake_loop)
@@ -1207,6 +1326,15 @@ def test_main_without_objective_enters_interactive_loop(tmp_path, monkeypatch) -
     assert calls["thinking_mode"] == "auto"
     assert calls["approval_mode"] == "confirm-risky"
     assert Path(calls["run_root"]) == (tmp_path / "workspace" / ".dan-code" / "runs").resolve()
+    control_log_path = tmp_path / "workspace" / ".dan-code" / "control-plane-events.jsonl"
+    assert Path(calls["control_logger_path"]) == control_log_path.resolve()
+    control_rows = [
+        json.loads(line)
+        for line in control_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [row["event"] for row in control_rows] == ["cli.started", "cli.completed"]
+    assert all(row["stream"] == "control_plane" for row in control_rows)
 
 
 def test_main_init_writes_workspace_product_config(tmp_path, capsys) -> None:

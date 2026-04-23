@@ -93,6 +93,8 @@ class CodingOrganismReport(BaseModel):
     change_summary: str = ""
     event_log_path: str | None = None
     event_log_schema: str | None = None
+    control_log_path: str | None = None
+    control_log_schema: str | None = None
     target_files: list[str] = Field(default_factory=list)
     test_plan: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
@@ -225,6 +227,7 @@ class CodeProductPaths(BaseModel):
     config: str
     session: str
     transcript: str
+    control_log: str
     runs_dir: str
 
 
@@ -245,6 +248,7 @@ def resolve_code_product_paths(
         config=str(root / "config.json"),
         session=str(session_path),
         transcript=str(root / "transcript.jsonl"),
+        control_log=str(root / "control-plane-events.jsonl"),
         runs_dir=str(root / "runs"),
     )
 
@@ -309,6 +313,8 @@ def append_code_product_transcript(
         "candidate_id": report.candidate_id,
         "event_log_path": report.event_log_path,
         "event_log_schema": report.event_log_schema,
+        "control_log_path": report.control_log_path or paths.control_log,
+        "control_log_schema": report.control_log_schema,
         "target_files": list(report.target_files),
         "test_plan": list(report.test_plan),
         "risks": list(report.risks),

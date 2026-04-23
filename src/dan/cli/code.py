@@ -9,7 +9,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Literal, Sequence
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -768,6 +768,7 @@ def _build_runtime_context(
     approval_mode: str,
     thinking_mode: str,
     task_id: str,
+    completion_timeout_seconds: float | None = None,
     benchmark_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     shell_process_directory = str(
@@ -786,6 +787,11 @@ def _build_runtime_context(
         "thinking_mode": thinking_mode,
         **now_context,
     }
+    if completion_timeout_seconds is not None:
+        payload["completion_timeout_seconds"] = float(completion_timeout_seconds)
+        payload["short_completion_timeout"] = _short_completion_timeout_active(
+            completion_timeout_seconds
+        )
     if benchmark_context:
         payload["benchmark_context"] = dict(benchmark_context)
     return payload
@@ -1415,6 +1421,12 @@ def _emit_code_event(event_callback, event: dict[str, Any]) -> None:
     event_callback(dict(event))
 
 
+def _log_code_event(logger: "CodeRunEventLogger | None", event: str, **payload: Any) -> None:
+    if logger is None:
+        return
+    logger.emit({"event": event, **payload})
+
+
 def _env_float(name: str, default: float) -> float:
     raw = os.environ.get(name)
     if raw is None:
@@ -1585,12 +1597,13 @@ class CodeHeartbeatMonitor:
 
 
 class CodeRunEventLogger:
-    """Persist the live DAN Code event stream for one bounded coding run."""
+    """Persist the DAN Code event stream for one bounded run or control-plane log."""
 
     def __init__(
         self,
         *,
         path: Path,
+        stream_kind: Literal["bounded_run", "control_plane"] = "bounded_run",
         session_id: str = "",
         turn_id: str = "",
         task_id: str = "",
@@ -1602,7 +1615,7 @@ class CodeRunEventLogger:
             path=path,
             context=OrganismLogContext(
                 product="dan_code",
-                stream_kind="bounded_run",
+                stream_kind=stream_kind,
                 session_id=session_id,
                 turn_id=turn_id,
                 task_id=task_id,
@@ -1850,10 +1863,31 @@ async def run_coding_organism_live(
             model=model,
             base_id=organ_id,
         )
-    if benchmark_context:
+    effective_max_repair_rounds = _effective_coding_organism_max_repair_rounds(
+        int(organism.max_repair_rounds),
+        benchmark_context=benchmark_context,
+        completion_timeout_seconds=completion_timeout_seconds,
+    )
+    _emit_code_event(
+        event_callback,
+        {
+            "event": "repair.policy.selected",
+            "configured_max_repair_rounds": int(organism.max_repair_rounds),
+            "effective_max_repair_rounds": effective_max_repair_rounds,
+            "benchmark_context": bool(benchmark_context),
+            "short_completion_timeout": _short_completion_timeout_active(
+                completion_timeout_seconds
+            ),
+            "completion_timeout_seconds": completion_timeout_seconds,
+            "organ_id": organ_id,
+            "organism_id": organism_id,
+            "task_id": task_id,
+        },
+    )
+    if effective_max_repair_rounds != int(organism.max_repair_rounds):
         organism = organism.model_copy(
             update={
-                "max_repair_rounds": max(int(organism.max_repair_rounds), 2),
+                "max_repair_rounds": effective_max_repair_rounds,
             }
         )
     organism = attach_local_tooling_to_coding_organism(
@@ -1861,6 +1895,12 @@ async def run_coding_organism_live(
         tool_ids=tool_runtime.tool_ids,
     )
     evidence_refs = _build_evidence_refs(workdir, evidence_summaries or [])
+    runtime_session_context = dict(session_context or {})
+    if completion_timeout_seconds is not None:
+        runtime_session_context["completion_timeout_seconds"] = float(completion_timeout_seconds)
+        runtime_session_context["short_completion_timeout"] = _short_completion_timeout_active(
+            completion_timeout_seconds
+        )
     task = CodingTask(
         task_id=task_id,
         objective=objective,
@@ -1870,7 +1910,7 @@ async def run_coding_organism_live(
         soft_constraints=list(soft_constraints or []),
         repair_brief=repair_brief,
         evidence_refs=[ref.model_copy(deep=True) for ref in evidence_refs],
-        session_context=dict(session_context or {}),
+        session_context=runtime_session_context,
     )
     trace_log = CrossCellTraceLog(event_callback=event_callback)
     execute_kwargs = {
@@ -1918,6 +1958,9 @@ def _print_report(report: dict[str, object]) -> None:
     event_log_path = str(report.get("event_log_path") or "").strip()
     if event_log_path:
         print(f"Event Log: {event_log_path}")
+    control_log_path = str(report.get("control_log_path") or "").strip()
+    if control_log_path:
+        print(f"Control Log: {control_log_path}")
     if report.get("candidate_id") is not None:
         print(f"Candidate: {report['candidate_id']}")
     elif str(report.get("status") or "").strip() != "completed":
@@ -1969,9 +2012,49 @@ def _provider_request_overrides_for_thinking_mode(
     normalized = str(thinking_mode or "auto").strip().lower()
     if normalized != "auto":
         overrides["thinking"] = {"type": normalized}
+    elif (
+        completion_timeout_seconds is not None
+        and 0 < float(completion_timeout_seconds) <= 60.0
+    ):
+        overrides["thinking"] = {"type": "disabled"}
     if completion_timeout_seconds is not None:
         overrides["timeout"] = float(completion_timeout_seconds)
     return overrides
+
+
+def _short_completion_timeout_active(
+    completion_timeout_seconds: float | None,
+) -> bool:
+    return (
+        completion_timeout_seconds is not None
+        and 0 < float(completion_timeout_seconds) <= 60.0
+    )
+
+
+def _effective_coding_organism_max_repair_rounds(
+    configured_rounds: int,
+    *,
+    benchmark_context: dict[str, Any] | None,
+    completion_timeout_seconds: float | None,
+) -> int:
+    effective = max(int(configured_rounds), 0)
+    if benchmark_context:
+        effective = max(effective, 2)
+    if _short_completion_timeout_active(completion_timeout_seconds):
+        return 0
+    return effective
+
+
+def _effective_supervision_loop_count(
+    *,
+    benchmark_context: dict[str, Any] | None,
+    completion_timeout_seconds: float | None,
+) -> int:
+    if _short_completion_timeout_active(completion_timeout_seconds):
+        return 1
+    if benchmark_context:
+        return _BENCHMARK_SUPERVISION_LOOPS
+    return _DEFAULT_SUPERVISION_LOOPS
 
 
 class CodeConversationOutcome(BaseModel):
@@ -1981,6 +2064,8 @@ class CodeConversationOutcome(BaseModel):
     assistant_messages: list[str] = Field(default_factory=list)
     question: str | None = None
     reports: list[CodingOrganismReport] = Field(default_factory=list)
+    control_log_path: str | None = None
+    control_log_schema: str | None = None
 
 
 def _assistant_text(message: str) -> str:
@@ -2251,6 +2336,7 @@ async def _run_orchestrated_turn(
     benchmark_context: dict[str, Any] | None = None,
     approval_callback=None,
     progress_renderer: CodeProgressRenderer,
+    control_logger: CodeRunEventLogger | None = None,
 ) -> CodeConversationOutcome:
     assistant_messages: list[str] = []
     reports: list[CodingOrganismReport] = []
@@ -2258,6 +2344,14 @@ async def _run_orchestrated_turn(
     current_event_logger: CodeRunEventLogger | None = None
     current_trace_rows_streamed = False
     session.record_message(role="user", text=objective)
+    _log_code_event(
+        control_logger,
+        "orchestrator.turn.started",
+        session_id=session.session_id,
+        objective=objective,
+        pending_clarification=session.pending_clarification,
+        prior_turns=len(session.turns),
+    )
 
     def _run_event_callback(event: dict[str, Any]) -> None:
         nonlocal current_trace_rows_streamed
@@ -2275,21 +2369,65 @@ async def _run_orchestrated_turn(
         if current_event_logger is not None:
             current_event_logger.emit(event)
 
+    def _control_event_callback(event: dict[str, Any]) -> None:
+        nonlocal current_trace_rows_streamed
+        heartbeat.observe(event)
+        _emit_code_event(progress_renderer, event)
+        if control_logger is not None:
+            control_logger.emit(event)
+        trace_row = event.get("trace_row")
+        if (
+            current_event_logger is not None
+            and str(event.get("event") or "").strip() == "trace.row"
+            and isinstance(trace_row, dict)
+        ):
+            current_trace_rows_streamed = True
+            current_event_logger.emit_trace_rows([trace_row])
+            return
+        if current_event_logger is not None:
+            current_event_logger.emit(event)
+
     heartbeat = CodeHeartbeatMonitor(
-        event_callback=_run_event_callback,
+        event_callback=_control_event_callback,
         enabled=True,
         idle_seconds=_env_float("DAN_CODE_HEARTBEAT_IDLE_SECONDS", 10.0),
         repeat_seconds=_env_float("DAN_CODE_HEARTBEAT_INTERVAL_SECONDS", 15.0),
         poll_seconds=_env_float("DAN_CODE_HEARTBEAT_POLL_SECONDS", 2.0),
     )
-    controller.set_event_callback(_run_event_callback)
-    project_planner.set_event_callback(_run_event_callback)
+    controller.set_event_callback(_control_event_callback)
+    project_planner.set_event_callback(_control_event_callback)
     await heartbeat.start()
+
+    def _build_outcome(
+        *,
+        status: str,
+        assistant_messages: Sequence[str],
+        question: str | None,
+        reports: Sequence[CodingOrganismReport],
+    ) -> CodeConversationOutcome:
+        return CodeConversationOutcome(
+            status=status,
+            assistant_messages=list(assistant_messages),
+            question=question,
+            reports=list(reports),
+            control_log_path=(
+                str(control_logger.path) if control_logger is not None else None
+            ),
+            control_log_schema=(
+                ORGANISM_LOG_SCHEMA_VERSION if control_logger is not None else None
+            ),
+        )
 
     try:
         orchestrator_session = _load_orchestrator_session(
             session=session,
             controller=controller,
+        )
+        _log_code_event(
+            control_logger,
+            "orchestrator.turn.decision.started",
+            objective=objective,
+            pending_clarification=session.pending_clarification,
         )
         decision, orchestrator_session = await controller.decide_user_turn(
             session=orchestrator_session,
@@ -2311,6 +2449,14 @@ async def _run_orchestrated_turn(
             controller=controller,
             durable_session=orchestrator_session,
         )
+        _log_code_event(
+            control_logger,
+            "orchestrator.turn.decision.completed",
+            action=decision.action,
+            coding_objective=decision.coding_objective,
+            has_public_response=bool(decision.public_response),
+            has_clarifying_question=bool(decision.clarifying_question),
+        )
 
         def _record_assistant(text: str, *, kind: str = "message") -> None:
             cleaned = _assistant_text(text)
@@ -2318,14 +2464,20 @@ async def _run_orchestrated_turn(
                 return
             assistant_messages.append(cleaned)
             session.record_message(role="assistant", text=cleaned, kind=kind)
-            _emit_assistant_message(_run_event_callback, cleaned)
+            _emit_assistant_message(_control_event_callback, cleaned)
 
         if decision.public_response:
             _record_assistant(decision.public_response)
 
         if decision.action == "respond":
             session.pending_clarification = None
-            return CodeConversationOutcome(
+            _log_code_event(
+                control_logger,
+                "orchestrator.turn.completed",
+                final_status="responded",
+                report_count=0,
+            )
+            return _build_outcome(
                 status="responded",
                 assistant_messages=assistant_messages,
                 question=None,
@@ -2337,7 +2489,14 @@ async def _run_orchestrated_turn(
             session.pending_clarification = question or None
             if question and question not in assistant_messages:
                 _record_assistant(question, kind="clarification")
-            return CodeConversationOutcome(
+            _log_code_event(
+                control_logger,
+                "orchestrator.turn.completed",
+                final_status="clarify",
+                report_count=0,
+                question=question,
+            )
+            return _build_outcome(
                 status="clarify",
                 assistant_messages=assistant_messages,
                 question=question,
@@ -2366,6 +2525,17 @@ async def _run_orchestrated_turn(
             ),
         )
         if task_lane_policy.use_fallback_pre_run_planner:
+            _log_code_event(
+                control_logger,
+                "orchestrator.project_planner.fallback",
+                requested_objective=next_objective,
+                requested_acceptance_criteria=list(effective_acceptance_criteria),
+                existing_milestone_count=(
+                    len(existing_project_plan.milestones)
+                    if existing_project_plan is not None
+                    else 0
+                ),
+            )
             planner_decision = _fallback_project_planner_decision(
                 user_message=objective,
                 requested_objective=next_objective,
@@ -2379,6 +2549,17 @@ async def _run_orchestrated_turn(
             project_planner_session = _load_project_planner_session(
                 session=session,
                 planner=project_planner,
+            )
+            _log_code_event(
+                control_logger,
+                "orchestrator.project_planner.started",
+                requested_objective=next_objective,
+                requested_acceptance_criteria=list(effective_acceptance_criteria),
+                existing_milestone_count=(
+                    len(existing_project_plan.milestones)
+                    if existing_project_plan is not None
+                    else 0
+                ),
             )
             planner_decision, project_planner_session = await project_planner.plan_project(
                 session=project_planner_session,
@@ -2402,6 +2583,13 @@ async def _run_orchestrated_turn(
                 planner=project_planner,
                 durable_session=project_planner_session,
             )
+            _log_code_event(
+                control_logger,
+                "orchestrator.project_planner.completed",
+                active_objective=planner_decision.active_objective,
+                active_milestone_id=planner_decision.active_milestone_id,
+                milestone_count=len(planner_decision.milestones),
+            )
         project_plan = CodingProjectPlan(
             project_goal=planner_decision.project_goal,
             plan_summary=planner_decision.plan_summary,
@@ -2418,10 +2606,19 @@ async def _run_orchestrated_turn(
                 *list(planner_decision.active_acceptance_criteria),
             ]
         ) or list(effective_acceptance_criteria)
-        max_supervision_loops = (
-            _BENCHMARK_SUPERVISION_LOOPS
-            if benchmark_context
-            else _DEFAULT_SUPERVISION_LOOPS
+        max_supervision_loops = _effective_supervision_loop_count(
+            benchmark_context=benchmark_context,
+            completion_timeout_seconds=completion_timeout_seconds,
+        )
+        _log_code_event(
+            control_logger,
+            "supervision.policy.selected",
+            max_supervision_loops=max_supervision_loops,
+            benchmark_context=bool(benchmark_context),
+            short_completion_timeout=_short_completion_timeout_active(
+                completion_timeout_seconds
+            ),
+            completion_timeout_seconds=completion_timeout_seconds,
         )
         base_turn_number = session.next_turn_number()
 
@@ -2443,6 +2640,16 @@ async def _run_orchestrated_turn(
             current_trace_rows_streamed = False
             run_completed = False
             try:
+                _log_code_event(
+                    control_logger,
+                    "run.turn.started",
+                    task_id=task_id,
+                    turn_number=report_turn_number,
+                    objective=next_objective,
+                    workdir=str(workdir),
+                    active_milestone_id=project_plan.active_milestone_id,
+                    milestone_count=len(project_plan.milestones),
+                )
                 _emit_code_event(
                     _run_event_callback,
                     {
@@ -2488,6 +2695,10 @@ async def _run_orchestrated_turn(
                     update={
                         "event_log_path": str(event_logger.path),
                         "event_log_schema": ORGANISM_LOG_SCHEMA_VERSION,
+                        "control_log_path": str(control_logger.path) if control_logger is not None else None,
+                        "control_log_schema": (
+                            ORGANISM_LOG_SCHEMA_VERSION if control_logger is not None else None
+                        ),
                     }
                 )
                 if (
@@ -2562,6 +2773,16 @@ async def _run_orchestrated_turn(
                                 "event_log_path": report.event_log_path,
                             },
                         )
+                        _log_code_event(
+                            control_logger,
+                            "run.turn.completed",
+                            task_id=task_id,
+                            trace_id=report.trace_id,
+                            status=report.status,
+                            review_action=review.action,
+                            candidate_id=report.candidate_id,
+                            event_log_path=report.event_log_path,
+                        )
                         run_completed = True
                         break
                     if continuation_index + 1 >= max_supervision_loops:
@@ -2577,6 +2798,16 @@ async def _run_orchestrated_turn(
                                 "event_log_path": report.event_log_path,
                             },
                         )
+                        _log_code_event(
+                            control_logger,
+                            "run.turn.completed",
+                            task_id=task_id,
+                            trace_id=report.trace_id,
+                            status=report.status,
+                            review_action=review.action,
+                            candidate_id=report.candidate_id,
+                            event_log_path=report.event_log_path,
+                        )
                         run_completed = True
                         break
                     _emit_code_event(
@@ -2590,6 +2821,16 @@ async def _run_orchestrated_turn(
                             "candidate_id": report.candidate_id,
                             "event_log_path": report.event_log_path,
                         },
+                    )
+                    _log_code_event(
+                        control_logger,
+                        "run.turn.completed",
+                        task_id=task_id,
+                        trace_id=report.trace_id,
+                        status=report.status,
+                        review_action=review.action,
+                        candidate_id=report.candidate_id,
+                        event_log_path=report.event_log_path,
                     )
                     run_completed = True
                     continue
@@ -2614,8 +2855,26 @@ async def _run_orchestrated_turn(
                             "event_log_path": report.event_log_path,
                         },
                     )
+                    _log_code_event(
+                        control_logger,
+                        "run.turn.completed",
+                        task_id=task_id,
+                        trace_id=report.trace_id,
+                        status=report.status,
+                        review_action=review.action,
+                        candidate_id=report.candidate_id,
+                        question=question,
+                        event_log_path=report.event_log_path,
+                    )
                     run_completed = True
-                    return CodeConversationOutcome(
+                    _log_code_event(
+                        control_logger,
+                        "orchestrator.turn.completed",
+                        final_status="clarify",
+                        report_count=len(reports),
+                        question=question,
+                    )
+                    return _build_outcome(
                         status="clarify",
                         assistant_messages=assistant_messages,
                         question=question,
@@ -2633,6 +2892,16 @@ async def _run_orchestrated_turn(
                         "event_log_path": report.event_log_path,
                     },
                 )
+                _log_code_event(
+                    control_logger,
+                    "run.turn.completed",
+                    task_id=task_id,
+                    trace_id=report.trace_id,
+                    status=report.status,
+                    review_action=review.action,
+                    candidate_id=report.candidate_id,
+                    event_log_path=report.event_log_path,
+                )
                 run_completed = True
                 break
             except Exception as exc:
@@ -2646,18 +2915,40 @@ async def _run_orchestrated_turn(
                             "error": str(exc),
                         },
                     )
+                    _log_code_event(
+                        control_logger,
+                        "run.turn.failed",
+                        task_id=task_id,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
                 raise
             finally:
                 current_event_logger = None
                 event_logger.close()
 
         final_status = reports[-1].status if reports else "responded"
-        return CodeConversationOutcome(
+        _log_code_event(
+            control_logger,
+            "orchestrator.turn.completed",
+            final_status=final_status,
+            report_count=len(reports),
+        )
+        return _build_outcome(
             status=final_status,
             assistant_messages=assistant_messages,
             question=question,
             reports=reports,
         )
+    except Exception as exc:
+        _log_code_event(
+            control_logger,
+            "orchestrator.turn.failed",
+            error_type=type(exc).__name__,
+            error=str(exc),
+            report_count=len(reports),
+        )
+        raise
     finally:
         controller.set_event_callback(progress_renderer)
         project_planner.set_event_callback(progress_renderer)
@@ -2696,6 +2987,7 @@ async def _run_coding_turn(
         approval_mode=approval_mode,
         thinking_mode=thinking_mode,
         task_id=task_id,
+        completion_timeout_seconds=completion_timeout_seconds,
         benchmark_context=benchmark_context,
     )
     (
@@ -2795,6 +3087,7 @@ def _print_session_status(
     if persist_session:
         print(f"session file: {product_paths.session}")
         print(f"transcript: {product_paths.transcript}")
+        print(f"control log: {product_paths.control_log}")
 
 
 def _print_session_history(session: CodingCliSession, *, limit: int = 10) -> None:
@@ -2947,6 +3240,7 @@ def _resolved_config_payload(
         "config_path": product_paths.config,
         "session_path": product_paths.session,
         "transcript_path": product_paths.transcript,
+        "control_log_path": product_paths.control_log,
         "config_exists": Path(product_paths.config).exists(),
         "session_exists": Path(product_paths.session).exists(),
         "persist_session": persist_session,
@@ -2981,6 +3275,7 @@ def _print_config_payload(payload: dict[str, Any], *, as_json: bool) -> None:
     print(f"product dir: {payload['product_dir']}")
     print(f"config path: {payload['config_path']}")
     print(f"session path: {payload['session_path']}")
+    print(f"control log: {payload['control_log_path']}")
     print(f"resolved model: {payload.get('resolved_model') or '(unset)'}")
     print(f"thinking mode: {payload.get('resolved_thinking_mode') or 'auto'}")
     print(f"tools: {', '.join(payload['tool_ids']) or '(none)'}")
@@ -3021,6 +3316,7 @@ def _interactive_loop(
     approval_state: CodeToolApprovalState,
     approval_mode: str,
     progress_renderer: CodeProgressRenderer,
+    control_logger: CodeRunEventLogger | None,
 ) -> int:
     print(CODE_PRODUCT_NAME)
     print(f"workspace: {workspace_root}")
@@ -3028,13 +3324,21 @@ def _interactive_loop(
     if session.turns:
         print(f"resumed: {len(session.turns)} prior turns")
     print("enter a coding task, or /help")
+    _log_code_event(
+        control_logger,
+        "interactive.started",
+        workspace_root=str(workspace_root),
+        session_id=session.session_id,
+    )
     while True:
         try:
             raw = input("dancode> ")
         except EOFError:
+            _log_code_event(control_logger, "interactive.exited", reason="eof")
             print()
             return 0
         except KeyboardInterrupt:
+            _log_code_event(control_logger, "interactive.exited", reason="keyboard_interrupt")
             print()
             return 0
 
@@ -3042,14 +3346,18 @@ def _interactive_loop(
         if not objective:
             continue
         if objective in {"/exit", "exit", "quit", ":q"}:
+            _log_code_event(control_logger, "interactive.exited", reason="user_exit")
             return 0
         if objective in {"/help", "help"}:
+            _log_code_event(control_logger, "interactive.command.executed", command="help")
             _print_repl_help()
             continue
         if objective == "/tools":
+            _log_code_event(control_logger, "interactive.command.executed", command="tools")
             _print_tool_catalog(as_json=False)
             continue
         if objective == "/status":
+            _log_code_event(control_logger, "interactive.command.executed", command="status")
             _print_session_status(
                 session=session,
                 workspace_root=workspace_root,
@@ -3063,17 +3371,23 @@ def _interactive_loop(
             )
             continue
         if objective == "/history":
+            _log_code_event(control_logger, "interactive.command.executed", command="history")
             _print_session_history(session)
             continue
         if objective == "/summary":
+            _log_code_event(control_logger, "interactive.command.executed", command="summary")
             _print_session_rollup(session)
             continue
         if objective in {"/reset", "/clear"}:
             session = CodingCliSession(workspace_root=str(workspace_root))
+            if control_logger is not None:
+                control_logger.update_context(session_id=session.session_id)
             if persist_session:
                 save_code_product_session(product_paths, session)
+            _log_code_event(control_logger, "interactive.command.executed", command="reset")
             print("session context cleared")
             continue
+        _log_code_event(control_logger, "interactive.turn.started", objective=objective)
         outcome = asyncio.run(
             _run_orchestrated_turn(
                 args=args,
@@ -3097,7 +3411,15 @@ def _interactive_loop(
                 benchmark_context=None,
                 approval_callback=approval_state,
                 progress_renderer=progress_renderer,
+                control_logger=control_logger,
             )
+        )
+        _log_code_event(
+            control_logger,
+            "interactive.turn.completed",
+            objective=objective,
+            status=outcome.status,
+            report_count=len(outcome.reports),
         )
         if outcome.reports:
             for report in outcome.reports:
@@ -3207,6 +3529,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_objective = swebench.objective
         task_id_base = swebench.task_id_base
 
+    control_logger = CodeRunEventLogger(
+        path=Path(product_paths.control_log),
+        stream_kind="control_plane",
+        session_id=session.session_id,
+        organism_id=str(args.organism_id),
+        organ_id="dan-code.control-plane",
+    )
+    _log_code_event(
+        control_logger,
+        "cli.started",
+        workspace_root=str(workspace_root),
+        session_id=session.session_id,
+        persist_session=persist_session,
+        interactive=run_objective is None,
+        swebench_mode=swebench is not None,
+        objective=run_objective,
+        control_log_path=str(control_logger.path),
+    )
+
     if args.init:
         config = _initialize_product_config(
             product_paths=product_paths,
@@ -3233,6 +3574,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "initialized": True,
         }
         _print_config_payload(payload, as_json=bool(args.json))
+        _log_code_event(control_logger, "cli.completed", exit_code=0, mode="init")
+        control_logger.close()
         return 0
 
     if args.show_config:
@@ -3252,6 +3595,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             approval_mode=approval_mode,
         )
         _print_config_payload(payload, as_json=bool(args.json))
+        _log_code_event(control_logger, "cli.completed", exit_code=0, mode="show_config")
+        control_logger.close()
         return 0
 
     try:
@@ -3262,6 +3607,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             base_url=args.base_url,
         )
     except Exception as exc:
+        _log_code_event(
+            control_logger,
+            "cli.failed",
+            error_type=type(exc).__name__,
+            error=str(exc),
+            mode="provider_build",
+        )
+        control_logger.close()
         parser.error(str(exc))
 
     run_root = (
@@ -3312,55 +3665,87 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     if run_objective is None:
-        return _interactive_loop(
-            args=args,
-            controller=conversation_controller,
-            project_planner=project_planner,
-            llm_provider=provider,
-            workspace_root=workspace_root,
-            model=live_model,
-            thinking_mode=thinking_mode,
-            session=session,
-            product_paths=product_paths,
-            tool_ids=tool_ids,
-            acceptance_criteria=effective_acceptance_criteria,
-            max_tool_rounds=max_tool_rounds,
-            max_tool_calls=max_tool_calls,
-            completion_timeout_seconds=completion_timeout_seconds,
-            persist_session=persist_session,
-            run_root=run_root,
-            approval_state=approval_state,
-            approval_mode=approval_mode,
-            progress_renderer=progress_renderer,
+        try:
+            exit_code = _interactive_loop(
+                args=args,
+                controller=conversation_controller,
+                project_planner=project_planner,
+                llm_provider=provider,
+                workspace_root=workspace_root,
+                model=live_model,
+                thinking_mode=thinking_mode,
+                session=session,
+                product_paths=product_paths,
+                tool_ids=tool_ids,
+                acceptance_criteria=effective_acceptance_criteria,
+                max_tool_rounds=max_tool_rounds,
+                max_tool_calls=max_tool_calls,
+                completion_timeout_seconds=completion_timeout_seconds,
+                persist_session=persist_session,
+                run_root=run_root,
+                approval_state=approval_state,
+                approval_mode=approval_mode,
+                progress_renderer=progress_renderer,
+                control_logger=control_logger,
+            )
+        except Exception as exc:
+            _log_code_event(
+                control_logger,
+                "cli.failed",
+                error_type=type(exc).__name__,
+                error=str(exc),
+                mode="interactive",
+            )
+            control_logger.close()
+            raise
+        _log_code_event(
+            control_logger,
+            "cli.completed",
+            exit_code=exit_code,
+            mode="interactive",
         )
+        control_logger.close()
+        return exit_code
 
-    outcome = asyncio.run(
-        _run_orchestrated_turn(
-            args=args,
-            controller=conversation_controller,
-            project_planner=project_planner,
-            llm_provider=provider,
-            workspace_root=workspace_root,
-            model=live_model,
-            objective=run_objective,
-            session=session,
-            tool_ids=tool_ids,
-            acceptance_criteria=effective_acceptance_criteria,
-            evidence_summaries=effective_evidence_summaries,
-            max_tool_rounds=max_tool_rounds,
-            max_tool_calls=max_tool_calls,
-            completion_timeout_seconds=completion_timeout_seconds,
-            approval_mode=approval_mode,
-            thinking_mode=thinking_mode,
-            run_root=run_root,
-            task_id_base=task_id_base,
-            benchmark_context=(
-                swebench.benchmark_context if swebench is not None else None
-            ),
-            approval_callback=approval_state,
-            progress_renderer=progress_renderer,
+    try:
+        outcome = asyncio.run(
+            _run_orchestrated_turn(
+                args=args,
+                controller=conversation_controller,
+                project_planner=project_planner,
+                llm_provider=provider,
+                workspace_root=workspace_root,
+                model=live_model,
+                objective=run_objective,
+                session=session,
+                tool_ids=tool_ids,
+                acceptance_criteria=effective_acceptance_criteria,
+                evidence_summaries=effective_evidence_summaries,
+                max_tool_rounds=max_tool_rounds,
+                max_tool_calls=max_tool_calls,
+                completion_timeout_seconds=completion_timeout_seconds,
+                approval_mode=approval_mode,
+                thinking_mode=thinking_mode,
+                run_root=run_root,
+                task_id_base=task_id_base,
+                benchmark_context=(
+                    swebench.benchmark_context if swebench is not None else None
+                ),
+                approval_callback=approval_state,
+                progress_renderer=progress_renderer,
+                control_logger=control_logger,
+            )
         )
-    )
+    except Exception as exc:
+        _log_code_event(
+            control_logger,
+            "cli.failed",
+            error_type=type(exc).__name__,
+            error=str(exc),
+            mode="single_turn",
+        )
+        control_logger.close()
+        raise
     if swebench is not None and outcome.reports:
         final_report = outcome.reports[-1]
         if outcome.status == "completed" and final_report.status == "completed":
@@ -3384,7 +3769,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_path=args.output,
             workspace_root=workspace_root,
         )
-        return 0 if outcome.reports[-1].status == "completed" else 1
+        exit_code = 0 if outcome.reports[-1].status == "completed" else 1
+        _log_code_event(
+            control_logger,
+            "cli.completed",
+            exit_code=exit_code,
+            mode="single_turn",
+            status=outcome.status,
+            report_count=len(outcome.reports),
+        )
+        control_logger.close()
+        return exit_code
 
     payload = outcome.model_dump(mode="json")
     if args.output:
@@ -3398,6 +3793,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
     elif not outcome.assistant_messages and outcome.question:
         print(f"[assistant] {outcome.question}")
+    _log_code_event(
+        control_logger,
+        "cli.completed",
+        exit_code=0,
+        mode="single_turn",
+        status=outcome.status,
+        report_count=0,
+    )
+    control_logger.close()
     return 0
 
 

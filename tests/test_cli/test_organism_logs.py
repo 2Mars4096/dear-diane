@@ -43,6 +43,30 @@ def test_code_run_event_logger_uses_shared_organism_log_schema(tmp_path) -> None
     assert any(row.record_kind == "span" and row.event_family == "run_log" for row in rows)
 
 
+def test_code_run_event_logger_supports_shared_control_plane_stream(tmp_path) -> None:
+    logger = CodeRunEventLogger(
+        path=tmp_path / "code-control.jsonl",
+        stream_kind="control_plane",
+        session_id="code-session-control",
+        organism_id="coding-organism",
+        organ_id="dan-code.control-plane",
+    )
+
+    logger.emit({"event": "orchestrator.turn.decision.started"})
+    logger.emit({"event": "orchestrator.turn.decision.completed", "action": "code"})
+    logger.close()
+
+    rows = read_organism_log_rows(logger.path)
+
+    assert rows[0].product == "dan_code"
+    assert rows[0].stream_kind == "control_plane"
+    assert rows[0].session_id == "code-session-control"
+    assert any(
+        row.record_kind == "span" and row.event_family == "orchestrator"
+        for row in rows
+    )
+
+
 def test_research_event_logger_supports_shared_control_plane_stream(tmp_path) -> None:
     logger = ResearchEventLogger(
         path=tmp_path / "research-control.jsonl",
