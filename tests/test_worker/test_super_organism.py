@@ -228,3 +228,29 @@ def test_runtime_downshift_detects_truncated_existing_file_overwrite(tmp_path) -
     )
     assert "`file_write` to existing file `module.py` is blocked" in message
     assert "Downshift now: use `file_edit`" in message
+
+
+def test_super_dan_soft_budget_extends_only_for_real_progress() -> None:
+    progress = {
+        "distinct_read_paths": 5,
+        "mutation_paths": 0,
+        "verification_commands": 0,
+        "discovery_tools": 5,
+        "shell_commands": 0,
+    }
+
+    tool_limit = local_runtime_module._soft_budget_limit(
+        "coding_prewrite",
+        limit_kind="tool_calls",
+        hard_limit=24,
+        progress=progress,
+    )
+    round_limit = local_runtime_module._soft_budget_limit(
+        "coding_prewrite",
+        limit_kind="rounds",
+        hard_limit=8,
+        progress=progress,
+    )
+
+    assert tool_limit == 10
+    assert round_limit == 5

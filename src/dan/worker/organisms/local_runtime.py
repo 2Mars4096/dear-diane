@@ -75,8 +75,32 @@ _VALIDATION_REPORT_REQUIRED_KEYS = frozenset(
 )
 _BLOCKED_TOOL_DISABLE_THRESHOLD = 2
 _TOOL_PROMPT_TEXT_LIMIT = 2000
+_EXCLUSIVE_OWNER_FILE_READ_PROMPT_TEXT_LIMIT = 24000
+_PREWRITE_SUCCESSFUL_READ_NUDGE_THRESHOLD = 3
+_AGGREGATION_PREWRITE_SUCCESSFUL_READ_NUDGE_THRESHOLD = 2
 _PREWRITE_SHELL_ANALYSIS_NUDGE_THRESHOLD = 4
 _FILE_WRITE_RAW_ARGUMENT_RISKY_LENGTH = 4000
+_SOFT_BUDGET_PROFILE_SUPER_DAN = "super_dan_live"
+_SUPER_DAN_PROVIDER_OVERLOAD_MAX_RETRIES = 2
+_SUPER_DAN_PROVIDER_OVERLOAD_RETRY_DELAYS = (0.5, 2.0)
+_DIRECT_WRITE_TIMEOUT_SOFT_CAP_SECONDS = 60.0
+_EXCLUSIVE_OWNER_DIRECT_WRITE_SOFT_CAP_SECONDS = 45.0
+_SOFT_PHASE_TOOL_CALL_BASE_BUDGETS = {
+    "coding_prewrite": 8,
+    "coding_direct_write": 5,
+    "coding_postwrite": 6,
+    "validator_read_only": 6,
+    "coding_worker_read_only": 5,
+    "research_note": 4,
+}
+_SOFT_PHASE_ROUND_BASE_BUDGETS = {
+    "coding_prewrite": 4,
+    "coding_direct_write": 2,
+    "coding_postwrite": 3,
+    "validator_read_only": 3,
+    "coding_worker_read_only": 2,
+    "research_note": 2,
+}
 
 
 def _event_text(value: Any) -> str | None:
@@ -137,14 +161,21 @@ def _truncate_prompt_text(value: str, *, limit: int = _TOOL_PROMPT_TEXT_LIMIT) -
     return value[:clipped] + suffix, True
 
 
-def _compact_prompt_value(value: Any) -> tuple[Any, bool]:
+def _compact_prompt_value(
+    value: Any,
+    *,
+    text_limit: int = _TOOL_PROMPT_TEXT_LIMIT,
+) -> tuple[Any, bool]:
     if isinstance(value, str):
-        return _truncate_prompt_text(value)
+        return _truncate_prompt_text(value, limit=text_limit)
     if isinstance(value, list):
         changed = False
         compacted: list[Any] = []
         for item in value:
-            compact_item, item_changed = _compact_prompt_value(item)
+            compact_item, item_changed = _compact_prompt_value(
+                item,
+                text_limit=text_limit,
+            )
             compacted.append(compact_item)
             changed = changed or item_changed
         return compacted, changed
@@ -152,20 +183,47 @@ def _compact_prompt_value(value: Any) -> tuple[Any, bool]:
         changed = False
         compacted: dict[str, Any] = {}
         for key, item in value.items():
-            compact_item, item_changed = _compact_prompt_value(item)
+            compact_item, item_changed = _compact_prompt_value(
+                item,
+                text_limit=text_limit,
+            )
             compacted[str(key)] = compact_item
             changed = changed or item_changed
         return compacted, changed
     return value, False
 
 
-def _compact_tool_payload_for_prompt(tool_payload: dict[str, Any]) -> dict[str, Any]:
-    compacted, changed = _compact_prompt_value(tool_payload)
+def _compact_tool_payload_for_prompt(
+    tool_payload: dict[str, Any],
+    *,
+    text_limit: int = _TOOL_PROMPT_TEXT_LIMIT,
+) -> dict[str, Any]:
+    compacted, changed = _compact_prompt_value(tool_payload, text_limit=text_limit)
     if not isinstance(compacted, dict):
         return dict(tool_payload)
     if changed:
         compacted["prompt_payload_compacted"] = True
     return compacted
+
+
+def _line_numbered_prompt_content(content: str) -> str:
+    lines = content.splitlines()
+    if content.endswith("\n"):
+        lines.append("")
+    return "\n".join(f"{index + 1:>6}| {line}" for index, line in enumerate(lines))
+
+
+def _file_read_payload_with_line_numbers(tool_payload: dict[str, Any]) -> dict[str, Any]:
+    prompt_payload = copy.deepcopy(tool_payload)
+    result = prompt_payload.get("result")
+    if not isinstance(result, dict):
+        return prompt_payload
+    content = result.get("content")
+    if not isinstance(content, str):
+        return prompt_payload
+    result["content"] = _line_numbered_prompt_content(content)
+    result["content_format"] = "line_numbered"
+    return prompt_payload
 
 
 def _tool_schema_name(tool: dict[str, Any]) -> str:
@@ -333,6 +391,11 @@ def _tool_use_policy(tool_ids: Sequence[str]) -> str:
                 "- Do not use shell `git` commands when git tools are unavailable; that usually means the workspace is not a git repository."
             )
     return "\n".join(lines)
+
+
+def _tool_budget_profile(request: CompletionRequest) -> str | None:
+    profile = str(request.metadata.get("tool_budget_profile") or "").strip()
+    return profile or None
 
 
 def _missing_required_tool_arguments(
@@ -977,6 +1040,8 @@ def _temporary_path_roots() -> list[Path]:
     roots: list[Path] = []
     seen: set[str] = set()
     for raw in (
+        "/tmp",
+        "/private/tmp",
         tempfile.gettempdir(),
         os.environ.get("TMPDIR"),
         os.environ.get("TEMP"),
@@ -1331,20 +1396,70 @@ def _write_capable_coding_stage_first_write_nudge_reason(
         workspace_root=workspace_root,
     ):
         return None
+    exclusive_owner_path = _exclusive_write_owner_path(request)
+    if exclusive_owner_path:
+        read_paths = _successful_read_paths(
+            executed_tools,
+            workspace_root=workspace_root,
+        )
+        if exclusive_owner_path in read_paths:
+            return "exclusive_write_owner_after_first_read"
     for tool in executed_tools:
         if _tool_confirms_effectively_empty_workspace(tool, workspace_root=workspace_root):
             return "first_write_after_empty_workspace"
-    if len(_successful_read_paths(executed_tools, workspace_root=workspace_root)) >= 6:
+    if (
+        len(_successful_read_paths(executed_tools, workspace_root=workspace_root))
+        >= _prewrite_successful_read_nudge_threshold(request)
+    ):
         return "stalled_analysis_before_first_write"
     if _successful_shell_command_count(executed_tools) >= _PREWRITE_SHELL_ANALYSIS_NUDGE_THRESHOLD:
         return "stalled_analysis_before_first_write"
     return None
 
 
+def _prewrite_successful_read_nudge_threshold(request: CompletionRequest) -> int:
+    if _exclusive_write_owner_path(request):
+        return 1
+    organism_stage = str(request.metadata.get("organism_stage") or "").strip().lower()
+    if organism_stage == "aggregation":
+        return _AGGREGATION_PREWRITE_SUCCESSFUL_READ_NUDGE_THRESHOLD
+    return _PREWRITE_SUCCESSFUL_READ_NUDGE_THRESHOLD
+
+
+def _exclusive_write_owner_path(request: CompletionRequest) -> str:
+    return str(request.metadata.get("exclusive_write_owner_path") or "").strip()
+
+
+def _exclusive_write_owner_prefers_file_edit(
+    request: CompletionRequest,
+    tool_schemas: Sequence[dict[str, Any]],
+    *,
+    workspace_root: Path,
+) -> bool:
+    owner_path = _exclusive_write_owner_path(request)
+    if not owner_path:
+        return False
+    if "file_edit" not in {
+        _tool_schema_name(tool)
+        for tool in tool_schemas
+        if isinstance(tool, dict)
+    }:
+        return False
+    try:
+        target_path = (workspace_root / owner_path).resolve()
+        workspace = workspace_root.resolve()
+        target_path.relative_to(workspace)
+    except (OSError, ValueError):
+        return False
+    return target_path.is_file()
+
+
 def _write_capable_coding_stage_first_write_nudge_message(
     reason: str,
     *,
     allow_final_read: bool,
+    file_write_only: bool = False,
+    file_edit_only: bool = False,
 ) -> str:
     reason_text = reason.replace("_", " ")
     final_read_sentence = (
@@ -1352,14 +1467,32 @@ def _write_capable_coding_stage_first_write_nudge_message(
         if allow_final_read
         else ""
     )
+    direct_tool_instruction = (
+        "The next tool call should be `file_edit` with `path`, `start_line`, `end_line`, and `content` "
+        "for a bounded line-range update to the owned file, not another read, search, or final prose-only answer."
+        if file_edit_only
+        else "The next tool call should be `file_write` with complete replacement content for the owned file, "
+        "not `file_edit`, another read, search, or final prose-only answer."
+        if file_write_only
+        else "The next tool call should be `file_write` or `file_edit`, not another read, search, or final prose-only answer."
+    )
     return (
         "Controller note: this write-capable coding stage is still read-only after initial discovery "
         f"({reason_text}). Stop auditing and make the first concrete project write now using the direct file tools "
-        "that are already enabled. The next tool call should be `file_write` or `file_edit`, not another read, search, "
-        "or final prose-only answer."
+        f"that are already enabled. {direct_tool_instruction}"
         f"{final_read_sentence} Create one or two small real files first, then continue incrementally. Prefer a "
         "minimal runnable slice over a complete project in one giant tool call. If you truly cannot materialize any "
         "bounded file set in this turn, return an explicit blocked candidate now instead of doing more discovery."
+    )
+
+
+def _exclusive_write_owner_read_scope_message(owner_path: str) -> str:
+    return (
+        f"Controller note: this exclusive write-owner lane owns `{owner_path}`. "
+        "Before the first write, use at most one `file_read` of that owned file. "
+        "Do not read other files or repeat owner-file reads in this lane. Use the existing owned-file content "
+        "and make the bounded write now. If `file_edit` is enabled, prefer one targeted line-range edit over "
+        "a whole-file replacement."
     )
 
 
@@ -1387,6 +1520,8 @@ def _write_capable_coding_stage_finalize_reason(
             return "temporary_external_write_after_workspace_patch"
         if _tool_mutates_temporary_workspace_helper_path(tool, workspace_root=workspace_root):
             return "temporary_workspace_helper_write_after_workspace_patch"
+    if _exclusive_write_owner_path(request):
+        return "exclusive_write_owner_workspace_patch_materialized"
 
     last_mutation_index = _last_successful_mutation_index(executed_tools)
     if last_mutation_index is None:
@@ -1505,8 +1640,20 @@ def _write_stage_tool_schemas(
     tool_schemas: Sequence[dict[str, Any]],
     *,
     allow_final_read: bool,
+    prefer_file_write_only: bool = False,
+    prefer_file_edit_only: bool = False,
 ) -> list[dict[str, Any]]:
-    preferred_names = {"file_edit", "file_write"}
+    available_names = {
+        str(tool.get("function", {}).get("name") or "").strip()
+        for tool in tool_schemas
+        if isinstance(tool, dict)
+    }
+    if prefer_file_edit_only and "file_edit" in available_names:
+        preferred_names = {"file_edit"}
+    elif prefer_file_write_only and "file_write" in available_names:
+        preferred_names = {"file_write"}
+    else:
+        preferred_names = {"file_edit", "file_write"}
     if allow_final_read:
         preferred_names.add("file_read")
     narrowed: list[dict[str, Any]] = []
@@ -1518,12 +1665,28 @@ def _write_stage_tool_schemas(
     return narrowed
 
 
-def _direct_write_tool_schemas(tool_schemas: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+def _direct_write_tool_schemas(
+    tool_schemas: Sequence[dict[str, Any]],
+    *,
+    prefer_file_write_only: bool = False,
+    prefer_file_edit_only: bool = False,
+) -> list[dict[str, Any]]:
+    available_names = {
+        str(tool.get("function", {}).get("name") or "").strip()
+        for tool in tool_schemas
+        if isinstance(tool, dict)
+    }
+    if prefer_file_edit_only and "file_edit" in available_names:
+        preferred_names = {"file_edit"}
+    elif prefer_file_write_only and "file_write" in available_names:
+        preferred_names = {"file_write"}
+    else:
+        preferred_names = {"file_write", "file_edit"}
     direct_write_tools = []
     for tool in tool_schemas:
         function = tool.get("function") if isinstance(tool, dict) else None
         name = str(function.get("name") or "").strip() if isinstance(function, dict) else ""
-        if name in {"file_write", "file_edit"}:
+        if name in preferred_names:
             direct_write_tools.append(tool)
     return direct_write_tools
 
@@ -1643,6 +1806,175 @@ def _research_note_finalize_message(reason: str) -> str:
     )
 
 
+def _looks_like_research_note_request(request: CompletionRequest) -> bool:
+    keys = _expected_return_shape_keys(request)
+    return {
+        "findings",
+        "evidence_refs",
+        "contradictions",
+        "open_questions",
+    }.issubset(keys) and "report_readiness" not in keys
+
+
+def _soft_budget_progress_snapshot(
+    *,
+    executed_tools: Sequence[dict[str, Any]],
+    workspace_root: Path,
+) -> dict[str, int]:
+    return {
+        "distinct_read_paths": len(
+            _successful_read_paths(executed_tools, workspace_root=workspace_root)
+        ),
+        "mutation_paths": len(
+            _successful_workspace_mutation_paths(
+                executed_tools,
+                workspace_root=workspace_root,
+            )
+        ),
+        "verification_commands": len(_successful_verification_commands(executed_tools)),
+        "discovery_tools": _successful_discovery_tool_count(executed_tools),
+        "shell_commands": _successful_shell_command_count(executed_tools),
+    }
+
+
+def _soft_budget_phase(
+    *,
+    request: CompletionRequest,
+    tool_ids: Sequence[str],
+    executed_tools: Sequence[dict[str, Any]],
+    workspace_root: Path,
+    write_stage_first_write_nudged: bool,
+    write_stage_direct_write_required: bool,
+) -> str | None:
+    mode = _read_only_finalize_mode(request)
+    read_only_tools = _tool_ids_are_read_only(tool_ids)
+    if mode == "validator" and read_only_tools:
+        return "validator_read_only"
+    if mode == "coding_worker" and read_only_tools:
+        return "coding_worker_read_only"
+    if _looks_like_research_note_request(request) and read_only_tools:
+        return "research_note"
+    if _coding_output_kind(request) is None or read_only_tools:
+        return None
+    if _successful_workspace_mutation_paths(
+        executed_tools,
+        workspace_root=workspace_root,
+    ):
+        return "coding_postwrite"
+    if write_stage_first_write_nudged or write_stage_direct_write_required:
+        return "coding_direct_write"
+    return "coding_prewrite"
+
+
+def _soft_budget_extension(
+    phase: str | None,
+    *,
+    limit_kind: str,
+    progress: dict[str, int],
+) -> int:
+    if phase == "coding_prewrite":
+        if limit_kind == "tool_calls":
+            return min(2, max(0, progress.get("distinct_read_paths", 0) - 3))
+        return 1 if progress.get("distinct_read_paths", 0) >= 4 else 0
+    if phase == "coding_direct_write":
+        if limit_kind == "tool_calls":
+            return 1 if progress.get("distinct_read_paths", 0) >= 2 else 0
+        return 0
+    if phase == "coding_postwrite":
+        if limit_kind == "tool_calls":
+            return min(
+                3,
+                progress.get("verification_commands", 0)
+                + max(0, progress.get("mutation_paths", 0) - 1),
+            )
+        return min(2, progress.get("verification_commands", 0))
+    if phase in {"validator_read_only", "coding_worker_read_only"}:
+        if limit_kind == "tool_calls":
+            return min(2, max(0, progress.get("distinct_read_paths", 0) - 2))
+        return 1 if progress.get("distinct_read_paths", 0) >= 3 else 0
+    if phase == "research_note":
+        if limit_kind == "tool_calls":
+            return 1 if progress.get("distinct_read_paths", 0) >= 2 else 0
+        return 0
+    return 0
+
+
+def _soft_budget_limit(
+    phase: str | None,
+    *,
+    limit_kind: str,
+    hard_limit: int | None,
+    progress: dict[str, int],
+) -> int | None:
+    if phase is None:
+        return hard_limit
+    base_budgets = (
+        _SOFT_PHASE_TOOL_CALL_BASE_BUDGETS
+        if limit_kind == "tool_calls"
+        else _SOFT_PHASE_ROUND_BASE_BUDGETS
+    )
+    base = base_budgets.get(phase)
+    if base is None:
+        return hard_limit
+    limit = base + _soft_budget_extension(
+        phase,
+        limit_kind=limit_kind,
+        progress=progress,
+    )
+    if hard_limit is None:
+        return limit
+    return min(hard_limit, limit)
+
+
+def _soft_budget_action_for_phase(phase: str | None) -> str | None:
+    if phase == "coding_prewrite":
+        return "narrow_write_stage"
+    if phase == "coding_direct_write":
+        return "require_direct_write"
+    if phase == "coding_postwrite":
+        return "force_finalize"
+    if phase in {"validator_read_only", "coding_worker_read_only", "research_note"}:
+        return "force_finalize"
+    return None
+
+
+def _soft_budget_message(
+    phase: str,
+    *,
+    limit_kind: str,
+    allow_final_read: bool,
+) -> str:
+    reason = f"soft_{limit_kind}_budget_exhausted"
+    if phase == "coding_prewrite":
+        return _write_capable_coding_stage_first_write_nudge_message(
+            reason,
+            allow_final_read=allow_final_read,
+        )
+    if phase == "coding_direct_write":
+        return _write_capable_coding_stage_direct_write_required_message(reason)
+    if phase == "coding_postwrite":
+        return _write_capable_coding_stage_finalize_message(reason)
+    if phase == "validator_read_only":
+        return _read_only_finalize_message(reason, mode="validator")
+    if phase == "coding_worker_read_only":
+        return _read_only_finalize_message(reason, mode="coding_worker")
+    return _research_note_finalize_message(reason)
+
+
+def _tool_call_allowed_past_soft_budget(
+    tool_id: str,
+    phase: str | None,
+    *,
+    allow_final_read: bool,
+) -> bool:
+    if phase == "coding_prewrite":
+        return tool_id in {"file_edit", "file_write"}
+    if phase == "coding_direct_write":
+        if tool_id in {"file_edit", "file_write"}:
+            return True
+        return allow_final_read and tool_id == "file_read"
+    return False
+
 def _provider_prompt_filter_error(exc: BaseException) -> bool:
     """Detect provider-side prompt safety/filter rejections without binding to one SDK."""
 
@@ -1656,6 +1988,42 @@ def _provider_prompt_filter_error(exc: BaseException) -> bool:
     if "content_filter" in text or "high risk" in text:
         return True
     return "prompt" in text and ("safety" in text or "rejected" in text or "blocked" in text)
+
+
+def _provider_overload_error(exc: BaseException) -> bool:
+    """Detect transient provider overload/rate-limit errors worth retrying briefly."""
+
+    text_parts = [
+        type(exc).__name__,
+        str(exc),
+        repr(getattr(exc, "body", "")),
+        repr(getattr(exc, "response", "")),
+        str(getattr(exc, "status_code", "") or ""),
+    ]
+    text = " ".join(part for part in text_parts if part).lower()
+    if any(
+        permanent in text
+        for permanent in (
+            "insufficient balance",
+            "exceeded_current_quota",
+            "invalid authentication",
+            "invalid api key",
+        )
+    ):
+        return False
+    return (
+        "engine_overloaded" in text
+        or "currently overloaded" in text
+        or "server overloaded" in text
+        or "rate limit" in text
+        or "ratelimit" in text
+        or "429" in text
+    )
+
+
+def _provider_overload_retry_delay(attempt: int) -> float:
+    index = max(0, min(attempt - 1, len(_SUPER_DAN_PROVIDER_OVERLOAD_RETRY_DELAYS) - 1))
+    return float(_SUPER_DAN_PROVIDER_OVERLOAD_RETRY_DELAYS[index])
 
 
 def _provider_safety_retry_messages(request: CompletionRequest) -> list[dict[str, Any]]:
@@ -1952,6 +2320,67 @@ def _provider_timeout_error(exc: BaseException) -> bool:
         return True
     text = str(exc or "").strip().lower()
     return "timeout" in text or "timed out" in text
+
+
+def _provider_timeout_recovery_disabled(request: CompletionRequest) -> bool:
+    if request.metadata.get("disable_timeout_recovery") is True:
+        return True
+    if request.metadata.get("short_completion_timeout") is True:
+        return True
+    raw_timeout = request.metadata.get("completion_timeout_seconds")
+    try:
+        timeout_seconds = float(raw_timeout)
+    except (TypeError, ValueError):
+        return False
+    return 0 < timeout_seconds <= 60.0
+
+
+def _effective_completion_timeout_budget(
+    *,
+    base_timeout_seconds: float | None,
+    request: CompletionRequest,
+    executed_tools: Sequence[dict[str, Any]],
+    workspace_root: Path,
+    write_stage_direct_write_required: bool,
+) -> tuple[float | None, str | None]:
+    if base_timeout_seconds is None:
+        return None, None
+    if _coding_output_kind(request) is None:
+        return base_timeout_seconds, None
+    if not write_stage_direct_write_required:
+        return base_timeout_seconds, None
+    if _successful_workspace_mutation_paths(
+        executed_tools,
+        workspace_root=workspace_root,
+    ):
+        return base_timeout_seconds, None
+
+    timeout_seconds = float(base_timeout_seconds)
+    if _exclusive_write_owner_path(request):
+        effective_timeout = min(
+            timeout_seconds,
+            _EXCLUSIVE_OWNER_DIRECT_WRITE_SOFT_CAP_SECONDS,
+        )
+        if effective_timeout < timeout_seconds:
+            return effective_timeout, "exclusive_owner_direct_write"
+        return timeout_seconds, None
+
+    effective_timeout = min(timeout_seconds, _DIRECT_WRITE_TIMEOUT_SOFT_CAP_SECONDS)
+    if effective_timeout < timeout_seconds:
+        return effective_timeout, "direct_write"
+    return timeout_seconds, None
+
+
+def _timeout_recovery_stage_key(
+    *,
+    write_stage_direct_write_required: bool,
+    write_stage_final_read_consumed: bool,
+) -> str:
+    if write_stage_final_read_consumed:
+        return "direct_write_after_final_read"
+    if write_stage_direct_write_required:
+        return "direct_write"
+    return "general"
 
 
 def _provider_timeout_fallback_payload(request: CompletionRequest) -> dict[str, Any] | None:
@@ -2491,8 +2920,14 @@ class ToolLoopCompletionProvider:
         worker_id: str | None,
         model_call_id: str,
         event_context: dict[str, Any],
+        timeout_seconds: float | None = None,
     ) -> CompletionResult:
-        if self._completion_timeout_seconds is None:
+        effective_timeout_seconds = (
+            self._completion_timeout_seconds
+            if timeout_seconds is None
+            else max(0.01, float(timeout_seconds))
+        )
+        if effective_timeout_seconds is None:
             return await self._complete_text_response(
                 messages=messages,
                 model=model,
@@ -2517,14 +2952,14 @@ class ToolLoopCompletionProvider:
         )
         done, _pending = await asyncio.wait(
             {completion_task},
-            timeout=self._completion_timeout_seconds,
+            timeout=effective_timeout_seconds,
         )
         if completion_task in done:
             return await completion_task
         completion_task.cancel()
         completion_task.add_done_callback(_drain_detached_asyncio_task)
         raise TimeoutError(
-            f"provider_completion_timeout:{self._completion_timeout_seconds:.2f}s"
+            f"provider_completion_timeout:{effective_timeout_seconds:.2f}s"
         )
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
@@ -2533,11 +2968,19 @@ class ToolLoopCompletionProvider:
             raise ValueError("Tool-loop completion provider requires a concrete model")
         worker_id = str(request.metadata.get("worker_id") or "").strip() or None
         event_context = self._event_context(request, worker_id=worker_id)
+        soft_budget_profile = _tool_budget_profile(request)
+        exclusive_write_owner_path = _exclusive_write_owner_path(request)
+        exclusive_write_owner = bool(exclusive_write_owner_path)
 
         requested_tool_schemas = self._resolve_tool_schemas(request.tools)
         tool_schemas = _validator_read_only_tool_schemas(
             request,
             requested_tool_schemas,
+        )
+        exclusive_owner_prefers_file_edit = _exclusive_write_owner_prefers_file_edit(
+            request,
+            tool_schemas,
+            workspace_root=self._tool_runtime.workspace_root,
         )
         if len(tool_schemas) != len(requested_tool_schemas):
             self._emit_event(
@@ -2584,11 +3027,13 @@ class ToolLoopCompletionProvider:
         forced_finalize_without_tools = False
         write_stage_first_write_nudged = False
         write_stage_final_read_available = False
+        write_stage_final_read_consumed = False
         write_stage_direct_write_required = False
         write_stage_direct_write_reprompted = False
         research_note_finalize_nudged = False
         provider_safety_retry_attempted = False
-        provider_timeout_recovery_attempted = False
+        provider_timeout_recovery_attempted: set[str] = set()
+        provider_overload_retry_attempts = 0
         blocked_by_tool_call_ids: list[str] = []
         blocked_tool_counts: dict[str, int] = {}
         disabled_tool_ids: set[str] = set()
@@ -2626,13 +3071,128 @@ class ToolLoopCompletionProvider:
                 for tool in request_tool_schemas
                 if _tool_schema_name(tool)
             ]
+            if (
+                soft_budget_profile == _SOFT_BUDGET_PROFILE_SUPER_DAN
+                and request_tool_ids
+                and not forced_finalize_without_tools
+            ):
+                soft_progress = _soft_budget_progress_snapshot(
+                    executed_tools=executed_tools,
+                    workspace_root=self._tool_runtime.workspace_root,
+                )
+                soft_phase = _soft_budget_phase(
+                    request=request,
+                    tool_ids=request_tool_ids,
+                    executed_tools=executed_tools,
+                    workspace_root=self._tool_runtime.workspace_root,
+                    write_stage_first_write_nudged=write_stage_first_write_nudged,
+                    write_stage_direct_write_required=write_stage_direct_write_required,
+                )
+                allow_final_read = any(
+                    _tool_schema_name(tool) == "file_read"
+                    for tool in request_tool_schemas
+                    if isinstance(tool, dict)
+                )
+                for limit_kind, consumed, hard_limit in (
+                    ("rounds", rounds, self._max_rounds),
+                    ("tool_calls", total_tool_calls, self._max_tool_calls),
+                ):
+                    soft_limit = _soft_budget_limit(
+                        soft_phase,
+                        limit_kind=limit_kind,
+                        hard_limit=hard_limit,
+                        progress=soft_progress,
+                    )
+                    if soft_phase is None or soft_limit is None or consumed < soft_limit:
+                        continue
+                    action = _soft_budget_action_for_phase(soft_phase)
+                    if action is None:
+                        continue
+                    if action == "narrow_write_stage":
+                        write_stage_first_write_nudged = True
+                        write_stage_final_read_available = allow_final_read
+                        write_stage_tool_schemas = _write_stage_tool_schemas(
+                            request_tool_schemas,
+                            allow_final_read=write_stage_final_read_available,
+                            prefer_file_write_only=exclusive_write_owner,
+                            prefer_file_edit_only=exclusive_owner_prefers_file_edit,
+                        )
+                        if write_stage_tool_schemas:
+                            active_tool_schemas = write_stage_tool_schemas
+                            disabled_tool_ids.clear()
+                        write_stage_direct_write_required = (
+                            not write_stage_final_read_available
+                        )
+                    elif action == "require_direct_write":
+                        write_stage_tool_schemas = _write_stage_tool_schemas(
+                            request_tool_schemas,
+                            allow_final_read=write_stage_final_read_available,
+                            prefer_file_write_only=exclusive_write_owner,
+                            prefer_file_edit_only=exclusive_owner_prefers_file_edit,
+                        )
+                        if write_stage_tool_schemas:
+                            active_tool_schemas = write_stage_tool_schemas
+                            disabled_tool_ids.clear()
+                        write_stage_direct_write_required = True
+                    else:
+                        forced_finalize_without_tools = True
+                        active_tool_schemas = []
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": _soft_budget_message(
+                                soft_phase,
+                                limit_kind=limit_kind,
+                                allow_final_read=allow_final_read,
+                            ),
+                        }
+                    )
+                    self._emit_event(
+                        "toolloop.soft_budget_nudged",
+                        phase=soft_phase,
+                        action=action,
+                        limit_kind=limit_kind,
+                        soft_limit=soft_limit,
+                        hard_limit=hard_limit,
+                        progress=soft_progress,
+                        enabled_tools=[
+                            str(tool.get("function", {}).get("name") or "").strip()
+                            for tool in active_tool_schemas
+                            if isinstance(tool, dict)
+                        ],
+                        blocked_by_tool_call_ids=list(blocked_by_tool_call_ids) or None,
+                        tool_calls_executed=len(executed_tools),
+                        **event_context,
+                    )
+                    blocked_by_tool_call_ids = []
+                    request_tool_schemas = _enabled_tool_schemas(
+                        active_tool_schemas,
+                        disabled_tool_ids=sorted(disabled_tool_ids),
+                    )
+                    request_tool_ids = [
+                        _tool_schema_name(tool)
+                        for tool in request_tool_schemas
+                        if _tool_schema_name(tool)
+                    ]
+                    break
             model_call_id = self._next_model_call_id()
+            effective_timeout_seconds, timeout_strategy = (
+                _effective_completion_timeout_budget(
+                    base_timeout_seconds=self._completion_timeout_seconds,
+                    request=request,
+                    executed_tools=executed_tools,
+                    workspace_root=self._tool_runtime.workspace_root,
+                    write_stage_direct_write_required=write_stage_direct_write_required,
+                )
+            )
             self._emit_event(
                 "model.requested",
                 model=model,
                 round=rounds + 1,
                 tool_count=len(request_tool_schemas),
                 model_call_id=model_call_id,
+                timeout_seconds=effective_timeout_seconds,
+                timeout_strategy=timeout_strategy,
                 blocked_by_tool_call_ids=list(blocked_by_tool_call_ids) or None,
                 **event_context,
             )
@@ -2651,35 +3211,84 @@ class ToolLoopCompletionProvider:
                     worker_id=worker_id,
                     model_call_id=model_call_id,
                     event_context=event_context,
+                    timeout_seconds=effective_timeout_seconds,
                 )
             except Exception as exc:
+                if (
+                    soft_budget_profile == _SOFT_BUDGET_PROFILE_SUPER_DAN
+                    and _provider_overload_error(exc)
+                    and provider_overload_retry_attempts
+                    < _SUPER_DAN_PROVIDER_OVERLOAD_MAX_RETRIES
+                ):
+                    provider_overload_retry_attempts += 1
+                    retry_delay = _provider_overload_retry_delay(
+                        provider_overload_retry_attempts
+                    )
+                    self._emit_event(
+                        "model.provider_overload_retry",
+                        model=model,
+                        round=rounds + 1,
+                        model_call_id=model_call_id,
+                        retry_attempt=provider_overload_retry_attempts,
+                        max_retries=_SUPER_DAN_PROVIDER_OVERLOAD_MAX_RETRIES,
+                        retry_delay_seconds=retry_delay,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                        **event_context,
+                    )
+                    if retry_delay > 0:
+                        await asyncio.sleep(retry_delay)
+                    continue
                 if _provider_timeout_error(exc):
-                    timeout_seconds = self._completion_timeout_seconds
+                    timeout_seconds = effective_timeout_seconds
+                    successful_tool_count = sum(
+                        1 for tool in executed_tools if tool.get("ok")
+                    )
+                    successful_tool_threshold = 1 if exclusive_write_owner else 2
+                    timeout_recovery_stage = _timeout_recovery_stage_key(
+                        write_stage_direct_write_required=write_stage_direct_write_required,
+                        write_stage_final_read_consumed=write_stage_final_read_consumed,
+                    )
                     self._emit_event(
                         "model.timeout",
                         model=model,
                         round=rounds + 1,
                         model_call_id=model_call_id,
                         timeout_seconds=timeout_seconds,
+                        timeout_strategy=timeout_strategy,
                         tool_count=len(request_tool_schemas),
                         error_type=type(exc).__name__,
                         **event_context,
                     )
                     can_retry_timeout = (
-                        not provider_timeout_recovery_attempted
+                        timeout_recovery_stage
+                        not in provider_timeout_recovery_attempted
+                        and not _provider_timeout_recovery_disabled(request)
                         and _coding_output_kind(request) is not None
                         and any(tool_id in {"file_edit", "file_write"} for tool_id in request_tool_ids)
                         and not _successful_workspace_mutation_paths(
                             executed_tools,
                             workspace_root=self._tool_runtime.workspace_root,
                         )
-                        and sum(1 for tool in executed_tools if tool.get("ok")) >= 2
+                        and successful_tool_count >= successful_tool_threshold
                     )
                     if can_retry_timeout:
-                        provider_timeout_recovery_attempted = True
+                        provider_timeout_recovery_attempted.add(
+                            timeout_recovery_stage
+                        )
+                        allow_timeout_recovery_final_read = (
+                            not write_stage_direct_write_required
+                            and not write_stage_final_read_consumed
+                            and (
+                                not write_stage_first_write_nudged
+                                or write_stage_final_read_available
+                            )
+                        )
                         recovered_tool_schemas = _write_stage_tool_schemas(
                             tool_schemas,
-                            allow_final_read=True,
+                            allow_final_read=allow_timeout_recovery_final_read,
+                            prefer_file_write_only=exclusive_write_owner,
+                            prefer_file_edit_only=exclusive_owner_prefers_file_edit,
                         )
                         if recovered_tool_schemas:
                             active_tool_schemas = recovered_tool_schemas
@@ -2718,6 +3327,7 @@ class ToolLoopCompletionProvider:
                             round=rounds + 1,
                             model_call_id=model_call_id,
                             timeout_seconds=timeout_seconds,
+                            timeout_strategy=timeout_strategy,
                             allow_final_read=write_stage_final_read_available,
                             tool_count=len(active_tool_schemas),
                             **event_context,
@@ -2883,7 +3493,9 @@ class ToolLoopCompletionProvider:
                     if not write_stage_direct_write_reprompted:
                         write_stage_direct_write_reprompted = True
                         direct_write_tool_schemas = _direct_write_tool_schemas(
-                            tool_schemas
+                            tool_schemas,
+                            prefer_file_write_only=exclusive_write_owner,
+                            prefer_file_edit_only=exclusive_owner_prefers_file_edit,
                         )
                         if direct_write_tool_schemas:
                             active_tool_schemas = direct_write_tool_schemas
@@ -3006,6 +3618,8 @@ class ToolLoopCompletionProvider:
             repeated_tool_call_nudges: list[tuple[str, str]] = []
             write_stage_helper_path_nudges: list[tuple[str, str, str]] = []
             file_write_downshift_nudges: list[tuple[str, str]] = []
+            exclusive_owner_read_scope_nudges: list[str] = []
+            phase_budget_nudges: list[tuple[str, str, int, dict[str, int]]] = []
             newly_disabled_tool_ids: list[str] = []
             write_stage_final_read_consumed = False
 
@@ -3016,6 +3630,20 @@ class ToolLoopCompletionProvider:
                 arguments: dict[str, Any],
                 tool_payload: dict[str, Any],
             ) -> dict[str, Any]:
+                prompt_text_limit = _TOOL_PROMPT_TEXT_LIMIT
+                if (
+                    exclusive_write_owner
+                    and tool_id == "file_read"
+                    and tool_payload.get("ok")
+                    and _relative_workspace_path(
+                        arguments.get("path"),
+                        workspace_root=self._tool_runtime.workspace_root,
+                    )
+                    == exclusive_write_owner_path
+                ):
+                    prompt_text_limit = _EXCLUSIVE_OWNER_FILE_READ_PROMPT_TEXT_LIMIT
+                    if exclusive_owner_prefers_file_edit:
+                        tool_payload = _file_read_payload_with_line_numbers(tool_payload)
                 executed_tools.append(
                     {
                         "tool_id": tool_id,
@@ -3031,7 +3659,10 @@ class ToolLoopCompletionProvider:
                         "tool_call_id": tool_call_id,
                         "name": tool_id,
                         "content": json.dumps(
-                            _compact_tool_payload_for_prompt(tool_payload),
+                            _compact_tool_payload_for_prompt(
+                                tool_payload,
+                                text_limit=prompt_text_limit,
+                            ),
                             ensure_ascii=False,
                             sort_keys=True,
                             default=str,
@@ -3060,15 +3691,115 @@ class ToolLoopCompletionProvider:
                         },
                     )
 
+            round_soft_phase: str | None = None
+            round_soft_progress: dict[str, int] = {}
+            round_soft_tool_call_limit: int | None = None
+            if soft_budget_profile == _SOFT_BUDGET_PROFILE_SUPER_DAN:
+                round_soft_progress = _soft_budget_progress_snapshot(
+                    executed_tools=executed_tools,
+                    workspace_root=self._tool_runtime.workspace_root,
+                )
+                round_soft_phase = _soft_budget_phase(
+                    request=request,
+                    tool_ids=request_tool_ids,
+                    executed_tools=executed_tools,
+                    workspace_root=self._tool_runtime.workspace_root,
+                    write_stage_first_write_nudged=write_stage_first_write_nudged,
+                    write_stage_direct_write_required=write_stage_direct_write_required,
+                )
+                round_soft_tool_call_limit = _soft_budget_limit(
+                    round_soft_phase,
+                    limit_kind="tool_calls",
+                    hard_limit=self._max_tool_calls,
+                    progress=round_soft_progress,
+                )
             for call_index, raw_call in enumerate(tool_calls):
                 total_tool_calls += 1
                 tool_id, tool_call_id, arguments = self._parse_tool_call(raw_call)
                 round_tool_call_ids.append(tool_call_id)
+                exclusive_owner_has_read_owned_file = (
+                    exclusive_write_owner
+                    and exclusive_write_owner_path
+                    in _successful_read_paths(
+                        executed_tools,
+                        workspace_root=self._tool_runtime.workspace_root,
+                    )
+                    and not _successful_workspace_mutation_paths(
+                        executed_tools,
+                        workspace_root=self._tool_runtime.workspace_root,
+                    )
+                )
                 if total_tool_calls > self._max_tool_calls:
                     tool_payload = {
                         "ok": False,
                         "error": f"tool_call_limit_exceeded:{self._max_tool_calls}",
                     }
+                elif (
+                    exclusive_write_owner
+                    and _coding_output_kind(request) is not None
+                    and tool_id == "file_read"
+                    and not _successful_workspace_mutation_paths(
+                        executed_tools,
+                        workspace_root=self._tool_runtime.workspace_root,
+                    )
+                    and (
+                        exclusive_owner_has_read_owned_file
+                        or _relative_workspace_path(
+                            arguments.get("path"),
+                            workspace_root=self._tool_runtime.workspace_root,
+                        )
+                        != exclusive_write_owner_path
+                    )
+                ):
+                    tool_payload = {
+                        "ok": False,
+                        "error": (
+                            "exclusive_write_owner_read_scope:"
+                            f"{exclusive_write_owner_path}"
+                        ),
+                    }
+                    exclusive_owner_read_scope_nudges.append(exclusive_write_owner_path)
+                elif (
+                    exclusive_owner_has_read_owned_file
+                    and _coding_output_kind(request) is not None
+                    and tool_id not in {"file_edit", "file_write"}
+                ):
+                    tool_payload = {
+                        "ok": False,
+                        "error": (
+                            "exclusive_write_owner_read_budget_consumed:"
+                            f"{exclusive_write_owner_path}"
+                        ),
+                    }
+                    exclusive_owner_read_scope_nudges.append(exclusive_write_owner_path)
+                elif (
+                    round_soft_phase is not None
+                    and round_soft_tool_call_limit is not None
+                    and total_tool_calls > round_soft_tool_call_limit
+                    and not _tool_call_allowed_past_soft_budget(
+                        tool_id,
+                        round_soft_phase,
+                        allow_final_read=(
+                            write_stage_final_read_available
+                            and "file_read" in request_tool_ids
+                        ),
+                    )
+                ):
+                    tool_payload = {
+                        "ok": False,
+                        "error": (
+                            "tool_phase_budget_exceeded:"
+                            f"{round_soft_phase}:{round_soft_tool_call_limit}"
+                        ),
+                    }
+                    phase_budget_nudges.append(
+                        (
+                            round_soft_phase,
+                            "tool_calls",
+                            round_soft_tool_call_limit,
+                            round_soft_progress,
+                        )
+                    )
                 elif tool_id not in self._tool_runtime.tool_ids:
                     tool_payload = {
                         "ok": False,
@@ -3194,6 +3925,12 @@ class ToolLoopCompletionProvider:
                     break
                 if not tool_payload.get("ok"):
                     error_text = str(tool_payload.get("error") or "").strip()
+                    if error_text.startswith("tool_phase_budget_exceeded:"):
+                        _skip_remaining_tool_calls(
+                            tool_calls[call_index + 1 :],
+                            reason="tool_phase_budget_exceeded",
+                        )
+                        break
                     if tool_id == "file_write":
                         downshift = _file_write_invalid_large_overwrite_downshift(
                             raw_call,
@@ -3240,6 +3977,72 @@ class ToolLoopCompletionProvider:
                         # model sees the narrowed tool basket before it burns the rest of the
                         # round on more unavailable calls.
                         break
+            if phase_budget_nudges:
+                phase, limit_kind, soft_limit, progress = phase_budget_nudges[0]
+                action = _soft_budget_action_for_phase(phase)
+                allow_final_read = any(
+                    _tool_schema_name(tool) == "file_read"
+                    for tool in request_tool_schemas
+                    if isinstance(tool, dict)
+                )
+                if action == "narrow_write_stage":
+                    write_stage_first_write_nudged = True
+                    write_stage_final_read_available = allow_final_read
+                    write_stage_tool_schemas = _write_stage_tool_schemas(
+                        request_tool_schemas,
+                        allow_final_read=write_stage_final_read_available,
+                        prefer_file_write_only=exclusive_write_owner,
+                        prefer_file_edit_only=exclusive_owner_prefers_file_edit,
+                    )
+                    if write_stage_tool_schemas:
+                        active_tool_schemas = write_stage_tool_schemas
+                        disabled_tool_ids.clear()
+                    write_stage_direct_write_required = (
+                        not write_stage_final_read_available
+                    )
+                elif action == "require_direct_write":
+                    write_stage_tool_schemas = _write_stage_tool_schemas(
+                        request_tool_schemas,
+                        allow_final_read=write_stage_final_read_available,
+                        prefer_file_write_only=exclusive_write_owner,
+                        prefer_file_edit_only=exclusive_owner_prefers_file_edit,
+                    )
+                    if write_stage_tool_schemas:
+                        active_tool_schemas = write_stage_tool_schemas
+                        disabled_tool_ids.clear()
+                    write_stage_direct_write_required = True
+                elif action == "force_finalize":
+                    forced_finalize_without_tools = True
+                    active_tool_schemas = []
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": _soft_budget_message(
+                            phase,
+                            limit_kind=limit_kind,
+                            allow_final_read=allow_final_read,
+                        ),
+                    }
+                )
+                self._emit_event(
+                    "toolloop.soft_budget_nudged",
+                    phase=phase,
+                    action=action,
+                    limit_kind=limit_kind,
+                    soft_limit=soft_limit,
+                    hard_limit=self._max_tool_calls,
+                    progress=progress,
+                    enabled_tools=[
+                        str(tool.get("function", {}).get("name") or "").strip()
+                        for tool in active_tool_schemas
+                        if isinstance(tool, dict)
+                    ],
+                    blocked_by_tool_call_ids=list(round_tool_call_ids) or None,
+                    tool_calls_executed=len(executed_tools),
+                    **event_context,
+                )
+                blocked_by_tool_call_ids = list(round_tool_call_ids)
+                continue
             if file_write_downshift_nudges:
                 unique_messages = []
                 seen_messages: set[str] = set()
@@ -3268,6 +4071,25 @@ class ToolLoopCompletionProvider:
                     tool_calls_executed=len(executed_tools),
                     **event_context,
                 )
+            if exclusive_owner_read_scope_nudges:
+                owner_paths = _dedupe(exclusive_owner_read_scope_nudges)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "\n".join(
+                            _exclusive_write_owner_read_scope_message(path)
+                            for path in owner_paths
+                        ),
+                    }
+                )
+                self._emit_event(
+                    "toolloop.exclusive_write_owner_read_scope_nudged",
+                    owner_paths=owner_paths,
+                    enabled_tools=list(request_tool_ids),
+                    blocked_by_tool_call_ids=list(round_tool_call_ids) or None,
+                    tool_calls_executed=len(executed_tools),
+                    **event_context,
+                )
             if write_stage_helper_path_nudges:
                 unique_messages = []
                 seen_messages: set[str] = set()
@@ -3280,7 +4102,11 @@ class ToolLoopCompletionProvider:
                         continue
                     seen_messages.add(message)
                     unique_messages.append(message)
-                direct_write_tool_schemas = _direct_write_tool_schemas(tool_schemas)
+                direct_write_tool_schemas = _direct_write_tool_schemas(
+                    tool_schemas,
+                    prefer_file_write_only=exclusive_write_owner,
+                    prefer_file_edit_only=exclusive_owner_prefers_file_edit,
+                )
                 if direct_write_tool_schemas:
                     active_tool_schemas = direct_write_tool_schemas
                     disabled_tool_ids.clear()
@@ -3415,7 +4241,11 @@ class ToolLoopCompletionProvider:
                     **event_context,
                 )
             if write_stage_final_read_consumed:
-                direct_write_tool_schemas = _direct_write_tool_schemas(tool_schemas)
+                direct_write_tool_schemas = _direct_write_tool_schemas(
+                    tool_schemas,
+                    prefer_file_write_only=exclusive_write_owner,
+                    prefer_file_edit_only=exclusive_owner_prefers_file_edit,
+                )
                 if direct_write_tool_schemas:
                     active_tool_schemas = direct_write_tool_schemas
                     disabled_tool_ids.clear()
@@ -3513,7 +4343,8 @@ class ToolLoopCompletionProvider:
             )
             if write_nudge_reason is not None and not write_stage_first_write_nudged:
                 write_stage_first_write_nudged = True
-                write_stage_final_read_available = any(
+                allow_write_nudge_final_read = not _exclusive_write_owner_path(request)
+                write_stage_final_read_available = allow_write_nudge_final_read and any(
                     _tool_schema_name(tool) == "file_read"
                     for tool in request_tool_schemas
                     if isinstance(tool, dict)
@@ -3521,6 +4352,8 @@ class ToolLoopCompletionProvider:
                 write_stage_tool_schemas = _write_stage_tool_schemas(
                     request_tool_schemas,
                     allow_final_read=write_stage_final_read_available,
+                    prefer_file_write_only=exclusive_write_owner,
+                    prefer_file_edit_only=exclusive_owner_prefers_file_edit,
                 )
                 if write_stage_tool_schemas:
                     active_tool_schemas = write_stage_tool_schemas
@@ -3532,6 +4365,11 @@ class ToolLoopCompletionProvider:
                         "content": _write_capable_coding_stage_first_write_nudge_message(
                             write_nudge_reason,
                             allow_final_read=write_stage_final_read_available,
+                            file_write_only=exclusive_write_owner
+                            and any(
+                                _tool_schema_name(tool) == "file_write"
+                                for tool in active_tool_schemas
+                            ),
                         ),
                     }
                 )

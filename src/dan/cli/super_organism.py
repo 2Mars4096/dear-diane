@@ -57,6 +57,7 @@ _LIVE_GENERIC_TOOL_IDS = [
 _LIVE_WEBSITE_FILES = ("index.html", "styles.css", "app.js", "README.md")
 _LIVE_FILE_WRITE_SAFE_WORD_LIMIT = 1200
 _LIVE_FILE_WRITE_SAFE_LINE_LIMIT = 200
+_LIVE_EXISTING_WEBSITE_MIN_CHANGED_FILES = 2
 _WEBSITE_TEMPLATE_PHRASES = (
     "execution contract",
     "objective contract",
@@ -580,6 +581,7 @@ def _build_live_website_worker(model: str) -> WorkerDefinition:
                 "- Treat the supplied coordination tickets as the working backlog and satisfy the final audit gate.\n"
                 f"- {_live_pacing_contract()}\n"
                 "- If the required files already exist, improve them incrementally instead of replacing everything at once.\n"
+                "- If this is an existing website redesign, update a coordinated set of files: HTML structure plus CSS visual language and/or JS motion. Do not finalize after changing only one required file unless the operator explicitly asked for a one-file tweak.\n"
                 "- After one failed or truncated large write, immediately switch to a smaller section-level strategy.\n"
                 "- Avoid rereading the same file unless the next edit truly needs exact line grounding.\n"
                 "- Do not create scratch files, marker files, or throwaway artifacts outside the required website file set.\n"
@@ -708,6 +710,7 @@ def _live_website_task(
         "Honor the supplied ticket ownership and handoff packets instead of freeforming a generic demo shell. "
         f"{_live_pacing_contract()} "
         "If the website files already exist, improve them incrementally instead of rewriting the whole site in one response. "
+        "For an existing website redesign, update a coordinated set of required files instead of changing only one page shell. "
         "Do not create extra scratch files outside the required artifact set. "
         f"The website should make the {report.cell_count}-cell Super DAN organism feel credible: "
         "show coordinated cells, organs, synchronization, live execution, and an organized payoff. "
@@ -1047,15 +1050,59 @@ def _merge_validation_failures(
     return merged
 
 
+def _existing_required_files_from_snapshot(
+    snapshot: dict[str, str | None],
+    required_paths: Sequence[Path],
+) -> list[str]:
+    existing: list[str] = []
+    for path in required_paths:
+        rendered = str(path.resolve(strict=False))
+        if snapshot.get(rendered) is not None:
+            existing.append(rendered)
+    return existing
+
+
+def _coordinated_website_change_failures(
+    *,
+    snapshot: dict[str, str | None],
+    required_paths: Sequence[Path],
+    changed_required_paths: Sequence[str],
+) -> list[str]:
+    existing_required = _existing_required_files_from_snapshot(snapshot, required_paths)
+    if len(existing_required) < _LIVE_EXISTING_WEBSITE_MIN_CHANGED_FILES:
+        return []
+    changed_existing = {
+        path for path in changed_required_paths if path in set(existing_required)
+    }
+    minimum = min(_LIVE_EXISTING_WEBSITE_MIN_CHANGED_FILES, len(existing_required))
+    if len(changed_existing) >= minimum:
+        return []
+    return [
+        (
+            "Existing website redesign changed only "
+            f"{len(changed_existing)} preexisting required file(s); update at least "
+            f"{minimum} coordinated required files, such as index.html plus styles.css or app.js."
+        )
+    ]
+
+
 def _website_static_validation_failures(
     report: SuperOrganismReport,
     *,
     required_paths: Sequence[Path],
     changed_required_paths: Sequence[str],
+    file_snapshot: dict[str, str | None],
 ) -> list[str]:
     failures: list[str] = []
     if not changed_required_paths:
         failures.append("The live run did not change any required website files.")
+    failures.extend(
+        _coordinated_website_change_failures(
+            snapshot=file_snapshot,
+            required_paths=required_paths,
+            changed_required_paths=changed_required_paths,
+        )
+    )
     if not required_paths:
         return failures
     index_path = Path(required_paths[0])
@@ -1075,6 +1122,28 @@ def _website_static_validation_failures(
             "The generated website still looks like the generic Super DAN contract/demo template."
         )
     return failures
+
+
+def _log_final_validation_event(
+    event_logger: SuperRunEventLogger | None,
+    *,
+    worker_id: str,
+    model: str,
+    validation: dict[str, Any],
+    deterministic_failures: Sequence[str] | None = None,
+) -> None:
+    _log_live_event(
+        event_logger,
+        "live.validation.completed",
+        worker_id=worker_id,
+        model=model,
+        status=validation.get("status"),
+        passed=validation.get("passed"),
+        overall_score=validation.get("overall_score"),
+        deterministic_failures=list(deterministic_failures or []) or None,
+        tool_calls=int(validation.get("tool_calls") or 0),
+        event_count=int(validation.get("event_count") or 0),
+    )
 
 
 async def _run_live_validation(
@@ -1121,7 +1190,7 @@ async def _run_live_validation(
     validation["token_usage"] = token_usage
     _log_live_event(
         event_logger,
-        "live.validation.completed",
+        "live.validation.model_completed",
         worker_id=worker.id,
         model=model,
         status=validation.get("status"),
@@ -1159,6 +1228,11 @@ async def _run_live_website_build(
             "Keep writes inside the requested workspace/artifact paths.",
             "Do not install dependencies or require a build step.",
             "Do not create scratch or throwaway files outside the required website artifact set.",
+            (
+                "If two or more required website files already existed at run start, "
+                "treat the task as a coordinated redesign/update and materially change at least "
+                f"{_LIVE_EXISTING_WEBSITE_MIN_CHANGED_FILES} required files."
+            ),
         ],
         soft_constraints=[
             "Favor a visually distinctive, non-generic landing page.",
@@ -1247,6 +1321,11 @@ async def _run_live_website_build(
                 "prefer_incremental_file_edit_on_existing_files": True,
                 "forbid_scratch_files_outside_required_artifacts": True,
             },
+            "existing_required_files": _existing_required_files_from_snapshot(
+                file_snapshot,
+                required_paths,
+            ),
+            "existing_website_min_changed_required_files": _LIVE_EXISTING_WEBSITE_MIN_CHANGED_FILES,
             "shared_board": (
                 report.shared_board.model_dump(mode="json") if report.shared_board is not None else None
             ),
@@ -1261,6 +1340,7 @@ async def _run_live_website_build(
         metadata={
             "surface": "super_organism",
             "mode": "live",
+            "tool_budget_profile": "super_dan_live",
             "trace_id": run_trace_id,
             "root_task_id": run_task_id,
             "organism_id": report.organism_id,
@@ -1346,6 +1426,7 @@ async def _run_live_website_build(
             metadata={
                 "surface": "super_organism",
                 "mode": "live",
+                "tool_budget_profile": "super_dan_live",
                 "trace_id": run_trace_id,
                 "root_task_id": run_task_id,
                 "organism_id": report.organism_id,
@@ -1364,13 +1445,23 @@ async def _run_live_website_build(
             provider=provider,
             event_logger=event_logger,
         )
+    static_validation_failures = _website_static_validation_failures(
+        report,
+        required_paths=required_paths,
+        changed_required_paths=changed_required_paths,
+        file_snapshot=file_snapshot,
+    )
     validation = _merge_validation_failures(
         validation,
-        _website_static_validation_failures(
-            report,
-            required_paths=required_paths,
-            changed_required_paths=changed_required_paths,
-        ),
+        static_validation_failures,
+    )
+    validation["deterministic_failures"] = list(static_validation_failures)
+    _log_final_validation_event(
+        event_logger,
+        worker_id="super-dan.live.website.validator",
+        model=model,
+        validation=validation,
+        deterministic_failures=static_validation_failures,
     )
     if not changed_required_paths and not error:
         error = "live build finished without changing any required website files"
@@ -1542,6 +1633,7 @@ async def _run_live_generic_execution(
         metadata={
             "surface": "super_organism",
             "mode": "live",
+            "tool_budget_profile": "super_dan_live",
             "trace_id": run_trace_id,
             "root_task_id": run_task_id,
             "organism_id": report.organism_id,
@@ -1616,6 +1708,7 @@ async def _run_live_generic_execution(
             metadata={
                 "surface": "super_organism",
                 "mode": "live",
+                "tool_budget_profile": "super_dan_live",
                 "trace_id": run_trace_id,
                 "root_task_id": run_task_id,
                 "organism_id": report.organism_id,
@@ -1634,6 +1727,12 @@ async def _run_live_generic_execution(
             provider=provider,
             event_logger=event_logger,
         )
+    _log_final_validation_event(
+        event_logger,
+        worker_id="super-dan.live.coding.validator",
+        model=model,
+        validation=validation,
+    )
     if not validation.get("passed") and not error:
         error = (
             str(validation.get("repair_brief") or "").strip()

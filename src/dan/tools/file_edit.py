@@ -314,6 +314,17 @@ def _build_edit_spec(
     }
 
 
+def _edit_content_argument(edit: dict[str, object]) -> str | None:
+    if "content" in edit:
+        value = edit.get("content")
+        return None if value is None else str(value)
+    for alias in ("replace", "replacement", "new_content", "new_string"):
+        if alias in edit:
+            value = edit.get(alias)
+            return None if value is None else str(value)
+    return None
+
+
 def _validate_edit_bounds(spec: dict[str, object], *, total_lines_before: int) -> None:
     mode = str(spec["mode"])
     start_line = int(spec["start_line"])
@@ -340,6 +351,20 @@ def _validate_edit_bounds(spec: dict[str, object], *, total_lines_before: int) -
             "invalid arguments for file_edit: "
             f"cannot insert after line {start_line}; valid range is 1-{total_lines_before}."
         )
+
+
+def _clamp_replace_delete_end_at_eof(
+    spec: dict[str, object],
+    *,
+    total_lines_before: int,
+) -> dict[str, object]:
+    if str(spec["mode"]) not in {"replace", "delete"}:
+        return spec
+    start_line = int(spec["start_line"])
+    end_line = int(spec["end_line"])
+    if start_line > total_lines_before or end_line <= total_lines_before:
+        return spec
+    return {**spec, "end_line": total_lines_before}
 
 
 def _preserve_line_boundary(
@@ -595,6 +620,50 @@ def _guard_placeholder_style_python_replace(
         )
 
 
+def _guard_placeholder_style_replace(
+    spec: dict[str, object],
+    *,
+    path: str,
+    total_lines_before: int,
+) -> None:
+    if str(spec["mode"]) not in {"replace", "insert_before", "insert_after"}:
+        return
+
+    replacement_text = "".join(list(spec["replacement_lines"])).strip()
+    if not replacement_text:
+        return
+
+    normalized = replacement_text.lower()
+    placeholder_markers = (
+        "read current content",
+        "existing content here",
+        "existing file content",
+        "placeholder",
+    )
+    if not any(marker in normalized for marker in placeholder_markers):
+        return
+
+    nonempty_lines = [line.strip() for line in replacement_text.splitlines() if line.strip()]
+    if len(nonempty_lines) > 3:
+        return
+
+    comment_prefixes = ("#", "//", "/*", "*", "<!--")
+    if not all(line.startswith(comment_prefixes) for line in nonempty_lines):
+        return
+
+    start_line = int(spec["start_line"])
+    end_line = int(spec["end_line"])
+    whole_fileish_replace = start_line == 1 and end_line >= max(1, total_lines_before - 2)
+    placeholder_only_comment = any("read current content" in line.lower() for line in nonempty_lines)
+    if not whole_fileish_replace and not placeholder_only_comment:
+        return
+
+    raise _tool_argument_error(
+        "invalid edit shape for file_edit: Suspicious placeholder-style content. "
+        f"Apply the real change to {path} instead of comment-only placeholder text."
+    )
+
+
 def _apply_edit_to_lines(
     lines: list[str],
     *,
@@ -686,12 +755,22 @@ async def file_edit(
                 raise _tool_argument_error(
                     f"invalid arguments for file_edit: edits[{index}] must be an object."
                 )
+            edit_mode = edit.get("mode")
+            edit_start_line, edit_end_line, edit_content = _normalize_replace_compatibility_args(
+                original_text=original_text,
+                start_line=edit.get("start_line"),
+                end_line=edit.get("end_line"),
+                content=_edit_content_argument(edit),
+                mode=str(edit_mode or "replace"),
+                old_string=edit.get("old_string"),
+                new_string=edit.get("new_string"),
+            )
             edit_specs.append(
                 _build_edit_spec(
-                    start_line=edit.get("start_line"),
-                    end_line=edit.get("end_line"),
-                    content=edit.get("content"),
-                    mode=edit.get("mode"),
+                    start_line=edit_start_line,
+                    end_line=edit_end_line,
+                    content=edit_content,
+                    mode=edit_mode,
                     label=f"edits[{index}]",
                 )
             )
@@ -716,6 +795,13 @@ async def file_edit(
         ]
 
     edit_specs = [
+        _clamp_replace_delete_end_at_eof(
+            spec,
+            total_lines_before=total_lines_before,
+        )
+        for spec in edit_specs
+    ]
+    edit_specs = [
         _reinterpret_anchor_heavy_replace(spec, original_lines=original_lines)
         for spec in edit_specs
     ]
@@ -728,6 +814,11 @@ async def file_edit(
     if len(edit_specs) > 1:
         _ensure_non_overlapping_edits(edit_specs)
     for spec in edit_specs:
+        _guard_placeholder_style_replace(
+            spec,
+            path=effective_path,
+            total_lines_before=total_lines_before,
+        )
         _guard_placeholder_style_python_replace(
             spec,
             path=effective_path,

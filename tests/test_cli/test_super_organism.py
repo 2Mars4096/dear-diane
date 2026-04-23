@@ -115,6 +115,31 @@ class _FakeLiveWebsiteProvider:
         )
 
 
+class _FakeOverloadedThenLiveWebsiteProvider:
+    def __init__(self) -> None:
+        self.overloads = 0
+        self.inner = _FakeLiveWebsiteProvider()
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        if self.overloads == 0:
+            self.overloads += 1
+            raise RuntimeError("engine_overloaded_error: The engine is currently overloaded")
+        return await self.inner.complete(
+            messages,
+            model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs,
+        )
+
+
 class _FakeRecoveringLiveWebsiteProvider:
     def __init__(self) -> None:
         self.calls = 0
@@ -288,6 +313,148 @@ class _FakeRecoveringLiveWebsiteProvider:
             ),
             model=model,
             usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            finish_reason="stop",
+        )
+
+
+class _FakeSoftBudgetLiveWebsiteProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.calls += 1
+        tools = kwargs.get("tools") or []
+        tool_names = [
+            str(tool.get("function", {}).get("name") or "")
+            for tool in tools
+            if isinstance(tool, dict)
+        ]
+        if self.calls <= 5:
+            tool_call = {
+                "id": f"call-read-{self.calls}",
+                "type": "function",
+                "function": {
+                    "name": "file_read",
+                    "arguments": json.dumps({"path": f"notes/input-{self.calls}.txt"}),
+                },
+            }
+            return CompletionResult(
+                text="",
+                model=model,
+                usage={"prompt_tokens": 12, "completion_tokens": 4, "total_tokens": 16},
+                tool_calls=[tool_call],
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [tool_call],
+                },
+            )
+        if self.calls == 6:
+            user_messages = [
+                str(message.get("content") or "")
+                for message in messages
+                if isinstance(message, dict) and message.get("role") == "user"
+            ]
+            assert any(
+                "Stop auditing and make the first concrete project write now" in content
+                for content in user_messages
+            )
+            assert "file_write" in tool_names
+            tool_calls = [
+                _file_write_call(
+                    "call-index",
+                    "website/index.html",
+                    (
+                        "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./styles.css\"></head>"
+                        "<body><main><section><p>20 cells, paced execution.</p>"
+                        "<h1>Super DAN moves from scouting to writing before the hard cap.</h1>"
+                        "<p>The runtime narrowed the tool lane once discovery had done its job.</p>"
+                        "</section></main><script src=\"./app.js\"></script></body></html>\n"
+                    ),
+                ),
+                _file_write_call(
+                    "call-css",
+                    "website/styles.css",
+                    "body { margin: 0; background: #10130f; color: #f2ead8; font-family: Georgia, serif; }\n",
+                ),
+                _file_write_call(
+                    "call-js",
+                    "website/app.js",
+                    "document.body.dataset.softBudgetNudged = 'true';\n",
+                ),
+                _file_write_call(
+                    "call-readme",
+                    "website/README.md",
+                    "# Soft Budget Website\n\nThe live lane narrowed to writing before the hard cap.\n",
+                ),
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                usage={"prompt_tokens": 24, "completion_tokens": 10, "total_tokens": 34},
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 7:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "live-website-soft-budget-001",
+                        "change_summary": ["shifted from bounded discovery into concrete website writes"],
+                        "target_files": [
+                            "website/index.html",
+                            "website/styles.css",
+                            "website/app.js",
+                            "website/README.md",
+                        ],
+                        "test_plan": ["open website/index.html"],
+                        "risks": [],
+                        "files_created": [
+                            "website/index.html",
+                            "website/styles.css",
+                            "website/app.js",
+                            "website/README.md",
+                        ],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 12, "completion_tokens": 9, "total_tokens": 21},
+                finish_reason="stop",
+            )
+        assert "file_write" not in tool_names
+        assert "file_edit" not in tool_names
+        return CompletionResult(
+            text=json.dumps(
+                {
+                    "passed": True,
+                    "overall_score": 0.91,
+                    "dimension_scores": {
+                        "objective_alignment": 0.92,
+                        "artifact_specificity": 0.89,
+                        "execution_quality": 0.92,
+                    },
+                    "repair_brief": "",
+                    "missing_requirements": [],
+                    "comparison_note": "The website materially satisfies the objective after the soft budget nudge.",
+                },
+                sort_keys=True,
+            ),
+            model=model,
+            usage={"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12},
             finish_reason="stop",
         )
 
@@ -488,6 +655,80 @@ class _FakeTemplateWebsiteProvider:
         )
 
 
+class _FakeSingleFileExistingWebsiteProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.calls += 1
+        if self.calls == 1:
+            tool_calls = [
+                _file_write_call(
+                    "call-index",
+                    "website/index.html",
+                    (
+                        "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./styles.css\"></head>"
+                        "<body><main><section><h1>Distributed AI teams, visibly synchronized.</h1>"
+                        "<p>Cells move from scouting into building with one shared memory board.</p>"
+                        "</section></main><script src=\"./app.js\"></script></body></html>\n"
+                    ),
+                )
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 2:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "single-file-redesign-001",
+                        "change_summary": ["updated only the HTML shell"],
+                        "target_files": ["website/index.html"],
+                        "test_plan": ["open website/index.html"],
+                        "risks": [],
+                        "files_created": [],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                finish_reason="stop",
+            )
+        return CompletionResult(
+            text=json.dumps(
+                {
+                    "passed": True,
+                    "overall_score": 0.91,
+                    "dimension_scores": {
+                        "objective_alignment": 0.9,
+                        "artifact_specificity": 0.9,
+                        "execution_quality": 0.93,
+                    },
+                    "repair_brief": "",
+                    "missing_requirements": [],
+                    "comparison_note": "The website looks materially improved.",
+                },
+                sort_keys=True,
+            ),
+            model=model,
+            finish_reason="stop",
+        )
+
+
 def test_build_parser_defaults() -> None:
     parser = build_parser()
     args = parser.parse_args([])
@@ -535,6 +776,7 @@ def test_live_worker_contracts_include_paced_small_write_guidance() -> None:
     assert "1200 words" in website_text
     assert "200 lines" in website_text
     assert "Do not create scratch files" in website_text
+    assert "coordinated set of files" in website_text
     assert "Prefer `file_edit` over whole-file `file_write`" in generic_text
     assert "1200 words" in generic_text
     assert "200 lines" in generic_text
@@ -554,6 +796,7 @@ def test_live_tasks_include_paced_incremental_execution_guidance(tmp_path) -> No
     assert "200 lines" in website_task
     assert "Do not create extra scratch files" in website_task
     assert "improve them incrementally" in website_task
+    assert "coordinated set of required files" in website_task
     assert "1200 words" in generic_task
     assert "200 lines" in generic_task
 
@@ -791,6 +1034,41 @@ def test_main_live_website_build_uses_native_tool_loop(tmp_path, capsys, monkeyp
     assert "fake live provider" in (tmp_path / "website" / "README.md").read_text(encoding="utf-8")
 
 
+def test_main_live_website_build_retries_transient_provider_overload(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    fake_provider = _FakeOverloadedThenLiveWebsiteProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "can you build a website for this product? make it look cool",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Live Build: completed" in stdout
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(row["event"] == "model.provider_overload_retry" for row in event_rows)
+
+
 def test_main_live_website_build_recovers_from_invalid_direct_write_calls(
     tmp_path,
     capsys,
@@ -838,6 +1116,67 @@ def test_main_live_website_build_recovers_from_invalid_direct_write_calls(
         for row in event_rows
     )
     assert "recovered from malformed file_write calls" in (
+        tmp_path / "website" / "README.md"
+    ).read_text(encoding="utf-8").lower()
+
+
+def test_main_live_website_build_soft_budget_nudges_before_hard_cap(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    for index in range(1, 6):
+        (notes / f"input-{index}.txt").write_text(
+            f"seed context {index}\n",
+            encoding="utf-8",
+        )
+
+    fake_provider = _FakeSoftBudgetLiveWebsiteProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "build a cool website for this product",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Live Build: completed" in stdout
+    assert "Validation: passed" in stdout
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    soft_budget_nudges = [
+        row
+        for row in event_rows
+        if row.get("event") == "toolloop.soft_budget_nudged"
+        and str(row.get("phase") or "").startswith("coding_")
+        and row.get("limit_kind") == "rounds"
+        and row.get("action")
+        in {"narrow_write_stage", "require_direct_write", "force_finalize"}
+    ]
+    assert soft_budget_nudges, "expected at least one coding-stage soft budget nudge"
+    assert not any(
+        str(row.get("stop_reason") or "").startswith("max_tool_rounds_exceeded")
+        for row in event_rows
+        if row.get("event") == "completion.completed"
+    )
+    assert "soft budget website" in (
         tmp_path / "website" / "README.md"
     ).read_text(encoding="utf-8").lower()
 
@@ -978,6 +1317,71 @@ def test_main_live_website_build_fails_generic_template_even_if_validator_passes
     assert (
         "generic Super DAN contract/demo template" in stdout
         or "raw operator prompt" in stdout
+    )
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(
+        row["event"] == "live.validation.completed" and row.get("passed") is False
+        for row in event_rows
+    )
+
+
+def test_main_live_website_build_requires_coordinated_existing_site_changes(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    website = tmp_path / "website"
+    website.mkdir()
+    (website / "index.html").write_text(
+        "<!doctype html><html><body>old site</body></html>\n",
+        encoding="utf-8",
+    )
+    (website / "styles.css").write_text("body { margin: 0; }\n", encoding="utf-8")
+    (website / "app.js").write_text("console.log('old');\n", encoding="utf-8")
+    (website / "README.md").write_text("# Old site\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: _FakeSingleFileExistingWebsiteProvider(),
+    )
+
+    exit_code = main(
+        [
+            "redesign the existing website for this product and make it feel dynamic",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 1
+    stdout = capsys.readouterr().out
+    assert "Status: failed" in stdout
+    assert "Live Build: failed" in stdout
+    assert "coordinated required files" in stdout
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(
+        row["event"] == "live.validation.model_completed" and row.get("passed") is True
+        for row in event_rows
+    )
+    assert any(
+        row["event"] == "live.validation.completed"
+        and row.get("passed") is False
+        and row.get("deterministic_failures")
+        for row in event_rows
     )
 
 
