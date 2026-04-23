@@ -70,6 +70,16 @@
   - [x] 15-1. Do not temporarily disable `file_write` / `file_edit` inside write-capable coding stages just because the model emitted malformed arguments
   - [x] 15-2. Do not treat disabled direct-write tools as an automatic post-patch finalize reason
   - [x] 15-3. Cover repeated-invalid-write recovery in both the local runtime and the `dan super-organism --live` CLI path
+- [x] 16. Replace brute-force live caps with phase-aware soft budgets
+  - [x] 16-1. Add a Super DAN-only live budget profile so the smarter policy does not silently change other organisms
+  - [x] 16-2. Nudge bounded discovery into write-stage/direct-write/finalize behavior before the global hard caps fire
+  - [x] 16-3. Keep one batched write response intact by enforcing tool-call soft budgets from the response-start phase snapshot
+  - [x] 16-4. Cover the soft-budget behavior in focused worker and CLI regressions
+- [x] 17. Harden existing-website redesign and validation ownership
+  - [x] 17-1. Require coordinated multi-file changes when a Super DAN live website run starts from an existing required artifact set
+  - [x] 17-2. Emit the model validator result separately from the final merged validation verdict so deterministic static gates cannot look split-brain
+  - [x] 17-3. Retry transient provider overloads briefly for Super DAN live tool loops without retrying permanent quota/auth failures
+  - [x] 17-4. Cover one-file existing-site redesign rejection, final validation event ownership, and transient overload retry in CLI regressions
 
 ## Decisions
 - The first slice is deterministic and logical. It proves organization, not live external truth.
@@ -79,6 +89,9 @@
 - Objective-specific behavior belongs in the showcase layer, not in the raw universal worker core.
 - The main command should be objective-first. Hardcoded scenario flags are not part of the operator-facing contract.
 - Super DAN stays independent from DAN Code and DAN Research for now; it should not call those product shells internally.
+- The hard `--max-tool-rounds` / `--max-tool-calls` caps stay as the final safety backstop, but Super DAN live should hit earlier phase-aware soft budgets first so it writes or finalizes before the blunt global stop reason.
+- Existing website redesigns need coordinated artifact updates. If two or more required files already existed at run start, changing only one required file is not enough to claim a material redesign.
+- Static website gates are part of the final validation verdict. The model validator result is still logged, but `live.validation.completed` now means the merged model-plus-deterministic verdict.
 
 ## Notes
 - The first use case is a truth-organism style credibility audit: scouts gather, claim cells atomize, memory clusters, immune cells challenge, experiment cells probe, brain cells reallocate, and synthesis cells produce a traceable verdict.
@@ -92,5 +105,10 @@
 - Website-objective output should be build-first, not report-first, so operators can see that files were actually created.
 - `--live` is the native Super DAN implementation path for website-like and general coding/build objectives. It uses the shared worker-core/local-tool substrate, requires configured LLM access, runs a separate read-only validator pass before exiting, fails if website-required files are missing or unchanged, fails for generic coding runs that finish without real workspace file mutations or validator approval, reports aggregate token usage for the build plus validator lanes when the provider returns usage, and now persists a shared-schema event log under `.dan-super/runs/turn-XX/events.jsonl`.
 - The live write lane now treats malformed `file_write` / `file_edit` calls as repairable tool-use errors inside write-capable coding stages. It keeps the direct-write basket enabled so the organism can still converge on a bounded patch in the same turn instead of self-disabling its own materialization tools and exiting early.
+- The live runtime now also applies a scoped `tool_budget_profile="super_dan_live"` soft-budget policy before the global hard caps. Discovery is nudged into the write-stage lane once bounded context is sufficient, validator/read-only lanes finalize earlier, and the tool-call budget is enforced against the response-start phase so one batched write response is not interrupted after the first file lands.
+- Existing-site website runs now carry the pre-run required-file inventory into the live payload and fail final validation if a redesign only changes one preexisting required file. This keeps the organism from rewriting `index.html` while leaving the old CSS/JS/README behind.
+- Super DAN live now retries transient provider overload/rate-limit errors briefly inside the tool loop when the request uses `tool_budget_profile="super_dan_live"`. Permanent quota/auth failures remain fail-fast.
 - Super DAN live logs now use the same shared `organism_log_v1` substrate as DAN Code and DAN Research, and the live result surfaces `event_log_path` / `event_log_schema` so downstream tooling can analyze the trace directly.
 - The report intentionally carries `mode="deterministic_demo"` plus a caveat so showcase outputs are not mistaken for sourced live evaluations.
+- Focused validation: `python -m py_compile src/dan/worker/organisms/local_runtime.py src/dan/cli/super_organism.py tests/test_worker/test_super_organism.py tests/test_cli/test_super_organism.py`, `PYTHONPATH=src:. pytest -q tests/test_worker/test_super_organism.py -k 'runtime_downshift or soft_budget or shared_board or universal_agent'` (`6 passed, 7 deselected`), and `PYTHONPATH=src:. pytest -q tests/test_cli/test_super_organism.py -k 'soft_budget or recovers_from_invalid_direct_write_calls or live_website_build_uses_native_tool_loop or live_general_coding_run_mutates_workspace'` (`4 passed, 18 deselected`).
+- Follow-up validation for the existing-site/final-verdict/overload slice: `python -m py_compile src/dan/worker/organisms/local_runtime.py src/dan/cli/super_organism.py tests/test_worker/test_super_organism.py tests/test_cli/test_super_organism.py`, `PYTHONPATH=src:. pytest -q tests/test_worker/test_super_organism.py -k 'runtime_downshift or soft_budget or shared_board or universal_agent'` (`6 passed, 7 deselected`), and `PYTHONPATH=src:. pytest -q tests/test_cli/test_super_organism.py -k 'live_website_build or live_worker_contracts or live_tasks_include'` (`9 passed, 15 deselected`).

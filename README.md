@@ -109,7 +109,7 @@ Open `http://localhost:5173`. The editor connects to the backend at `localhost:8
 
 This is a Super DAN CLI for the "organized organism" story. The default path is deterministic and no-server: it now runs the cheaper 20-cell operator mode across brain, scout, claim, immune, memory, experiment, and synthesis organs, accepts the user request as the objective, then emits a traceable universal-agent contract with board heartbeats, state deltas, resource requests, reallocations, explicit shared-board tickets, typed handoff packets, native execution nodes, and a final audit gate. For website objectives it materializes a self-contained static website artifact under `./website` unless `--plan-only` or `--json` is used, and the default terminal output leads with the built files. Use `--cell-count 100 --active-cell-cap 20 --organism-id super-dan-100` only when you want the larger showcase.
 
-Use `--live` when you want the organism to actually run a model/tool execution lane. Live Super DAN now supports both website-like objectives and general coding/build objectives in the current workspace, uses the shared `WorkerCoreExecutor` plus local tools to inspect/mutate files, passes the same ticket/packet/audit contract into the live worker and validator lanes, explicitly tells the worker to move at a paced incremental cadence instead of giant rewrites, carries a conservative safe `file_write` envelope (`~1200` words / `200` lines) plus a preference for `file_edit` on existing files, and now enforces that recovery generically in the shared runtime: when a malformed/truncated whole-file `file_write` still targets an existing file, the runtime blocks repeated whole-file retries on that file for the rest of the turn until the worker switches to `file_edit`. Live mode also runs a separate read-only validator pass before reporting success, surfaces aggregate token usage for the build plus validator lanes when the provider returns it, persists a full shared-schema run log under `.dan-super/runs/turn-XX/events.jsonl`, and does **not** call the separate DAN Code or DAN Research product shells internally.
+Use `--live` when you want the organism to actually run a model/tool execution lane. Live Super DAN now supports both website-like objectives and general coding/build objectives in the current workspace, uses the shared `WorkerCoreExecutor` plus local tools to inspect/mutate files, passes the same ticket/packet/audit contract into the live worker and validator lanes, explicitly tells the worker to move at a paced incremental cadence instead of giant rewrites, carries a conservative safe `file_write` envelope (`~1200` words / `200` lines) plus a preference for `file_edit` on existing files, and now enforces that recovery generically in the shared runtime: when a malformed/truncated whole-file `file_write` still targets an existing file, the runtime blocks repeated whole-file retries on that file for the rest of the turn until the worker switches to `file_edit`. Live mode still keeps hard global backstops (`--max-tool-rounds 8`, `--max-tool-calls 24` by default), but Super DAN now hits earlier phase-aware soft budgets first: bounded discovery is nudged into write-stage/direct-write behavior before those blunt caps, validator/read-only lanes finalize earlier, and one batched write response is allowed to finish without the runtime flipping into `postwrite` after the first file. Existing website redesigns must now make coordinated changes across the required artifact set instead of only rewriting `index.html`, and the final validation event reflects both the model validator and deterministic static gates. Live mode also retries brief provider-overload/rate-limit errors at the Super DAN tool-loop seam, runs a separate read-only validator pass before reporting success, surfaces aggregate token usage for the build plus validator lanes when the provider returns it, persists a full shared-schema run log under `.dan-super/runs/turn-XX/events.jsonl`, and does **not** call the separate DAN Code or DAN Research product shells internally.
 
 ```bash
 dan super-organism
@@ -350,7 +350,8 @@ It uses `.env` / environment settings by default for the provider and model, and
 
 - `config.json` — workspace-local DAN Code defaults
 - `session.json` — resumable session state
-- `transcript.jsonl` — compact run history with `event_log_path` pointers
+- `transcript.jsonl` — compact run history with `event_log_path` / `control_log_path` pointers
+- `control-plane-events.jsonl` — workspace-level controller, planner, review, and CLI lifecycle log
 - `runs/` — per-turn evidence notes plus `events.jsonl` step logs
 
 `dan code` runs directly on a dedicated coding organism built from the same universal worker membrane. Its runtime shape is explicit:
@@ -375,7 +376,7 @@ Role-level tool exposure is also explicit:
 
 Each real coding turn now carries standard runtime context automatically, including workspace root, current working directory, current date/time/timezone, active model, enabled tool IDs, and approval mode. That keeps the model from wasting early tool calls on facts the runtime already knows.
 
-Each bounded coding run now also writes `.dan-code/runs/turn-XX/events.jsonl`, a timestamped JSONL stream of the emitted run events. That file is the durable step-by-step audit trail for later analysis, and both the final CLI report and `transcript.jsonl` keep the matching `event_log_path`.
+Each bounded coding run writes `.dan-code/runs/turn-XX/events.jsonl`, a timestamped JSONL stream of emitted worker/tool/run events. The surrounding control layer also writes `.dan-code/control-plane-events.jsonl`, so controller decisions, project-planner steps, review actions, interactive commands, and run launch/completion events survive outside the bounded run window. The final CLI report and `transcript.jsonl` keep both `event_log_path` and `control_log_path`.
 
 For the chat-like control layer above the coding organism, `dan code` now also uses a bounded hedge on real orchestrator/review LLM decisions: if one no-tool controller call stays slow, a second provider call can launch after a short delay, and the first response that already satisfies the structured decision schema wins. This keeps the hedge above the agents rather than inside the write-heavy coding organism.
 
@@ -627,6 +628,7 @@ Use this when you already have a JSON or JSONL log from another agent system and
 dan-organism-log summarize external-log.jsonl
 dan-organism-log import external-log.jsonl --output normalized.jsonl
 dan-organism-log analyze external-log.jsonl --json
+dan-organism-log scheduler-replay external-log.jsonl --json
 dan organism-log summarize external-log.jsonl --field timestamp=ts --field event=type --field span_id=call_id
 ```
 
@@ -637,6 +639,12 @@ The command auto-detects native `organism_log_v1` files and passes them through 
 - per-span inclusive duration, exclusive duration, and inferred wait time where the log contains enough ordering data
 
 The desktop editor now consumes that same payload directly in **Development mode → Timeline → Organism Logs** through `/api/organism-logs` and `/api/organism-logs/analyze`, so DAN-native Code/Research traces can be inspected visually without re-running CLI analysis by hand.
+
+`scheduler-replay` is the first scheduler-facing diagnostic over that same trace substrate. It keeps live behavior unchanged and instead projects:
+- observed makespan, exclusive work, and average parallelism
+- effective lower bounds (`critical_path` vs `work/capacity`) plus residual slack
+- the terminal barrier tail after parallel work has drained
+- lane-sequence-only missed-parallelism hints for later queue-policy evaluation
 
 ### `dan-run` — Execute a Workflow
 
