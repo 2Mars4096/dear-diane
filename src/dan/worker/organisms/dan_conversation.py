@@ -17,6 +17,11 @@ from dan.worker.core.contracts import (
 from dan.worker.core.model import WorkerDefinition
 from dan.worker.organisms.coding_conversation import ProviderCompletionAdapter
 from dan.worker.runner import DurableAgentRunner, DurableAgentSessionState
+from dan.worker.specialized_agents import (
+    SpecializedAgentKind,
+    build_specialized_agent_worker,
+    default_controller_guardrails,
+)
 from dan.worker.structured_payload import parse_jsonish_payload
 
 
@@ -130,8 +135,8 @@ def build_dan_conversation_worker(
     worker_id: str,
     model: str | None,
 ) -> WorkerDefinition:
-    return WorkerDefinition(
-        id=worker_id,
+    return build_specialized_agent_worker(
+        worker_id=worker_id,
         role="dan_conversation_controller",
         instruction=(
             "You are the DAN-v2 conversation controller on top of the universal-agent substrate. "
@@ -154,6 +159,20 @@ def build_dan_conversation_worker(
             "criteria, what to avoid, and when the worker should ask back."
         ),
         model=model,
+        specialization=SpecializedAgentKind.CONTROLLER,
+        contract_name="dan_conversation_controller",
+        recurrent_loop="user_turn -> lane_decision -> brief -> worker_report -> review_decision",
+        typed_action_contract="conversation_turn_decision",
+        deterministic_guardrails=default_controller_guardrails(
+            safety_envelope="lane_routing",
+            notes=[
+                "controller decisions must preserve lane, approval, and audit context",
+                "controller may delegate but does not execute workspace actions directly",
+            ],
+        ),
+        metadata={
+            "lane_family": ["code", "research", "incident", "legacy"],
+        },
     )
 
 

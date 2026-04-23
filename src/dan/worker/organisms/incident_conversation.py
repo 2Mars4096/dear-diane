@@ -24,6 +24,11 @@ from dan.worker.organisms.incident_execution import (
     resolve_incident_action_boundary,
 )
 from dan.worker.runner import DurableAgentRunner, DurableAgentSessionState
+from dan.worker.specialized_agents import (
+    SpecializedAgentKind,
+    build_specialized_agent_worker,
+    default_controller_guardrails,
+)
 from dan.worker.structured_payload import parse_jsonish_payload
 
 
@@ -102,8 +107,8 @@ def build_incident_commander_worker(
     worker_id: str,
     model: str | None,
 ) -> WorkerDefinition:
-    return WorkerDefinition(
-        id=worker_id,
+    return build_specialized_agent_worker(
+        worker_id=worker_id,
         role="incident_commander",
         instruction=(
             "You are the Incident Commander organism on top of the universal-agent substrate. "
@@ -119,6 +124,21 @@ def build_incident_commander_worker(
             "without making the approval boundary explicit."
         ),
         model=model,
+        specialization=SpecializedAgentKind.CONTROLLER,
+        contract_name="incident_commander",
+        recurrent_loop="incident_turn -> classify -> bounded_action -> verification -> terminal_state",
+        typed_action_contract="incident_turn_decision",
+        deterministic_guardrails=default_controller_guardrails(
+            safety_envelope="incident_control",
+            notes=[
+                "incident controller must make approval boundaries explicit",
+                "incident controller delegates bounded actions but does not bypass operator safety",
+            ],
+        ),
+        metadata={
+            "lane_family": ["code", "legacy"],
+            "terminal_states": [state.value for state in IncidentTerminalState],
+        },
     )
 
 

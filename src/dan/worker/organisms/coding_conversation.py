@@ -26,6 +26,7 @@ from dan.worker.core.structured_output import (
 from dan.worker.organism_log import organism_event_context, stable_output_contract_id
 from dan.worker.organisms.coding_execution import build_coding_orchestrator_worker
 from dan.worker.runner import DurableAgentRunner, DurableAgentSessionState
+from dan.worker.scheduler import build_universal_scheduling_worker
 from dan.worker.structured_payload import parse_jsonish_payload
 
 DEFAULT_CONTROL_HEDGE_MAX_ATTEMPTS = 2
@@ -230,9 +231,11 @@ def build_coding_project_planner_worker(
 ) -> WorkerDefinition:
     """Shared DAN Code project planner on the universal-agent substrate."""
 
-    return WorkerDefinition(
-        id=worker_id,
+    return build_universal_scheduling_worker(
+        worker_id=worker_id,
+        model=model,
         role="coding_project_planner",
+        contract_name="coding_project_planner",
         instruction=(
             "You are the DAN Code project planner on top of the universal worker substrate. "
             "Given the user's coding request, recent conversation/report context, and any "
@@ -243,7 +246,6 @@ def build_coding_project_planner_worker(
             "milestones as completed when the supplied recent reports justify that conclusion. "
             "The active objective must be one concrete bounded milestone, not the whole project."
         ),
-        model=model,
     )
 
 

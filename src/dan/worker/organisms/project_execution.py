@@ -23,6 +23,11 @@ from dan.worker.organs import (
     synthesis_organ,
     universal_validator_organ,
 )
+from dan.worker.specialized_agents import (
+    SpecializedAgentKind,
+    build_specialized_agent_worker,
+    default_controller_guardrails,
+)
 from dan.worker.structured_payload import parse_jsonish_payload
 from dan.worker.signaling import (
     CellAddress,
@@ -53,8 +58,8 @@ def build_research_orchestrator_worker(
 ) -> WorkerDefinition:
     """Shared DAN Research orchestrator worker on the universal-agent substrate."""
 
-    return WorkerDefinition(
-        id=worker_id,
+    return build_specialized_agent_worker(
+        worker_id=worker_id,
         role="research_orchestrator",
         instruction=(
             "You are the research orchestrator for DAN Research on top of the universal "
@@ -95,6 +100,20 @@ def build_research_orchestrator_worker(
             "with explicit caveats."
         ),
         model=model,
+        specialization=SpecializedAgentKind.CONTROLLER,
+        contract_name="research_orchestrator",
+        recurrent_loop="research_turn -> bounded_pass_plan -> deep_research_report -> review_decision",
+        typed_action_contract="research_orchestrator_decision",
+        deterministic_guardrails=default_controller_guardrails(
+            safety_envelope="research_control",
+            notes=[
+                "research orchestrator chooses bounded passes and answer shape",
+                "research orchestrator keeps user-facing delivery adaptive while internal gates stay explicit",
+            ],
+        ),
+        metadata={
+            "lane_family": ["research"],
+        },
     )
 
 
