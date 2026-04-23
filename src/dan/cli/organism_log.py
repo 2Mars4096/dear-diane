@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from dan.worker.organism_log_analysis import analyze_organism_log_rows
+from dan.worker.scheduler import analyze_scheduler_replay_rows
 from dan.worker.organism_log_adapters import (
     OrganismLogImportConfig,
     SUPPORTED_ORGANISM_LOG_ADAPTERS,
@@ -93,6 +94,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max slowest/blocking spans to print in plain text (default: 5).",
     )
     analyze_parser.set_defaults(func=_cmd_analyze)
+
+    scheduler_parser = subparsers.add_parser(
+        "scheduler-replay",
+        help="Replay scheduler diagnostics over a raw or normalized log.",
+    )
+    _add_shared_args(scheduler_parser)
+    scheduler_parser.add_argument("source", help="Source JSON or JSONL log file.")
+    scheduler_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the scheduler replay payload as JSON.",
+    )
+    scheduler_parser.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Max bottlenecks and missed-parallelism items to print (default: 5).",
+    )
+    scheduler_parser.add_argument(
+        "--capacity",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "Optional scheduler capacity hint. Defaults to observed max_parallel_spans "
+            "from the trace."
+        ),
+    )
+    scheduler_parser.set_defaults(func=_cmd_scheduler_replay)
     return parser
 
 
@@ -194,6 +225,30 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         print(json.dumps(analysis, ensure_ascii=False, indent=2, sort_keys=True))
     else:
         _print_analysis(analysis, limit=max(1, int(args.limit)))
+    return 0
+
+
+def _cmd_scheduler_replay(args: argparse.Namespace) -> int:
+    config = _build_import_config(args)
+    source_rows = read_import_rows(args.source)
+    adapter, normalized_rows = normalize_import_rows(source_rows, config=config)
+    analysis = analyze_scheduler_replay_rows(
+        normalized_rows,
+        capacity_hint=int(args.capacity) if int(args.capacity or 0) > 0 else None,
+        limit=max(1, int(args.limit)),
+    ).model_dump(mode="json")
+    analysis.update(
+        {
+            "adapter": adapter,
+            "source_path": str(Path(args.source).expanduser().resolve()),
+            "source_row_count": len(source_rows),
+            "normalized_row_count": len(normalized_rows),
+        }
+    )
+    if args.json:
+        print(json.dumps(analysis, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        _print_scheduler_replay(analysis, limit=max(1, int(args.limit)))
     return 0
 
 
@@ -322,6 +377,77 @@ def _print_analysis(payload: dict[str, object], *, limit: int) -> None:
                 ]
             chain_text = " -> ".join(chain_labels) if chain_labels else "(none)"
             print(f"  {target_label}:{wait_part}  {chain_text}")
+
+
+def _print_scheduler_replay(payload: dict[str, object], *, limit: int) -> None:
+    adapter = str(payload.get("adapter") or "auto")
+    source_path = str(payload.get("source_path") or "")
+    barrier = dict(payload.get("terminal_barrier") or {})
+    top_bottlenecks = list(payload.get("top_bottlenecks") or [])
+    missed_parallelism = list(payload.get("missed_parallelism") or [])
+
+    print(f"Adapter: {adapter}")
+    if source_path:
+        print(f"Source: {source_path}")
+    print(
+        "Rows: "
+        f"{int(payload.get('source_row_count') or 0)} source -> "
+        f"{int(payload.get('normalized_row_count') or 0)} normalized"
+    )
+    print(
+        "Scheduler replay: "
+        f"makespan={int(payload.get('observed_makespan_ms') or 0)} ms; "
+        f"capacity={int(payload.get('capacity_hint') or 1)} "
+        f"({str(payload.get('capacity_source') or 'default')}); "
+        f"work={int(payload.get('total_exclusive_work_ms') or 0)} ms; "
+        f"avg_parallel={float(payload.get('average_parallelism') or 0.0):.3f}"
+    )
+    print(
+        "Lower bounds: "
+        f"critical_path={int(payload.get('critical_path_lower_bound_ms') or 0)} ms; "
+        f"work/capacity={int(payload.get('work_capacity_lower_bound_ms') or 0)} ms; "
+        f"effective={int(payload.get('scheduler_lower_bound_ms') or 0)} ms; "
+        f"slack={int(payload.get('slack_ms') or 0)} ms"
+    )
+
+    barrier_labels = [str(label).strip() for label in list(barrier.get("labels") or []) if str(label).strip()]
+    if barrier_labels:
+        print(
+            "Terminal barrier: "
+            f"{int(barrier.get('duration_ms') or 0)} ms over "
+            f"{len(barrier_labels)} spans"
+        )
+        print(f"  {' -> '.join(barrier_labels[:limit])}")
+
+    if top_bottlenecks:
+        print("Bottlenecks:")
+        for item in top_bottlenecks[:limit]:
+            row = dict(item)
+            label = str(row.get("label") or row.get("span_id") or "").strip()
+            lane_id = str(row.get("lane_id") or "").strip()
+            lane_part = f" [{lane_id}]" if lane_id else ""
+            reason = str(row.get("reason") or "").strip()
+            reason_part = f" reason={reason}" if reason else ""
+            print(
+                f"  {int(row.get('exclusive_duration_ms') or 0):>6} ms{lane_part}  "
+                f"{label}{reason_part}"
+            )
+
+    if missed_parallelism:
+        print("Missed parallelism:")
+        for item in missed_parallelism[:limit]:
+            row = dict(item)
+            source_label = str(row.get("source_label") or row.get("source_span_id") or "").strip()
+            target_label = str(row.get("target_label") or row.get("target_span_id") or "").strip()
+            lane_id = str(row.get("lane_id") or "").strip()
+            lane_part = f" [{lane_id}]" if lane_id else ""
+            wait_part = ""
+            if row.get("waiting_duration_ms") is not None:
+                wait_part = f" wait={int(row.get('waiting_duration_ms') or 0)} ms"
+            print(
+                f"  {int(row.get('estimated_gain_upper_bound_ms') or 0):>6} ms ub{lane_part}  "
+                f"{source_label} -> {target_label}{wait_part}"
+            )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -163,3 +163,143 @@ def test_analyze_command_outputs_timeline_and_graph_payload(tmp_path: Path, caps
     assert payload["timeline"]["spans"]
     assert payload["graph"]["edges"]
     assert payload["graph"]["critical_path_span_ids"] == ["stage-1", "stage-2"]
+
+
+def test_scheduler_replay_command_outputs_lower_bounds_and_barrier_payload(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    source = tmp_path / "scheduler.jsonl"
+    source.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "ts": "2026-04-23T00:00:00Z",
+                        "type": "stage_started",
+                        "op_id": "plan",
+                        "worker": "planner",
+                        "summary": "Plan",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-04-23T00:00:02Z",
+                        "type": "stage_completed",
+                        "op_id": "plan",
+                        "worker": "planner",
+                        "status": "completed",
+                        "summary": "Plan",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-04-23T00:00:02Z",
+                        "type": "stage_started",
+                        "op_id": "build",
+                        "worker": "planner",
+                        "summary": "Build",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-04-23T00:00:06Z",
+                        "type": "stage_completed",
+                        "op_id": "build",
+                        "worker": "planner",
+                        "status": "completed",
+                        "summary": "Build",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-04-23T00:00:02Z",
+                        "type": "stage_started",
+                        "op_id": "review",
+                        "worker": "reviewer",
+                        "summary": "Review",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-04-23T00:00:05Z",
+                        "type": "stage_completed",
+                        "op_id": "review",
+                        "worker": "reviewer",
+                        "status": "completed",
+                        "summary": "Review",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-04-23T00:00:06Z",
+                        "type": "stage_started",
+                        "op_id": "aggregate",
+                        "worker": "aggregator",
+                        "summary": "Aggregate",
+                        "blocked": ["build", "review"],
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-04-23T00:00:07Z",
+                        "type": "stage_completed",
+                        "op_id": "aggregate",
+                        "worker": "aggregator",
+                        "status": "completed",
+                        "summary": "Aggregate",
+                        "blocked": ["build", "review"],
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-04-23T00:00:07Z",
+                        "type": "stage_started",
+                        "op_id": "validate",
+                        "worker": "aggregator",
+                        "summary": "Validate",
+                        "blocked": ["aggregate"],
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-04-23T00:00:08Z",
+                        "type": "stage_completed",
+                        "op_id": "validate",
+                        "worker": "aggregator",
+                        "status": "completed",
+                        "summary": "Validate",
+                        "blocked": ["aggregate"],
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    exit_code = organism_log_cli.main(
+        [
+            "scheduler-replay",
+            str(source),
+            "--field",
+            "timestamp=ts",
+            "--field",
+            "event=type",
+            "--field",
+            "span_id=op_id",
+            "--field",
+            "worker_id=worker",
+            "--field",
+            "blocked_by=blocked",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["adapter"] == "generic_json"
+    assert payload["capacity_source"] == "observed_parallelism"
+    assert payload["critical_path_lower_bound_ms"] == 8000
+    assert payload["scheduler_lower_bound_ms"] == 8000
+    assert payload["terminal_barrier"]["span_ids"] == ["aggregate", "validate"]
