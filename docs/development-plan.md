@@ -155,6 +155,8 @@ Follow-on priority after that subtraction: standardize the concierge/worker cont
 
 The new `54-*` rewrite family is the first direct expression of that packaging goal. Instead of keeping separate partial brains for code, research, concierge, gateway, and surface adapters, DAN-v2 should converge on one durable conversation controller that can route into specialist organisms or bounded operator lanes while preserving policy, approval, and audit boundaries.
 
+The next theoretical phase is `55-*` agent-level stochastic orchestration. DAN should move beyond workflow-stage critical-path optimization toward a dynamic scheduler over agent/task DAGs, where quality/time rewards, context quality, streaming reduction, validator-gated artifact promotion, and conservative robustness to misspecified estimates determine what work runs next. The goal is not more named roles; it is a smarter queue over bounded agents.
+
 ---
 
 ## 5. Design Decisions

@@ -1,0 +1,277 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+
+\title{Agent-Level Stochastic Orchestration for Deep Agent Network}
+\author{Deep Agent Network Design Note}
+\date{April 23, 2026}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Var}{\operatorname{Var}}
+\newcommand{\UCB}{\operatorname{UCB}}
+\newcommand{\LCB}{\operatorname{LCB}}
+\newcommand{\argmax}{\operatorname*{arg\,max}}
+\newcommand{\argmin}{\operatorname*{arg\,min}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note reframes Deep Agent Network orchestration as an agent-level stochastic scheduling problem. The goal is not to create many named roles. The goal is to minimize time-to-quality by maintaining a dynamic task DAG, dispatching ready work across bounded agents, streaming artifacts upward, validating partial outputs, and pruning or duplicating branches under uncertainty. The core optimization target is quality and wall-clock time. Token cost, rework risk, and context loss remain extensible reward terms, but they should not dominate the first implementation. A central design requirement is robustness to misspecification: expected duration, expected quality gain, failure probability, uncertainty, and even the dependency graph itself are estimates, not facts.
+\end{abstract}
+
+\section{Motivation}
+
+The earlier workflow-level view optimizes over fixed stages such as scouting, planning, execution, aggregation, validation, and delivery. That view correctly identifies a bottleneck: once aggregation or final delivery needs all prior evidence, those stages become serial barriers.
+
+The stronger view moves optimization down to the agent/task level. DAN should maintain a dynamic queue of bounded tasks and route those tasks through agents as temporary compute slots. The useful structure is not a large catalog of personas. The useful structure is a scheduler over a task graph:
+
+\[
+G_t = (V_t, E_t, A_t, C_t),
+\]
+
+where $V_t$ are tasks, $E_t$ are dependency edges, $A_t$ are artifacts, and $C_t$ is the context/provenance ledger at time $t$.
+
+\section{Universal-Agent-Derived Scheduler}
+
+The scheduler should build on the universal-agent substrate rather than sit beside it as a separate black-box optimizer. The right split is:
+
+\begin{itemize}[leftmargin=1.5em]
+\item a universal scheduling agent proposes task decomposition, dependency revisions, context repair, branch continuation, cancellation, duplication, and finalization decisions;
+\item deterministic policy guards enforce capacity, hard dependencies, safety envelopes, confidence-bound pruning rules, and audit logging;
+\item worker reports, validators, reducers, and artifact ledgers feed back into the same recurrent universal-agent membrane.
+\end{itemize}
+
+This keeps DAN's architecture coherent. The scheduler is not a hand-coded replacement for universal agents. It is a specialized universal-agent controller whose decisions are constrained by typed task contracts and observable queue mathematics.
+
+The same applies one level above. The DAN-v2 conversation controller is also a universal-agent specialization: it frames the user turn, chooses the lane, sets the safety envelope, and defines the success contract. The scheduler is the next universal-agent specialization below it: it turns that framed objective into a dynamic task graph and queue policy. Controller, scheduler, worker, reducer, and validator should therefore differ by typed contract, not by being separate architectures.
+
+\section{Serial Barriers and Decomposition}
+
+Some stages are real barriers. Orchestration, final aggregation, validation, and delivery often have to observe earlier work before they can close the loop. The scheduler should not pretend those barriers disappear. It should reduce the amount of work waiting at the barrier by moving partial reduction, validation, and context repair earlier.
+
+The main speedup target is therefore decomposition plus queueing inside the broad scouting, planning, execution, and validation work. For a decomposition into paths $i$ and tasks $j$, the load-balancing problem is to choose a task split that reduces the slowest path:
+
+\[
+\min_{\mathcal{D}} \max_i \sum_j T_{ij}.
+\]
+
+This expression is incomplete without coordination overhead. A more operational target is:
+
+\[
+\min_{\mathcal{D}, \pi}
+\left[
+\max_i \sum_j T_{ij}
++ C_{\text{coord}}(\mathcal{D}, \pi)
++ C_{\text{barrier}}(\mathcal{D}, \pi)
+\right],
+\]
+
+where $\pi$ is the queueing policy, $C_{\text{coord}}$ captures handoff/reducer overhead, and $C_{\text{barrier}}$ captures residual waiting at aggregation or final delivery. This prevents over-fragmentation: splitting work only helps when the reduced critical path is larger than the extra coordination cost.
+
+\section{Baseline Objective}
+
+For deterministic DAG scheduling with $m$ parallel workers, a standard lower bound is:
+
+\[
+T^\star \geq \max \left( CP(G), \frac{W(G)}{m} \right),
+\]
+
+where $CP(G)$ is the critical path length and $W(G)$ is total remaining work. In DAN, task runtimes and task values are uncertain, so the practical target should be:
+
+\[
+\min_\pi \E \left[ T_\pi(q_\star) \right],
+\quad
+T_\pi(q_\star) = \inf \{t : Q_t \geq q_\star\},
+\]
+
+where $\pi$ is the scheduling policy, $Q_t$ is current output quality, and $q_\star$ is the acceptable quality threshold. This is the cleanest product-level objective: minimize time-to-quality.
+
+Equivalent constrained forms are also useful:
+
+\[
+\max Q_T \quad \text{subject to} \quad T \leq B,
+\]
+
+or
+
+\[
+\min T \quad \text{subject to} \quad Q_T \geq q_\star.
+\]
+
+These match the practical priority: quality first, then time, with token cost only as a later diagnostic or constraint.
+
+\section{Task Model}
+
+Each task should carry estimates, requirements, and output contracts:
+
+\[
+\tau =
+(\text{deps}, \widehat{D}, \widehat{G}, \widehat{U}, \widehat{P_f},
+\text{context}, \text{artifact}, \text{validator}).
+\]
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Field & Meaning \\
+\midrule
+$\widehat{D}$ & expected duration distribution \\
+$\widehat{G}$ & expected quality gain \\
+$\widehat{U}$ & uncertainty or variance estimate \\
+$\widehat{P_f}$ & failure probability estimate \\
+context & required context references and compression assumptions \\
+artifact & typed output emitted by the task \\
+validator & local test, rubric, critic, or deterministic checker \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The scheduler's actions include dispatching a task, splitting a task, duplicating a risky task, validating an artifact, cancelling a branch, improving context, asking for missing information, or finalizing from promoted artifacts.
+
+\section{Reward Shape}
+
+The first reward should prioritize quality and time:
+
+\[
+R(a \mid s) = \widehat{g}_a - \lambda \widehat{d}_a,
+\]
+
+where $\widehat{g}_a$ is the expected quality gain of action $a$ and $\widehat{d}_a$ is expected latency. The framework should remain extensible:
+
+\[
+R =
+w_q Q
+- w_t T
+- w_c C_{\text{token}}
+- w_r R_{\text{rework}}
+- w_x X_{\text{context-loss}}.
+\]
+
+Initially, $w_c$, $w_r$, and $w_x$ can be zero or diagnostic-only. The architecture should still record them so later policy experiments do not require a new event contract.
+
+\section{Context as a Resource}
+
+In LLM orchestration, context is not only transport. Context is a resource and a failure mode. A task may fail because the model is weak, but it may also fail because a compressed brief omitted one critical constraint.
+
+DAN should therefore track:
+
+\begin{itemize}[leftmargin=1.5em]
+\item context completeness: whether all required facts are present
+\item context freshness: whether the context reflects the latest artifacts
+\item compression loss: what was removed or summarized away
+\item provenance: which task, source, or artifact produced each claim
+\item assumption debt: claims used before validation
+\end{itemize}
+
+This makes ``send better context'' a scheduler action. Sometimes that action is higher value than spawning another worker.
+
+\section{Robustness to Misspecification}
+
+The estimates above are misspecified by default. Duration distributions, quality gains, uncertainties, failure probabilities, and dependency edges are all learned approximations. A stable scheduler should avoid both over-pruning and noisy over-exploration.
+
+\subsection{Ambiguity Sets}
+
+Let $\theta$ represent the true task parameters and $\widehat{\theta}$ the current estimate. Instead of optimizing only the point estimate, use an ambiguity set:
+
+\[
+\theta \in \mathcal{U}(\widehat{\theta}).
+\]
+
+A robust scheduling rule can prefer:
+
+\[
+a_t =
+\argmax_a \min_{\theta \in \mathcal{U}(\widehat{\theta})}
+R_\theta(a \mid s_t).
+\]
+
+For a lightweight implementation, use confidence penalties:
+
+\[
+S(a) =
+\left(\widehat{g}_a - z_\beta \widehat{\sigma}^g_a \right)
+- \lambda
+\left(\widehat{d}_a + z_\alpha \widehat{\sigma}^d_a \right).
+\]
+
+This favors high expected gain, but penalizes uncertain gain and uncertain duration.
+
+\subsection{Conservative Pruning}
+
+Branch pruning should include slack. A branch $b$ should be cancelled only when its optimistic value is clearly below the incumbent:
+
+\[
+\UCB_\beta(V_b) + \epsilon
+<
+\LCB_\beta(V_{\text{best}}).
+\]
+
+The slack term $\epsilon$ is important. It prevents early overkill when estimates are weak. DAN can also reserve a small exploration budget so at least one uncertain but plausible branch survives long enough to produce real evidence.
+
+\subsection{Dependency Uncertainty}
+
+The dependency graph can also be wrong. Edges should support states such as hard, soft, suspected, and disproven. A suspected dependency can block speculative finalization without preventing safe scouting or context acquisition. If later evidence contradicts the graph, the scheduler should be able to reopen a branch, add an edge, or demote an artifact.
+
+\subsection{Stability Controls}
+
+Robust orchestration needs hysteresis. The scheduler should not constantly reshuffle priorities because of tiny score changes. Useful controls include:
+
+\begin{itemize}[leftmargin=1.5em]
+\item minimum score margins before cancelling or redirecting work
+\item bounded redundancy for high-impact tasks
+\item periodic calibration from observed runtimes and validator outcomes
+\item straggler detection with split-or-replace decisions
+\item artifact promotion only after validator gates, not after confident prose
+\end{itemize}
+
+\section{Streaming Reduction and Validation}
+
+The weak pattern is a global barrier:
+
+\[
+\text{scout all} \rightarrow \text{wait} \rightarrow
+\text{plan all} \rightarrow \text{wait} \rightarrow
+\text{execute all} \rightarrow \text{wait} \rightarrow
+\text{aggregate}.
+\]
+
+The stronger pattern is streaming:
+
+\[
+\text{worker output} \rightarrow
+\text{local reducer} \rightarrow
+\text{validator} \rightarrow
+\text{promoted artifact} \rightarrow
+\text{global synthesis}.
+\]
+
+Aggregation should be hierarchical and incremental. Validation should run before the end, not only as a final ceremony. Final delivery should assemble promoted artifacts and clearly mark unresolved assumptions.
+
+\section{Scheduler Loop}
+
+A first implementation can be expressed as:
+
+\begin{enumerate}[leftmargin=1.5em]
+\item Maintain the current task DAG, artifact set, and context ledger.
+\item Estimate duration, quality gain, uncertainty, and failure risk for ready tasks.
+\item Dispatch the highest robust-priority tasks subject to dependency and capacity limits.
+\item Stream back artifacts, assumptions, blockers, and confidence.
+\item Validate artifacts and promote only those that pass the relevant gate.
+\item Recompute priorities and update the graph.
+\item Cancel, split, duplicate, or continue branches using conservative pruning.
+\item Return once the quality threshold is reached or the remaining upper bound cannot justify more work.
+\end{enumerate}
+
+\section{Design Principle}
+
+DAN should feel less like roleplay and more like a distributed build system for cognition. Agents are temporary compute cells. The task graph, queueing policy, context ledger, artifact validators, and reducer hierarchy are the organism.
+
+\end{document}
