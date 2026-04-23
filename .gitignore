@@ -192,6 +192,9 @@ pnpm-debug.log*
 !/tests/test_worker/test_model.py
 !/tests/test_worker/test_presets.py
 !/tests/test_worker/test_roles.py
+!/tests/test_worker/test_scheduler.py
+!/tests/test_worker/test_scheduler_replay.py
+!/tests/test_worker/test_specialized_agents.py
 !/tests/test_worker/test_super_organism.py
 !/tests/test_worker/test_worker_first_validation_gate.py
 !/tests/test_worker/test_workflow.py
