@@ -35,6 +35,7 @@ from dan.worker import (
 from dan.worker.model import LLMHints, Worker
 from dan.worker.organisms.coding_execution import (
     CodingTask,
+    _apply_frontend_contract_hygiene,
     _normalize_orchestrator_plan,
     coding_execution_organism,
 )
@@ -221,6 +222,74 @@ def test_coding_orchestrator_plan_collapses_duplicate_briefs_back_to_one_worker(
 
     assert plan.worker_count == 1
     assert plan.worker_briefs == ["Fix the navbar hover effect in styles.css."]
+
+
+def test_frontend_contract_hygiene_runs_for_normal_timeout_parallel_owner_merge(tmp_path) -> None:
+    (tmp_path / "index.html").write_text(
+        """
+<!doctype html>
+<html lang="en">
+<head>
+  <link rel="stylesheet" href="./styles.css" />
+  <style>
+    body { color: white; }
+    <section class="organs reveal-on-scroll">
+</head>
+<body>
+  <main>
+    <section id="features" class="features">
+      <article data-delay="1"><h2>Decision trails</h2></article>
+    </section>
+    <script src="./app.js"></script>
+  </main>
+</body>
+</html>
+
+    <script src="./app.js"></script>
+  </main>
+</body>
+</html>
+""".strip(),
+        encoding="utf-8",
+    )
+    (tmp_path / "styles.css").write_text("body { color: white; }\n", encoding="utf-8")
+    (tmp_path / "app.js").write_text("console.log('ready');\n", encoding="utf-8")
+    task = CodingTask(
+        task_id="coding-task",
+        objective="Refresh the website.",
+        session_context={
+            "workspace_root": str(tmp_path),
+            "completion_timeout_seconds": 90.0,
+            "short_completion_timeout": False,
+        },
+    )
+    candidate_payload = {
+        "candidate_id": "candidate-1-worker-merge",
+        "change_summary": "Merged parallel website lanes.",
+        "target_files": ["index.html", "styles.css", "app.js"],
+        "test_plan": [],
+        "risks": [],
+        "workspace_effect": "modified",
+    }
+
+    report = _apply_frontend_contract_hygiene(
+        task=task,
+        candidate_payload=candidate_payload,
+        owner_paths=["index.html", "styles.css", "app.js"],
+    )
+
+    assert report is not None
+    assert report["errors"] == []
+    assert "closed unclosed style blocks before </head>" in report["repairs"]
+    assert "removed duplicate document tail tags" in report["repairs"]
+    html = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert "<section" not in html.split("</head>", 1)[0]
+    assert html.count("</style>") == 1
+    assert html.count('src="./app.js"') == 1
+    assert html.count("</main>") == 1
+    assert html.count("</body>") == 1
+    assert html.count("</html>") == 1
+    assert "data-animate-delay" in html
 
 
 def test_worker_with_llm_hints_without_model_projects_to_legacy_llm_operator() -> None:

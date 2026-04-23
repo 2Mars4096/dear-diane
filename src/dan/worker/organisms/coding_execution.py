@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
@@ -210,7 +212,157 @@ def _planned_worker_count(
     return max(1, min(int(organism.default_worker_count), int(organism.max_worker_count)))
 
 
+def _task_in_benchmark_mode(task: "CodingTask") -> bool:
+    raw = task.session_context.get("benchmark_context") if isinstance(task.session_context, dict) else None
+    return isinstance(raw, dict) and bool(raw)
+
+
+def _broad_design_parallel_worker_briefs(
+    *,
+    task: "CodingTask",
+    repair_brief: str = "",
+) -> list[str]:
+    objective = _clean_text(repair_brief) or _clean_text(task.objective)
+    worker_objective = (
+        "Apply a bounded modern dark visual refresh to the existing website using only existing files. "
+        "Improve layout clarity, vertical spacing, typography, and restrained motion without adding "
+        "dependencies or creating new files."
+    )
+    if "competition" in objective.lower():
+        worker_objective = (
+            "Apply a bounded modern dark visual refresh to the existing website using only existing files. "
+            "Improve layout clarity, vertical spacing, typography, and restrained motion for a stronger "
+            "competition-grade presentation without adding dependencies or creating new files."
+        )
+    owner_team_contract = (
+        "Team coverage rule: the parallel owner lanes collectively satisfy the global entry-point inspection, "
+        "modified-file listing, full updated-content return, and read-back confirmation requirements. "
+        "You personally should inspect and modify only your owned file."
+    )
+    selector_contract = (
+        "Shared selector contract: keep and target existing selectors `.site-header`, `.hero`, `.eyebrow`, `h1`, "
+        "`.lede`, `.actions`, `.button`, `.features`, `.features article`, and in-page anchors. If adding a scroll cue, "
+        "use `.scroll-cue` and `.scroll-cue-dot`. For entrance hooks, prefer `[data-animate]` attributes on existing "
+        "elements and treat `[data-animate]`, `.is-visible`, and `.js-reveal` as one shared animation contract across "
+        "HTML/CSS/JS. Use `data-animate-delay` for stagger attributes when CSS references stagger delays. If JS "
+        "toggles `.is-hidden` on `.scroll-cue`, CSS must define that hidden state. Do not duplicate existing sections "
+        "or IDs, and keep exactly one closing `</main>`, `</body>`, and `</html>` tag. Do not invent unmatched "
+        "selectors such as `.hero-title`, `.hero-subtitle`, `.hero-cta`, `.hero-scroll-cue`, or `.hero-card` unless "
+        "the HTML owner also creates them in index.html."
+    )
+    return [
+        (
+            "EXCLUSIVE WRITE OWNER: index.html. Inspect index.html once for the primary page structure, then "
+            "materialize only the bounded HTML/layout/content hierarchy changes needed in index.html. "
+            "Do not edit styles.css or app.js, and do not spend another round auditing unrelated files. "
+            f"{owner_team_contract} {selector_contract} Objective: "
+            f"{worker_objective}"
+        ),
+        (
+            "EXCLUSIVE WRITE OWNER: styles.css. Inspect styles.css once when it exists, then materialize only the "
+            "bounded theme, spacing, typography, responsive polish, and CSS transition changes needed in "
+            "styles.css. Prefer a coherent dark palette and small high-signal CSS changes. Do not edit "
+            "index.html or app.js, and do not spend another round auditing unrelated files. "
+            f"{owner_team_contract} {selector_contract} Objective: "
+            f"{worker_objective}"
+        ),
+        (
+            "EXCLUSIVE WRITE OWNER: app.js. Inspect app.js once for the current interaction/motion layer, then materialize only "
+            "bounded JS-driven polish in app.js when needed. Do not edit index.html or styles.css, and do not "
+            "add dependencies or spend another round auditing unrelated files. "
+            f"{owner_team_contract} {selector_contract} "
+            f"Objective: {worker_objective}"
+        ),
+    ]
+
+
+def _exclusive_write_owner_path_from_brief(brief: str) -> str:
+    match = re.search(
+        r"exclusive\s+write\s+owner\s*:\s*([^\s,;:]+)",
+        _clean_text(brief),
+        flags=re.IGNORECASE,
+    )
+    return match.group(1).rstrip(".") if match else ""
+
+
+def _should_force_parallel_design_fanout(
+    *,
+    task: "CodingTask",
+    payload: dict[str, Any],
+    repair_brief: str = "",
+) -> bool:
+    if _task_in_benchmark_mode(task):
+        return False
+    if _repair_brief_requests_compact_replan(repair_brief):
+        return False
+    objective_text = " ".join(
+        item
+        for item in [
+            _clean_text(task.objective),
+            _clean_text(repair_brief),
+            " ".join(_clean_text(item) for item in task.acceptance_criteria),
+        ]
+        if item
+    ).lower()
+    if not objective_text:
+        return False
+    broad_markers = (
+        "website",
+        "landing page",
+        "frontend",
+        "ui",
+        "visual refresh",
+        "dark theme",
+        "dark color",
+        "typography",
+        "spacing",
+        "layout",
+        "animation",
+        "transition",
+        "make it look",
+        "look modern",
+        "look cooler",
+        "redesign",
+        "polish",
+    )
+    hits = sum(1 for marker in broad_markers if marker in objective_text)
+    return hits >= 2
+
+
+def _repair_brief_requests_compact_replan(repair_brief: str) -> bool:
+    text = _clean_text(repair_brief).lower()
+    if not text:
+        return False
+    markers = (
+        "no material bounded candidate",
+        "no material mutation evidence",
+        "failed to materialize",
+        "provider timed out before the coding worker produced a bounded candidate",
+        "re-plan with a smaller",
+        "prefer 1 worker",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _aggregation_failure_repair_brief(
+    error: str,
+    *,
+    parallel_owner_plan: bool,
+) -> str:
+    base = _clean_text(error)
+    guidance = (
+        "Re-plan with a smaller write-first attempt. Prefer 1 worker unless another split has a concrete immediate first write."
+        if parallel_owner_plan
+        else "Re-plan with a smaller write-first attempt and make the first file edit happen in the next model round."
+    )
+    return (
+        f"{base} {guidance} Keep discovery narrow, avoid rediscovering unrelated files, and return a material bounded candidate."
+    ).strip()
+
+
 def _has_material_candidate_output(payload: dict[str, Any]) -> bool:
+    if _is_timeout_or_blocked_no_output_candidate(payload):
+        return False
     return _has_material_structured_outcome(
         payload,
         id_field="candidate_id",
@@ -220,6 +372,36 @@ def _has_material_candidate_output(payload: dict[str, Any]) -> bool:
         risks_field="risks",
         effect_field="workspace_effect",
     )
+
+
+def _is_timeout_or_blocked_no_output_candidate(payload: dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    candidate = _candidate_view(payload)
+    if candidate.target_refs:
+        return False
+    text = " ".join(
+        _clean_text(value).lower()
+        for value in (
+            candidate.candidate_id,
+            candidate.change_summary,
+            " ".join(candidate.validation_steps),
+            " ".join(candidate.risks),
+        )
+        if _clean_text(value)
+    )
+    if not text:
+        return False
+    blocked_markers = (
+        "provider timed out",
+        "provider completion timed out",
+        "timed out before",
+        "no code candidate was produced",
+        "did not leave a materialized workspace patch",
+        "no material bounded candidate",
+        "before the coding worker produced a bounded candidate",
+    )
+    return any(marker in text for marker in blocked_markers)
 
 
 def _salvage_candidate_output(execution: OrganExecution | None) -> dict[str, Any]:
@@ -281,7 +463,9 @@ class CodingOrganism(BaseModel):
         "candidate_fragment, change_summary, target_files, test_plan, and risks. When you are the only coding "
         "worker and write-capable tools are enabled, materialize the smallest correct patch directly instead of "
         "deferring it to a later stage. When multiple coding workers are running in parallel, stay read-only and "
-        "return a concrete candidate_fragment for later reconciliation instead of mutating the shared workspace. "
+        "return a concrete candidate_fragment for later reconciliation instead of mutating the shared workspace, "
+        "unless your brief explicitly names you as an exclusive write owner for specific files. In that case, "
+        "materialize only those owned files and do not edit any other file. "
         "Do not pass write-like arguments to read tools, and do not repeatedly probe paths that do not exist just "
         "because you intend to create them. If the workspace is empty or the brief requires new files, inspect "
         "only enough context to confirm that and then either materialize the first bounded slice directly when you "
@@ -516,7 +700,11 @@ def _root_orchestrator_packet(
             acting_authority=WorkerAuthority.LEAD,
             max_spawned_cells=0,
         ),
-        metadata={"organism_id": organism.organism_id, "organism_stage": "orchestration"},
+        metadata={
+            "organism_id": organism.organism_id,
+            "organism_stage": "orchestration",
+            **_runtime_policy_metadata(task),
+        },
     )
 
 
@@ -624,10 +812,32 @@ def _normalize_orchestrator_plan(
 ) -> CodingOrchestratorPlan:
     payload = _parse_payload(outputs)
     worker_count = _planned_worker_count(payload=payload, organism=organism)
+    explicit_worker_count = _coerce_worker_count(payload.get("worker_count"))
     try:
         plan = CodingOrchestratorPlan.model_validate(payload)
     except Exception:
         plan = CodingOrchestratorPlan(worker_count=worker_count)
+    if _should_force_parallel_design_fanout(
+        task=task,
+        payload=payload,
+        repair_brief=repair_brief,
+    ):
+        fanout_briefs = _broad_design_parallel_worker_briefs(
+            task=task,
+            repair_brief=repair_brief,
+        )
+        worker_count = min(len(fanout_briefs), int(organism.max_worker_count))
+        plan = plan.model_copy(
+            update={
+                "worker_count": worker_count,
+                "worker_briefs": fanout_briefs[:worker_count],
+                "aggregation_focus": (
+                    _clean_text(plan.aggregation_focus)
+                    + " Merge the parallel HTML/layout, CSS/theme, and interaction/motion fragments into one "
+                    "small concrete patch, and avoid broad rereads once the target files are known."
+                ).strip(),
+            }
+        )
     distinct_briefs = _distinct_worker_briefs(list(plan.worker_briefs))
     if worker_count > 1 and len(distinct_briefs) < worker_count:
         worker_count = max(1, len(distinct_briefs))
@@ -649,6 +859,654 @@ def _normalize_orchestrator_plan(
     )
 
 
+def _worker_results_have_material_for_aggregation(member_results: dict[str, Any]) -> bool:
+    for raw_payload in member_results.values():
+        payload = _parse_payload(dict(raw_payload or {}))
+        if _has_material_candidate_output(payload):
+            return True
+    return False
+
+
+def _exclusive_owner_paths(worker_execution: TissueExecution) -> list[str]:
+    paths: list[str] = []
+    for member in worker_execution.pattern.members:
+        owner_path = _candidate_path_key(
+            dict(member.metadata or {}).get("exclusive_write_owner_path")
+        )
+        if owner_path and owner_path not in paths:
+            paths.append(owner_path)
+    return paths
+
+
+def _material_worker_payloads_with_mutation_evidence(
+    *,
+    member_results: dict[str, Any],
+    worker_execution: TissueExecution,
+) -> list[dict[str, Any]]:
+    execution_by_member = _worker_execution_map(worker_execution)
+    payloads: list[dict[str, Any]] = []
+    for member_id in sorted(member_results):
+        payload = _parse_payload(dict(member_results.get(member_id) or {}))
+        if not _has_material_candidate_output(payload):
+            continue
+        executed_tools = _executed_tools_from_handoff_execution(execution_by_member.get(member_id))
+        if not _candidate_has_matching_mutation_evidence(
+            payload,
+            executed_tools=executed_tools,
+        ):
+            continue
+        payloads.append(_candidate_payload(payload))
+    return payloads
+
+
+def _exclusive_owner_mutation_paths(worker_execution: TissueExecution) -> list[str]:
+    paths: list[str] = []
+    for member, execution in zip(
+        worker_execution.pattern.members,
+        worker_execution.member_executions,
+        strict=True,
+    ):
+        owner_path = _candidate_path_key(
+            dict(member.metadata or {}).get("exclusive_write_owner_path")
+        )
+        if not owner_path:
+            continue
+        executed_tools = _executed_tools_from_handoff_execution(execution)
+        for mutation_path in _successful_file_mutation_paths(executed_tools):
+            if _paths_overlap(owner_path, mutation_path) and owner_path not in paths:
+                paths.append(owner_path)
+    return paths
+
+
+def _extend_unique_text(items: list[str], values: Any) -> None:
+    for value in values or []:
+        text = _clean_text(value)
+        if text and text not in items:
+            items.append(text)
+
+
+def _owner_normalized_path(path: Any, *, owner_paths: Sequence[str]) -> str:
+    normalized = _candidate_path_key(path)
+    if not normalized:
+        return ""
+    for owner_path in owner_paths:
+        if _paths_overlap(owner_path, normalized):
+            return owner_path
+    return normalized
+
+
+def _extend_unique_candidate_paths(
+    items: list[str],
+    values: Any,
+    *,
+    owner_paths: Sequence[str],
+) -> None:
+    for value in values or []:
+        path = _owner_normalized_path(value, owner_paths=owner_paths)
+        if path and path not in items:
+            items.append(path)
+
+
+def _missing_exclusive_owner_material_paths(
+    *,
+    member_results: dict[str, Any],
+    worker_execution: TissueExecution,
+) -> list[str]:
+    owner_paths = _exclusive_owner_paths(worker_execution)
+    if len(owner_paths) <= 1:
+        return []
+    material_payloads = _material_worker_payloads_with_mutation_evidence(
+        member_results=member_results,
+        worker_execution=worker_execution,
+    )
+    successful_paths: list[str] = []
+    _extend_unique_candidate_paths(
+        successful_paths,
+        _exclusive_owner_mutation_paths(worker_execution),
+        owner_paths=owner_paths,
+    )
+    for payload in material_payloads:
+        _extend_unique_candidate_paths(
+            successful_paths,
+            payload.get("target_files"),
+            owner_paths=owner_paths,
+        )
+    return [
+        owner_path
+        for owner_path in owner_paths
+        if not any(_paths_overlap(owner_path, path) for path in successful_paths)
+    ]
+
+
+def _deterministic_worker_merge_candidate(
+    *,
+    member_results: dict[str, Any],
+    worker_execution: TissueExecution,
+    attempt: int,
+) -> dict[str, Any] | None:
+    owner_paths = _exclusive_owner_paths(worker_execution)
+    material_payloads = _material_worker_payloads_with_mutation_evidence(
+        member_results=member_results,
+        worker_execution=worker_execution,
+    )
+    owned_mutation_paths = _exclusive_owner_mutation_paths(worker_execution)
+    target_files: list[str] = []
+    test_plan: list[str] = []
+    risks: list[str] = []
+    summaries: list[str] = []
+    _extend_unique_candidate_paths(
+        target_files,
+        owned_mutation_paths,
+        owner_paths=owner_paths,
+    )
+    for payload in material_payloads:
+        _extend_unique_candidate_paths(
+            target_files,
+            payload.get("target_files"),
+            owner_paths=owner_paths,
+        )
+        _extend_unique_text(test_plan, payload.get("test_plan"))
+        _extend_unique_text(risks, payload.get("risks"))
+        summary = _clean_text(payload.get("change_summary"))
+        if summary and summary not in summaries:
+            summaries.append(summary)
+    if not target_files:
+        return None
+    if owner_paths:
+        ordered_targets = [
+            owner_path
+            for owner_path in owner_paths
+            if any(_paths_overlap(owner_path, path) for path in target_files)
+        ]
+        for path in target_files:
+            if path not in ordered_targets:
+                ordered_targets.append(path)
+        target_files = ordered_targets
+    change_summary = (
+        "Merged worker material changes: " + " ".join(summaries)
+        if summaries
+        else "Merged worker material changes across covered owner lanes."
+    )
+    return _candidate_payload(
+        {
+            "candidate_id": f"candidate-{attempt}-worker-merge",
+            "change_summary": change_summary,
+            "target_files": target_files,
+            "test_plan": test_plan,
+            "risks": risks,
+            "workspace_effect": "modified",
+        }
+    )
+
+
+_FRONTEND_CONTRACT_FILES = ("index.html", "styles.css", "app.js")
+
+
+def _frontend_contract_files_are_owned(
+    *,
+    owner_paths: Sequence[str],
+    candidate_payload: dict[str, Any],
+) -> bool:
+    paths = [
+        _candidate_path_key(path)
+        for path in [*owner_paths, *(candidate_payload.get("target_files") or [])]
+        if _candidate_path_key(path)
+    ]
+    return all(any(_paths_overlap(path, required) for path in paths) for required in _FRONTEND_CONTRACT_FILES)
+
+
+def _workspace_root_from_task(task: "CodingTask") -> Path | None:
+    context = task.session_context if isinstance(task.session_context, dict) else {}
+    for key in ("workspace_root", "effective_working_directory", "current_working_directory"):
+        value = _clean_text(context.get(key))
+        if not value:
+            continue
+        try:
+            return Path(value).expanduser().resolve()
+        except OSError:
+            return None
+    return None
+
+
+def _workspace_contract_file(workspace_root: Path, relative_path: str) -> Path | None:
+    try:
+        path = (workspace_root / relative_path).resolve()
+        path.relative_to(workspace_root)
+    except (OSError, ValueError):
+        return None
+    return path
+
+
+def _dedupe_duplicate_features_sections(html: str) -> tuple[str, bool]:
+    section_pattern = re.compile(
+        r"<section\b[^>]*\bid=[\"']features[\"'][^>]*>.*?</section>",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    matches = [
+        match
+        for match in section_pattern.finditer(html)
+        if re.search(r"\bclass=[\"'][^\"']*\bfeatures\b[^\"']*[\"']", match.group(0), re.IGNORECASE)
+    ]
+    if len(matches) <= 1:
+        return html, False
+
+    keep_index = 0
+    for index, match in enumerate(matches):
+        if "data-animate" in match.group(0):
+            keep_index = index
+            break
+
+    parts: list[str] = []
+    cursor = 0
+    for index, match in enumerate(matches):
+        if index == keep_index:
+            parts.append(html[cursor : match.end()])
+        else:
+            parts.append(html[cursor : match.start()])
+        cursor = match.end()
+    parts.append(html[cursor:])
+    return "".join(parts), True
+
+
+def _ensure_feature_animation_hooks(html: str) -> tuple[str, bool]:
+    section_pattern = re.compile(
+        r"(<section\b[^>]*\bid=[\"']features[\"'][^>]*>)(.*?)(</section>)",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    def _replace_section(match: re.Match[str]) -> str:
+        opening = match.group(1)
+        body = match.group(2)
+        closing = match.group(3)
+        if not re.search(r"\bdata-animate=", opening, re.IGNORECASE):
+            opening = opening[:-1] + ' data-animate="features">'
+        body = re.sub(
+            r"<article\b(?![^>]*\bdata-animate=)([^>]*)>",
+            lambda article: f'<article{article.group(1)} data-animate="feature">',
+            body,
+            flags=re.IGNORECASE,
+        )
+        return opening + body + closing
+
+    updated, count = section_pattern.subn(_replace_section, html, count=1)
+    return updated, bool(count and updated != html)
+
+
+def _dedupe_consecutive_closing_tags(html: str, tags: Sequence[str] = ("main", "body", "html")) -> tuple[str, bool]:
+    lines = html.splitlines(keepends=True)
+    output: list[str] = []
+    changed = False
+    tag_set = {tag.lower() for tag in tags}
+    for line in lines:
+        stripped = line.strip().lower()
+        if stripped.startswith("</") and stripped.endswith(">"):
+            tag = stripped[2:-1].strip()
+            if tag in tag_set and output and output[-1].strip().lower() == stripped:
+                changed = True
+                continue
+        output.append(line)
+    return "".join(output), changed
+
+
+def _normalize_animation_delay_attributes(html: str) -> tuple[str, bool]:
+    tag_pattern = re.compile(r"<[^>]*\bdata-delay=[^>]*>", flags=re.IGNORECASE)
+
+    def _replace_tag(match: re.Match[str]) -> str:
+        tag = match.group(0)
+        if re.search(r"\bdata-animate-delay=", tag, re.IGNORECASE):
+            return tag
+        return re.sub(r"\bdata-delay=", "data-animate-delay=", tag, flags=re.IGNORECASE)
+
+    updated, count = tag_pattern.subn(_replace_tag, html)
+    return updated, bool(count and updated != html)
+
+
+def _close_unclosed_style_blocks_before_head(html: str) -> tuple[str, bool]:
+    style_pattern = re.compile(
+        r"(<style\b[^>]*>)(.*?)(</head>)",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    changed = False
+
+    def _replace_style(match: re.Match[str]) -> str:
+        nonlocal changed
+        body = match.group(2)
+        if re.search(r"</style\s*>", body, flags=re.IGNORECASE):
+            return match.group(0)
+        changed = True
+        css_lines: list[str] = []
+        for line in body.splitlines():
+            if line.lstrip().startswith("<"):
+                continue
+            css_lines.append(line)
+        css_body = "\n".join(css_lines).rstrip()
+        if css_body:
+            css_body += "\n"
+        return f"{match.group(1)}{css_body}  </style>\n{match.group(3)}"
+
+    return style_pattern.sub(_replace_style, html), changed
+
+
+def _dedupe_document_tail_tags(html: str) -> tuple[str, bool]:
+    changed = False
+
+    def _dedupe_pattern(source: str, pattern: re.Pattern[str]) -> str:
+        nonlocal changed
+        matches = list(pattern.finditer(source))
+        if len(matches) <= 1:
+            return source
+        changed = True
+        keep_end = matches[-1].end()
+        parts: list[str] = []
+        cursor = 0
+        for match in matches[:-1]:
+            parts.append(source[cursor : match.start()])
+            cursor = match.end()
+        parts.append(source[cursor:keep_end])
+        parts.append(source[keep_end:])
+        return "".join(parts)
+
+    html = _dedupe_pattern(
+        html,
+        re.compile(
+            r"\s*<script\b[^>]*\bsrc=[\"']\.\/app\.js[\"'][^>]*>\s*</script>\s*",
+            flags=re.IGNORECASE,
+        ),
+    )
+    for tag in ("main", "body", "html"):
+        html = _dedupe_pattern(
+            html,
+            re.compile(rf"\s*</{tag}\s*>\s*", flags=re.IGNORECASE),
+        )
+    return html, changed
+
+
+def _frontend_contract_validation_errors(workspace_root: Path) -> list[str]:
+    errors: list[str] = []
+    index_path = _workspace_contract_file(workspace_root, "index.html")
+    if index_path is None or not index_path.exists():
+        return errors
+    try:
+        html = index_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [f"index.html: {exc}"]
+
+    for tag in ("html", "head", "body", "main"):
+        open_count = len(re.findall(rf"<{tag}(?:\s|>)", html, flags=re.IGNORECASE))
+        close_count = len(re.findall(rf"</{tag}\s*>", html, flags=re.IGNORECASE))
+        if open_count != 1 or close_count != 1:
+            errors.append(f"index.html has {open_count} <{tag}> and {close_count} </{tag}> tags")
+
+    for style_match in re.finditer(r"<style\b[^>]*>(.*?)</style\s*>", html, flags=re.IGNORECASE | re.DOTALL):
+        if re.search(r"</head\s*>|<body\b|<section\b", style_match.group(1), flags=re.IGNORECASE):
+            errors.append("index.html has markup leaked into a style block")
+            break
+    head_match = re.search(r"<head\b[^>]*>(.*?)</head\s*>", html, flags=re.IGNORECASE | re.DOTALL)
+    if head_match and "<style" in head_match.group(1).lower() and "</style>" not in head_match.group(1).lower():
+        errors.append("index.html has an unclosed style block before </head>")
+
+    for ref in re.findall(r"\b(?:href|src)=[\"']([^\"']+)[\"']", html, flags=re.IGNORECASE):
+        if ref.startswith(("#", "http://", "https://", "mailto:", "tel:", "data:")):
+            continue
+        local_ref = ref.split("#", 1)[0].split("?", 1)[0]
+        if not local_ref:
+            continue
+        ref_path = _workspace_contract_file(workspace_root, local_ref)
+        if ref_path is None or not ref_path.exists():
+            errors.append(f"index.html references missing local file {ref}")
+
+    styles_path = _workspace_contract_file(workspace_root, "styles.css")
+    if styles_path is not None and styles_path.exists():
+        try:
+            css = styles_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            errors.append(f"styles.css: {exc}")
+        else:
+            if css.count("{") != css.count("}"):
+                errors.append("styles.css has unbalanced braces")
+
+    return errors
+
+
+def _ensure_visible_animation_css(css: str) -> tuple[str, bool]:
+    additions: list[str] = []
+    if "[data-animate]" in css and ".js-reveal.is-visible" not in css:
+        additions.append(
+            """
+/* Compatibility for JS-driven reveal classes used by parallel app.js lanes. */
+.js-reveal {
+  opacity: 0;
+  transform: translateY(18px);
+  transition: opacity 0.7s cubic-bezier(0.22, 0.61, 0.36, 1), transform 0.7s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+[data-animate].is-visible,
+.js-reveal.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+""".strip()
+        )
+    if ".scroll-cue" in css and ".scroll-cue.is-hidden" not in css:
+        additions.append(
+            """
+.scroll-cue.is-hidden {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+""".strip()
+        )
+    if (
+        ("[data-animate]" in css or ".js-reveal" in css or ".scroll-cue-dot" in css)
+        and "prefers-reduced-motion" not in css
+    ):
+        additions.append(
+            """
+@media (prefers-reduced-motion: reduce) {
+  [data-animate],
+  .js-reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+
+  .scroll-cue-dot {
+    animation: none;
+  }
+}
+""".strip()
+        )
+    if not additions:
+        return css, False
+    return css.rstrip() + "\n\n" + "\n\n".join(additions) + "\n", True
+
+
+def _apply_frontend_contract_hygiene(
+    *,
+    task: "CodingTask",
+    candidate_payload: dict[str, Any],
+    owner_paths: Sequence[str],
+) -> dict[str, Any] | None:
+    if not _frontend_contract_files_are_owned(owner_paths=owner_paths, candidate_payload=candidate_payload):
+        return None
+    workspace_root = _workspace_root_from_task(task)
+    if workspace_root is None:
+        return None
+
+    changed_files: list[str] = []
+    repairs: list[str] = []
+    errors: list[str] = []
+
+    index_path = _workspace_contract_file(workspace_root, "index.html")
+    if index_path is not None and index_path.exists():
+        try:
+            html = index_path.read_text(encoding="utf-8")
+            updated_html, style_closed = _close_unclosed_style_blocks_before_head(html)
+            updated_html, tail_tags_deduped = _dedupe_document_tail_tags(updated_html)
+            updated_html, deduped = _dedupe_duplicate_features_sections(updated_html)
+            updated_html, hooks_added = _ensure_feature_animation_hooks(updated_html)
+            updated_html, closing_tags_deduped = _dedupe_consecutive_closing_tags(updated_html)
+            updated_html, delay_attrs_normalized = _normalize_animation_delay_attributes(updated_html)
+            if updated_html != html:
+                index_path.write_text(updated_html, encoding="utf-8")
+                changed_files.append("index.html")
+                if deduped:
+                    repairs.append("deduped duplicate #features sections")
+                if style_closed:
+                    repairs.append("closed unclosed style blocks before </head>")
+                if tail_tags_deduped:
+                    repairs.append("removed duplicate document tail tags")
+                if hooks_added:
+                    repairs.append("normalized feature data-animate hooks")
+                if closing_tags_deduped:
+                    repairs.append("removed duplicate closing container tags")
+                if delay_attrs_normalized:
+                    repairs.append("normalized data-animate-delay attributes")
+        except OSError as exc:
+            errors.append(f"index.html: {exc}")
+
+    styles_path = _workspace_contract_file(workspace_root, "styles.css")
+    if styles_path is not None and styles_path.exists():
+        try:
+            css = styles_path.read_text(encoding="utf-8")
+            updated_css, css_changed = _ensure_visible_animation_css(css)
+            if css_changed:
+                styles_path.write_text(updated_css, encoding="utf-8")
+                changed_files.append("styles.css")
+                repairs.append("added .is-visible/.js-reveal CSS compatibility")
+        except OSError as exc:
+            errors.append(f"styles.css: {exc}")
+
+    validation_errors = _frontend_contract_validation_errors(workspace_root)
+    errors.extend(error for error in validation_errors if error not in errors)
+
+    if not changed_files and not errors:
+        return None
+
+    target_files = list(candidate_payload.get("target_files") or [])
+    for changed_file in changed_files:
+        if changed_file not in target_files:
+            target_files.append(changed_file)
+    candidate_payload["target_files"] = target_files
+
+    if changed_files:
+        summary = _clean_text(candidate_payload.get("change_summary"))
+        hygiene_summary = "Applied deterministic frontend contract hygiene: " + "; ".join(repairs) + "."
+        candidate_payload["change_summary"] = f"{summary} {hygiene_summary}".strip()
+        test_plan = list(candidate_payload.get("test_plan") or [])
+        hygiene_test = (
+            "Validate that index.html has one #features section and that CSS/JS reveal hooks agree on "
+            "[data-animate], .is-visible, and .js-reveal."
+        )
+        if hygiene_test not in test_plan:
+            test_plan.append(hygiene_test)
+        candidate_payload["test_plan"] = test_plan
+
+    if errors:
+        risks = list(candidate_payload.get("risks") or [])
+        risk = "Deterministic frontend contract hygiene could not inspect all files: " + "; ".join(errors)
+        if risk not in risks:
+            risks.append(risk)
+        candidate_payload["risks"] = risks
+
+    return {
+        "changed_files": changed_files,
+        "repairs": repairs,
+        "errors": errors,
+    }
+
+
+def _apply_short_timeout_frontend_contract_hygiene(
+    *,
+    task: "CodingTask",
+    candidate_payload: dict[str, Any],
+    owner_paths: Sequence[str],
+) -> dict[str, Any] | None:
+    return _apply_frontend_contract_hygiene(
+        task=task,
+        candidate_payload=candidate_payload,
+        owner_paths=owner_paths,
+    )
+
+
+def _augment_aggregation_candidate_from_worker_results(
+    payload: dict[str, Any],
+    *,
+    member_results: dict[str, Any],
+    worker_execution: TissueExecution,
+    attempt: int,
+) -> dict[str, Any]:
+    material_payloads = _material_worker_payloads_with_mutation_evidence(
+        member_results=member_results,
+        worker_execution=worker_execution,
+    )
+    owned_mutation_paths = _exclusive_owner_mutation_paths(worker_execution)
+    if not material_payloads and not owned_mutation_paths:
+        return payload
+
+    candidate = _candidate_payload(payload)
+    was_timeout_placeholder = _is_timeout_or_blocked_no_output_candidate(candidate)
+    owner_paths = _exclusive_owner_paths(worker_execution)
+    target_files: list[str] = []
+    test_plan: list[str] = []
+    risks: list[str] = []
+    summaries: list[str] = []
+    _extend_unique_candidate_paths(
+        target_files,
+        owned_mutation_paths,
+        owner_paths=owner_paths,
+    )
+    for material_payload in material_payloads:
+        _extend_unique_candidate_paths(
+            target_files,
+            material_payload.get("target_files"),
+            owner_paths=owner_paths,
+        )
+        _extend_unique_text(test_plan, material_payload.get("test_plan"))
+        _extend_unique_text(risks, material_payload.get("risks"))
+        summary = _clean_text(material_payload.get("change_summary"))
+        if summary and summary not in summaries:
+            summaries.append(summary)
+
+    if target_files:
+        merged_target_files: list[str] = []
+        _extend_unique_candidate_paths(
+            merged_target_files,
+            candidate.get("target_files"),
+            owner_paths=owner_paths,
+        )
+        _extend_unique_candidate_paths(
+            merged_target_files,
+            target_files,
+            owner_paths=owner_paths,
+        )
+        candidate["target_files"] = merged_target_files
+    if test_plan:
+        merged_test_plan: list[str] = []
+        _extend_unique_text(merged_test_plan, candidate.get("test_plan"))
+        _extend_unique_text(merged_test_plan, test_plan)
+        candidate["test_plan"] = merged_test_plan
+    if risks:
+        merged_risks: list[str] = []
+        _extend_unique_text(merged_risks, candidate.get("risks"))
+        _extend_unique_text(merged_risks, risks)
+        candidate["risks"] = merged_risks
+    if summaries and (
+        not _clean_text(candidate.get("change_summary"))
+        or was_timeout_placeholder
+    ):
+        candidate["change_summary"] = "Merged worker material changes: " + " ".join(summaries)
+    if target_files and (
+        not _clean_text(candidate.get("candidate_id"))
+        or was_timeout_placeholder
+    ):
+        candidate["candidate_id"] = f"candidate-{attempt}-worker-merge"
+    if target_files and not _clean_text(candidate.get("workspace_effect")):
+        candidate["workspace_effect"] = "modified"
+    return _candidate_payload(candidate)
+
+
 def _worker_member(
     *,
     organism: CodingOrganism,
@@ -660,6 +1518,22 @@ def _worker_member(
 ) -> TissueMember:
     member_id = f"worker-{index}"
     cell_id = f"{organism.base_id}.{member_id}"
+    exclusive_owner_path = _exclusive_write_owner_path_from_brief(brief)
+    instruction_suffix = f"Assigned brief:\n{brief}"
+    if exclusive_owner_path:
+        instruction_suffix = (
+            f"{instruction_suffix}\n\n"
+            f"Exclusive write-owner constraint: `{exclusive_owner_path}` is your owned file. "
+            "The global entry-point inspection, modified-file listing, full updated-content return, and read-back "
+            "confirmation requirements are satisfied across the whole organism, not inside this lane alone. "
+            "Do not try to satisfy those global delivery requirements by reading other files or drafting full final output here. "
+            "Read only the minimum local context needed, then use targeted `file_edit` when "
+            "that tool is available for an existing owned file; use `file_write` only when "
+            "the owned file must be created or `file_edit` is unavailable. Do not spend "
+            "another round on broad auditing after reading the owned file once. "
+            f"After the first successful read of `{exclusive_owner_path}`, the very next model response must be "
+            "`file_edit` or `file_write` against that same owned file, not more reads, planning prose, or candidate-only text."
+        )
     return TissueMember(
         member_id=member_id,
         address=CellAddress(
@@ -675,7 +1549,7 @@ def _worker_member(
             model=organism.worker_model,
             tool_ids=list(tool_ids),
         ),
-        instruction_suffix=f"Assigned brief:\n{brief}",
+        instruction_suffix=instruction_suffix,
         input_payload_overrides={
             "worker_brief": brief,
             "worker_index": index,
@@ -684,6 +1558,7 @@ def _worker_member(
         metadata={
             "organism_id": organism.organism_id,
             "worker_role": organism.worker_role,
+            "exclusive_write_owner_path": exclusive_owner_path,
         },
     )
 
@@ -695,9 +1570,51 @@ def _worker_tool_ids_for_plan(
 ) -> list[str]:
     if plan.worker_count <= 1:
         return list(organism.worker_tool_ids)
+    if _plan_has_parallel_exclusive_write_owners(plan):
+        file_tool_ids = [
+            tool_id
+            for tool_id in organism.worker_tool_ids
+            if tool_id in {"file_read", "file_edit", "file_write"}
+        ]
+        if file_tool_ids:
+            return file_tool_ids
+        return list(organism.worker_tool_ids)
     if organism.parallel_worker_tool_ids:
         return list(organism.parallel_worker_tool_ids)
     return list(organism.worker_tool_ids)
+
+
+def _plan_has_parallel_exclusive_write_owners(plan: CodingOrchestratorPlan) -> bool:
+    if plan.worker_count <= 1:
+        return False
+    return any(
+        "exclusive write owner" in _clean_text(brief).lower()
+        for brief in plan.worker_briefs
+    )
+
+
+def _runtime_policy_metadata(task: "CodingTask") -> dict[str, Any]:
+    session_context = task.session_context if isinstance(task.session_context, dict) else {}
+    metadata: dict[str, Any] = {}
+    raw_timeout = session_context.get("completion_timeout_seconds")
+    timeout_seconds: float | None = None
+    try:
+        timeout_seconds = float(raw_timeout)
+    except (TypeError, ValueError):
+        timeout_seconds = None
+    if timeout_seconds is not None:
+        metadata["completion_timeout_seconds"] = timeout_seconds
+    short_timeout = bool(session_context.get("short_completion_timeout"))
+    if timeout_seconds is not None and 0 < timeout_seconds <= 60.0:
+        short_timeout = True
+    if short_timeout:
+        metadata["short_completion_timeout"] = True
+        metadata["disable_timeout_recovery"] = True
+    return metadata
+
+
+def _short_completion_timeout_task(task: "CodingTask") -> bool:
+    return bool(_runtime_policy_metadata(task).get("short_completion_timeout"))
 
 
 def _worker_pool_pattern(
@@ -767,6 +1684,19 @@ def _executed_tools_from_handoff_execution(execution: HandoffExecution | None) -
     return [dict(tool) for tool in executed_tools if isinstance(tool, dict)]
 
 
+def _executed_tools_from_tissue_execution(
+    worker_execution: TissueExecution | None,
+) -> list[dict[str, Any]] | None:
+    if worker_execution is None:
+        return None
+    executed_tools: list[dict[str, Any]] = []
+    for member_execution in _worker_execution_map(worker_execution).values():
+        member_tools = _executed_tools_from_handoff_execution(member_execution)
+        if member_tools:
+            executed_tools.extend(member_tools)
+    return executed_tools or None
+
+
 def _worker_execution_map(worker_execution: TissueExecution) -> dict[str, HandoffExecution]:
     return {
         member.member_id: execution
@@ -800,6 +1730,55 @@ def _looks_like_mutating_shell_command(command: Any) -> bool:
         " >> ",
     )
     return any(marker in text for marker in mutation_markers)
+
+
+def _candidate_path_key(path: Any) -> str:
+    text = _clean_text(path).replace("\\", "/").rstrip("/")
+    while "//" in text:
+        text = text.replace("//", "/")
+    return text
+
+
+def _paths_overlap(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    return left.endswith(f"/{right}") or right.endswith(f"/{left}")
+
+
+def _successful_file_mutation_paths(executed_tools: list[dict[str, Any]] | None) -> list[str]:
+    paths: list[str] = []
+    for tool in executed_tools or []:
+        if not tool.get("ok"):
+            continue
+        if str(tool.get("tool_id") or "").strip() not in {"file_edit", "file_write"}:
+            continue
+        arguments = dict(tool.get("arguments") or {})
+        result = dict(tool.get("result") or {})
+        path = _candidate_path_key(result.get("path") or arguments.get("path"))
+        if path and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _candidate_has_matching_mutation_evidence(
+    payload: dict[str, Any],
+    *,
+    executed_tools: list[dict[str, Any]] | None,
+) -> bool:
+    target_files = [_candidate_path_key(path) for path in payload.get("target_files") or []]
+    target_files = [path for path in target_files if path]
+    if not target_files:
+        return False
+    mutation_paths = _successful_file_mutation_paths(executed_tools)
+    if not mutation_paths:
+        return False
+    return any(
+        _paths_overlap(target_path, mutation_path)
+        for target_path in target_files
+        for mutation_path in mutation_paths
+    )
 
 
 def _candidate_requires_mutation_evidence(
@@ -863,10 +1842,18 @@ def _aggregation_requires_mutation_evidence(
     *,
     payload: dict[str, Any],
     execution: OrganExecution | None,
+    worker_execution: TissueExecution | None = None,
 ) -> tuple[str, dict[str, Any]] | None:
+    executed_tools: list[dict[str, Any]] = []
+    aggregation_tools = _executed_tools_from_execution(execution)
+    worker_tools = _executed_tools_from_tissue_execution(worker_execution)
+    if aggregation_tools:
+        executed_tools.extend(aggregation_tools)
+    if worker_tools:
+        executed_tools.extend(worker_tools)
     return _candidate_requires_mutation_evidence(
         payload=payload,
-        executed_tools=_executed_tools_from_execution(execution),
+        executed_tools=executed_tools or None,
     )
 
 
@@ -1021,6 +2008,7 @@ async def execute_coding_organism(
     best_aggregation: OrganExecution | None = None
     best_validation: OrganExecution | None = None
     best_pass_threshold: float | None = None
+    aggregation_failed_error: str | None = None
 
     prior_packet: CellHandoffPacket | None = None
     prior_signal_id: str | None = None
@@ -1291,129 +2279,383 @@ async def execute_coding_organism(
                 workspace_effect=_candidate_workspace_effect(aggregation_candidate),
             )
         else:
-            aggregation_packet = _child_packet(
-                sender=worker_packet.recipient,
-                recipient=organism.aggregator_organ.boundary_address,
-                parent_packet=worker_packet,
-                parent_signal_id=worker_execution.signals[-1].signal_id,
-                lineage_suffix=f"organ:{organism.aggregator_organ.organ_id}",
-                task_id=f"{task.task_id}:aggregate:{attempt}",
-                instruction=plan.aggregation_focus,
-                scope="coding-organism.aggregate",
-                hard_constraints=list(task.hard_constraints),
-                soft_constraints=list(task.soft_constraints),
-                input_payload={
-                    "objective": task.objective,
-                    "acceptance_criteria": list(task.acceptance_criteria),
-                    "research_findings": list(task.research_findings),
-                    "repair_brief": repair_brief,
-                    "session_context": dict(task.session_context),
-                    "orchestration_plan": plan.model_dump(mode="json"),
-                    "worker_results": dict(worker_execution.result.outputs.get("member_results") or {}),
-                },
-                evidence_refs=[
-                    *task.evidence_refs,
-                    *_completion_output_refs(worker_execution.signals),
-                ],
-                output_contract=OutputContract(
-                    definition_of_done="Return the aggregated bounded coding candidate.",
-                    expected_return_shape=json.dumps(
-                        {
-                            "candidate_id": "<required>",
-                            "change_summary": "<required>",
-                            "target_files": "<required>",
-                            "test_plan": "<required>",
-                            "risks": "<required>",
-                            "workspace_effect": "<optional: modified|verified>",
-                        },
-                        sort_keys=True,
-                    ),
-                ),
-                authority=WorkerAuthority.DELEGATE,
-                metadata={
-                    "organism_id": organism.organism_id,
-                    "organism_stage": "aggregation",
-                    "organ_id": organism.aggregator_organ.organ_id,
-                },
-            )
-            aggregation_execution = await execute_organ_pattern(
-                executor=executor,
-                pattern=organism.aggregator_organ,
-                packet=aggregation_packet,
-                trace_log=trace_log,
-            )
-            aggregation_executions.append(aggregation_execution)
-            if aggregation_execution.result.outputs:
-                aggregation_execution.result.outputs = _candidate_payload(dict(aggregation_execution.result.outputs))
-            if aggregation_execution.result.status == "completed":
-                evidence_failure = _aggregation_requires_mutation_evidence(
-                    payload=dict(aggregation_execution.result.outputs),
-                    execution=aggregation_execution,
+            if not _worker_results_have_material_for_aggregation(member_results):
+                aggregation_failed_error = (
+                    "Workers produced no material bounded candidate to merge; stop and re-plan instead of rediscovering the workspace in aggregation."
                 )
-                if evidence_failure is not None:
-                    error_text, extra_metadata = evidence_failure
-                    aggregation_execution.result.status = "failed"
-                    aggregation_execution.result.error = error_text
-                    aggregation_execution.result.metadata = {
-                        **dict(aggregation_execution.result.metadata),
-                        **dict(extra_metadata),
-                    }
-            stage_records.append(
-                _record(
+                stage_records.append(
+                    _record(
+                        stage="aggregation",
+                        attempt=attempt,
+                        packet=worker_packet,
+                        status="failed",
+                        summary=aggregation_failed_error,
+                        organ_id=organism.aggregator_organ.organ_id,
+                        output_keys=[],
+                    )
+                )
+                _emit(
+                    "stage.completed",
                     stage="aggregation",
                     attempt=attempt,
-                    packet=aggregation_packet,
-                    status=aggregation_execution.result.status,
-                    summary=(
-                        aggregation_execution.result.error
-                        if aggregation_execution.result.status != "completed" and aggregation_execution.result.error
-                        else aggregation_execution.signals[-1].summary
-                    ),
-                    organ_id=organism.aggregator_organ.organ_id,
-                    output_keys=sorted(aggregation_execution.result.outputs),
+                    status="failed",
+                    candidate_source=candidate_source,
+                    candidate_id=None,
+                    target_files=[],
+                    test_plan=[],
+                    workspace_effect=None,
+                    message="Workers did not produce a material candidate for aggregation.",
                 )
-            )
-            aggregation_candidate = _candidate_view(dict(aggregation_execution.result.outputs))
-            _emit(
-                "stage.completed",
-                stage="aggregation",
-                attempt=attempt,
-                status=aggregation_execution.result.status,
-                candidate_source=candidate_source,
-                candidate_id=aggregation_candidate.candidate_id,
-                target_files=list(aggregation_candidate.target_files),
-                test_plan=list(aggregation_candidate.test_plan),
-                workspace_effect=_candidate_workspace_effect(aggregation_candidate),
-                message=(
-                    "Prepared one bounded coding candidate."
-                    if aggregation_execution.result.status == "completed"
-                    else "Could not prepare a candidate."
-                ),
-            )
-            _emit_status_update(
-                actor="aggregator",
-                phase="aggregation",
-                attempt=attempt,
-                status=(
-                    "completed"
-                    if aggregation_execution.result.status == "completed"
-                    else aggregation_execution.result.status
-                ),
-                message=_aggregation_status_message(dict(aggregation_execution.result.outputs)),
-                candidate_source=candidate_source,
-                candidate_id=aggregation_candidate.candidate_id,
-                target_files=list(aggregation_candidate.target_files),
-                test_plan=list(aggregation_candidate.test_plan),
-                workspace_effect=_candidate_workspace_effect(aggregation_candidate),
-            )
-            if aggregation_execution.result.status != "completed":
-                prior_packet = aggregation_packet
-                prior_signal_id = aggregation_execution.signals[-1].signal_id
+                _emit_status_update(
+                    actor="aggregator",
+                    phase="aggregation",
+                    attempt=attempt,
+                    status="failed",
+                    message=aggregation_failed_error,
+                    candidate_source=candidate_source,
+                    candidate_id=None,
+                    target_files=[],
+                    test_plan=[],
+                    workspace_effect=None,
+                )
+                if attempt <= organism.max_repair_rounds:
+                    repair_brief = _aggregation_failure_repair_brief(
+                        aggregation_failed_error,
+                        parallel_owner_plan=_plan_has_parallel_exclusive_write_owners(plan),
+                    )
+                    previous_validation_payload = {
+                        "passed": False,
+                        "overall_score": 0.0,
+                        "dimension_scores": {},
+                        "repair_brief": repair_brief,
+                        "missing_requirements": ["material bounded candidate"],
+                        "comparison_note": aggregation_failed_error,
+                    }
+                    repair_history.append(
+                        {
+                            "attempt": attempt,
+                            "worker_count": plan.worker_count,
+                            "worker_briefs": list(plan.worker_briefs),
+                            "candidate_id": None,
+                            "score": None,
+                            "passed": False,
+                            "pass_threshold": float(plan.pass_threshold),
+                            "repair_brief": repair_brief,
+                        }
+                    )
+                    _emit(
+                        "repair.requested",
+                        attempt=attempt,
+                        score=None,
+                        repair_brief=repair_brief,
+                        missing_requirements=["material bounded candidate"],
+                        source="aggregation",
+                    )
+                    _emit_status_update(
+                        actor="aggregator",
+                        phase="repair",
+                        attempt=attempt,
+                        status="needs_repair",
+                        message=repair_brief,
+                        missing_requirements=["material bounded candidate"],
+                    )
+                    prior_packet = worker_packet
+                    prior_signal_id = worker_execution.signals[-1].signal_id
+                    continue
+                prior_packet = worker_packet
+                prior_signal_id = worker_execution.signals[-1].signal_id
                 break
-            candidate_payload = dict(aggregation_execution.result.outputs)
-            candidate_output_refs = list(aggregation_execution.result.output_refs)
-            validation_parent_packet = aggregation_packet
-            validation_parent_signal_id = aggregation_execution.signals[-1].signal_id
+            missing_owner_paths = _missing_exclusive_owner_material_paths(
+                member_results=member_results,
+                worker_execution=worker_execution,
+            )
+            if missing_owner_paths:
+                aggregation_failed_error = (
+                    "Required parallel owner lanes produced no material mutation evidence: "
+                    + ", ".join(missing_owner_paths)
+                )
+                stage_records.append(
+                    _record(
+                        stage="aggregation",
+                        attempt=attempt,
+                        packet=worker_packet,
+                        status="failed",
+                        summary=aggregation_failed_error,
+                        organ_id=organism.aggregator_organ.organ_id,
+                        output_keys=[],
+                    )
+                )
+                _emit(
+                    "stage.completed",
+                    stage="aggregation",
+                    attempt=attempt,
+                    status="failed",
+                    candidate_source=candidate_source,
+                    candidate_id=None,
+                    target_files=[],
+                    test_plan=[],
+                    workspace_effect=None,
+                    missing_owner_paths=missing_owner_paths,
+                    message="Workers did not cover every required exclusive owner lane.",
+                )
+                _emit_status_update(
+                    actor="aggregator",
+                    phase="aggregation",
+                    attempt=attempt,
+                    status="failed",
+                    message=aggregation_failed_error,
+                    candidate_source=candidate_source,
+                    candidate_id=None,
+                    target_files=[],
+                    test_plan=[],
+                    workspace_effect=None,
+                )
+                if attempt <= organism.max_repair_rounds:
+                    repair_brief = _aggregation_failure_repair_brief(
+                        aggregation_failed_error,
+                        parallel_owner_plan=True,
+                    )
+                    missing_requirements = [
+                        f"material mutation evidence for {path}"
+                        for path in missing_owner_paths
+                    ]
+                    previous_validation_payload = {
+                        "passed": False,
+                        "overall_score": 0.0,
+                        "dimension_scores": {},
+                        "repair_brief": repair_brief,
+                        "missing_requirements": missing_requirements,
+                        "comparison_note": aggregation_failed_error,
+                    }
+                    repair_history.append(
+                        {
+                            "attempt": attempt,
+                            "worker_count": plan.worker_count,
+                            "worker_briefs": list(plan.worker_briefs),
+                            "candidate_id": None,
+                            "score": None,
+                            "passed": False,
+                            "pass_threshold": float(plan.pass_threshold),
+                            "repair_brief": repair_brief,
+                        }
+                    )
+                    _emit(
+                        "repair.requested",
+                        attempt=attempt,
+                        score=None,
+                        repair_brief=repair_brief,
+                        missing_requirements=missing_requirements,
+                        source="aggregation",
+                    )
+                    _emit_status_update(
+                        actor="aggregator",
+                        phase="repair",
+                        attempt=attempt,
+                        status="needs_repair",
+                        message=repair_brief,
+                        missing_requirements=missing_requirements,
+                    )
+                    prior_packet = worker_packet
+                    prior_signal_id = worker_execution.signals[-1].signal_id
+                    continue
+                prior_packet = worker_packet
+                prior_signal_id = worker_execution.signals[-1].signal_id
+                break
+            deterministic_merge = (
+                _deterministic_worker_merge_candidate(
+                    member_results=member_results,
+                    worker_execution=worker_execution,
+                    attempt=attempt,
+                )
+                if _plan_has_parallel_exclusive_write_owners(plan)
+                else None
+            )
+            if deterministic_merge is not None:
+                candidate_payload = deterministic_merge
+                hygiene_report = _apply_frontend_contract_hygiene(
+                    task=task,
+                    candidate_payload=candidate_payload,
+                    owner_paths=_exclusive_owner_paths(worker_execution),
+                )
+                candidate_source = "worker_merge"
+                aggregation_candidate = _candidate_view(candidate_payload)
+                if hygiene_report is not None:
+                    _emit(
+                        "contract_hygiene.applied",
+                        stage="aggregation",
+                        attempt=attempt,
+                        candidate_source=candidate_source,
+                        candidate_id=aggregation_candidate.candidate_id,
+                        changed_files=list(hygiene_report.get("changed_files") or []),
+                        repairs=list(hygiene_report.get("repairs") or []),
+                        errors=list(hygiene_report.get("errors") or []),
+                        message="Applied deterministic frontend contract hygiene before validation.",
+                    )
+                stage_records.append(
+                    _record(
+                        stage="aggregation",
+                        attempt=attempt,
+                        packet=worker_packet,
+                        status="completed",
+                        summary="Synthesized a deterministic worker-merge candidate from covered owner lanes.",
+                        organ_id=f"{organism.base_id}.worker-pool",
+                        output_keys=sorted(candidate_payload),
+                    )
+                )
+                _emit(
+                    "stage.completed",
+                    stage="aggregation",
+                    attempt=attempt,
+                    status="completed",
+                    candidate_source=candidate_source,
+                    candidate_id=aggregation_candidate.candidate_id,
+                    target_files=list(aggregation_candidate.target_files),
+                    test_plan=list(aggregation_candidate.test_plan),
+                    workspace_effect=_candidate_workspace_effect(aggregation_candidate),
+                    message="Using deterministic worker-merge candidate from covered owner lanes.",
+                )
+                _emit_status_update(
+                    actor="aggregator",
+                    phase="aggregation",
+                    attempt=attempt,
+                    status="completed",
+                    message="Using deterministic worker-merge candidate from covered owner lanes.",
+                    candidate_source=candidate_source,
+                    candidate_id=aggregation_candidate.candidate_id,
+                    target_files=list(aggregation_candidate.target_files),
+                    test_plan=list(aggregation_candidate.test_plan),
+                    workspace_effect=_candidate_workspace_effect(aggregation_candidate),
+                )
+            else:
+                aggregation_packet = _child_packet(
+                    sender=worker_packet.recipient,
+                    recipient=organism.aggregator_organ.boundary_address,
+                    parent_packet=worker_packet,
+                    parent_signal_id=worker_execution.signals[-1].signal_id,
+                    lineage_suffix=f"organ:{organism.aggregator_organ.organ_id}",
+                    task_id=f"{task.task_id}:aggregate:{attempt}",
+                    instruction=plan.aggregation_focus,
+                    scope="coding-organism.aggregate",
+                    hard_constraints=list(task.hard_constraints),
+                    soft_constraints=list(task.soft_constraints),
+                    input_payload={
+                        "objective": task.objective,
+                        "acceptance_criteria": list(task.acceptance_criteria),
+                        "research_findings": list(task.research_findings),
+                        "repair_brief": repair_brief,
+                        "session_context": dict(task.session_context),
+                        "orchestration_plan": plan.model_dump(mode="json"),
+                        "worker_results": dict(worker_execution.result.outputs.get("member_results") or {}),
+                    },
+                    evidence_refs=[
+                        *task.evidence_refs,
+                        *_completion_output_refs(worker_execution.signals),
+                    ],
+                    output_contract=OutputContract(
+                        definition_of_done="Return the aggregated bounded coding candidate.",
+                        expected_return_shape=json.dumps(
+                            {
+                                "candidate_id": "<required>",
+                                "change_summary": "<required>",
+                                "target_files": "<required>",
+                                "test_plan": "<required>",
+                                "risks": "<required>",
+                                "workspace_effect": "<optional: modified|verified>",
+                            },
+                            sort_keys=True,
+                        ),
+                    ),
+                    authority=WorkerAuthority.DELEGATE,
+                    metadata={
+                        "organism_id": organism.organism_id,
+                        "organism_stage": "aggregation",
+                        "organ_id": organism.aggregator_organ.organ_id,
+                    },
+                )
+                aggregation_execution = await execute_organ_pattern(
+                    executor=executor,
+                    pattern=organism.aggregator_organ,
+                    packet=aggregation_packet,
+                    trace_log=trace_log,
+                )
+                aggregation_executions.append(aggregation_execution)
+                if aggregation_execution.result.outputs:
+                    aggregation_execution.result.outputs = _augment_aggregation_candidate_from_worker_results(
+                        _candidate_payload(dict(aggregation_execution.result.outputs)),
+                        member_results=member_results,
+                        worker_execution=worker_execution,
+                        attempt=attempt,
+                    )
+                if aggregation_execution.result.status == "completed":
+                    evidence_failure = _aggregation_requires_mutation_evidence(
+                        payload=dict(aggregation_execution.result.outputs),
+                        execution=aggregation_execution,
+                        worker_execution=worker_execution,
+                    )
+                    if evidence_failure is not None:
+                        error_text, extra_metadata = evidence_failure
+                        aggregation_execution.result.status = "failed"
+                        aggregation_execution.result.error = error_text
+                        aggregation_execution.result.metadata = {
+                            **dict(aggregation_execution.result.metadata),
+                            **dict(extra_metadata),
+                        }
+                stage_records.append(
+                    _record(
+                        stage="aggregation",
+                        attempt=attempt,
+                        packet=aggregation_packet,
+                        status=aggregation_execution.result.status,
+                        summary=(
+                            aggregation_execution.result.error
+                            if aggregation_execution.result.status != "completed" and aggregation_execution.result.error
+                            else aggregation_execution.signals[-1].summary
+                        ),
+                        organ_id=organism.aggregator_organ.organ_id,
+                        output_keys=sorted(aggregation_execution.result.outputs),
+                    )
+                )
+                aggregation_candidate = _candidate_view(dict(aggregation_execution.result.outputs))
+                _emit(
+                    "stage.completed",
+                    stage="aggregation",
+                    attempt=attempt,
+                    status=aggregation_execution.result.status,
+                    candidate_source=candidate_source,
+                    candidate_id=aggregation_candidate.candidate_id,
+                    target_files=list(aggregation_candidate.target_files),
+                    test_plan=list(aggregation_candidate.test_plan),
+                    workspace_effect=_candidate_workspace_effect(aggregation_candidate),
+                    message=(
+                        "Prepared one bounded coding candidate."
+                        if aggregation_execution.result.status == "completed"
+                        else "Could not prepare a candidate."
+                    ),
+                )
+                _emit_status_update(
+                    actor="aggregator",
+                    phase="aggregation",
+                    attempt=attempt,
+                    status=(
+                        "completed"
+                        if aggregation_execution.result.status == "completed"
+                        else aggregation_execution.result.status
+                    ),
+                    message=_aggregation_status_message(dict(aggregation_execution.result.outputs)),
+                    candidate_source=candidate_source,
+                    candidate_id=aggregation_candidate.candidate_id,
+                    target_files=list(aggregation_candidate.target_files),
+                    test_plan=list(aggregation_candidate.test_plan),
+                    workspace_effect=_candidate_workspace_effect(aggregation_candidate),
+                )
+                if aggregation_execution.result.status != "completed":
+                    prior_packet = aggregation_packet
+                    prior_signal_id = aggregation_execution.signals[-1].signal_id
+                    break
+                candidate_payload = dict(aggregation_execution.result.outputs)
+                candidate_output_refs = list(aggregation_execution.result.output_refs)
+                validation_parent_packet = aggregation_packet
+                validation_parent_signal_id = aggregation_execution.signals[-1].signal_id
 
         latest_candidate_output = dict(candidate_payload)
         latest_candidate_source = candidate_source
@@ -1658,6 +2900,8 @@ async def execute_coding_organism(
                 error=latest.error,
                 metadata=latest.metadata,
             )
+        elif aggregation_failed_error:
+            error = f"Aggregation failed: {aggregation_failed_error}"
         elif worker_pool_executions:
             latest = worker_pool_executions[-1].result
             error = _result_failure_message(
