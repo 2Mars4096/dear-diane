@@ -10,7 +10,7 @@ from dan.engine import Engine, EngineConfig, RunResult
 from dan.engine.executor import ExecutorRegistry
 from dan.executors.tool import ToolExecutor, ToolRegistry
 from dan.models.context import MergeStrategy, CompactionStrategy, CompactionRule, FailurePolicy
-from dan.worker import Worker
+from dan.worker import Worker, RoleSpec, WorkerBrief, build_cell, request_from_brief
 ```
 
 ---
@@ -498,7 +498,55 @@ Workflow-generation rollout note:
 - For scheduler actions, use one `SchedulingProposal` shape for `serial`, `parallel`, `dispatch`, `split`, `duplicate`, `improve_context`, `validate`, `finalize`, `wait`, and `stop`. Populate `expected_value` or `expected_quality_gain`, `latency_cost`, `token_cost`, `rework_risk`, `material_yield_probability`, and `required_capacity` when known; `select_scheduler_proposal(...)` records per-proposal score components and selects the best admissible marginal-value move after deterministic guards run.
 - For scheduler `DUPLICATE` / hedge actions, also populate `uncertainty` and `failure_probability` when available. The deterministic guard rejects duplicates that do not clear risk-adjusted value, uncertainty/failure-risk, and material-yield thresholds.
 
-### 3q. Context Capsules
+### 3q. Universal Cell Briefs
+
+For new bounded worker/organism paths, prefer the Plan 56 brief surface over hand-built `WorkerDefinition` variants. `build_cell(...)` creates the invariant execution cell; task rules, tools, constraints, sampling, validation, and output shape live in `WorkerBrief` and are rendered into the user prompt by `request_from_brief(...)`.
+
+```python
+from dan.worker import (
+    RoleSpec,
+    WorkerBrief,
+    build_cell,
+    compose_coding_universal_plan,
+    request_from_brief,
+)
+from dan.cli.universal_progress import universal_progress_delta
+from dan.worker.contracts.templates import coding_brief, review_brief
+from dan.worker.organism_log import OrganismLogWriter
+from dan.worker.organisms import (
+    OrganismCommand,
+    OrganismPlan,
+    OrganismPolicy,
+    OrganismTask,
+    SemanticDecisionProposal,
+    SemanticObserverQueue,
+    admit_semantic_decision,
+    execute_universal_organism,
+)
+
+brief = coding_brief(
+    role=RoleSpec(role_label="builder", responsibility="Modify the requested files"),
+    task="Implement the bounded change.",
+    allowed_tool_ids=["file_read", "file_edit", "file_write"],
+)
+worker = build_cell("provider-model", brief.sampling_policy, brief.role.role_label)
+request = request_from_brief(brief)
+```
+
+Runtime notes:
+- `UNIVERSAL_CELL_SYSTEM_PROMPT` must stay domain-agnostic. Do not put product rules, file lists, thresholds, or validator wording into the cell system prompt.
+- Put task-specific behavior in `WorkerBrief`: `tool_policy`, `runtime_policy`, `validation_policy`, `prompt_slots`, `contract_snippets`, `fail_predicates`, `recovery_hints`, `output_contract`, `sampling_policy`, `evidence`, `context_packet`, and `input_payload`.
+- Use `src/dan/worker/contracts/templates.py` for common profiles (`role_brief`, `coding_brief`, `review_brief`, `research_brief`, `scheduler_brief`) instead of concatenating bespoke prompt strings.
+- `role_brief(...)` and the task-family templates accept `evidence=...`, `context_packet=...`, and `input_payload=...` directly, so callers should pass structured refs/payloads into the brief instead of appending them as free-form prompt text.
+- `PromptContext.stable_fingerprint()` excludes routine dynamic refs; `slot_fingerprint()` includes slot values; `full_fingerprint()` includes dynamic snapshot/provenance refs for trace/debug use.
+- `OrganismDependency` can require upstream readiness beyond completion with `readiness_predicates`, `artifact_kinds`, and `unlock_keys`. If an upstream task returns `context_capsules` / `readiness_signals` in `WorkerExecutionResult.metadata` or outputs, the universal runner evaluates them through the scheduler readiness policy and injects the admitted context packet into the downstream brief.
+- `OrganismPlan` carries plan-level `repair_policy`, `runtime_budget_policy`, `capsule_policy`, `scheduler_hooks`, `artifact_policy`, `acceptance_policy`, `semantic_observer_policy`, and `decision_policy`; `OrganismPolicy` carries concurrency, priority, retry, stale-timeout, coalescing, semantic-observer cadence, command-queue, and dead-letter settings.
+- `SemanticObserverQueue` batches high-frequency semantic status rows into bounded `OrganismSemanticSnapshot` objects. Treat observer/reviewer/orchestrator LLM outputs as `SemanticDecisionProposal` rows; call `admit_semantic_decision(...)` before mutating plan state or issuing commands. Accepted proposals become `OrganismCommand` rows with idempotency keys and state versions.
+- `execute_universal_organism(...)` currently runs additive role/brief DAGs through `WorkerCoreExecutor`; pass `log_writer=OrganismLogWriter(...)` when you need shared `organism_log_v1` rows. The returned metadata includes `run_state`, `semantic_snapshots`, `decision_ledger`, and `admitted_commands`.
+- Event rows include `organism.run_state.delta`, runtime/semantic heartbeat rows, scheduler proposal rows, reducer output rows, speculative-validation rows, promotion decisions, decision ledger rows, and command rows. Terminal/editor renderers should consume those through `universal_progress_delta(event)` instead of polling an LLM orchestrator for status.
+- Migration callers can use `compose_coding_universal_plan(...)`, `compose_project_execution_universal_plan(...)`, `compose_incident_universal_plan(...)`, `compose_reference_demo_universal_plan(...)`, and `compose_super_organism_universal_plan(...)` to turn legacy task-shaped payloads into brief-driven `OrganismPlan` data. Public legacy model contracts are also mirrored under `dan.worker.organisms.contracts`.
+
+### 3r. Context Capsules
 
 Use context capsules when you need to pass useful partial evidence between agents without replaying full tool transcripts. Capsules preserve raw references plus small retained exact spans, so downstream agents can act quickly and rehydrate exact evidence only when needed.
 

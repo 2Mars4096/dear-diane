@@ -1,15 +1,15 @@
 # 56: Universal Organism and Cell Restructure
 
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Collapse the per-product organism / worker / validator inventory into one universal organism and one universal cell: fixed execution infrastructure and prompt architecture, with roles discovered by the orchestrator and task rules, prompts, budgets, tools, thresholds, sampling, and validation criteria supplied by typed role/brief/policy objects instead of per-variant builder functions, constants, fixed role catalogs, and substring-cue routers.
 
 ## Tasks
 
-- [ ] 1. Land the universal cell substrate via [56-1-universal-cell-and-fixed-system-prompt](56-1-universal-cell-and-fixed-system-prompt.md)
-- [ ] 2. Build the parameterized prompt-template library via [56-2-task-prompt-template-library](56-2-task-prompt-template-library.md)
-- [ ] 3. Move task specialization into orchestrator-composed briefs via [56-3-orchestrator-brief-driven-specialization](56-3-orchestrator-brief-driven-specialization.md)
-- [ ] 4. Collapse organism families into one universal organism via [56-4-collapse-organisms-into-one](56-4-collapse-organisms-into-one.md)
-- [ ] 5. Retire substring routers and per-variant CLI builders via [56-5-cli-and-router-consolidation](56-5-cli-and-router-consolidation.md)
+- [x] 1. Land the universal cell substrate via [56-1-universal-cell-and-fixed-system-prompt](56-1-universal-cell-and-fixed-system-prompt.md) — substrate and import-boundary regressions landed; legacy product constructor counts are frozen behind a migration allowlist
+- [x] 2. Build the parameterized prompt-template library via [56-2-task-prompt-template-library](56-2-task-prompt-template-library.md) — snippet/template library plus rendered-template snapshots and shared-snippet regressions landed
+- [ ] 3. Move task specialization into orchestrator-composed briefs via [56-3-orchestrator-brief-driven-specialization](56-3-orchestrator-brief-driven-specialization.md) — Super DAN is brief-driven and additive legacy facade composers now produce `OrganismPlan` data; direct product rewiring remains open
+- [ ] 4. Collapse organism families into one universal organism via [56-4-collapse-organisms-into-one](56-4-collapse-organisms-into-one.md) — universal runner now carries plan policies, readiness dependencies, event/run-state provenance, semantic observer snapshots, admitted commands, dynamic dependency revisions, and facade plan composers; physical legacy archive remains open
+- [ ] 5. Retire substring routers and per-variant CLI builders via [56-5-cli-and-router-consolidation](56-5-cli-and-router-consolidation.md) — deterministic selector, Super DAN live builder/global-policy removal, non-code family guard, and event-stream progress deltas landed; broader product entry-point rewiring remains open
 
 ## Decisions
 
@@ -33,6 +33,9 @@
 
 ## Notes
 
+- 2026-04-26 implementation pass: landed the additive Plan 56 substrate without archiving legacy organism files yet: `src/dan/worker/cell.py`, `src/dan/worker/brief.py`, `src/dan/worker/contracts/*`, `src/dan/worker/organisms/universal_organism.py`, and `src/dan/cli/dispatch.py`, plus focused worker/CLI regressions. Follow-up slices wired Super DAN compatibility routing through `select_orchestrator(...)`, added optional universal-runner `organism_log_v1` persistence/run-state events, locked transitional import boundaries against new direct CLI builder growth, and connected hard dependency readiness to the existing capsule/scheduler policy. Direct legacy archive/removal is deferred until thin compatibility facades are ready because current product shells still import legacy execution contracts.
+- 2026-04-26 follow-up: Super DAN live lanes now compose `WorkerBrief` objects and derive universal cells from the briefs; website/generic tool ids, required files, coordinated-redesign thresholds, and anti-template phrases now come from `OrchestratorChoice` policy data instead of CLI globals. Universal-organism policy/event support now includes semantic observer snapshots and deterministic decision admission.
+- 2026-04-26 control-plane/facade follow-up: universal-organism events now cover capacity decisions, run-state deltas, runtime/semantic heartbeats, scheduler proposal outcomes, reducer/speculative-validation/promotion rows, decision-ledger rows, admitted commands with idempotency keys, and dynamic dependency revision rows. `legacy_facades.py` adds compose-then-run `OrganismPlan` builders for legacy coding, project/research, incident, reference-demo, and Super DAN shapes, plus a migration `worker.organisms.contracts` namespace for public model imports.
 - This work is a structural follow-up to `46-7` (worker bundle extraction) and the `54-*` DAN-v2 control-plane stack. It does not change the cell tool loop, the model gateway, or the scheduler — only what those substrates ingest.
 - Concrete pain point that triggered this plan: `cli/super_organism.py` carries `_build_live_website_worker`, `_build_live_generic_worker`, `_build_live_website_validator`, `_build_live_generic_validator`, plus matching constants `_LIVE_WEBSITE_TOOL_IDS`, `_LIVE_GENERIC_TOOL_IDS`, `_LIVE_WEBSITE_FILES`, `_WEBSITE_TEMPLATE_PHRASES`, plus substring-cue router functions `_is_website_objective`, `_supports_live_execution`. Each new variant requires copy-paste-modify across all of these. The same shape recurs across `coding_execution.py`, `project_execution.py`, `incident_execution.py`, and `reference_demo.py`.
 - The existing `_live_pacing_contract()` helper (a parameterized text snippet shared between worker `instruction` and `system_prompt`) points in the right direction, but the generalized form must take policy data from the brief. Defaults may exist as product policy profiles, but they are not universal constants.
