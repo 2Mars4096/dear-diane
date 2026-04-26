@@ -918,6 +918,37 @@ def universal_validator_organ(
     )
 
 
+def compact_universal_validator_organ(
+    *,
+    organism_id: str,
+    model: str | None = None,
+    organ_id: str = "universal-validator",
+) -> OrganPattern:
+    """Preset for a one-lead validator after deterministic prechecks have run."""
+
+    pattern = universal_validator_organ(
+        organism_id=organism_id,
+        model=model,
+        organ_id=organ_id,
+    )
+    return pattern.model_copy(
+        update={
+            "tissue": None,
+            "tissue_coordinator": None,
+            "lead_instruction": (
+                "Use the deterministic_precheck payload first, then perform one compact "
+                "model review of unresolved quality risks. Return the universal validation "
+                "report with scores, missing requirements, and a bounded repair brief."
+            ),
+            "metadata": {
+                **dict(pattern.metadata),
+                "validation_mode": "compact_model_review",
+                "deterministic_precheck_required": True,
+            },
+        }
+    )
+
+
 def coding_build_organ(
     *,
     organism_id: str,
@@ -1154,6 +1185,7 @@ __all__ = [
     "build_organ_lead_packet",
     "coding_aggregation_organ",
     "coding_build_organ",
+    "compact_universal_validator_organ",
     "deep_research_organ",
     "execute_organ_pattern",
     "resolve_deep_research_reader_briefs",

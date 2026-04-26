@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -79,6 +80,9 @@ class TissueMember(BaseModel):
     budget_limits: CellBudgetLimits | None = None
     authority_limits: CellAuthorityLimits | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+TissueMemberCompletionCallback = Callable[[TissueMember, CellHandoffPacket, HandoffExecution], Any]
 
 
 class TissuePoolLimits(BaseModel):
@@ -427,14 +431,28 @@ async def _execute_member_pool(
     members: list[TissueMember],
     member_packets: list[CellHandoffPacket],
     trace_log: CrossCellTraceLog | None,
+    member_completion_callback: TissueMemberCompletionCallback | None = None,
 ) -> list[HandoffExecution]:
+    async def _notify(
+        member: TissueMember,
+        member_packet: CellHandoffPacket,
+        execution: HandoffExecution,
+    ) -> HandoffExecution:
+        if member_completion_callback is None:
+            return execution
+        result = member_completion_callback(member, member_packet, execution)
+        if inspect.isawaitable(result):
+            await result
+        return execution
+
     async def _invoke(member: TissueMember, member_packet: CellHandoffPacket) -> HandoffExecution:
-        return await execute_cell_handoff(
+        execution = await execute_cell_handoff(
             executor=executor,
             worker=member.worker,
             packet=member_packet,
             trace_log=trace_log,
         )
+        return await _notify(member, member_packet, execution)
 
     if pattern.limits.max_concurrency == 1 or len(member_packets) <= 1:
         return [
@@ -692,6 +710,7 @@ async def execute_tissue_pattern(
     pattern: TissuePattern,
     packet: CellHandoffPacket,
     trace_log: CrossCellTraceLog | None = None,
+    member_completion_callback: TissueMemberCompletionCallback | None = None,
 ) -> TissueExecution:
     """Run one reusable tissue pattern as a coordinator cell plus same-type fan-out."""
 
@@ -774,6 +793,7 @@ async def execute_tissue_pattern(
         members=pattern.members,
         member_packets=member_packets,
         trace_log=trace_log,
+        member_completion_callback=member_completion_callback,
     )
     member_results, failed_members = _member_result_maps(pattern.members, member_executions)
     output_refs = _derive_output_refs(pattern, pattern.members, member_executions)
@@ -927,6 +947,7 @@ __all__ = [
     "TissueBudgetEnvelope",
     "TissueExecution",
     "TissueExecutionResult",
+    "TissueMemberCompletionCallback",
     "TissueMember",
     "TissueMergeMode",
     "TissuePattern",

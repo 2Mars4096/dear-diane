@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Literal
 
@@ -62,6 +63,21 @@ class SchedulerReplayOpportunity(BaseModel):
     reason: str = ""
 
 
+class SchedulerReplayReadiness(BaseModel):
+    """Capsule/readiness timing metrics for downstream-unlock replay."""
+
+    capsule_event_count: int = 0
+    readiness_event_count: int = 0
+    first_useful_artifact_at: str = ""
+    first_downstream_ready_at: str = ""
+    first_useful_artifact_ms: int | None = None
+    first_downstream_ready_ms: int | None = None
+    downstream_unlock_latency_ms: int | None = None
+    ready_signal_ids: list[str] = Field(default_factory=list)
+    predicates: list[str] = Field(default_factory=list)
+    blocker_event_count: int = 0
+
+
 class SchedulerReplayAnalysis(BaseModel):
     """Replay diagnostics for the shared scheduler layer."""
 
@@ -79,6 +95,7 @@ class SchedulerReplayAnalysis(BaseModel):
     scheduler_lower_bound_ms: int | None = None
     slack_ms: int | None = None
     terminal_barrier: SchedulerReplayBarrier = Field(default_factory=SchedulerReplayBarrier)
+    readiness: SchedulerReplayReadiness = Field(default_factory=SchedulerReplayReadiness)
     top_bottlenecks: list[SchedulerReplayBottleneck] = Field(default_factory=list)
     missed_parallelism: list[SchedulerReplayOpportunity] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
@@ -92,11 +109,14 @@ def analyze_scheduler_replay_rows(
 ) -> SchedulerReplayAnalysis:
     """Project one scheduler-diagnostic view over normalized or raw rows."""
 
-    analysis = analyze_organism_log_rows(rows)
+    materialized_rows = list(rows)
+    readiness = _readiness_metrics(materialized_rows)
+    analysis = analyze_organism_log_rows(materialized_rows)
     return analyze_scheduler_replay_analysis(
         analysis,
         capacity_hint=capacity_hint,
         limit=limit,
+        readiness=readiness,
     )
 
 
@@ -105,6 +125,7 @@ def analyze_scheduler_replay_analysis(
     *,
     capacity_hint: int | None = None,
     limit: int = 5,
+    readiness: SchedulerReplayReadiness | None = None,
 ) -> SchedulerReplayAnalysis:
     """Project one scheduler-diagnostic view over organism-log analysis."""
 
@@ -128,6 +149,7 @@ def analyze_scheduler_replay_analysis(
             capacity_source=capacity_source,
             observed_makespan_ms=analysis.timeline.duration_ms,
             max_parallel_spans=analysis.timeline.max_parallel_spans,
+            readiness=readiness or SchedulerReplayReadiness(),
             notes=notes,
         )
 
@@ -180,6 +202,7 @@ def analyze_scheduler_replay_analysis(
         scheduler_lower_bound_ms=scheduler_lower_bound_ms,
         slack_ms=slack_ms,
         terminal_barrier=terminal_barrier,
+        readiness=readiness or SchedulerReplayReadiness(),
         top_bottlenecks=top_bottlenecks,
         missed_parallelism=missed_parallelism,
         notes=_diagnostic_notes(
@@ -215,6 +238,155 @@ def _resolve_capacity_hint(
     if observed_parallelism > 0:
         return int(observed_parallelism), "observed_parallelism"
     return 1, "default"
+
+
+def _parse_row_timestamp(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _row_payload(row: OrganismLogRow | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(row, OrganismLogRow):
+        return dict(row.payload or {})
+    return dict(row or {})
+
+
+def _row_value(row: OrganismLogRow | dict[str, Any], key: str) -> Any:
+    if isinstance(row, OrganismLogRow):
+        value = getattr(row, key, None)
+        if value not in {None, "", []}:
+            return value
+        return dict(row.payload or {}).get(key)
+    return dict(row or {}).get(key)
+
+
+def _row_event(row: OrganismLogRow | dict[str, Any]) -> str:
+    return str(_row_value(row, "event") or "").strip()
+
+
+def _row_timestamp(row: OrganismLogRow | dict[str, Any]) -> str:
+    return str(_row_value(row, "timestamp") or "").strip()
+
+
+def _row_relative_ms(
+    timestamp: str,
+    *,
+    baseline: datetime | None,
+) -> int | None:
+    current = _parse_row_timestamp(timestamp)
+    if baseline is None or current is None:
+        return None
+    return max(int((current - baseline).total_seconds() * 1000), 0)
+
+
+def _capsules_include_useful_artifact(payload: dict[str, Any]) -> bool:
+    capsules = payload.get("capsules")
+    if isinstance(capsules, list):
+        for capsule in capsules:
+            if not isinstance(capsule, dict):
+                continue
+            if str(capsule.get("kind") or "") == "blocker":
+                continue
+            state = str(capsule.get("artifact_state") or "useful_for_downstream")
+            if state in {"useful_for_downstream", "validated"}:
+                return True
+    kinds = payload.get("capsule_kinds")
+    if isinstance(kinds, list):
+        return any(str(kind or "").strip() and str(kind) != "blocker" for kind in kinds)
+    return False
+
+
+def _readiness_metrics(
+    rows: list[OrganismLogRow | dict[str, Any]],
+) -> SchedulerReplayReadiness:
+    timestamps = [
+        parsed
+        for row in rows
+        if (parsed := _parse_row_timestamp(_row_timestamp(row))) is not None
+    ]
+    baseline = min(timestamps) if timestamps else None
+
+    capsule_event_count = 0
+    readiness_event_count = 0
+    first_useful_at = ""
+    first_ready_at = ""
+    first_useful_ms: int | None = None
+    first_ready_ms: int | None = None
+    ready_signal_ids: list[str] = []
+    predicates: list[str] = []
+    blocker_event_count = 0
+
+    for row in rows:
+        event = _row_event(row)
+        payload = _row_payload(row)
+        timestamp = _row_timestamp(row)
+        if event == "context.capsule.emitted":
+            capsule_event_count += 1
+            if not first_useful_at and _capsules_include_useful_artifact(payload):
+                first_useful_at = timestamp
+                first_useful_ms = _row_relative_ms(timestamp, baseline=baseline)
+            kinds = payload.get("capsule_kinds")
+            if isinstance(kinds, list) and any(str(kind) == "blocker" for kind in kinds):
+                blocker_event_count += 1
+            continue
+
+        if event != "context.readiness.emitted":
+            continue
+        readiness_event_count += 1
+        readiness = payload.get("readiness")
+        readiness_payload = readiness if isinstance(readiness, dict) else payload
+        predicate = str(
+            readiness_payload.get("predicate")
+            or payload.get("predicate")
+            or ""
+        ).strip()
+        if predicate and predicate not in predicates:
+            predicates.append(predicate)
+        readiness_id = str(
+            readiness_payload.get("readiness_id")
+            or payload.get("readiness_id")
+            or ""
+        ).strip()
+        ready = bool(
+            readiness_payload.get("ready_for_downstream")
+            if "ready_for_downstream" in readiness_payload
+            else payload.get("ready_for_downstream")
+        )
+        blockers = readiness_payload.get("blockers")
+        blocker_count = payload.get("blocker_count")
+        if (
+            isinstance(blockers, list)
+            and any(str(item).strip() for item in blockers)
+        ) or (isinstance(blocker_count, int) and blocker_count > 0):
+            blocker_event_count += 1
+        if ready:
+            if readiness_id and readiness_id not in ready_signal_ids:
+                ready_signal_ids.append(readiness_id)
+            if not first_ready_at:
+                first_ready_at = timestamp
+                first_ready_ms = _row_relative_ms(timestamp, baseline=baseline)
+
+    unlock_latency_ms = None
+    if first_useful_ms is not None and first_ready_ms is not None:
+        unlock_latency_ms = max(int(first_ready_ms) - int(first_useful_ms), 0)
+
+    return SchedulerReplayReadiness(
+        capsule_event_count=capsule_event_count,
+        readiness_event_count=readiness_event_count,
+        first_useful_artifact_at=first_useful_at,
+        first_downstream_ready_at=first_ready_at,
+        first_useful_artifact_ms=first_useful_ms,
+        first_downstream_ready_ms=first_ready_ms,
+        downstream_unlock_latency_ms=unlock_latency_ms,
+        ready_signal_ids=ready_signal_ids,
+        predicates=predicates,
+        blocker_event_count=blocker_event_count,
+    )
 
 
 def _span_weight(span: OrganismLogSpanAnalysis) -> int:
@@ -449,6 +621,7 @@ __all__ = [
     "SchedulerReplayBarrier",
     "SchedulerReplayBottleneck",
     "SchedulerReplayOpportunity",
+    "SchedulerReplayReadiness",
     "analyze_scheduler_replay",
     "analyze_scheduler_replay_analysis",
     "analyze_scheduler_replay_rows",
