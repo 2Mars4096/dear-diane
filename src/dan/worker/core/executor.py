@@ -670,6 +670,10 @@ class WorkerCoreExecutor:
         request: ExecutionRequest,
         hints: CompletionHints,
     ) -> str:
+        rendered_brief_prompt = str(request.metadata.get("brief_rendered_user_prompt") or "").strip()
+        if rendered_brief_prompt:
+            return rendered_brief_prompt
+
         sections: list[str] = []
         if hints.prompt_template:
             format_values = dict(request.input_payload)

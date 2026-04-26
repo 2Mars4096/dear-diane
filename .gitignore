@@ -190,12 +190,16 @@ pnpm-debug.log*
 !/tests/test_worker/test_linting.py
 !/tests/test_worker/test_memory_evidence_lifecycle.py
 !/tests/test_worker/test_model.py
+!/tests/test_worker/test_plan56_import_boundaries.py
+!/tests/test_worker/test_prompt_contract_library.py
 !/tests/test_worker/test_presets.py
 !/tests/test_worker/test_roles.py
 !/tests/test_worker/test_scheduler.py
 !/tests/test_worker/test_scheduler_replay.py
 !/tests/test_worker/test_specialized_agents.py
 !/tests/test_worker/test_super_organism.py
+!/tests/test_worker/test_universal_cell_and_briefs.py
+!/tests/test_worker/test_universal_organism.py
 !/tests/test_worker/test_worker_first_validation_gate.py
 !/tests/test_worker/test_workflow.py
 !/tests/test_linter/
