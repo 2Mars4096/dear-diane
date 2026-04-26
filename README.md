@@ -28,7 +28,7 @@ DAN is aimed at deep work that ordinary single-agent copilots handle poorly: mul
 - **Output normalization** — built-in parse → validate → re-prompt → retry on every LLM operator
 - **Retry & fallback** — per-node `RetryPolicy` with exponential backoff, fallback models, and halt/skip/error failure modes
 - **Multi-provider LLM** — built-in support for OpenAI, Anthropic, and Google; prefix-based routing (`gpt-*`, `claude-*`, `gemini-*`) with per-node model override, plus a shared provider-layer retry wrapper for transient API failures so agent surfaces do not each reinvent recovery logic
-- **11 built-in tools** — file I/O, web search/fetch, HTTP, shell commands, PDF reading, text chunking, JSON extraction, regex. Web fetch can optionally recover through DAN's persistent browser for JS-heavy or auth-gated pages; relative paths stay sandboxed to the workspace root, while explicit absolute paths are trusted and allowed. For untrusted LLM callers, keep inputs relative or add an approval layer
+- **Built-in tools** — file I/O, deterministic workspace checks, web search/fetch, HTTP, shell commands, PDF reading, text chunking, JSON extraction, regex. Web fetch can optionally recover through DAN's persistent browser for JS-heavy or auth-gated pages; relative paths stay sandboxed to the workspace root, while explicit absolute paths are trusted and allowed. For untrusted LLM callers, keep inputs relative or add an approval layer
 - **Checkpointing** — resume long-running workflows from the last completed level
 
 ## Quick Start
@@ -70,7 +70,7 @@ cp .env.example .env
 To enable the best daily-use experience, uncomment these bundles in your `.env`:
 ```env
 DAN_LEARNING_MODE=1      # Turn on all safe learning features (prompt optimization, memory, etc.)
-DAN_FULL_TOOLS=1         # Expose all 32+ tools in chat (file ops, git, system)
+DAN_FULL_TOOLS=1         # Expose the full built-in tool basket in chat (file ops, git, system)
 DAN_ENABLE_TIER_POLICY=1 # Auto-assign models by task difficulty
 ```
 
@@ -169,6 +169,7 @@ dan organism --research-only --research-readers 8 --json
 The default live tool basket is:
 - `list_directory`
 - `file_read`
+- `workspace_check`
 - `file_edit`
 - `file_write`
 - `shell_command`
@@ -428,7 +429,7 @@ Tool rounds are unbounded by default now. If you want a hard cap for a particula
 
 Provider completion waits are also bounded by default now. `dan code` resolves the per-completion timeout in this order: `--completion-timeout-seconds` -> `.dan-code/config.json` -> `DAN_CODE_COMPLETION_TIMEOUT_SECONDS` -> default `90s`. Use `--completion-timeout-seconds 0` to disable that bound. During a long quiet provider wait, the CLI now emits sparse heartbeat/status lines and an explicit timeout event instead of sitting silently after the last tool call.
 
-The local tool loop now also injects a shared structured-tool policy. In practice that means `dan code` should prefer `list_directory`, `file_read`, `file_edit`, `file_write`, `web_search`, and structured git tools over shell fallbacks, use `file_edit` for targeted line-based edits to existing files, batch multiple non-overlapping edits to the same file into one `file_edit(edits=[...])` call when possible, use `file_write` for whole-file create/replace/append flows, use `web_search` for live external lookups instead of guessing current facts, avoid shell heredocs when direct file tools are available, and cut down on repeated discovery once it already has the needed fact. The same loop now also validates alternative tool-argument requirement groups (`anyOf` / `oneOf`), so malformed calls like an empty `web_search {}` fail through the repair path instead of silently returning an empty success payload.
+The local tool loop now also injects a shared structured-tool policy. In practice that means `dan code` should prefer `list_directory`, `file_read`, `workspace_check`, `file_edit`, `file_write`, `web_search`, and structured git tools over shell fallbacks, use `workspace_check` for deterministic existence/count/HTML-tag/syntax checks before reaching for shell, use `file_edit` for targeted edits to existing files, batch multiple non-overlapping edits to the same file into one `file_edit(edits=[...])` call when possible, require each batch edit to include `start_line` or a unique `old_string`/`new_string` pair copied from a recent read, use `file_write` for whole-file create/replace/append flows, use `web_search` for live external lookups instead of guessing current facts, avoid shell heredocs when direct file tools are available, and cut down on repeated discovery once it already has the needed fact. The same loop now also validates alternative tool-argument requirement groups (`anyOf` / `oneOf`), so malformed calls like an empty `web_search {}` or an unanchored batch `file_edit` fail through the repair path instead of silently returning an empty success payload. Runtime validation remains strict, while the provider-facing `file_edit` schema is kept compact so strict OpenAI-compatible backends such as Moonshot do not reject the tool list before a worker can start.
 
 The structured-output seam is more tolerant now as well. Fenced ` ```json ... ``` ` replies from the orchestrator or bounded organs are parsed as structured payloads instead of being dumped back to the console as raw text, and local file tools accept `file_path` as a compatibility alias for `path` so minor argument-name mismatches do not waste a tool round.
 

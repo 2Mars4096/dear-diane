@@ -494,6 +494,42 @@ Workflow-generation rollout note:
 - `wf.worker(..., control_flow={...})` is the lightweight Worker-facing routing surface. At runtime it still delegates to the specialized `gate` executor rather than pretending branch/while semantics are generic LLM/tool behavior.
 - `wf.worker(..., validation_rules=[...])` is now the first-class Worker-facing validator surface. Runtime still delegates through the retained validator executor where that is the honest compatibility path.
 - `wf.worker(..., external_input_schema=..., external_output_schema=..., control_state_schema=..., local_state=..., compaction_rule=..., failure_policy=..., projections=...)` is now the first-class composite-contract surface for Worker-owned scopes. Those fields round-trip through the builder/decompiler and can participate in boundary validation, while retained specialized scheduler semantics still stay explicit where that is clearer.
+- For bounded organism validators, use `universal_validator_organ(...)` when a full review quorum is required and `compact_universal_validator_organ(...)` only after deterministic prechecks have already handled schema/static blockers. The compact organ keeps the same universal validation report shape but uses one lead model review instead of reviewer quorum fan-out.
+- For scheduler actions, use one `SchedulingProposal` shape for `serial`, `parallel`, `dispatch`, `split`, `duplicate`, `improve_context`, `validate`, `finalize`, `wait`, and `stop`. Populate `expected_value` or `expected_quality_gain`, `latency_cost`, `token_cost`, `rework_risk`, `material_yield_probability`, and `required_capacity` when known; `select_scheduler_proposal(...)` records per-proposal score components and selects the best admissible marginal-value move after deterministic guards run.
+- For scheduler `DUPLICATE` / hedge actions, also populate `uncertainty` and `failure_probability` when available. The deterministic guard rejects duplicates that do not clear risk-adjusted value, uncertainty/failure-risk, and material-yield thresholds.
+
+### 3q. Context Capsules
+
+Use context capsules when you need to pass useful partial evidence between agents without replaying full tool transcripts. Capsules preserve raw references plus small retained exact spans, so downstream agents can act quickly and rehydrate exact evidence only when needed.
+
+For deterministic file checks, prefer the built-in `workspace_check` tool before shell commands. It returns structured `validation_result` capsules for existence checks, literal/regex counts, HTML tag balance, and Python/JSON syntax checks.
+
+```python
+from dan.worker import build_tool_context_capsules, assemble_context_packet
+
+capsules = build_tool_context_capsules(
+    {
+        "tool_id": "file_read",
+        "tool_call_id": "tool-1",
+        "model_call_id": "model-1",
+        "arguments": {"path": "src/app.py", "start_line": 20, "end_line": 60},
+        "ok": True,
+        "result": {"path": "src/app.py", "content": "...", "line_count": 41},
+    },
+    source_task_id="task-a",
+    source_worker_id="worker-a",
+)
+packet = assemble_context_packet(capsules, target_task_id="task-b")
+```
+
+Runtime notes:
+- `ContextCapsule` carries `raw_refs`, `retained_evidence`, `summary`, `relevance`, `confidence`, `artifact_state`, `assumptions`, `open_questions`, `unlocks`, and `invalidates`.
+- `ContextPacket` is the bounded downstream prompt/context bundle. It includes selected capsules, exact retained spans, raw refs, and omitted capsule ids.
+- `ReadinessSignal` represents whether capsules are sufficient to unlock downstream work before the upstream worker fully completes.
+- `ToolLoopCompletionProvider` now attaches `context_capsules` and `readiness_signal` to recorded `executed_tools`, emits `context.capsule.emitted` events for deterministic tool-result retainers, and emits `context.readiness.emitted` events for downstream-unlock replay.
+- Scheduler tasks can declare `required_readiness_predicates`, `required_artifact_kinds`, and `required_unlocks`; use `evaluate_task_readiness_from_capsules(...)` to produce a ready/not-ready decision plus a bounded context packet.
+- Tissue pools can expose member completion through `member_completion_callback` on `execute_tissue_pattern(...)`, allowing organism-level schedulers to evaluate readiness before the whole pool barrier returns.
+- DAN Code consumes the same readiness shape across reducer and validator boundaries: individual owner lanes emit `scheduler.readiness.member_evaluated` / `scheduler.downstream.unlocked` as they finish, ready owner lanes start deterministic partial aggregation through `aggregation.partial_reduced`, complete incremental merge candidates can start deterministic validation prechecks through `validation.precheck.incremental_completed`, compact validator work can start speculatively through `validation.speculative_model.started/completed`, final validation can reuse unchanged prechecks and compact validator results through `validation.precheck.reused` / `validation.speculative_model.reused`, and the full pool emits `scheduler.readiness.evaluated` with ready/blocked owner paths while final result metadata keeps `readiness_ledger_history`.
 
 ---
 
@@ -1234,14 +1270,14 @@ Emits a `tier_escalation` event with `from_tier`, `to_tier`, `from_model`, `to_m
 
 ## 7e. Built-in Tools (`dan.tools`)
 
-DAN ships 32 batteries-included tools, auto-registered during server startup. Each tool module exports a `TOOL_METADATA` dict and an async callable.
+DAN ships batteries-included tools, auto-registered during server startup. Each tool module exports a `TOOL_METADATA` dict and an async callable.
 
 ### Tool Categories
 
 | Category | Tools | Description |
 |---|---|---|
 | **System** | `current_datetime`, `clipboard`, `python_eval`, `notify` | Time, clipboard, sandboxed code eval, notifications |
-| **File I/O** | `file_read`, `file_write`, `list_directory`, `file_move`, `file_copy`, `file_delete` | Workspace-sandboxed file operations |
+| **File I/O** | `file_read`, `file_edit`, `file_write`, `list_directory`, `file_move`, `file_copy`, `file_delete` | Workspace-sandboxed file operations |
 | **Data** | `csv_read`, `spreadsheet_read` | CSV/TSV parsing, Excel (.xlsx) reading |
 | **Web** | `web_search`, `web_fetch`, `http_request` | Tavily/Brave/DuckDuckGo search, URL fetch with optional browser-backed recovery, general HTTP |
 | **Shell** | `shell_command` | Subprocess with timeout and allowlist |
@@ -1255,6 +1291,8 @@ DAN ships 32 batteries-included tools, auto-registered during server startup. Ea
 `pdf_read` parameters: `path` (required), optional `mode`, `start_page`, `end_page`, `vision_model`, and `vision_prompt`. In `mode="vision"`, the tool reports `pages_requested`, `pages_returned`, `truncated`, and `warning` so callers can tell when a long PDF was capped to the first 25 pages.
 
 `list_directory` parameters: `path` (required), optional `glob_pattern`, `recursive`, `limit`, and `start_after`. Results are sorted by relative path and report page metadata: `count` (entries returned in this page), `total_count` (entries matching the current filter/cursor), `remaining_count`, `truncated`, and `next_start_after`. When `truncated=true`, callers should continue with `start_after=next_start_after` or narrow the listing with `glob_pattern` instead of inferring that later entries are absent.
+
+`file_edit` parameters: `path` plus either a line-based edit (`start_line`, optional `end_line`, `content`, `mode`) or `edits=[...]` for multiple non-overlapping edits in the same file. Each batch item must include `start_line` or a unique exact-text compatibility pair (`old_string` plus `new_string`) copied from a recent `file_read`; unanchored batch items such as `{"content": "..."}` are rejected and should be repaired by reading the target lines first. Provider-facing local tool schemas may be compacted to avoid strict backend schema-size limits, but the runtime still validates the full `file_edit` contract before applying any disk mutation.
 
 `web_fetch` accepts `url` plus optional `browser_fallback`. When enabled, the tool retries through DAN's persistent Playwright browser if the plain HTTP fetch fails or only returns a short JavaScript/cookie/challenge shell. Returned metadata now includes `fetch_via` (`"http"` or `"browser"`), `browser_fallback_used`, and `content_requires_browser`. The conversation-layer `web_search` / `web_fetch` capability handlers expose the same `browser_fallback` flag and `SearchResultSet.browser_fallback_count` so callers can tell when grounding depended on browser-rendered content.
 
@@ -1283,7 +1321,7 @@ extract = wf.tool("extract", tool_id="json_extract",
 from dan.executors.tool import ToolRegistry
 
 registry = ToolRegistry()
-registry.register_builtin_tools()  # registers all 32 built-in tools
+registry.register_builtin_tools()  # registers built-in tools
 
 # Add custom tools (override built-in IDs or add new ones)
 async def my_tool(query: str) -> dict:
