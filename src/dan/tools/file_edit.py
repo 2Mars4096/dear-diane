@@ -40,6 +40,17 @@ TOOL_METADATA = {
                 "type": "string",
                 "description": "Replacement or inserted content. Required for replace/insert modes.",
             },
+            "old_string": {
+                "type": "string",
+                "description": (
+                    "Compatibility replace form: exact existing text to replace. "
+                    "Use only when copied from a recent file_read and the text appears once."
+                ),
+            },
+            "new_string": {
+                "type": "string",
+                "description": "Compatibility replace form: replacement text for old_string.",
+            },
             "mode": {
                 "type": "string",
                 "enum": ["replace", "insert_before", "insert_after", "delete"],
@@ -55,8 +66,8 @@ TOOL_METADATA = {
                 "type": "array",
                 "description": (
                     "Optional batch form for multiple non-overlapping edits to the same file. "
-                    "Each item uses the same fields as a single edit: start_line, optional "
-                    "end_line, optional content, and optional mode."
+                    "Each item uses either line-based fields (start_line, optional end_line, "
+                    "content/mode) or compatibility replace fields (old_string plus new_string)."
                 ),
                 "items": {
                     "type": "object",
@@ -73,6 +84,29 @@ TOOL_METADATA = {
                             "type": "string",
                             "description": "Replacement or inserted content.",
                         },
+                        "old_string": {
+                            "type": "string",
+                            "description": (
+                                "Compatibility replace form: exact existing text to replace. "
+                                "Use only when copied from a recent file_read and unique in the file."
+                            ),
+                        },
+                        "new_string": {
+                            "type": "string",
+                            "description": "Compatibility replace form: replacement text for old_string.",
+                        },
+                        "replace": {
+                            "type": "string",
+                            "description": "Alias for content in batched replace edits.",
+                        },
+                        "replacement": {
+                            "type": "string",
+                            "description": "Alias for content in batched replace edits.",
+                        },
+                        "new_content": {
+                            "type": "string",
+                            "description": "Alias for content in batched replace edits.",
+                        },
                         "mode": {
                             "type": "string",
                             "enum": ["replace", "insert_before", "insert_after", "delete"],
@@ -80,7 +114,11 @@ TOOL_METADATA = {
                             "default": "replace",
                         },
                     },
-                    "required": ["start_line"],
+                    "anyOf": [
+                        {"required": ["start_line"]},
+                        {"required": ["old_string", "new_string"]},
+                        {"required": ["old_string", "content"]},
+                    ],
                 },
             },
         },
@@ -88,6 +126,8 @@ TOOL_METADATA = {
         "anyOf": [
             {"required": ["start_line"]},
             {"required": ["edits"]},
+            {"required": ["old_string", "new_string"]},
+            {"required": ["old_string", "content"]},
         ],
     },
     "examples": [
@@ -286,6 +326,14 @@ def _build_edit_spec(
 ) -> dict[str, object]:
     field_prefix = "" if label == "edit" else f"{label}."
     normalized_mode = _normalize_mode(mode, name=f"{field_prefix}mode")
+    if start_line is None:
+        if label == "edit":
+            raise _tool_argument_error(
+                "missing required arguments for file_edit: start_line or old_string"
+            )
+        raise _tool_argument_error(
+            f"missing required arguments for file_edit: {label} must include start_line or old_string"
+        )
     anchor_line = _normalize_line_number(start_line, name=f"{field_prefix}start_line")
     replacement_text = "" if content is None else str(content)
     if normalized_mode != "delete" and content is None:

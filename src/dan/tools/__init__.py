@@ -59,6 +59,7 @@ _TOOL_MODULES = [
     "text_translate",
     "web_fetch",
     "web_search",
+    "workspace_check",
 ]
 
 _REQUIRED_METADATA_KEYS = {"tool_id", "description", "parameters", "examples", "category", "returns"}
