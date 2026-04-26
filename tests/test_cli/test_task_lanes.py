@@ -49,6 +49,28 @@ def test_classify_code_task_lane_marks_bounded_existing_file_edit_fast() -> None
     assert policy.use_fallback_post_run_review is True
 
 
+def test_classify_code_task_lane_marks_single_file_repair_fast() -> None:
+    policy = classify_code_task_lane(
+        user_message=(
+            "Read index.html from disk, use a shell command for exact counts, "
+            "overwrite index.html with a single full-file write if needed, read back "
+            "the result, and do not modify styles.css or app.js."
+        ),
+        coding_objective=(
+            "Read index.html from disk, use a shell command for exact counts, "
+            "overwrite index.html with a single full-file write if needed, read back "
+            "the result, and do not modify styles.css or app.js."
+        ),
+        benchmark_mode=False,
+        pending_clarification=False,
+        existing_plan_milestones=0,
+    )
+
+    assert policy.lane == "fast"
+    assert policy.use_fallback_pre_run_planner is True
+    assert policy.use_fallback_post_run_review is True
+
+
 def test_classify_research_task_lane_marks_document_review_fast() -> None:
     policy = classify_research_task_lane(
         user_message="Review this 80-page paper and summarize the main arguments by section.",

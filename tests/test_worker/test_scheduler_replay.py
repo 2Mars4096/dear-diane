@@ -244,3 +244,62 @@ def test_analyze_scheduler_replay_rows_flags_lane_sequence_only_serialization() 
     assert opportunity.estimated_gain_upper_bound_ms == 2000
     assert opportunity.serial_gap_ms == 0
     assert opportunity.reason == "lane_sequence_only_serialization"
+
+
+def test_analyze_scheduler_replay_rows_reports_readiness_unlock_timing() -> None:
+    raw_rows = [
+        {
+            "schema": "organism_log_v1",
+            "stream": "run",
+            "product": "external",
+            "timestamp": "2026-04-23T00:00:00Z",
+            "event": "model.requested",
+            "row_kind": "event",
+        },
+        {
+            "schema": "organism_log_v1",
+            "stream": "run",
+            "product": "external",
+            "timestamp": "2026-04-23T00:00:01Z",
+            "event": "context.capsule.emitted",
+            "row_kind": "event",
+            "capsule_count": 1,
+            "capsule_kinds": ["implementation_delta"],
+            "capsules": [
+                {
+                    "capsule_id": "ctxcap:1",
+                    "kind": "implementation_delta",
+                    "artifact_state": "useful_for_downstream",
+                    "summary": "Changed src/app.py",
+                }
+            ],
+        },
+        {
+            "schema": "organism_log_v1",
+            "stream": "run",
+            "product": "external",
+            "timestamp": "2026-04-23T00:00:03Z",
+            "event": "context.readiness.emitted",
+            "row_kind": "event",
+            "readiness_id": "ready:1",
+            "ready_for_downstream": True,
+            "predicate": "tool_context_available",
+            "readiness": {
+                "readiness_id": "ready:1",
+                "ready_for_downstream": True,
+                "predicate": "tool_context_available",
+                "capsule_ids": ["ctxcap:1"],
+                "blockers": [],
+            },
+        },
+    ]
+
+    analysis = analyze_scheduler_replay_rows(raw_rows)
+
+    assert analysis.readiness.capsule_event_count == 1
+    assert analysis.readiness.readiness_event_count == 1
+    assert analysis.readiness.first_useful_artifact_ms == 1000
+    assert analysis.readiness.first_downstream_ready_ms == 3000
+    assert analysis.readiness.downstream_unlock_latency_ms == 2000
+    assert analysis.readiness.ready_signal_ids == ["ready:1"]
+    assert analysis.readiness.predicates == ["tool_context_available"]

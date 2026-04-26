@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from dan.models.control_flow import (
     GateNode,
     HumanInTheLoopNode,
@@ -19,8 +23,25 @@ from dan.models.nodes import CodeOperator, LLMOperator, RAGOperator, ReflectionN
 from dan.models.ports import InputPort, OutputPort
 from dan.worker import (
     BRIDGED_LEGACY_NODE_TYPES,
+    CellAddress,
+    CellHandoffPacket,
+    CrossCellTraceLog,
     EXPLICIT_NON_BRIDGED_LEGACY_NODE_TYPES,
+    ExecutionRequest,
+    HandoffExecution,
+    HandoffTask,
+    OutputContract,
+    SignalTrace,
+    TissueExecution,
+    TissueExecutionResult,
+    TissueMember,
+    TissuePoolLimits,
+    WorkerExecutionResult,
+    WorkerCoreExecutor,
+    WorkerDefinition,
+    compact_universal_validator_organ,
     convert_graph,
+    execute_tissue_pattern,
     infer_execution_effect,
     legacy_to_worker,
     mutation_claim_requires_evidence,
@@ -31,14 +52,26 @@ from dan.worker import (
     universal_validator_organ,
     validate_conversion,
     worker_to_legacy,
+    parallel_worker_pool,
+    execute_coding_organism,
 )
+from dan.worker.core.interfaces import CompletionResponse
 from dan.worker.model import LLMHints, Worker
 from dan.worker.organisms.coding_execution import (
     CodingTask,
     _apply_frontend_contract_hygiene,
+    _artifact_readiness_ledger,
+    _candidate_readiness_key,
+    _deterministic_validation_precheck,
+    _incremental_worker_merge_candidate,
+    _incremental_validation_precheck_record,
     _normalize_orchestrator_plan,
+    _partial_aggregation_fragment,
+    _worker_material_yield_signal,
+    _worker_pool_pattern,
     coding_execution_organism,
 )
+from dan.worker.organisms.local_runtime import LocalOrganismToolRuntime
 
 
 def test_role_factory_returns_standard_worker() -> None:
@@ -50,6 +83,65 @@ def test_role_factory_returns_standard_worker() -> None:
     assert reviewer.role == "reviewer"
     assert reviewer.model == "test-model"
     assert reviewer.persona == "Review carefully"
+
+
+@pytest.mark.asyncio
+async def test_tissue_member_completion_callback_observes_each_member_before_merge() -> None:
+    members = [
+        TissueMember(
+            member_id="worker-1",
+            address=CellAddress(
+                cell_id="pool.worker-1",
+                tissue_id="pool",
+                organism_id="test-organism",
+            ),
+            worker=WorkerDefinition(id="pool.worker-1", role="coding_worker"),
+            input_payload_overrides={"worker_index": 1},
+        ),
+        TissueMember(
+            member_id="worker-2",
+            address=CellAddress(
+                cell_id="pool.worker-2",
+                tissue_id="pool",
+                organism_id="test-organism",
+            ),
+            worker=WorkerDefinition(id="pool.worker-2", role="coding_worker"),
+            input_payload_overrides={"worker_index": 2},
+        ),
+    ]
+    pattern = parallel_worker_pool(
+        "pool",
+        members=members,
+        limits=TissuePoolLimits(max_concurrency=2),
+    )
+    packet = CellHandoffPacket(
+        trace=SignalTrace(trace_id="trace:tissue-callback", root_task_id="task"),
+        sender=CellAddress(cell_id="orchestrator", organism_id="test-organism"),
+        recipient=CellAddress(
+            cell_id="pool.coordinator",
+            tissue_id="pool",
+            organism_id="test-organism",
+        ),
+        task=HandoffTask(task_id="task:workers", instruction="Run workers."),
+        output_contract=OutputContract(),
+    )
+    observed: list[tuple[str, int]] = []
+
+    execution = await execute_tissue_pattern(
+        executor=WorkerCoreExecutor(),
+        pattern=pattern,
+        packet=packet,
+        member_completion_callback=lambda member, _packet, member_execution: observed.append(
+            (
+                member.member_id,
+                int(member_execution.result.outputs["result"]["worker_index"]),
+            )
+        ),
+    )
+
+    assert execution.result.status == "completed"
+    assert sorted(observed) == [("worker-1", 1), ("worker-2", 2)]
+    assert sorted(execution.result.outputs["member_results"]) == ["worker-1", "worker-2"]
 
 
 def test_legacy_llm_round_trips_through_worker_bridge() -> None:
@@ -206,6 +298,23 @@ def test_universal_validator_accepts_explicit_tie_break_priority() -> None:
     assert organ.metadata["review_tie_break_priority"] == ["pass", "repair"]
 
 
+def test_compact_universal_validator_reuses_report_contract_without_quorum() -> None:
+    organ = compact_universal_validator_organ(organism_id="test-organism")
+
+    assert organ.kind.value == "universal_validator"
+    assert organ.tissue is None
+    assert organ.tissue_coordinator is None
+    assert organ.boundary_contract.required_output_keys == [
+        "passed",
+        "overall_score",
+        "dimension_scores",
+        "repair_brief",
+        "missing_requirements",
+        "comparison_note",
+    ]
+    assert organ.metadata["validation_mode"] == "compact_model_review"
+
+
 def test_coding_orchestrator_plan_collapses_duplicate_briefs_back_to_one_worker() -> None:
     plan = _normalize_orchestrator_plan(
         outputs={
@@ -222,6 +331,606 @@ def test_coding_orchestrator_plan_collapses_duplicate_briefs_back_to_one_worker(
 
     assert plan.worker_count == 1
     assert plan.worker_briefs == ["Fix the navbar hover effect in styles.css."]
+
+
+def test_deterministic_validation_precheck_selects_compact_policy_for_static_blockers(tmp_path) -> None:
+    (tmp_path / "index.html").write_text(
+        """
+<!doctype html>
+<html>
+<head><link rel="stylesheet" href="./missing.css"></head>
+<body><main><h1>Updated</h1></main></body>
+</html>
+""".strip(),
+        encoding="utf-8",
+    )
+    task = CodingTask(
+        task_id="coding-task",
+        objective="Refresh index.html quickly.",
+        session_context={
+            "workspace_root": str(tmp_path),
+            "completion_timeout_seconds": 45.0,
+            "short_completion_timeout": True,
+        },
+    )
+    plan = _normalize_orchestrator_plan(
+        outputs={
+            "worker_count": 1,
+            "worker_briefs": ["Patch index.html."],
+            "validator_focus": "Validate the frontend candidate.",
+        },
+        organism=coding_execution_organism(model="gpt-test"),
+        task=task,
+    )
+
+    report = _deterministic_validation_precheck(
+        task=task,
+        plan=plan,
+        candidate_payload={
+            "candidate_id": "candidate-1",
+            "change_summary": "Updated index.html.",
+            "target_files": ["index.html"],
+            "test_plan": ["open index.html"],
+            "workspace_effect": "modified",
+        },
+        candidate_source="worker",
+    )
+
+    assert report["policy_source"] == "compact_validator"
+    assert report["blocking_errors"] == [
+        "index.html references missing local file ./missing.css"
+    ]
+    assert report["checks"] == ["frontend_static_contract"]
+
+
+def test_orchestrator_plan_records_scheduler_action_selection_for_artifact_partitions(tmp_path) -> None:
+    for path in ("index.html", "styles.css", "app.js"):
+        (tmp_path / path).write_text(f"/* {path} */\n", encoding="utf-8")
+    task = CodingTask(
+        task_id="coding-task",
+        objective="Refresh the existing target files as non-overlapping artifacts.",
+        session_context={
+            "workspace_root": str(tmp_path),
+            "target_artifacts": ["index.html", "styles.css", "app.js"],
+        },
+    )
+
+    plan = _normalize_orchestrator_plan(
+        outputs={
+            "worker_count": 1,
+            "worker_briefs": ["Patch the existing files."],
+            "validator_focus": "Validate the frontend candidate.",
+        },
+        organism=coding_execution_organism(model="gpt-test"),
+        task=task,
+    )
+
+    assert plan.worker_count == 3
+    assert plan.scheduler_policy_source == "generic_artifact_partition"
+    assert plan.scheduler_decision["selected_action"] == "parallel"
+    assert plan.scheduler_decision["selected_proposal"]["required_capacity"] == 3
+    assert len(plan.scheduler_decision["rankings"]) == 2
+    assert plan.artifact_owner_paths == ["index.html", "styles.css", "app.js"]
+
+
+def test_orchestrator_plan_avoids_owner_lanes_for_non_mutated_artifacts(tmp_path) -> None:
+    for path in ("index.html", "styles.css", "app.js", "index_backup.html"):
+        (tmp_path / path).write_text(f"/* {path} */\n", encoding="utf-8")
+    task = CodingTask(
+        task_id="coding-task",
+        objective=(
+            "Read index.html from disk. Use a shell command to report exact structural "
+            "tag counts. If needed, overwrite index.html with a single full-file write. "
+            "Do not modify styles.css or app.js."
+        ),
+        session_context={"workspace_root": str(tmp_path)},
+    )
+
+    plan = _normalize_orchestrator_plan(
+        outputs={
+            "worker_count": 4,
+            "worker_briefs": ["Run the bounded repair."],
+            "validator_focus": "Validate the frontend candidate.",
+        },
+        organism=coding_execution_organism(model="gpt-test"),
+        task=task,
+    )
+
+    assert plan.worker_count == 1
+    assert plan.scheduler_policy_source == ""
+    assert plan.scheduler_decision == {}
+    assert plan.artifact_owner_paths == []
+
+
+def test_orchestrator_plan_ignores_backup_workspace_artifacts(tmp_path) -> None:
+    for path in ("index.html", "styles.css", "app.js", "index_backup.html"):
+        (tmp_path / path).write_text(f"/* {path} */\n", encoding="utf-8")
+    task = CodingTask(
+        task_id="coding-task",
+        objective="Refresh the existing target files as non-overlapping artifacts.",
+        session_context={"workspace_root": str(tmp_path)},
+    )
+
+    plan = _normalize_orchestrator_plan(
+        outputs={
+            "worker_count": 1,
+            "worker_briefs": ["Patch the existing files."],
+            "validator_focus": "Validate the frontend candidate.",
+        },
+        organism=coding_execution_organism(model="gpt-test"),
+        task=task,
+    )
+
+    assert plan.worker_count == 3
+    assert plan.scheduler_policy_source == "generic_artifact_partition"
+    assert plan.artifact_owner_paths == ["index.html", "styles.css", "app.js"]
+
+
+@pytest.mark.asyncio
+async def test_file_edit_missing_content_fails_before_approval(tmp_path) -> None:
+    events: list[dict[str, object]] = []
+    approval_calls: list[tuple[str, dict[str, object]]] = []
+    (tmp_path / "index.html").write_text("<main>ok</main>\n", encoding="utf-8")
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["file_edit"],
+        workspace_root=tmp_path,
+        approval_callback=lambda tool_id, arguments, metadata: approval_calls.append(
+            (tool_id, dict(arguments))
+        )
+        or True,
+        event_callback=events.append,
+    )
+
+    with pytest.raises(ValueError, match="file_edit: content"):
+        await runtime.call(
+            "file_edit",
+            {
+                "path": "index.html",
+                "start_line": 1,
+                "end_line": 1,
+            },
+            worker_id="coding-build.worker-3",
+        )
+
+    assert approval_calls == []
+    assert [event["event"] for event in events] == ["tool.started", "tool.failed"]
+    assert "tool_arguments_invalid: missing required arguments for file_edit: content" in str(
+        events[1]["error"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_file_edit_placeholder_content_fails_before_approval(tmp_path) -> None:
+    events: list[dict[str, object]] = []
+    approval_calls: list[tuple[str, dict[str, object]]] = []
+    target = tmp_path / "index.html"
+    target.write_text("<main>ok</main>\n", encoding="utf-8")
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["file_edit"],
+        workspace_root=tmp_path,
+        approval_callback=lambda tool_id, arguments, metadata: approval_calls.append(
+            (tool_id, dict(arguments))
+        )
+        or True,
+        event_callback=events.append,
+    )
+
+    with pytest.raises(ValueError, match="dummy read-instruction"):
+        await runtime.call(
+            "file_edit",
+            {
+                "path": "index.html",
+                "start_line": 1,
+                "end_line": 1,
+                "content": "dummy call to read - will error, use file_read instead",
+            },
+            worker_id="coding-build.worker-1",
+        )
+
+    assert approval_calls == []
+    assert target.read_text(encoding="utf-8") == "<main>ok</main>\n"
+    assert [event["event"] for event in events] == ["tool.started", "tool.failed"]
+    assert "content contains dummy read-instruction edit content" in str(
+        events[1]["error"]
+    )
+
+
+def test_worker_material_yield_signal_separates_candidate_from_written_artifact() -> None:
+    read_only_signal = _worker_material_yield_signal(
+        member_id="worker-1",
+        payload={
+            "candidate_id": "candidate-readonly",
+            "change_summary": "Proposed a bounded patch but did not write it.",
+            "target_files": ["src/app.py"],
+            "test_plan": ["pytest -q"],
+            "risks": [],
+            "workspace_effect": "modified",
+        },
+        executed_tools=[
+            {
+                "tool_id": "file_read",
+                "ok": True,
+                "arguments": {"path": "src/app.py"},
+                "result": {"path": "src/app.py"},
+            }
+        ],
+    )
+    written_signal = _worker_material_yield_signal(
+        member_id="worker-2",
+        owner_path="src/app.py",
+        payload={
+            "candidate_id": "candidate-written",
+            "change_summary": "Patched the app.",
+            "target_files": ["src/app.py"],
+            "test_plan": ["pytest -q"],
+            "risks": [],
+            "workspace_effect": "modified",
+        },
+        executed_tools=[
+            {
+                "tool_id": "file_edit",
+                "ok": True,
+                "arguments": {"path": "src/app.py"},
+                "result": {"path": "src/app.py"},
+            }
+        ],
+    )
+    timeout_signal = _worker_material_yield_signal(
+        member_id="worker-3",
+        payload={
+            "candidate_id": "Provider completion timed out before generation finished.",
+            "change_summary": "Provider completion timed out before generation finished.",
+            "target_files": [],
+            "test_plan": [],
+            "risks": [],
+        },
+        executed_tools=[],
+    )
+
+    assert read_only_signal["candidate_material"] is True
+    assert read_only_signal["materialized_artifact"] is False
+    assert read_only_signal["no_material_reason"] == "missing_mutation_evidence"
+    assert written_signal["candidate_material"] is True
+    assert written_signal["materialized_artifact"] is True
+    assert written_signal["matching_mutation_evidence"] is True
+    assert written_signal["owner_path"] == "src/app.py"
+    assert timeout_signal["candidate_material"] is False
+    assert timeout_signal["materialized_artifact"] is False
+    assert timeout_signal["no_material_reason"] == "timeout_or_blocked_no_output"
+
+
+def test_artifact_readiness_ledger_marks_capsule_backed_owner_lanes_ready() -> None:
+    def mutation_tool(worker_id: str, path: str, owner_path: str) -> dict[str, object]:
+        capsule_id = f"ctx:{worker_id}:{owner_path}"
+        return {
+            "tool_id": "file_edit",
+            "ok": True,
+            "arguments": {"path": path},
+            "result": {"path": path},
+            "context_capsules": [
+                {
+                    "capsule_id": capsule_id,
+                    "kind": "implementation_delta",
+                    "summary": f"Changed {owner_path}",
+                    "artifact_state": "useful_for_downstream",
+                    "unlocks": ["implementation_delta", f"file_changed:{path}"],
+                    "confidence": 0.9,
+                }
+            ],
+            "readiness_signal": {
+                "readiness_id": f"ready:{worker_id}:{owner_path}",
+                "capsule_ids": [capsule_id],
+                "ready_for_downstream": True,
+                "predicate": "tool_context_available",
+                "summary": f"{owner_path} is ready for downstream aggregation.",
+                "blockers": [],
+                "downstream_task_ids": [],
+            },
+        }
+
+    organism = coding_execution_organism(model="gpt-test")
+    task = CodingTask(
+        task_id="coding-task",
+        objective="Refresh the existing target files as non-overlapping artifacts.",
+        session_context={"target_artifacts": ["index.html", "styles.css"]},
+    )
+    plan = _normalize_orchestrator_plan(
+        outputs={
+            "worker_count": 1,
+            "worker_briefs": ["Patch the existing files."],
+            "validator_focus": "Validate the frontend candidate.",
+        },
+        organism=organism,
+        task=task,
+    )
+    pattern, coordinator = _worker_pool_pattern(
+        organism=organism,
+        attempt=1,
+        plan=plan,
+    )
+    packet = CellHandoffPacket(
+        trace=SignalTrace(trace_id="trace:readiness", root_task_id=task.task_id),
+        sender=CellAddress(cell_id="orchestrator", organism_id=organism.organism_id),
+        recipient=coordinator,
+        task=HandoffTask(
+            task_id=f"{task.task_id}:workers:1",
+            instruction="Run owner lanes.",
+        ),
+        output_contract=OutputContract(),
+    )
+    member_results = {
+        "worker-1": {
+            "candidate_fragment": {"index.html": "<main>Updated</main>\n"},
+            "change_summary": "Updated index.html.",
+            "target_files": ["index.html"],
+            "test_plan": ["open index.html"],
+            "risks": [],
+            "workspace_effect": "modified",
+        },
+        "worker-2": {
+            "candidate_fragment": {"styles.css": "body { color: white; }\n"},
+            "change_summary": "Updated styles.css.",
+            "target_files": ["styles.css"],
+            "test_plan": ["open index.html"],
+            "risks": [],
+            "workspace_effect": "modified",
+        },
+    }
+    member_executions = [
+        HandoffExecution(
+            packet=packet,
+            request=ExecutionRequest(task="worker-1"),
+            result=WorkerExecutionResult(
+                status="completed",
+                outputs=member_results["worker-1"],
+                metadata={
+                    "raw_response": {
+                        "executed_tools": [
+                            mutation_tool(
+                                "worker-1",
+                                "/workspace/site/index.html",
+                                "index.html",
+                            )
+                        ]
+                    }
+                },
+            ),
+        ),
+        HandoffExecution(
+            packet=packet,
+            request=ExecutionRequest(task="worker-2"),
+            result=WorkerExecutionResult(
+                status="completed",
+                outputs=member_results["worker-2"],
+                metadata={
+                    "raw_response": {
+                        "executed_tools": [
+                            mutation_tool(
+                                "worker-2",
+                                "/workspace/site/styles.css",
+                                "styles.css",
+                            )
+                        ]
+                    }
+                },
+            ),
+        ),
+    ]
+    worker_execution = TissueExecution(
+        pattern=pattern,
+        packet=packet,
+        result=TissueExecutionResult(
+            status="completed",
+            outputs={"member_results": member_results},
+            metadata={"successful_member_ids": ["worker-1", "worker-2"]},
+        ),
+        member_executions=member_executions,
+    )
+
+    ledger = _artifact_readiness_ledger(
+        plan=plan,
+        member_results=member_results,
+        worker_execution=worker_execution,
+    )
+
+    assert ledger["all_owner_paths_ready"] is True
+    assert ledger["ready_owner_paths"] == ["index.html", "styles.css"]
+    assert ledger["missing_owner_paths"] == []
+    assert {lane["readiness_source"] for lane in ledger["lanes"]} == {
+        "capsule_scheduler"
+    }
+    assert all(lane["scheduler_readiness"]["ready"] is True for lane in ledger["lanes"])
+
+    fragments = [
+        _partial_aggregation_fragment(
+            member_id="worker-1",
+            owner_path="index.html",
+            payload=member_results["worker-1"],
+            executed_tools=[
+                mutation_tool(
+                    "worker-1",
+                    "/workspace/site/index.html",
+                    "index.html",
+                )
+            ],
+        ),
+        _partial_aggregation_fragment(
+            member_id="worker-2",
+            owner_path="styles.css",
+            payload=member_results["worker-2"],
+            executed_tools=[
+                mutation_tool(
+                    "worker-2",
+                    "/workspace/site/styles.css",
+                    "styles.css",
+                )
+            ],
+        ),
+    ]
+    candidate = _incremental_worker_merge_candidate(
+        fragments=[fragment for fragment in fragments if fragment is not None],
+        owner_paths=["index.html", "styles.css"],
+        attempt=1,
+    )
+
+    assert candidate is not None
+    assert candidate["candidate_id"] == "candidate-1-worker-merge"
+    assert candidate["target_files"] == ["index.html", "styles.css"]
+    assert candidate["candidate_fragment"] == {
+        "index.html": "<main>Updated</main>\n",
+        "styles.css": "body { color: white; }\n",
+    }
+    assert candidate["synthesized_from_incremental_reducer"] is True
+    precheck_record = _incremental_validation_precheck_record(
+        task=task,
+        plan=plan,
+        candidate_payload=candidate,
+        candidate_source="worker_merge",
+        attempt=1,
+        fragment_count=2,
+        owner_paths=["index.html", "styles.css"],
+    )
+
+    assert precheck_record["candidate_key"] == _candidate_readiness_key(candidate)
+    assert precheck_record["candidate_id"] == "candidate-1-worker-merge"
+    assert precheck_record["policy_source"] == "compact_validator"
+    assert precheck_record["blocking_errors"] == []
+    assert precheck_record["checks"] == ["artifact_owner_coverage"]
+    assert precheck_record["validation_precheck"]["candidate_source"] == "worker_merge"
+
+
+@pytest.mark.asyncio
+async def test_coding_execution_reuses_speculative_compact_validation_from_incremental_merge(
+    tmp_path,
+) -> None:
+    def mutation_tool(worker_id: str, path: str, owner_path: str) -> dict[str, object]:
+        capsule_id = f"ctx:{worker_id}:{owner_path}"
+        return {
+            "tool_id": "file_edit",
+            "ok": True,
+            "arguments": {"path": path},
+            "result": {"path": path},
+            "context_capsules": [
+                {
+                    "capsule_id": capsule_id,
+                    "kind": "implementation_delta",
+                    "summary": f"Changed {owner_path}",
+                    "artifact_state": "useful_for_downstream",
+                    "unlocks": ["implementation_delta", f"file_changed:{path}"],
+                    "confidence": 0.9,
+                }
+            ],
+            "readiness_signal": {
+                "readiness_id": f"ready:{worker_id}:{owner_path}",
+                "capsule_ids": [capsule_id],
+                "ready_for_downstream": True,
+                "predicate": "tool_context_available",
+                "summary": f"{owner_path} is ready for downstream validation.",
+                "blockers": [],
+                "downstream_task_ids": [],
+            },
+        }
+
+    class Provider:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def complete(self, request) -> CompletionResponse:
+            worker_id = str(request.metadata.get("worker_id") or "")
+            self.calls.append(worker_id)
+            if worker_id == "coding-build.orchestrator":
+                payload = {
+                    "public_response": "Patch two owned artifacts in parallel.",
+                    "worker_count": 2,
+                    "worker_briefs": [
+                        "EXCLUSIVE WRITE OWNER: src/app.py. Patch the app module only.",
+                        "EXCLUSIVE WRITE OWNER: README.md. Patch the README only.",
+                    ],
+                    "aggregation_focus": "Merge the two owner outputs into one candidate.",
+                    "validator_focus": "Validate the merged candidate.",
+                    "pass_threshold": 0.9,
+                }
+                return CompletionResponse(text=json.dumps(payload, sort_keys=True))
+            if worker_id == "coding-build.worker-1":
+                payload = {
+                    "candidate_fragment": {"src/app.py": "print('ready')\n"},
+                    "change_summary": "Updated app module.",
+                    "target_files": ["src/app.py"],
+                    "test_plan": ["python -m py_compile src/app.py"],
+                    "risks": [],
+                    "workspace_effect": "modified",
+                }
+                return CompletionResponse(
+                    text=json.dumps(payload, sort_keys=True),
+                    raw={
+                        "executed_tools": [
+                            mutation_tool(
+                                "worker-1",
+                                str(tmp_path / "src/app.py"),
+                                "src/app.py",
+                            )
+                        ]
+                    },
+                )
+            if worker_id == "coding-build.worker-2":
+                payload = {
+                    "candidate_fragment": {"README.md": "# Ready\n"},
+                    "change_summary": "Updated README.",
+                    "target_files": ["README.md"],
+                    "test_plan": ["review README.md"],
+                    "risks": [],
+                    "workspace_effect": "modified",
+                }
+                return CompletionResponse(
+                    text=json.dumps(payload, sort_keys=True),
+                    raw={
+                        "executed_tools": [
+                            mutation_tool(
+                                "worker-2",
+                                str(tmp_path / "README.md"),
+                                "README.md",
+                            )
+                        ]
+                    },
+                )
+            if worker_id == "coding-build.validator.lead":
+                payload = {
+                    "passed": True,
+                    "overall_score": 0.96,
+                    "dimension_scores": {"boundedness": 0.96},
+                    "repair_brief": "",
+                    "missing_requirements": [],
+                    "comparison_note": "Speculative compact validation passed.",
+                }
+                return CompletionResponse(text=json.dumps(payload, sort_keys=True))
+            raise AssertionError(f"Unexpected worker_id: {worker_id}")
+
+    provider = Provider()
+    events: list[dict[str, object]] = []
+    task = CodingTask(
+        task_id="coding-task",
+        objective="Patch two non-overlapping artifacts.",
+        session_context={"workspace_root": str(tmp_path)},
+    )
+
+    execution = await execute_coding_organism(
+        executor=WorkerCoreExecutor(completion_provider=provider),
+        organism=coding_execution_organism(model="gpt-test"),
+        task=task,
+        trace_log=CrossCellTraceLog(),
+        event_callback=events.append,
+    )
+
+    event_names = [str(event["event"]) for event in events]
+    assert execution.result is not None
+    assert execution.result.status == "completed"
+    assert "validation.speculative_model.started" in event_names
+    assert "validation.speculative_model.completed" in event_names
+    assert "validation.speculative_model.reused" in event_names
+    assert provider.calls.count("coding-build.validator.lead") == 1
+    speculative_history = execution.result.metadata["speculative_validation_history"]
+    assert speculative_history[0]["reused_at_final_validation"] is True
+    assert speculative_history[0]["status"] == "completed"
 
 
 def test_frontend_contract_hygiene_runs_for_normal_timeout_parallel_owner_merge(tmp_path) -> None:

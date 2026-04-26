@@ -17,6 +17,8 @@ from dan.cli.code import (
     _conversation_context,
     _effective_coding_organism_max_repair_rounds,
     _effective_supervision_loop_count,
+    _normalize_structured_workspace_check_acceptance_criteria,
+    _normalize_structured_workspace_check_objective,
     _provider_request_overrides_for_thinking_mode,
     _project_planner_context,
     _load_or_create_session,
@@ -239,6 +241,7 @@ def test_main_json_uses_coding_organism_runner(tmp_path, capsys, monkeypatch) ->
         assert kwargs["tool_ids"] == [
             "list_directory",
             "file_read",
+            "workspace_check",
             "file_edit",
             "file_write",
             "shell_command",
@@ -256,6 +259,7 @@ def test_main_json_uses_coding_organism_runner(tmp_path, capsys, monkeypatch) ->
         assert kwargs["session_context"]["tool_ids"] == [
             "list_directory",
             "file_read",
+            "workspace_check",
             "file_edit",
             "file_write",
             "shell_command",
@@ -1305,6 +1309,7 @@ def test_main_without_objective_enters_interactive_loop(tmp_path, monkeypatch) -
     assert calls["tool_ids"] == [
         "list_directory",
         "file_read",
+        "workspace_check",
         "file_edit",
         "file_write",
         "shell_command",
@@ -1337,6 +1342,47 @@ def test_main_without_objective_enters_interactive_loop(tmp_path, monkeypatch) -
     assert all(row["stream"] == "control_plane" for row in control_rows)
 
 
+def test_structured_workspace_check_objective_replaces_stale_html_shell_counts() -> None:
+    stale_objective = (
+        "Read /tmp/site/index.html from disk. Use shell_command grep -c to report "
+        "exact counts of <html>, </html>, <head>, </head>, <body>, </body>, "
+        "<main>, and </main> before repairing duplicates."
+    )
+
+    normalized, changed = _normalize_structured_workspace_check_objective(
+        stale_objective,
+        tool_ids=["file_read", "workspace_check", "shell_command"],
+    )
+
+    assert changed is True
+    assert "workspace_check" in normalized
+    assert 'check="html_tags"' in normalized
+    assert 'path="index.html"' in normalized
+    assert "grep -c" not in normalized
+
+
+def test_structured_workspace_check_acceptance_replaces_stale_shell_counts() -> None:
+    stale_objective = (
+        "Use shell_command to report counts for <html>, </html>, <head>, </head>, "
+        "<body>, </body>, <main>, and </main> in index.html."
+    )
+    criteria = [
+        "Return exactly one bounded candidate.",
+        "Use shell_command grep counts for index.html structural tags.",
+    ]
+
+    normalized, changed = _normalize_structured_workspace_check_acceptance_criteria(
+        criteria,
+        objective=stale_objective,
+        tool_ids=["workspace_check", "shell_command"],
+    )
+
+    assert changed is True
+    assert "Return exactly one bounded candidate." in normalized
+    assert not any("grep" in criterion for criterion in normalized)
+    assert any("workspace_check" in criterion for criterion in normalized)
+
+
 def test_main_init_writes_workspace_product_config(tmp_path, capsys) -> None:
     exit_code = main(
         [
@@ -1359,6 +1405,7 @@ def test_main_init_writes_workspace_product_config(tmp_path, capsys) -> None:
     assert config_payload["default_tool_ids"] == [
         "list_directory",
         "file_read",
+        "workspace_check",
         "file_edit",
         "file_write",
         "shell_command",
