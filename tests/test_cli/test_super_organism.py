@@ -756,30 +756,49 @@ def test_build_parser_rejects_public_scenario_flag() -> None:
         parser.parse_args(["--scenario", "truth-audit"])
 
 
+def test_live_objective_routing_uses_shared_dispatch_selector() -> None:
+    website = super_cli.run_super_organism_demo("build a product website")
+    research = super_cli.run_super_organism_demo("research current evidence about this market")
+
+    assert super_cli._is_website_objective(website) is True
+    assert super_cli._supports_live_execution(website) is True
+    assert super_cli._is_website_objective(research) is False
+    assert super_cli._supports_live_execution(research) is False
+
+
 def test_live_worker_contracts_include_paced_small_write_guidance() -> None:
-    website_worker = super_cli._build_live_website_worker("fake-model")
-    generic_worker = super_cli._build_live_generic_worker("fake-model")
-
-    website_text = " ".join(
-        [
-            str(website_worker.instruction or ""),
-            str(website_worker.llm_hints.system_prompt or ""),
-        ]
+    choice = super_cli._super_live_choice(
+        super_cli.run_super_organism_demo("build a product website")
     )
-    generic_text = " ".join(
-        [
-            str(generic_worker.instruction or ""),
-            str(generic_worker.llm_hints.system_prompt or ""),
-        ]
+    brief = super_cli.coding_brief(
+        role=super_cli.RoleSpec(
+            role_label="coding_worker",
+            trace_role="super-dan.live.website-builder",
+        ),
+        task="Build the website.",
+        pacing_policy=super_cli._live_pacing_policy(forbid_scratch_files=True),
+        tool_policy={"allowed_tool_ids": choice.tool_policy["allowed_tool_ids"]},
+        sampling_policy={"profile": choice.sampling_policy, "temperature": 0.35, "max_tokens": 2800},
+    )
+    website_worker = super_cli._live_cell_from_brief(
+        model="fake-model",
+        brief=brief,
+        worker_id="super-dan.live.website-builder",
+        organism_stage="execution",
     )
 
-    assert "1200 words" in website_text
-    assert "200 lines" in website_text
-    assert "Do not create scratch files" in website_text
-    assert "coordinated set of files" in website_text
-    assert "Prefer `file_edit` over whole-file `file_write`" in generic_text
-    assert "1200 words" in generic_text
-    assert "200 lines" in generic_text
+    website_text = str(website_worker.llm_hints.system_prompt or "")
+    pacing_text = super_cli._live_pacing_contract()
+
+    assert not hasattr(super_cli, "_build_live_website_worker")
+    assert not hasattr(super_cli, "_build_live_generic_worker")
+    assert website_worker.metadata["universal_cell"] is True
+    assert website_worker.metadata["brief_driven"] is True
+    assert "Do not assume product-specific rules" in website_text
+    assert choice.artifact_policy["required_files"] == ["index.html", "styles.css", "app.js", "README.md"]
+    assert "file_write" in choice.tool_policy["allowed_tool_ids"]
+    assert "1200 words" in pacing_text
+    assert "200 lines" in pacing_text
 
 
 def test_live_tasks_include_paced_incremental_execution_guidance(tmp_path) -> None:
