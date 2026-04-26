@@ -16,6 +16,10 @@ from typing import Any, Callable, Sequence
 from dan.providers import CompletionResult, LLMProvider, apply_cache_hints
 from dan.tools import get_all_tools
 from dan.tools._git_helpers import _find_repo, _git_binary
+from dan.worker.context_capsules import (
+    build_tool_context_capsules,
+    readiness_signal_from_capsules,
+)
 from dan.worker.core.interfaces import CompletionRequest, CompletionResponse
 from dan.worker.core.model import WorkerDefinition
 from dan.worker.organism_log import organism_event_context, stable_output_contract_id
@@ -28,6 +32,7 @@ from dan.worker.tissue import TissuePattern
 DEFAULT_LIVE_ORGANISM_TOOL_IDS = [
     "list_directory",
     "file_read",
+    "workspace_check",
     "file_edit",
     "file_write",
     "shell_command",
@@ -41,12 +46,21 @@ DEFAULT_LIVE_ORGANISM_TOOL_IDS = [
 # constrained read-only subset.
 _READ_ONLY_TOOL_EXCLUSIONS = frozenset({"file_edit", "file_write", "shell_command"})
 _DISCOVERY_ONLY_TOOL_IDS = frozenset(
-    {"list_directory", "file_read", "web_search", "git_status", "git_diff", "git_log"}
+    {
+        "list_directory",
+        "file_read",
+        "workspace_check",
+        "web_search",
+        "git_status",
+        "git_diff",
+        "git_log",
+    }
 )
 _RESEARCH_TOOL_PREFERRED_ORDER = ("web_search", "file_read", "list_directory")
 _RESEARCH_TOOL_EXCLUSIONS = frozenset({"git_status", "git_diff", "git_log"})
 _CODING_AGGREGATION_TOOL_PREFERRED_ORDER = (
     "file_read",
+    "workspace_check",
     "file_edit",
     "file_write",
     "git_diff",
@@ -76,6 +90,8 @@ _VALIDATION_REPORT_REQUIRED_KEYS = frozenset(
 _BLOCKED_TOOL_DISABLE_THRESHOLD = 2
 _TOOL_PROMPT_TEXT_LIMIT = 2000
 _EXCLUSIVE_OWNER_FILE_READ_PROMPT_TEXT_LIMIT = 24000
+_OLDER_FILE_READ_PROMPT_TEXT_LIMIT = 700
+_RECENT_FULL_FILE_READ_PROMPT_RESULTS = 2
 _PREWRITE_SUCCESSFUL_READ_NUDGE_THRESHOLD = 3
 _AGGREGATION_PREWRITE_SUCCESSFUL_READ_NUDGE_THRESHOLD = 2
 _PREWRITE_SHELL_ANALYSIS_NUDGE_THRESHOLD = 4
@@ -206,6 +222,144 @@ def _compact_tool_payload_for_prompt(
     return compacted
 
 
+def _message_content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        return str(content)
+
+
+def _message_prompt_char_count(messages: Sequence[dict[str, Any]]) -> int:
+    total = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        total += len(_message_content_text(message.get("content")))
+        tool_calls = message.get("tool_calls")
+        if tool_calls:
+            total += len(_message_content_text(tool_calls))
+    return total
+
+
+def _compact_middle_text_for_prompt(
+    content: str,
+    *,
+    limit: int,
+) -> tuple[str, int]:
+    if len(content) <= limit:
+        return content, 0
+    head_chars = max(int(limit * 0.55), 1)
+    tail_chars = max(limit - head_chars, 1)
+    omitted = max(len(content) - head_chars - tail_chars, 0)
+    marker = (
+        f"\n...[older file_read compacted for prompt replay; {omitted} chars omitted. "
+        "Use a targeted file_read line range if exact omitted code is needed]...\n"
+    )
+    return f"{content[:head_chars]}{marker}{content[-tail_chars:]}", omitted
+
+
+def _compact_older_file_read_payload_for_prompt(
+    tool_payload: dict[str, Any],
+    *,
+    text_limit: int = _OLDER_FILE_READ_PROMPT_TEXT_LIMIT,
+) -> tuple[dict[str, Any], bool, int]:
+    if not tool_payload.get("ok"):
+        return tool_payload, False, 0
+    result = tool_payload.get("result")
+    if not isinstance(result, dict):
+        return tool_payload, False, 0
+    content = result.get("content")
+    if not isinstance(content, str):
+        return tool_payload, False, 0
+
+    compacted_content, omitted = _compact_middle_text_for_prompt(
+        content,
+        limit=text_limit,
+    )
+    if omitted <= 0:
+        return tool_payload, False, 0
+
+    compacted = copy.deepcopy(tool_payload)
+    compacted_result = compacted.setdefault("result", {})
+    if isinstance(compacted_result, dict):
+        compacted_result["content"] = compacted_content
+        compacted_result["content_prompt_scope"] = "older_file_read_excerpt"
+        compacted_result["prompt_content_omitted_chars"] = omitted
+        compacted_result["prompt_context_note"] = (
+            "Older file_read content was compacted only for prompt replay. "
+            "The full tool result remains available in runtime logs; call file_read "
+            "with a targeted line range if exact omitted code is needed."
+        )
+    compacted["prompt_payload_compacted"] = True
+    compacted["prompt_context_compacted"] = True
+    return compacted, True, omitted
+
+
+def _compact_messages_for_provider_prompt(
+    messages: Sequence[dict[str, Any]],
+    *,
+    recent_full_file_reads: int = _RECENT_FULL_FILE_READ_PROMPT_RESULTS,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Return provider-facing messages with older file-read payloads shrunk.
+
+    Raw tool evidence stays in ``executed_tools`` and event logs. This only trims
+    the replay prompt so dozens of file reads do not keep reloading every prior
+    file excerpt on each model round.
+    """
+
+    copied = [copy.deepcopy(message) for message in messages if isinstance(message, dict)]
+    original_chars = _message_prompt_char_count(copied)
+    file_read_indices = [
+        index
+        for index, message in enumerate(copied)
+        if str(message.get("role") or "").strip() == "tool"
+        and str(message.get("name") or "").strip() == "file_read"
+    ]
+    keep_indices = set(file_read_indices[-max(0, int(recent_full_file_reads)) :])
+    compacted_count = 0
+    omitted_chars = 0
+
+    for index in file_read_indices:
+        if index in keep_indices:
+            continue
+        message = copied[index]
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        try:
+            payload = json.loads(content)
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        compacted_payload, compacted, omitted = _compact_older_file_read_payload_for_prompt(
+            payload,
+        )
+        if not compacted:
+            continue
+        message["content"] = json.dumps(
+            compacted_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        compacted_count += 1
+        omitted_chars += omitted
+
+    compacted_chars = _message_prompt_char_count(copied)
+    return copied, {
+        "prompt_message_count": len(copied),
+        "prompt_input_chars": compacted_chars,
+        "prompt_context_original_chars": original_chars,
+        "prompt_context_saved_chars": max(original_chars - compacted_chars, 0),
+        "prompt_context_file_read_messages": len(file_read_indices),
+        "prompt_context_compacted_file_reads": compacted_count,
+        "prompt_context_omitted_file_read_chars": omitted_chars,
+    }
+
+
 def _line_numbered_prompt_content(content: str) -> str:
     lines = content.splitlines()
     if content.endswith("\n"):
@@ -248,6 +402,50 @@ def _enabled_tool_schemas(
         for tool in tool_schemas
         if isinstance(tool, dict) and _tool_schema_name(tool) not in disabled
     ]
+
+
+def _model_facing_tool_parameters(tool_id: str, parameters: Any) -> dict[str, Any]:
+    if tool_id != "file_edit":
+        return (
+            copy.deepcopy(parameters)
+            if isinstance(parameters, dict)
+            else {"type": "object", "properties": {}}
+        )
+
+    edit_item_properties: dict[str, Any] = {
+        "start_line": {"type": "integer", "description": "1-indexed anchor line."},
+        "end_line": {"type": "integer", "description": "Inclusive 1-indexed end line."},
+        "content": {"type": "string", "description": "Replacement or inserted text."},
+        "mode": {
+            "type": "string",
+            "enum": ["replace", "insert_before", "insert_after", "delete"],
+            "description": "Edit mode.",
+        },
+        "old_string": {
+            "type": "string",
+            "description": "Exact unique old text copied from a recent file_read.",
+        },
+        "new_string": {"type": "string", "description": "Replacement for old_string."},
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Existing file path."},
+            **copy.deepcopy(edit_item_properties),
+            "edits": {
+                "type": "array",
+                "description": (
+                    "Batch non-overlapping same-file edits. Each item must include "
+                    "start_line or old_string plus new_string."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": copy.deepcopy(edit_item_properties),
+                },
+            },
+        },
+        "required": ["path"],
+    }
 
 
 def _read_only_tool_ids(tool_ids: Sequence[str]) -> list[str]:
@@ -330,6 +528,10 @@ def _tool_use_policy(tool_ids: Sequence[str]) -> str:
         lines.append(
             "- Prefer explicit line windows with `start_line`/`end_line` for code inspection. Do not rely on shell `grep`/`sed`/`awk`, regex searches, or other fixed-pattern matching to locate edit sites when `file_read` is available."
         )
+    if "workspace_check" in available:
+        lines.append(
+            "- Use `workspace_check` before `shell_command` for deterministic file existence, literal/regex counts, HTML tag balance, and Python/JSON syntax checks."
+        )
         if not mutation_capable:
             lines.append(
                 "- This tool set is read-only. Do not try to create files through `file_read`, and do not pass write-like arguments such as `write` or `content` to it."
@@ -339,7 +541,7 @@ def _tool_use_policy(tool_ids: Sequence[str]) -> str:
             )
     if "file_edit" in available:
         lines.append(
-            "- Use `file_edit` for targeted line-based edits to existing files. Always include `path` and `start_line`, and include `content` for replace/insert edits. When replacing multiple lines, include `end_line` so the full target range is explicit. If you need multiple non-overlapping edits in the same file, prefer one `file_edit` call with `edits=[...]` over repeated single-edit calls."
+            "- Use `file_edit` for targeted edits to existing files. For line-based edits, always include `path` and `start_line`, and include `content` for replace/insert edits. When replacing multiple lines, include `end_line` so the full target range is explicit. If you need multiple non-overlapping edits in the same file, prefer one `file_edit` call with `edits=[...]` over repeated single-edit calls; every batch item must include `start_line` or a unique `old_string`/`new_string` pair copied from a recent `file_read`."
         )
         lines.append(
             "- Prefer line-based edits derived from a prior `file_read`. Do not depend on regex, shell pattern matching, or exact text-match replacement as your primary edit localization strategy."
@@ -483,6 +685,106 @@ def _tool_argument_validation_error(
     )
 
 
+def _file_edit_missing_content_argument(arguments: dict[str, Any]) -> str:
+    def _present(value: Any) -> bool:
+        return not _tool_argument_is_missing({"value": value}, "value")
+
+    def _edit_has_replacement(edit: dict[str, Any]) -> bool:
+        if _present(edit.get("old_string")) and (
+            _present(edit.get("new_string")) or _present(edit.get("content"))
+        ):
+            return True
+        for key in ("content", "replace", "replacement", "new_content", "new_string"):
+            if _present(edit.get(key)):
+                return True
+        return False
+
+    if isinstance(arguments.get("edits"), list):
+        for index, edit in enumerate(arguments.get("edits") or []):
+            if not isinstance(edit, dict):
+                continue
+            mode = str(edit.get("mode") or "replace").strip().lower()
+            if mode != "delete" and _present(edit.get("start_line")) and not _edit_has_replacement(edit):
+                return f"edits[{index}].content"
+        return ""
+
+    mode = str(arguments.get("mode") or "replace").strip().lower()
+    if mode == "delete":
+        return ""
+    if _present(arguments.get("old_string")) and (
+        _present(arguments.get("new_string")) or _present(arguments.get("content"))
+    ):
+        return ""
+    if _present(arguments.get("start_line")) and not _present(arguments.get("content")):
+        return "content"
+    return ""
+
+
+def _file_edit_placeholder_content_argument(arguments: dict[str, Any]) -> str:
+    def _present(value: Any) -> bool:
+        return not _tool_argument_is_missing({"value": value}, "value")
+
+    def _is_placeholder(value: Any) -> bool:
+        if not isinstance(value, str):
+            return False
+        normalized = " ".join(value.strip().lower().split())
+        if not normalized:
+            return False
+        return any(
+            phrase in normalized
+            for phrase in (
+                "dummy call",
+                "will error",
+                "use file_read instead",
+            )
+        )
+
+    def _placeholder_key(container: dict[str, Any]) -> str:
+        if _present(container.get("old_string")):
+            for key in ("new_string", "content"):
+                if _present(container.get(key)) and _is_placeholder(container.get(key)):
+                    return key
+            return ""
+        for key in ("content", "replace", "replacement", "new_content", "new_string"):
+            if _present(container.get(key)) and _is_placeholder(container.get(key)):
+                return key
+        return ""
+
+    if isinstance(arguments.get("edits"), list):
+        for index, edit in enumerate(arguments.get("edits") or []):
+            if not isinstance(edit, dict):
+                continue
+            mode = str(edit.get("mode") or "replace").strip().lower()
+            if mode == "delete":
+                continue
+            key = _placeholder_key(edit)
+            if key:
+                return f"edits[{index}].{key}"
+        return ""
+
+    mode = str(arguments.get("mode") or "replace").strip().lower()
+    if mode == "delete":
+        return ""
+    return _placeholder_key(arguments)
+
+
+def _tool_specific_argument_validation_error(
+    tool_id: str,
+    arguments: dict[str, Any],
+) -> str:
+    if tool_id == "file_edit":
+        missing = _file_edit_missing_content_argument(arguments)
+        if missing:
+            return _tool_argument_validation_error(tool_id, [missing])
+        placeholder = _file_edit_placeholder_content_argument(arguments)
+        if placeholder:
+            return (
+                "tool_arguments_invalid: invalid arguments for file_edit: "
+                f"{placeholder} contains dummy read-instruction edit content"
+            )
+    return ""
+
+
 def _tool_argument_failure_nudge(tool_id: str, error_text: str) -> str | None:
     marker = "tool_arguments_invalid:"
     if marker not in error_text:
@@ -508,8 +810,11 @@ def _tool_argument_failure_nudge(tool_id: str, error_text: str) -> str | None:
         )
     elif tool_id == "file_edit":
         extra_guidance = (
-            ' For `file_edit`, retry with `{"path":"src/app.py","start_line":12,"content":"..."}` '
-            'or `{"path":"src/app.py","edits":[...]}`. Include `path` plus one valid edit shape.'
+            ' For `file_edit`, retry with `{"path":"src/app.py","start_line":12,"end_line":14,"content":"..."}` '
+            'or `{"path":"src/app.py","edits":[{"start_line":12,"end_line":14,"content":"..."}]}`. '
+            "Every item in `edits` must include `start_line`, or a unique exact-text compatibility pair "
+            "such as `old_string` plus `new_string` copied from a recent `file_read`. "
+            "If you do not know the line numbers or exact old text, call `file_read` first."
         )
     return (
         f"Tool correction: the previous `{tool_id}` call failed because {detail}. "
@@ -1248,6 +1553,36 @@ def _successful_shell_command_count(executed_tools: Sequence[dict[str, Any]]) ->
     return count
 
 
+def _materialized_file_content_snapshot(
+    target_files: Sequence[str],
+    *,
+    workspace_root: Path | None,
+) -> dict[str, str]:
+    if workspace_root is None:
+        return {}
+
+    snapshots: dict[str, str] = {}
+    root = workspace_root.expanduser().resolve()
+    for path in target_files:
+        relative = str(path or "").strip()
+        if not relative:
+            continue
+        candidate = (root / relative).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            continue
+        if not candidate.is_file():
+            continue
+        try:
+            snapshots[relative] = candidate.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            snapshots[relative] = candidate.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+    return snapshots
+
+
 def _partial_coding_candidate_from_tool_evidence(
     *,
     request: CompletionRequest,
@@ -1282,12 +1617,19 @@ def _partial_coding_candidate_from_tool_evidence(
 
     reason_text = " ".join(stop_reason.replace(":", " ").replace("_", " ").split())
     verification_commands = _successful_verification_commands(executed_tools)
+    file_snapshots = _materialized_file_content_snapshot(
+        target_files,
+        workspace_root=workspace_root,
+    )
 
     payload = dict(base_payload)
     if output_kind == "candidate":
         payload.setdefault("candidate_id", "partial-candidate-from-tool-evidence")
     else:
         payload.setdefault("candidate_fragment", {})
+    if file_snapshots:
+        payload["candidate_fragment"] = file_snapshots
+        payload["readback_files"] = list(file_snapshots)
     payload["change_summary"] = str(
         payload.get("change_summary")
         or (
@@ -1299,7 +1641,12 @@ def _partial_coding_candidate_from_tool_evidence(
     payload["test_plan"] = (
         verification_commands
         or [
-            "Inspect the materialized files and rerun the bounded validation step.",
+            (
+                "Runtime read back the materialized files from disk; inspect the synthesized "
+                "candidate_fragment and rerun bounded validation."
+            )
+            if file_snapshots
+            else "Inspect the materialized files and rerun the bounded validation step.",
         ]
     )
     payload["risks"] = [
@@ -2335,6 +2682,26 @@ def _provider_timeout_recovery_disabled(request: CompletionRequest) -> bool:
     return 0 < timeout_seconds <= 60.0
 
 
+def _request_completion_timeout_seconds(
+    *,
+    base_timeout_seconds: float | None,
+    request: CompletionRequest,
+) -> float | None:
+    raw_timeout = request.metadata.get("completion_timeout_seconds")
+    if raw_timeout in {None, ""}:
+        return base_timeout_seconds
+    try:
+        timeout_seconds = float(raw_timeout)
+    except (TypeError, ValueError):
+        return base_timeout_seconds
+    if timeout_seconds <= 0:
+        return None
+    timeout_seconds = max(0.01, timeout_seconds)
+    if base_timeout_seconds is None:
+        return timeout_seconds
+    return min(float(base_timeout_seconds), timeout_seconds)
+
+
 def _effective_completion_timeout_budget(
     *,
     base_timeout_seconds: float | None,
@@ -2343,19 +2710,23 @@ def _effective_completion_timeout_budget(
     workspace_root: Path,
     write_stage_direct_write_required: bool,
 ) -> tuple[float | None, str | None]:
-    if base_timeout_seconds is None:
+    timeout_budget = _request_completion_timeout_seconds(
+        base_timeout_seconds=base_timeout_seconds,
+        request=request,
+    )
+    if timeout_budget is None:
         return None, None
     if _coding_output_kind(request) is None:
-        return base_timeout_seconds, None
+        return timeout_budget, None
     if not write_stage_direct_write_required:
-        return base_timeout_seconds, None
+        return timeout_budget, None
     if _successful_workspace_mutation_paths(
         executed_tools,
         workspace_root=workspace_root,
     ):
-        return base_timeout_seconds, None
+        return timeout_budget, None
 
-    timeout_seconds = float(base_timeout_seconds)
+    timeout_seconds = float(timeout_budget)
     if _exclusive_write_owner_path(request):
         effective_timeout = min(
             timeout_seconds,
@@ -2680,6 +3051,17 @@ class LocalOrganismToolRuntime:
                 **shared_context,
             )
             raise ValueError(error_text)
+        tool_specific_error = _tool_specific_argument_validation_error(tool_id, kwargs)
+        if tool_specific_error:
+            self._emit_event(
+                "tool.failed",
+                tool_id=tool_id,
+                arguments=dict(kwargs),
+                metadata=dict(metadata),
+                error=tool_specific_error,
+                **shared_context,
+            )
+            raise ValueError(tool_specific_error)
         if self._approval_callback is not None:
             approved = self._approval_callback(tool_id, dict(kwargs), dict(metadata))
             if not approved:
@@ -3185,6 +3567,9 @@ class ToolLoopCompletionProvider:
                     write_stage_direct_write_required=write_stage_direct_write_required,
                 )
             )
+            provider_messages, prompt_context_stats = _compact_messages_for_provider_prompt(
+                messages,
+            )
             self._emit_event(
                 "model.requested",
                 model=model,
@@ -3194,6 +3579,7 @@ class ToolLoopCompletionProvider:
                 timeout_seconds=effective_timeout_seconds,
                 timeout_strategy=timeout_strategy,
                 blocked_by_tool_call_ids=list(blocked_by_tool_call_ids) or None,
+                **prompt_context_stats,
                 **event_context,
             )
             blocked_by_tool_call_ids = []
@@ -3203,7 +3589,7 @@ class ToolLoopCompletionProvider:
             }
             try:
                 last_result = await self._complete_text_response_with_timeout(
-                    messages=apply_cache_hints(self._provider, list(messages)),
+                    messages=apply_cache_hints(self._provider, provider_messages),
                     model=model,
                     request=request,
                     provider_kwargs=provider_kwargs,
@@ -3653,6 +4039,80 @@ class ToolLoopCompletionProvider:
                         **tool_payload,
                     }
                 )
+                current_record = executed_tools[-1]
+                context_source_task_id = str(
+                    event_context.get("root_task_id")
+                    or request.metadata.get("task_id")
+                    or ""
+                )
+                context_source_worker_id = str(
+                    event_context.get("worker_id")
+                    or request.metadata.get("worker_id")
+                    or worker_id
+                    or ""
+                )
+                context_source_event_ids = [
+                    value
+                    for value in (tool_call_id, model_call_id)
+                    if str(value or "").strip()
+                ]
+                context_capsules = build_tool_context_capsules(
+                    current_record,
+                    source_task_id=context_source_task_id,
+                    source_worker_id=context_source_worker_id,
+                    source_trace_id=str(event_context.get("trace_id") or ""),
+                    source_event_ids=context_source_event_ids,
+                )
+                if context_capsules:
+                    capsule_payloads = [
+                        capsule.model_dump(mode="json", exclude_none=True)
+                        for capsule in context_capsules
+                    ]
+                    current_record["context_capsules"] = capsule_payloads
+                    readiness_signal = readiness_signal_from_capsules(
+                        context_capsules,
+                        source_task_id=context_source_task_id,
+                        source_worker_id=context_source_worker_id,
+                        predicate="tool_context_available",
+                    )
+                    readiness_payload = readiness_signal.model_dump(
+                        mode="json",
+                        exclude_none=True,
+                    )
+                    current_record["readiness_signal"] = readiness_payload
+                    self._emit_event(
+                        "context.capsule.emitted",
+                        capsule_count=len(capsule_payloads),
+                        capsule_ids=[
+                            str(capsule.get("capsule_id") or "")
+                            for capsule in capsule_payloads
+                            if str(capsule.get("capsule_id") or "").strip()
+                        ],
+                        capsule_kinds=[
+                            str(capsule.get("kind") or "")
+                            for capsule in capsule_payloads
+                            if str(capsule.get("kind") or "").strip()
+                        ],
+                        capsules=capsule_payloads,
+                        tool_id=tool_id,
+                        tool_call_id=tool_call_id,
+                        model_call_id=model_call_id,
+                        **event_context,
+                    )
+                    self._emit_event(
+                        "context.readiness.emitted",
+                        readiness=readiness_payload,
+                        readiness_id=readiness_signal.readiness_id,
+                        ready_for_downstream=readiness_signal.ready_for_downstream,
+                        predicate=readiness_signal.predicate,
+                        blocker_count=len(readiness_signal.blockers),
+                        capsule_count=len(capsule_payloads),
+                        capsule_ids=list(readiness_signal.capsule_ids),
+                        tool_id=tool_id,
+                        tool_call_id=tool_call_id,
+                        model_call_id=model_call_id,
+                        **event_context,
+                    )
                 messages.append(
                     {
                         "role": "tool",
@@ -3669,7 +4129,7 @@ class ToolLoopCompletionProvider:
                         ),
                     }
                 )
-                return executed_tools[-1]
+                return current_record
 
             def _skip_remaining_tool_calls(
                 remaining_calls: Sequence[dict[str, Any]],
@@ -4427,20 +4887,25 @@ class ToolLoopCompletionProvider:
                 if name in seen:
                     continue
                 seen.add(name)
+                runtime_metadata = self._tool_runtime.metadata_for(name)
+                runtime_parameters = (
+                    runtime_metadata.get("parameters")
+                    or function.get("parameters")
+                    or {"type": "object", "properties": {}}
+                )
                 filtered.append(
                     {
                         "type": str(tool.get("type") or "function") if isinstance(tool, dict) else "function",
                         "function": {
                             "name": name,
                             "description": str(
-                                self._tool_runtime.metadata_for(name).get("description")
+                                runtime_metadata.get("description")
                                 or function.get("description")
                                 or name
                             ).strip(),
-                            "parameters": copy.deepcopy(
-                                self._tool_runtime.metadata_for(name).get("parameters")
-                                or function.get("parameters")
-                                or {"type": "object", "properties": {}}
+                            "parameters": _model_facing_tool_parameters(
+                                name,
+                                runtime_parameters,
                             ),
                         },
                     }

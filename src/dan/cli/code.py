@@ -2072,6 +2072,197 @@ def _assistant_text(message: str) -> str:
     return " ".join(str(message or "").strip().split())
 
 
+def _workspace_check_available(tool_ids: Sequence[str]) -> bool:
+    return any(str(tool_id or "").strip() == "workspace_check" for tool_id in tool_ids)
+
+
+def _looks_like_stale_html_shell_count_objective(text: str) -> bool:
+    normalized = " ".join(str(text or "").strip().lower().split())
+    if not normalized or "index.html" not in normalized:
+        return False
+    if not any(marker in normalized for marker in ("shell_command", "shell command", "grep -c")):
+        return False
+    if not any(marker in normalized for marker in ("count", "counts", "tag balance", "structural tag")):
+        return False
+    html_tag_markers = (
+        "<html",
+        "</html",
+        "<head",
+        "</head",
+        "<body",
+        "</body",
+        "<main",
+        "</main",
+    )
+    return sum(1 for marker in html_tag_markers if marker in normalized) >= 4
+
+
+def _structured_workspace_check_html_objective() -> str:
+    return (
+        "Use the structured read-only `workspace_check` tool for the HTML structural "
+        "repair check instead of shell tag-count commands. Run `workspace_check` with "
+        '`check="html_tags"`, `path="index.html"`, and '
+        '`tags=["html","head","body","main"]`. If the check reports balanced single '
+        "document tags, do not fabricate an edit; return a bounded verified candidate "
+        "with the workspace_check result and `target_files=[\"index.html\"]`. If the "
+        "check reports duplicate or imbalanced tags, call `file_read` for `index.html`, "
+        "repair only the broken structural tags with one bounded `file_edit`, rerun the "
+        "same workspace_check, and return the before/after check results plus every "
+        "modified file name. Do not use `shell_command` for this tag-count check."
+    )
+
+
+def _normalize_structured_workspace_check_objective(
+    objective: str,
+    *,
+    tool_ids: Sequence[str],
+) -> tuple[str, bool]:
+    cleaned = _assistant_text(objective)
+    if not _workspace_check_available(tool_ids):
+        return cleaned, False
+    if not _looks_like_stale_html_shell_count_objective(cleaned):
+        return cleaned, False
+    return _structured_workspace_check_html_objective(), True
+
+
+def _criterion_is_stale_html_shell_count(text: str) -> bool:
+    normalized = " ".join(str(text or "").strip().lower().split())
+    if not normalized:
+        return False
+    if not any(marker in normalized for marker in ("shell_command", "shell command", "grep -c")):
+        return False
+    return "index.html" in normalized or any(
+        marker in normalized for marker in ("<html", "</html", "<head", "<body", "<main")
+    )
+
+
+def _normalize_structured_workspace_check_acceptance_criteria(
+    criteria: Sequence[str],
+    *,
+    objective: str,
+    tool_ids: Sequence[str],
+) -> tuple[list[str], bool]:
+    original = _dedupe(criteria)
+    if not _workspace_check_available(tool_ids):
+        return original, False
+    if not _looks_like_stale_html_shell_count_objective(objective) and not any(
+        _criterion_is_stale_html_shell_count(criterion) for criterion in original
+    ):
+        return original, False
+
+    retained = [
+        criterion
+        for criterion in original
+        if not _criterion_is_stale_html_shell_count(criterion)
+    ]
+    normalized = _dedupe(
+        [
+            *retained,
+            "Use `workspace_check` with `check=\"html_tags\"` for `index.html` structural tag verification.",
+            "If the HTML structure is already balanced, return a verified no-edit candidate instead of fabricating an edit.",
+            "If a repair is needed, modify only `index.html` and include the post-repair `workspace_check` result.",
+        ]
+    )
+    return normalized, normalized != original
+
+
+def _normalize_structured_workspace_check_project_plan(
+    plan: CodingProjectPlan | None,
+    *,
+    tool_ids: Sequence[str],
+) -> tuple[CodingProjectPlan | None, bool]:
+    if plan is None:
+        return None, False
+
+    changed = False
+    project_goal, goal_changed = _normalize_structured_workspace_check_objective(
+        plan.project_goal,
+        tool_ids=tool_ids,
+    )
+    changed = changed or goal_changed
+
+    milestones = []
+    for milestone in plan.milestones:
+        objective, objective_changed = _normalize_structured_workspace_check_objective(
+            milestone.objective,
+            tool_ids=tool_ids,
+        )
+        acceptance_criteria, criteria_changed = (
+            _normalize_structured_workspace_check_acceptance_criteria(
+                milestone.acceptance_criteria,
+                objective=milestone.objective,
+                tool_ids=tool_ids,
+            )
+        )
+        if objective_changed or criteria_changed:
+            milestone = milestone.model_copy(
+                update={
+                    "objective": objective,
+                    "acceptance_criteria": acceptance_criteria,
+                }
+            )
+            changed = True
+        milestones.append(milestone)
+
+    if not changed:
+        return plan, False
+    return (
+        plan.model_copy(
+            update={
+                "project_goal": project_goal,
+                "milestones": milestones,
+            }
+        ),
+        True,
+    )
+
+
+def _normalize_structured_workspace_check_planner_decision(
+    planner_decision: Any,
+    *,
+    tool_ids: Sequence[str],
+) -> tuple[Any, bool]:
+    changed = False
+    project_plan = CodingProjectPlan(
+        project_goal=getattr(planner_decision, "project_goal", ""),
+        plan_summary=getattr(planner_decision, "plan_summary", ""),
+        milestones=list(getattr(planner_decision, "milestones", []) or []),
+        active_milestone_id=getattr(planner_decision, "active_milestone_id", None),
+    )
+    project_plan, plan_changed = _normalize_structured_workspace_check_project_plan(
+        project_plan,
+        tool_ids=tool_ids,
+    )
+    changed = changed or plan_changed
+
+    active_objective, active_objective_changed = _normalize_structured_workspace_check_objective(
+        getattr(planner_decision, "active_objective", ""),
+        tool_ids=tool_ids,
+    )
+    active_acceptance_criteria, active_criteria_changed = (
+        _normalize_structured_workspace_check_acceptance_criteria(
+            list(getattr(planner_decision, "active_acceptance_criteria", []) or []),
+            objective=getattr(planner_decision, "active_objective", ""),
+            tool_ids=tool_ids,
+        )
+    )
+    changed = changed or active_objective_changed or active_criteria_changed
+    if not changed or project_plan is None:
+        return planner_decision, False
+
+    return (
+        planner_decision.model_copy(
+            update={
+                "project_goal": project_plan.project_goal,
+                "milestones": list(project_plan.milestones),
+                "active_objective": active_objective,
+                "active_acceptance_criteria": active_acceptance_criteria,
+            }
+        ),
+        True,
+    )
+
+
 def _mark_benchmark_continuation_exhausted(
     report: CodingOrganismReport,
     *,
@@ -2512,7 +2703,42 @@ async def _run_orchestrated_turn(
         effective_acceptance_criteria = _dedupe(
             [*list(acceptance_criteria), *list(decision.acceptance_criteria)]
         ) or list(acceptance_criteria)
+        raw_next_objective = next_objective
+        next_objective, objective_normalized = _normalize_structured_workspace_check_objective(
+            next_objective,
+            tool_ids=tool_ids,
+        )
+        effective_acceptance_criteria, criteria_normalized = (
+            _normalize_structured_workspace_check_acceptance_criteria(
+                effective_acceptance_criteria,
+                objective=raw_next_objective,
+                tool_ids=tool_ids,
+            )
+        )
+        if objective_normalized or criteria_normalized:
+            _log_code_event(
+                control_logger,
+                "orchestrator.structured_check_objective.normalized",
+                stage="pre_planner",
+                objective_normalized=objective_normalized,
+                acceptance_criteria_normalized=criteria_normalized,
+            )
         existing_project_plan = _load_project_plan(session)
+        existing_project_plan, existing_plan_normalized = (
+            _normalize_structured_workspace_check_project_plan(
+                existing_project_plan,
+                tool_ids=tool_ids,
+            )
+        )
+        if existing_plan_normalized:
+            _store_project_plan(session=session, plan=existing_project_plan)
+            _log_code_event(
+                control_logger,
+                "orchestrator.structured_check_objective.normalized",
+                stage="existing_project_plan",
+                objective_normalized=True,
+                acceptance_criteria_normalized=True,
+            )
         task_lane_policy = classify_code_task_lane(
             user_message=objective,
             coding_objective=next_objective,
@@ -2583,6 +2809,21 @@ async def _run_orchestrated_turn(
                 planner=project_planner,
                 durable_session=project_planner_session,
             )
+        planner_decision, planner_normalized = (
+            _normalize_structured_workspace_check_planner_decision(
+                planner_decision,
+                tool_ids=tool_ids,
+            )
+        )
+        if planner_normalized:
+            _log_code_event(
+                control_logger,
+                "orchestrator.structured_check_objective.normalized",
+                stage="project_planner_decision",
+                objective_normalized=True,
+                acceptance_criteria_normalized=True,
+            )
+        if not task_lane_policy.use_fallback_pre_run_planner:
             _log_code_event(
                 control_logger,
                 "orchestrator.project_planner.completed",

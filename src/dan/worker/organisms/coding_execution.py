@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Sequence
 
 from pydantic import BaseModel, Field
 
-from dan.worker.composition import CrossCellTraceLog, HandoffExecution, execute_cell_handoff
+from dan.worker.composition import (
+    CrossCellTraceLog,
+    HandoffExecution,
+    execute_cell_handoff,
+    make_completion_signal,
+)
 from dan.worker.core.contracts import OutputContract
-from dan.worker.core.executor import WorkerCoreExecutor
+from dan.worker.core.executor import WorkerCoreExecutor, WorkerExecutionResult
 from dan.worker.core.model import WorkerDefinition
 from dan.worker.model import WorkerAuthority
 from dan.worker.organism_log import new_trace_id
@@ -30,10 +37,22 @@ from dan.worker.outcomes import (
 from dan.worker.organisms.project_execution import OrganismObservability, OrganismStageRecord
 from dan.worker.organs import (
     OrganExecution,
+    OrganExecutionResult,
     OrganPattern,
     coding_aggregation_organ,
+    compact_universal_validator_organ,
     execute_organ_pattern,
     universal_validator_organ,
+)
+from dan.worker.scheduler import (
+    ArtifactPartition,
+    SchedulerAction,
+    SchedulerGuardrailState,
+    SchedulerTask,
+    SchedulingProposal,
+    evaluate_artifact_partition_admission,
+    evaluate_task_readiness_from_capsules,
+    select_scheduler_proposal,
 )
 from dan.worker.signaling import (
     CellAddress,
@@ -59,6 +78,8 @@ from dan.worker.tissue import (
 )
 
 OrganismEventCallback = Callable[[dict[str, Any]], None]
+
+_VALIDATION_COMPLETION_TIMEOUT_CAP_SECONDS = 30.0
 
 
 def _parse_payload(outputs: dict[str, Any]) -> dict[str, Any]:
@@ -129,6 +150,17 @@ def _candidate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         risks_field="risks",
         effect_field="workspace_effect",
     )
+
+
+def _candidate_readiness_key(candidate_payload: dict[str, Any]) -> str:
+    normalized = _candidate_payload(dict(candidate_payload or {}))
+    serialized = json.dumps(
+        normalized,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def _aggregation_status_message(payload: dict[str, Any]) -> str:
@@ -217,63 +249,350 @@ def _task_in_benchmark_mode(task: "CodingTask") -> bool:
     return isinstance(raw, dict) and bool(raw)
 
 
-def _broad_design_parallel_worker_briefs(
+_ARTIFACT_PARTITION_SUFFIX_KIND = {
+    ".html": "markup",
+    ".css": "style",
+    ".js": "script",
+    ".jsx": "script",
+    ".ts": "script",
+    ".tsx": "script",
+    ".py": "python",
+    ".md": "markdown",
+    ".json": "data",
+    ".toml": "config",
+    ".yaml": "config",
+    ".yml": "config",
+}
+_ARTIFACT_PARTITION_PRIORITY = {
+    "markup": 10,
+    "style": 20,
+    "script": 30,
+    "python": 40,
+    "markdown": 50,
+    "config": 60,
+    "data": 70,
+}
+_ARTIFACT_PATH_PATTERN = re.compile(
+    r"(?<![\w/.-])(?:[\w.-]+/)*[\w.-]+\.(?:html|css|js|jsx|ts|tsx|py|md|json|toml|ya?ml)(?![\w.-])",
+    flags=re.IGNORECASE,
+)
+
+
+def _artifact_kind_for_path(path: str) -> str:
+    return _ARTIFACT_PARTITION_SUFFIX_KIND.get(Path(path).suffix.lower(), "artifact")
+
+
+def _artifact_path_key(path: Any) -> str:
+    text = _clean_text(path).replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    while "//" in text:
+        text = text.replace("//", "/")
+    return text.strip().strip("/")
+
+
+def _task_artifact_text(task: "CodingTask", repair_brief: str = "") -> str:
+    return " ".join(
+        text
+        for text in [
+            _clean_text(task.objective),
+            _clean_text(repair_brief),
+            " ".join(_clean_text(item) for item in task.acceptance_criteria),
+            " ".join(_clean_text(item) for item in task.hard_constraints),
+            " ".join(_clean_text(item) for item in task.soft_constraints),
+        ]
+        if text
+    )
+
+
+def _explicit_artifact_paths_from_text(text: str) -> list[str]:
+    paths: list[str] = []
+    for match in _ARTIFACT_PATH_PATTERN.finditer(text):
+        path = _artifact_path_key(match.group(0).rstrip(".,;:"))
+        if path and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _artifact_paths_blocked_for_mutation(text: str) -> set[str]:
+    normalized = _clean_text(text)
+    if not normalized:
+        return set()
+    blocked: set[str] = set()
+    markers = (
+        "do not modify",
+        "don't modify",
+        "must not modify",
+        "should not modify",
+        "do not edit",
+        "don't edit",
+        "must not edit",
+        "should not edit",
+    )
+    for marker in markers:
+        for match in re.finditer(re.escape(marker), normalized, flags=re.IGNORECASE):
+            fragment = normalized[match.end() : match.end() + 240]
+            boundary = re.search(
+                r"(?:\.|;|\n|\bunless\b|\bexcept\b|\bother\s+than\b|\bafter\b|\bbefore\b)",
+                fragment,
+                flags=re.IGNORECASE,
+            )
+            if boundary:
+                fragment = fragment[: boundary.start()]
+            blocked.update(_explicit_artifact_paths_from_text(fragment))
+    return blocked
+
+
+def _artifact_paths_allowed_as_only_mutations(text: str) -> set[str]:
+    normalized = _clean_text(text)
+    if not normalized:
+        return set()
+    allowed: set[str] = set()
+    patterns = (
+        r"\bonly\s+([A-Za-z0-9_./~\\-]+\.[A-Za-z0-9_./~\\-]+)\s+(?:is|are|should be|may be|can be)\s+(?:modified|edited|changed|updated|written|overwritten)",
+        r"\b(?:modify|edit|change|update|write|overwrite)\s+only\s+([A-Za-z0-9_./~\\-]+\.[A-Za-z0-9_./~\\-]+)",
+        r"\boverwrite\s+([A-Za-z0-9_./~\\-]+\.[A-Za-z0-9_./~\\-]+)\s+with\s+(?:a\s+)?single",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, normalized, flags=re.IGNORECASE):
+            path = _artifact_path_key(match.group(1).rstrip(".,;:"))
+            if path:
+                allowed.add(path)
+    return allowed
+
+
+def _workspace_artifact_candidate_is_auxiliary(path: Path) -> bool:
+    stem = path.stem.lower()
+    suffix = path.suffix.lower()
+    name = path.name.lower()
+    if suffix in {".bak", ".backup", ".orig", ".tmp"}:
+        return True
+    auxiliary_markers = ("backup", "bak", "copy", "old", "tmp", "temp")
+    return any(
+        stem == marker
+        or stem.startswith(f"{marker}_")
+        or stem.startswith(f"{marker}-")
+        or stem.endswith(f"_{marker}")
+        or stem.endswith(f"-{marker}")
+        or name.endswith(f".{marker}{suffix}")
+        for marker in auxiliary_markers
+    )
+
+
+def _artifact_paths_from_context(task: "CodingTask") -> list[str]:
+    context = task.session_context if isinstance(task.session_context, dict) else {}
+    raw = (
+        context.get("scheduler_artifacts")
+        or context.get("artifact_candidates")
+        or context.get("target_artifacts")
+    )
+    if not isinstance(raw, list):
+        return []
+    paths: list[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            path = _artifact_path_key(item)
+        elif isinstance(item, dict):
+            path = _artifact_path_key(
+                item.get("path") or item.get("artifact_path") or item.get("file") or item.get("target_file")
+            )
+        else:
+            path = ""
+        if path and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _task_requests_existing_artifact_partition(task: "CodingTask", repair_brief: str = "") -> bool:
+    context_paths = _artifact_paths_from_context(task)
+    if context_paths:
+        return True
+    text = _task_artifact_text(task, repair_brief).lower()
+    markers = (
+        "entry-point",
+        "entry point",
+        "entrypoint",
+        "existing files",
+        "target files",
+        "modified files",
+        "all files",
+        "non-overlapping",
+        "separable",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _workspace_artifact_candidates(task: "CodingTask") -> list[str]:
+    workspace_root = _workspace_root_from_task(task)
+    if workspace_root is None or not workspace_root.exists():
+        return []
+    candidates: list[str] = []
+    try:
+        children = [path for path in workspace_root.iterdir() if path.is_file()]
+    except OSError:
+        return []
+    for path in children:
+        if path.name.startswith("."):
+            continue
+        if path.suffix.lower() not in _ARTIFACT_PARTITION_SUFFIX_KIND:
+            continue
+        if _workspace_artifact_candidate_is_auxiliary(path):
+            continue
+        key = _artifact_path_key(path.name)
+        if key:
+            candidates.append(key)
+    candidates.sort(
+        key=lambda value: (
+            _ARTIFACT_PARTITION_PRIORITY.get(_artifact_kind_for_path(value), 999),
+            value,
+        )
+    )
+    return candidates
+
+
+def _generic_artifact_partitions(
     *,
     task: "CodingTask",
+    max_partitions: int,
     repair_brief: str = "",
-) -> list[str]:
-    objective = _clean_text(repair_brief) or _clean_text(task.objective)
-    worker_objective = (
-        "Apply a bounded modern dark visual refresh to the existing website using only existing files. "
-        "Improve layout clarity, vertical spacing, typography, and restrained motion without adding "
-        "dependencies or creating new files."
-    )
-    if "competition" in objective.lower():
-        worker_objective = (
-            "Apply a bounded modern dark visual refresh to the existing website using only existing files. "
-            "Improve layout clarity, vertical spacing, typography, and restrained motion for a stronger "
-            "competition-grade presentation without adding dependencies or creating new files."
+) -> tuple[list[ArtifactPartition], dict[str, Any]]:
+    if _task_in_benchmark_mode(task) or _repair_brief_requests_compact_replan(repair_brief):
+        return [], {}
+    if not _task_requests_existing_artifact_partition(task, repair_brief):
+        return [], {}
+
+    paths: list[str] = []
+    for path in [
+        *_artifact_paths_from_context(task),
+        *_explicit_artifact_paths_from_text(_task_artifact_text(task, repair_brief)),
+        *_workspace_artifact_candidates(task),
+    ]:
+        key = _artifact_path_key(path)
+        if key and key not in paths:
+            paths.append(key)
+    artifact_text = _task_artifact_text(task, repair_brief)
+    blocked_paths = _artifact_paths_blocked_for_mutation(artifact_text)
+    only_paths = _artifact_paths_allowed_as_only_mutations(artifact_text)
+    if blocked_paths:
+        paths = [path for path in paths if path not in blocked_paths]
+    if only_paths:
+        paths = [path for path in paths if path in only_paths]
+    if len(paths) < 2:
+        return [], {}
+
+    partitions: list[ArtifactPartition] = []
+    for index, path in enumerate(paths[:max_partitions], start=1):
+        partitions.append(
+            ArtifactPartition(
+                partition_id=f"artifact:{index}:{path}",
+                artifact_paths=[path],
+                artifact_kind=_artifact_kind_for_path(path),
+                owner_id=f"worker-{index}",
+                expected_quality_gain=1.0,
+                expected_latency_seconds=30.0,
+                coordination_cost=0.05,
+                metadata={"source": "coding_task_artifact_partition"},
+            )
         )
-    owner_team_contract = (
-        "Team coverage rule: the parallel owner lanes collectively satisfy the global entry-point inspection, "
-        "modified-file listing, full updated-content return, and read-back confirmation requirements. "
-        "You personally should inspect and modify only your owned file."
+    admissions = evaluate_artifact_partition_admission(
+        partitions,
+        max_parallel=max_partitions,
+        min_parallel_score=0.0,
     )
-    selector_contract = (
-        "Shared selector contract: keep and target existing selectors `.site-header`, `.hero`, `.eyebrow`, `h1`, "
-        "`.lede`, `.actions`, `.button`, `.features`, `.features article`, and in-page anchors. If adding a scroll cue, "
-        "use `.scroll-cue` and `.scroll-cue-dot`. For entrance hooks, prefer `[data-animate]` attributes on existing "
-        "elements and treat `[data-animate]`, `.is-visible`, and `.js-reveal` as one shared animation contract across "
-        "HTML/CSS/JS. Use `data-animate-delay` for stagger attributes when CSS references stagger delays. If JS "
-        "toggles `.is-hidden` on `.scroll-cue`, CSS must define that hidden state. Do not duplicate existing sections "
-        "or IDs, and keep exactly one closing `</main>`, `</body>`, and `</html>` tag. Do not invent unmatched "
-        "selectors such as `.hero-title`, `.hero-subtitle`, `.hero-cta`, `.hero-scroll-cue`, or `.hero-card` unless "
-        "the HTML owner also creates them in index.html."
+    admitted_ids = {item.partition_id for item in admissions if item.admitted}
+    admitted_partitions = [
+        partition for partition in partitions if partition.partition_id in admitted_ids
+    ]
+    if len(admitted_partitions) < 2:
+        return [], {
+            "admissions": [
+                admission.model_dump(mode="json", exclude_none=True)
+                for admission in admissions
+            ],
+            "selection_reason": "fewer_than_two_admitted_partitions",
+        }
+
+    total_quality = sum(
+        partition.expected_quality_gain
+        if partition.expected_quality_gain is not None
+        else 1.0
+        for partition in admitted_partitions
     )
-    return [
-        (
-            "EXCLUSIVE WRITE OWNER: index.html. Inspect index.html once for the primary page structure, then "
-            "materialize only the bounded HTML/layout/content hierarchy changes needed in index.html. "
-            "Do not edit styles.css or app.js, and do not spend another round auditing unrelated files. "
-            f"{owner_team_contract} {selector_contract} Objective: "
-            f"{worker_objective}"
+    latencies = [
+        partition.expected_latency_seconds
+        if partition.expected_latency_seconds is not None
+        else 30.0
+        for partition in admitted_partitions
+    ]
+    average_rework_risk = sum(
+        partition.rework_risk + partition.conflict_risk
+        for partition in admitted_partitions
+    ) / len(admitted_partitions)
+    proposals = [
+        SchedulingProposal(
+            action=SchedulerAction.SERIAL,
+            target_task_id="artifact_partitions:serial",
+            reason="Run the artifact work as one bounded worker when parallel overhead is not worth it.",
+            required_capacity=1,
+            expected_value=total_quality,
+            latency_cost=0.01 * sum(latencies),
+            rework_risk=min(1.0, average_rework_risk),
+            material_yield_probability=0.65,
+            metadata={"source": "coding_task_artifact_partition"},
         ),
-        (
-            "EXCLUSIVE WRITE OWNER: styles.css. Inspect styles.css once when it exists, then materialize only the "
-            "bounded theme, spacing, typography, responsive polish, and CSS transition changes needed in "
-            "styles.css. Prefer a coherent dark palette and small high-signal CSS changes. Do not edit "
-            "index.html or app.js, and do not spend another round auditing unrelated files. "
-            f"{owner_team_contract} {selector_contract} Objective: "
-            f"{worker_objective}"
-        ),
-        (
-            "EXCLUSIVE WRITE OWNER: app.js. Inspect app.js once for the current interaction/motion layer, then materialize only "
-            "bounded JS-driven polish in app.js when needed. Do not edit index.html or styles.css, and do not "
-            "add dependencies or spend another round auditing unrelated files. "
-            f"{owner_team_contract} {selector_contract} "
-            f"Objective: {worker_objective}"
+        SchedulingProposal(
+            action=SchedulerAction.PARALLEL,
+            target_task_id="artifact_partitions:parallel",
+            reason="Run non-overlapping artifact-owner lanes to reduce the slowest path.",
+            required_capacity=len(admitted_partitions),
+            expected_value=total_quality,
+            latency_cost=0.01 * max(latencies),
+            rework_risk=min(1.0, average_rework_risk + 0.05),
+            material_yield_probability=0.75,
+            metadata={"source": "coding_task_artifact_partition"},
         ),
     ]
+    selection = select_scheduler_proposal(
+        proposals,
+        state=SchedulerGuardrailState(
+            available_capacity=max_partitions,
+            max_capacity=max_partitions,
+            audit_log_enabled=True,
+            safety_envelope="bounded_task_dispatch",
+        ),
+    )
+    decision = selection.model_dump(mode="json", exclude_none=True)
+    decision["admissions"] = [
+        admission.model_dump(mode="json", exclude_none=True)
+        for admission in admissions
+    ]
+    if selection.selected_action != SchedulerAction.PARALLEL:
+        return [], decision
+    return admitted_partitions, decision
+
+
+def _artifact_partition_worker_briefs(
+    *,
+    task: "CodingTask",
+    partitions: Sequence[ArtifactPartition],
+) -> list[str]:
+    objective = _clean_text(task.objective)
+    briefs: list[str] = []
+    for partition in partitions:
+        path = partition.artifact_paths[0] if partition.artifact_paths else partition.partition_id
+        kind = _clean_text(partition.artifact_kind) or "artifact"
+        briefs.append(
+            (
+                f"EXCLUSIVE WRITE OWNER: {path}. This is a scheduler artifact partition of kind `{kind}`. "
+                "Inspect only the local context required for this artifact, then materialize the bounded change "
+                "for this artifact when the objective requires a write. Do not edit any other artifact path. "
+                "Return candidate_fragment, change_summary, target_files, test_plan, and risks for this owned "
+                "artifact only. The organism-level aggregator handles cross-artifact merge, global modified-file "
+                "listing, read-back confirmation, and final delivery. "
+                f"Objective: {objective}"
+            )
+        )
+    return briefs
 
 
 def _exclusive_write_owner_path_from_brief(brief: str) -> str:
@@ -283,50 +602,6 @@ def _exclusive_write_owner_path_from_brief(brief: str) -> str:
         flags=re.IGNORECASE,
     )
     return match.group(1).rstrip(".") if match else ""
-
-
-def _should_force_parallel_design_fanout(
-    *,
-    task: "CodingTask",
-    payload: dict[str, Any],
-    repair_brief: str = "",
-) -> bool:
-    if _task_in_benchmark_mode(task):
-        return False
-    if _repair_brief_requests_compact_replan(repair_brief):
-        return False
-    objective_text = " ".join(
-        item
-        for item in [
-            _clean_text(task.objective),
-            _clean_text(repair_brief),
-            " ".join(_clean_text(item) for item in task.acceptance_criteria),
-        ]
-        if item
-    ).lower()
-    if not objective_text:
-        return False
-    broad_markers = (
-        "website",
-        "landing page",
-        "frontend",
-        "ui",
-        "visual refresh",
-        "dark theme",
-        "dark color",
-        "typography",
-        "spacing",
-        "layout",
-        "animation",
-        "transition",
-        "make it look",
-        "look modern",
-        "look cooler",
-        "redesign",
-        "polish",
-    )
-    hits = sum(1 for marker in broad_markers if marker in objective_text)
-    return hits >= 2
 
 
 def _repair_brief_requests_compact_replan(repair_brief: str) -> bool:
@@ -447,6 +722,9 @@ class CodingOrchestratorPlan(BaseModel):
     )
     validator_focus: str = "Score the aggregated candidate against the acceptance criteria and emit a repair brief when needed."
     pass_threshold: float = Field(default=0.9, ge=0.0, le=1.0)
+    artifact_owner_paths: list[str] = Field(default_factory=list)
+    scheduler_policy_source: str = ""
+    scheduler_decision: dict[str, Any] = Field(default_factory=dict)
 
 
 class CodingOrganism(BaseModel):
@@ -480,6 +758,7 @@ class CodingOrganism(BaseModel):
     parallel_worker_tool_ids: list[str] = Field(default_factory=list)
     aggregator_organ: OrganPattern
     validator_organ: OrganPattern
+    compact_validator_organ: OrganPattern | None = None
     default_worker_count: int = Field(default=1, ge=1)
     max_worker_count: int = Field(default=4, ge=1)
     max_repair_rounds: int = Field(default=1, ge=0)
@@ -812,20 +1091,25 @@ def _normalize_orchestrator_plan(
 ) -> CodingOrchestratorPlan:
     payload = _parse_payload(outputs)
     worker_count = _planned_worker_count(payload=payload, organism=organism)
-    explicit_worker_count = _coerce_worker_count(payload.get("worker_count"))
     try:
         plan = CodingOrchestratorPlan.model_validate(payload)
     except Exception:
         plan = CodingOrchestratorPlan(worker_count=worker_count)
-    if _should_force_parallel_design_fanout(
+    artifact_partitions, scheduler_decision = _generic_artifact_partitions(
         task=task,
-        payload=payload,
+        max_partitions=int(organism.max_worker_count),
         repair_brief=repair_brief,
-    ):
-        fanout_briefs = _broad_design_parallel_worker_briefs(
+    )
+    if artifact_partitions:
+        fanout_briefs = _artifact_partition_worker_briefs(
             task=task,
-            repair_brief=repair_brief,
+            partitions=artifact_partitions,
         )
+        owner_paths = [
+            partition.artifact_paths[0]
+            for partition in artifact_partitions
+            if partition.artifact_paths
+        ]
         worker_count = min(len(fanout_briefs), int(organism.max_worker_count))
         plan = plan.model_copy(
             update={
@@ -833,9 +1117,12 @@ def _normalize_orchestrator_plan(
                 "worker_briefs": fanout_briefs[:worker_count],
                 "aggregation_focus": (
                     _clean_text(plan.aggregation_focus)
-                    + " Merge the parallel HTML/layout, CSS/theme, and interaction/motion fragments into one "
-                    "small concrete patch, and avoid broad rereads once the target files are known."
+                    + " Merge the parallel artifact-owner fragments into one small concrete patch from read-back "
+                    "and mutation evidence, and avoid broad rereads once the target artifacts are known."
                 ).strip(),
+                "artifact_owner_paths": owner_paths[:worker_count],
+                "scheduler_policy_source": "generic_artifact_partition",
+                "scheduler_decision": dict(scheduler_decision),
             }
         )
     distinct_briefs = _distinct_worker_briefs(list(plan.worker_briefs))
@@ -854,6 +1141,7 @@ def _normalize_orchestrator_plan(
         update={
             "worker_count": worker_count,
             "worker_briefs": worker_briefs,
+            "artifact_owner_paths": list(plan.artifact_owner_paths)[:worker_count],
             "validator_focus": validator_focus or plan.validator_focus,
         }
     )
@@ -865,6 +1153,437 @@ def _worker_results_have_material_for_aggregation(member_results: dict[str, Any]
         if _has_material_candidate_output(payload):
             return True
     return False
+
+
+def _worker_material_yield_signal(
+    *,
+    member_id: str,
+    owner_path: str = "",
+    payload: dict[str, Any] | None = None,
+    executed_tools: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    candidate_payload = dict(payload or {})
+    candidate = _candidate_view(candidate_payload)
+    target_files = list(candidate.target_files)
+    mutation_paths = _successful_file_mutation_paths(executed_tools)
+    candidate_material = _has_material_candidate_output(candidate_payload)
+    matching_mutation_evidence = (
+        _candidate_has_matching_mutation_evidence(
+            candidate_payload,
+            executed_tools=executed_tools,
+        )
+        if candidate_material
+        else False
+    )
+    workspace_effect = _candidate_workspace_effect(candidate)
+    materialized_artifact = bool(
+        candidate_material
+        and (
+            matching_mutation_evidence
+            or workspace_effect == "verified"
+            or not _mutation_claim_requires_evidence(candidate)
+        )
+    )
+    no_material_reason = ""
+    if not candidate_material:
+        no_material_reason = (
+            "timeout_or_blocked_no_output"
+            if _is_timeout_or_blocked_no_output_candidate(candidate_payload)
+            else "no_material_candidate"
+        )
+    elif not materialized_artifact:
+        no_material_reason = "missing_mutation_evidence"
+
+    return {
+        "member_id": member_id,
+        "owner_path": _artifact_path_key(owner_path),
+        "candidate_id": candidate.candidate_id,
+        "target_files": target_files,
+        "workspace_effect": workspace_effect or "",
+        "candidate_material": candidate_material,
+        "materialized_artifact": materialized_artifact,
+        "matching_mutation_evidence": matching_mutation_evidence,
+        "mutation_paths": mutation_paths,
+        "no_material_reason": no_material_reason,
+    }
+
+
+def _worker_material_yield_metrics(
+    *,
+    member_results: dict[str, Any],
+    worker_execution: TissueExecution,
+) -> dict[str, Any]:
+    execution_by_member = _worker_execution_map(worker_execution)
+    owner_by_member = {
+        member.member_id: _artifact_path_key(
+            dict(member.metadata or {}).get("exclusive_write_owner_path")
+        )
+        for member in worker_execution.pattern.members
+    }
+    lane_signals: list[dict[str, Any]] = []
+    for member_id in sorted(member_results):
+        payload = _parse_payload(dict(member_results.get(member_id) or {}))
+        lane_signals.append(
+            _worker_material_yield_signal(
+                member_id=member_id,
+                owner_path=owner_by_member.get(member_id, ""),
+                payload=payload,
+                executed_tools=_executed_tools_from_handoff_execution(
+                    execution_by_member.get(member_id)
+                ),
+            )
+        )
+
+    total_lanes = len(lane_signals)
+    material_candidate_count = sum(1 for item in lane_signals if item["candidate_material"])
+    materialized_artifact_count = sum(1 for item in lane_signals if item["materialized_artifact"])
+    mutation_evidence_count = sum(1 for item in lane_signals if item["matching_mutation_evidence"])
+    no_material_reasons: dict[str, int] = {}
+    for item in lane_signals:
+        reason = _clean_text(item.get("no_material_reason"))
+        if reason:
+            no_material_reasons[reason] = no_material_reasons.get(reason, 0) + 1
+
+    return {
+        "total_lanes": total_lanes,
+        "material_candidate_count": material_candidate_count,
+        "materialized_artifact_count": materialized_artifact_count,
+        "mutation_evidence_count": mutation_evidence_count,
+        "material_candidate_rate": (
+            material_candidate_count / total_lanes if total_lanes else 0.0
+        ),
+        "materialized_artifact_rate": (
+            materialized_artifact_count / total_lanes if total_lanes else 0.0
+        ),
+        "no_material_reasons": no_material_reasons,
+        "lanes": lane_signals,
+    }
+
+
+def _tool_context_capsules(
+    executed_tools: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    capsules: list[dict[str, Any]] = []
+    for tool in executed_tools or []:
+        for capsule in tool.get("context_capsules") or []:
+            if isinstance(capsule, dict):
+                capsules.append(dict(capsule))
+    return capsules
+
+
+def _tool_readiness_signals(
+    executed_tools: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    signals: list[dict[str, Any]] = []
+    for tool in executed_tools or []:
+        signal = tool.get("readiness_signal")
+        if isinstance(signal, dict):
+            signals.append(dict(signal))
+    return signals
+
+
+def _capsules_with_owner_unlock_aliases(
+    *,
+    capsules: list[dict[str, Any]],
+    owner_path: str,
+    mutation_paths: Sequence[str],
+) -> list[dict[str, Any]]:
+    owner_key = _artifact_path_key(owner_path)
+    if not owner_key:
+        return [dict(capsule) for capsule in capsules]
+    alias = f"file_changed:{owner_key}"
+    matching_mutation = any(_paths_overlap(owner_key, path) for path in mutation_paths)
+    enhanced: list[dict[str, Any]] = []
+    for capsule in capsules:
+        copied = dict(capsule)
+        unlocks = [
+            _clean_text(unlock)
+            for unlock in copied.get("unlocks") or []
+            if _clean_text(unlock)
+        ]
+        if matching_mutation or any(
+            unlock.startswith("file_changed:")
+            and _paths_overlap(owner_key, unlock.split(":", 1)[1])
+            for unlock in unlocks
+        ):
+            if alias not in unlocks:
+                unlocks.append(alias)
+        copied["unlocks"] = unlocks
+        enhanced.append(copied)
+    return enhanced
+
+
+def _artifact_readiness_lane(
+    *,
+    plan: CodingOrchestratorPlan,
+    member_id: str,
+    owner_path: str,
+    payload: dict[str, Any],
+    executed_tools: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    candidate = _candidate_view(payload)
+    mutation_paths = _successful_file_mutation_paths(executed_tools)
+    context_capsules = _tool_context_capsules(executed_tools)
+    readiness_signals = _tool_readiness_signals(executed_tools)
+    owner_mutation_ready = bool(
+        owner_path
+        and any(_paths_overlap(owner_path, mutation_path) for mutation_path in mutation_paths)
+    )
+    scheduler_readiness: dict[str, Any] = {}
+    scheduler_ready = False
+    missing_unlocks: list[str] = []
+    blockers: list[str] = []
+    if owner_path:
+        readiness_task = SchedulerTask(
+            task_id=f"{member_id}:owner:{owner_path}",
+            title=f"Owner artifact ready: {owner_path}",
+            required_artifact_kinds=["implementation_delta"],
+            required_unlocks=[f"file_changed:{owner_path}"],
+            metadata={
+                "member_id": member_id,
+                "owner_path": owner_path,
+                "scheduler_policy_source": _clean_text(plan.scheduler_policy_source),
+            },
+        )
+        evaluation = evaluate_task_readiness_from_capsules(
+            readiness_task,
+            _capsules_with_owner_unlock_aliases(
+                capsules=context_capsules,
+                owner_path=owner_path,
+                mutation_paths=mutation_paths,
+            ),
+            readiness_signals=readiness_signals,
+        )
+        scheduler_ready = evaluation.ready
+        missing_unlocks = list(evaluation.missing_unlocks)
+        blockers = list(evaluation.blockers)
+        scheduler_readiness = evaluation.model_dump(
+            mode="json",
+            exclude_none=True,
+        )
+
+    ready_for_downstream = bool(scheduler_ready or owner_mutation_ready)
+    if scheduler_ready:
+        readiness_source = "capsule_scheduler"
+    elif owner_mutation_ready:
+        readiness_source = "mutation_evidence_fallback"
+    elif owner_path:
+        readiness_source = "blocked"
+    elif _has_material_candidate_output(payload):
+        readiness_source = "candidate_only"
+    else:
+        readiness_source = "none"
+
+    return {
+        "member_id": member_id,
+        "owner_path": owner_path,
+        "ready_for_downstream": ready_for_downstream,
+        "readiness_source": readiness_source,
+        "target_files": list(candidate.target_files),
+        "candidate_material": _has_material_candidate_output(payload),
+        "mutation_paths": mutation_paths,
+        "capsule_count": len(context_capsules),
+        "readiness_signal_count": len(readiness_signals),
+        "missing_unlocks": missing_unlocks,
+        "blockers": blockers,
+        "scheduler_readiness": scheduler_readiness,
+    }
+
+
+def _artifact_readiness_summary(
+    *,
+    plan: CodingOrchestratorPlan,
+    lanes: Sequence[dict[str, Any]],
+    owner_paths: Sequence[str],
+) -> dict[str, Any]:
+    ready_owner_paths: list[str] = []
+    blocked_owner_paths: list[str] = []
+    for lane in lanes:
+        owner_path = _artifact_path_key(lane.get("owner_path"))
+        if not owner_path:
+            continue
+        if lane.get("ready_for_downstream"):
+            if owner_path not in ready_owner_paths:
+                ready_owner_paths.append(owner_path)
+        elif owner_path not in blocked_owner_paths:
+            blocked_owner_paths.append(owner_path)
+
+    missing_owner_paths = [
+        owner_path for owner_path in owner_paths if owner_path not in ready_owner_paths
+    ]
+    return {
+        "scheduler_policy_source": _clean_text(plan.scheduler_policy_source),
+        "owner_path_count": len(owner_paths),
+        "ready_owner_paths": ready_owner_paths,
+        "blocked_owner_paths": blocked_owner_paths,
+        "missing_owner_paths": missing_owner_paths,
+        "all_owner_paths_ready": bool(owner_paths) and not missing_owner_paths,
+        "lanes": list(lanes),
+    }
+
+
+def _artifact_readiness_ledger(
+    *,
+    plan: CodingOrchestratorPlan,
+    member_results: dict[str, Any],
+    worker_execution: TissueExecution,
+) -> dict[str, Any]:
+    execution_by_member = _worker_execution_map(worker_execution)
+    owner_by_member = {
+        member.member_id: _artifact_path_key(
+            dict(member.metadata or {}).get("exclusive_write_owner_path")
+        )
+        for member in worker_execution.pattern.members
+    }
+
+    lanes: list[dict[str, Any]] = []
+    for member_id in sorted(member_results):
+        payload = _parse_payload(dict(member_results.get(member_id) or {}))
+        owner_path = owner_by_member.get(member_id, "")
+        executed_tools = _executed_tools_from_handoff_execution(
+            execution_by_member.get(member_id)
+        )
+        lanes.append(
+            _artifact_readiness_lane(
+                plan=plan,
+                member_id=member_id,
+                owner_path=owner_path,
+                payload=payload,
+                executed_tools=executed_tools,
+            )
+        )
+
+    owner_paths = _exclusive_owner_paths(worker_execution)
+    return _artifact_readiness_summary(
+        plan=plan,
+        lanes=lanes,
+        owner_paths=owner_paths,
+    )
+
+
+def _partial_aggregation_fragment(
+    *,
+    member_id: str,
+    owner_path: str,
+    payload: dict[str, Any],
+    executed_tools: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    if not _has_material_candidate_output(payload):
+        return None
+    if not _candidate_has_matching_mutation_evidence(
+        payload,
+        executed_tools=executed_tools,
+    ):
+        return None
+    mutation_paths = _successful_file_mutation_paths(executed_tools)
+    return {
+        "member_id": member_id,
+        "owner_path": _artifact_path_key(owner_path),
+        "mutation_paths": mutation_paths,
+        "payload": _candidate_payload(payload),
+    }
+
+
+def _partial_aggregation_progress(
+    *,
+    fragments: Sequence[dict[str, Any]],
+    owner_paths: Sequence[str],
+) -> dict[str, Any]:
+    ready_owner_paths: list[str] = []
+    for fragment in fragments:
+        owner_path = _artifact_path_key(fragment.get("owner_path"))
+        if not owner_path:
+            continue
+        if owner_path not in ready_owner_paths:
+            ready_owner_paths.append(owner_path)
+    missing_owner_paths = [
+        owner_path for owner_path in owner_paths if owner_path not in ready_owner_paths
+    ]
+    return {
+        "fragment_count": len(fragments),
+        "owner_path_count": len(owner_paths),
+        "ready_owner_paths": ready_owner_paths,
+        "missing_owner_paths": missing_owner_paths,
+        "all_owner_paths_ready": bool(owner_paths) and not missing_owner_paths,
+    }
+
+
+def _incremental_worker_merge_candidate(
+    *,
+    fragments: Sequence[dict[str, Any]],
+    owner_paths: Sequence[str],
+    attempt: int,
+) -> dict[str, Any] | None:
+    if not fragments:
+        return None
+    progress = _partial_aggregation_progress(
+        fragments=fragments,
+        owner_paths=owner_paths,
+    )
+    if owner_paths and not progress["all_owner_paths_ready"]:
+        return None
+
+    material_payloads = [
+        dict(fragment.get("payload") or {})
+        for fragment in fragments
+        if isinstance(fragment.get("payload"), dict)
+    ]
+    if not material_payloads:
+        return None
+
+    owned_mutation_paths = [
+        _artifact_path_key(fragment.get("owner_path"))
+        for fragment in fragments
+        if _artifact_path_key(fragment.get("owner_path"))
+    ]
+    target_files: list[str] = []
+    test_plan: list[str] = []
+    risks: list[str] = []
+    summaries: list[str] = []
+    _extend_unique_candidate_paths(
+        target_files,
+        owned_mutation_paths,
+        owner_paths=owner_paths,
+    )
+    for payload in material_payloads:
+        _extend_unique_candidate_paths(
+            target_files,
+            payload.get("target_files"),
+            owner_paths=owner_paths,
+        )
+        _extend_unique_text(test_plan, payload.get("test_plan"))
+        _extend_unique_text(risks, payload.get("risks"))
+        summary = _clean_text(payload.get("change_summary"))
+        if summary and summary not in summaries:
+            summaries.append(summary)
+    if not target_files:
+        return None
+
+    ordered_targets = [
+        owner_path
+        for owner_path in owner_paths
+        if any(_paths_overlap(owner_path, path) for path in target_files)
+    ]
+    for path in target_files:
+        if path not in ordered_targets:
+            ordered_targets.append(path)
+    candidate_fragment = _merge_candidate_fragments(material_payloads)
+    return _candidate_payload(
+        {
+            "candidate_id": f"candidate-{attempt}-worker-merge",
+            "change_summary": (
+                "Merged worker material changes: " + " ".join(summaries)
+                if summaries
+                else "Merged worker material changes across covered owner lanes."
+            ),
+            "target_files": ordered_targets,
+            "test_plan": test_plan,
+            "risks": risks,
+            "workspace_effect": "modified",
+            **({"candidate_fragment": candidate_fragment} if candidate_fragment is not None else {}),
+            "synthesized_from_incremental_reducer": True,
+        }
+    )
 
 
 def _exclusive_owner_paths(worker_execution: TissueExecution) -> list[str]:
@@ -947,6 +1666,43 @@ def _extend_unique_candidate_paths(
             items.append(path)
 
 
+def _merge_candidate_fragments(payloads: Sequence[dict[str, Any]]) -> Any:
+    fragments: dict[str, Any] = {}
+    text_fragments: list[str] = []
+    for payload in payloads:
+        fragment = payload.get("candidate_fragment")
+        if isinstance(fragment, dict):
+            for key, value in fragment.items():
+                text_key = _clean_text(key)
+                if text_key and text_key not in fragments:
+                    fragments[text_key] = value
+            continue
+        text = _clean_text(fragment)
+        if text and text not in text_fragments:
+            text_fragments.append(text)
+    if fragments:
+        if text_fragments:
+            fragments["_notes"] = "\n\n".join(text_fragments)
+        return fragments
+    if text_fragments:
+        return "\n\n".join(text_fragments)
+    return None
+
+
+def _copy_candidate_material_extras(
+    candidate_payload: dict[str, Any],
+    source_payload: dict[str, Any],
+) -> None:
+    for key in (
+        "candidate_fragment",
+        "readback_files",
+        "synthesized_from_tool_evidence",
+        "fallback_reason",
+    ):
+        if key in source_payload and key not in candidate_payload:
+            candidate_payload[key] = source_payload[key]
+
+
 def _missing_exclusive_owner_material_paths(
     *,
     member_results: dict[str, Any],
@@ -1012,6 +1768,7 @@ def _deterministic_worker_merge_candidate(
             summaries.append(summary)
     if not target_files:
         return None
+    candidate_fragment = _merge_candidate_fragments(material_payloads)
     if owner_paths:
         ordered_targets = [
             owner_path
@@ -1035,6 +1792,7 @@ def _deterministic_worker_merge_candidate(
             "test_plan": test_plan,
             "risks": risks,
             "workspace_effect": "modified",
+            **({"candidate_fragment": candidate_fragment} if candidate_fragment is not None else {}),
         }
     )
 
@@ -1504,6 +2262,9 @@ def _augment_aggregation_candidate_from_worker_results(
         candidate["candidate_id"] = f"candidate-{attempt}-worker-merge"
     if target_files and not _clean_text(candidate.get("workspace_effect")):
         candidate["workspace_effect"] = "modified"
+    candidate_fragment = _merge_candidate_fragments(material_payloads)
+    if candidate_fragment is not None and "candidate_fragment" not in candidate:
+        candidate["candidate_fragment"] = candidate_fragment
     return _candidate_payload(candidate)
 
 
@@ -1514,11 +2275,12 @@ def _worker_member(
     index: int,
     tissue_id: str,
     brief: str,
+    owner_path: str = "",
     tool_ids: list[str],
 ) -> TissueMember:
     member_id = f"worker-{index}"
     cell_id = f"{organism.base_id}.{member_id}"
-    exclusive_owner_path = _exclusive_write_owner_path_from_brief(brief)
+    exclusive_owner_path = _artifact_path_key(owner_path) or _exclusive_write_owner_path_from_brief(brief)
     instruction_suffix = f"Assigned brief:\n{brief}"
     if exclusive_owner_path:
         instruction_suffix = (
@@ -1570,7 +2332,7 @@ def _worker_tool_ids_for_plan(
 ) -> list[str]:
     if plan.worker_count <= 1:
         return list(organism.worker_tool_ids)
-    if _plan_has_parallel_exclusive_write_owners(plan):
+    if _plan_has_parallel_artifact_owners(plan):
         file_tool_ids = [
             tool_id
             for tool_id in organism.worker_tool_ids
@@ -1584,13 +2346,19 @@ def _worker_tool_ids_for_plan(
     return list(organism.worker_tool_ids)
 
 
-def _plan_has_parallel_exclusive_write_owners(plan: CodingOrchestratorPlan) -> bool:
+def _plan_has_parallel_artifact_owners(plan: CodingOrchestratorPlan) -> bool:
     if plan.worker_count <= 1:
         return False
+    if any(_artifact_path_key(path) for path in plan.artifact_owner_paths):
+        return True
     return any(
         "exclusive write owner" in _clean_text(brief).lower()
         for brief in plan.worker_briefs
     )
+
+
+def _plan_has_parallel_exclusive_write_owners(plan: CodingOrchestratorPlan) -> bool:
+    return _plan_has_parallel_artifact_owners(plan)
 
 
 def _runtime_policy_metadata(task: "CodingTask") -> dict[str, Any]:
@@ -1617,6 +2385,334 @@ def _short_completion_timeout_task(task: "CodingTask") -> bool:
     return bool(_runtime_policy_metadata(task).get("short_completion_timeout"))
 
 
+def _validation_runtime_policy_metadata(task: "CodingTask") -> dict[str, Any]:
+    metadata = _runtime_policy_metadata(task)
+    raw_timeout = metadata.get("completion_timeout_seconds")
+    try:
+        timeout_seconds = float(raw_timeout)
+    except (TypeError, ValueError):
+        return metadata
+    if timeout_seconds <= 0:
+        return metadata
+    cap = _VALIDATION_COMPLETION_TIMEOUT_CAP_SECONDS
+    if timeout_seconds <= cap:
+        return metadata
+    metadata["completion_timeout_seconds"] = cap
+    metadata["short_completion_timeout"] = True
+    metadata["disable_timeout_recovery"] = True
+    metadata["validation_timeout_cap_seconds"] = cap
+    metadata["inherited_completion_timeout_seconds"] = timeout_seconds
+    return metadata
+
+
+def _candidate_path_keys(candidate_payload: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    for path in _candidate_view(candidate_payload).target_files:
+        key = _artifact_path_key(path)
+        if key and key not in paths:
+            paths.append(key)
+    return paths
+
+
+def _deterministic_validation_precheck(
+    *,
+    task: "CodingTask",
+    plan: CodingOrchestratorPlan,
+    candidate_payload: dict[str, Any],
+    candidate_source: str,
+) -> dict[str, Any]:
+    candidate = _candidate_view(candidate_payload)
+    blocking_errors: list[str] = []
+    warnings: list[str] = []
+    checks: list[str] = []
+
+    if _is_timeout_or_blocked_no_output_candidate(candidate_payload):
+        blocking_errors.append("candidate is a timeout/blocker placeholder rather than material output")
+    if not _clean_text(candidate.candidate_id):
+        warnings.append("candidate does not include a stable candidate_id")
+    target_paths = _candidate_path_keys(candidate_payload)
+    if not target_paths:
+        blocking_errors.append("candidate names no target files")
+    if not candidate.test_plan:
+        warnings.append("candidate has no focused validation steps")
+
+    owner_paths = [_artifact_path_key(path) for path in plan.artifact_owner_paths if _artifact_path_key(path)]
+    if owner_paths:
+        for owner_path in owner_paths:
+            if not any(_paths_overlap(owner_path, target_path) for target_path in target_paths):
+                blocking_errors.append(f"candidate does not cover artifact owner path {owner_path}")
+        checks.append("artifact_owner_coverage")
+
+    workspace_root = _workspace_root_from_task(task)
+    frontend_like_paths = {
+        Path(path).name
+        for path in [*target_paths, *owner_paths]
+        if Path(path).suffix.lower() in {".html", ".css", ".js"}
+    }
+    if workspace_root is not None and frontend_like_paths:
+        frontend_errors = _frontend_contract_validation_errors(workspace_root)
+        if frontend_errors:
+            blocking_errors.extend(frontend_errors)
+        checks.append("frontend_static_contract")
+
+    return {
+        "policy_source": (
+            "compact_validator"
+            if _should_use_compact_validation(
+                task=task,
+                plan=plan,
+                candidate_source=candidate_source,
+                blocking_errors=blocking_errors,
+            )
+            else "full_validator"
+        ),
+        "candidate_source": candidate_source,
+        "blocking_errors": blocking_errors,
+        "warnings": warnings,
+        "checks": checks,
+    }
+
+
+def _should_use_compact_validation(
+    *,
+    task: "CodingTask",
+    plan: CodingOrchestratorPlan,
+    candidate_source: str,
+    blocking_errors: Sequence[str],
+) -> bool:
+    if blocking_errors:
+        return True
+    if _short_completion_timeout_task(task):
+        return True
+    if candidate_source == "worker_merge":
+        return True
+    if _clean_text(plan.scheduler_policy_source) == "generic_artifact_partition":
+        return True
+    return False
+
+
+def _incremental_validation_precheck_record(
+    *,
+    task: "CodingTask",
+    plan: CodingOrchestratorPlan,
+    candidate_payload: dict[str, Any],
+    candidate_source: str,
+    attempt: int,
+    fragment_count: int,
+    owner_paths: Sequence[str],
+) -> dict[str, Any]:
+    candidate = _candidate_view(candidate_payload)
+    precheck = _deterministic_validation_precheck(
+        task=task,
+        plan=plan,
+        candidate_payload=candidate_payload,
+        candidate_source=candidate_source,
+    )
+    normalized_owner_paths = [
+        _artifact_path_key(path)
+        for path in owner_paths
+        if _artifact_path_key(path)
+    ]
+    return {
+        "attempt": attempt,
+        "candidate_key": _candidate_readiness_key(candidate_payload),
+        "candidate_id": candidate.candidate_id,
+        "candidate_source": candidate_source,
+        "fragment_count": int(fragment_count),
+        "owner_paths": normalized_owner_paths,
+        "policy_source": precheck["policy_source"],
+        "blocking_errors": list(precheck.get("blocking_errors") or []),
+        "warnings": list(precheck.get("warnings") or []),
+        "checks": list(precheck.get("checks") or []),
+        "validation_precheck": dict(precheck),
+    }
+
+
+def _select_validation_organ(
+    *,
+    organism: "CodingOrganism",
+    validation_precheck: dict[str, Any],
+) -> OrganPattern:
+    if (
+        validation_precheck["policy_source"] == "compact_validator"
+        and organism.compact_validator_organ is not None
+    ):
+        return organism.compact_validator_organ
+    return organism.validator_organ
+
+
+def _validation_output_contract() -> OutputContract:
+    return OutputContract(
+        definition_of_done="Return the validation result for the aggregated coding candidate.",
+        expected_return_shape=json.dumps(
+            {
+                "passed": "<required>",
+                "overall_score": "<required>",
+                "dimension_scores": "<required>",
+                "repair_brief": "<required>",
+                "missing_requirements": "<required>",
+                "comparison_note": "<required>",
+            },
+            sort_keys=True,
+        ),
+    )
+
+
+def _validation_packet(
+    *,
+    task: "CodingTask",
+    plan: CodingOrchestratorPlan,
+    selected_validator_organ: OrganPattern,
+    parent_packet: CellHandoffPacket,
+    parent_signal_id: str,
+    candidate_payload: dict[str, Any],
+    candidate_source: str,
+    validation_precheck: dict[str, Any],
+    attempt: int,
+    worker_count: int,
+    best_score_so_far: float | None,
+    repair_brief: str,
+    evidence_refs: Sequence[EvidenceRef],
+    task_id: str,
+    metadata: dict[str, Any] | None = None,
+) -> CellHandoffPacket:
+    return _child_packet(
+        sender=parent_packet.recipient,
+        recipient=selected_validator_organ.boundary_address,
+        parent_packet=parent_packet,
+        parent_signal_id=parent_signal_id,
+        lineage_suffix=f"organ:{selected_validator_organ.organ_id}",
+        task_id=task_id,
+        instruction=plan.validator_focus,
+        scope="coding-organism.validate",
+        hard_constraints=list(task.hard_constraints),
+        soft_constraints=list(task.soft_constraints),
+        input_payload={
+            "candidate": dict(candidate_payload),
+            "acceptance_criteria": list(task.acceptance_criteria),
+            "research_findings": list(task.research_findings),
+            "session_context": dict(task.session_context),
+            "quality_bar": float(plan.pass_threshold),
+            "deterministic_precheck": dict(validation_precheck),
+            "comparison_context": {
+                "attempt": attempt,
+                "best_score_so_far": best_score_so_far,
+                "repair_brief": repair_brief,
+                "worker_count": worker_count,
+                "candidate_source": candidate_source,
+                "validation_policy_source": validation_precheck["policy_source"],
+            },
+        },
+        evidence_refs=list(evidence_refs),
+        output_contract=_validation_output_contract(),
+        authority=WorkerAuthority.DELEGATE,
+        metadata={
+            "organism_id": _organism_id_from_validator(selected_validator_organ),
+            "organism_stage": "validation",
+            "organ_id": selected_validator_organ.organ_id,
+            "validation_policy_source": validation_precheck["policy_source"],
+            **dict(metadata or {}),
+            **_validation_runtime_policy_metadata(task),
+        },
+    )
+
+
+def _organism_id_from_validator(selected_validator_organ: OrganPattern) -> str:
+    return selected_validator_organ.boundary_address.organism_id or ""
+
+
+def _speculative_model_validation_admission(
+    *,
+    validation_precheck: dict[str, Any],
+    selected_validator_organ: OrganPattern,
+) -> dict[str, Any]:
+    blockers: list[str] = []
+    if validation_precheck.get("blocking_errors"):
+        blockers.append("blocking_precheck")
+    if validation_precheck.get("policy_source") != "compact_validator":
+        blockers.append("non_compact_policy")
+    if selected_validator_organ.tissue is not None:
+        blockers.append("validator_requires_tissue_quorum")
+    if selected_validator_organ.metadata.get("validation_mode") != "compact_model_review":
+        blockers.append("non_compact_validator")
+    return {
+        "admitted": not blockers,
+        "blockers": blockers,
+        "reason": "admitted" if not blockers else ",".join(blockers),
+    }
+
+
+def _precheck_failed_validation_payload(precheck: dict[str, Any]) -> dict[str, Any]:
+    missing_requirements = [
+        _clean_text(item)
+        for item in precheck.get("blocking_errors") or []
+        if _clean_text(item)
+    ]
+    comparison_note = (
+        "Deterministic validation precheck found blocking issues: "
+        + "; ".join(missing_requirements)
+        if missing_requirements
+        else "Deterministic validation precheck failed."
+    )
+    return {
+        "passed": False,
+        "overall_score": 0.0,
+        "dimension_scores": {"deterministic_precheck": 0.0},
+        "repair_brief": comparison_note,
+        "missing_requirements": missing_requirements,
+        "comparison_note": comparison_note,
+        "validation_policy_source": "deterministic_precheck",
+        "deterministic_precheck": dict(precheck),
+    }
+
+
+def _validation_precheck_execution(
+    *,
+    pattern: OrganPattern,
+    packet: CellHandoffPacket,
+    payload: dict[str, Any],
+    trace_log: CrossCellTraceLog | None,
+) -> OrganExecution:
+    if trace_log is not None:
+        trace_log.record_handoff(packet)
+    result = WorkerExecutionResult(
+        status="completed",
+        outputs=payload,
+        metadata={
+            "organ_id": pattern.organ_id,
+            "organ_kind": pattern.kind.value,
+            "validation_policy_source": "deterministic_precheck",
+        },
+    )
+    completion = make_completion_signal(
+        packet,
+        result,
+        summary="Deterministic validation precheck blocked the candidate.",
+        metadata={
+            "organ_id": pattern.organ_id,
+            "organ_kind": pattern.kind.value,
+            "output_keys": sorted(payload),
+            "validation_policy_source": "deterministic_precheck",
+        },
+    )
+    if trace_log is not None:
+        trace_log.record_signal(completion)
+    return OrganExecution(
+        pattern=pattern,
+        packet=packet,
+        result=OrganExecutionResult(
+            status="completed",
+            outputs=dict(payload),
+            metadata={
+                "organ_id": pattern.organ_id,
+                "organ_kind": pattern.kind.value,
+                "validation_policy_source": "deterministic_precheck",
+            },
+        ),
+        signals=[completion],
+    )
+
+
 def _worker_pool_pattern(
     *,
     organism: CodingOrganism,
@@ -1638,6 +2734,11 @@ def _worker_pool_pattern(
             index=index,
             tissue_id=tissue_id,
             brief=brief,
+            owner_path=(
+                plan.artifact_owner_paths[index - 1]
+                if index - 1 < len(plan.artifact_owner_paths)
+                else ""
+            ),
             tool_ids=worker_tool_ids,
         )
         for index, brief in enumerate(plan.worker_briefs, start=1)
@@ -1879,6 +2980,7 @@ def _promote_single_worker_candidate(
         "test_plan": list(member_payload.get("test_plan") or []),
         "risks": list(member_payload.get("risks") or []),
     }
+    _copy_candidate_material_extras(candidate_payload, member_payload)
     if member_payload.get("workspace_effect") is not None:
         candidate_payload["workspace_effect"] = member_payload.get("workspace_effect")
 
@@ -1945,6 +3047,11 @@ def coding_execution_organism(
             organ_id=f"{base_id}.validator",
             review_tie_break_priority=["repair", "pass"],
         ),
+        compact_validator_organ=compact_universal_validator_organ(
+            organism_id=organism_id,
+            model=model,
+            organ_id=f"{base_id}.validator",
+        ),
         metadata={
             "coding_flow": "orchestrator -> worker pool -> direct single-worker candidate or aggregation fallback -> validator",
         },
@@ -1998,6 +3105,15 @@ async def execute_coding_organism(
     aggregation_executions: list[OrganExecution] = []
     validation_executions: list[OrganExecution] = []
     repair_history: list[dict[str, Any]] = []
+    material_yield_history: list[dict[str, Any]] = []
+    readiness_ledger_history: list[dict[str, Any]] = []
+    incremental_readiness_history: list[dict[str, Any]] = []
+    partial_aggregation_history: list[dict[str, Any]] = []
+    incremental_validation_history: list[dict[str, Any]] = []
+    incremental_validation_precheck_by_candidate_key: dict[str, dict[str, Any]] = {}
+    speculative_validation_history: list[dict[str, Any]] = []
+    speculative_validation_tasks_by_candidate_key: dict[str, asyncio.Task[OrganExecution]] = {}
+    speculative_validation_context_by_candidate_key: dict[str, dict[str, Any]] = {}
 
     best_score = -1.0
     best_attempt: int | None = None
@@ -2009,6 +3125,168 @@ async def execute_coding_organism(
     best_validation: OrganExecution | None = None
     best_pass_threshold: float | None = None
     aggregation_failed_error: str | None = None
+
+    def _consume_speculative_validation_task(task_obj: asyncio.Task[OrganExecution]) -> None:
+        try:
+            task_obj.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
+
+    async def _run_speculative_model_validation(
+        *,
+        record: dict[str, Any],
+        selected_validator_organ: OrganPattern,
+        validation_packet: CellHandoffPacket,
+        candidate_key: str,
+        candidate_id: str | None,
+        attempt: int,
+        worker_count: int,
+        validation_precheck: dict[str, Any],
+    ) -> OrganExecution:
+        _emit(
+            "validation.speculative_model.started",
+            stage="validation",
+            source_stage="aggregation",
+            attempt=attempt,
+            worker_count=worker_count,
+            candidate_id=candidate_id,
+            candidate_key=candidate_key,
+            validator_organ_id=selected_validator_organ.organ_id,
+            policy_source=validation_precheck["policy_source"],
+            message="Started compact model validation from a complete incremental merge candidate.",
+        )
+        try:
+            execution = await execute_organ_pattern(
+                executor=executor,
+                pattern=selected_validator_organ,
+                packet=validation_packet,
+                trace_log=trace_log,
+            )
+        except asyncio.CancelledError:
+            record["status"] = "cancelled"
+            raise
+        except Exception as exc:
+            record["status"] = "failed"
+            record["error"] = str(exc)
+            _emit(
+                "validation.speculative_model.failed",
+                stage="validation",
+                attempt=attempt,
+                candidate_id=candidate_id,
+                candidate_key=candidate_key,
+                error=str(exc),
+            )
+            raise
+
+        score = None
+        if execution.result.status == "completed":
+            score = float(execution.result.outputs.get("overall_score") or 0.0)
+        record.update(
+            {
+                "status": execution.result.status,
+                "score": score,
+                "passed": bool(execution.result.outputs.get("passed")),
+            }
+        )
+        _emit(
+            "validation.speculative_model.completed",
+            stage="validation",
+            source_stage="aggregation",
+            attempt=attempt,
+            worker_count=worker_count,
+            candidate_id=candidate_id,
+            candidate_key=candidate_key,
+            status=execution.result.status,
+            score=score,
+            passed=bool(execution.result.outputs.get("passed")),
+            missing_requirements=list(execution.result.outputs.get("missing_requirements") or []),
+            repair_brief=str(execution.result.outputs.get("repair_brief") or ""),
+            message="Completed compact model validation for the incremental merge candidate.",
+        )
+        return execution
+
+    def _start_speculative_model_validation(
+        *,
+        selected_validator_organ: OrganPattern,
+        validation_packet: CellHandoffPacket,
+        candidate_key: str,
+        candidate_id: str | None,
+        candidate_source: str,
+        validation_precheck: dict[str, Any],
+        attempt: int,
+        worker_count: int,
+        fragment_count: int,
+        owner_paths: Sequence[str],
+        admission: dict[str, Any],
+    ) -> None:
+        if candidate_key in speculative_validation_tasks_by_candidate_key:
+            return
+        record = {
+            "attempt": attempt,
+            "worker_count": worker_count,
+            "candidate_key": candidate_key,
+            "candidate_id": candidate_id,
+            "candidate_source": candidate_source,
+            "validator_organ_id": selected_validator_organ.organ_id,
+            "policy_source": validation_precheck["policy_source"],
+            "fragment_count": int(fragment_count),
+            "owner_paths": list(owner_paths),
+            "status": "scheduled",
+            "admission": dict(admission),
+            "reused_at_final_validation": False,
+        }
+        speculative_validation_history.append(record)
+        speculative_validation_context_by_candidate_key[candidate_key] = {
+            "candidate_source": candidate_source,
+            "validator_organ_id": selected_validator_organ.organ_id,
+            "policy_source": validation_precheck["policy_source"],
+            "validation_precheck": dict(validation_precheck),
+            "record": record,
+        }
+        task_obj = asyncio.create_task(
+            _run_speculative_model_validation(
+                record=record,
+                selected_validator_organ=selected_validator_organ,
+                validation_packet=validation_packet,
+                candidate_key=candidate_key,
+                candidate_id=candidate_id,
+                attempt=attempt,
+                worker_count=worker_count,
+                validation_precheck=validation_precheck,
+            )
+        )
+        task_obj.add_done_callback(_consume_speculative_validation_task)
+        speculative_validation_tasks_by_candidate_key[candidate_key] = task_obj
+
+    def _discard_speculative_model_validation(
+        *,
+        candidate_key: str,
+        reason: str,
+    ) -> None:
+        task_obj = speculative_validation_tasks_by_candidate_key.get(candidate_key)
+        if task_obj is None or task_obj.done():
+            return
+        context = speculative_validation_context_by_candidate_key.get(candidate_key) or {}
+        record = context.get("record")
+        if isinstance(record, dict):
+            record["status"] = "cancelled"
+            record["discard_reason"] = reason
+        _emit(
+            "validation.speculative_model.discarded",
+            stage="validation",
+            attempt=record.get("attempt") if isinstance(record, dict) else None,
+            worker_count=record.get("worker_count") if isinstance(record, dict) else None,
+            candidate_id=(
+                record.get("candidate_id")
+                if isinstance(record, dict)
+                else context.get("candidate_id")
+            ),
+            candidate_key=candidate_key,
+            reason=reason,
+        )
+        task_obj.cancel()
 
     prior_packet: CellHandoffPacket | None = None
     prior_signal_id: str | None = None
@@ -2105,6 +3383,16 @@ async def execute_coding_organism(
                 else list(orchestrator_payload.get("worker_briefs") or [])
             ),
             pass_threshold=(plan.pass_threshold if plan is not None else orchestrator_payload.get("pass_threshold")),
+            scheduler_policy_source=(
+                _clean_text(plan.scheduler_policy_source)
+                if plan is not None
+                else ""
+            ),
+            scheduler_decision=(
+                dict(plan.scheduler_decision)
+                if plan is not None and plan.scheduler_decision
+                else None
+            ),
             message=(
                 f"Planned {(plan.worker_count if plan is not None else orchestrator_payload.get('worker_count'))} coding workers."
                 if orchestrator_run.result.status == "completed"
@@ -2128,12 +3416,29 @@ async def execute_coding_organism(
             worker_briefs=list(plan.worker_briefs),
             aggregation_focus=plan.aggregation_focus,
             validator_focus=plan.validator_focus,
+            scheduler_policy_source=_clean_text(plan.scheduler_policy_source),
+            scheduler_decision=dict(plan.scheduler_decision),
         )
+        if plan.scheduler_decision:
+            _emit(
+                "scheduler.action.selected",
+                stage="orchestration",
+                attempt=attempt,
+                scheduler_policy_source=_clean_text(plan.scheduler_policy_source),
+                **dict(plan.scheduler_decision),
+            )
         worker_pool_pattern, worker_pool_address = _worker_pool_pattern(
             organism=organism,
             attempt=attempt,
             plan=plan,
         )
+        worker_pool_owner_paths = [
+            _artifact_path_key(dict(member.metadata or {}).get("exclusive_write_owner_path"))
+            for member in worker_pool_pattern.members
+            if _artifact_path_key(dict(member.metadata or {}).get("exclusive_write_owner_path"))
+        ]
+        partial_aggregation_fragments_by_member: dict[str, dict[str, Any]] = {}
+        partial_aggregation_executions_by_member: dict[str, HandoffExecution] = {}
         _emit(
             "stage.started",
             stage="workers",
@@ -2170,11 +3475,220 @@ async def execute_coding_organism(
                 "worker_count": plan.worker_count,
             },
         )
+        def _on_worker_member_completed(
+            member: TissueMember,
+            _member_packet: CellHandoffPacket,
+            member_execution: HandoffExecution,
+        ) -> None:
+            payload = _parse_payload(dict(member_execution.result.outputs or {}))
+            owner_path = _artifact_path_key(
+                dict(member.metadata or {}).get("exclusive_write_owner_path")
+            )
+            lane = _artifact_readiness_lane(
+                plan=plan,
+                member_id=member.member_id,
+                owner_path=owner_path,
+                payload=payload,
+                executed_tools=_executed_tools_from_handoff_execution(member_execution),
+            )
+            summary = _artifact_readiness_summary(
+                plan=plan,
+                lanes=[lane],
+                owner_paths=[owner_path] if owner_path else [],
+            )
+            record = {
+                "attempt": attempt,
+                "worker_count": plan.worker_count,
+                "member_id": member.member_id,
+                **summary,
+            }
+            incremental_readiness_history.append(record)
+            _emit(
+                "scheduler.readiness.member_evaluated",
+                stage="workers",
+                attempt=attempt,
+                worker_count=plan.worker_count,
+                member_id=member.member_id,
+                **summary,
+            )
+            if lane.get("ready_for_downstream"):
+                _emit(
+                    "scheduler.downstream.unlocked",
+                    stage="workers",
+                    attempt=attempt,
+                    worker_count=plan.worker_count,
+                    member_id=member.member_id,
+                    owner_path=owner_path,
+                    readiness_source=lane.get("readiness_source"),
+                    unlocked_tasks=(
+                        ["aggregation:owner_fragment"]
+                        if owner_path
+                        else ["aggregation:candidate_fragment"]
+                    ),
+                    message="A worker lane produced a downstream-ready artifact before the worker pool barrier completed.",
+                )
+                fragment = _partial_aggregation_fragment(
+                    member_id=member.member_id,
+                    owner_path=owner_path,
+                    payload=payload,
+                    executed_tools=_executed_tools_from_handoff_execution(member_execution),
+                )
+                if fragment is not None:
+                    partial_aggregation_fragments_by_member[member.member_id] = fragment
+                    partial_aggregation_executions_by_member[member.member_id] = member_execution
+                    partial_progress = _partial_aggregation_progress(
+                        fragments=list(partial_aggregation_fragments_by_member.values()),
+                        owner_paths=worker_pool_owner_paths,
+                    )
+                    partial_record = {
+                        "attempt": attempt,
+                        "worker_count": plan.worker_count,
+                        "member_id": member.member_id,
+                        "owner_path": owner_path,
+                        **partial_progress,
+                    }
+                    partial_aggregation_history.append(partial_record)
+                    _emit(
+                        "scheduler.downstream.started",
+                        stage="aggregation",
+                        source_stage="workers",
+                        attempt=attempt,
+                        worker_count=plan.worker_count,
+                        member_id=member.member_id,
+                        owner_path=owner_path,
+                        downstream_task_id="aggregation:partial_reduce",
+                        message="Started deterministic partial aggregation from a downstream-ready worker lane.",
+                    )
+                    _emit(
+                        "aggregation.partial_reduced",
+                        stage="aggregation",
+                        source_stage="workers",
+                        attempt=attempt,
+                        worker_count=plan.worker_count,
+                        member_id=member.member_id,
+                        owner_path=owner_path,
+                        **partial_progress,
+                    )
+                    incremental_candidate = _incremental_worker_merge_candidate(
+                        fragments=list(partial_aggregation_fragments_by_member.values()),
+                        owner_paths=worker_pool_owner_paths,
+                        attempt=attempt,
+                    )
+                    if incremental_candidate is not None:
+                        candidate_key = _candidate_readiness_key(incremental_candidate)
+                        if candidate_key not in incremental_validation_precheck_by_candidate_key:
+                            precheck_record = _incremental_validation_precheck_record(
+                                task=task,
+                                plan=plan,
+                                candidate_payload=incremental_candidate,
+                                candidate_source="worker_merge",
+                                attempt=attempt,
+                                fragment_count=int(partial_progress["fragment_count"]),
+                                owner_paths=worker_pool_owner_paths,
+                            )
+                            precheck_record["worker_count"] = plan.worker_count
+                            incremental_validation_history.append(precheck_record)
+                            incremental_validation_precheck_by_candidate_key[candidate_key] = (
+                                precheck_record
+                            )
+                            incremental_candidate_view = _candidate_view(incremental_candidate)
+                            _emit(
+                                "scheduler.downstream.started",
+                                stage="validation",
+                                source_stage="aggregation",
+                                attempt=attempt,
+                                worker_count=plan.worker_count,
+                                downstream_task_id="validation:deterministic_precheck",
+                                candidate_id=incremental_candidate_view.candidate_id,
+                                candidate_key=candidate_key,
+                                fragment_count=int(partial_progress["fragment_count"]),
+                                owner_paths=worker_pool_owner_paths,
+                                message="Started deterministic validation precheck from a complete incremental merge candidate.",
+                            )
+                            _emit(
+                                "validation.precheck.incremental_completed",
+                                stage="validation",
+                                source_stage="aggregation",
+                                attempt=attempt,
+                                worker_count=plan.worker_count,
+                                candidate_id=incremental_candidate_view.candidate_id,
+                                candidate_key=candidate_key,
+                                policy_source=precheck_record["policy_source"],
+                                blocking_errors=list(precheck_record["blocking_errors"]),
+                                warnings=list(precheck_record["warnings"]),
+                                checks=list(precheck_record["checks"]),
+                            )
+                            selected_speculative_validator = _select_validation_organ(
+                                organism=organism,
+                                validation_precheck=precheck_record["validation_precheck"],
+                            )
+                            speculative_admission = _speculative_model_validation_admission(
+                                validation_precheck=precheck_record["validation_precheck"],
+                                selected_validator_organ=selected_speculative_validator,
+                            )
+                            precheck_record["speculative_model_admission"] = dict(
+                                speculative_admission
+                            )
+                            if speculative_admission["admitted"]:
+                                speculative_evidence_refs = list(task.evidence_refs)
+                                for execution in partial_aggregation_executions_by_member.values():
+                                    speculative_evidence_refs.extend(
+                                        _completion_output_refs(execution.signals)
+                                    )
+                                speculative_packet = _validation_packet(
+                                    task=task,
+                                    plan=plan,
+                                    selected_validator_organ=selected_speculative_validator,
+                                    parent_packet=_member_packet,
+                                    parent_signal_id=member_execution.signals[-1].signal_id,
+                                    candidate_payload=incremental_candidate,
+                                    candidate_source="worker_merge",
+                                    validation_precheck=precheck_record["validation_precheck"],
+                                    attempt=attempt,
+                                    worker_count=plan.worker_count,
+                                    best_score_so_far=(
+                                        None if best_score < 0 else best_score
+                                    ),
+                                    repair_brief=repair_brief,
+                                    evidence_refs=speculative_evidence_refs,
+                                    task_id=f"{task.task_id}:validate:{attempt}:speculative",
+                                    metadata={
+                                        "speculative_validation": True,
+                                        "candidate_key": candidate_key,
+                                    },
+                                )
+                                _start_speculative_model_validation(
+                                    selected_validator_organ=selected_speculative_validator,
+                                    validation_packet=speculative_packet,
+                                    candidate_key=candidate_key,
+                                    candidate_id=incremental_candidate_view.candidate_id,
+                                    candidate_source="worker_merge",
+                                    validation_precheck=precheck_record["validation_precheck"],
+                                    attempt=attempt,
+                                    worker_count=plan.worker_count,
+                                    fragment_count=int(partial_progress["fragment_count"]),
+                                    owner_paths=worker_pool_owner_paths,
+                                    admission=speculative_admission,
+                                )
+                            else:
+                                _emit(
+                                    "validation.speculative_model.skipped",
+                                    stage="validation",
+                                    source_stage="aggregation",
+                                    attempt=attempt,
+                                    worker_count=plan.worker_count,
+                                    candidate_id=incremental_candidate_view.candidate_id,
+                                    candidate_key=candidate_key,
+                                    reason=speculative_admission["reason"],
+                                    blockers=list(speculative_admission["blockers"]),
+                                )
+
         worker_execution = await execute_tissue_pattern(
             executor=executor,
             pattern=worker_pool_pattern,
             packet=worker_packet,
             trace_log=trace_log,
+            member_completion_callback=_on_worker_member_completed,
         )
         worker_pool_executions.append(worker_execution)
         stage_records.append(
@@ -2207,6 +3721,44 @@ async def execute_coding_organism(
             break
 
         member_results = dict(worker_execution.result.outputs.get("member_results") or {})
+        material_yield = _worker_material_yield_metrics(
+            member_results=member_results,
+            worker_execution=worker_execution,
+        )
+        material_yield_history.append(
+            {
+                "attempt": attempt,
+                "worker_count": plan.worker_count,
+                "scheduler_policy_source": _clean_text(plan.scheduler_policy_source),
+                **material_yield,
+            }
+        )
+        _emit(
+            "worker.material_yield.measured",
+            stage="workers",
+            attempt=attempt,
+            worker_count=plan.worker_count,
+            scheduler_policy_source=_clean_text(plan.scheduler_policy_source),
+            **material_yield,
+        )
+        readiness_ledger = _artifact_readiness_ledger(
+            plan=plan,
+            member_results=member_results,
+            worker_execution=worker_execution,
+        )
+        readiness_ledger_record = {
+            "attempt": attempt,
+            "worker_count": plan.worker_count,
+            **readiness_ledger,
+        }
+        readiness_ledger_history.append(readiness_ledger_record)
+        _emit(
+            "scheduler.readiness.evaluated",
+            stage="workers",
+            attempt=attempt,
+            worker_count=plan.worker_count,
+            **readiness_ledger,
+        )
         for member_id in sorted(member_results):
             member_result = _parse_payload(dict(member_results.get(member_id) or {}))
             member_candidate = _candidate_view(member_result)
@@ -2304,6 +3856,7 @@ async def execute_coding_organism(
                     target_files=[],
                     test_plan=[],
                     workspace_effect=None,
+                    scheduler_policy_source=_clean_text(plan.scheduler_policy_source),
                     message="Workers did not produce a material candidate for aggregation.",
                 )
                 _emit_status_update(
@@ -2317,11 +3870,12 @@ async def execute_coding_organism(
                     target_files=[],
                     test_plan=[],
                     workspace_effect=None,
+                    scheduler_policy_source=_clean_text(plan.scheduler_policy_source),
                 )
                 if attempt <= organism.max_repair_rounds:
                     repair_brief = _aggregation_failure_repair_brief(
                         aggregation_failed_error,
-                        parallel_owner_plan=_plan_has_parallel_exclusive_write_owners(plan),
+                        parallel_owner_plan=_plan_has_parallel_artifact_owners(plan),
                     )
                     previous_validation_payload = {
                         "passed": False,
@@ -2365,10 +3919,13 @@ async def execute_coding_organism(
                 prior_packet = worker_packet
                 prior_signal_id = worker_execution.signals[-1].signal_id
                 break
-            missing_owner_paths = _missing_exclusive_owner_material_paths(
-                member_results=member_results,
-                worker_execution=worker_execution,
-            )
+            if not candidate_payload:
+                missing_owner_paths = _missing_exclusive_owner_material_paths(
+                    member_results=member_results,
+                    worker_execution=worker_execution,
+                )
+            else:
+                missing_owner_paths = []
             if missing_owner_paths:
                 aggregation_failed_error = (
                     "Required parallel owner lanes produced no material mutation evidence: "
@@ -2461,14 +4018,26 @@ async def execute_coding_organism(
                 prior_packet = worker_packet
                 prior_signal_id = worker_execution.signals[-1].signal_id
                 break
+            incremental_merge = _incremental_worker_merge_candidate(
+                fragments=list(partial_aggregation_fragments_by_member.values()),
+                owner_paths=worker_pool_owner_paths,
+                attempt=attempt,
+            )
             deterministic_merge = (
-                _deterministic_worker_merge_candidate(
-                    member_results=member_results,
-                    worker_execution=worker_execution,
-                    attempt=attempt,
+                None
+                if candidate_payload
+                else (
+                    incremental_merge
+                    or (
+                        _deterministic_worker_merge_candidate(
+                            member_results=member_results,
+                            worker_execution=worker_execution,
+                            attempt=attempt,
+                        )
+                        if _plan_has_parallel_exclusive_write_owners(plan)
+                        else None
+                    )
                 )
-                if _plan_has_parallel_exclusive_write_owners(plan)
-                else None
             )
             if deterministic_merge is not None:
                 candidate_payload = deterministic_merge
@@ -2479,6 +4048,16 @@ async def execute_coding_organism(
                 )
                 candidate_source = "worker_merge"
                 aggregation_candidate = _candidate_view(candidate_payload)
+                if candidate_payload.get("synthesized_from_incremental_reducer"):
+                    _emit(
+                        "aggregation.incremental_merge.reused",
+                        stage="aggregation",
+                        attempt=attempt,
+                        candidate_id=aggregation_candidate.candidate_id,
+                        fragment_count=len(partial_aggregation_fragments_by_member),
+                        owner_paths=worker_pool_owner_paths,
+                        message="Reused deterministic partial aggregation fragments for the final worker merge.",
+                    )
                 if hygiene_report is not None:
                     _emit(
                         "contract_hygiene.applied",
@@ -2526,7 +4105,7 @@ async def execute_coding_organism(
                     test_plan=list(aggregation_candidate.test_plan),
                     workspace_effect=_candidate_workspace_effect(aggregation_candidate),
                 )
-            else:
+            elif not candidate_payload:
                 aggregation_packet = _child_packet(
                     sender=worker_packet.recipient,
                     recipient=organism.aggregator_organ.boundary_address,
@@ -2666,62 +4245,162 @@ async def execute_coding_organism(
             attempt=attempt,
             message="Validating the aggregated candidate.",
         )
-        validation_packet = _child_packet(
-            sender=validation_parent_packet.recipient,
-            recipient=organism.validator_organ.boundary_address,
+        validation_candidate_key = _candidate_readiness_key(candidate_payload)
+        incremental_precheck_record = incremental_validation_precheck_by_candidate_key.get(
+            validation_candidate_key
+        )
+        if (
+            incremental_precheck_record is not None
+            and incremental_precheck_record.get("candidate_source") == candidate_source
+        ):
+            validation_precheck = dict(incremental_precheck_record["validation_precheck"])
+            _emit(
+                "validation.precheck.reused",
+                stage="validation",
+                attempt=attempt,
+                source="incremental_validation",
+                candidate_id=_candidate_view(candidate_payload).candidate_id,
+                candidate_key=validation_candidate_key,
+                policy_source=validation_precheck["policy_source"],
+                message="Reused deterministic validation precheck computed from the incremental merge candidate.",
+            )
+        else:
+            validation_precheck = _deterministic_validation_precheck(
+                task=task,
+                plan=plan,
+                candidate_payload=candidate_payload,
+                candidate_source=candidate_source,
+            )
+        _emit(
+            "validation.precheck.completed",
+            stage="validation",
+            attempt=attempt,
+            policy_source=validation_precheck["policy_source"],
+            candidate_source=candidate_source,
+            blocking_errors=list(validation_precheck.get("blocking_errors") or []),
+            warnings=list(validation_precheck.get("warnings") or []),
+            checks=list(validation_precheck.get("checks") or []),
+        )
+        selected_validator_organ = _select_validation_organ(
+            organism=organism,
+            validation_precheck=validation_precheck,
+        )
+        _emit(
+            "validation.policy.selected",
+            stage="validation",
+            attempt=attempt,
+            policy_source=validation_precheck["policy_source"],
+            validator_organ_id=selected_validator_organ.organ_id,
+            compact_model_review=selected_validator_organ.tissue is None,
+            blocking_precheck=bool(validation_precheck.get("blocking_errors")),
+        )
+        validation_packet = _validation_packet(
+            task=task,
+            plan=plan,
+            selected_validator_organ=selected_validator_organ,
             parent_packet=validation_parent_packet,
             parent_signal_id=validation_parent_signal_id,
-            lineage_suffix=f"organ:{organism.validator_organ.organ_id}",
-            task_id=f"{task.task_id}:validate:{attempt}",
-            instruction=plan.validator_focus,
-            scope="coding-organism.validate",
-            hard_constraints=list(task.hard_constraints),
-            soft_constraints=list(task.soft_constraints),
-            input_payload={
-                "candidate": dict(candidate_payload),
-                "acceptance_criteria": list(task.acceptance_criteria),
-                "research_findings": list(task.research_findings),
-                "session_context": dict(task.session_context),
-                "quality_bar": float(plan.pass_threshold),
-                "comparison_context": {
-                    "attempt": attempt,
-                    "best_score_so_far": None if best_score < 0 else best_score,
-                    "repair_brief": repair_brief,
-                    "worker_count": plan.worker_count,
-                },
-            },
+            candidate_payload=candidate_payload,
+            candidate_source=candidate_source,
+            validation_precheck=validation_precheck,
+            attempt=attempt,
+            worker_count=plan.worker_count,
+            best_score_so_far=None if best_score < 0 else best_score,
+            repair_brief=repair_brief,
             evidence_refs=[
                 *task.evidence_refs,
                 *_completion_output_refs(worker_execution.signals),
                 *candidate_output_refs,
             ],
-            output_contract=OutputContract(
-                definition_of_done="Return the validation result for the aggregated coding candidate.",
-                expected_return_shape=json.dumps(
-                    {
-                        "passed": "<required>",
-                        "overall_score": "<required>",
-                        "dimension_scores": "<required>",
-                        "repair_brief": "<required>",
-                        "missing_requirements": "<required>",
-                        "comparison_note": "<required>",
-                    },
-                    sort_keys=True,
-                ),
-            ),
-            authority=WorkerAuthority.DELEGATE,
-            metadata={
-                "organism_id": organism.organism_id,
-                "organism_stage": "validation",
-                "organ_id": organism.validator_organ.organ_id,
-            },
+            task_id=f"{task.task_id}:validate:{attempt}",
         )
-        validation_execution = await execute_organ_pattern(
-            executor=executor,
-            pattern=organism.validator_organ,
-            packet=validation_packet,
-            trace_log=trace_log,
+        speculative_context = speculative_validation_context_by_candidate_key.get(
+            validation_candidate_key
         )
+        speculative_task = speculative_validation_tasks_by_candidate_key.get(
+            validation_candidate_key
+        )
+        speculative_reusable = (
+            speculative_task is not None
+            and speculative_context is not None
+            and speculative_context.get("candidate_source") == candidate_source
+            and speculative_context.get("validator_organ_id") == selected_validator_organ.organ_id
+            and speculative_context.get("policy_source") == validation_precheck["policy_source"]
+            and not validation_precheck.get("blocking_errors")
+        )
+        if not speculative_reusable:
+            for candidate_key in list(speculative_validation_tasks_by_candidate_key):
+                _discard_speculative_model_validation(
+                    candidate_key=candidate_key,
+                    reason=(
+                        "final_candidate_changed"
+                        if candidate_key != validation_candidate_key
+                        else "final_validation_context_changed"
+                    ),
+                )
+        if validation_precheck.get("blocking_errors"):
+            validation_execution = _validation_precheck_execution(
+                pattern=selected_validator_organ,
+                packet=validation_packet,
+                payload=_precheck_failed_validation_payload(validation_precheck),
+                trace_log=trace_log,
+            )
+        elif speculative_reusable and speculative_task is not None:
+            _emit(
+                "validation.speculative_model.awaited",
+                stage="validation",
+                attempt=attempt,
+                candidate_id=_candidate_view(candidate_payload).candidate_id,
+                candidate_key=validation_candidate_key,
+                validator_organ_id=selected_validator_organ.organ_id,
+                message="Awaiting the compact validator already started from the incremental merge candidate.",
+            )
+            try:
+                validation_execution = await speculative_task
+                validation_packet = validation_execution.packet
+                record = dict(speculative_context.get("record") or {})
+                if isinstance(speculative_context.get("record"), dict):
+                    speculative_context["record"]["reused_at_final_validation"] = True
+                _emit(
+                    "validation.speculative_model.reused",
+                    stage="validation",
+                    attempt=attempt,
+                    candidate_id=_candidate_view(candidate_payload).candidate_id,
+                    candidate_key=validation_candidate_key,
+                    validator_organ_id=selected_validator_organ.organ_id,
+                    status=validation_execution.result.status,
+                    score=(
+                        float(validation_execution.result.outputs.get("overall_score") or 0.0)
+                        if validation_execution.result.status == "completed"
+                        else None
+                    ),
+                    passed=bool(validation_execution.result.outputs.get("passed")),
+                    speculative_status=record.get("status"),
+                    message="Reused the compact model validation result started from the readiness boundary.",
+                )
+            except Exception as exc:
+                _emit(
+                    "validation.speculative_model.failed",
+                    stage="validation",
+                    attempt=attempt,
+                    candidate_id=_candidate_view(candidate_payload).candidate_id,
+                    candidate_key=validation_candidate_key,
+                    error=str(exc),
+                    source="final_reuse",
+                )
+                validation_execution = await execute_organ_pattern(
+                    executor=executor,
+                    pattern=selected_validator_organ,
+                    packet=validation_packet,
+                    trace_log=trace_log,
+                )
+        else:
+            validation_execution = await execute_organ_pattern(
+                executor=executor,
+                pattern=selected_validator_organ,
+                packet=validation_packet,
+                trace_log=trace_log,
+            )
         validation_executions.append(validation_execution)
         score = None
         if validation_execution.result.status == "completed":
@@ -2733,7 +4412,7 @@ async def execute_coding_organism(
                 packet=validation_packet,
                 status=validation_execution.result.status,
                 summary=validation_execution.signals[-1].summary,
-                organ_id=organism.validator_organ.organ_id,
+                organ_id=selected_validator_organ.organ_id,
                 score=score,
                 output_keys=sorted(validation_execution.result.outputs),
             )
@@ -2749,6 +4428,8 @@ async def execute_coding_organism(
             repair_brief=str(validation_execution.result.outputs.get("repair_brief") or ""),
             missing_requirements=list(validation_execution.result.outputs.get("missing_requirements") or []),
             comparison_note=str(validation_execution.result.outputs.get("comparison_note") or ""),
+            validation_policy_source=validation_precheck["policy_source"],
+            deterministic_precheck=dict(validation_precheck),
             message=(
                 f"Validator scored the candidate at {score:.2f}."
                 if validation_execution.result.status == "completed" and score is not None
@@ -2772,6 +4453,7 @@ async def execute_coding_organism(
             score=score,
             missing_requirements=list(validation_execution.result.outputs.get("missing_requirements") or []),
             repair_brief=str(validation_execution.result.outputs.get("repair_brief") or ""),
+            validation_policy_source=validation_precheck["policy_source"],
         )
 
         prior_packet = validation_packet
@@ -2952,6 +4634,12 @@ async def execute_coding_organism(
         observability=observability,
         metadata={
             "repair_history": repair_history,
+            "material_yield_history": material_yield_history,
+            "readiness_ledger_history": readiness_ledger_history,
+            "incremental_readiness_history": incremental_readiness_history,
+            "partial_aggregation_history": partial_aggregation_history,
+            "incremental_validation_history": incremental_validation_history,
+            "speculative_validation_history": speculative_validation_history,
             "orchestrator_runs": len(orchestrator_runs),
             "worker_pool_attempts": len(worker_pool_executions),
             "aggregation_attempts": len(aggregation_executions),
