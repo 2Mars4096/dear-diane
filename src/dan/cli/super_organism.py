@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import copy
 import hashlib
+import inspect
 import json
 import sys
 from datetime import datetime
@@ -3016,6 +3017,64 @@ async def _run_live_generic_execution(
     }
 
 
+async def _close_live_provider(
+    provider: LLMProvider,
+    *,
+    event_logger: SuperRunEventLogger | None = None,
+) -> None:
+    for attr_name in ("close", "aclose"):
+        closer = getattr(provider, attr_name, None)
+        if not callable(closer):
+            continue
+        try:
+            result = closer()
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:
+            _log_live_event(
+                event_logger,
+                "provider.close.failed",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+        return
+
+
+async def _run_live_execution_with_provider_cleanup(
+    report: SuperOrganismReport,
+    args: argparse.Namespace,
+    *,
+    model: str,
+    provider: LLMProvider,
+    run_trace_id: str,
+    run_task_id: str,
+    event_logger: SuperRunEventLogger | None,
+    objective_kind: str,
+) -> dict[str, Any]:
+    try:
+        if objective_kind == "website":
+            return await _run_live_website_build(
+                report,
+                args,
+                model=model,
+                provider=provider,
+                run_trace_id=run_trace_id,
+                run_task_id=run_task_id,
+                event_logger=event_logger,
+            )
+        return await _run_live_generic_execution(
+            report,
+            args,
+            model=model,
+            provider=provider,
+            run_trace_id=run_trace_id,
+            run_task_id=run_task_id,
+            event_logger=event_logger,
+        )
+    finally:
+        await _close_live_provider(provider, event_logger=event_logger)
+
+
 def _mutation_paths_from_tools(
     executed_tools: Sequence[dict[str, Any]],
     *,
@@ -3341,30 +3400,18 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
                 parser.error(str(exc))
                 return 2
             try:
-                if _is_website_objective(report, args):
-                    live_result = asyncio.run(
-                        _run_live_website_build(
-                            report,
-                            args,
-                            model=model,
-                            provider=provider,
-                            run_trace_id=live_trace_id,
-                            run_task_id=live_task_id,
-                            event_logger=event_logger,
-                        )
+                live_result = asyncio.run(
+                    _run_live_execution_with_provider_cleanup(
+                        report,
+                        args,
+                        model=model,
+                        provider=provider,
+                        run_trace_id=live_trace_id,
+                        run_task_id=live_task_id,
+                        event_logger=event_logger,
+                        objective_kind=objective_kind,
                     )
-                else:
-                    live_result = asyncio.run(
-                        _run_live_generic_execution(
-                            report,
-                            args,
-                            model=model,
-                            provider=provider,
-                            run_trace_id=live_trace_id,
-                            run_task_id=live_task_id,
-                            event_logger=event_logger,
-                        )
-                    )
+                )
             except Exception as exc:
                 _log_live_event(
                     event_logger,

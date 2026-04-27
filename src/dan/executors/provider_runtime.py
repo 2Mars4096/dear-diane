@@ -113,6 +113,46 @@ class _GatewayBackedProviderAdapter:
         async for chunk in stream_iter:
             yield chunk
 
+    async def close(self) -> None:
+        candidates: list[Any] = []
+        provider = getattr(self, "_provider", None)
+        if provider is not None:
+            candidates.append(provider)
+        gateway = getattr(self, "_gateway", None)
+        registry = getattr(gateway, "registry", None)
+        provider_names = getattr(registry, "provider_names", None)
+        get_provider = getattr(registry, "get", None)
+        if callable(provider_names) and callable(get_provider):
+            for name in provider_names():
+                candidate = get_provider(name)
+                if candidate is not None:
+                    candidates.append(candidate)
+
+        seen: set[int] = set()
+        for candidate in candidates:
+            marker = id(candidate)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            await _close_provider_candidate(candidate)
+
+    async def aclose(self) -> None:
+        await self.close()
+
+
+async def _close_provider_candidate(provider: Any) -> None:
+    for attr_name in ("close", "aclose"):
+        closer = getattr(provider, attr_name, None)
+        if not callable(closer):
+            continue
+        try:
+            result = closer()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            logger.debug("Unable to close provider candidate", exc_info=True)
+        return
+
 def _cache_runtime_gateway(context: Any, gateway: Any) -> Any:
     if gateway is None:
         return None

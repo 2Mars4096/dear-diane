@@ -118,6 +118,15 @@ class OpenAIProvider:
                 return
             return
 
+    async def close(self) -> None:
+        client = getattr(self, "_client", None)
+        if client is not None:
+            await self._close_client_quietly(client)
+            self._client = None
+
+    async def aclose(self) -> None:
+        await self.close()
+
     async def recover_from_error(self, exc: BaseException) -> None:
         _ = exc
         factory = getattr(self, "_client_factory", None)

@@ -116,6 +116,35 @@ class _FakeLiveWebsiteProvider:
         )
 
 
+class _FakeClosableLiveWebsiteProvider(_FakeLiveWebsiteProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.complete_loop_ids: list[int] = []
+        self.close_loop_id: int | None = None
+        self.close_calls = 0
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.complete_loop_ids.append(id(asyncio.get_running_loop()))
+        return await super().complete(
+            messages,
+            model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs,
+        )
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        self.close_loop_id = id(asyncio.get_running_loop())
+
+
 class _FakePatchContinuationWebsiteProvider:
     def __init__(self) -> None:
         self.calls = 0
@@ -1823,6 +1852,36 @@ def test_main_live_website_build_uses_native_tool_loop(tmp_path, capsys, monkeyp
     assert all(row["product"] == "dan_super" for row in event_rows)
     assert (tmp_path / "website" / "index.html").read_text(encoding="utf-8").startswith("<!doctype html>")
     assert "fake live provider" in (tmp_path / "website" / "README.md").read_text(encoding="utf-8")
+
+
+def test_main_live_closes_provider_before_event_loop_shutdown(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    fake_provider = _FakeClosableLiveWebsiteProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "can you build a website for this product? make it look cool",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    _ = capsys.readouterr()
+    assert fake_provider.close_calls == 1
+    assert fake_provider.close_loop_id is not None
+    assert fake_provider.close_loop_id in fake_provider.complete_loop_ids
 
 
 def test_main_live_existing_website_layout_prompt_uses_website_lane(
