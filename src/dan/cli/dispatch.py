@@ -53,7 +53,7 @@ SUPER_DAN_WEBSITE_TEMPLATE_PHRASES = (
     "acceptance synthesis",
     "super dan turns one objective into coordinated execution",
 )
-SUPER_DAN_EXISTING_WEBSITE_MIN_CHANGED_FILES = 2
+SUPER_DAN_EXISTING_WEBSITE_PREFERRED_COORDINATED_FILES = 2
 
 
 class OrchestratorChoice(BaseModel):
@@ -197,7 +197,7 @@ def select_orchestrator(intent: str, context: Mapping[str, Any] | None = None) -
                 },
                 artifact_policy={
                     "required_files": list(SUPER_DAN_WEBSITE_FILES),
-                    "existing_website_min_changed_files": SUPER_DAN_EXISTING_WEBSITE_MIN_CHANGED_FILES,
+                    "existing_website_preferred_coordinated_files": SUPER_DAN_EXISTING_WEBSITE_PREFERRED_COORDINATED_FILES,
                 },
                 acceptance_policy={
                     "requires_live_artifact": True,
@@ -250,7 +250,7 @@ def select_orchestrator(intent: str, context: Mapping[str, Any] | None = None) -
             },
             artifact_policy={
                 "required_files": list(SUPER_DAN_WEBSITE_FILES),
-                "existing_website_min_changed_files": SUPER_DAN_EXISTING_WEBSITE_MIN_CHANGED_FILES,
+                "existing_website_preferred_coordinated_files": SUPER_DAN_EXISTING_WEBSITE_PREFERRED_COORDINATED_FILES,
             },
             acceptance_policy={
                 "requires_live_artifact": True,
@@ -269,7 +269,7 @@ __all__ = [
     "BUILD_INTENT_CUES",
     "CODE_EXECUTION_FAMILIES",
     "OrchestratorChoice",
-    "SUPER_DAN_EXISTING_WEBSITE_MIN_CHANGED_FILES",
+    "SUPER_DAN_EXISTING_WEBSITE_PREFERRED_COORDINATED_FILES",
     "SUPER_DAN_GENERIC_TOOL_IDS",
     "SUPER_DAN_WEBSITE_FILES",
     "SUPER_DAN_WEBSITE_TEMPLATE_PHRASES",

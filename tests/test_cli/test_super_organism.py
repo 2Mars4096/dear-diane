@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -106,6 +107,123 @@ class _FakeLiveWebsiteProvider:
                     "repair_brief": "",
                     "missing_requirements": [],
                     "comparison_note": "The website materially satisfies the objective.",
+                },
+                sort_keys=True,
+            ),
+            model=model,
+            usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            finish_reason="stop",
+        )
+
+
+class _FakePatchContinuationWebsiteProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.calls += 1
+        if self.calls == 1:
+            rendered_messages = "\n".join(
+                str(message.get("content") or "")
+                for message in messages
+                if isinstance(message, dict)
+            )
+            assert "Continue patching this existing website with a concrete maintainability pass" in rendered_messages
+            assert "Original operator wording: can you keep patching this website" in rendered_messages
+            assert "index.html, styles.css, app.js, and README.md" in rendered_messages
+            tool_calls = [
+                _file_write_call(
+                    "call-index",
+                    "index.html",
+                    (
+                        "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./styles.css\"></head>"
+                        "<body><main><section id=\"component-map\"><h1>Patchable Product Website</h1>"
+                        "<p>Editable sections, component map, and changelog guidance are now visible.</p></section>"
+                        "<section id=\"changelog\"><h2>Patch Notes</h2><p>Record future website changes here.</p></section>"
+                        "</main><script src=\"./app.js\"></script></body></html>\n"
+                    ),
+                ),
+                _file_write_call(
+                    "call-css",
+                    "styles.css",
+                    (
+                        "body { margin: 0; font-family: Inter, system-ui, sans-serif; background: #0d1117; color: #f5f7fb; }\n"
+                        "#component-map, #changelog { max-width: 880px; margin: 0 auto; padding: 48px 24px; }\n"
+                    ),
+                ),
+                _file_write_call(
+                    "call-js",
+                    "app.js",
+                    (
+                        "document.documentElement.dataset.patchable = 'true';\n"
+                        "document.querySelectorAll('[id]').forEach((node) => node.dataset.editBlock = node.id);\n"
+                    ),
+                ),
+                _file_write_call(
+                    "call-readme",
+                    "README.md",
+                    (
+                        "# Patchable Website\n\n"
+                        "Component map: `#component-map`, `#changelog`.\n"
+                        "Patch flow: edit HTML sections, CSS tokens, and JS hooks together.\n"
+                    ),
+                ),
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                usage={"prompt_tokens": 40, "completion_tokens": 10, "total_tokens": 50},
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 2:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "patch-continuation-001",
+                        "change_summary": ["expanded a vague continuation request into a maintainable multi-file website patch"],
+                        "target_files": ["index.html", "styles.css", "app.js", "README.md"],
+                        "test_plan": ["open index.html and inspect README.md patch guidance"],
+                        "risks": [],
+                        "files_created": [],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 30, "completion_tokens": 20, "total_tokens": 50},
+                finish_reason="stop",
+            )
+        rendered_messages = "\n".join(
+            str(message.get("content") or "")
+            for message in messages
+            if isinstance(message, dict)
+        )
+        assert "Validate against the expanded patch brief" in rendered_messages
+        return CompletionResult(
+            text=json.dumps(
+                {
+                    "passed": True,
+                    "overall_score": 0.91,
+                    "dimension_scores": {
+                        "objective_alignment": 0.9,
+                        "artifact_specificity": 0.91,
+                        "execution_quality": 0.92,
+                    },
+                    "repair_brief": "",
+                    "missing_requirements": [],
+                    "comparison_note": "The patch adds maintainability guidance across the website artifact set.",
                 },
                 sort_keys=True,
             ),
@@ -729,6 +847,165 @@ class _FakeSingleFileExistingWebsiteProvider:
         )
 
 
+class _FakeRepairingExistingWebsiteProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.calls += 1
+        if self.calls == 1:
+            tool_calls = [
+                _file_write_call(
+                    "call-index",
+                    "website/index.html",
+                    (
+                        "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./styles.css\"></head>"
+                        "<body><main><section><h1>Patchable Super DAN Site</h1>"
+                        "<p>The first pass changed only the page shell.</p></section>"
+                        "</main><script src=\"./app.js\"></script></body></html>\n"
+                    ),
+                )
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 2:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "repair-needed-001",
+                        "change_summary": ["updated only index.html"],
+                        "target_files": ["website/index.html"],
+                        "test_plan": ["open website/index.html"],
+                        "risks": ["needs coordinated follow-up"],
+                        "files_created": [],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                finish_reason="stop",
+            )
+        if self.calls == 3:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "passed": False,
+                        "overall_score": 0.42,
+                        "dimension_scores": {
+                            "objective_alignment": 0.5,
+                            "artifact_specificity": 0.4,
+                            "execution_quality": 0.35,
+                        },
+                        "repair_brief": "Change at least one more required website file.",
+                        "missing_requirements": ["styles.css, app.js, or README.md must be updated too"],
+                        "comparison_note": "Only index.html changed.",
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                finish_reason="stop",
+            )
+        if self.calls == 4:
+            rendered_messages = "\n".join(
+                str(message.get("content") or "")
+                for message in messages
+                if isinstance(message, dict)
+            )
+            assert "Repair the previous website patch now" in rendered_messages
+            assert "Change at least one more required website file" in rendered_messages
+            tool_calls = [
+                _file_write_call(
+                    "call-css",
+                    "website/styles.css",
+                    (
+                        ":root { --surface: #101418; --accent: #5eead4; }\n"
+                        "body { margin: 0; font-family: Inter, system-ui, sans-serif; background: var(--surface); color: #f6fbff; }\n"
+                        ".patch-notes { border-top: 1px solid rgba(255,255,255,.18); padding: 32px; }\n"
+                    ),
+                ),
+                _file_write_call(
+                    "call-js",
+                    "website/app.js",
+                    (
+                        "const patchNotes = ['Coordinated repair updated style, behavior, and docs.'];\n"
+                        "document.documentElement.dataset.patchReady = 'true';\n"
+                    ),
+                ),
+                _file_write_call(
+                    "call-readme",
+                    "website/README.md",
+                    (
+                        "# Patchable Website\n\n"
+                        "## Patch Guide\n"
+                        "Edit index.html for content, styles.css for visual tokens, and app.js for behavior.\n\n"
+                        "## Changelog\n"
+                        "- Coordinated repair pass updated multiple required files.\n"
+                    ),
+                ),
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 5:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "repair-success-001",
+                        "change_summary": ["repaired the site with coordinated CSS, JS, and README changes"],
+                        "target_files": ["website/styles.css", "website/app.js", "website/README.md"],
+                        "test_plan": ["open website/index.html"],
+                        "risks": [],
+                        "files_created": [],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                finish_reason="stop",
+            )
+        return CompletionResult(
+            text=json.dumps(
+                {
+                    "passed": True,
+                    "overall_score": 0.9,
+                    "dimension_scores": {
+                        "objective_alignment": 0.9,
+                        "artifact_specificity": 0.9,
+                        "execution_quality": 0.9,
+                    },
+                    "repair_brief": "",
+                    "missing_requirements": [],
+                    "comparison_note": "The repair changed a coordinated set of required files.",
+                },
+                sort_keys=True,
+            ),
+            model=model,
+            finish_reason="stop",
+        )
+
+
 def test_build_parser_defaults() -> None:
     parser = build_parser()
     args = parser.parse_args([])
@@ -742,11 +1019,12 @@ def test_build_parser_defaults() -> None:
     assert args.model is None
     assert args.api_key is None
     assert args.base_url is None
-    assert args.max_tool_rounds == 8
-    assert args.max_tool_calls == 24
+    assert args.max_tool_rounds == 10
+    assert args.max_tool_calls == 32
     assert args.artifact_dir == "website"
     assert args.json is False
     assert args.verbose is False
+    assert args.quiet_progress is False
 
 
 def test_build_parser_rejects_public_scenario_flag() -> None:
@@ -815,9 +1093,108 @@ def test_live_tasks_include_paced_incremental_execution_guidance(tmp_path) -> No
     assert "200 lines" in website_task
     assert "Do not create extra scratch files" in website_task
     assert "improve them incrementally" in website_task
-    assert "coordinated set of required files" in website_task
+    assert "focused single-file patch is acceptable" in website_task
     assert "1200 words" in generic_task
     assert "200 lines" in generic_task
+
+
+def test_super_progress_renderer_prints_compact_live_events(capsys) -> None:
+    renderer = super_cli.SuperProgressRenderer(enabled=True)
+
+    renderer(
+        {
+            "event": "live.objective.normalized",
+            "reason": "vague_website_continuation",
+            "previous_failure_hint": "Existing website changed only one file.",
+        }
+    )
+    renderer(
+        {
+            "event": "model.requested",
+            "span_id": "model-call:1",
+            "round": 1,
+            "model": "fake-live-model",
+            "tool_count": 4,
+            "worker_id": "super-dan.live.website-builder",
+        }
+    )
+    renderer(
+        {
+            "event": "tool.started",
+            "span_id": "file_read:1",
+            "tool_id": "file_read",
+            "arguments": {"path": "/tmp/site/index.html"},
+            "worker_id": "super-dan.live.website-builder",
+        }
+    )
+    renderer(
+        {
+            "event": "tool.completed",
+            "span_id": "file_read:1",
+            "tool_id": "file_read",
+            "status": "completed",
+            "result": {"path": "/tmp/site/index.html", "line_count": 42, "size": 900},
+            "worker_id": "super-dan.live.website-builder",
+        }
+    )
+    renderer(
+        {
+            "event": "super.heartbeat",
+            "phase": "model",
+            "detail": "round=1 model=fake-live-model tools=4",
+            "elapsed_seconds": 12,
+        }
+    )
+    renderer(
+        {
+            "event": "live.validation.completed",
+            "passed": False,
+            "overall_score": 0.49,
+            "deterministic_failures": ["Existing website changed only one file."],
+        }
+    )
+
+    stdout = capsys.readouterr().out
+    assert stdout.startswith("[")
+    assert "] [run] normalized vague website continuation" in stdout
+    assert "[run] normalized vague website continuation" in stdout
+    assert "[run] previous validation feedback: Existing website changed only one file." in stdout
+    assert "[builder][model] request round=1 model=fake-live-model tools=4" in stdout
+    assert "[builder][tool] file_read: index.html" in stdout
+    assert "[builder][tool] ok file_read: lines=42 bytes=900 path=index.html" in stdout
+    assert "[status] still running model (12s idle): round=1 model=fake-live-model tools=4" in stdout
+    assert "[validation] failed 0.49" in stdout
+    assert "[validation] gap: Existing website changed only one file." in stdout
+
+
+@pytest.mark.asyncio
+async def test_super_heartbeat_monitor_emits_idle_events() -> None:
+    events: list[dict] = []
+    monitor = super_cli.SuperHeartbeatMonitor(
+        event_callback=events.append,
+        enabled=True,
+        idle_seconds=0.01,
+        repeat_seconds=0.02,
+        poll_seconds=0.005,
+    )
+
+    await monitor.start()
+    monitor.observe(
+        {
+            "event": "model.requested",
+            "round": 2,
+            "model": "fake-live-model",
+            "tool_count": 3,
+            "worker_id": "super-dan.live.website-builder",
+        }
+    )
+    await asyncio.sleep(0.04)
+    await monitor.stop()
+
+    heartbeat = [event for event in events if event.get("event") == "super.heartbeat"]
+    assert heartbeat
+    assert heartbeat[0]["phase"] == "model"
+    assert "round=2" in heartbeat[0]["detail"]
 
 
 def test_unified_cli_registers_super_organism() -> None:
@@ -868,6 +1245,18 @@ def test_main_default_runs_universal_agent_showcase(capsys) -> None:
     assert "Delivery Plan:" not in stdout
     assert "Claim Graph:" not in stdout
     assert "operator objective" in stdout
+
+
+def test_main_no_objective_tty_starts_interactive_prompt(capsys, monkeypatch) -> None:
+    monkeypatch.setattr(super_cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "/exit")
+
+    exit_code = main([])
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Super DAN interactive" in stdout
+    assert "Type an objective" in stdout
 
 
 def test_main_verbose_text_summary_prints_full_trace(capsys) -> None:
@@ -1024,6 +1413,15 @@ def test_main_live_website_build_uses_native_tool_loop(tmp_path, capsys, monkeyp
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
+    assert "[run] started: can you build a website for this product? make it look cool" in stdout
+    assert "[model] preparing provider: fake-live-model" in stdout
+    assert "[build] website lane started:" in stdout
+    assert (
+        "[builder][tool] file_write:" in stdout
+        or "[tool] file_write:" in stdout
+    )
+    assert "[validation] started" in stdout
+    assert "[done] completed" in stdout
     assert "Live Build: completed" in stdout
     assert "\nBuild: completed" not in stdout
     assert "Materialized Artifacts:" not in stdout
@@ -1051,6 +1449,185 @@ def test_main_live_website_build_uses_native_tool_loop(tmp_path, capsys, monkeyp
     assert all(row["product"] == "dan_super" for row in event_rows)
     assert (tmp_path / "website" / "index.html").read_text(encoding="utf-8").startswith("<!doctype html>")
     assert "fake live provider" in (tmp_path / "website" / "README.md").read_text(encoding="utf-8")
+
+
+def test_main_live_progress_can_be_disabled(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    fake_provider = _FakeLiveWebsiteProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "can you build a website for this product? make it look cool",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+            "--quiet-progress",
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Live Build: completed" in stdout
+    assert "[run]" not in stdout
+    assert "[build]" not in stdout
+    assert "[builder][tool]" not in stdout
+    assert "[validation]" not in stdout
+    assert (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").exists()
+
+
+def test_main_objective_with_model_uses_live_without_live_flag(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    fake_provider = _FakeLiveWebsiteProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "can you build a website for this product? make it look cool",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Live Build: completed" in stdout
+    assert "\nBuild: completed" not in stdout
+    assert (tmp_path / "website" / "index.html").exists()
+    assert (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").exists()
+
+
+def test_code_like_live_website_workspace_writes_at_workspace_root(tmp_path) -> None:
+    workspace = tmp_path / "website"
+    args = build_parser().parse_args(
+        [
+            "build a website for this product",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(workspace),
+        ]
+    )
+    args._artifact_dir_explicit = False
+    args._code_like_live = True
+    report = super_cli.run_super_organism_demo(args.target)
+    choice = super_cli._super_live_choice(report)
+
+    workspace_root, artifact_root, relative_files, required_paths = (
+        super_cli._live_artifact_layout(args, choice)
+    )
+
+    assert workspace_root == workspace.resolve(strict=False)
+    assert artifact_root == workspace.resolve(strict=False)
+    assert relative_files == ["index.html", "styles.css", "app.js", "README.md"]
+    assert required_paths[0] == workspace.resolve(strict=False) / "index.html"
+
+
+def test_vague_website_continuation_objective_expands_from_workspace_and_prior_failure(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "website"
+    workspace.mkdir()
+    required_paths = [
+        workspace / "index.html",
+        workspace / "styles.css",
+        workspace / "app.js",
+        workspace / "README.md",
+    ]
+    for path in required_paths:
+        path.write_text(f"old {path.name}\n", encoding="utf-8")
+    run_dir = workspace / ".dan-super" / "runs" / "turn-01"
+    run_dir.mkdir(parents=True)
+    (run_dir / "events.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "live.validation.completed",
+                "passed": False,
+                "deterministic_failures": [
+                    "Existing website redesign changed only 1 preexisting required file(s)."
+                ],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    report = super_cli.run_super_organism_demo("can you keep patching this website")
+
+    context = super_cli._live_website_objective_context(
+        report,
+        workspace_root=workspace,
+        required_paths=required_paths,
+    )
+
+    assert context["normalized"] is True
+    assert context["reason"] == "vague_website_continuation"
+    assert context["original_objective"] == "can you keep patching this website"
+    assert "coordinated, inspectable changes across index.html, styles.css, app.js, and README.md" in context["effective_objective"]
+    assert "Existing website redesign changed only 1" in context["previous_failure_hint"]
+
+
+def test_main_vague_website_continuation_uses_default_patch_brief(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "website"
+    workspace.mkdir()
+    for filename in ("index.html", "styles.css", "app.js", "README.md"):
+        (workspace / filename).write_text(f"old {filename}\n", encoding="utf-8")
+    fake_provider = _FakePatchContinuationWebsiteProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "can you keep patching this website",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(workspace),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Live Build: completed" in stdout
+    assert (workspace / "index.html").exists()
+    assert not (workspace / "website" / "index.html").exists()
+    event_log_path = workspace / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
+    rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    normalized = [
+        row for row in rows if row.get("event") == "live.objective.normalized"
+    ]
+    assert normalized
+    assert normalized[0]["original_objective"] == "can you keep patching this website"
+    assert "concrete maintainability pass" in normalized[0]["effective_objective"]
 
 
 def test_main_live_website_build_retries_transient_provider_overload(
@@ -1349,7 +1926,7 @@ def test_main_live_website_build_fails_generic_template_even_if_validator_passes
     )
 
 
-def test_main_live_website_build_requires_coordinated_existing_site_changes(
+def test_main_live_website_build_allows_material_single_file_existing_site_patch(
     tmp_path,
     capsys,
     monkeypatch,
@@ -1381,11 +1958,12 @@ def test_main_live_website_build_requires_coordinated_existing_site_changes(
         ]
     )
 
-    assert exit_code == 1
+    assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Status: failed" in stdout
-    assert "Live Build: failed" in stdout
-    assert "coordinated required files" in stdout
+    assert "Status: completed" in stdout
+    assert "Live Build: completed" in stdout
+    assert "Validation: passed" in stdout
+    assert "coordinated required files" not in stdout
     event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
     event_rows = [
         json.loads(line)
@@ -1396,12 +1974,68 @@ def test_main_live_website_build_requires_coordinated_existing_site_changes(
         row["event"] == "live.validation.model_completed" and row.get("passed") is True
         for row in event_rows
     )
-    assert any(
-        row["event"] == "live.validation.completed"
-        and row.get("passed") is False
-        and row.get("deterministic_failures")
-        for row in event_rows
+    final_validation = [
+        row for row in event_rows if row.get("event") == "live.validation.completed"
+    ][-1]
+    assert final_validation["passed"] is True
+    assert not final_validation.get("deterministic_failures")
+
+
+def test_main_live_website_build_repairs_failed_validation_once(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    website = tmp_path / "website"
+    website.mkdir()
+    (website / "index.html").write_text(
+        "<!doctype html><html><body>old site</body></html>\n",
+        encoding="utf-8",
     )
+    (website / "styles.css").write_text("body { margin: 0; }\n", encoding="utf-8")
+    (website / "app.js").write_text("console.log('old');\n", encoding="utf-8")
+    (website / "README.md").write_text("# Old site\n", encoding="utf-8")
+
+    fake_provider = _FakeRepairingExistingWebsiteProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "patch the website",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Live Build: completed" in stdout
+    assert "[repair] attempt 1 started" in stdout
+    assert "[repair] attempt 1 completed" in stdout
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(row["event"] == "live.website_repair.started" for row in event_rows)
+    assert any(row["event"] == "live.website_repair.completed" for row in event_rows)
+    final_validation = [
+        row for row in event_rows if row.get("event") == "live.validation.completed"
+    ][-1]
+    assert final_validation["passed"] is True
+    repair_completed = [
+        row for row in event_rows if row.get("event") == "live.website_repair.completed"
+    ][-1]
+    assert len(repair_completed["changed_required_files"]) >= 2
+    assert "coordinated repair pass" in (website / "README.md").read_text(encoding="utf-8").lower()
 
 
 def test_main_live_rejects_plan_only() -> None:

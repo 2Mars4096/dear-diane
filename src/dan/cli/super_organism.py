@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import hashlib
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -75,6 +77,7 @@ class SuperRunEventLogger:
         organism_id: str = "",
         organ_id: str = "",
         trace_id: str = "",
+        progress_callback=None,
     ) -> None:
         self._writer = OrganismLogWriter(
             path=path,
@@ -89,13 +92,21 @@ class SuperRunEventLogger:
                 organ_id=organ_id,
             ),
         )
+        self._progress_callback = progress_callback
         self.path = self._writer.path
 
     def emit(self, event: dict[str, Any]) -> None:
-        self._writer.emit(event)
+        payload = dict(event)
+        row = self._writer.emit(payload)
+        if self._progress_callback is not None:
+            self._progress_callback(dict(row))
 
     def emit_trace_rows(self, trace_rows: Sequence[dict[str, Any]]) -> None:
-        self._writer.emit_trace_rows(trace_rows)
+        rows = [dict(row) for row in trace_rows]
+        self._writer.emit_trace_rows(rows)
+        if self._progress_callback is not None:
+            for row in rows:
+                self._progress_callback(dict(row))
 
     def update_context(self, **updates: Any) -> None:
         self._writer.update_context(**updates)
@@ -108,10 +119,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dan-super-organism",
         description=(
-            "Run the Super DAN organism showcase. "
-            "This accepts an objective, proves the coordination board, cell roles, "
-            "delivery/claim contracts, and reallocation loop before any expensive "
-            "live execution. Use --live for native tool-backed execution."
+            "Run Super DAN from the command line. With an objective and configured "
+            "model, the CLI runs the native live execution lane; use --plan-only for "
+            "the coordination contract/showcase."
         ),
     )
     parser.add_argument(
@@ -119,7 +129,8 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         default=None,
         help=(
-            "Operator objective. Omit to run the default universal-agent objective "
+            "Operator objective. Omit in a terminal to start an interactive Super DAN session; "
+            "non-interactive calls still run the default universal-agent objective "
             f"({DEFAULT_SUPER_ORGANISM_TARGET!r})."
         ),
     )
@@ -149,8 +160,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--live",
         action="store_true",
         help=(
-            "Run Super DAN's native live execution lane with local tools. "
-            "Supports website-like and general coding/build objectives and requires LLM configuration."
+            "Force Super DAN's native live execution lane with local tools. "
+            "Objectives auto-enter this lane when a live model is configured."
         ),
     )
     parser.add_argument(
@@ -168,14 +179,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-tool-rounds",
         type=int,
-        default=8,
-        help="Maximum model/tool rounds for --live. Defaults to 8.",
+        default=10,
+        help="Maximum model/tool rounds for --live. Defaults to 10.",
     )
     parser.add_argument(
         "--max-tool-calls",
         type=int,
-        default=24,
-        help="Maximum local tool calls for --live. Defaults to 24.",
+        default=32,
+        help="Maximum local tool calls for --live. Defaults to 32.",
     )
     parser.add_argument(
         "--workspace",
@@ -185,7 +196,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--artifact-dir",
         default="website",
-        help="Directory, relative to --workspace unless absolute, for generated website artifacts.",
+        help=(
+            "Directory, relative to --workspace unless absolute, for generated website artifacts. "
+            "In code-like live mode, a website-named workspace is treated as the artifact root when this is omitted."
+        ),
     )
     parser.add_argument(
         "--json",
@@ -196,6 +210,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--verbose",
         action="store_true",
         help="Print the full organism text report instead of the compact CLI summary.",
+    )
+    parser.add_argument(
+        "--quiet-progress",
+        action="store_true",
+        help="Disable live progress lines for non-JSON runs.",
     )
     parser.add_argument(
         "--output",
@@ -286,6 +305,9 @@ def _print_live_report(
     error = str(live_result.get("error") or "").strip()
     if error:
         lines.append(f"Error: {_display_text(error)}")
+    failed_step = str(live_result.get("failed_step") or "").strip()
+    if failed_step and status != "completed":
+        lines.append(f"Failed Step: {_display_text(failed_step)}")
     validation = dict(live_result.get("validation") or {})
     if validation:
         verdict = "passed" if validation.get("passed") else "failed"
@@ -398,6 +420,463 @@ def _display_text(value: object) -> str:
     return " ".join(str(value).split())
 
 
+def _truncate_text(value: Any, *, limit: int = 160) -> str:
+    text = _display_text(value)
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."
+
+
+def _path_basename(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return Path(text).name or text
+    except Exception:
+        return text
+
+
+def _tool_request_summary(tool_id: str, arguments: Mapping[str, Any]) -> str:
+    args = dict(arguments or {})
+    if tool_id == "file_edit":
+        mode = str(args.get("mode") or "replace")
+        path = str(args.get("path") or args.get("file_path") or "(missing path)")
+        start_line = args.get("start_line")
+        end_line = args.get("end_line", start_line)
+        if start_line is not None:
+            return f"{mode} {_path_basename(path)}:{start_line}-{end_line}"
+        old_string = str(args.get("old_string") or "")
+        if old_string:
+            return f"{mode} {_path_basename(path)} ({len(old_string)} chars anchor)"
+        edits = args.get("edits")
+        if isinstance(edits, list):
+            return f"{mode} {_path_basename(path)} ({len(edits)} edits)"
+        return f"{mode} {_path_basename(path)}"
+    if tool_id == "file_write":
+        mode = str(args.get("mode") or "overwrite")
+        path = str(args.get("path") or "(missing path)")
+        content = str(args.get("content") or "")
+        return f"{mode} {_path_basename(path)} ({len(content.encode('utf-8'))} bytes)"
+    if tool_id == "file_read":
+        path = str(args.get("path") or "(missing path)")
+        start_line = args.get("start_line")
+        end_line = args.get("end_line")
+        if start_line is not None or end_line is not None:
+            return f"{_path_basename(path)}:{start_line or 1}-{end_line or 'end'}"
+        return _path_basename(path)
+    if tool_id == "list_directory":
+        return str(args.get("path") or ".")
+    if tool_id == "shell_command":
+        return _truncate_text(args.get("command") or "(missing command)", limit=160)
+    if tool_id in {"git_status", "git_diff", "git_log"}:
+        return f"path={args.get('path') or '.'}"
+    if "path" in args:
+        return _truncate_text(args.get("path") or "", limit=160)
+    try:
+        return _truncate_text(
+            json.dumps(args, ensure_ascii=False, sort_keys=True, default=str),
+            limit=160,
+        )
+    except Exception:
+        return _truncate_text(str(args), limit=160)
+
+
+def _tool_result_summary(tool_id: str, payload: Mapping[str, Any]) -> str:
+    result = payload.get("result")
+    if str(payload.get("status") or "").strip() in {"failed", "denied"}:
+        return str(payload.get("error") or "tool failed")
+    if isinstance(result, dict):
+        if tool_id == "list_directory":
+            count = result.get("count")
+            total_count = result.get("total_count")
+            remaining = result.get("remaining_count")
+            summary = f"entries={count if count is not None else len(result.get('entries') or [])}"
+            if total_count not in {None, count}:
+                summary += f"/{total_count}"
+            if result.get("truncated") and remaining is not None:
+                summary += f" remaining={remaining}"
+            return summary
+        if tool_id == "file_read":
+            parts: list[str] = []
+            if result.get("line_count") is not None:
+                parts.append(f"lines={result.get('line_count')}")
+            if result.get("size") is not None:
+                parts.append(f"bytes={result.get('size')}")
+            path = result.get("path")
+            if path:
+                parts.append(f"path={_path_basename(path)}")
+            return " ".join(parts) or "read file"
+        if tool_id == "file_write":
+            path = result.get("path")
+            bytes_written = result.get("bytes_written")
+            if bytes_written is not None:
+                return f"wrote {bytes_written} bytes to {_path_basename(path)}"
+            return f"wrote {_path_basename(path)}"
+        if tool_id == "file_edit":
+            path = result.get("path")
+            mode = result.get("mode") or "edit"
+            start_line = result.get("start_line")
+            end_line = result.get("end_line")
+            changed = result.get("changed")
+            suffix = " changed=no" if changed is False else ""
+            if start_line is not None:
+                return f"{mode} {_path_basename(path)}:{start_line}-{end_line}{suffix}"
+            return f"{mode} {_path_basename(path)}{suffix}"
+        if tool_id == "shell_command":
+            stdout = str(result.get("stdout") or "")
+            stderr = str(result.get("stderr") or "")
+            return (
+                f"exit={result.get('exit_code', '?')} "
+                f"stdout={len(stdout)} chars stderr={len(stderr)} chars"
+            )
+        if tool_id == "git_diff":
+            return (
+                f"files={result.get('files_changed', 0)} "
+                f"+{result.get('additions', 0)} -{result.get('deletions', 0)}"
+            )
+        if tool_id == "git_status":
+            return (
+                f"modified={len(result.get('modified', []) or [])} "
+                f"untracked={len(result.get('untracked', []) or [])}"
+            )
+        if "path" in result:
+            return _truncate_text(result.get("path") or "", limit=160)
+    if payload.get("error"):
+        return _truncate_text(payload.get("error"), limit=160)
+    try:
+        return _truncate_text(
+            json.dumps(result, ensure_ascii=False, sort_keys=True, default=str),
+            limit=160,
+        )
+    except Exception:
+        return _truncate_text(str(result), limit=160)
+
+
+class SuperProgressRenderer:
+    """Render concise live Super DAN progress in the terminal."""
+
+    def __init__(self, *, enabled: bool) -> None:
+        self._enabled = bool(enabled)
+        self._seen: set[tuple[str, str, str]] = set()
+
+    @staticmethod
+    def _timestamp(event: Mapping[str, Any]) -> str:
+        raw = str(event.get("timestamp") or "").strip()
+        if raw:
+            try:
+                return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone().strftime("%H:%M:%S")
+            except ValueError:
+                pass
+        return datetime.now().astimezone().strftime("%H:%M:%S")
+
+    @staticmethod
+    def _scope(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if text.startswith("super-dan.live."):
+            text = text[len("super-dan.live.") :]
+        if text.endswith("-builder"):
+            return "builder"
+        if text.endswith("-validator"):
+            return "validator"
+        if "." in text:
+            text = text.split(".")[-1]
+        return text
+
+    def _emit(self, event: Mapping[str, Any], message: str) -> None:
+        print(f"[{self._timestamp(event)}] {message}", flush=True)
+
+    def _print_once(self, key: tuple[str, str, str], event: Mapping[str, Any], message: str) -> None:
+        if key in self._seen:
+            return
+        self._seen.add(key)
+        self._emit(event, message)
+
+    def __call__(self, event: dict[str, Any]) -> None:
+        if not self._enabled:
+            return
+        name = str(event.get("event") or "").strip()
+        if not name:
+            return
+        if name == "run.log.started":
+            objective = _truncate_text(event.get("objective") or "", limit=180)
+            self._emit(event, f"[run] started: {objective}")
+            return
+        if name == "live.objective.normalized":
+            reason = str(event.get("reason") or "objective").replace("_", " ")
+            self._emit(event, f"[run] normalized {reason}")
+            hint = _truncate_text(event.get("previous_failure_hint") or "", limit=180)
+            if hint:
+                self._emit(event, f"[run] previous validation feedback: {hint}")
+            return
+        if name == "provider.build.started":
+            model = str(event.get("model") or event.get("requested_model") or "").strip()
+            if model:
+                self._emit(event, f"[model] preparing provider: {model}")
+            return
+        if name == "live.website_build.started":
+            root = _truncate_text(event.get("artifact_root") or "", limit=120)
+            self._emit(event, f"[build] website lane started: {root}")
+            return
+        if name in {"live.generic_execution.started", "live.generic_build.started"}:
+            root = _truncate_text(event.get("workspace_root") or "", limit=120)
+            self._emit(event, f"[build] coding lane started: {root}")
+            return
+        if name == "model.requested":
+            span_id = str(event.get("span_id") or event.get("model_call_id") or "")
+            round_id = str(event.get("round") or "?")
+            scope = self._scope(event.get("worker_id"))
+            prefix = f"[{scope}][model]" if scope else "[model]"
+            model = str(event.get("model") or "(unknown)")
+            tools = int(event.get("tool_count") or 0)
+            self._print_once(
+                ("model.requested", span_id, round_id),
+                event,
+                f"{prefix} request round={round_id} model={model} tools={tools}",
+            )
+            return
+        if name == "model.responded":
+            span_id = str(event.get("span_id") or event.get("model_call_id") or "")
+            round_id = str(event.get("round") or "?")
+            scope = self._scope(event.get("worker_id"))
+            prefix = f"[{scope}][model]" if scope else "[model]"
+            finish = str(event.get("finish_reason") or "").strip()
+            tool_calls = [
+                str(item).strip()
+                for item in (event.get("tool_calls") or [])
+                if str(item).strip()
+            ]
+            details = [f"round={round_id}"]
+            if finish:
+                details.append(f"finish={finish}")
+            if tool_calls:
+                details.append("tools=" + ",".join(tool_calls[:4]))
+            self._print_once(
+                ("model.responded", span_id, round_id),
+                event,
+                f"{prefix} response {' '.join(details)}",
+            )
+            return
+        if name == "tool.started":
+            span_id = str(event.get("span_id") or event.get("tool_call_id") or "")
+            tool_id = str(event.get("tool_id") or "tool")
+            scope = self._scope(event.get("worker_id"))
+            prefix = f"[{scope}][tool]" if scope else "[tool]"
+            summary = _tool_request_summary(tool_id, dict(event.get("arguments") or {}))
+            self._print_once(
+                ("tool.started", span_id, tool_id),
+                event,
+                f"{prefix} {tool_id}: {summary}",
+            )
+            return
+        if name == "tool.completed":
+            span_id = str(event.get("span_id") or event.get("tool_call_id") or "")
+            tool_id = str(event.get("tool_id") or "tool")
+            status = str(event.get("status") or "completed")
+            scope = self._scope(event.get("worker_id"))
+            prefix = f"[{scope}][tool]" if scope else "[tool]"
+            summary = _tool_result_summary(tool_id, event)
+            label = "ok" if status == "completed" else "failed"
+            self._print_once(
+                ("tool.completed", span_id, tool_id),
+                event,
+                f"{prefix} {label} {tool_id}: {summary}",
+            )
+            return
+        if name in {"tool.failed", "tool.denied"}:
+            span_id = str(event.get("span_id") or event.get("tool_call_id") or "")
+            tool_id = str(event.get("tool_id") or "tool")
+            scope = self._scope(event.get("worker_id"))
+            prefix = f"[{scope}][tool]" if scope else "[tool]"
+            message = _truncate_text(event.get("error") or name, limit=180)
+            self._print_once(
+                (name, span_id, tool_id),
+                event,
+                f"{prefix} {name.split('.')[-1]} {tool_id}: {message}",
+            )
+            return
+        if name == "toolloop.soft_budget_nudged":
+            action = str(event.get("action") or "nudge")
+            phase = str(event.get("phase") or "phase")
+            self._emit(event, f"[status] soft budget: {action} ({phase})")
+            return
+        if name == "live.validation.started":
+            self._emit(event, "[validation] started")
+            return
+        if name == "live.validation.model_completed":
+            verdict = "passed" if event.get("passed") else "failed"
+            self._emit(event, f"[validation] model {verdict}")
+            return
+        if name == "live.validation.completed":
+            verdict = "passed" if event.get("passed") else "failed"
+            score = _coerce_float(event.get("overall_score"))
+            self._emit(event, f"[validation] {verdict} {score:.2f}")
+            failures = [
+                _truncate_text(item, limit=180)
+                for item in (event.get("deterministic_failures") or [])
+                if str(item).strip()
+            ]
+            for failure in failures[:2]:
+                self._emit(event, f"[validation] gap: {failure}")
+            return
+        if name == "live.website_repair.started":
+            attempt = int(event.get("attempt") or 1)
+            reason = _truncate_text(event.get("reason") or "validation failed", limit=160)
+            self._emit(event, f"[repair] attempt {attempt} started: {reason}")
+            return
+        if name == "live.website_repair.completed":
+            attempt = int(event.get("attempt") or 1)
+            status = str(event.get("status") or "completed")
+            changed = [
+                _path_basename(path)
+                for path in (event.get("changed_required_files") or [])
+                if str(path).strip()
+            ]
+            suffix = f" changed={','.join(changed)}" if changed else ""
+            self._emit(event, f"[repair] attempt {attempt} {status}{suffix}")
+            return
+        if name in {
+            "live.website_build.completed",
+            "live.generic_execution.completed",
+            "live.generic_build.completed",
+        }:
+            status = str(event.get("status") or "completed")
+            self._emit(event, f"[build] {status}")
+            return
+        if name == "run.log.completed":
+            status = str(event.get("status") or "completed")
+            self._emit(event, f"[done] {status}")
+            return
+        if name == "run.log.failed":
+            message = _truncate_text(event.get("error") or "failed", limit=180)
+            self._emit(event, f"[done] failed: {message}")
+            return
+        if name == "super.heartbeat":
+            phase = str(event.get("phase") or "running")
+            detail = _truncate_text(event.get("detail") or "", limit=160)
+            elapsed = int(event.get("elapsed_seconds") or 0)
+            suffix = f": {detail}" if detail else ""
+            self._emit(event, f"[status] still running {phase} ({elapsed}s idle){suffix}")
+
+
+class SuperHeartbeatMonitor:
+    """Emit sparse terminal/log heartbeats while live model calls are quiet."""
+
+    def __init__(
+        self,
+        *,
+        event_callback,
+        enabled: bool,
+        idle_seconds: float = 10.0,
+        repeat_seconds: float = 15.0,
+        poll_seconds: float = 2.0,
+    ) -> None:
+        self._event_callback = event_callback
+        self._enabled = bool(enabled) and event_callback is not None
+        self._idle_seconds = max(0.0, float(idle_seconds))
+        self._repeat_seconds = max(self._idle_seconds, float(repeat_seconds), 0.0)
+        self._poll_seconds = max(0.001, float(poll_seconds))
+        self._last_activity = 0.0
+        self._last_heartbeat = 0.0
+        self._phase = "starting"
+        self._worker_id = ""
+        self._detail = ""
+        self._task: asyncio.Task[None] | None = None
+        self._stop_event: asyncio.Event | None = None
+
+    def observe(self, event: dict[str, Any]) -> None:
+        if not self._enabled:
+            return
+        name = str(event.get("event") or "")
+        if not name or name == "super.heartbeat":
+            return
+        loop = asyncio.get_running_loop()
+        self._last_activity = loop.time()
+        worker_id = str(event.get("worker_id") or "").strip()
+        if worker_id:
+            self._worker_id = worker_id
+        if name == "model.requested":
+            self._phase = "model"
+            self._detail = (
+                f"round={event.get('round', '?')} "
+                f"model={event.get('model') or '(unknown)'} "
+                f"tools={event.get('tool_count', 0)}"
+            )
+            return
+        if name == "model.responded":
+            self._phase = "model-response"
+            self._detail = f"finish={event.get('finish_reason') or 'stop'}"
+            return
+        if name == "tool.started":
+            self._phase = "tool"
+            self._detail = _tool_request_summary(
+                str(event.get("tool_id") or ""),
+                dict(event.get("arguments") or {}),
+            )
+            return
+        if name == "tool.completed":
+            self._phase = "post-tool"
+            self._detail = str(event.get("tool_id") or "tool")
+            return
+        if name == "live.validation.started":
+            self._phase = "validation"
+            self._detail = "read-only validator"
+            return
+        if name == "completion.completed":
+            self._phase = "completion"
+            self._detail = str(event.get("stop_reason") or "completed")
+            return
+
+    async def start(self) -> None:
+        if not self._enabled or self._task is not None:
+            return
+        loop = asyncio.get_running_loop()
+        self._stop_event = asyncio.Event()
+        self._last_activity = loop.time()
+        self._last_heartbeat = 0.0
+        self._task = asyncio.create_task(self._run())
+
+    async def stop(self) -> None:
+        if self._task is None:
+            return
+        if self._stop_event is not None:
+            self._stop_event.set()
+        try:
+            await self._task
+        finally:
+            self._task = None
+            self._stop_event = None
+
+    async def _run(self) -> None:
+        stop_event = self._stop_event
+        if stop_event is None:
+            return
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=self._poll_seconds)
+                break
+            except asyncio.TimeoutError:
+                pass
+            loop = asyncio.get_running_loop()
+            now = loop.time()
+            idle = now - self._last_activity
+            since_last = now - self._last_heartbeat if self._last_heartbeat else float("inf")
+            if idle < self._idle_seconds or since_last < self._repeat_seconds:
+                continue
+            self._last_heartbeat = now
+            self._event_callback(
+                {
+                    "event": "super.heartbeat",
+                    "phase": self._phase,
+                    "detail": self._detail,
+                    "worker_id": self._worker_id,
+                    "elapsed_seconds": int(idle),
+                }
+            )
+
+
 def _is_website_objective(report: SuperOrganismReport) -> bool:
     choice = _super_live_choice(report)
     return choice.orchestrator_id == "super-dan-live-website"
@@ -441,8 +920,11 @@ def _live_choice_required_files(choice: OrchestratorChoice) -> list[str]:
     return ["index.html", "styles.css", "app.js", "README.md"]
 
 
-def _live_choice_existing_min_changed_files(choice: OrchestratorChoice) -> int:
-    value = choice.artifact_policy.get("existing_website_min_changed_files", 2)
+def _live_choice_existing_preferred_coordinated_files(choice: OrchestratorChoice) -> int:
+    value = choice.artifact_policy.get(
+        "existing_website_preferred_coordinated_files",
+        choice.artifact_policy.get("existing_website_min_changed_files", 2),
+    )
     try:
         return max(int(value), 1)
     except (TypeError, ValueError):
@@ -454,6 +936,189 @@ def _live_choice_template_phrases(choice: OrchestratorChoice) -> list[str]:
     if isinstance(phrases, (list, tuple)):
         return [str(phrase) for phrase in phrases]
     return []
+
+
+def _single_line(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _has_any_word(text: str, words: Sequence[str]) -> bool:
+    padded = f" {text} "
+    return any(f" {word} " in padded for word in words)
+
+
+def _vague_website_continuation_applies(
+    objective: str,
+    *,
+    existing_website: bool,
+) -> bool:
+    text = _single_line(objective).lower()
+    if not text:
+        return False
+    site_referents = ("website", "site", "page", "frontend", "landing page")
+    has_site_referent = any(phrase in text for phrase in site_referents)
+    if not has_site_referent and not existing_website:
+        return False
+    continuation_phrases = (
+        "keep patching",
+        "continue patching",
+        "keep improving",
+        "continue improving",
+        "keep working",
+        "keep going",
+        "patch this",
+        "patch it",
+        "make it better",
+        "improve it",
+        "continue",
+    )
+    if not any(phrase in text for phrase in continuation_phrases):
+        return False
+    specific_words = (
+        "add",
+        "remove",
+        "fix",
+        "redesign",
+        "rewrite",
+        "animation",
+        "responsive",
+        "mobile",
+        "copy",
+        "color",
+        "layout",
+        "section",
+        "component",
+        "changelog",
+        "readme",
+        "docs",
+        "button",
+        "form",
+        "pricing",
+        "hero",
+    )
+    return not _has_any_word(text, specific_words)
+
+
+def _latest_super_dan_failure_hint(
+    workspace_root: Path,
+    *,
+    max_chars: int = 420,
+) -> str:
+    run_root = _super_run_root(workspace_root)
+    if not run_root.exists():
+        return ""
+    event_logs = sorted(
+        run_root.glob("turn-*/events.jsonl"),
+        key=lambda path: path.parent.name,
+        reverse=True,
+    )
+    for event_log in event_logs:
+        try:
+            lines = event_log.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except Exception:
+            continue
+        for line in reversed(lines):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            event = str(row.get("event") or "")
+            failed = row.get("passed") is False or str(row.get("status") or "") == "failed"
+            if event not in {"live.validation.completed", "run.log.completed"} or not failed:
+                continue
+            parts: list[str] = []
+            deterministic_failures = row.get("deterministic_failures")
+            if isinstance(deterministic_failures, list):
+                parts.extend(str(item).strip() for item in deterministic_failures if str(item).strip())
+            for key in ("error", "repair_brief", "comparison_note"):
+                value = str(row.get(key) or "").strip()
+                if value:
+                    parts.append(value)
+            hint = _single_line(" ".join(parts))
+            if hint:
+                return hint[:max_chars]
+    return ""
+
+
+def _live_website_objective_context(
+    report: SuperOrganismReport,
+    *,
+    workspace_root: Path,
+    required_paths: Sequence[Path],
+) -> dict[str, Any]:
+    original = _single_line(report.target)
+    existing_required_files = [
+        path.name for path in required_paths if path.exists()
+    ]
+    existing_website = "index.html" in existing_required_files or len(existing_required_files) >= 2
+    previous_failure_hint = (
+        _latest_super_dan_failure_hint(workspace_root) if existing_website else ""
+    )
+    if not _vague_website_continuation_applies(
+        original,
+        existing_website=existing_website,
+    ):
+        return {
+            "normalized": False,
+            "reason": "",
+            "original_objective": original,
+            "effective_objective": original,
+            "existing_required_files": existing_required_files,
+            "previous_failure_hint": previous_failure_hint,
+        }
+    default_brief = (
+        "Continue patching this existing website with a concrete maintainability pass. "
+        "Prefer coordinated, inspectable changes across index.html, styles.css, app.js, and README.md. "
+        "Preserve the current site subject unless the existing files make it clearly obsolete. "
+        "Add or improve modular sections, editable content blocks or a component map, a changelog or patch-notes area, "
+        "and explicit patch/extension guidance so future edits are easy. "
+        "Keep the patch bounded, static, and dependency-free."
+    )
+    if previous_failure_hint:
+        default_brief = (
+            f"{default_brief} Address this previous validation feedback: {previous_failure_hint}"
+        )
+    return {
+        "normalized": True,
+        "reason": "vague_website_continuation",
+        "original_objective": original,
+        "effective_objective": default_brief,
+        "existing_required_files": existing_required_files,
+        "previous_failure_hint": previous_failure_hint,
+    }
+
+
+def _argv_has_option(argv: Sequence[str], option: str) -> bool:
+    return any(token == option or token.startswith(f"{option}=") for token in argv)
+
+
+def _live_model_configured(requested_model: str | None) -> bool:
+    if str(requested_model or "").strip():
+        return True
+    config = resolve_config()
+    if str(config.get("model") or "").strip():
+        return True
+    engine_config = build_engine_config_from_env()
+    fallback = str(engine_config.llm_default_model or "").strip()
+    return bool(fallback and fallback != "stub-model")
+
+
+def _should_implicit_live(report: SuperOrganismReport, args: argparse.Namespace) -> bool:
+    if (
+        bool(getattr(args, "live", False))
+        or bool(getattr(args, "plan_only", False))
+        or not str(getattr(args, "target", "") or "").strip()
+        or not _supports_live_execution(report)
+    ):
+        return False
+    if not (
+        bool(getattr(args, "_stdin_is_tty", False))
+        or bool(getattr(args, "_model_explicit", False))
+    ):
+        return False
+    return _live_model_configured(getattr(args, "model", None))
 
 
 def _should_materialize_website(report: SuperOrganismReport, args: argparse.Namespace) -> bool:
@@ -518,13 +1183,41 @@ def _build_live_provider(
     )
 
 
+def _workspace_should_be_website_artifact_root(
+    args: argparse.Namespace,
+    choice: OrchestratorChoice,
+) -> bool:
+    if bool(getattr(args, "_artifact_dir_explicit", False)):
+        return False
+    if not bool(getattr(args, "_code_like_live", False)):
+        return False
+    artifact_dir = Path(str(args.artifact_dir or "")).expanduser()
+    if artifact_dir.is_absolute() or artifact_dir.as_posix().strip("/") not in {
+        "website",
+        "",
+    }:
+        return False
+    workspace_root = normalize_workspace_root(str(args.workspace))
+    if workspace_root.name.lower() in {"website", "site", "web", "public", "dist"}:
+        return True
+    required_files = _live_choice_required_files(choice)
+    existing = [
+        filename for filename in required_files if (workspace_root / filename).exists()
+    ]
+    return "index.html" in existing or len(existing) >= 3
+
+
 def _live_artifact_layout(
     args: argparse.Namespace,
     choice: OrchestratorChoice,
 ) -> tuple[Path, Path, list[str], list[Path]]:
     artifact_dir = Path(str(args.artifact_dir)).expanduser()
     required_files = _live_choice_required_files(choice)
-    if artifact_dir.is_absolute():
+    if _workspace_should_be_website_artifact_root(args, choice):
+        workspace_root = normalize_workspace_root(str(args.workspace))
+        artifact_root = workspace_root
+        relative_files = list(required_files)
+    elif artifact_dir.is_absolute():
         workspace_root = artifact_dir.resolve(strict=False)
         artifact_root = workspace_root
         relative_files = list(required_files)
@@ -647,20 +1340,32 @@ def _live_website_task(
     *,
     artifact_root: Path,
     relative_files: Sequence[str],
+    objective_context: Mapping[str, Any] | None = None,
 ) -> str:
     files = ", ".join(relative_files)
+    context = dict(objective_context or {})
+    effective_objective = str(context.get("effective_objective") or report.target).strip()
+    original_objective = str(context.get("original_objective") or report.target).strip()
+    normalized_note = ""
+    if context.get("normalized"):
+        normalized_note = (
+            f"Original operator wording: {original_objective}. "
+            "The request was vague continuation language, so apply the expanded default patch brief above. "
+        )
     return (
         "Build the requested product website now. "
-        f"Operator objective: {report.target}. "
+        f"Operator objective: {effective_objective}. "
+        f"{normalized_note}"
         f"Artifact root: {artifact_root}. "
         f"Required relative files: {files}. "
         "Honor the supplied ticket ownership and handoff packets instead of freeforming a generic demo shell. "
         f"{_live_pacing_contract()} "
         "If the website files already exist, improve them incrementally instead of rewriting the whole site in one response. "
-        "For an existing website redesign, update a coordinated set of required files instead of changing only one page shell. "
+        "For an existing website patch, prefer coordinated edits when the objective spans structure, style, behavior, or docs; "
+        "a focused single-file patch is acceptable when it fully satisfies the objective. "
         "Do not create extra scratch files outside the required artifact set. "
-        f"The website should make the {report.cell_count}-cell Super DAN organism feel credible: "
-        "show coordinated cells, organs, synchronization, live execution, and an organized payoff. "
+        "Make the website's actual product or subject clear. Preserve the existing site subject when patching an existing site. "
+        "Do not pivot to a generic Super DAN execution-contract/demo site unless the operator explicitly asks for Super DAN. "
         "Actually create the files, then return the requested compact JSON-like completion summary."
     )
 
@@ -670,15 +1375,80 @@ def _live_website_validation_task(
     *,
     artifact_root: Path,
     relative_files: Sequence[str],
+    objective_context: Mapping[str, Any] | None = None,
 ) -> str:
     files = ", ".join(relative_files)
+    context = dict(objective_context or {})
+    effective_objective = str(context.get("effective_objective") or report.target).strip()
+    original_objective = str(context.get("original_objective") or report.target).strip()
+    normalized_note = ""
+    if context.get("normalized"):
+        normalized_note = (
+            f"Original operator wording: {original_objective}. "
+            "Validate against the expanded patch brief, not only the terse continuation wording. "
+        )
     return (
         "Validate the materialized website now in read-only mode. "
-        f"Operator objective: {report.target}. "
+        f"Operator objective: {effective_objective}. "
+        f"{normalized_note}"
         f"Artifact root: {artifact_root}. "
         f"Required relative files: {files}. "
         "Inspect the generated files and decide whether the result is a real product website aligned with the objective, "
-        "not just a generic Super DAN execution-contract demo shell."
+        "not just a generic Super DAN execution-contract demo shell. "
+        "Allow a focused single-file patch when it materially satisfies the objective; require broader coverage only when "
+        "the request or evidence truly spans multiple files."
+    )
+
+
+def _validation_repair_brief(
+    validation: Mapping[str, Any],
+    deterministic_failures: Sequence[str],
+) -> str:
+    parts: list[str] = []
+    for key in ("repair_brief", "comparison_note", "error"):
+        value = _display_text(validation.get(key) or "")
+        if value:
+            parts.append(value)
+    missing = validation.get("missing_requirements")
+    if isinstance(missing, list):
+        parts.extend(_display_text(item) for item in missing if str(item).strip())
+    parts.extend(_display_text(item) for item in deterministic_failures if str(item).strip())
+    seen: set[str] = set()
+    compact: list[str] = []
+    for part in parts:
+        if part and part not in seen:
+            seen.add(part)
+            compact.append(part)
+    return " ".join(compact)
+
+
+def _live_website_repair_task(
+    report: SuperOrganismReport,
+    *,
+    artifact_root: Path,
+    relative_files: Sequence[str],
+    validation: Mapping[str, Any],
+    deterministic_failures: Sequence[str],
+    changed_required_paths: Sequence[str],
+    objective_context: Mapping[str, Any] | None = None,
+) -> str:
+    files = ", ".join(relative_files)
+    changed = ", ".join(_path_basename(path) for path in changed_required_paths) or "none"
+    repair_brief = _validation_repair_brief(validation, deterministic_failures)
+    context = dict(objective_context or {})
+    effective_objective = str(context.get("effective_objective") or report.target).strip()
+    return (
+        "Repair the previous website patch now; do not stop with another summary-only response. "
+        f"Operator objective: {effective_objective}. "
+        f"Artifact root: {artifact_root}. "
+        f"Required relative files: {files}. "
+        f"Files already changed this run: {changed}. "
+        f"Previous validation failure: {repair_brief or 'validator rejected the previous patch'}. "
+        "Make concrete edits in the required files. If the feedback asks for broader coordination, update one or more "
+        "required files that were not changed yet. For a maintainability patch, update the visible HTML, CSS guidance/tokens, "
+        "JS module or patch notes behavior, and README patch instructions as needed. "
+        "Keep the repair bounded, static, dependency-free, and inside the required artifact set. "
+        "Actually write the repair with file_write or file_edit, then return the compact completion summary."
     )
 
 
@@ -770,11 +1540,14 @@ async def _execute_live_request(
     event_logger: SuperRunEventLogger | None = None,
 ) -> tuple[Any, list[dict[str, Any]], list[dict[str, Any]]]:
     events: list[dict[str, Any]] = []
+    heartbeat_monitor: SuperHeartbeatMonitor | None = None
 
     def record_event(event: dict[str, Any]) -> None:
         payload = dict(event)
         events.append(payload)
         if event_logger is None:
+            if heartbeat_monitor is not None:
+                heartbeat_monitor.observe(payload)
             return
         trace_row = payload.get("trace_row")
         if (
@@ -782,8 +1555,12 @@ async def _execute_live_request(
             and isinstance(trace_row, dict)
         ):
             event_logger.emit_trace_rows([trace_row])
+            if heartbeat_monitor is not None:
+                heartbeat_monitor.observe(dict(trace_row))
             return
         event_logger.emit(payload)
+        if heartbeat_monitor is not None:
+            heartbeat_monitor.observe(payload)
 
     tool_runtime = LocalOrganismToolRuntime(
         tool_ids=list(tool_ids),
@@ -802,7 +1579,15 @@ async def _execute_live_request(
         completion_provider=completion_provider,
         event_sink=CallbackEventSink(record_event),
     )
-    result = await executor.execute(worker, request)
+    heartbeat_monitor = SuperHeartbeatMonitor(
+        event_callback=record_event,
+        enabled=event_logger is not None,
+    )
+    await heartbeat_monitor.start()
+    try:
+        result = await executor.execute(worker, request)
+    finally:
+        await heartbeat_monitor.stop()
     raw_response = result.metadata.get("raw_response")
     executed_tools = (
         list(raw_response.get("executed_tools") or [])
@@ -1009,51 +1794,16 @@ def _existing_required_files_from_snapshot(
     return existing
 
 
-def _coordinated_website_change_failures(
-    *,
-    snapshot: dict[str, str | None],
-    required_paths: Sequence[Path],
-    changed_required_paths: Sequence[str],
-    min_changed_files: int,
-) -> list[str]:
-    existing_required = _existing_required_files_from_snapshot(snapshot, required_paths)
-    if len(existing_required) < min_changed_files:
-        return []
-    changed_existing = {
-        path for path in changed_required_paths if path in set(existing_required)
-    }
-    minimum = min(min_changed_files, len(existing_required))
-    if len(changed_existing) >= minimum:
-        return []
-    return [
-        (
-            "Existing website redesign changed only "
-            f"{len(changed_existing)} preexisting required file(s); update at least "
-            f"{minimum} coordinated required files, such as index.html plus styles.css or app.js."
-        )
-    ]
-
-
 def _website_static_validation_failures(
     report: SuperOrganismReport,
     *,
     required_paths: Sequence[Path],
     changed_required_paths: Sequence[str],
-    file_snapshot: dict[str, str | None],
-    min_changed_files: int,
     template_phrases: Sequence[str],
 ) -> list[str]:
     failures: list[str] = []
     if not changed_required_paths:
         failures.append("The live run did not change any required website files.")
-    failures.extend(
-        _coordinated_website_change_failures(
-            snapshot=file_snapshot,
-            required_paths=required_paths,
-            changed_required_paths=changed_required_paths,
-            min_changed_files=min_changed_files,
-        )
-    )
     if not required_paths:
         return failures
     index_path = Path(required_paths[0])
@@ -1169,20 +1919,35 @@ async def _run_live_website_build(
         ["file_write", "file_edit", "file_read", "list_directory"],
     )
     website_read_only_tool_ids = _live_choice_read_only_tool_ids(choice)
-    existing_min_changed_files = _live_choice_existing_min_changed_files(choice)
+    existing_preferred_coordinated_files = _live_choice_existing_preferred_coordinated_files(choice)
     template_phrases = _live_choice_template_phrases(choice)
     pacing_policy = _live_pacing_policy(forbid_scratch_files=True)
     worker_id = "super-dan.live.website-builder"
     workspace_root, artifact_root, relative_files, required_paths = _live_artifact_layout(args, choice)
     workspace_root.mkdir(parents=True, exist_ok=True)
     file_snapshot = _snapshot_file_state(required_paths)
+    objective_context = _live_website_objective_context(
+        report,
+        workspace_root=workspace_root,
+        required_paths=required_paths,
+    )
+    if objective_context.get("normalized"):
+        _log_live_event(
+            event_logger,
+            "live.objective.normalized",
+            reason=objective_context.get("reason"),
+            original_objective=objective_context.get("original_objective"),
+            effective_objective=objective_context.get("effective_objective"),
+            previous_failure_hint=objective_context.get("previous_failure_hint") or None,
+            existing_required_files=list(objective_context.get("existing_required_files") or []),
+        )
     worker_brief = coding_brief(
             role=RoleSpec(
                 role_label="coding_worker",
                 responsibility="Build the requested Super DAN static website artifact.",
                 success_criteria=[
                     "All required website files exist.",
-                    "Existing websites are updated as a coordinated artifact set.",
+                    "Existing websites receive material required-file changes; multi-file coordination is preferred for broad patches.",
                     "The result is inspectable by opening index.html directly.",
                 ],
                 artifact_targets=list(relative_files),
@@ -1192,6 +1957,7 @@ async def _run_live_website_build(
                 report,
                 artifact_root=artifact_root,
                 relative_files=relative_files,
+                objective_context=objective_context,
             ),
             scope=f"workspace={workspace_root}; artifact_root={artifact_root}; native Super DAN live website build",
             hard_constraints=[
@@ -1200,11 +1966,7 @@ async def _run_live_website_build(
                 "Keep writes inside the requested workspace/artifact paths.",
                 "Do not install dependencies or require a build step.",
                 "Do not create scratch or throwaway files outside the required website artifact set.",
-                (
-                    "If two or more required website files already existed at run start, "
-                    "treat the task as a coordinated redesign/update and materially change at least "
-                    f"{existing_min_changed_files} required files."
-                ),
+                "For existing websites, materially change at least one required file; prefer broader coordinated edits when the requested patch naturally spans files.",
             ],
             soft_constraints=[
                 "Build a polished static product website with distinctive layout, motion, and concise copy.",
@@ -1232,7 +1994,9 @@ async def _run_live_website_build(
             sampling_policy={"profile": choice.sampling_policy, "temperature": 0.35, "max_tokens": 2800},
             evidence=_super_report_evidence_blocks(report),
             input_payload={
-                "objective": report.target,
+                "objective": objective_context.get("effective_objective") or report.target,
+                "original_objective": report.target,
+                "objective_normalization": dict(objective_context),
                 "workspace_root": str(workspace_root),
                 "artifact_root": str(artifact_root),
                 "artifact_files": list(relative_files),
@@ -1246,7 +2010,11 @@ async def _run_live_website_build(
                     file_snapshot,
                     required_paths,
                 ),
-                "existing_website_min_changed_required_files": existing_min_changed_files,
+                "existing_website_change_policy": {
+                    "minimum_required_changed_files": 1,
+                    "preferred_coordinated_required_files": existing_preferred_coordinated_files,
+                    "prefer_coordinated_when_objective_spans_files": True,
+                },
                 "shared_board": (
                     report.shared_board.model_dump(mode="json") if report.shared_board is not None else None
                 ),
@@ -1318,68 +2086,74 @@ async def _run_live_website_build(
         reason=error or "live website build did not meet the exit contract",
         missing_requirements=[str(path) for path in missing_paths],
     )
-    if not missing_paths and changed_required_paths:
+
+    async def run_website_validator(
+        current_changed_required_paths: Sequence[str],
+    ) -> dict[str, Any]:
         validator_worker_id = "super-dan.live.website.validator"
         validator_brief = review_brief(
-                role=RoleSpec(
-                    role_label="validator_website",
-                    responsibility="Validate the Super DAN website artifact in read-only mode.",
-                    success_criteria=[
-                        "Required files were read directly.",
-                        "The artifact materially satisfies the operator objective.",
-                        "The result is not a generic Super DAN execution-contract demo.",
-                    ],
-                    artifact_targets=list(relative_files),
-                    trace_role="super-dan.live.website.validator",
-                ),
-                task=_live_website_validation_task(
-                    report,
-                    artifact_root=artifact_root,
-                    relative_files=relative_files,
-                ),
-                scope=f"workspace={workspace_root}; artifact_root={artifact_root}; native Super DAN website validation",
-                hard_constraints=[
-                    "Read-only validation only; do not write or edit files.",
-                    "Inspect the required website files directly before deciding.",
-                    "Fail if the result is still a generic execution-contract/demo template.",
-                    "Fail if the page mostly echoes the raw operator prompt.",
+            role=RoleSpec(
+                role_label="validator_website",
+                responsibility="Validate the Super DAN website artifact in read-only mode.",
+                success_criteria=[
+                    "Required files were read directly.",
+                    "The artifact materially satisfies the operator objective.",
+                    "The result is not a generic Super DAN execution-contract demo.",
                 ],
-                soft_constraints=[
-                    "Prefer concrete missing requirements over vague criticism.",
-                    "Judge objective alignment, not just file existence.",
-                ],
-                allowed_tool_ids=website_read_only_tool_ids,
-                failure_phrases=template_phrases,
-                tool_policy={
-                    "allowed_tool_ids": list(website_read_only_tool_ids),
-                    "preferred_tool_ids": ["file_read", "list_directory"],
-                    "max_tool_calls": max(4, min(int(args.max_tool_calls), 12)),
-                },
-                sampling_policy={"profile": "deterministic", "temperature": 0.0, "max_tokens": 1600},
-                output_contract=OutputContract(
-                    definition_of_done="Return the validation report only.",
-                    expected_return_shape=_live_validation_return_shape(),
-                ),
-                input_payload={
-                    "objective": report.target,
-                    "workspace_root": str(workspace_root),
-                    "artifact_root": str(artifact_root),
-                    "artifact_files": list(relative_files),
-                    "required_files": [str(path) for path in required_paths],
-                    "changed_required_files": list(changed_required_paths),
-                },
-                metadata={
-                    "surface": "super_organism",
-                    "mode": "live",
-                    "tool_budget_profile": "super_dan_live",
-                    "trace_id": run_trace_id,
-                    "root_task_id": run_task_id,
-                    "organism_id": report.organism_id,
-                    "organ_id": "super-dan.live.website",
-                    "worker_id": validator_worker_id,
-                    "organism_stage": "validation",
-                },
-            )
+                artifact_targets=list(relative_files),
+                trace_role="super-dan.live.website.validator",
+            ),
+            task=_live_website_validation_task(
+                report,
+                artifact_root=artifact_root,
+                relative_files=relative_files,
+                objective_context=objective_context,
+            ),
+            scope=f"workspace={workspace_root}; artifact_root={artifact_root}; native Super DAN website validation",
+            hard_constraints=[
+                "Read-only validation only; do not write or edit files.",
+                "Inspect the required website files directly before deciding.",
+                "Fail if the result is still a generic execution-contract/demo template.",
+                "Fail if the page mostly echoes the raw operator prompt.",
+            ],
+            soft_constraints=[
+                "Prefer concrete missing requirements over vague criticism.",
+                "Judge objective alignment, not just file existence.",
+            ],
+            allowed_tool_ids=website_read_only_tool_ids,
+            failure_phrases=template_phrases,
+            tool_policy={
+                "allowed_tool_ids": list(website_read_only_tool_ids),
+                "preferred_tool_ids": ["file_read", "list_directory"],
+                "max_tool_calls": max(4, min(int(args.max_tool_calls), 12)),
+            },
+            sampling_policy={"profile": "deterministic", "temperature": 0.0, "max_tokens": 1600},
+            output_contract=OutputContract(
+                definition_of_done="Return the validation report only.",
+                expected_return_shape=_live_validation_return_shape(),
+            ),
+            input_payload={
+                "objective": objective_context.get("effective_objective") or report.target,
+                "original_objective": report.target,
+                "objective_normalization": dict(objective_context),
+                "workspace_root": str(workspace_root),
+                "artifact_root": str(artifact_root),
+                "artifact_files": list(relative_files),
+                "required_files": [str(path) for path in required_paths],
+                "changed_required_files": list(current_changed_required_paths),
+            },
+            metadata={
+                "surface": "super_organism",
+                "mode": "live",
+                "tool_budget_profile": "super_dan_live",
+                "trace_id": run_trace_id,
+                "root_task_id": run_task_id,
+                "organism_id": report.organism_id,
+                "organ_id": "super-dan.live.website",
+                "worker_id": validator_worker_id,
+                "organism_stage": "validation",
+            },
+        )
         validator_worker = _live_cell_from_brief(
             model=model,
             brief=validator_brief,
@@ -1387,7 +2161,7 @@ async def _run_live_website_build(
             organism_stage="validation",
         )
         validator_request = _request_from_live_brief(validator_brief)
-        validation = await _run_live_validation(
+        return await _run_live_validation(
             worker=validator_worker,
             request=validator_request,
             tool_ids=website_read_only_tool_ids,
@@ -1397,12 +2171,13 @@ async def _run_live_website_build(
             provider=provider,
             event_logger=event_logger,
         )
+
+    if not missing_paths and changed_required_paths:
+        validation = await run_website_validator(changed_required_paths)
     static_validation_failures = _website_static_validation_failures(
         report,
         required_paths=required_paths,
         changed_required_paths=changed_required_paths,
-        file_snapshot=file_snapshot,
-        min_changed_files=existing_min_changed_files,
         template_phrases=template_phrases,
     )
     validation = _merge_validation_failures(
@@ -1410,6 +2185,173 @@ async def _run_live_website_build(
         static_validation_failures,
     )
     validation["deterministic_failures"] = list(static_validation_failures)
+    validation_tool_calls_total = int(validation.get("tool_calls") or 0)
+    validation_event_count_total = int(validation.get("event_count") or 0)
+    validation_token_usage = _merge_token_usage(validation.get("token_usage"))
+    repair_attempts = 0
+    if (
+        result.status == "completed"
+        and not missing_paths
+        and bool(changed_required_paths)
+        and not bool(validation.get("passed"))
+    ):
+        repair_attempts = 1
+        repair_reason = _validation_repair_brief(validation, static_validation_failures)
+        _log_live_event(
+            event_logger,
+            "live.website_repair.started",
+            attempt=repair_attempts,
+            model=model,
+            reason=repair_reason or "validation failed",
+            changed_required_files=list(changed_required_paths),
+        )
+        repair_worker_id = "super-dan.live.website-repair"
+        repair_brief = coding_brief(
+            role=RoleSpec(
+                role_label="coding_worker",
+                responsibility="Repair the Super DAN website artifact after validation failure.",
+                success_criteria=[
+                    "Validation feedback is addressed with concrete file edits.",
+                    "The repair changes required website files that directly address the failed validation.",
+                    "The result remains static and dependency-free.",
+                ],
+                artifact_targets=list(relative_files),
+                trace_role="super-dan.live.website-repair",
+            ),
+            task=_live_website_repair_task(
+                report,
+                artifact_root=artifact_root,
+                relative_files=relative_files,
+                validation=validation,
+                deterministic_failures=static_validation_failures,
+                changed_required_paths=changed_required_paths,
+                objective_context=objective_context,
+            ),
+            scope=f"workspace={workspace_root}; artifact_root={artifact_root}; Super DAN website validation repair",
+            hard_constraints=[
+                "Actually edit required website files; do not return a summary-only response.",
+                "Keep writes inside the requested workspace/artifact paths.",
+                "Do not install dependencies or require a build step.",
+                "Do not create scratch or throwaway files outside the required website artifact set.",
+                "Change additional required files only when the validation feedback or objective calls for broader coverage.",
+            ],
+            soft_constraints=[
+                "Prefer small targeted edits over rewriting the whole site.",
+                "Prioritize required files that have not changed yet.",
+                "Address validator feedback directly before polishing unrelated details.",
+                "Avoid rereading unchanged context unless exact edit grounding is needed.",
+            ],
+            pacing_policy=pacing_policy,
+            tool_policy={
+                "allowed_tool_ids": list(website_tool_ids),
+                "preferred_tool_ids": list(website_preferred_tool_ids),
+                "max_tool_calls": int(args.max_tool_calls),
+            },
+            output_contract=OutputContract(
+                definition_of_done=(
+                    "Validation feedback is addressed with concrete required-file edits and the final response names "
+                    "changed files, validation plan, and remaining risks."
+                ),
+                expected_return_shape=_live_expected_return_shape(),
+            ),
+            sampling_policy={"profile": choice.sampling_policy, "temperature": 0.25, "max_tokens": 2400},
+            evidence=_super_report_evidence_blocks(report),
+            input_payload={
+                "objective": objective_context.get("effective_objective") or report.target,
+                "original_objective": report.target,
+                "objective_normalization": dict(objective_context),
+                "workspace_root": str(workspace_root),
+                "artifact_root": str(artifact_root),
+                "artifact_files": list(relative_files),
+                "required_files": [str(path) for path in required_paths],
+                "changed_required_files": list(changed_required_paths),
+                "validation": dict(validation),
+                "deterministic_failures": list(static_validation_failures),
+                "write_pacing": dict(pacing_policy),
+                "existing_required_files": _existing_required_files_from_snapshot(
+                    file_snapshot,
+                    required_paths,
+                ),
+                "existing_website_change_policy": {
+                    "minimum_required_changed_files": 1,
+                    "preferred_coordinated_required_files": existing_preferred_coordinated_files,
+                    "prefer_coordinated_when_objective_spans_files": True,
+                },
+            },
+            metadata={
+                "surface": "super_organism",
+                "mode": "live",
+                "tool_budget_profile": "super_dan_live",
+                "trace_id": run_trace_id,
+                "root_task_id": run_task_id,
+                "organism_id": report.organism_id,
+                "organ_id": "super-dan.live.website",
+                "organism_stage": "execution",
+                "worker_id": repair_worker_id,
+            },
+        )
+        repair_worker = _live_cell_from_brief(
+            model=model,
+            brief=repair_brief,
+            worker_id=repair_worker_id,
+            organism_stage="execution",
+        )
+        repair_result, repair_tools, repair_events = await _execute_live_request(
+            worker=repair_worker,
+            request=_request_from_live_brief(repair_brief),
+            tool_ids=website_tool_ids,
+            workspace_root=workspace_root,
+            args=args,
+            model=model,
+            provider=provider,
+            event_logger=event_logger,
+        )
+        result = repair_result
+        executed_tools.extend(repair_tools)
+        events.extend(repair_events)
+        build_token_usage = _merge_token_usage(
+            build_token_usage,
+            _extract_execution_usage(repair_result),
+        )
+        if repair_result.error:
+            error = repair_result.error
+        existing_paths = [path for path in required_paths if path.exists()]
+        missing_paths = [path for path in required_paths if not path.exists()]
+        changed_required_paths = _changed_paths_from_snapshot(file_snapshot, required_paths)
+        mutated_paths = _mutation_paths_from_tools(executed_tools, workspace_root=workspace_root)
+        _log_live_event(
+            event_logger,
+            "live.website_repair.completed",
+            attempt=repair_attempts,
+            model=model,
+            status=repair_result.status,
+            tool_calls=len(repair_tools),
+            event_count=len(repair_events),
+            changed_required_files=list(changed_required_paths),
+        )
+        validation = _failed_validation_payload(
+            reason=error or "live website repair did not meet the exit contract",
+            missing_requirements=[str(path) for path in missing_paths],
+        )
+        if not missing_paths and changed_required_paths:
+            validation = await run_website_validator(changed_required_paths)
+        static_validation_failures = _website_static_validation_failures(
+            report,
+            required_paths=required_paths,
+            changed_required_paths=changed_required_paths,
+            template_phrases=template_phrases,
+        )
+        validation = _merge_validation_failures(
+            validation,
+            static_validation_failures,
+        )
+        validation["deterministic_failures"] = list(static_validation_failures)
+        validation_tool_calls_total += int(validation.get("tool_calls") or 0)
+        validation_event_count_total += int(validation.get("event_count") or 0)
+        validation_token_usage = _merge_token_usage(
+            validation_token_usage,
+            validation.get("token_usage"),
+        )
     _log_final_validation_event(
         event_logger,
         worker_id="super-dan.live.website.validator",
@@ -1434,7 +2376,7 @@ async def _run_live_website_build(
     )
     token_usage = _merge_token_usage(
         build_token_usage,
-        validation.get("token_usage"),
+        validation_token_usage,
     )
     return {
         "status": status,
@@ -1447,13 +2389,15 @@ async def _run_live_website_build(
         "required_files": [str(path) for path in required_paths],
         "missing_files": [str(path) for path in missing_paths],
         "changed_required_files": list(changed_required_paths),
-        "tool_calls": len(executed_tools) + int(validation.get("tool_calls") or 0),
+        "tool_calls": len(executed_tools) + validation_tool_calls_total,
         "mutated_paths": mutated_paths,
-        "event_count": len(events) + int(validation.get("event_count") or 0),
+        "event_count": len(events) + validation_event_count_total,
         "summary": result.outputs.get("result") or result.outputs.get("text") or "",
         "error": error,
         "summary_label": "Live Build",
         "objective_kind": "website",
+        "repair_attempts": repair_attempts,
+        "failed_step": "validation" if not bool(validation.get("passed")) else "",
         "token_usage": token_usage,
         "validation": validation,
     }
@@ -1919,10 +2863,7 @@ def _html_escape(value: str) -> str:
     )
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    load_env()
-    parser = build_parser()
-    args = parser.parse_args(list(argv) if argv is not None else None)
+def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if bool(getattr(args, "live", False)) and bool(getattr(args, "plan_only", False)):
         parser.error("--live cannot be combined with --plan-only")
 
@@ -1937,6 +2878,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(str(exc))
         return 2
 
+    implicit_live = _should_implicit_live(report, args)
+    if implicit_live:
+        setattr(args, "live", True)
+        setattr(args, "_implicit_live", True)
+        setattr(args, "_code_like_live", True)
+    elif not hasattr(args, "_implicit_live"):
+        setattr(args, "_implicit_live", False)
+    if bool(getattr(args, "live", False)):
+        setattr(args, "_code_like_live", True)
+
     payload = report.model_dump(mode="json")
     live_result: dict[str, Any] | None = None
     if bool(getattr(args, "live", False)):
@@ -1949,6 +2900,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         live_trace_id = new_trace_id()
         live_task_id = f"super-dan-live:{live_turn_number}"
         objective_kind = "website" if _is_website_objective(report) else "coding"
+        progress_renderer = SuperProgressRenderer(
+            enabled=not bool(getattr(args, "json", False))
+            and not bool(getattr(args, "quiet_progress", False))
+        )
         event_logger = SuperRunEventLogger(
             path=live_workdir / "events.jsonl",
             session_id=_super_session_id(live_workspace_root),
@@ -1957,6 +2912,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             organism_id=report.organism_id,
             organ_id="super-dan.live",
             trace_id=live_trace_id,
+            progress_callback=progress_renderer,
         )
         try:
             _log_live_event(
@@ -2113,6 +3069,70 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             _print_compact_report(report, artifact_paths=paths)
     return 0
+
+
+def _interactive_loop(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    workspace_root = normalize_workspace_root(str(args.workspace))
+    print("Super DAN interactive")
+    print(f"workspace: {workspace_root}")
+    print("Type an objective, /plan <objective> for a dry contract, or /exit.")
+    while True:
+        try:
+            text = input("super-dan> ")
+        except EOFError:
+            print()
+            return 0
+        except KeyboardInterrupt:
+            print()
+            return 130
+        objective = text.strip()
+        if not objective:
+            continue
+        lowered = objective.lower()
+        if lowered in {"/exit", "/quit", "exit", "quit"}:
+            return 0
+        plan_only = False
+        if lowered.startswith("/plan "):
+            objective = objective[6:].strip()
+            plan_only = True
+        if not objective:
+            continue
+        turn_args = copy.copy(args)
+        turn_args.target = objective
+        turn_args.plan_only = plan_only
+        turn_args.live = bool(getattr(args, "live", False)) or not plan_only
+        turn_args.json = False
+        turn_args.output = None
+        turn_args._code_like_live = not plan_only
+        try:
+            exit_code = _run_super_turn(turn_args, parser)
+        except SystemExit as exc:
+            exit_code = int(exc.code or 0) if isinstance(exc.code, int) else 2
+        if exit_code not in {0, 1}:
+            return exit_code
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    load_env()
+    parser = build_parser()
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
+    args = parser.parse_args(raw_argv)
+    setattr(args, "_live_explicit", _argv_has_option(raw_argv, "--live"))
+    setattr(args, "_model_explicit", _argv_has_option(raw_argv, "--model"))
+    setattr(args, "_artifact_dir_explicit", _argv_has_option(raw_argv, "--artifact-dir"))
+    setattr(args, "_implicit_live", False)
+    setattr(args, "_code_like_live", False)
+    setattr(args, "_stdin_is_tty", sys.stdin.isatty())
+
+    no_objective = not str(getattr(args, "target", "") or "").strip()
+    report_mode_requested = any(
+        bool(getattr(args, field, False))
+        for field in ("plan_only", "json", "verbose")
+    ) or bool(getattr(args, "output", None))
+    if no_objective and not report_mode_requested and sys.stdin.isatty():
+        return _interactive_loop(args, parser)
+
+    return _run_super_turn(args, parser)
 
 
 if __name__ == "__main__":  # pragma: no cover
