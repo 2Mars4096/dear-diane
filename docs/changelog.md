@@ -1,6 +1,23 @@
 # Changelog
 
 ## 2026-04-27
+- [fix] Made Super DAN website anti-template failures actionable: static validation now reports the exact template phrase hits, repair prompts tell the worker to remove or rename those hits, and failed post-repair validations are marked `repair_exhausted` so hook state does not imply another repair will run.
+- [test] Added Super DAN regressions for exact static validation evidence, repair prompt contents, successful template-hit repair, failed repair diagnostics, and hook suppression after repair exhaustion.
+- [fix] Tightened Super DAN `IntentSignal` context handling so artifact-only context remains routing evidence instead of becoming a fake explicit decision, while explicit `operation="mutate"` signals default to mutation permission when the caller omits the redundant boolean.
+- [refactor] Renamed remaining Super DAN dispatch cue/policy constants to private fallback data and kept `IntentSignal` / `resolve_intent_signal(...)` as the public routing contract.
+- [test] Added dispatch regressions for explicit non-English mutate signals, artifact-only website evidence, and private fallback cue-list boundaries.
+- [docs] Audited remaining deterministic Super DAN semantic rules and website-specific live-lane policies; recorded the next extraction target as a replaceable intent-signal producer plus artifact-profile registry.
+- [feat] Added an explicit Super DAN `IntentSignal` dispatch contract with operation, artifact target, mutation permission, confidence, rationale, and evidence fields. `select_orchestrator(...)` now resolves that signal before choosing a lane, so routing decisions can be inspected instead of inferred from hidden cue branches.
+- [test] Added dispatch regressions that assert `IntentSignal` fields directly for code, research/reader, existing-artifact Super DAN turns, no-context ambiguous turns, and research-family read-only guards.
+- [fix] Corrected the Super DAN routing patch away from task-specific/language-specific cue expansion. Existing artifact context now feeds `select_orchestrator(...)` as context, and the dispatcher no longer exports website-polish or multilingual read-only cue lists as public orchestration policy.
+- [test] Added context-first Super DAN routing regressions for named website roots, explicit artifact dirs, missing-context negatives, research-family read-only guards, and a fake-provider CLI run for the layout-messy prompt without depending on exported task cue lists.
+- [fix] Split Super DAN website no-write failures from validation repair. Website live runs now run one bounded first-write recovery pass when the builder produces no required-file edits, log it as `[retry]`, revalidate if recovery lands a patch, and route hook packets to `first_write_recovery` instead of `repair`.
+- [test] Added Super DAN regressions for first-write recovery success, no-op recovery exhaustion without repair hooks, and hook routing that distinguishes no-write validation failures from changed-but-invalid patches.
+- [feat] Raised the Super DAN live default `--max-tool-calls` from `32` to `64` while keeping `--max-tool-rounds` at `10`.
+- [feat] Extended Super DAN hook state with idempotent event-log replay, stale-heartbeat packet replacement, persisted worktree task/diff records, and a non-authoritative worktree diff admission/rejection gate.
+- [test] Added Super DAN hook regressions for stale heartbeat dropping, worktree diff admission/rejection without main-workspace mutation, and event-log replay without duplicate hook packets.
+- [feat] Added the first Super DAN internal hook/inbox runtime. Live event rows now enqueue bounded hook packets into durable `.dan-super/state/` inbox state, emit queue/lease/owner-lock rows into the same run trace, and expose `--reactivity`, `--queue-status`, `--worktree-parallelism`, and interactive `/status` / `/queues`.
+- [test] Added Super DAN hook coverage for material-write routing, queue coalescing, lease release, same-owner lock waiting, persisted queue status, and live CLI hook-state output.
 - [docs] Added Plan 56-6 for Super DAN event-driven organ inboxes, queue/lease policies, critical-path containment, and worktree-based parallelism for conflicting owners.
 - [fix] Relaxed Super DAN live website validation so a focused single-file patch can pass when it materially satisfies the objective; deterministic static gates now require actual required-file mutation plus anti-template/prompt-echo checks instead of a fixed two-file count.
 - [feat] Raised Super DAN live defaults to `--max-tool-rounds 10` / `--max-tool-calls 32` and made post-write, direct-write, and validator soft budgets less aggressive before forced finalization.
