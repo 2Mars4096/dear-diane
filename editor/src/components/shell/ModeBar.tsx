@@ -9,6 +9,7 @@ import {
   Workflow,
   Command,
   Settings2,
+  Sparkles,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import NotificationCenter from "./NotificationCenter";
@@ -69,6 +70,16 @@ export default function ModeBar() {
       <div className="flex items-center gap-1">
         <BackendStatusIndicator />
         <MessagingStatusButton />
+        <button
+          onClick={() => {
+            window.location.hash = "v2";
+          }}
+          className="app-no-drag inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 hover:text-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-200 transition-colors"
+          title="Open DAN V2"
+        >
+          <Sparkles size={14} />
+          <span>V2</span>
+        </button>
         <button
           onClick={() => window.dispatchEvent(new CustomEvent("app:openSettings"))}
           className="app-no-drag inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-200 dark:text-gray-300 dark:hover:text-white dark:hover:bg-white/10 transition-colors"

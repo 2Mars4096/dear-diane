@@ -62,14 +62,14 @@ interface AppState {
   setActiveChatThread: (threadId: string | null, workflowId: string | null) => void;
 }
 
-function getModeFromHash(): AppMode {
+function getModeFromHash(): AppMode | null {
   const hash = window.location.hash.replace("#", "");
   const valid = MODE_CONFIGS.find((m) => m.id === hash && m.enabled);
-  return valid ? valid.id : "chat";
+  return valid ? valid.id : null;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
-  activeMode: getModeFromHash(),
+  activeMode: getModeFromHash() ?? "chat",
 
   activeChatThreadId: null,
   activeChatWorkflowId: null,
@@ -139,6 +139,7 @@ export function pushNotification(n: Omit<AppNotification, "id" | "timestamp" | "
 if (typeof window !== "undefined") {
   window.addEventListener("hashchange", () => {
     const mode = getModeFromHash();
+    if (!mode) return;
     useAppStore.getState().setMode(mode);
   });
 }
