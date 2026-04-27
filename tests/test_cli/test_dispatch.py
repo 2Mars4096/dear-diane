@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from dan.cli.dispatch import select_orchestrator
+import pytest
+
+import dan.cli.dispatch as dispatch
+from dan.cli.dispatch import resolve_intent_signal, select_orchestrator
 from dan.cli.universal_progress import universal_progress_delta
 
 
@@ -10,6 +13,21 @@ def test_select_orchestrator_for_code_command() -> None:
     assert choice.orchestrator_id == "dan-code"
     assert choice.brief_composer == "templates.coding_brief"
     assert choice.tool_policy["mode"] == "workspace-mutation"
+    assert choice.intent_signal.operation == "mutate"
+    assert choice.intent_signal.mutation_permission is True
+
+
+def test_dispatch_public_exports_keep_fallback_cue_lists_private() -> None:
+    assert "BUILD_INTENT_CUES" not in dispatch.__all__
+    assert "WEBSITE_INTENT_CUES" not in dispatch.__all__
+    assert "READ_ONLY_INTENT_CUES" not in dispatch.__all__
+    assert "WEBSITE_WORKSPACE_PATCH_CUES" not in dispatch.__all__
+    assert not hasattr(dispatch, "BUILD_INTENT_CUES")
+    assert not hasattr(dispatch, "WEBSITE_INTENT_CUES")
+    assert not hasattr(dispatch, "READ_ONLY_INTENT_CUES")
+    assert not hasattr(dispatch, "WEBSITE_WORKSPACE_PATCH_CUES")
+    assert "IntentSignal" in dispatch.__all__
+    assert "resolve_intent_signal" in dispatch.__all__
 
 
 def test_select_orchestrator_for_research_and_reader_commands() -> None:
@@ -19,6 +37,8 @@ def test_select_orchestrator_for_research_and_reader_commands() -> None:
     assert research.orchestrator_id == "dan-research"
     assert reader.orchestrator_id == "dan-reader"
     assert reader.tool_policy["mode"] == "read-only"
+    assert research.intent_signal.operation == "read_only"
+    assert reader.intent_signal.mutation_permission is False
 
 
 def test_select_orchestrator_for_reference_organism() -> None:
@@ -37,6 +57,172 @@ def test_select_orchestrator_for_super_organism_website_and_generic_build() -> N
     assert website.artifact_policy["required_files"] == ["index.html", "styles.css", "app.js", "README.md"]
     assert generic.orchestrator_id == "super-dan-live-coding"
     assert generic.tool_policy["profile"] == "generic"
+    assert website.intent_signal.artifact_target == "website"
+    assert generic.intent_signal.artifact_target == "workspace"
+
+
+def test_resolve_intent_signal_is_explainable_before_lane_selection() -> None:
+    signal = resolve_intent_signal(
+        "can you think harder, the layout now is completely messy",
+        {
+            "command": "super-organism",
+            "execution_family": "general_operator",
+            "existing_website_workspace": True,
+        },
+    )
+
+    assert signal.operation == "mutate"
+    assert signal.artifact_target == "website"
+    assert signal.mutation_permission is True
+    assert signal.confidence > 0
+    assert "existing artifact context" in signal.rationale
+    assert "existing_artifact:website" in signal.evidence
+
+
+def test_select_orchestrator_accepts_explicit_intent_signal_without_text_cues() -> None:
+    choice = select_orchestrator(
+        "把这里处理一下",
+        {
+            "command": "super-organism",
+            "intent_signal": {
+                "operation": "mutate",
+                "artifact_target": "workspace",
+                "mutation_permission": True,
+                "confidence": 0.91,
+                "source": "test-classifier",
+                "rationale": "external classifier selected a workspace mutation",
+                "evidence": ["language_agnostic_classifier"],
+            },
+        },
+    )
+
+    assert choice.orchestrator_id == "super-dan-live-coding"
+    assert choice.intent_signal.source == "test-classifier"
+    assert choice.intent_signal.rationale == "external classifier selected a workspace mutation"
+
+
+def test_select_orchestrator_accepts_explicit_operation_without_permission_field() -> None:
+    choice = select_orchestrator(
+        "把这里处理一下",
+        {
+            "command": "super-organism",
+            "operation": "mutate",
+            "artifact_target": "workspace",
+            "intent_source": "test-classifier",
+        },
+    )
+
+    assert choice.orchestrator_id == "super-dan-live-coding"
+    assert choice.intent_signal.operation == "mutate"
+    assert choice.intent_signal.mutation_permission is True
+
+
+def test_select_orchestrator_treats_artifact_only_context_as_routing_evidence() -> None:
+    choice = select_orchestrator(
+        "build this",
+        {
+            "command": "super-organism",
+            "artifact_kind": "website",
+        },
+    )
+
+    assert choice.orchestrator_id == "super-dan-live-website"
+    assert choice.intent_signal.operation == "mutate"
+    assert choice.intent_signal.artifact_target == "website"
+    assert "artifact_context:website" in choice.intent_signal.evidence
+
+
+def test_select_orchestrator_explicit_read_only_intent_blocks_website_context_mutation() -> None:
+    choice = select_orchestrator(
+        "please continue here",
+        {
+            "command": "super-organism",
+            "existing_website_workspace": True,
+            "intent_signal": {
+                "operation": "read_only",
+                "artifact_target": "website",
+                "mutation_permission": False,
+                "confidence": 0.93,
+                "source": "test-classifier",
+                "rationale": "external classifier selected read-only review",
+            },
+        },
+    )
+
+    assert choice.orchestrator_id == "super-dan-showcase"
+    assert choice.intent_signal.operation == "read_only"
+    assert choice.intent_signal.mutation_permission is False
+
+
+@pytest.mark.parametrize(
+    ("intent", "context_updates"),
+    [
+        (
+            "can you think harder, the layout now is completely messy",
+            {"existing_website_workspace": True},
+        ),
+        (
+            "tighten the hero spacing so the first screen feels intentional",
+            {"existing_website": True},
+        ),
+        (
+            "polish the mobile alignment and visual style",
+            {"workspace_kind": "website"},
+        ),
+    ],
+)
+def test_select_orchestrator_uses_existing_artifact_context(
+    intent: str,
+    context_updates: dict[str, object],
+) -> None:
+    context = {
+        "command": "super-organism",
+        "execution_family": "general_operator",
+        **context_updates,
+    }
+    choice = select_orchestrator(
+        intent,
+        context,
+    )
+
+    assert choice.orchestrator_id == "super-dan-live-website"
+    assert choice.tool_policy["profile"] == "website"
+    assert "intent signal" in choice.rationale
+    assert choice.intent_signal.artifact_target == "website"
+    assert choice.intent_signal.mutation_permission is True
+
+
+def test_select_orchestrator_does_not_infer_website_from_ui_words_without_context() -> None:
+    choice = select_orchestrator(
+        "can you think harder, the layout now is completely messy",
+        {
+            "command": "super-organism",
+            "execution_family": "general_operator",
+        },
+    )
+
+    assert choice.orchestrator_id == "super-dan-showcase"
+    assert choice.tool_policy["mode"] == "read-only"
+    assert choice.acceptance_policy["requires_live_artifact"] is False
+    assert choice.intent_signal.operation == "unknown"
+    assert choice.intent_signal.mutation_permission is False
+
+
+def test_select_orchestrator_keeps_research_family_read_only_in_website_workspace() -> None:
+    choice = select_orchestrator(
+        "research visual design evidence for this homepage",
+        {
+            "command": "super-organism",
+            "execution_family": "research",
+            "existing_website_workspace": True,
+        },
+    )
+
+    assert choice.orchestrator_id == "super-dan-showcase"
+    assert choice.tool_policy["mode"] == "read-only"
+    assert "visual" not in choice.matched_cues
+    assert choice.intent_signal.operation == "read_only"
+    assert choice.intent_signal.artifact_target == "website"
 
 
 def test_select_orchestrator_respects_super_organism_execution_family() -> None:
