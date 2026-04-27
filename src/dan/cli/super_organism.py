@@ -993,17 +993,46 @@ def _super_live_choice(
         "command": "super-organism",
         "execution_family": report.execution_family,
     }
-    if (
-        args is not None
-        and bool(getattr(args, "_code_like_live", False))
-        and _existing_website_workspace_context(args)
-    ):
+    code_like_live = args is not None and bool(getattr(args, "_code_like_live", False))
+    existing_website_workspace = code_like_live and _existing_website_workspace_context(args)
+    if existing_website_workspace:
         context["existing_website_workspace"] = True
         context["workspace_kind"] = "website"
+    base_choice = select_orchestrator(
+        str(report.target or ""),
+        context,
+    )
+    if (
+        base_choice.orchestrator_id in {"super-dan-live-website", "super-dan-live-coding"}
+        or not code_like_live
+        or not _live_context_allows_mutation_signal(report)
+    ):
+        return base_choice
+    if code_like_live and _live_context_allows_mutation_signal(report):
+        artifact_target = "website" if existing_website_workspace else "workspace"
+        evidence = ["live_context:mutation_permission"]
+        if existing_website_workspace:
+            evidence.append("existing_artifact:website")
+        context["intent_signal"] = {
+            "operation": "mutate",
+            "artifact_target": artifact_target,
+            "mutation_permission": True,
+            "confidence": 0.9,
+            "source": "super-dan-live-context",
+            "rationale": (
+                "explicit live or interactive Super DAN context grants workspace mutation permission"
+            ),
+            "evidence": evidence,
+        }
     return select_orchestrator(
         str(report.target or ""),
         context,
     )
+
+
+def _live_context_allows_mutation_signal(report: SuperOrganismReport) -> bool:
+    family = _single_line(report.execution_family).lower()
+    return family in {"", "general_operator", "general operator", "code", "code_plus_research"}
 
 
 def _supports_live_execution(

@@ -1404,7 +1404,7 @@ def test_existing_website_workspace_context_accepts_named_roots_and_artifact_dir
     assert artifact_choice.orchestrator_id == "super-dan-live-website"
 
 
-def test_layout_request_without_existing_website_context_stays_showcase(tmp_path) -> None:
+def test_live_context_routes_ambiguous_request_to_generic_coding(tmp_path) -> None:
     args = build_parser().parse_args(
         [
             "can you think harder, the layout now is completely messy",
@@ -1418,9 +1418,38 @@ def test_layout_request_without_existing_website_context_stays_showcase(tmp_path
     report = super_cli.run_super_organism_demo(args.target)
 
     assert super_cli._existing_website_workspace_context(args) is False
-    assert super_cli._supports_live_execution(report, args) is False
+    assert super_cli._supports_live_execution(report, args) is True
     choice = super_cli._super_live_choice(report, args)
-    assert choice.orchestrator_id == "super-dan-showcase"
+    assert choice.orchestrator_id == "super-dan-live-coding"
+    assert choice.intent_signal.source == "super-dan-live-context"
+    assert choice.intent_signal.artifact_target == "workspace"
+
+
+def test_live_context_routes_creation_request_to_generic_coding_without_text_cues(tmp_path) -> None:
+    animation_root = tmp_path / "animation"
+    args = build_parser().parse_args(
+        [
+            (
+                "help me generate an animation, playable, of a burning match from the "
+                "start to the end, with realistic visual effects"
+            ),
+            "--live",
+            "--workspace",
+            str(animation_root),
+        ]
+    )
+    args._artifact_dir_explicit = False
+    args._code_like_live = True
+    report = super_cli.run_super_organism_demo(args.target)
+
+    assert report.execution_family == "general_operator"
+    assert super_cli._existing_website_workspace_context(args) is False
+    assert super_cli._supports_live_execution(report, args) is True
+    choice = super_cli._super_live_choice(report, args)
+    assert choice.orchestrator_id == "super-dan-live-coding"
+    assert choice.tool_policy["profile"] == "generic"
+    assert choice.intent_signal.operation == "mutate"
+    assert choice.intent_signal.source == "super-dan-live-context"
 
 
 def test_research_design_request_in_website_workspace_stays_read_only(tmp_path) -> None:
