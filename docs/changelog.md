@@ -1,6 +1,21 @@
 # Changelog
 
+## 2026-04-27
+- [docs] Added Plan 56-6 for Super DAN event-driven organ inboxes, queue/lease policies, critical-path containment, and worktree-based parallelism for conflicting owners.
+- [fix] Relaxed Super DAN live website validation so a focused single-file patch can pass when it materially satisfies the objective; deterministic static gates now require actual required-file mutation plus anti-template/prompt-echo checks instead of a fixed two-file count.
+- [feat] Raised Super DAN live defaults to `--max-tool-rounds 10` / `--max-tool-calls 32` and made post-write, direct-write, and validator soft budgets less aggressive before forced finalization.
+- [fix] Restored the local-runtime read-only tool-policy warning for read-only baskets even when `workspace_check` is not present.
+- [test] Updated Super DAN CLI regressions to cover material single-file existing-site patches, the larger default live budget, and the existing validation-repair path.
+
 ## 2026-04-26
+- [feat] Added timestamp prefixes to Super DAN live progress lines and one bounded website repair pass after validator rejection, so concrete patches that miss coordinated-file requirements can self-correct before the final verdict.
+- [test] Added Super DAN regression coverage for timestamped progress rendering and a validation-failed website patch that succeeds after the automatic repair lane updates multiple required files.
+- [feat] Added compact live console progress to `dan super-organism`, streaming run/model/tool/validation/completion rows plus sparse idle heartbeats from the same `.dan-super` event stream; `--quiet-progress` disables the terminal renderer and `--json` remains clean.
+- [test] Added Super DAN coverage for the progress renderer, async heartbeat monitor, default live progress output, and quiet-progress suppression.
+- [feat] Taught Super DAN live website runs to normalize vague existing-site continuation turns such as `keep patching this website` into a default maintainability patch brief, including coordinated HTML/CSS/JS/README changes and previous `.dan-super` validation feedback.
+- [test] Added Super DAN regressions for vague website-continuation objective expansion, workspace-root website writes, and the `live.objective.normalized` event log row.
+- [feat] Made `dan super-organism` feel closer to `dan code`: a bare TTY command now opens an interactive prompt, objectives with an explicit/configured model auto-enter the native live lane, `--plan-only` remains the deterministic contract path, and code-like website workspaces avoid nested `website/website` output.
+- [test] Added Super DAN CLI regressions for implicit live execution without `--live` and website-named workspace artifact-root handling.
 - [feat] Extended the Plan 56 universal organism control plane with capacity decisions, run-state deltas, runtime/semantic heartbeat rows, scheduler proposal outcomes, reducer/speculative-validation/promotion rows, admitted commands with idempotency keys, and dynamic dependency revisions.
 - [feat] Added Plan 56 compatibility plan composers in `src/dan/worker/organisms/legacy_facades.py` for coding, project/research, incident, reference-demo, and Super DAN task shapes, plus a `worker.organisms.contracts` migration namespace for legacy public model contracts.
 - [fix] Kept non-code Super DAN execution families on the read-only showcase path even when the objective text contains build/website cues, and added a CLI event-stream progress delta adapter for universal-organism rows.
