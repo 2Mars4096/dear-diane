@@ -103,18 +103,18 @@ _DIRECT_WRITE_TIMEOUT_SOFT_CAP_SECONDS = 60.0
 _EXCLUSIVE_OWNER_DIRECT_WRITE_SOFT_CAP_SECONDS = 45.0
 _SOFT_PHASE_TOOL_CALL_BASE_BUDGETS = {
     "coding_prewrite": 8,
-    "coding_direct_write": 5,
-    "coding_postwrite": 6,
-    "validator_read_only": 6,
-    "coding_worker_read_only": 5,
+    "coding_direct_write": 8,
+    "coding_postwrite": 12,
+    "validator_read_only": 10,
+    "coding_worker_read_only": 8,
     "research_note": 4,
 }
 _SOFT_PHASE_ROUND_BASE_BUDGETS = {
     "coding_prewrite": 4,
-    "coding_direct_write": 2,
-    "coding_postwrite": 3,
-    "validator_read_only": 3,
-    "coding_worker_read_only": 2,
+    "coding_direct_write": 3,
+    "coding_postwrite": 5,
+    "validator_read_only": 4,
+    "coding_worker_read_only": 3,
     "research_note": 2,
 }
 
@@ -532,13 +532,13 @@ def _tool_use_policy(tool_ids: Sequence[str]) -> str:
         lines.append(
             "- Use `workspace_check` before `shell_command` for deterministic file existence, literal/regex counts, HTML tag balance, and Python/JSON syntax checks."
         )
-        if not mutation_capable:
-            lines.append(
-                "- This tool set is read-only. Do not try to create files through `file_read`, and do not pass write-like arguments such as `write` or `content` to it."
-            )
-            lines.append(
-                "- If the workspace is empty or a required file does not exist, confirm that quickly and then return a concrete bounded candidate for a later write-capable stage instead of repeatedly probing missing paths."
-            )
+    if not mutation_capable:
+        lines.append(
+            "- This tool set is read-only. Do not try to create files through `file_read`, and do not pass write-like arguments such as `write` or `content` to it."
+        )
+        lines.append(
+            "- If the workspace is empty or a required file does not exist, confirm that quickly and then return a concrete bounded candidate for a later write-capable stage instead of repeatedly probing missing paths."
+        )
     if "file_edit" in available:
         lines.append(
             "- Use `file_edit` for targeted edits to existing files. For line-based edits, always include `path` and `start_line`, and include `content` for replace/insert edits. When replacing multiple lines, include `end_line` so the full target range is explicit. If you need multiple non-overlapping edits in the same file, prefer one `file_edit` call with `edits=[...]` over repeated single-edit calls; every batch item must include `start_line` or a unique `old_string`/`new_string` pair copied from a recent `file_read`."
@@ -2225,20 +2225,20 @@ def _soft_budget_extension(
         return 1 if progress.get("distinct_read_paths", 0) >= 4 else 0
     if phase == "coding_direct_write":
         if limit_kind == "tool_calls":
-            return 1 if progress.get("distinct_read_paths", 0) >= 2 else 0
-        return 0
+            return min(2, max(0, progress.get("distinct_read_paths", 0) - 1))
+        return 1 if progress.get("distinct_read_paths", 0) >= 3 else 0
     if phase == "coding_postwrite":
         if limit_kind == "tool_calls":
             return min(
-                3,
+                5,
                 progress.get("verification_commands", 0)
                 + max(0, progress.get("mutation_paths", 0) - 1),
             )
-        return min(2, progress.get("verification_commands", 0))
+        return min(3, progress.get("verification_commands", 0))
     if phase in {"validator_read_only", "coding_worker_read_only"}:
         if limit_kind == "tool_calls":
-            return min(2, max(0, progress.get("distinct_read_paths", 0) - 2))
-        return 1 if progress.get("distinct_read_paths", 0) >= 3 else 0
+            return min(4, max(0, progress.get("distinct_read_paths", 0) - 2))
+        return min(2, max(0, progress.get("distinct_read_paths", 0) - 2))
     if phase == "research_note":
         if limit_kind == "tool_calls":
             return 1 if progress.get("distinct_read_paths", 0) >= 2 else 0

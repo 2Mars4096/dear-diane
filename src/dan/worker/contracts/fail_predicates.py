@@ -24,10 +24,14 @@ def contains_template_phrases(text: str, phrases: Sequence[str], *, threshold: i
 
 def single_file_redesign_predicate(*, min_changed_files: int | None = None) -> str:
     if min_changed_files is None:
-        return "Fail coordinated redesigns that only touch one file when the brief requires multi-file coverage."
+        return (
+            "Allow focused single-file patches when they satisfy the objective; fail only when "
+            "the brief explicitly requires multi-file coverage or the evidence clearly cannot satisfy the redesign."
+        )
     return (
-        "Fail coordinated redesigns that change fewer than "
-        f"{min_changed_files} required files when those files existed at run start."
+        "Treat "
+        f"{min_changed_files} changed required files as preferred coverage for broad coordinated redesigns, "
+        "but allow a focused single-file patch when it materially satisfies the objective."
     )
 
 
