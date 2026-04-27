@@ -1,6 +1,13 @@
 # Changelog
 
 ## 2026-04-27
+- [docs] Added the Plan 57 Chat / Agent V2 control-plane stack plus a focused UI companion plan: V2 will expose only Chat and Agent while keeping legacy editor modes present but unwired from the new happy path.
+- [fix] Closed Super DAN live providers inside the same `asyncio.run(...)` coroutine that uses them, preventing OpenAI/httpx `AsyncClient.aclose()` cleanup tasks from firing after the event loop is already closed.
+- [test] Added provider-lifecycle regressions for Super DAN live cleanup, OpenAI provider client closure, and gateway-backed provider adapter closure.
+- [feat] Added a lightweight chat-first V2 frontend at `#v2` / `#chat-v2`, with lazy classic-shell loading, thread history, streaming composer, stop control, tool/run-event chips, and a small endpoint adapter over DAN's existing chat portal.
+- [test] Added focused V2 endpoint/history/persistence-shape coverage and revalidated the editor build plus bundle budgets.
+- [fix] Changed Super DAN live routing so explicit/interactive live context can supply the mutation signal when the selector would otherwise reject an ambiguous artifact request, letting prompts like `generate a playable animation` enter the generic coding lane without adding more fixed creation-word cues.
+- [test] Added routing regressions for live-context mutation fallback on ambiguous workspace requests and playable-animation creation objectives, while preserving website-lane and research-read-only behavior.
 - [fix] Made Super DAN website anti-template failures actionable: static validation now reports the exact template phrase hits, repair prompts tell the worker to remove or rename those hits, and failed post-repair validations are marked `repair_exhausted` so hook state does not imply another repair will run.
 - [test] Added Super DAN regressions for exact static validation evidence, repair prompt contents, successful template-hit repair, failed repair diagnostics, and hook suppression after repair exhaustion.
 - [fix] Tightened Super DAN `IntentSignal` context handling so artifact-only context remains routing evidence instead of becoming a fake explicit decision, while explicit `operation="mutate"` signals default to mutation permission when the caller omits the redundant boolean.

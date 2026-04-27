@@ -1595,6 +1595,19 @@ After `POST /api/chat/message` returns `{ "stream_channel_id": "chat-abc123" }`,
 ws://<host>/api/chat/<stream_channel_id>/events
 ```
 
+### Minimal Frontend Contract
+
+Any frontend, including the lightweight V2 shell, should use the same portal contract:
+
+| Step | Method / path | Required shape |
+|---|---|---|
+| Send turn | `POST /api/chat/message` | `workflow_id`, `message`, sanitized `history`, `thread_id`, `session_id`, `mode`, canonical `surface`, `surface_type`, `surface_id`, optional `surface_context` |
+| Stream response | `WS /api/chat/{stream_channel_id}/events` | Consume `chat_token`, terminal events, tool events, notices, queued redirects, and pings |
+| Stop response | `POST /api/chat/{stream_channel_id}/stop` | Optional `message_id` body field |
+| Persist history | `POST/GET/PUT/DELETE /api/chats...` | Store user/assistant messages with `tool_calls`, `run_events`, attachments, token usage, and mutation metadata |
+
+Do not inject system messages through `history`; the server strips them. Put surface-specific facts in `surface_context`.
+
 ### Event Types
 
 | Event type | Semantics | Key fields |
