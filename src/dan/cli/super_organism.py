@@ -15,6 +15,10 @@ from typing import Any, Mapping, Sequence
 from dan.cli import load_env, normalize_workspace_root, resolve_config
 from dan.cli import live_gateway
 from dan.cli.dispatch import OrchestratorChoice, select_orchestrator
+from dan.cli.super_hooks import (
+    SuperHookRuntime,
+    format_super_queue_status,
+)
 from dan.providers import LLMProvider
 from dan.server.runtime_config import build_engine_config_from_env
 from dan.worker.brief import RoleSpec, WorkerBrief, request_from_brief
@@ -78,6 +82,7 @@ class SuperRunEventLogger:
         organ_id: str = "",
         trace_id: str = "",
         progress_callback=None,
+        hook_runtime: SuperHookRuntime | None = None,
     ) -> None:
         self._writer = OrganismLogWriter(
             path=path,
@@ -93,6 +98,7 @@ class SuperRunEventLogger:
             ),
         )
         self._progress_callback = progress_callback
+        self._hook_runtime = hook_runtime
         self.path = self._writer.path
 
     def emit(self, event: dict[str, Any]) -> None:
@@ -100,6 +106,15 @@ class SuperRunEventLogger:
         row = self._writer.emit(payload)
         if self._progress_callback is not None:
             self._progress_callback(dict(row))
+        self._emit_hook_rows(row)
+
+    def _emit_hook_rows(self, row: dict[str, Any]) -> None:
+        if self._hook_runtime is None:
+            return
+        for hook_event in self._hook_runtime.process_event(dict(row)):
+            hook_row = self._writer.emit(dict(hook_event))
+            if self._progress_callback is not None:
+                self._progress_callback(dict(hook_row))
 
     def emit_trace_rows(self, trace_rows: Sequence[dict[str, Any]]) -> None:
         rows = [dict(row) for row in trace_rows]
@@ -110,6 +125,11 @@ class SuperRunEventLogger:
 
     def update_context(self, **updates: Any) -> None:
         self._writer.update_context(**updates)
+
+    def hook_state_snapshot(self) -> dict[str, Any] | None:
+        if self._hook_runtime is None:
+            return None
+        return self._hook_runtime.snapshot()
 
     def close(self) -> None:
         self._writer.close()
@@ -185,8 +205,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-tool-calls",
         type=int,
-        default=32,
-        help="Maximum local tool calls for --live. Defaults to 32.",
+        default=64,
+        help="Maximum local tool calls for --live. Defaults to 64.",
     )
     parser.add_argument(
         "--workspace",
@@ -215,6 +235,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--quiet-progress",
         action="store_true",
         help="Disable live progress lines for non-JSON runs.",
+    )
+    parser.add_argument(
+        "--reactivity",
+        choices=("immediate", "balanced", "batch"),
+        default="balanced",
+        help=(
+            "Super DAN hook/inbox reactivity profile for live runs. "
+            "Immediate wakes organs quickly, balanced coalesces short bursts, batch waits longer."
+        ),
+    )
+    parser.add_argument(
+        "--queue-status",
+        action="store_true",
+        help="Print Super DAN hook/inbox queue state. With no objective, only prints status.",
+    )
+    parser.add_argument(
+        "--worktree-parallelism",
+        type=int,
+        default=0,
+        help=(
+            "Maximum planned isolated worktree patch lanes for conflicting owners. "
+            "Current live execution remains main-lane authoritative."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -316,6 +359,21 @@ def _print_live_report(
     event_log_path = str(live_result.get("event_log_path") or "").strip()
     if event_log_path:
         lines.append(f"Event Log: {event_log_path}")
+    hook_state = live_result.get("hook_state")
+    if bool(live_result.get("show_queue_status")) and isinstance(hook_state, dict):
+        inboxes = hook_state.get("inboxes") if isinstance(hook_state.get("inboxes"), dict) else {}
+        lines.append("Hook Queues:")
+        for inbox_id in sorted(inboxes):
+            inbox = inboxes.get(inbox_id) if isinstance(inboxes.get(inbox_id), dict) else {}
+            metrics = inbox.get("metrics") if isinstance(inbox.get("metrics"), dict) else {}
+            pending = len(list(inbox.get("pending_packet_ids") or []))
+            active = len(list(inbox.get("active_lease_ids") or []))
+            lines.append(
+                f"- {inbox_id}: pending={pending} active={active} "
+                f"enqueued={int(metrics.get('enqueued') or 0)} "
+                f"leased={int(metrics.get('leased') or 0)} "
+                f"coalesced={int(metrics.get('coalesced') or 0)}"
+            )
     lines.extend(
         [
             f"Model: {_display_text(live_result.get('model') or '')}",
@@ -604,6 +662,31 @@ class SuperProgressRenderer:
             objective = _truncate_text(event.get("objective") or "", limit=180)
             self._emit(event, f"[run] started: {objective}")
             return
+        if name == "super.hook.runtime.started":
+            profile = str(event.get("reactivity_profile") or "balanced")
+            inboxes = ",".join(str(item) for item in list(event.get("inboxes") or [])[:6])
+            suffix = f" inboxes={inboxes}" if inboxes else ""
+            self._emit(event, f"[hooks] runtime started: reactivity={profile}{suffix}")
+            return
+        if name == "super.worktree.policy.configured":
+            parallelism = int(event.get("worktree_parallelism") or 0)
+            root = _truncate_text(event.get("worktree_root") or "", limit=120)
+            self._emit(event, f"[hooks] worktree lane configured: parallelism={parallelism} root={root}")
+            return
+        if name == "super.hook.packet_enqueued":
+            inbox_id = str(event.get("inbox_id") or "inbox")
+            source = str(event.get("source_event") or "event")
+            packet_type = str(event.get("packet_type") or "packet")
+            depth = int(event.get("queue_depth") or 0)
+            self._emit(event, f"[hooks] {inbox_id} <= {source} ({packet_type}, depth={depth})")
+            return
+        if name.startswith("super.inbox."):
+            inbox_id = str(event.get("inbox_id") or "inbox")
+            reason = _truncate_text(event.get("reason") or event.get("queue_full_action") or "", limit=120)
+            action = name.rsplit(".", 1)[-1].replace("packet_", "")
+            suffix = f": {reason}" if reason else ""
+            self._emit(event, f"[hooks] {inbox_id} {action}{suffix}")
+            return
         if name == "live.objective.normalized":
             reason = str(event.get("reason") or "objective").replace("_", " ")
             self._emit(event, f"[run] normalized {reason}")
@@ -720,6 +803,22 @@ class SuperProgressRenderer:
             ]
             for failure in failures[:2]:
                 self._emit(event, f"[validation] gap: {failure}")
+            return
+        if name == "live.website_first_write_recovery.started":
+            attempt = int(event.get("attempt") or 1)
+            reason = _truncate_text(event.get("reason") or "no required files changed", limit=160)
+            self._emit(event, f"[retry] first-write recovery {attempt} started: {reason}")
+            return
+        if name == "live.website_first_write_recovery.completed":
+            attempt = int(event.get("attempt") or 1)
+            status = str(event.get("status") or "completed")
+            changed = [
+                _path_basename(path)
+                for path in (event.get("changed_required_files") or [])
+                if str(path).strip()
+            ]
+            suffix = f" changed={','.join(changed)}" if changed else " changed=none"
+            self._emit(event, f"[retry] first-write recovery {attempt} {status}{suffix}")
             return
         if name == "live.website_repair.started":
             attempt = int(event.get("attempt") or 1)
@@ -877,23 +976,40 @@ class SuperHeartbeatMonitor:
             )
 
 
-def _is_website_objective(report: SuperOrganismReport) -> bool:
-    choice = _super_live_choice(report)
+def _is_website_objective(
+    report: SuperOrganismReport,
+    args: argparse.Namespace | None = None,
+) -> bool:
+    choice = _super_live_choice(report, args)
     return choice.orchestrator_id == "super-dan-live-website"
 
 
-def _super_live_choice(report: SuperOrganismReport) -> OrchestratorChoice:
+def _super_live_choice(
+    report: SuperOrganismReport,
+    args: argparse.Namespace | None = None,
+) -> OrchestratorChoice:
+    context: dict[str, Any] = {
+        "command": "super-organism",
+        "execution_family": report.execution_family,
+    }
+    if (
+        args is not None
+        and bool(getattr(args, "_code_like_live", False))
+        and _existing_website_workspace_context(args)
+    ):
+        context["existing_website_workspace"] = True
+        context["workspace_kind"] = "website"
     return select_orchestrator(
         str(report.target or ""),
-        {
-            "command": "super-organism",
-            "execution_family": report.execution_family,
-        },
+        context,
     )
 
 
-def _supports_live_execution(report: SuperOrganismReport) -> bool:
-    choice = _super_live_choice(report)
+def _supports_live_execution(
+    report: SuperOrganismReport,
+    args: argparse.Namespace | None = None,
+) -> bool:
+    choice = _super_live_choice(report, args)
     return choice.orchestrator_id in {"super-dan-live-website", "super-dan-live-coding"}
 
 
@@ -1110,7 +1226,7 @@ def _should_implicit_live(report: SuperOrganismReport, args: argparse.Namespace)
         bool(getattr(args, "live", False))
         or bool(getattr(args, "plan_only", False))
         or not str(getattr(args, "target", "") or "").strip()
-        or not _supports_live_execution(report)
+        or not _supports_live_execution(report, args)
     ):
         return False
     if not (
@@ -1128,7 +1244,7 @@ def _should_materialize_website(report: SuperOrganismReport, args: argparse.Name
         or bool(getattr(args, "live", False))
     ):
         return False
-    return _is_website_objective(report)
+    return _is_website_objective(report, args)
 
 
 def _artifact_root(args: argparse.Namespace) -> Path:
@@ -1181,6 +1297,29 @@ def _build_live_provider(
         api_key=api_key,
         base_url=base_url,
     )
+
+
+def _existing_website_workspace_context(args: argparse.Namespace) -> bool:
+    workspace_root = normalize_workspace_root(str(args.workspace))
+    if workspace_root.name.lower() in {"website", "site", "web", "public", "dist"}:
+        return True
+    artifact_dir = Path(str(getattr(args, "artifact_dir", "website") or "website")).expanduser()
+    candidate_roots = [workspace_root]
+    if artifact_dir.is_absolute():
+        candidate_roots.append(artifact_dir.resolve(strict=False))
+    else:
+        candidate_roots.append((workspace_root / artifact_dir).resolve(strict=False))
+    for root in candidate_roots:
+        if not (root / "index.html").exists():
+            continue
+        companion_count = sum(
+            1
+            for filename in ("styles.css", "app.js", "README.md")
+            if (root / filename).exists()
+        )
+        if companion_count >= 1:
+            return True
+    return False
 
 
 def _workspace_should_be_website_artifact_root(
@@ -1447,8 +1586,36 @@ def _live_website_repair_task(
         "Make concrete edits in the required files. If the feedback asks for broader coordination, update one or more "
         "required files that were not changed yet. For a maintainability patch, update the visible HTML, CSS guidance/tokens, "
         "JS module or patch notes behavior, and README patch instructions as needed. "
+        "If the feedback lists Template phrase hits, remove or rename those exact hits in index.html; static validation "
+        "passes only when fewer than 2 exact template hits remain. "
         "Keep the repair bounded, static, dependency-free, and inside the required artifact set. "
         "Actually write the repair with file_write or file_edit, then return the compact completion summary."
+    )
+
+
+def _live_website_first_write_recovery_task(
+    report: SuperOrganismReport,
+    *,
+    artifact_root: Path,
+    relative_files: Sequence[str],
+    validation: Mapping[str, Any],
+    deterministic_failures: Sequence[str],
+    objective_context: Mapping[str, Any] | None = None,
+) -> str:
+    files = ", ".join(relative_files)
+    recovery_brief = _validation_repair_brief(validation, deterministic_failures)
+    context = dict(objective_context or {})
+    effective_objective = str(context.get("effective_objective") or report.target).strip()
+    return (
+        "Recover from the previous website build pass now. The prior builder returned without changing any required "
+        "website file, so this is not a validation repair; it is a first-write recovery. "
+        f"Operator objective: {effective_objective}. "
+        f"Artifact root: {artifact_root}. "
+        f"Required relative files: {files}. "
+        f"Failure reason: {recovery_brief or 'no required website files changed'}. "
+        "Do not summarize. Make at least one concrete required-file edit with file_write or file_edit before finalizing. "
+        "For an existing website, prefer a small coordinated patch that improves visible HTML plus styling or behavior. "
+        "Keep the recovery bounded, static, dependency-free, and inside the required artifact set."
     )
 
 
@@ -1817,12 +1984,38 @@ def _website_static_validation_failures(
     target = " ".join(str(report.target or "").lower().split())
     if target and len(target) >= 24 and target in html:
         failures.append("The generated website still echoes the raw operator prompt as page copy.")
-    template_hits = [phrase for phrase in template_phrases if phrase in html]
+    template_hits = _website_template_phrase_hits(html, template_phrases)
     if len(template_hits) >= 2:
         failures.append(
-            "The generated website still looks like the generic Super DAN contract/demo template."
+            "The generated website still looks like the generic Super DAN contract/demo template. "
+            f"Template phrase hits in index.html: {_display_template_phrase_hits(template_hits)}. "
+            "Remove or rename enough exact hits so fewer than 2 remain."
         )
     return failures
+
+
+def _website_template_phrase_hits(
+    normalized_html: str,
+    template_phrases: Sequence[str],
+) -> list[str]:
+    hits: list[str] = []
+    seen: set[str] = set()
+    for phrase in template_phrases:
+        display = " ".join(str(phrase or "").split())
+        normalized = display.lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        if normalized in normalized_html:
+            hits.append(display)
+    return hits
+
+
+def _display_template_phrase_hits(hits: Sequence[str], *, limit: int = 8) -> str:
+    visible = [f"'{hit}'" for hit in hits[:limit]]
+    if len(hits) > limit:
+        visible.append(f"+{len(hits) - limit} more")
+    return ", ".join(visible)
 
 
 def _log_final_validation_event(
@@ -1832,6 +2025,10 @@ def _log_final_validation_event(
     model: str,
     validation: dict[str, Any],
     deterministic_failures: Sequence[str] | None = None,
+    changed_required_files: Sequence[str] | None = None,
+    first_write_recovery_attempted: bool = False,
+    repair_attempted: bool = False,
+    repair_exhausted: bool = False,
 ) -> None:
     _log_live_event(
         event_logger,
@@ -1842,6 +2039,10 @@ def _log_final_validation_event(
         passed=validation.get("passed"),
         overall_score=validation.get("overall_score"),
         deterministic_failures=list(deterministic_failures or []) or None,
+        changed_required_files=list(changed_required_files or []),
+        first_write_recovery_attempted=bool(first_write_recovery_attempted),
+        repair_attempted=bool(repair_attempted),
+        repair_exhausted=bool(repair_exhausted),
         tool_calls=int(validation.get("tool_calls") or 0),
         event_count=int(validation.get("event_count") or 0),
     )
@@ -1912,7 +2113,7 @@ async def _run_live_website_build(
     run_task_id: str,
     event_logger: SuperRunEventLogger | None = None,
 ) -> dict[str, Any]:
-    choice = _super_live_choice(report)
+    choice = _super_live_choice(report, args)
     website_tool_ids = _live_choice_tool_ids(choice)
     website_preferred_tool_ids = _live_choice_preferred_tool_ids(
         choice,
@@ -2188,6 +2389,161 @@ async def _run_live_website_build(
     validation_tool_calls_total = int(validation.get("tool_calls") or 0)
     validation_event_count_total = int(validation.get("event_count") or 0)
     validation_token_usage = _merge_token_usage(validation.get("token_usage"))
+    first_write_recovery_attempts = 0
+    if result.status == "completed" and not changed_required_paths:
+        first_write_recovery_attempts = 1
+        recovery_reason = _validation_repair_brief(validation, static_validation_failures)
+        _log_live_event(
+            event_logger,
+            "live.website_first_write_recovery.started",
+            attempt=first_write_recovery_attempts,
+            model=model,
+            reason=recovery_reason or "no required website files changed",
+            changed_required_files=list(changed_required_paths),
+        )
+        recovery_worker_id = "super-dan.live.website-first-write-recovery"
+        recovery_brief = coding_brief(
+            role=RoleSpec(
+                role_label="coding_worker",
+                responsibility="Recover a Super DAN website build that produced no required-file edits.",
+                success_criteria=[
+                    "At least one required website file is concretely edited.",
+                    "The recovery directly advances the operator objective.",
+                    "The result remains static and dependency-free.",
+                ],
+                artifact_targets=list(relative_files),
+                trace_role="super-dan.live.website-first-write-recovery",
+            ),
+            task=_live_website_first_write_recovery_task(
+                report,
+                artifact_root=artifact_root,
+                relative_files=relative_files,
+                validation=validation,
+                deterministic_failures=static_validation_failures,
+                objective_context=objective_context,
+            ),
+            scope=f"workspace={workspace_root}; artifact_root={artifact_root}; Super DAN website first-write recovery",
+            hard_constraints=[
+                "Actually edit at least one required website file; do not return a summary-only response.",
+                "Keep writes inside the requested workspace/artifact paths.",
+                "Do not install dependencies or require a build step.",
+                "Do not create scratch or throwaway files outside the required website artifact set.",
+            ],
+            soft_constraints=[
+                "Prefer a small, visible edit over another broad analysis pass.",
+                "Use file_edit for existing files when exact grounding is available; use bounded file_write when creating a missing required file.",
+                "Avoid rereading unchanged context unless exact edit grounding is needed.",
+            ],
+            pacing_policy=pacing_policy,
+            tool_policy={
+                "allowed_tool_ids": list(website_tool_ids),
+                "preferred_tool_ids": list(website_preferred_tool_ids),
+                "max_tool_calls": int(args.max_tool_calls),
+            },
+            output_contract=OutputContract(
+                definition_of_done=(
+                    "A concrete required-file edit has been made and the final response names changed files, "
+                    "validation plan, and remaining risks."
+                ),
+                expected_return_shape=_live_expected_return_shape(),
+            ),
+            sampling_policy={"profile": choice.sampling_policy, "temperature": 0.2, "max_tokens": 2200},
+            evidence=_super_report_evidence_blocks(report),
+            input_payload={
+                "objective": objective_context.get("effective_objective") or report.target,
+                "original_objective": report.target,
+                "objective_normalization": dict(objective_context),
+                "workspace_root": str(workspace_root),
+                "artifact_root": str(artifact_root),
+                "artifact_files": list(relative_files),
+                "required_files": [str(path) for path in required_paths],
+                "changed_required_files": list(changed_required_paths),
+                "validation": dict(validation),
+                "deterministic_failures": list(static_validation_failures),
+                "write_pacing": dict(pacing_policy),
+                "existing_required_files": _existing_required_files_from_snapshot(
+                    file_snapshot,
+                    required_paths,
+                ),
+                "existing_website_change_policy": {
+                    "minimum_required_changed_files": 1,
+                    "preferred_coordinated_required_files": existing_preferred_coordinated_files,
+                    "prefer_coordinated_when_objective_spans_files": True,
+                },
+            },
+            metadata={
+                "surface": "super_organism",
+                "mode": "live",
+                "tool_budget_profile": "super_dan_live",
+                "trace_id": run_trace_id,
+                "root_task_id": run_task_id,
+                "organism_id": report.organism_id,
+                "organ_id": "super-dan.live.website",
+                "organism_stage": "execution",
+                "worker_id": recovery_worker_id,
+            },
+        )
+        recovery_worker = _live_cell_from_brief(
+            model=model,
+            brief=recovery_brief,
+            worker_id=recovery_worker_id,
+            organism_stage="execution",
+        )
+        recovery_result, recovery_tools, recovery_events = await _execute_live_request(
+            worker=recovery_worker,
+            request=_request_from_live_brief(recovery_brief),
+            tool_ids=website_tool_ids,
+            workspace_root=workspace_root,
+            args=args,
+            model=model,
+            provider=provider,
+            event_logger=event_logger,
+        )
+        result = recovery_result
+        executed_tools.extend(recovery_tools)
+        events.extend(recovery_events)
+        build_token_usage = _merge_token_usage(
+            build_token_usage,
+            _extract_execution_usage(recovery_result),
+        )
+        error = recovery_result.error
+        existing_paths = [path for path in required_paths if path.exists()]
+        missing_paths = [path for path in required_paths if not path.exists()]
+        changed_required_paths = _changed_paths_from_snapshot(file_snapshot, required_paths)
+        mutated_paths = _mutation_paths_from_tools(executed_tools, workspace_root=workspace_root)
+        _log_live_event(
+            event_logger,
+            "live.website_first_write_recovery.completed",
+            attempt=first_write_recovery_attempts,
+            model=model,
+            status=recovery_result.status,
+            tool_calls=len(recovery_tools),
+            event_count=len(recovery_events),
+            changed_required_files=list(changed_required_paths),
+        )
+        validation = _failed_validation_payload(
+            reason=error or "live website first-write recovery did not meet the exit contract",
+            missing_requirements=[str(path) for path in missing_paths],
+        )
+        if not missing_paths and changed_required_paths:
+            validation = await run_website_validator(changed_required_paths)
+        static_validation_failures = _website_static_validation_failures(
+            report,
+            required_paths=required_paths,
+            changed_required_paths=changed_required_paths,
+            template_phrases=template_phrases,
+        )
+        validation = _merge_validation_failures(
+            validation,
+            static_validation_failures,
+        )
+        validation["deterministic_failures"] = list(static_validation_failures)
+        validation_tool_calls_total += int(validation.get("tool_calls") or 0)
+        validation_event_count_total += int(validation.get("event_count") or 0)
+        validation_token_usage = _merge_token_usage(
+            validation_token_usage,
+            validation.get("token_usage"),
+        )
     repair_attempts = 0
     if (
         result.status == "completed"
@@ -2358,6 +2714,10 @@ async def _run_live_website_build(
         model=model,
         validation=validation,
         deterministic_failures=static_validation_failures,
+        changed_required_files=changed_required_paths,
+        first_write_recovery_attempted=bool(first_write_recovery_attempts),
+        repair_attempted=bool(repair_attempts),
+        repair_exhausted=bool(repair_attempts and not validation.get("passed")),
     )
     if not changed_required_paths and not error:
         error = "live build finished without changing any required website files"
@@ -2397,6 +2757,7 @@ async def _run_live_website_build(
         "summary_label": "Live Build",
         "objective_kind": "website",
         "repair_attempts": repair_attempts,
+        "first_write_recovery_attempts": first_write_recovery_attempts,
         "failed_step": "validation" if not bool(validation.get("passed")) else "",
         "token_usage": token_usage,
         "validation": validation,
@@ -2413,7 +2774,7 @@ async def _run_live_generic_execution(
     run_task_id: str,
     event_logger: SuperRunEventLogger | None = None,
 ) -> dict[str, Any]:
-    choice = _super_live_choice(report)
+    choice = _super_live_choice(report, args)
     generic_tool_ids = _live_choice_tool_ids(choice)
     generic_preferred_tool_ids = _live_choice_preferred_tool_ids(
         choice,
@@ -2891,7 +3252,7 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
     payload = report.model_dump(mode="json")
     live_result: dict[str, Any] | None = None
     if bool(getattr(args, "live", False)):
-        if not _supports_live_execution(report):
+        if not _supports_live_execution(report, args):
             parser.error(
                 "--live currently supports website-like and general coding/build objectives"
             )
@@ -2899,10 +3260,19 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
         live_workdir, live_turn_number = _build_super_run_workdir(live_workspace_root)
         live_trace_id = new_trace_id()
         live_task_id = f"super-dan-live:{live_turn_number}"
-        objective_kind = "website" if _is_website_objective(report) else "coding"
+        objective_kind = "website" if _is_website_objective(report, args) else "coding"
         progress_renderer = SuperProgressRenderer(
             enabled=not bool(getattr(args, "json", False))
             and not bool(getattr(args, "quiet_progress", False))
+        )
+        hook_runtime = SuperHookRuntime(
+            state_root=live_workspace_root / ".dan-super" / "state",
+            run_id=live_task_id,
+            turn_id=str(live_turn_number),
+            task_id=live_task_id,
+            trace_id=live_trace_id,
+            reactivity_profile=str(getattr(args, "reactivity", "balanced") or "balanced"),
+            worktree_parallelism=max(0, int(getattr(args, "worktree_parallelism", 0) or 0)),
         )
         event_logger = SuperRunEventLogger(
             path=live_workdir / "events.jsonl",
@@ -2913,6 +3283,7 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
             organ_id="super-dan.live",
             trace_id=live_trace_id,
             progress_callback=progress_renderer,
+            hook_runtime=hook_runtime,
         )
         try:
             _log_live_event(
@@ -2970,7 +3341,7 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
                 parser.error(str(exc))
                 return 2
             try:
-                if _is_website_objective(report):
+                if _is_website_objective(report, args):
                     live_result = asyncio.run(
                         _run_live_website_build(
                             report,
@@ -3015,6 +3386,8 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
                 **dict(live_result or {}),
                 "event_log_path": str(event_logger.path),
                 "event_log_schema": ORGANISM_LOG_SCHEMA_VERSION,
+                "hook_state": event_logger.hook_state_snapshot(),
+                "show_queue_status": bool(getattr(args, "queue_status", False)),
             }
             _log_live_event(
                 event_logger,
@@ -3075,7 +3448,7 @@ def _interactive_loop(args: argparse.Namespace, parser: argparse.ArgumentParser)
     workspace_root = normalize_workspace_root(str(args.workspace))
     print("Super DAN interactive")
     print(f"workspace: {workspace_root}")
-    print("Type an objective, /plan <objective> for a dry contract, or /exit.")
+    print("Type an objective, /plan <objective> for a dry contract, /status for queues, or /exit.")
     while True:
         try:
             text = input("super-dan> ")
@@ -3091,6 +3464,9 @@ def _interactive_loop(args: argparse.Namespace, parser: argparse.ArgumentParser)
         lowered = objective.lower()
         if lowered in {"/exit", "/quit", "exit", "quit"}:
             return 0
+        if lowered in {"/status", "/queues", "status"}:
+            print(format_super_queue_status(workspace_root))
+            continue
         plan_only = False
         if lowered.startswith("/plan "):
             objective = objective[6:].strip()
@@ -3125,6 +3501,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     setattr(args, "_stdin_is_tty", sys.stdin.isatty())
 
     no_objective = not str(getattr(args, "target", "") or "").strip()
+    if no_objective and bool(getattr(args, "queue_status", False)):
+        workspace_root = normalize_workspace_root(str(args.workspace))
+        print(format_super_queue_status(workspace_root))
+        return 0
     report_mode_requested = any(
         bool(getattr(args, field, False))
         for field in ("plan_only", "json", "verbose")

@@ -686,6 +686,107 @@ class _FakeNoOpWebsiteProvider:
         )
 
 
+class _FakeFirstWriteRecoveryWebsiteProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.calls += 1
+        if self.calls == 1:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "noop-before-retry-001",
+                        "change_summary": ["inspected but did not edit"],
+                        "target_files": [],
+                        "test_plan": ["no validation possible"],
+                        "risks": ["no required files changed"],
+                        "files_created": [],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                finish_reason="stop",
+            )
+        if self.calls == 2:
+            rendered_messages = "\n".join(
+                str(message.get("content") or "")
+                for message in messages
+                if isinstance(message, dict)
+            )
+            assert "first-write recovery" in rendered_messages
+            tool_calls = [
+                _file_write_call(
+                    "call-retry-index",
+                    "website/index.html",
+                    (
+                        "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./styles.css\"></head>"
+                        "<body><main><section><h1>Super DAN: execution as an organism</h1>"
+                        "<p>Twenty cells coordinate scouting, memory, validation, and repair into one live build lane.</p>"
+                        "</section></main><script src=\"./app.js\"></script></body></html>\n"
+                    ),
+                ),
+                _file_write_call(
+                    "call-retry-css",
+                    "website/styles.css",
+                    "body { margin: 0; font-family: Inter, system-ui, sans-serif; background: #0d1117; color: #f8fafc; }\nmain { padding: 48px; }\n",
+                ),
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 3:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "first-write-recovery-001",
+                        "change_summary": ["recovered with concrete HTML and CSS edits"],
+                        "target_files": ["website/index.html", "website/styles.css"],
+                        "test_plan": ["open website/index.html"],
+                        "risks": [],
+                        "files_created": [],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                finish_reason="stop",
+            )
+        return CompletionResult(
+            text=json.dumps(
+                {
+                    "passed": True,
+                    "overall_score": 0.88,
+                    "dimension_scores": {
+                        "objective_alignment": 0.9,
+                        "artifact_specificity": 0.86,
+                        "execution_quality": 0.88,
+                    },
+                    "repair_brief": "",
+                    "missing_requirements": [],
+                    "comparison_note": "The retry produced a concrete website patch.",
+                },
+                sort_keys=True,
+            ),
+            model=model,
+            finish_reason="stop",
+        )
+
+
 class _FakeTemplateWebsiteProvider:
     def __init__(self) -> None:
         self.calls = 0
@@ -765,6 +866,172 @@ class _FakeTemplateWebsiteProvider:
                     "repair_brief": "",
                     "missing_requirements": [],
                     "comparison_note": "Looks acceptable.",
+                },
+                sort_keys=True,
+            ),
+            model=model,
+            finish_reason="stop",
+        )
+
+
+class _FakeTemplateRepairWebsiteProvider:
+    def __init__(self, *, repair_removes_hits: bool) -> None:
+        self.calls = 0
+        self.repair_removes_hits = repair_removes_hits
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.calls += 1
+        if self.calls == 1:
+            tool_calls = [
+                _file_write_call(
+                    "call-index",
+                    "website/index.html",
+                    (
+                        "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./styles.css\"></head>"
+                        "<body><main><h1>Super DAN turns one objective into coordinated execution.</h1>"
+                        "<section><h2>Execution contract</h2><p>Objective contract</p>"
+                        "<p>Native execution lane</p></section></main><script src=\"./app.js\"></script>"
+                        "</body></html>\n"
+                    ),
+                ),
+                _file_write_call("call-css", "website/styles.css", "body { margin: 0; }\n"),
+                _file_write_call("call-js", "website/app.js", "console.log('template');\n"),
+                _file_write_call("call-readme", "website/README.md", "# Template Website\n"),
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 2:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "template-repair-001",
+                        "change_summary": ["created a generic template website"],
+                        "target_files": [
+                            "website/index.html",
+                            "website/styles.css",
+                            "website/app.js",
+                            "website/README.md",
+                        ],
+                        "test_plan": ["open website/index.html"],
+                        "risks": [],
+                        "files_created": [],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                finish_reason="stop",
+            )
+        if self.calls == 3:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "passed": True,
+                        "overall_score": 0.95,
+                        "dimension_scores": {
+                            "objective_alignment": 0.95,
+                            "artifact_specificity": 0.95,
+                            "execution_quality": 0.95,
+                        },
+                        "repair_brief": "",
+                        "missing_requirements": [],
+                        "comparison_note": "The model validator accepts the website.",
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                finish_reason="stop",
+            )
+        if self.calls == 4:
+            rendered_messages = "\n".join(
+                str(message.get("content") or "")
+                for message in messages
+                if isinstance(message, dict)
+            )
+            assert "Template phrase hits in index.html" in rendered_messages
+            assert "'execution contract'" in rendered_messages
+            assert "fewer than 2 exact template hits remain" in rendered_messages
+            if self.repair_removes_hits:
+                html = (
+                    "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./styles.css\"></head>"
+                    "<body><main><h1>Coordinate AI work as a live product system</h1>"
+                    "<section><h2>From objective to shipped artifact</h2>"
+                    "<p>Specialized cells gather context, build, validate, and repair visible outcomes.</p>"
+                    "</section></main><script src=\"./app.js\"></script></body></html>\n"
+                )
+                css = (
+                    "body { margin: 0; font-family: Inter, system-ui, sans-serif; "
+                    "background: #111915; color: #f4f7ef; }\n"
+                    "main { max-width: 920px; margin: 0 auto; padding: 64px 24px; }\n"
+                )
+            else:
+                html = (
+                    "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./styles.css\"></head>"
+                    "<body><main><h1>Super DAN turns one objective into coordinated execution.</h1>"
+                    "<section><h2>Execution contract</h2><p>Objective contract</p>"
+                    "<p>Native execution lane</p></section></main><script src=\"./app.js\"></script>"
+                    "</body></html>\n"
+                )
+                css = "body { margin: 0; background: white; color: black; }\n"
+            tool_calls = [
+                _file_write_call("repair-index", "website/index.html", html),
+                _file_write_call("repair-css", "website/styles.css", css),
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 5:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "template-repair-final",
+                        "change_summary": ["attempted to repair static template language"],
+                        "target_files": ["website/index.html", "website/styles.css"],
+                        "test_plan": ["open website/index.html"],
+                        "risks": [],
+                        "files_created": [],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                finish_reason="stop",
+            )
+        return CompletionResult(
+            text=json.dumps(
+                {
+                    "passed": True,
+                    "overall_score": 0.91,
+                    "dimension_scores": {
+                        "objective_alignment": 0.91,
+                        "artifact_specificity": 0.9,
+                        "execution_quality": 0.92,
+                    },
+                    "repair_brief": "",
+                    "missing_requirements": [],
+                    "comparison_note": "The model validator accepts the repaired website.",
                 },
                 sort_keys=True,
             ),
@@ -1020,7 +1287,7 @@ def test_build_parser_defaults() -> None:
     assert args.api_key is None
     assert args.base_url is None
     assert args.max_tool_rounds == 10
-    assert args.max_tool_calls == 32
+    assert args.max_tool_calls == 64
     assert args.artifact_dir == "website"
     assert args.json is False
     assert args.verbose is False
@@ -1042,6 +1309,113 @@ def test_live_objective_routing_uses_shared_dispatch_selector() -> None:
     assert super_cli._supports_live_execution(website) is True
     assert super_cli._is_website_objective(research) is False
     assert super_cli._supports_live_execution(research) is False
+
+
+def test_existing_website_workspace_layout_request_routes_to_website_live(tmp_path) -> None:
+    website = tmp_path / "website"
+    website.mkdir()
+    (website / "index.html").write_text("<!doctype html><html><body>old</body></html>\n", encoding="utf-8")
+    (website / "styles.css").write_text("body { margin: 0; }\n", encoding="utf-8")
+    args = build_parser().parse_args(
+        [
+            "can you think harder, the layout now is completely messy",
+            "--live",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+    args._artifact_dir_explicit = False
+    args._code_like_live = True
+    report = super_cli.run_super_organism_demo(args.target)
+
+    assert super_cli._supports_live_execution(report, args) is True
+    assert super_cli._is_website_objective(report, args) is True
+    choice = super_cli._super_live_choice(report, args)
+    assert choice.orchestrator_id == "super-dan-live-website"
+
+
+def test_existing_website_workspace_context_accepts_named_roots_and_artifact_dirs(tmp_path) -> None:
+    named_root = tmp_path / "public"
+    named_root.mkdir()
+    named_args = build_parser().parse_args(
+        [
+            "the hero spacing is messy",
+            "--live",
+            "--workspace",
+            str(named_root),
+        ]
+    )
+    named_args._artifact_dir_explicit = False
+    named_args._code_like_live = True
+    named_report = super_cli.run_super_organism_demo(named_args.target)
+
+    assert super_cli._existing_website_workspace_context(named_args) is True
+    assert super_cli._is_website_objective(named_report, named_args) is True
+
+    artifact_root = tmp_path / "client"
+    artifact_root.mkdir()
+    (artifact_root / "index.html").write_text("<main>old</main>\n", encoding="utf-8")
+    (artifact_root / "app.js").write_text("document.body.dataset.old = 'true';\n", encoding="utf-8")
+    artifact_args = build_parser().parse_args(
+        [
+            "polish mobile alignment and visual style",
+            "--live",
+            "--workspace",
+            str(tmp_path),
+            "--artifact-dir",
+            "client",
+        ]
+    )
+    artifact_args._artifact_dir_explicit = True
+    artifact_args._code_like_live = True
+    artifact_report = super_cli.run_super_organism_demo(artifact_args.target)
+
+    assert super_cli._existing_website_workspace_context(artifact_args) is True
+    artifact_choice = super_cli._super_live_choice(artifact_report, artifact_args)
+    assert artifact_choice.orchestrator_id == "super-dan-live-website"
+
+
+def test_layout_request_without_existing_website_context_stays_showcase(tmp_path) -> None:
+    args = build_parser().parse_args(
+        [
+            "can you think harder, the layout now is completely messy",
+            "--live",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+    args._artifact_dir_explicit = False
+    args._code_like_live = True
+    report = super_cli.run_super_organism_demo(args.target)
+
+    assert super_cli._existing_website_workspace_context(args) is False
+    assert super_cli._supports_live_execution(report, args) is False
+    choice = super_cli._super_live_choice(report, args)
+    assert choice.orchestrator_id == "super-dan-showcase"
+
+
+def test_research_design_request_in_website_workspace_stays_read_only(tmp_path) -> None:
+    website = tmp_path / "website"
+    website.mkdir()
+    (website / "index.html").write_text("<!doctype html><html><body>old</body></html>\n", encoding="utf-8")
+    (website / "styles.css").write_text("body { margin: 0; }\n", encoding="utf-8")
+    args = build_parser().parse_args(
+        [
+            "research visual design evidence for this homepage",
+            "--live",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+    args._artifact_dir_explicit = False
+    args._code_like_live = True
+    report = super_cli.run_super_organism_demo(args.target)
+
+    assert report.execution_family == "research"
+    assert super_cli._existing_website_workspace_context(args) is True
+    assert super_cli._supports_live_execution(report, args) is False
+    choice = super_cli._super_live_choice(report, args)
+    assert choice.orchestrator_id == "super-dan-showcase"
 
 
 def test_live_worker_contracts_include_paced_small_write_guidance() -> None:
@@ -1451,6 +1825,41 @@ def test_main_live_website_build_uses_native_tool_loop(tmp_path, capsys, monkeyp
     assert "fake live provider" in (tmp_path / "website" / "README.md").read_text(encoding="utf-8")
 
 
+def test_main_live_existing_website_layout_prompt_uses_website_lane(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    website = tmp_path / "website"
+    website.mkdir()
+    (website / "index.html").write_text("<!doctype html><html><body>old</body></html>\n", encoding="utf-8")
+    (website / "styles.css").write_text("body { margin: 0; }\n", encoding="utf-8")
+    fake_provider = _FakeLiveWebsiteProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "can you think harder, the layout now is completely messy",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "[build] website lane started:" in stdout
+    assert "Live Build: completed" in stdout
+    assert "currently supports website-like" not in stdout
+    assert (website / "index.html").read_text(encoding="utf-8").startswith("<!doctype html>")
+
+
 def test_main_live_progress_can_be_disabled(
     tmp_path,
     capsys,
@@ -1483,6 +1892,89 @@ def test_main_live_progress_can_be_disabled(
     assert "[builder][tool]" not in stdout
     assert "[validation]" not in stdout
     assert (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").exists()
+
+
+def test_main_live_queue_status_persists_hook_inbox_state(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    fake_provider = _FakeLiveWebsiteProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "can you build a website for this product? make it look cool",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+            "--queue-status",
+            "--worktree-parallelism",
+            "2",
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "[hooks] runtime started: reactivity=balanced" in stdout
+    assert "[hooks] worktree lane configured: parallelism=2" in stdout
+    assert "Hook Queues:" in stdout
+    assert "- validation:" in stdout
+    state_path = tmp_path / ".dan-super" / "state" / "inboxes.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["worktree_parallelism"] == 2
+    assert state["inboxes"]["validation"]["metrics"]["enqueued"] >= 1
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert event_rows[0]["event"] == "run.log.started"
+    assert event_rows[-1]["event"] == "run.log.completed"
+    assert any(row["event"] == "super.hook.packet_enqueued" for row in event_rows)
+    assert any(row["event"] == "super.lease.acquired" for row in event_rows)
+    assert any(row["event"] == "super.owner_lock.acquired" for row in event_rows)
+    assert any(row["event"] == "super.worktree.policy.configured" for row in event_rows)
+
+
+def test_main_queue_status_without_objective_prints_hook_state(
+    tmp_path,
+    capsys,
+) -> None:
+    runtime = super_cli.SuperHookRuntime(
+        state_root=tmp_path / ".dan-super" / "state",
+        run_id="super-dan-live:1",
+        turn_id="1",
+        task_id="super-dan-live:1",
+        trace_id="trace:test",
+        reactivity_profile="immediate",
+    )
+    runtime.process_event(
+        {
+            "event": "tool.completed",
+            "sequence": 1,
+            "task_id": "super-dan-live:1",
+            "tool_id": "file_write",
+            "status": "completed",
+            "arguments": {"path": "index.html"},
+            "result": {"path": "index.html"},
+        }
+    )
+
+    exit_code = main(["--workspace", str(tmp_path), "--queue-status"])
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Super DAN queues" in stdout
+    assert "reactivity: immediate" in stdout
+    assert "- validation:" in stdout
 
 
 def test_main_objective_with_model_uses_live_without_live_flag(
@@ -1881,6 +2373,80 @@ def test_main_live_website_build_fails_without_real_file_changes(tmp_path, capsy
     assert "Status: failed" in stdout
     assert "Live Build: failed" in stdout
     assert "changing any required website files" in stdout
+    assert "[retry] first-write recovery 1 started" in stdout
+    assert "[repair]" not in stdout
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(
+        row["event"] == "live.website_first_write_recovery.started"
+        for row in event_rows
+    )
+    assert not any(row["event"] == "live.website_repair.started" for row in event_rows)
+    assert not any(
+        row["event"] == "super.hook.packet_enqueued"
+        and row.get("inbox_id") == "repair"
+        for row in event_rows
+    )
+
+
+def test_main_live_website_build_recovers_from_no_first_write(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    website = tmp_path / "website"
+    website.mkdir()
+    (website / "index.html").write_text("<!doctype html><html><body>old site</body></html>\n", encoding="utf-8")
+    (website / "styles.css").write_text("body { margin: 0; }\n", encoding="utf-8")
+    (website / "app.js").write_text("console.log('old');\n", encoding="utf-8")
+    (website / "README.md").write_text("# Old site\n", encoding="utf-8")
+
+    fake_provider = _FakeFirstWriteRecoveryWebsiteProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "can you make sure the website would look properly at least?",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Live Build: completed" in stdout
+    assert "[retry] first-write recovery 1 started" in stdout
+    assert "[retry] first-write recovery 1 completed" in stdout
+    assert "[repair]" not in stdout
+    assert "Validation: passed" in stdout
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(
+        row["event"] == "live.website_first_write_recovery.completed"
+        and len(row["changed_required_files"]) >= 2
+        for row in event_rows
+    )
+    assert not any(row["event"] == "live.website_repair.started" for row in event_rows)
+    final_validation = [
+        row for row in event_rows if row.get("event") == "live.validation.completed"
+    ][-1]
+    assert final_validation["passed"] is True
+    assert final_validation["first_write_recovery_attempted"] is True
 
 
 def test_main_live_website_build_fails_generic_template_even_if_validator_passes(
@@ -1914,15 +2480,173 @@ def test_main_live_website_build_fails_generic_template_even_if_validator_passes
         "generic Super DAN contract/demo template" in stdout
         or "raw operator prompt" in stdout
     )
+    assert "Template phrase hits in index.html" in stdout
+    assert "'execution contract'" in stdout
     event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+    final_validation = [
+        row for row in event_rows if row.get("event") == "live.validation.completed"
+    ][-1]
+    assert final_validation["passed"] is False
+    assert final_validation["repair_attempted"] is True
+    assert final_validation["repair_exhausted"] is True
     assert any(
-        row["event"] == "live.validation.completed" and row.get("passed") is False
-        for row in event_rows
+        "Template phrase hits in index.html" in failure
+        for failure in final_validation.get("deterministic_failures") or []
+    )
+
+
+def test_website_static_validation_names_template_phrase_hits(tmp_path) -> None:
+    report = super_cli.run_super_organism_demo("Build a product website")
+    index_path = tmp_path / "index.html"
+    index_path.write_text(
+        "<!doctype html><html><body><h1>Execution contract</h1>"
+        "<p>Objective contract</p><p>Native execution lane</p></body></html>\n",
+        encoding="utf-8",
+    )
+
+    failures = super_cli._website_static_validation_failures(
+        report,
+        required_paths=[index_path],
+        changed_required_paths=[str(index_path)],
+        template_phrases=[
+            "execution contract",
+            "objective contract",
+            "native execution lane",
+        ],
+    )
+
+    message = "\n".join(failures)
+    assert "Template phrase hits in index.html" in message
+    assert "'execution contract'" in message
+    assert "'objective contract'" in message
+    assert "fewer than 2 remain" in message
+
+
+def test_live_website_repair_task_includes_template_hit_repair_instruction(tmp_path) -> None:
+    report = super_cli.run_super_organism_demo("Build a product website")
+
+    task = super_cli._live_website_repair_task(
+        report,
+        artifact_root=tmp_path,
+        relative_files=["index.html", "styles.css", "app.js", "README.md"],
+        validation={"passed": False, "repair_brief": ""},
+        deterministic_failures=[
+            "The generated website still looks like the generic Super DAN contract/demo template. "
+            "Template phrase hits in index.html: 'execution contract', 'objective contract'. "
+            "Remove or rename enough exact hits so fewer than 2 remain."
+        ],
+        changed_required_paths=[str(tmp_path / "index.html")],
+    )
+
+    assert "Template phrase hits" in task
+    assert "remove or rename those exact hits in index.html" in task
+    assert "fewer than 2 exact template hits remain" in task
+
+
+def test_main_live_website_build_repairs_template_static_failure(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    fake_provider = _FakeTemplateRepairWebsiteProvider(repair_removes_hits=True)
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "can you build a website for this product? make it look cool",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Status: completed" in stdout
+    assert "[repair] attempt 1 started" in stdout
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    repair_started = [
+        row for row in event_rows if row.get("event") == "live.website_repair.started"
+    ][-1]
+    assert "Template phrase hits in index.html" in repair_started["reason"]
+    final_validation = [
+        row for row in event_rows if row.get("event") == "live.validation.completed"
+    ][-1]
+    assert final_validation["passed"] is True
+    assert final_validation["repair_attempted"] is True
+    assert final_validation["repair_exhausted"] is False
+    html = (tmp_path / "website" / "index.html").read_text(encoding="utf-8").lower()
+    assert "execution contract" not in html
+    assert "objective contract" not in html
+    assert "native execution lane" not in html
+
+
+def test_main_live_website_build_reports_template_hits_after_failed_repair(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    fake_provider = _FakeTemplateRepairWebsiteProvider(repair_removes_hits=False)
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "can you build a website for this product? make it look cool",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 1
+    stdout = capsys.readouterr().out
+    assert "Status: failed" in stdout
+    assert "Template phrase hits in index.html" in stdout
+    assert "Remove or rename enough exact hits so fewer than 2 remain" in stdout
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    final_index, final_validation = [
+        (index, row)
+        for index, row in enumerate(event_rows)
+        if row.get("event") == "live.validation.completed"
+    ][-1]
+    assert final_validation["passed"] is False
+    assert final_validation["repair_attempted"] is True
+    assert final_validation["repair_exhausted"] is True
+    assert any(
+        "Template phrase hits in index.html" in failure
+        for failure in final_validation.get("deterministic_failures") or []
+    )
+    assert not any(
+        row.get("event") == "super.hook.packet_enqueued"
+        and row.get("inbox_id") == "repair"
+        for row in event_rows[final_index + 1 :]
     )
 
 
