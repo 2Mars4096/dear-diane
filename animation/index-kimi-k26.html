@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Match Simulation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=Inter:wght@300&display=swap');
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #050505;
+            font-family: 'Inter', sans-serif;
+        }
+
+        /* The Glowing Ambient Light behind the flame */
+        #ambient-light {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 100vw;
+            height: 100vh;
+            background: radial-gradient(circle at 50% 40%, rgba(255, 160, 60, 0.15), rgba(255, 60, 0, 0.05) 30%, transparent 70%);
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            mix-blend-mode: screen;
+            z-index: 5;
+        }
+
+        /* The Strike Box UI */
+        #ui-layer {
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            text-align: center;
+            color: rgba(255, 255, 255, 0.4);
+            z-index: 20;
+            pointer-events: none;
+            transition: opacity 1s;
+        }
+
+        .instruction {
+            font-size: 0.9rem;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+        }
+
+        /* The Matchstick Object */
+        #match-container {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 500px;
+            z-index: 10;
+            transform-origin: top center;
+            transition: transform 0.1s;
+        }
+
+        #match-head {
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 24px;
+            height: 28px;
+            background: radial-gradient(circle at 30% 30%, #ff4d4d, #8b0000);
+            border-radius: 40% 40% 50% 50%;
+            box-shadow: inset -2px -2px 5px rgba(0,0,0,0.5);
+            z-index: 2;
+        }
+
+        #match-wood {
+            position: absolute;
+            top: 25px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 8px;
+            height: 300px;
+            background: linear-gradient(90deg, #5c4033, #8b5a2b, #5c4033);
+            border-radius: 4px;
+            z-index: 1;
+        }
+
+        /* Charred effect on wood */
+        #char-layer {
+            position: absolute;
+            top: 25px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 8px;
+            height: 0px; /* Grows as it burns */
+            background: linear-gradient(90deg, #1a1a1a, #000000, #1a1a1a);
+            border-radius: 4px 4px 0 0;
+            z-index: 1;
+            transition: height 0.1s linear;
+        }
+
+        /* Canvas for Flame and Smoke */
+        #fire-canvas {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 15; /* Above match, below smoke? Actually smoke should be above */
+            pointer-events: none;
+        }
+
+        /* Container for DOM-based smoke particles */
+        #smoke-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 16;
+        }
+
+        .smoke-particle {
+            position: absolute;
+            background: radial-gradient(circle, rgba(100,100,100,0.4) 0%, rgba(50,50,50,0.1) 60%, transparent 100%);
+            border-radius: 50%;
+            pointer-events: none;
+        }
+
+        /* Strike Strip Area */
+        #strike-zone {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 150px;
+            background: linear-gradient(to top, rgba(255,255,255,0.05), transparent);
+            cursor: grab;
+            z-index: 25;
+        }
+        
+        #strike-zone:active {
+            cursor: grabbing;
+        }
+
+        /* Sparks */
+        .spark {
+            position: absolute;
+            background: #ffcc00;
+            border-radius: 50%;
+            pointer-events: none;
+            box-shadow: 0 0 4px #ffaa00;
+        }
+
+        /* Vignette */
+        .vignette {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            box-shadow: inset 0 0 150px rgba(0,0,0,0.9);
+            pointer-events: none;
+            z-index: 30;
+        }
+
+    </style>
+</head>
+<body>
+
+    <!-- Background Ambience -->
+    <div id="ambient-light"></div>
+    <div class="vignette"></div>
+
+    <!-- Smoke Layer (DOM) -->
+    <div id="smoke-container"></div>
+
+    <!-- Canvas for Flame Rendering -->
+    <canvas id="fire-canvas"></canvas>
+
+    <!-- The Match Object -->
+    <div id="match-container">
+        <div id="match-head"></div>
+        <div id="char-layer"></div>
+        <div id="match-wood"></div>
+    </div>
+
+    <!-- Interactive UI -->
+    <div id="ui-layer">
+        <div class="instruction">Drag Upwards to Strike</div>
+        <div class="text-xs opacity-50">Then watch it burn</div>
+    </div>
+
+    <!-- Strike Zone (Invisible interaction layer) -->
+    <div id="strike-zone"></div>
+
+    <script>
+        /**
+         * Interactive Match Simulation
+         * 
+         * Features:
+         * 1. Gesture-based ignition (Drag to strike).
+         * 2. Procedural Canvas Flame (Bezier curves, noise, wind).
+         * 3. Physics-based Smoke (DOM particles).
+         * 4. Dynamic Lighting (Global illumination based on flame size).
+         * 5. Burning progression (Wood chars, flame shrinks).
+         */
+
+        const canvas = document.getElementById('fire-canvas');
+        const ctx = canvas.getContext('2d');
+        const matchContainer = document.getElementById('match-container');
+        const matchHead = document.getElementById('match-head');
+        const charLayer = document.getElementById('char-layer');
+        const ambientLight = document.getElementById('ambient-light');
+        const smokeContainer = document.getElementById('smoke-container');
+        const strikeZone = document.getElementById('strike-zone');
+        const uiLayer = document.getElementById('ui-layer');
+
+        // State
+        let state = {
+            isLit: false,
+            isBurnedOut: false,
+            fuel: 100, // 100 to 0
+            wind: 0,
+            time: 0,
+            mouseX: 0,
+            mouseY: 0
+        };
+
+        // Configuration
+        const config = {
+            burnRate: 0.08, // How fast fuel depletes
+            flameBaseWidth: 40,
+            flameHeightMax: 150,
+            smokeThreshold: 10 // Fuel level where smoke starts heavily
+        };
+
+        // Resize Canvas
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // --- Interaction: Striking ---
+        let isDragging = false;
+        let startY = 0;
+        let lastY = 0;
+        let velocity = 0;
+
+        strikeZone.addEventListener('mousedown', (e) => {
+            if (state.isLit) return;
+            isDragging = true;
+            startY = e.clientY;
+            lastY = e.clientY;
+            velocity = 0;
+            matchContainer.style.transform = `translate(-50%, -50%) rotate(0deg)`;
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            // Update mouse pos for wind effect
+            state.mouseX = e.clientX;
+            state.mouseY = e.clientY;
+
+            if (!isDragging) return;
+
+            const currentY = e.clientY;
+            const delta = lastY - currentY; // Positive if moving up
+            velocity = delta;
+            lastY = currentY;
+
+            // Move match visually based on drag
+            // Restrict X, allow Y movement up to a point
+            const offsetY = Math.max(0, startY - currentY);
+            
+            // Rotate match slightly based on horizontal drag for realism
+            const deltaX = e.clientX - (window.innerWidth / 2);
+            const rotation = Math.max(-30, Math.min(30, deltaX * 0.1));
+
+            matchContainer.style.transform = `translate(calc(-50% + ${deltaX * 0.2}px), calc(-50% - ${offsetY}px)) rotate(${rotation}deg)`;
+
+            // Trigger Ignition
+            if (offsetY > 100 && velocity > 5 && !state.isLit) {
+                ignite();
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            isDragging = false;
+            if (!state.isLit) {
+                // Reset match position smoothly
+                matchContainer.style.transition = "transform 0.5s ease-out";
+                matchContainer.style.transform = "translate(-50%, -50%)";
+                setTimeout(() => { matchContainer.style.transition = "transform 0.1s"; }, 500);
+            } else {
+                // Keep match at current angle or let it dangle? 
+                // For this sim, let's lock it once lit or let user move it slightly
+                matchContainer.style.transform = `translate(-50%, -50%) rotate(0deg)`;
+            }
+        });
+
+        // --- Core Logic: Ignition ---
+        function ignite() {
+            state.isLit = true;
+            state.fuel = 100;
+            state.isBurnedOut = false;
+            
+            // Visual feedback
+            matchHead.style.backgroundColor = '#ffaa00'; // Glowing head
+            matchHead.style.boxShadow = '0 0 20px #ff5500';
+            uiLayer.style.opacity = '0';
+            
+            // Create initial burst sparks
+            createSparks(window.innerWidth/2, window.innerHeight/2 - 100, 20);
+        }
+
+        // --- Particle Systems ---
+
+        // 1. Sparks
+        let sparks = [];
+        function createSparks(x, y, count) {
+            for(let i=0; i<count; i++) {
+                sparks.push({
+                    x: x,
+                    y: y,
+                    vx: (Math.random() - 0.5) * 10,
+                    vy: (Math.random() - 0.5) * 10,
+                    life: 1.0,
+                    color: `hsl(${40 + Math.random()*20}, 100%, 70%)`
+                });
+            }
+        }
+
+        function updateSparks() {
+            for (let i = sparks.length - 1; i >= 0; i--) {
+                let s = sparks[i];
+                s.x += s.vx;
+                s.y += s.vy;
+                s.vy += 0.2; // Gravity
+                s.life -= 0.05;
+                
+                ctx.fillStyle = s.color;
+                ctx.globalAlpha = s.life;
+                ctx.beginPath();
+                ctx.arc(s.x, s.y, 1.5, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.globalAlpha = 1;
+
+                if (s.life <= 0) sparks.splice(i, 1);
+            }
+        }
+
+        // 2. Smoke (DOM based for soft blur)
+        let smokeTimer = 0;
+        function createSmoke(x, y, intensity) {
+            const el = document.createElement('div');
+            el.classList.add('smoke-particle');
+            
+            // Randomize size
+            const size = 20 + Math.random() * 60;
+            el.style.width = `${size}px`;
+            el.style.height = `${size}px`;
+            
+            el.style.left = `${x}px`;
+            el.style.top = `${y}px`;
+            
+            smokeContainer.appendChild(el);
+
+            // Animate smoke
+            const duration = 2000 + Math.random() * 2000;
+            const drift = (Math.random() - 0.5) * 100;
+
+            const animation = el.animate([
+                { transform: 'translate(-50%, -50%) scale(0.5)', opacity: 0 },
+                { transform: `translate(calc(-50% + ${drift}px), -150px) scale(2)`, opacity: 0.6, offset: 0.3 },
+                { transform: `translate(calc(-50% + ${drift*2}px), -400px) scale(4)`, opacity: 0 }
+            ], {
+                duration: duration,
+                easing: 'ease-out'
+            });
+
+            animation.onfinish = () => el.remove();
+        }
+
+        // --- Rendering Loop ---
+
+        function drawFlame() {
+            if (!state.isLit || state.isBurnedOut) return;
+
+            const centerX = window.innerWidth / 2;
+            const centerY = window.innerHeight / 2 - 140; // Position relative to match head
+
+            // Calculate Flame Size based on Fuel
+            const fuelRatio = state.fuel / 100;
+            const currentBaseWidth = config.flameBaseWidth * fuelRatio;
+            const currentHeight = config.flameHeightMax * (0.8 + Math.random() * 0.2) * fuelRatio;
+
+            // Wind Effect (Mouse Interaction)
+            // Map mouse X from 0..width to -50..50 wind force
+            const windForce = (state.mouseX - window.innerWidth/2) * 0.1;
+            const tipX = centerX + windForce + (Math.sin(state.time * 0.1) * 10);
+
+            // Draw Outer Glow (Red/Orange)
+            ctx.shadowBlur = 30 * fuelRatio;
+            ctx.shadowColor = "rgba(255, 100, 0, 0.8)";
+            
+            // Create Gradient for Flame
+            const grad = ctx.createRadialGradient(centerX, centerY, 2, centerX, centerY - currentHeight/2, currentHeight);
+            grad.addColorStop(0, 'rgba(255, 255, 200, 1)');    // White core
+            grad.addColorStop(0.2, 'rgba(255, 220, 50, 0.9)'); // Yellow
+            grad.addColorStop(0.5, 'rgba(255, 100, 0, 0.8)');  // Orange
+            grad.addColorStop(1, 'rgba(100, 0, 0, 0)');        // Transparent Red
+
+            ctx.fillStyle = grad;
+            
+            // Draw Flame Shape using Bezier curves
+            ctx.beginPath();
+            ctx.moveTo(centerX - currentBaseWidth/2, centerY + 10); // Base Left
+            
+            // Left curve control point
+            const cp1x = centerX - currentBaseWidth + (windForce * 0.5);
+            const cp1y = centerY - currentHeight * 0.5;
+            
+            // Tip
+            const tipY = centerY - currentHeight + (Math.random() * 10);
+
+            // Right curve control point
+            const cp2x = centerX + currentBaseWidth + (windForce * 0.5);
+            const cp2y = centerY - currentHeight * 0.5;
+
+            ctx.bezierCurveTo(cp1x, cp1y, tipX - 10, tipY + 20, tipX, tipY); // Left to Tip
+            ctx.bezierCurveTo(tipX + 10, tipY + 20, cp2x, cp2y, centerX + currentBaseWidth/2, centerY + 10); // Tip to Right
+            
+            ctx.closePath();
+            ctx.fill();
+
+            // Reset Shadow for next frame
+            ctx.shadowBlur = 0;
+
+            // Inner Core (Bright White/Blueish) - Gives it depth
+            if (fuelRatio > 0.2) {
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+                ctx.beginPath();
+                ctx.moveTo(centerX - 5, centerY);
+                ctx.quadraticCurveTo(centerX - 2, centerY - 30 * fuelRatio, centerX, centerY - 40 * fuelRatio);
+                ctx.quadraticCurveTo(centerX + 2, centerY - 30 * fuelRatio, centerX + 5, centerY);
+                ctx.fill();
+            }
+        }
+
+        function updateLighting() {
+            if (!state.isLit || state.isBurnedOut) {
+                ambientLight.style.opacity = 0;
+                return;
+            }
+
+            // Flicker calculation
+            const flicker = 0.9 + Math.random() * 0.2;
+            const intensity = (state.fuel / 100) * flicker;
+            
+            ambientLight.style.opacity = intensity;
+            
+            // Move light source slightly with flame tip
+            const windX = (state.mouseX - window.innerWidth/2) * 0.05;
+            ambientLight.style.background = `radial-gradient(circle at calc(50% + ${windX}px) 40%, rgba(255, 160, 60, ${0.2 * intensity}), rgba(255, 60, 0, ${0.05 * intensity}) 30%, transparent 70%)`;
+        }
+
+        function loop() {
+            state.time++;
+
+            // Clear Canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (state.isLit) {
+                // Consume Fuel
+                if (state.fuel > 0) {
+                    state.fuel -= config.burnRate;
+                    
+                    // Update Wood Char Visual
+                    const charHeight = (100 - state.fuel) * 2; // Max 200px char
+                    charLayer.style.height = `${charHeight}px`;
+                    
+                    // Smoke Generation
+                    smokeTimer++;
+                    if (smokeTimer > 5) { // Create smoke every few frames
+                        // Smoke starts when fuel is lower or randomly
+                        if (state.fuel < 60 || Math.random() > 0.7) {
+                            createSmoke(window.innerWidth/2 + (Math.random()-0.5)*20, window.innerHeight/2 - 140 - (charHeight/2));
+                        }
+                        smokeTimer = 0;
+                    }
+
+                } else if (!state.isBurnedOut) {
+                    // Burnout Event
+                    state.isBurnedOut = true;
+                    state.isLit = false;
+                    matchHead.style.backgroundColor = '#222'; // Ash
+                    matchHead.style.boxShadow = 'none';
+                    uiLayer.innerHTML = '<div class="instruction">The flame is gone.</div><div class="text-xs opacity-50">Reload to try again</div>';
+                    uiLayer.style.opacity = '1';
+                    
+                    // Final smoke puff
+                    for(let i=0; i<10; i++) {
+                        setTimeout(() => createSmoke(window.innerWidth/2, window.innerHeight/2 - 140, 1), i*100);
+                    }
+                }
+
+                // Random tiny sparks from the match head
+                if (Math.random() > 0.9 && state.fuel > 5) {
+                     createSparks(
+                         window.innerWidth/2 + (Math.random()-0.5)*10, 
+                         window.innerHeight/2 - 130, 
+                         1
+                     );
+                }
+            }
+
+            updateLighting();
+            drawFlame();
+            updateSparks();
+
+            requestAnimationFrame(loop);
+        }
+
+        // Start Loop
+        loop();
+
+    </script>
+</body>
+</html>
