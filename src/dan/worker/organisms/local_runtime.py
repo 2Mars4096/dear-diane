@@ -541,7 +541,10 @@ def _tool_use_policy(tool_ids: Sequence[str]) -> str:
         )
     if "file_edit" in available:
         lines.append(
-            "- Use `file_edit` for targeted edits to existing files. For line-based edits, always include `path` and `start_line`, and include `content` for replace/insert edits. When replacing multiple lines, include `end_line` so the full target range is explicit. If you need multiple non-overlapping edits in the same file, prefer one `file_edit` call with `edits=[...]` over repeated single-edit calls; every batch item must include `start_line` or a unique `old_string`/`new_string` pair copied from a recent `file_read`."
+            "- Use `file_edit` for targeted edits to existing files. Before each mutation, do a compact edit-intent check and map it to the schema: replace an existing range with `mode=\"replace\"` plus `content`; insert text with `insert_before`/`insert_after` plus `content`; delete text with `mode=\"delete\"` and no replacement fields; replace exact text with `old_string` plus `new_string` copied from a recent `file_read` and no delete mode."
+        )
+        lines.append(
+            "- For line-based edits, always include `path` and `start_line`, and include `content` for replace/insert edits. When replacing multiple lines, include `end_line` so the full target range is explicit. If you need multiple non-overlapping edits in the same file, prefer one `file_edit` call with `edits=[...]` over repeated single-edit calls; every batch item must include `start_line` or a unique `old_string`/`new_string` pair copied from a recent `file_read`."
         )
         lines.append(
             "- Prefer line-based edits derived from a prior `file_read`. Do not depend on regex, shell pattern matching, or exact text-match replacement as your primary edit localization strategy."
@@ -768,11 +771,93 @@ def _file_edit_placeholder_content_argument(arguments: dict[str, Any]) -> str:
     return _placeholder_key(arguments)
 
 
+def _file_edit_empty_batch_argument(arguments: dict[str, Any]) -> str:
+    if "edits" not in arguments:
+        return ""
+    edits = arguments.get("edits")
+    if not isinstance(edits, list) or not edits:
+        return "edits"
+    return ""
+
+
+def _file_edit_delete_replacement_argument(arguments: dict[str, Any]) -> str:
+    replacement_keys = ("content", "new_string", "replace", "replacement", "new_content")
+
+    def _has_replacement_field(container: dict[str, Any]) -> str:
+        for key in replacement_keys:
+            if key in container and container.get(key) is not None:
+                return key
+        return ""
+
+    if isinstance(arguments.get("edits"), list):
+        for index, edit in enumerate(arguments.get("edits") or []):
+            if not isinstance(edit, dict):
+                continue
+            mode = str(edit.get("mode") or "replace").strip().lower()
+            if mode != "delete":
+                continue
+            key = _has_replacement_field(edit)
+            if key:
+                return f"edits[{index}].{key}"
+        return ""
+
+    mode = str(arguments.get("mode") or "replace").strip().lower()
+    if mode != "delete":
+        return ""
+    key = _has_replacement_field(arguments)
+    return key
+
+
+def _file_edit_compatibility_mode_argument(arguments: dict[str, Any]) -> str:
+    def _has_old_text(container: dict[str, Any]) -> bool:
+        return "old_string" in container and container.get("old_string") is not None
+
+    def _has_replacement(container: dict[str, Any]) -> bool:
+        return any(
+            key in container and container.get(key) is not None
+            for key in ("new_string", "content")
+        )
+
+    if isinstance(arguments.get("edits"), list):
+        for index, edit in enumerate(arguments.get("edits") or []):
+            if not isinstance(edit, dict):
+                continue
+            mode = str(edit.get("mode") or "replace").strip().lower()
+            if mode != "replace" and _has_old_text(edit) and _has_replacement(edit):
+                return f"edits[{index}].mode"
+        return ""
+
+    mode = str(arguments.get("mode") or "replace").strip().lower()
+    if mode != "replace" and _has_old_text(arguments) and _has_replacement(arguments):
+        return "mode"
+    return ""
+
+
 def _tool_specific_argument_validation_error(
     tool_id: str,
     arguments: dict[str, Any],
 ) -> str:
     if tool_id == "file_edit":
+        empty_batch = _file_edit_empty_batch_argument(arguments)
+        if empty_batch:
+            return (
+                "tool_arguments_invalid: invalid arguments for file_edit: "
+                "edits must be a non-empty list when provided"
+            )
+        delete_replacement = _file_edit_delete_replacement_argument(arguments)
+        if delete_replacement:
+            return (
+                "tool_arguments_invalid: invalid argument combination for file_edit: "
+                f"{delete_replacement} cannot be used with delete mode. Delete mode removes text only; "
+                "retry with mode 'replace' if you intend to swap text."
+            )
+        compatibility_mode = _file_edit_compatibility_mode_argument(arguments)
+        if compatibility_mode:
+            return (
+                "tool_arguments_invalid: invalid argument combination for file_edit: "
+                f"{compatibility_mode} cannot combine old_string plus new_string/content with non-replace mode. "
+                "Compatibility replacement uses mode 'replace' or omits mode."
+            )
         missing = _file_edit_missing_content_argument(arguments)
         if missing:
             return _tool_argument_validation_error(tool_id, [missing])
@@ -810,8 +895,12 @@ def _tool_argument_failure_nudge(tool_id: str, error_text: str) -> str | None:
         )
     elif tool_id == "file_edit":
         extra_guidance = (
-            ' For `file_edit`, retry with `{"path":"src/app.py","start_line":12,"end_line":14,"content":"..."}` '
-            'or `{"path":"src/app.py","edits":[{"start_line":12,"end_line":14,"content":"..."}]}`. '
+            ' For `file_edit`, first choose the edit intent: replacement uses '
+            '`{"path":"src/app.py","start_line":12,"end_line":14,"mode":"replace","content":"..."}`; '
+            'insertion uses `mode:"insert_before"` or `mode:"insert_after"` plus `content`; '
+            'deletion uses `mode:"delete"` with no `content`/`new_string`; '
+            "exact-text replacement uses `old_string` plus `new_string` and no delete mode. "
+            'For multiple edits, retry with `{"path":"src/app.py","edits":[{"start_line":12,"end_line":14,"mode":"replace","content":"..."}]}`. '
             "Every item in `edits` must include `start_line`, or a unique exact-text compatibility pair "
             "such as `old_string` plus `new_string` copied from a recent `file_read`. "
             "If you do not know the line numbers or exact old text, call `file_read` first."

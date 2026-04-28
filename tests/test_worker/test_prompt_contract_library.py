@@ -104,7 +104,7 @@ def test_template_rendered_prompt_snapshots_are_stable() -> None:
 
     assert {name: sha256(text.encode("utf-8")).hexdigest() for name, text in rendered.items()} == {
         "role_brief": "2ddfcdcf5c1fccf0fe351731426ebd73345f870e59caf2d2849d3f27c6d1b963",
-        "coding_brief": "16f7f961ed7d5abafeed3a0df197395823a0e8334622836e79afba275ddecc56",
+        "coding_brief": "57128db6cfd2e7411ae452da618ee88fe306d7fb8d516b7e9ab5209ceaece1f8",
         "review_brief": "78b4ee9c2415ef565b1ab4ead1a111f3ab06e4c7d9dcdfa27605559ca4d4420e",
         "research_brief": "ca91cbb886b7b6af46c745d189a2e121cec5fe8200ac39964d95b1c9c3adeb71",
         "scheduler_brief": "c6f88f47fef6e0ac9b70b28023085d2d9658be7472d7acd6ccaac1fff61cff81",

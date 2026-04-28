@@ -38,23 +38,27 @@ TOOL_METADATA = {
             },
             "content": {
                 "type": "string",
-                "description": "Replacement or inserted content. Required for replace/insert modes.",
+                "description": "Replacement or inserted content. Required for replace/insert modes; invalid with delete mode.",
             },
             "old_string": {
                 "type": "string",
                 "description": (
                     "Compatibility replace form: exact existing text to replace. "
-                    "Use only when copied from a recent file_read and the text appears once."
+                    "Use only when copied from a recent file_read and the text appears once. "
+                    "This implies replace mode; do not combine it with delete mode."
                 ),
             },
             "new_string": {
                 "type": "string",
-                "description": "Compatibility replace form: replacement text for old_string.",
+                "description": "Compatibility replace form: replacement text for old_string. Implies replace mode.",
             },
             "mode": {
                 "type": "string",
                 "enum": ["replace", "insert_before", "insert_after", "delete"],
-                "description": "Edit mode. 'replace' swaps the line range, 'delete' removes it, and insert modes add content around start_line.",
+                "description": (
+                    "Edit mode. 'replace' swaps the line range using content, insert modes add content around "
+                    "start_line, and 'delete' removes text only. Delete mode must not include content or new_string."
+                ),
                 "default": "replace",
             },
             "encoding": {
@@ -82,18 +86,19 @@ TOOL_METADATA = {
                         },
                         "content": {
                             "type": "string",
-                            "description": "Replacement or inserted content.",
+                            "description": "Replacement or inserted content. Required for replace/insert modes; invalid with delete mode.",
                         },
                         "old_string": {
                             "type": "string",
                             "description": (
                                 "Compatibility replace form: exact existing text to replace. "
-                                "Use only when copied from a recent file_read and unique in the file."
+                                "Use only when copied from a recent file_read and unique in the file. "
+                                "This implies replace mode; do not combine it with delete mode."
                             ),
                         },
                         "new_string": {
                             "type": "string",
-                            "description": "Compatibility replace form: replacement text for old_string.",
+                            "description": "Compatibility replace form: replacement text for old_string. Implies replace mode.",
                         },
                         "replace": {
                             "type": "string",
@@ -110,7 +115,7 @@ TOOL_METADATA = {
                         "mode": {
                             "type": "string",
                             "enum": ["replace", "insert_before", "insert_after", "delete"],
-                            "description": "Edit mode for this batch item.",
+                            "description": "Edit mode for this batch item. Delete mode removes text only and must not include replacement fields.",
                             "default": "replace",
                         },
                     },
@@ -183,6 +188,7 @@ TOOL_METADATA = {
 }
 
 _EDIT_MODES = frozenset({"replace", "insert_before", "insert_after", "delete"})
+_REPLACEMENT_FIELD_NAMES = ("content", "new_string", "replace", "replacement", "new_content")
 
 
 def _tool_argument_error(detail: str) -> ValueError:
@@ -253,6 +259,13 @@ def _line_range_from_span(text: str, start_index: int, end_index: int) -> tuple[
     return start_line, end_line
 
 
+def _has_replacement_field(container: dict[str, object], *field_names: str) -> str:
+    for field_name in field_names:
+        if field_name in container and container.get(field_name) is not None:
+            return field_name
+    return ""
+
+
 def _normalize_replace_compatibility_args(
     *,
     original_text: str,
@@ -267,6 +280,13 @@ def _normalize_replace_compatibility_args(
     normalized_content = content if content is not None else None
     if normalized_content is None and new_string is not None:
         normalized_content = str(new_string)
+    old_text = str(old_string) if old_string is not None else ""
+    if old_text and normalized_content is not None and normalized_mode != "replace":
+        raise _tool_argument_error(
+            "invalid argument combination for file_edit: old_string plus new_string/content is a replacement "
+            f"compatibility form and cannot be combined with mode '{normalized_mode}'. "
+            "Retry with mode 'replace' or omit mode; use delete mode only when removing text without replacement fields."
+        )
     if normalized_mode != "replace":
         return start_line, end_line, normalized_content
 
@@ -281,7 +301,6 @@ def _normalize_replace_compatibility_args(
         else None
     )
 
-    old_text = str(old_string) if old_string is not None else ""
     if old_text:
         if normalized_start is None:
             match_start, match_end = _find_unique_span(original_text, old_text)
@@ -336,6 +355,11 @@ def _build_edit_spec(
         )
     anchor_line = _normalize_line_number(start_line, name=f"{field_prefix}start_line")
     replacement_text = "" if content is None else str(content)
+    if normalized_mode == "delete" and content is not None:
+        raise _tool_argument_error(
+            "invalid argument combination for file_edit: delete mode removes text only and must not include "
+            "content/new_string/replace/replacement/new_content. If you intend to swap text, retry with mode 'replace'."
+        )
     if normalized_mode != "delete" and content is None:
         raise _tool_argument_error(
             f"missing required arguments for file_edit: {field_prefix}content"
@@ -804,6 +828,14 @@ async def file_edit(
                     f"invalid arguments for file_edit: edits[{index}] must be an object."
                 )
             edit_mode = edit.get("mode")
+            if str(edit_mode or "replace").strip() == "delete":
+                replacement_field = _has_replacement_field(edit, *_REPLACEMENT_FIELD_NAMES)
+                if replacement_field:
+                    raise _tool_argument_error(
+                        "invalid argument combination for file_edit: "
+                        f"edits[{index}] uses delete mode with {replacement_field}. Delete mode removes text only; "
+                        "retry with mode 'replace' if you intend to swap text."
+                    )
             edit_start_line, edit_end_line, edit_content = _normalize_replace_compatibility_args(
                 original_text=original_text,
                 start_line=edit.get("start_line"),
@@ -823,6 +855,21 @@ async def file_edit(
                 )
             )
     else:
+        if str(mode or "replace").strip() == "delete":
+            top_level_args = {
+                "content": content,
+                "new_string": _kwargs.get("new_string"),
+                "replace": _kwargs.get("replace"),
+                "replacement": _kwargs.get("replacement"),
+                "new_content": _kwargs.get("new_content"),
+            }
+            replacement_field = _has_replacement_field(top_level_args, *_REPLACEMENT_FIELD_NAMES)
+            if replacement_field:
+                raise _tool_argument_error(
+                    "invalid argument combination for file_edit: "
+                    f"delete mode was combined with {replacement_field}. Delete mode removes text only; "
+                    "retry with mode 'replace' if you intend to swap text."
+                )
         start_line, end_line, content = _normalize_replace_compatibility_args(
             original_text=original_text,
             start_line=start_line,

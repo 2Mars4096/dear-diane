@@ -535,6 +535,41 @@ async def test_file_edit_placeholder_content_fails_before_approval(tmp_path) -> 
     )
 
 
+@pytest.mark.asyncio
+async def test_file_edit_delete_replacement_fails_before_approval(tmp_path) -> None:
+    events: list[dict[str, object]] = []
+    approval_calls: list[tuple[str, dict[str, object]]] = []
+    target = tmp_path / "index.html"
+    target.write_text("<main>ok</main>\n", encoding="utf-8")
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["file_edit"],
+        workspace_root=tmp_path,
+        approval_callback=lambda tool_id, arguments, metadata: approval_calls.append(
+            (tool_id, dict(arguments))
+        )
+        or True,
+        event_callback=events.append,
+    )
+
+    with pytest.raises(ValueError, match="delete mode"):
+        await runtime.call(
+            "file_edit",
+            {
+                "path": "index.html",
+                "start_line": 1,
+                "end_line": 1,
+                "mode": "delete",
+                "new_string": "<main>patched</main>\n",
+            },
+            worker_id="coding-build.worker-1",
+        )
+
+    assert approval_calls == []
+    assert target.read_text(encoding="utf-8") == "<main>ok</main>\n"
+    assert [event["event"] for event in events] == ["tool.started", "tool.failed"]
+    assert "new_string cannot be used with delete mode" in str(events[1]["error"])
+
+
 def test_worker_material_yield_signal_separates_candidate_from_written_artifact() -> None:
     read_only_signal = _worker_material_yield_signal(
         member_id="worker-1",

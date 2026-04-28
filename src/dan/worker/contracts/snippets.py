@@ -51,7 +51,11 @@ def pacing_contract(policy: PacingPolicy | Mapping[str, Any] | None = None) -> s
 
 def incremental_edit_contract(*, prefer_file_edit: bool = True) -> str:
     if prefer_file_edit:
-        return "When changing an existing file, prefer a grounded incremental edit over a whole-file rewrite."
+        return (
+            "When changing an existing file, prefer a grounded incremental edit over a whole-file rewrite. "
+            "Before calling the file tool, map the edit intent to the schema: replace uses content, insert uses content, "
+            "delete uses no replacement fields, and old_string/new_string means exact-text replacement."
+        )
     return "When changing files, use the smallest mutation that satisfies the brief."
 
 
