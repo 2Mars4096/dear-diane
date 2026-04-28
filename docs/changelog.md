@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-04-28
+- [docs] Patched the Plan 55-3 context/provenance track with the next prompt-pressure slice: profile-driven provider replay budgets, deterministic older-tool and assistant tool-call argument compaction, context-length emergency retry, budget telemetry, and focused regression coverage.
+- [fix] Hardened `file_edit` intent semantics so delete mode cannot carry replacement fields and exact-text `old_string` / `new_string` compatibility cannot be combined with non-replace modes. The local runtime now rejects those malformed edit shapes before approval and nudges workers toward a replace/insert/delete intent check before calling file tools.
+- [test] Added regressions for ambiguous `file_edit` delete-plus-replacement calls, empty edit batches, runtime pre-approval rejection, and the updated prompt-contract snapshot.
 - [fix] Added bounded generic first-write recovery for Super DAN live runs that finish without workspace mutations. Generic no-mutation failures now get two concrete recovery attempts before final failure, final validation records the recovery attempt, and hook routing treats generic no-mutation rows as first-write recovery instead of ordinary repair.
 - [test] Added Super DAN CLI and hook regressions for generic first-write recovery success, exhausted no-mutation recovery, generic no-mutation hook routing, and validation-hook suppression for empty recovery completions.
 - [feat] Raised Super DAN generic live large-context budgets for modern long-document runs: worker/repair output caps are now `64k`, validator output caps are `12k`, tool-result prompt replay is `24k` chars, exclusive-owner file-read replay is `96k` chars, older file-read replay is `4k` chars, the recent full-read window is `4`, and full-file `file_read` allows up to `4 MB` before requiring a line range.
