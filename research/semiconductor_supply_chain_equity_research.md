@@ -1,4 +1,4 @@
-# Semiconductor Supply Chain — Sector Equity Research
+# placeholder
 
 > **Sector:** Global Semiconductors | **Rating:** Overweight | **Date:** June 2025  
 > **Benchmark:** SOXX / PHLX Semiconductor Index | **Price Target (SOXX proxy):** 6,800  
@@ -19,13 +19,7 @@ The global semiconductor industry is entering a structurally higher growth phase
 
 ## 2. Downstream: Systems & Servers
 
-| Company | Role |
-|---------|------|
-| Dell | Enterprise servers |
-## 2. Market Overview & Investment Thesis
-
-### 2.1 TAM and Growth Outlook
-The World Semiconductor Trade Statistics (WSTS) projects global semiconductor sales of ~$650B in 2025 (+12% YoY), with 2026 advancing to ~$720B (+11% YoY). AI-related silicon is the primary accelerant: we estimate AI datacenter chips (GPUs, TPUs, custom ASICs, and associated HBM) will grow from ~$75B in 2024 to ~$150B+ by 2026, a ~40% CAGR.
+### 2.1 Market Size & Growth
 
 | Segment | 2024E ($B) | 2025E ($B) | 2026E ($B) | CAGR |
 |---------|------------|------------|------------|------|
@@ -47,21 +41,24 @@ The World Semiconductor Trade Statistics (WSTS) projects global semiconductor sa
 ### 2.3 Geographic & Policy Context
 U.S. CHIPS Act ($52B) and analogous EU/Japan/Korea subsidies are reshaping fab geography. Intel is attempting to build a viable foundry business with U.S. and EU anchor capacity. Export controls (U.S. BIS Entity List, October 2023 and subsequent updates) restrict China’s access to leading-edge EUV equipment and certain AI chips, creating a two-track supply chain.
 
----
+### 2.4 Key Players
 
+| Company | Role |
+|---------|------|
+| Dell | Enterprise servers |
 | HPE | Enterprise and HPC |
 | Supermicro | Hyperscale and AI servers |
 | Foxconn / Wistron / Quanta | Server ODMs |
 
----
+## 3. Midstream: Semiconductors
 
-## 3. Midstream: Chips & Memory
+The midstream layer encompasses chip design, memory production, and foundry services that form the core of semiconductor value creation.
 
-### 3.1 Logic & AI Accelerators
+### 3.1 Logic & Processors
 | Company | Segment |
 |---------|---------|
-| NVIDIA | AI GPUs |
-| AMD | CPUs and GPUs |
+| NVIDIA | GPUs / AI accelerators |
+| AMD | CPUs / GPUs |
 | Intel | CPUs |
 | Broadcom | Custom silicon |
 
@@ -102,14 +99,36 @@ U.S. CHIPS Act ($52B) and analogous EU/Japan/Korea subsidies are reshaping fab g
 
 ## 5. Investment Implications
 
-- AI infrastructure spending is the primary growth driver.
-- Geographic concentration in Taiwan and South Korea remains a risk.
-- Equipment and materials suppliers benefit from capacity expansion.
+**Overweight the leading-edge AI supply chain.** NVIDIA, TSMC, SK Hynix, ASML, and Applied Materials remain our preferred expressions of the AI capex cycle. NVIDIA’s full-stack dominance (GPU + networking + software) creates a widening moat in training and is now extending into inference. TSMC’s monopoly on leading-edge logic and its CoWoS packaging bottleneck give it exceptional pricing power through 2025.
+
+**Memory inflection offers asymmetric upside.** HBM3E supply is sold out through 2025, and the transition to HBM4 in 2026 will require new packaging architectures that favor incumbents with advanced 3D-stacking expertise. We see SK Hynix as best positioned, followed by Samsung and Micron.
+
+**Equipment and materials are late-cycle compounders.** Every $1 of incremental AI silicon capex translates to ~$0.20–$0.25 of wafer-fab equipment spend. ASML’s EUV backlog extends into 2026, while Applied Materials and Lam Research benefit from rising etch and deposition intensity at advanced nodes.
+
+**Downstream OEMs/ODMs are volume-levered plays.** Dell, Supermicro, and Foxconn offer exposure to AI server unit growth but face margin pressure from GPU supply constraints and intense competition. We prefer the upstream and midstream over the downstream on a risk-adjusted basis.
 
 ---
 
 ## 6. Risks
 
-- Cyclical demand downturns
-- Geopolitical disruption
-- Supply bottlenecks in key components
+- **Geopolitical disruption:** A Taiwan Strait crisis would severely disrupt TSMC production and global logic supply. We estimate a six-month TSMC outage could erase $150B+ of semiconductor TAM and trigger a global tech recession.
+- **Cyclical inventory correction:** Non-AI segments (smartphones, PCs, autos) remain vulnerable to demand shocks. A synchronized downturn could push overall semiconductor sales below $600B in 2026.
+- **China demand decoupling:** Expanded U.S. export controls could accelerate China’s domestic substitution efforts, eroding long-term revenue pools for Western equipment and chip vendors.
+- **Oversupply in non-AI nodes:** Aggressive mature-node capacity expansion by Chinese fabs and legacy IDMs risks price wars in 28nm+ by late 2025.
+- **AI demand disappointment:** If AI ROI fails to materialize at the application layer, hyperscaler capex could decelerate abruptly, disproportionately impacting NVIDIA and the HBM supply chain.
+
+---
+
+## 7. Risk Disclosures
+
+This research is prepared by Deep Agent Network Research for informational purposes only and does not constitute an offer, solicitation, or recommendation to buy or sell any security or financial instrument. The opinions, estimates, and projections expressed herein reflect the judgment of the author as of the date of publication and are subject to change without notice.
+
+**Conflicts of Interest:** Deep Agent Network Research may hold positions in securities discussed in this report. The author has no direct financial relationship with the companies mentioned.
+
+**No Reliance:** This report is not tailored to any individual’s financial situation or investment objectives. Recipients should conduct their own independent research and consult a qualified financial advisor before making investment decisions.
+
+**Forward-Looking Statements:** This report contains forward-looking statements based on current expectations, estimates, forecasts, and projections. Actual results may differ materially from those anticipated.
+
+**Data Sources:** Market-share and valuation figures are approximate and derived from public filings, industry estimates (WSTS, SIA, Gartner), and consensus estimates. No representation or warranty is made as to the accuracy or completeness of such information.
+
+**Regulatory:** This report is not registered with any securities regulator and is intended solely for professional and institutional investors.
