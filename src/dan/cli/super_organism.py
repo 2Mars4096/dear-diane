@@ -8,6 +8,8 @@ import copy
 import hashlib
 import inspect
 import json
+import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -25,7 +27,7 @@ from dan.server.runtime_config import build_engine_config_from_env
 from dan.worker.brief import RoleSpec, WorkerBrief, request_from_brief
 from dan.worker.cell import build_cell
 from dan.worker.contracts import snippets
-from dan.worker.contracts.templates import coding_brief, review_brief
+from dan.worker.contracts.templates import coding_brief, review_brief, role_brief
 from dan.worker.core.contracts import ExecutionRequest, OutputContract
 from dan.worker.core.executor import WorkerCoreExecutor
 from dan.worker.core.interfaces import CallbackEventSink
@@ -50,18 +52,36 @@ from dan.worker.organisms.super_organism import (
 )
 
 
-_LIVE_FILE_WRITE_SAFE_WORD_LIMIT = 1200
-_LIVE_FILE_WRITE_SAFE_LINE_LIMIT = 200
+_GENERIC_SNAPSHOT_SKIP_DIR_NAMES = frozenset(
+    {
+        ".dan-super",
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        "__pycache__",
+        "node_modules",
+        ".venv",
+        "venv",
+    }
+)
+_SUPER_DAN_WORKER_MAX_TOKENS = 64_000
+_SUPER_DAN_REPAIR_MAX_TOKENS = 64_000
+_SUPER_DAN_VALIDATOR_MAX_TOKENS = 12_000
+_SUPER_DAN_GENERIC_FIRST_WRITE_RECOVERY_ATTEMPTS = 2
 
 
 def _live_pacing_policy(*, forbid_scratch_files: bool = False) -> dict[str, Any]:
     policy: dict[str, Any] = {
-        "safe_file_write_word_limit": _LIVE_FILE_WRITE_SAFE_WORD_LIMIT,
-        "safe_file_write_line_limit": _LIVE_FILE_WRITE_SAFE_LINE_LIMIT,
-        "prefer_incremental_file_edit_on_existing_files": True,
+        "prefer_file_edit": True,
+        "avoid_scratch_files": True,
+        "cadence": (
+            "land one coherent valid slice before attempting the next; use larger direct writes when they are "
+            "the clearest way to create a new requested artifact, and downshift only after a real truncation or "
+            "tool-shape failure"
+        ),
     }
     if forbid_scratch_files:
-        policy["forbid_scratch_files_outside_required_artifacts"] = True
+        policy["avoid_scratch_files"] = True
     return policy
 
 
@@ -206,8 +226,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-tool-calls",
         type=int,
-        default=64,
-        help="Maximum local tool calls for --live. Defaults to 64.",
+        default=128,
+        help="Maximum local tool calls for --live. Defaults to 128.",
     )
     parser.add_argument(
         "--workspace",
@@ -299,7 +319,6 @@ def _print_compact_report(
         f"Target: {_display_text(report.target)}",
         f"Verdict: {_display_text(report.final_verdict)}",
         f"{_display_text(report.score_label)}: {report.credibility_score:.2f}",
-        f"Execution Family: {_display_text(report.execution_family)}",
         "Organs: " + ", ".join(f"{key}={value}" for key, value in sorted(report.organ_counts.items())),
         "Coordination: "
         + " -> ".join(
@@ -403,7 +422,6 @@ def _text_report_lines(report: SuperOrganismReport) -> list[str]:
         f"Max Active Observed: {report.max_active_observed}",
         f"Verdict: {_display_text(report.final_verdict)}",
         f"{_display_text(report.score_label)}: {report.credibility_score:.2f}",
-        f"Execution Family: {_display_text(report.execution_family)}",
         f"Stages: {_display_text(' -> '.join(report.stage_sequence))}",
         "Organs: " + ", ".join(f"{key}={value}" for key, value in sorted(report.organ_counts.items())),
         "Signals: " + ", ".join(f"{key}={value}" for key, value in sorted(report.signal_counts.items())),
@@ -526,6 +544,8 @@ def _tool_request_summary(tool_id: str, arguments: Mapping[str, Any]) -> str:
         return _path_basename(path)
     if tool_id == "list_directory":
         return str(args.get("path") or ".")
+    if tool_id == "web_search":
+        return _truncate_text(args.get("query") or args.get("url") or "(missing query)", limit=160)
     if tool_id == "shell_command":
         return _truncate_text(args.get("command") or "(missing command)", limit=160)
     if tool_id in {"git_status", "git_diff", "git_log"}:
@@ -589,6 +609,13 @@ def _tool_result_summary(tool_id: str, payload: Mapping[str, Any]) -> str:
                 f"exit={result.get('exit_code', '?')} "
                 f"stdout={len(stdout)} chars stderr={len(stderr)} chars"
             )
+        if tool_id == "web_search":
+            results = result.get("results")
+            if isinstance(results, list):
+                return f"results={len(results)}"
+            if result.get("url"):
+                return _truncate_text(result.get("url"), limit=160)
+            return "search completed"
         if tool_id == "git_diff":
             return (
                 f"files={result.get('files_changed', 0)} "
@@ -706,7 +733,7 @@ class SuperProgressRenderer:
             return
         if name in {"live.generic_execution.started", "live.generic_build.started"}:
             root = _truncate_text(event.get("workspace_root") or "", limit=120)
-            self._emit(event, f"[build] coding lane started: {root}")
+            self._emit(event, f"[build] generic lane started: {root}")
             return
         if name == "model.requested":
             span_id = str(event.get("span_id") or event.get("model_call_id") or "")
@@ -805,12 +832,12 @@ class SuperProgressRenderer:
             for failure in failures[:2]:
                 self._emit(event, f"[validation] gap: {failure}")
             return
-        if name == "live.website_first_write_recovery.started":
+        if name in {"live.website_first_write_recovery.started", "live.generic_first_write_recovery.started"}:
             attempt = int(event.get("attempt") or 1)
             reason = _truncate_text(event.get("reason") or "no required files changed", limit=160)
             self._emit(event, f"[retry] first-write recovery {attempt} started: {reason}")
             return
-        if name == "live.website_first_write_recovery.completed":
+        if name in {"live.website_first_write_recovery.completed", "live.generic_first_write_recovery.completed"}:
             attempt = int(event.get("attempt") or 1)
             status = str(event.get("status") or "completed")
             changed = [
@@ -821,12 +848,12 @@ class SuperProgressRenderer:
             suffix = f" changed={','.join(changed)}" if changed else " changed=none"
             self._emit(event, f"[retry] first-write recovery {attempt} {status}{suffix}")
             return
-        if name == "live.website_repair.started":
+        if name in {"live.website_repair.started", "live.generic_repair.started"}:
             attempt = int(event.get("attempt") or 1)
             reason = _truncate_text(event.get("reason") or "validation failed", limit=160)
             self._emit(event, f"[repair] attempt {attempt} started: {reason}")
             return
-        if name == "live.website_repair.completed":
+        if name in {"live.website_repair.completed", "live.generic_repair.completed"}:
             attempt = int(event.get("attempt") or 1)
             status = str(event.get("status") or "completed")
             changed = [
@@ -981,8 +1008,7 @@ def _is_website_objective(
     report: SuperOrganismReport,
     args: argparse.Namespace | None = None,
 ) -> bool:
-    choice = _super_live_choice(report, args)
-    return choice.orchestrator_id == "super-dan-live-website"
+    return False
 
 
 def _super_live_choice(
@@ -991,28 +1017,52 @@ def _super_live_choice(
 ) -> OrchestratorChoice:
     context: dict[str, Any] = {
         "command": "super-organism",
-        "execution_family": report.execution_family,
     }
     code_like_live = args is not None and bool(getattr(args, "_code_like_live", False))
     existing_website_workspace = code_like_live and _existing_website_workspace_context(args)
+    single_file_html_workspace = (
+        code_like_live
+        and not existing_website_workspace
+        and _single_file_html_workspace_context(args)
+    )
     if existing_website_workspace:
         context["existing_website_workspace"] = True
         context["workspace_kind"] = "website"
+    elif single_file_html_workspace:
+        context["single_file_html_workspace"] = True
+        context["workspace_kind"] = "single_file_html"
+        if _live_context_allows_mutation_signal(report):
+            context["intent_signal"] = {
+                "operation": "mutate",
+                "artifact_target": "workspace",
+                "mutation_permission": True,
+                "confidence": 0.9,
+                "source": "super-dan-live-context",
+                "rationale": (
+                    "explicit live or interactive Super DAN context targets an existing single-file HTML artifact"
+                ),
+                "evidence": [
+                    "live_context:mutation_permission",
+                    "existing_artifact:single_file_html",
+                ],
+            }
     base_choice = select_orchestrator(
         str(report.target or ""),
         context,
     )
     if (
-        base_choice.orchestrator_id in {"super-dan-live-website", "super-dan-live-coding"}
+        base_choice.orchestrator_id == "super-dan-live-general"
         or not code_like_live
         or not _live_context_allows_mutation_signal(report)
     ):
         return base_choice
     if code_like_live and _live_context_allows_mutation_signal(report):
-        artifact_target = "website" if existing_website_workspace else "workspace"
+        artifact_target = "workspace"
         evidence = ["live_context:mutation_permission"]
         if existing_website_workspace:
             evidence.append("existing_artifact:website")
+        elif single_file_html_workspace:
+            evidence.append("existing_artifact:single_file_html")
         context["intent_signal"] = {
             "operation": "mutate",
             "artifact_target": artifact_target,
@@ -1031,8 +1081,7 @@ def _super_live_choice(
 
 
 def _live_context_allows_mutation_signal(report: SuperOrganismReport) -> bool:
-    family = _single_line(report.execution_family).lower()
-    return family in {"", "general_operator", "general operator", "code", "code_plus_research"}
+    return True
 
 
 def _supports_live_execution(
@@ -1040,7 +1089,7 @@ def _supports_live_execution(
     args: argparse.Namespace | None = None,
 ) -> bool:
     choice = _super_live_choice(report, args)
-    return choice.orchestrator_id in {"super-dan-live-website", "super-dan-live-coding"}
+    return choice.orchestrator_id == "super-dan-live-general"
 
 
 def _live_choice_tool_ids(choice: OrchestratorChoice) -> list[str]:
@@ -1055,7 +1104,16 @@ def _live_choice_preferred_tool_ids(choice: OrchestratorChoice, fallback: Sequen
 
 
 def _live_choice_read_only_tool_ids(choice: OrchestratorChoice) -> list[str]:
-    read_only = {"list_directory", "file_read", "git_status", "git_diff", "git_log"}
+    read_only = {
+        "list_directory",
+        "file_read",
+        "workspace_check",
+        "web_search",
+        "current_datetime",
+        "git_status",
+        "git_diff",
+        "git_log",
+    }
     return [tool_id for tool_id in _live_choice_tool_ids(choice) if tool_id in read_only]
 
 
@@ -1252,11 +1310,13 @@ def _live_model_configured(requested_model: str | None) -> bool:
 
 
 def _should_implicit_live(report: SuperOrganismReport, args: argparse.Namespace) -> bool:
+    live_probe_args = copy.copy(args)
+    setattr(live_probe_args, "_code_like_live", True)
     if (
         bool(getattr(args, "live", False))
         or bool(getattr(args, "plan_only", False))
         or not str(getattr(args, "target", "") or "").strip()
-        or not _supports_live_execution(report, args)
+        or not _supports_live_execution(report, live_probe_args)
     ):
         return False
     if not (
@@ -1268,13 +1328,7 @@ def _should_implicit_live(report: SuperOrganismReport, args: argparse.Namespace)
 
 
 def _should_materialize_website(report: SuperOrganismReport, args: argparse.Namespace) -> bool:
-    if (
-        bool(getattr(args, "plan_only", False))
-        or bool(getattr(args, "json", False))
-        or bool(getattr(args, "live", False))
-    ):
-        return False
-    return _is_website_objective(report, args)
+    return False
 
 
 def _artifact_root(args: argparse.Namespace) -> Path:
@@ -1352,6 +1406,29 @@ def _existing_website_workspace_context(args: argparse.Namespace) -> bool:
     return False
 
 
+def _single_file_html_workspace_context(args: argparse.Namespace) -> bool:
+    workspace_root = normalize_workspace_root(str(args.workspace))
+    artifact_dir = Path(str(getattr(args, "artifact_dir", "website") or "website")).expanduser()
+    candidate_roots = [workspace_root]
+    if artifact_dir.is_absolute():
+        candidate_roots.append(artifact_dir.resolve(strict=False))
+    else:
+        candidate_roots.append((workspace_root / artifact_dir).resolve(strict=False))
+    for root in candidate_roots:
+        if root.name.lower() in {"website", "site", "web", "public", "dist"}:
+            continue
+        if not (root / "index.html").exists():
+            continue
+        companion_count = sum(
+            1
+            for filename in ("styles.css", "app.js", "README.md")
+            if (root / filename).exists()
+        )
+        if companion_count == 0:
+            return True
+    return False
+
+
 def _workspace_should_be_website_artifact_root(
     args: argparse.Namespace,
     choice: OrchestratorChoice,
@@ -1401,12 +1478,12 @@ def _live_artifact_layout(
 def _live_expected_return_shape() -> str:
     return json.dumps(
         {
-            "candidate_id": "super-dan-live-website-001",
+            "candidate_id": "super-dan-live-general-001",
             "change_summary": ["short summary of concrete files written"],
-            "target_files": ["website/index.html", "website/styles.css"],
-            "test_plan": ["open the generated index.html in a browser"],
+            "target_files": ["path/to/changed-file.md"],
+            "test_plan": ["inspect the changed artifact or run a focused verification command"],
             "risks": ["remaining limitations or assumptions"],
-            "files_created": ["website/index.html", "website/styles.css"],
+            "files_created": ["path/to/changed-file.md"],
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -1591,6 +1668,85 @@ def _validation_repair_brief(
     return " ".join(compact)
 
 
+def _looks_like_git_baseline_rejection(text: str) -> bool:
+    lowered = str(text or "").lower()
+    git_terms = ("git history", "git log", "git diff", "commit", "head~", "untracked")
+    baseline_terms = ("baseline", "greenfield", "created fresh", "no prior version")
+    return any(term in lowered for term in git_terms) and any(
+        term in lowered for term in baseline_terms
+    )
+
+
+def _generic_validation_requests_additive_repair(validation: Mapping[str, Any]) -> bool:
+    text = _validation_repair_brief(validation, [])
+    lowered = text.lower()
+    additive_terms = (
+        "add",
+        "expand",
+        "enrich",
+        "include",
+        "missing",
+        "lacks",
+        "insufficient",
+        "deepen",
+        "more substantive",
+        "not enough",
+    )
+    removal_terms = ("remove", "delete", "trim", "shorten", "compress")
+    return any(term in lowered for term in additive_terms) and not (
+        any(term in lowered for term in removal_terms)
+        and not any(term in lowered for term in ("add", "expand", "include", "missing"))
+    )
+
+
+def _generic_validation_repair_brief(validation: Mapping[str, Any]) -> str:
+    raw = _validation_repair_brief(validation, [])
+    if not _looks_like_git_baseline_rejection(raw):
+        return raw
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", raw)
+        if sentence.strip()
+    ]
+    filtered_sentences = []
+    for sentence in sentences:
+        lowered_sentence = sentence.lower()
+        sentence_is_git_baseline = (
+            ("git" in lowered_sentence or "commit" in lowered_sentence or "head~" in lowered_sentence)
+            and any(term in lowered_sentence for term in ("baseline", "diff", "history", "greenfield"))
+        ) or (
+            "baseline" in lowered_sentence
+            and any(term in lowered_sentence for term in ("locate", "create", "prior version", "fresh"))
+        )
+        if not sentence_is_git_baseline:
+            filtered_sentences.append(sentence)
+    substantive = " ".join(filtered_sentences).strip()
+    if not substantive:
+        substantive = raw
+    return (
+        "Do not create, overwrite, or commit a baseline artifact to manufacture before/after evidence. "
+        "This workspace may contain untracked operator artifacts; use the run's pre-run file-state metadata and "
+        "the current artifact content as the baseline. Repair by improving the existing candidate directly. "
+        f"Validator feedback, interpreted as substantive content gaps rather than a git-history requirement: {substantive}"
+    )
+
+
+def _generic_repair_validation_payload(
+    validation: Mapping[str, Any],
+    *,
+    repair_brief: str,
+) -> dict[str, Any]:
+    payload = dict(validation)
+    payload["repair_brief"] = repair_brief
+    if _looks_like_git_baseline_rejection(_validation_repair_brief(validation, [])):
+        payload["comparison_note"] = (
+            "Git history or commit evidence is not required for this generic workspace repair; "
+            "compare against the pre-run file-state metadata and current artifact substance."
+        )
+        payload["git_baseline_rejection_corrected"] = True
+    return payload
+
+
 def _live_website_repair_task(
     report: SuperOrganismReport,
     *,
@@ -1655,14 +1811,37 @@ def _live_generic_task(
     workspace_root: Path,
 ) -> str:
     return (
-        "Execute the operator objective in the current workspace now. "
+        "Execute the operator objective in the current workspace now, using the enabled tools to produce the requested deliverable. "
         f"Operator objective: {report.target}. "
         f"Workspace root: {workspace_root}. "
         "Honor the supplied ticket ownership and handoff packets instead of freeforming a generic build summary. "
         f"{_live_pacing_contract()} "
-        "Inspect the existing project as needed, make a bounded implementation that materially advances the objective, "
-        "and run focused verification if useful. Actually mutate workspace files before finalizing, then return the "
-        "requested compact JSON-like completion summary."
+        "Inspect the existing project or workspace as needed. If the objective asks for current external facts, use web_search "
+        "instead of guessing. If it asks to save, export, return, or eventually produce a file, create or update the appropriate "
+        "workspace artifact; markdown/report requests should be materialized as a markdown file with source notes or links when "
+        "available. If it asks for software, make the bounded implementation and run focused verification when useful. "
+        "Actually mutate workspace files before finalizing, then return the requested compact JSON-like completion summary."
+    )
+
+
+def _live_generic_first_write_recovery_task(
+    report: SuperOrganismReport,
+    *,
+    workspace_root: Path,
+    failure_reason: str,
+    attempt: int,
+) -> str:
+    return (
+        "Run a generic Super DAN first-write recovery now. "
+        f"Attempt: {attempt}. "
+        f"Operator objective: {report.target}. "
+        f"Workspace root: {workspace_root}. "
+        f"Previous failure reason: {failure_reason or 'no workspace files were changed'}. "
+        "The previous worker returned or timed out without a durable workspace mutation. Do not summarize, plan, or keep "
+        "researching. Make at least one concrete file_write or file_edit call before finalizing. If the objective asks for "
+        "a report or markdown deliverable, create or update the report artifact directly. If an existing relevant artifact "
+        "is present, prefer appending or targeted edits over replacing it. Keep the recovery inside the workspace root, "
+        "then return the requested compact JSON-like completion summary."
     )
 
 
@@ -1670,12 +1849,64 @@ def _live_generic_validation_task(
     report: SuperOrganismReport,
     *,
     workspace_root: Path,
+    pre_run_file_state: Mapping[str, Mapping[str, Any]] | None = None,
+    post_run_file_state: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> str:
+    state_note = ""
+    if pre_run_file_state:
+        state_note = (
+            "Pre-run file-state metadata for mutated paths is available in the input payload. "
+            "Use it as the before/after baseline for untracked workspaces; do not require git commits, git log, "
+            "or git diff evidence when a file existed before the run and was changed by write tools. "
+        )
+    if post_run_file_state:
+        state_note += (
+            "Post-run file-state metadata for mutated paths is also available; use it to notice destructive shrinkage "
+            "or missing artifacts. "
+        )
     return (
-        "Validate the live implementation now in read-only mode. "
+        "Validate the live workspace deliverable now in read-only mode. "
         f"Operator objective: {report.target}. "
         f"Workspace root: {workspace_root}. "
-        "Inspect the mutated files and relevant read-only git evidence, then decide whether the result materially advances the objective."
+        f"{state_note}"
+        "Inspect the mutated files and relevant read-only evidence, then decide whether the result materially advances the "
+        "objective. For report or markdown objectives, verify that a report-like artifact was actually written and is not just "
+        "a generic planning memo. For software objectives, inspect the implementation and verification evidence."
+    )
+
+
+def _live_generic_repair_task(
+    report: SuperOrganismReport,
+    *,
+    workspace_root: Path,
+    validation: Mapping[str, Any],
+    mutated_paths: Sequence[str],
+    repair_brief: str | None = None,
+    pre_run_file_state: Mapping[str, Mapping[str, Any]] | None = None,
+    current_file_state: Mapping[str, Mapping[str, Any]] | None = None,
+) -> str:
+    effective_repair_brief = repair_brief or _generic_validation_repair_brief(validation)
+    changed = ", ".join(str(path) for path in mutated_paths) or "none recorded"
+    state_note = ""
+    if pre_run_file_state or current_file_state:
+        state_note = (
+            "Use the supplied file-state metadata as before/after context. Do not treat missing git commits, empty git log, "
+            "or an untracked workspace as proof that a new baseline must be created. "
+        )
+    return (
+        "Repair the previous Super DAN live deliverable now. "
+        f"Operator objective: {report.target}. "
+        f"Workspace root: {workspace_root}. "
+        f"Current mutated files: {changed}. "
+        f"{state_note}"
+        f"Validation feedback: {effective_repair_brief or 'validator rejected the previous deliverable'}. "
+        "Make concrete workspace edits that address that feedback; do not return a summary-only response. If the deliverable is "
+        "a report or markdown artifact, edit that artifact directly and improve grounding or coverage as needed. "
+        "Do not overwrite a substantive existing artifact with a shorter baseline, scaffold, or outline to manufacture "
+        "before/after evidence; preserve existing substance and expand or target-edit it unless the validator explicitly asks "
+        "for removal. "
+        "Keep the repair bounded, preserve the existing artifact shape unless the feedback requires otherwise, "
+        "and finish with the requested compact JSON-like completion summary."
     )
 
 
@@ -1808,6 +2039,73 @@ def _snapshot_file_state(paths: Sequence[Path]) -> dict[str, str | None]:
     return {
         str(path.resolve(strict=False)): _file_digest(path)
         for path in paths
+    }
+
+
+def _file_metadata(path: Path) -> dict[str, Any]:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return {"exists": False, "size": None, "mtime_ns": None}
+    except Exception as exc:
+        return {
+            "exists": False,
+            "size": None,
+            "mtime_ns": None,
+            "error": type(exc).__name__,
+        }
+    return {
+        "exists": True,
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+    }
+
+
+def _snapshot_workspace_file_metadata(workspace_root: Path) -> dict[str, dict[str, Any]]:
+    root = workspace_root.resolve(strict=False)
+    snapshot: dict[str, dict[str, Any]] = {}
+    if not root.exists():
+        return snapshot
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [
+            dirname
+            for dirname in dirnames
+            if dirname not in _GENERIC_SNAPSHOT_SKIP_DIR_NAMES
+        ]
+        for filename in filenames:
+            path = Path(dirpath) / filename
+            try:
+                if path.is_symlink() or not path.is_file():
+                    continue
+            except OSError:
+                continue
+            snapshot[str(path.resolve(strict=False))] = _file_metadata(path)
+    return snapshot
+
+
+def _file_metadata_for_paths(
+    snapshot: Mapping[str, Mapping[str, Any]],
+    paths: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    states: dict[str, dict[str, Any]] = {}
+    for raw_path in paths:
+        path = Path(str(raw_path)).expanduser()
+        rendered = str(path.resolve(strict=False))
+        state = snapshot.get(rendered)
+        states[rendered] = (
+            dict(state)
+            if isinstance(state, Mapping)
+            else {"exists": False, "size": None, "mtime_ns": None}
+        )
+    return states
+
+
+def _current_file_metadata_for_paths(paths: Sequence[str]) -> dict[str, dict[str, Any]]:
+    return {
+        str(Path(str(raw_path)).expanduser().resolve(strict=False)): _file_metadata(
+            Path(str(raw_path)).expanduser()
+        )
+        for raw_path in paths
     }
 
 
@@ -2174,7 +2472,7 @@ async def _run_live_website_build(
         )
     worker_brief = coding_brief(
             role=RoleSpec(
-                role_label="coding_worker",
+                role_label="workspace_worker",
                 responsibility="Build the requested Super DAN static website artifact.",
                 success_criteria=[
                     "All required website files exist.",
@@ -2222,7 +2520,11 @@ async def _run_live_website_build(
                 ),
                 expected_return_shape=_live_expected_return_shape(),
             ),
-            sampling_policy={"profile": choice.sampling_policy, "temperature": 0.35, "max_tokens": 2800},
+            sampling_policy={
+                "profile": choice.sampling_policy,
+                "temperature": 0.35,
+                "max_tokens": _SUPER_DAN_WORKER_MAX_TOKENS,
+            },
             evidence=_super_report_evidence_blocks(report),
             input_payload={
                 "objective": objective_context.get("effective_objective") or report.target,
@@ -2356,9 +2658,13 @@ async def _run_live_website_build(
             tool_policy={
                 "allowed_tool_ids": list(website_read_only_tool_ids),
                 "preferred_tool_ids": ["file_read", "list_directory"],
-                "max_tool_calls": max(4, min(int(args.max_tool_calls), 12)),
+                "max_tool_calls": max(4, min(int(args.max_tool_calls), 24)),
             },
-            sampling_policy={"profile": "deterministic", "temperature": 0.0, "max_tokens": 1600},
+            sampling_policy={
+                "profile": "deterministic",
+                "temperature": 0.0,
+                "max_tokens": _SUPER_DAN_VALIDATOR_MAX_TOKENS,
+            },
             output_contract=OutputContract(
                 definition_of_done="Return the validation report only.",
                 expected_return_shape=_live_validation_return_shape(),
@@ -2477,7 +2783,11 @@ async def _run_live_website_build(
                 ),
                 expected_return_shape=_live_expected_return_shape(),
             ),
-            sampling_policy={"profile": choice.sampling_policy, "temperature": 0.2, "max_tokens": 2200},
+            sampling_policy={
+                "profile": choice.sampling_policy,
+                "temperature": 0.2,
+                "max_tokens": _SUPER_DAN_REPAIR_MAX_TOKENS,
+            },
             evidence=_super_report_evidence_blocks(report),
             input_payload={
                 "objective": objective_context.get("effective_objective") or report.target,
@@ -2640,7 +2950,11 @@ async def _run_live_website_build(
                 ),
                 expected_return_shape=_live_expected_return_shape(),
             ),
-            sampling_policy={"profile": choice.sampling_policy, "temperature": 0.25, "max_tokens": 2400},
+            sampling_policy={
+                "profile": choice.sampling_policy,
+                "temperature": 0.25,
+                "max_tokens": _SUPER_DAN_REPAIR_MAX_TOKENS,
+            },
             evidence=_super_report_evidence_blocks(report),
             input_payload={
                 "objective": objective_context.get("effective_objective") or report.target,
@@ -2808,34 +3122,39 @@ async def _run_live_generic_execution(
     generic_tool_ids = _live_choice_tool_ids(choice)
     generic_preferred_tool_ids = _live_choice_preferred_tool_ids(
         choice,
-        ["list_directory", "file_read", "file_edit", "file_write", "git_diff", "shell_command"],
+        ["list_directory", "web_search", "file_read", "file_edit", "file_write", "git_diff", "shell_command"],
     )
     generic_read_only_tool_ids = _live_choice_read_only_tool_ids(choice)
     pacing_policy = _live_pacing_policy()
-    worker_id = "super-dan.live.coding-builder"
+    worker_id = "super-dan.live.general-builder"
     workspace_root = normalize_workspace_root(str(args.workspace))
     workspace_root.mkdir(parents=True, exist_ok=True)
-    worker_brief = coding_brief(
+    pre_run_workspace_state = _snapshot_workspace_file_metadata(workspace_root)
+    worker_brief = role_brief(
             role=RoleSpec(
-                role_label="coding_worker",
-                responsibility="Execute the requested Super DAN coding/build change directly in the workspace.",
+                role_label="workspace_worker",
+                responsibility="Execute the requested Super DAN deliverable directly in the workspace.",
                 success_criteria=[
                     "At least one workspace file is created or edited.",
                     "The change materially advances the operator objective.",
                     "The final answer names changed files, validation plan, and remaining risks.",
                 ],
-                trace_role="super-dan.live.coding-builder",
+                trace_role="super-dan.live.general-builder",
             ),
             task=_live_generic_task(report, workspace_root=workspace_root),
-            scope=f"workspace={workspace_root}; native Super DAN live coding/build execution",
+            scope=f"workspace={workspace_root}; native Super DAN live general workspace execution",
             hard_constraints=[
                 "Actually mutate workspace files before finalizing.",
                 "Do not invoke the separate DAN Code or DAN Research product shells.",
                 "Keep the work inside the current workspace root.",
                 "Do not use destructive git reset, checkout, or rm-style cleanup.",
+                "When the requested deliverable is a saved report, markdown file, data note, or other document artifact, write that artifact to the workspace.",
+                "Use web_search for current external facts when the enabled tool is available.",
             ],
             soft_constraints=[
-                "Prefer a bounded implementation over a broad speculative rewrite.",
+                "Prefer a bounded concrete deliverable over broad speculative analysis.",
+                "For broad maps, cover the highest-value chain first and mark lower-confidence gaps clearly.",
+                "Prefer primary/company/regulatory/source-grounded evidence over unsourced memory when current facts matter.",
                 "Use shell_command only when it materially verifies or inspects the workspace.",
                 "Keep the final summary concise and inspectable.",
                 "Inspect first, then make a bounded coherent implementation.",
@@ -2843,12 +3162,16 @@ async def _run_live_generic_execution(
                 "After one failed or truncated large write, immediately switch to a smaller patch strategy.",
                 "Avoid rereading the same files unless the next edit truly needs exact grounding.",
             ],
-            pacing_policy=pacing_policy,
             tool_policy={
                 "allowed_tool_ids": list(generic_tool_ids),
                 "preferred_tool_ids": list(generic_preferred_tool_ids),
                 "max_tool_calls": int(args.max_tool_calls),
             },
+            contract_snippets=[
+                _live_pacing_contract(pacing_policy),
+                snippets.incremental_edit_contract(),
+                snippets.no_scratch_files_contract(),
+            ],
             output_contract=OutputContract(
                 definition_of_done=(
                     "At least one workspace file was created or edited and the final response names the changed files, "
@@ -2856,7 +3179,11 @@ async def _run_live_generic_execution(
                 ),
                 expected_return_shape=_live_expected_return_shape(),
             ),
-            sampling_policy={"profile": choice.sampling_policy, "temperature": 0.30, "max_tokens": 2800},
+            sampling_policy={
+                "profile": choice.sampling_policy,
+                "temperature": 0.30,
+                "max_tokens": _SUPER_DAN_WORKER_MAX_TOKENS,
+            },
             evidence=_super_report_evidence_blocks(report),
             input_payload={
                 "objective": report.target,
@@ -2864,7 +3191,6 @@ async def _run_live_generic_execution(
                 "organism_id": report.organism_id,
                 "cell_count": report.cell_count,
                 "active_cell_cap": report.active_cell_cap,
-                "execution_family": report.execution_family,
                 "organ_counts": dict(report.organ_counts),
                 "delivery_plan": [node.model_dump(mode="json") for node in report.delivery_plan],
                 "write_pacing": dict(pacing_policy),
@@ -2886,7 +3212,7 @@ async def _run_live_generic_execution(
                 "trace_id": run_trace_id,
                 "root_task_id": run_task_id,
                 "organism_id": report.organism_id,
-                "organ_id": "super-dan.live.coding",
+                "organ_id": "super-dan.live.general",
                 "organism_stage": "execution",
                 "worker_id": worker_id,
             },
@@ -2936,26 +3262,48 @@ async def _run_live_generic_execution(
             else None
         ),
     )
-    if mutated_paths:
-        validator_worker_id = "super-dan.live.coding.validator"
+    validation_tool_calls_total = 0
+    validation_event_count_total = 0
+    validation_token_usage: dict[str, int] | None = None
+
+    def record_validation_usage(current_validation: Mapping[str, Any]) -> None:
+        nonlocal validation_tool_calls_total, validation_event_count_total, validation_token_usage
+        validation_tool_calls_total += int(current_validation.get("tool_calls") or 0)
+        validation_event_count_total += int(current_validation.get("event_count") or 0)
+        validation_token_usage = _merge_token_usage(
+            validation_token_usage,
+            current_validation.get("token_usage"),
+        )
+
+    async def run_generic_validator(paths: Sequence[str]) -> dict[str, Any]:
+        validator_worker_id = "super-dan.live.general.validator"
+        pre_run_file_state = _file_metadata_for_paths(pre_run_workspace_state, paths)
+        post_run_file_state = _current_file_metadata_for_paths(paths)
         validator_brief = review_brief(
                 role=RoleSpec(
-                    role_label="validator_coding",
-                    responsibility="Validate the Super DAN coding/build mutation in read-only mode.",
+                    role_label="validator_workspace",
+                    responsibility="Validate the Super DAN workspace deliverable in read-only mode.",
                     success_criteria=[
                         "Mutated files and relevant git evidence were inspected.",
                         "The implementation materially advances the operator objective.",
                         "Placeholder-style or non-responsive changes are rejected.",
                     ],
-                    artifact_targets=list(mutated_paths),
-                    trace_role="super-dan.live.coding.validator",
+                    artifact_targets=list(paths),
+                    trace_role="super-dan.live.general.validator",
                 ),
-                task=_live_generic_validation_task(report, workspace_root=workspace_root),
-                scope=f"workspace={workspace_root}; native Super DAN coding/build validation",
+                task=_live_generic_validation_task(
+                    report,
+                    workspace_root=workspace_root,
+                    pre_run_file_state=pre_run_file_state,
+                    post_run_file_state=post_run_file_state,
+                ),
+                scope=f"workspace={workspace_root}; native Super DAN general workspace validation",
                 hard_constraints=[
                     "Read-only validation only; do not write or edit files.",
                     "Inspect the mutated files and relevant read-only git evidence before deciding.",
+                    "Use pre-run file-state metadata as the material-change baseline for untracked workspaces; do not require git commits or git history.",
                     "Fail if the run made only placeholder-style or otherwise non-responsive changes.",
+                    "For document/report objectives, inspect the written artifact and fail if no report-like file was produced.",
                 ],
                 soft_constraints=[
                     "Prefer concrete missing requirements over vague criticism.",
@@ -2964,10 +3312,14 @@ async def _run_live_generic_execution(
                 allowed_tool_ids=generic_read_only_tool_ids,
                 tool_policy={
                     "allowed_tool_ids": list(generic_read_only_tool_ids),
-                    "preferred_tool_ids": ["git_diff", "file_read", "git_status", "list_directory"],
-                    "max_tool_calls": max(4, min(int(args.max_tool_calls), 12)),
+                    "preferred_tool_ids": ["git_diff", "file_read", "web_search", "git_status", "list_directory"],
+                    "max_tool_calls": max(4, min(int(args.max_tool_calls), 24)),
                 },
-                sampling_policy={"profile": "deterministic", "temperature": 0.0, "max_tokens": 1600},
+                sampling_policy={
+                    "profile": "deterministic",
+                    "temperature": 0.0,
+                    "max_tokens": _SUPER_DAN_VALIDATOR_MAX_TOKENS,
+                },
                 output_contract=OutputContract(
                     definition_of_done="Return the validation report only.",
                     expected_return_shape=_live_validation_return_shape(),
@@ -2975,7 +3327,9 @@ async def _run_live_generic_execution(
                 input_payload={
                     "objective": report.target,
                     "workspace_root": str(workspace_root),
-                    "mutated_paths": list(mutated_paths),
+                    "mutated_paths": list(paths),
+                    "pre_run_file_state": pre_run_file_state,
+                    "post_run_file_state": post_run_file_state,
                 },
                 metadata={
                     "surface": "super_organism",
@@ -2984,7 +3338,7 @@ async def _run_live_generic_execution(
                     "trace_id": run_trace_id,
                     "root_task_id": run_task_id,
                     "organism_id": report.organism_id,
-                    "organ_id": "super-dan.live.coding",
+                    "organ_id": "super-dan.live.general",
                     "worker_id": validator_worker_id,
                     "organism_stage": "validation",
                 },
@@ -2996,7 +3350,7 @@ async def _run_live_generic_execution(
             organism_stage="validation",
         )
         validator_request = _request_from_live_brief(validator_brief)
-        validation = await _run_live_validation(
+        return await _run_live_validation(
             worker=validator_worker,
             request=validator_request,
             tool_ids=generic_read_only_tool_ids,
@@ -3006,17 +3360,324 @@ async def _run_live_generic_execution(
             provider=provider,
             event_logger=event_logger,
         )
+
+    first_write_recovery_attempts = 0
+
+    async def run_generic_first_write_recovery() -> None:
+        nonlocal first_write_recovery_attempts
+        nonlocal result, executed_tools, events, build_token_usage, mutated_paths, error, validation
+
+        while (
+            not mutated_paths
+            and first_write_recovery_attempts < _SUPER_DAN_GENERIC_FIRST_WRITE_RECOVERY_ATTEMPTS
+        ):
+            first_write_recovery_attempts += 1
+            recovery_reason = (
+                error
+                or _validation_repair_brief(validation, [])
+                or "live execution finished without any workspace file mutations"
+            )
+            _log_live_event(
+                event_logger,
+                "live.generic_first_write_recovery.started",
+                attempt=first_write_recovery_attempts,
+                model=model,
+                reason=recovery_reason,
+            )
+            recovery_worker_id = "super-dan.live.general-first-write-recovery"
+            recovery_brief = role_brief(
+                role=RoleSpec(
+                    role_label="workspace_worker",
+                    responsibility="Recover a Super DAN live run that produced no workspace mutation.",
+                    success_criteria=[
+                        "At least one workspace file is created or edited.",
+                        "The recovery materially advances the original operator objective.",
+                        "The final answer names changed files, validation plan, and remaining risks.",
+                    ],
+                    trace_role="super-dan.live.general-first-write-recovery",
+                ),
+                task=_live_generic_first_write_recovery_task(
+                    report,
+                    workspace_root=workspace_root,
+                    failure_reason=recovery_reason,
+                    attempt=first_write_recovery_attempts,
+                ),
+                scope=f"workspace={workspace_root}; native Super DAN generic first-write recovery",
+                hard_constraints=[
+                    "Actually create or edit at least one workspace file with file_write or file_edit before finalizing.",
+                    "Do not invoke the separate DAN Code or DAN Research product shells.",
+                    "Keep the work inside the current workspace root.",
+                    "Do not use destructive git reset, checkout, or rm-style cleanup.",
+                    "If the requested deliverable is a saved report, markdown file, data note, or other document artifact, write that artifact to the workspace.",
+                ],
+                soft_constraints=[
+                    "Prefer the smallest coherent durable artifact edit that materially advances the objective.",
+                    "If a relevant existing artifact is present, prefer file_edit or append-style file_write over replacing it.",
+                    "Avoid additional broad discovery unless the next write depends on one exact path or fact.",
+                    "For report objectives, write substantive section content rather than another outline or plan.",
+                ],
+                tool_policy={
+                    "allowed_tool_ids": list(generic_tool_ids),
+                    "preferred_tool_ids": list(generic_preferred_tool_ids),
+                    "max_tool_calls": int(args.max_tool_calls),
+                },
+                contract_snippets=[
+                    _live_pacing_contract(pacing_policy),
+                    snippets.incremental_edit_contract(),
+                    snippets.no_scratch_files_contract(),
+                ],
+                output_contract=OutputContract(
+                    definition_of_done=(
+                        "The no-mutation failure is recovered by a concrete workspace file creation or edit, and the final "
+                        "response names changed files, validation plan, and remaining risks."
+                    ),
+                    expected_return_shape=_live_expected_return_shape(),
+                ),
+                sampling_policy={
+                    "profile": choice.sampling_policy,
+                    "temperature": 0.25,
+                    "max_tokens": _SUPER_DAN_REPAIR_MAX_TOKENS,
+                },
+                evidence=_super_report_evidence_blocks(report),
+                input_payload={
+                    "objective": report.target,
+                    "workspace_root": str(workspace_root),
+                    "failure_reason": recovery_reason,
+                    "attempt": first_write_recovery_attempts,
+                    "write_pacing": dict(pacing_policy),
+                },
+                metadata={
+                    "surface": "super_organism",
+                    "mode": "live",
+                    "tool_budget_profile": "super_dan_live",
+                    "trace_id": run_trace_id,
+                    "root_task_id": run_task_id,
+                    "organism_id": report.organism_id,
+                    "organ_id": "super-dan.live.general",
+                    "organism_stage": "execution",
+                    "worker_id": recovery_worker_id,
+                },
+            )
+            recovery_worker = _live_cell_from_brief(
+                model=model,
+                brief=recovery_brief,
+                worker_id=recovery_worker_id,
+                organism_stage="execution",
+            )
+            recovery_result, recovery_tools, recovery_events = await _execute_live_request(
+                worker=recovery_worker,
+                request=_request_from_live_brief(recovery_brief),
+                tool_ids=generic_tool_ids,
+                workspace_root=workspace_root,
+                args=args,
+                model=model,
+                provider=provider,
+                event_logger=event_logger,
+            )
+            result = recovery_result
+            executed_tools.extend(recovery_tools)
+            events.extend(recovery_events)
+            build_token_usage = _merge_token_usage(
+                build_token_usage,
+                _extract_execution_usage(recovery_result),
+            )
+            if recovery_result.error:
+                error = recovery_result.error
+            mutated_paths = _mutation_paths_from_tools(executed_tools, workspace_root=workspace_root)
+            _log_live_event(
+                event_logger,
+                "live.generic_first_write_recovery.completed",
+                attempt=first_write_recovery_attempts,
+                model=model,
+                status=recovery_result.status,
+                tool_calls=len(recovery_tools),
+                event_count=len(recovery_events),
+                changed_required_files=list(mutated_paths),
+            )
+            if mutated_paths:
+                if not recovery_result.error:
+                    error = None
+                validation = await run_generic_validator(mutated_paths)
+                record_validation_usage(validation)
+                return
+
+            error = recovery_result.error or "live execution finished without any workspace file mutations"
+            validation = _failed_validation_payload(
+                reason=error,
+                missing_requirements=["No workspace file mutations were observed."],
+            )
+
+    if mutated_paths:
+        validation = await run_generic_validator(mutated_paths)
+        record_validation_usage(validation)
+    elif result.status == "completed":
+        await run_generic_first_write_recovery()
+
+    repair_attempts = 0
+    if result.status == "completed" and mutated_paths and not bool(validation.get("passed")):
+        repair_attempts = 1
+        repair_reason = _generic_validation_repair_brief(validation)
+        repair_validation = _generic_repair_validation_payload(
+            validation,
+            repair_brief=repair_reason,
+        )
+        repair_pre_run_file_state = _file_metadata_for_paths(pre_run_workspace_state, mutated_paths)
+        repair_current_file_state = _current_file_metadata_for_paths(mutated_paths)
+        additive_repair_required = _generic_validation_requests_additive_repair(validation)
+        _log_live_event(
+            event_logger,
+            "live.generic_repair.started",
+            attempt=repair_attempts,
+            model=model,
+            reason=repair_reason or "validation failed",
+            changed_required_files=list(mutated_paths),
+            additive_repair_required=bool(additive_repair_required),
+        )
+        repair_worker_id = "super-dan.live.general-repair"
+        repair_brief = role_brief(
+            role=RoleSpec(
+                role_label="workspace_worker",
+                responsibility="Repair the Super DAN workspace deliverable after validation failure.",
+                success_criteria=[
+                    "Validation feedback is addressed with concrete workspace edits.",
+                    "The repair materially advances the original operator objective.",
+                    "The final answer names changed files, validation plan, and remaining risks.",
+                ],
+                artifact_targets=list(mutated_paths),
+                trace_role="super-dan.live.general-repair",
+            ),
+            task=_live_generic_repair_task(
+                report,
+                workspace_root=workspace_root,
+                validation=repair_validation,
+                mutated_paths=mutated_paths,
+                repair_brief=repair_reason,
+                pre_run_file_state=repair_pre_run_file_state,
+                current_file_state=repair_current_file_state,
+            ),
+            scope=f"workspace={workspace_root}; native Super DAN general workspace validation repair",
+            hard_constraints=[
+                "Actually edit workspace files; do not return a summary-only response.",
+                "Keep the work inside the current workspace root.",
+                "Do not invoke the separate DAN Code or DAN Research product shells.",
+                "Do not use destructive git reset, checkout, or rm-style cleanup.",
+                "Do not create, commit, or overwrite a baseline artifact just to satisfy git-history or before/after evidence.",
+            ],
+            soft_constraints=[
+                "Prefer targeted edits over rewriting the whole artifact.",
+                "Address validator feedback directly before polishing unrelated details.",
+                "Preserve the existing artifact shape unless the feedback requires broader restructuring.",
+                "Prefer `file_edit` over whole-file `file_write` when the target file already exists.",
+                "For additive repair feedback, preserve existing substance and expand or target-edit rather than replacing it with a shorter scaffold.",
+            ],
+            tool_policy={
+                "allowed_tool_ids": list(generic_tool_ids),
+                "preferred_tool_ids": list(generic_preferred_tool_ids),
+                "max_tool_calls": int(args.max_tool_calls),
+            },
+            contract_snippets=[
+                _live_pacing_contract(pacing_policy),
+                snippets.incremental_edit_contract(),
+                snippets.no_scratch_files_contract(),
+            ],
+            output_contract=OutputContract(
+                definition_of_done=(
+                    "Validation feedback is addressed with concrete workspace edits and the final response names "
+                    "changed files, validation plan, and remaining risks."
+                ),
+                expected_return_shape=_live_expected_return_shape(),
+            ),
+            sampling_policy={
+                "profile": choice.sampling_policy,
+                "temperature": 0.25,
+                "max_tokens": _SUPER_DAN_REPAIR_MAX_TOKENS,
+            },
+            evidence=_super_report_evidence_blocks(report),
+            input_payload={
+                "objective": report.target,
+                "workspace_root": str(workspace_root),
+                "mutated_paths": list(mutated_paths),
+                "validation": repair_validation,
+                "pre_run_file_state": repair_pre_run_file_state,
+                "current_file_state": repair_current_file_state,
+                "write_pacing": dict(pacing_policy),
+            },
+            metadata={
+                "surface": "super_organism",
+                "mode": "live",
+                "tool_budget_profile": "super_dan_live",
+                "trace_id": run_trace_id,
+                "root_task_id": run_task_id,
+                "organism_id": report.organism_id,
+                "organ_id": "super-dan.live.general",
+                "organism_stage": "execution",
+                "worker_id": repair_worker_id,
+                "repair_policy": {
+                    "forbid_shrinking_existing_artifacts": bool(additive_repair_required),
+                    "target_paths": list(mutated_paths),
+                },
+            },
+        )
+        repair_worker = _live_cell_from_brief(
+            model=model,
+            brief=repair_brief,
+            worker_id=repair_worker_id,
+            organism_stage="execution",
+        )
+        repair_result, repair_tools, repair_events = await _execute_live_request(
+            worker=repair_worker,
+            request=_request_from_live_brief(repair_brief),
+            tool_ids=generic_tool_ids,
+            workspace_root=workspace_root,
+            args=args,
+            model=model,
+            provider=provider,
+            event_logger=event_logger,
+        )
+        result = repair_result
+        executed_tools.extend(repair_tools)
+        events.extend(repair_events)
+        build_token_usage = _merge_token_usage(
+            build_token_usage,
+            _extract_execution_usage(repair_result),
+        )
+        if repair_result.error:
+            error = repair_result.error
+        mutated_paths = _mutation_paths_from_tools(executed_tools, workspace_root=workspace_root)
+        _log_live_event(
+            event_logger,
+            "live.generic_repair.completed",
+            attempt=repair_attempts,
+            model=model,
+            status=repair_result.status,
+            tool_calls=len(repair_tools),
+            event_count=len(repair_events),
+            changed_required_files=list(mutated_paths),
+        )
+        validation = _failed_validation_payload(
+            reason=error or "live workspace repair did not meet the exit contract",
+            missing_requirements=(
+                ["No workspace file mutations were observed."]
+                if not mutated_paths
+                else None
+            ),
+        )
+        if mutated_paths:
+            validation = await run_generic_validator(mutated_paths)
+            record_validation_usage(validation)
     _log_final_validation_event(
         event_logger,
-        worker_id="super-dan.live.coding.validator",
+        worker_id="super-dan.live.general.validator",
         model=model,
         validation=validation,
+        deterministic_failures=list(validation.get("missing_requirements") or []),
+        changed_required_files=mutated_paths,
+        first_write_recovery_attempted=bool(first_write_recovery_attempts),
+        repair_attempted=bool(repair_attempts),
+        repair_exhausted=bool(repair_attempts and not validation.get("passed")),
     )
     if not validation.get("passed") and not error:
-        error = (
-            str(validation.get("repair_brief") or "").strip()
-            or "live execution failed validation"
-        )
+        error = _validation_repair_brief(validation, []) or "live execution failed validation"
     status = (
         "completed"
         if result.status == "completed" and mutated_paths and bool(validation.get("passed"))
@@ -3024,7 +3685,7 @@ async def _run_live_generic_execution(
     )
     token_usage = _merge_token_usage(
         build_token_usage,
-        validation.get("token_usage"),
+        validation_token_usage,
     )
     return {
         "status": status,
@@ -3034,13 +3695,13 @@ async def _run_live_generic_execution(
         "files": list(mutated_paths),
         "required_files": [],
         "missing_files": [],
-        "tool_calls": len(executed_tools) + int(validation.get("tool_calls") or 0),
+        "tool_calls": len(executed_tools) + validation_tool_calls_total,
         "mutated_paths": list(mutated_paths),
-        "event_count": len(events) + int(validation.get("event_count") or 0),
+        "event_count": len(events) + validation_event_count_total,
         "summary": result.outputs.get("result") or result.outputs.get("text") or "",
         "error": error,
         "summary_label": "Live Run",
-        "objective_kind": "coding",
+        "objective_kind": "general",
         "token_usage": token_usage,
         "validation": validation,
     }
@@ -3081,16 +3742,6 @@ async def _run_live_execution_with_provider_cleanup(
     objective_kind: str,
 ) -> dict[str, Any]:
     try:
-        if objective_kind == "website":
-            return await _run_live_website_build(
-                report,
-                args,
-                model=model,
-                provider=provider,
-                run_trace_id=run_trace_id,
-                run_task_id=run_task_id,
-                event_logger=event_logger,
-            )
         return await _run_live_generic_execution(
             report,
             args,
@@ -3116,6 +3767,11 @@ def _mutation_paths_from_tools(
             continue
         arguments = tool.get("arguments") if isinstance(tool.get("arguments"), dict) else {}
         result = tool.get("result") if isinstance(tool.get("result"), dict) else {}
+        if (
+            str(tool.get("tool_id") or "") == "file_edit"
+            and (result.get("changed") is False or result.get("no_op") is True)
+        ):
+            continue
         raw_path = str(result.get("path") or arguments.get("path") or arguments.get("file_path") or "").strip()
         if not raw_path:
             continue
@@ -3342,13 +3998,13 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
     if bool(getattr(args, "live", False)):
         if not _supports_live_execution(report, args):
             parser.error(
-                "--live currently supports website-like and general coding/build objectives"
+                "--live could not resolve a generic Super DAN workspace-deliverable lane"
             )
         live_workspace_root = normalize_workspace_root(str(args.workspace))
         live_workdir, live_turn_number = _build_super_run_workdir(live_workspace_root)
         live_trace_id = new_trace_id()
         live_task_id = f"super-dan-live:{live_turn_number}"
-        objective_kind = "website" if _is_website_objective(report, args) else "coding"
+        objective_kind = "general"
         progress_renderer = SuperProgressRenderer(
             enabled=not bool(getattr(args, "json", False))
             and not bool(getattr(args, "quiet_progress", False))

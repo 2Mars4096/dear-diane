@@ -164,9 +164,8 @@ class _FakePatchContinuationWebsiteProvider:
                 for message in messages
                 if isinstance(message, dict)
             )
-            assert "Continue patching this existing website with a concrete maintainability pass" in rendered_messages
-            assert "Original operator wording: can you keep patching this website" in rendered_messages
-            assert "index.html, styles.css, app.js, and README.md" in rendered_messages
+            assert "Execute the operator objective in the current workspace now" in rendered_messages
+            assert "can you keep patching this website" in rendered_messages
             tool_calls = [
                 _file_write_call(
                     "call-index",
@@ -239,7 +238,7 @@ class _FakePatchContinuationWebsiteProvider:
             for message in messages
             if isinstance(message, dict)
         )
-        assert "Validate against the expanded patch brief" in rendered_messages
+        assert "Validate the live workspace deliverable now" in rendered_messages
         return CompletionResult(
             text=json.dumps(
                 {
@@ -606,6 +605,150 @@ class _FakeSoftBudgetLiveWebsiteProvider:
         )
 
 
+class _FakeGenericReportPostwriteBudgetProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.max_tokens_seen: list[int | None] = []
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.calls += 1
+        self.max_tokens_seen.append(max_tokens)
+        tools = kwargs.get("tools") or []
+        tool_names = [
+            str(tool.get("function", {}).get("name") or "")
+            for tool in tools
+            if isinstance(tool, dict)
+        ]
+        if self.calls <= 5:
+            tool_call = {
+                "id": f"call-read-{self.calls}",
+                "type": "function",
+                "function": {
+                    "name": "file_read",
+                    "arguments": json.dumps({"path": f"notes/input-{self.calls}.txt"}),
+                },
+            }
+            return CompletionResult(
+                text="",
+                model=model,
+                usage={"prompt_tokens": 12, "completion_tokens": 4, "total_tokens": 16},
+                tool_calls=[tool_call],
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [tool_call],
+                },
+            )
+        if self.calls == 6:
+            assert "file_write" in tool_names
+            tool_call = {
+                "id": "call-report-first",
+                "type": "function",
+                "function": {
+                    "name": "file_write",
+                    "arguments": json.dumps(
+                        {
+                            "path": "equity_report.md",
+                            "content": "# Equity Report\n\nInitial investment thesis.\n",
+                        }
+                    ),
+                },
+            }
+            return CompletionResult(
+                text="",
+                model=model,
+                usage={"prompt_tokens": 12, "completion_tokens": 6, "total_tokens": 18},
+                tool_calls=[tool_call],
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [tool_call],
+                },
+            )
+        if self.calls == 7:
+            assert "file_write" in tool_names
+            assert not any(
+                "stop using tools and return"
+                in str(message.get("content") or "").lower()
+                for message in messages
+                if isinstance(message, dict) and message.get("role") == "user"
+            )
+            tool_call = {
+                "id": "call-report-second",
+                "type": "function",
+                "function": {
+                    "name": "file_write",
+                    "arguments": json.dumps(
+                        {
+                            "path": "equity_report.md",
+                            "mode": "append",
+                            "content": "\n## Valuation\n\nComps, estimate bridge, and risk framing.\n",
+                        }
+                    ),
+                },
+            }
+            return CompletionResult(
+                text="",
+                model=model,
+                usage={"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20},
+                tool_calls=[tool_call],
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [tool_call],
+                },
+            )
+        if self.calls == 8:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "generic-report-postwrite-budget",
+                        "change_summary": ["expanded the report after the initial write"],
+                        "target_files": ["equity_report.md"],
+                        "test_plan": ["inspect equity_report.md"],
+                        "risks": [],
+                        "files_created": ["equity_report.md"],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                finish_reason="stop",
+            )
+        assert "file_write" not in tool_names
+        assert "file_edit" not in tool_names
+        return CompletionResult(
+            text=json.dumps(
+                {
+                    "passed": True,
+                    "overall_score": 0.9,
+                    "dimension_scores": {
+                        "objective_alignment": 0.9,
+                        "artifact_specificity": 0.9,
+                        "execution_quality": 0.9,
+                    },
+                    "repair_brief": "",
+                    "missing_requirements": [],
+                    "comparison_note": "The report continued expanding after the first write.",
+                },
+                sort_keys=True,
+            ),
+            model=model,
+            usage={"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12},
+            finish_reason="stop",
+        )
+
+
 def _file_write_call(call_id: str, path: str, content: str) -> dict:
     return {
         "id": call_id,
@@ -689,7 +832,7 @@ class _FakeLiveCodingProvider:
         )
 
 
-class _FakeNoOpWebsiteProvider:
+class _FakeLiveCodingValidationFailureProvider(_FakeLiveCodingProvider):
     async def complete(
         self,
         messages,
@@ -698,6 +841,390 @@ class _FakeNoOpWebsiteProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        self.calls += 1
+        if self.calls == 1:
+            tool_calls = [
+                _file_write_call(
+                    "call-generic",
+                    "index.html",
+                    "<!doctype html><html><body><canvas id=\"scene\"></canvas></body></html>\n",
+                ),
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                usage={"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28},
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 2:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "live-coding-weak-smoke",
+                        "change_summary": ["made a small smoke tweak"],
+                        "target_files": ["index.html"],
+                        "test_plan": ["open index.html"],
+                        "risks": [],
+                        "files_created": [],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 10, "completion_tokens": 6, "total_tokens": 16},
+                finish_reason="stop",
+            )
+        return CompletionResult(
+            text=json.dumps(
+                {
+                    "passed": False,
+                    "overall_score": 0.3,
+                    "dimension_scores": {
+                        "objective_alignment": 0.45,
+                        "artifact_specificity": 0.3,
+                        "execution_quality": 0.25,
+                    },
+                    "repair_brief": "",
+                    "missing_requirements": [],
+                    "comparison_note": "The smoke is still chunky and needs smaller particles, turbulence, and lighter blending.",
+                },
+                sort_keys=True,
+            ),
+            model=model,
+            usage={"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+            finish_reason="stop",
+        )
+
+
+class _FakeLiveCodingRepairProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.calls += 1
+        if self.calls == 1:
+            tool_calls = [
+                _file_write_call(
+                    "call-initial-animation",
+                    "index.html",
+                    "<!doctype html><html><body><canvas id=\"smoke\">chunky smoke</canvas></body></html>\n",
+                ),
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                usage={"prompt_tokens": 18, "completion_tokens": 8, "total_tokens": 26},
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 2:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "live-coding-initial-smoke",
+                        "change_summary": ["created a first smoke animation pass"],
+                        "target_files": ["index.html"],
+                        "test_plan": ["open index.html"],
+                        "risks": [],
+                        "files_created": ["index.html"],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 9, "completion_tokens": 5, "total_tokens": 14},
+                finish_reason="stop",
+            )
+        if self.calls == 3:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "passed": False,
+                        "overall_score": 0.3,
+                        "dimension_scores": {
+                            "objective_alignment": 0.4,
+                            "artifact_specificity": 0.3,
+                            "execution_quality": 0.2,
+                        },
+                        "repair_brief": "Make the smoke less chunky with smaller particles and lighter blending.",
+                        "missing_requirements": ["Smoke particles are too large."],
+                        "comparison_note": "The first pass is not flowy enough.",
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 7, "completion_tokens": 4, "total_tokens": 11},
+                finish_reason="stop",
+            )
+        if self.calls == 4:
+            tool_calls = [
+                _file_write_call(
+                    "call-repair-animation",
+                    "index.html",
+                    (
+                        "<!doctype html><html><body><canvas id=\"smoke\">"
+                        "flowy smoke with smaller particles, turbulence, and lighter blending"
+                        "</canvas></body></html>\n"
+                    ),
+                ),
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                usage={"prompt_tokens": 16, "completion_tokens": 9, "total_tokens": 25},
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 5:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "live-coding-repaired-smoke",
+                        "change_summary": ["repaired the smoke to be lighter and flowier"],
+                        "target_files": ["index.html"],
+                        "test_plan": ["open index.html"],
+                        "risks": [],
+                        "files_created": [],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 8, "completion_tokens": 5, "total_tokens": 13},
+                finish_reason="stop",
+            )
+        return CompletionResult(
+            text=json.dumps(
+                {
+                    "passed": True,
+                    "overall_score": 0.91,
+                    "dimension_scores": {
+                        "objective_alignment": 0.92,
+                        "artifact_specificity": 0.9,
+                        "execution_quality": 0.91,
+                    },
+                    "repair_brief": "",
+                    "missing_requirements": [],
+                    "comparison_note": "The repaired smoke now matches the requested flowy effect.",
+                },
+                sort_keys=True,
+            ),
+            model=model,
+            usage={"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+            finish_reason="stop",
+        )
+
+
+class _FakeGenericReportGitBaselineRepairProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.calls += 1
+        rendered_messages = "\n".join(
+            str(message.get("content") or "")
+            for message in messages
+            if isinstance(message, dict)
+        )
+        if self.calls == 1:
+            tool_calls = [
+                {
+                    "id": "call-report-append",
+                    "type": "function",
+                    "function": {
+                        "name": "file_write",
+                        "arguments": json.dumps(
+                            {
+                                "path": "semiconductor_supply_chain_equity_research.md",
+                                "mode": "append",
+                                "content": (
+                                    "\n## Financial Summary\n\n"
+                                    "| Ticker | Company | Revenue | Margin |\n"
+                                    "| --- | --- | ---: | ---: |\n"
+                                    "| NVDA | NVIDIA | $130B | 60% |\n"
+                                    "\n## Valuation\n\n"
+                                    "Initial relative-value discussion with forward AI-cycle drivers.\n"
+                                ),
+                            }
+                        ),
+                    },
+                }
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                usage={"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28},
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 2:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "report-initial",
+                        "change_summary": ["appended financial and valuation sections"],
+                        "target_files": ["semiconductor_supply_chain_equity_research.md"],
+                        "test_plan": ["read the markdown report"],
+                        "risks": [],
+                        "files_created": [],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 9, "completion_tokens": 5, "total_tokens": 14},
+                finish_reason="stop",
+            )
+        if self.calls == 3:
+            assert "pre_run_file_state" in rendered_messages
+            assert "do not require git commits" in rendered_messages.lower()
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "passed": False,
+                        "overall_score": 0.45,
+                        "dimension_scores": {
+                            "objective_alignment": 0.45,
+                            "artifact_specificity": 0.45,
+                            "execution_quality": 0.45,
+                        },
+                        "repair_brief": (
+                            "Locate or create a baseline equity research report first, then perform an actual enrichment pass. "
+                            "Add ticker-indexed financial metrics and valuation framing."
+                        ),
+                        "missing_requirements": [
+                            "Add forward estimates and bull/base/bear valuation framework."
+                        ],
+                        "comparison_note": (
+                            "Git history shows zero commits and no diff, so enrichment against a baseline was not evidenced."
+                        ),
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 7, "completion_tokens": 4, "total_tokens": 11},
+                finish_reason="stop",
+            )
+        if self.calls == 4:
+            assert "Do not create, overwrite, or commit a baseline artifact" in rendered_messages
+            assert "pre_run_file_state" in rendered_messages
+            assert "Locate or create a baseline" not in rendered_messages
+            tool_calls = [
+                {
+                    "id": "call-report-repair",
+                    "type": "function",
+                    "function": {
+                        "name": "file_write",
+                        "arguments": json.dumps(
+                            {
+                                "path": "semiconductor_supply_chain_equity_research.md",
+                                "mode": "append",
+                                "content": (
+                                    "\n## Scenario Framework\n\n"
+                                    "- Bull: AI accelerator demand sustains premium multiples.\n"
+                                    "- Base: supply growth normalizes but leaders keep margin advantage.\n"
+                                    "- Bear: capex digestion compresses memory and server exposure.\n"
+                                ),
+                            }
+                        ),
+                    },
+                }
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                usage={"prompt_tokens": 16, "completion_tokens": 9, "total_tokens": 25},
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 5:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "report-repaired",
+                        "change_summary": ["added scenario framework without replacing the report"],
+                        "target_files": ["semiconductor_supply_chain_equity_research.md"],
+                        "test_plan": ["read the markdown report"],
+                        "risks": [],
+                        "files_created": [],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 8, "completion_tokens": 5, "total_tokens": 13},
+                finish_reason="stop",
+            )
+        return CompletionResult(
+            text=json.dumps(
+                {
+                    "passed": True,
+                    "overall_score": 0.88,
+                    "dimension_scores": {
+                        "objective_alignment": 0.9,
+                        "artifact_specificity": 0.86,
+                        "execution_quality": 0.88,
+                    },
+                    "repair_brief": "",
+                    "missing_requirements": [],
+                    "comparison_note": "The report was enriched against the pre-run file state without relying on git history.",
+                },
+                sort_keys=True,
+            ),
+            model=model,
+            usage={"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12},
+            finish_reason="stop",
+        )
+
+
+class _FakeNoOpWebsiteProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.calls += 1
         return CompletionResult(
             text=json.dumps(
                 {
@@ -1222,7 +1749,7 @@ class _FakeRepairingExistingWebsiteProvider:
                 for message in messages
                 if isinstance(message, dict)
             )
-            assert "Repair the previous website patch now" in rendered_messages
+            assert "Repair the previous Super DAN live deliverable now" in rendered_messages
             assert "Change at least one more required website file" in rendered_messages
             tool_calls = [
                 _file_write_call(
@@ -1316,7 +1843,7 @@ def test_build_parser_defaults() -> None:
     assert args.api_key is None
     assert args.base_url is None
     assert args.max_tool_rounds == 10
-    assert args.max_tool_calls == 64
+    assert args.max_tool_calls == 128
     assert args.artifact_dir == "website"
     assert args.json is False
     assert args.verbose is False
@@ -1334,13 +1861,13 @@ def test_live_objective_routing_uses_shared_dispatch_selector() -> None:
     website = super_cli.run_super_organism_demo("build a product website")
     research = super_cli.run_super_organism_demo("research current evidence about this market")
 
-    assert super_cli._is_website_objective(website) is True
+    assert super_cli._is_website_objective(website) is False
     assert super_cli._supports_live_execution(website) is True
     assert super_cli._is_website_objective(research) is False
     assert super_cli._supports_live_execution(research) is False
 
 
-def test_existing_website_workspace_layout_request_routes_to_website_live(tmp_path) -> None:
+def test_existing_website_workspace_layout_request_routes_to_generic_live(tmp_path) -> None:
     website = tmp_path / "website"
     website.mkdir()
     (website / "index.html").write_text("<!doctype html><html><body>old</body></html>\n", encoding="utf-8")
@@ -1358,9 +1885,11 @@ def test_existing_website_workspace_layout_request_routes_to_website_live(tmp_pa
     report = super_cli.run_super_organism_demo(args.target)
 
     assert super_cli._supports_live_execution(report, args) is True
-    assert super_cli._is_website_objective(report, args) is True
+    assert super_cli._is_website_objective(report, args) is False
     choice = super_cli._super_live_choice(report, args)
-    assert choice.orchestrator_id == "super-dan-live-website"
+    assert choice.orchestrator_id == "super-dan-live-general"
+    assert choice.tool_policy["profile"] == "generic"
+    assert choice.intent_signal.artifact_target == "website"
 
 
 def test_existing_website_workspace_context_accepts_named_roots_and_artifact_dirs(tmp_path) -> None:
@@ -1379,7 +1908,7 @@ def test_existing_website_workspace_context_accepts_named_roots_and_artifact_dir
     named_report = super_cli.run_super_organism_demo(named_args.target)
 
     assert super_cli._existing_website_workspace_context(named_args) is True
-    assert super_cli._is_website_objective(named_report, named_args) is True
+    assert super_cli._is_website_objective(named_report, named_args) is False
 
     artifact_root = tmp_path / "client"
     artifact_root.mkdir()
@@ -1401,10 +1930,11 @@ def test_existing_website_workspace_context_accepts_named_roots_and_artifact_dir
 
     assert super_cli._existing_website_workspace_context(artifact_args) is True
     artifact_choice = super_cli._super_live_choice(artifact_report, artifact_args)
-    assert artifact_choice.orchestrator_id == "super-dan-live-website"
+    assert artifact_choice.orchestrator_id == "super-dan-live-general"
+    assert artifact_choice.tool_policy["profile"] == "generic"
 
 
-def test_live_context_routes_ambiguous_request_to_generic_coding(tmp_path) -> None:
+def test_live_context_routes_ambiguous_request_to_generic_workspace_lane(tmp_path) -> None:
     args = build_parser().parse_args(
         [
             "can you think harder, the layout now is completely messy",
@@ -1420,12 +1950,12 @@ def test_live_context_routes_ambiguous_request_to_generic_coding(tmp_path) -> No
     assert super_cli._existing_website_workspace_context(args) is False
     assert super_cli._supports_live_execution(report, args) is True
     choice = super_cli._super_live_choice(report, args)
-    assert choice.orchestrator_id == "super-dan-live-coding"
+    assert choice.orchestrator_id == "super-dan-live-general"
     assert choice.intent_signal.source == "super-dan-live-context"
     assert choice.intent_signal.artifact_target == "workspace"
 
 
-def test_live_context_routes_creation_request_to_generic_coding_without_text_cues(tmp_path) -> None:
+def test_live_context_routes_creation_request_to_generic_workspace_lane_without_text_cues(tmp_path) -> None:
     animation_root = tmp_path / "animation"
     args = build_parser().parse_args(
         [
@@ -1446,13 +1976,100 @@ def test_live_context_routes_creation_request_to_generic_coding_without_text_cue
     assert super_cli._existing_website_workspace_context(args) is False
     assert super_cli._supports_live_execution(report, args) is True
     choice = super_cli._super_live_choice(report, args)
-    assert choice.orchestrator_id == "super-dan-live-coding"
+    assert choice.orchestrator_id == "super-dan-live-general"
     assert choice.tool_policy["profile"] == "generic"
     assert choice.intent_signal.operation == "mutate"
     assert choice.intent_signal.source == "super-dan-live-context"
 
 
-def test_research_design_request_in_website_workspace_stays_read_only(tmp_path) -> None:
+def test_live_context_routes_markdown_report_request_to_generic_workspace_lane(tmp_path) -> None:
+    research_root = tmp_path / "research"
+    args = build_parser().parse_args(
+        [
+            (
+                "help me do an equity research on the semiconductor industry, "
+                "cover downstream servers through chips, memory, equipment, materials, "
+                "and return me a markdown file eventually"
+            ),
+            "--live",
+            "--workspace",
+            str(research_root),
+        ]
+    )
+    args._artifact_dir_explicit = False
+    args._code_like_live = True
+    report = super_cli.run_super_organism_demo(args.target)
+
+    assert report.execution_family == "research"
+    assert super_cli._supports_live_execution(report, args) is True
+    assert super_cli._is_website_objective(report, args) is False
+    choice = super_cli._super_live_choice(report, args)
+    assert choice.orchestrator_id == "super-dan-live-general"
+    assert choice.tool_policy["profile"] == "generic"
+    assert "web_search" in choice.tool_policy["allowed_tool_ids"]
+    assert "file_write" in choice.tool_policy["allowed_tool_ids"]
+    assert choice.intent_signal.source == "super-dan-live-context"
+    assert choice.intent_signal.artifact_target == "workspace"
+
+    task = super_cli._live_generic_task(report, workspace_root=research_root)
+    assert "requested deliverable" in task
+    assert "markdown/report requests" in task
+    assert "web_search" in task
+
+
+def test_implicit_live_probe_allows_markdown_report_with_model(tmp_path) -> None:
+    args = build_parser().parse_args(
+        [
+            "research current semiconductor supply-chain companies and return a markdown report",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+    args._stdin_is_tty = False
+    args._model_explicit = True
+    args._code_like_live = False
+    report = super_cli.run_super_organism_demo(args.target)
+
+    assert report.execution_family == "research"
+    assert super_cli._should_implicit_live(report, args) is True
+
+
+def test_single_file_html_workspace_routes_to_generic_workspace_lane_despite_html_cues(tmp_path) -> None:
+    animation_root = tmp_path / "animation"
+    animation_root.mkdir()
+    (animation_root / "index.html").write_text(
+        "<!doctype html><html><body><canvas></canvas></body></html>\n",
+        encoding="utf-8",
+    )
+    (animation_root / "index-kimi-k26.html").write_text(
+        "<!doctype html><html><body>reference smoke mechanism</body></html>\n",
+        encoding="utf-8",
+    )
+    args = build_parser().parse_args(
+        [
+            "make the smoke more vivid, refer to the other html file, only edit index.html",
+            "--live",
+            "--workspace",
+            str(animation_root),
+        ]
+    )
+    args._artifact_dir_explicit = False
+    args._code_like_live = True
+    report = super_cli.run_super_organism_demo(args.target)
+
+    assert super_cli._existing_website_workspace_context(args) is False
+    assert super_cli._single_file_html_workspace_context(args) is True
+    assert super_cli._is_website_objective(report, args) is False
+    choice = super_cli._super_live_choice(report, args)
+    assert choice.orchestrator_id == "super-dan-live-general"
+    assert choice.tool_policy["profile"] == "generic"
+    assert choice.intent_signal.artifact_target == "workspace"
+    assert "existing_artifact:single_file_html" in choice.intent_signal.evidence
+
+
+def test_research_design_request_in_website_workspace_uses_generic_lane_with_artifact_hint(tmp_path) -> None:
     website = tmp_path / "website"
     website.mkdir()
     (website / "index.html").write_text("<!doctype html><html><body>old</body></html>\n", encoding="utf-8")
@@ -1471,63 +2088,60 @@ def test_research_design_request_in_website_workspace_stays_read_only(tmp_path) 
 
     assert report.execution_family == "research"
     assert super_cli._existing_website_workspace_context(args) is True
-    assert super_cli._supports_live_execution(report, args) is False
+    assert super_cli._supports_live_execution(report, args) is True
     choice = super_cli._super_live_choice(report, args)
-    assert choice.orchestrator_id == "super-dan-showcase"
+    assert choice.orchestrator_id == "super-dan-live-general"
+    assert choice.tool_policy["profile"] == "generic"
+    assert choice.intent_signal.artifact_target == "website"
 
 
-def test_live_worker_contracts_include_paced_small_write_guidance() -> None:
+def test_live_worker_contracts_include_paced_large_context_write_guidance() -> None:
     choice = super_cli._super_live_choice(
         super_cli.run_super_organism_demo("build a product website")
     )
-    brief = super_cli.coding_brief(
+    brief = super_cli.role_brief(
         role=super_cli.RoleSpec(
-            role_label="coding_worker",
-            trace_role="super-dan.live.website-builder",
+            role_label="workspace_worker",
+            trace_role="super-dan.live.general-builder",
         ),
-        task="Build the website.",
-        pacing_policy=super_cli._live_pacing_policy(forbid_scratch_files=True),
+        task="Produce the requested workspace deliverable.",
+        contract_snippets=[super_cli._live_pacing_contract()],
         tool_policy={"allowed_tool_ids": choice.tool_policy["allowed_tool_ids"]},
-        sampling_policy={"profile": choice.sampling_policy, "temperature": 0.35, "max_tokens": 2800},
+        sampling_policy={"profile": choice.sampling_policy, "temperature": 0.35, "max_tokens": 64000},
     )
-    website_worker = super_cli._live_cell_from_brief(
+    generic_worker = super_cli._live_cell_from_brief(
         model="fake-model",
         brief=brief,
-        worker_id="super-dan.live.website-builder",
+        worker_id="super-dan.live.general-builder",
         organism_stage="execution",
     )
 
-    website_text = str(website_worker.llm_hints.system_prompt or "")
+    worker_text = str(generic_worker.llm_hints.system_prompt or "")
     pacing_text = super_cli._live_pacing_contract()
 
     assert not hasattr(super_cli, "_build_live_website_worker")
     assert not hasattr(super_cli, "_build_live_generic_worker")
-    assert website_worker.metadata["universal_cell"] is True
-    assert website_worker.metadata["brief_driven"] is True
-    assert "Do not assume product-specific rules" in website_text
-    assert choice.artifact_policy["required_files"] == ["index.html", "styles.css", "app.js", "README.md"]
+    assert generic_worker.metadata["universal_cell"] is True
+    assert generic_worker.metadata["brief_driven"] is True
+    assert "Do not assume product-specific rules" in worker_text
+    assert choice.orchestrator_id == "super-dan-live-general"
+    assert choice.tool_policy["profile"] == "generic"
     assert "file_write" in choice.tool_policy["allowed_tool_ids"]
-    assert "1200 words" in pacing_text
-    assert "200 lines" in pacing_text
+    assert "1200 words" not in pacing_text
+    assert "200 lines" not in pacing_text
+    assert "use larger direct writes" in pacing_text
 
 
 def test_live_tasks_include_paced_incremental_execution_guidance(tmp_path) -> None:
     report = super_cli.run_super_organism_demo("build a cool website for this product")
 
-    website_task = super_cli._live_website_task(
-        report,
-        artifact_root=tmp_path / "website",
-        relative_files=["website/index.html", "website/styles.css", "website/app.js", "website/README.md"],
-    )
     generic_task = super_cli._live_generic_task(report, workspace_root=tmp_path)
 
-    assert "1200 words" in website_task
-    assert "200 lines" in website_task
-    assert "Do not create extra scratch files" in website_task
-    assert "improve them incrementally" in website_task
-    assert "focused single-file patch is acceptable" in website_task
-    assert "1200 words" in generic_task
-    assert "200 lines" in generic_task
+    assert "1200 words" not in generic_task
+    assert "200 lines" not in generic_task
+    assert "requested deliverable" in generic_task
+    assert "use larger direct writes" in generic_task
+    assert "Actually mutate workspace files" in generic_task
 
 
 def test_super_progress_renderer_prints_compact_live_events(capsys) -> None:
@@ -1721,7 +2335,7 @@ def test_main_text_summary_keeps_objective_first(capsys) -> None:
     assert "OpenHands" in stdout
 
 
-def test_main_text_summary_materializes_website_artifact(tmp_path, capsys) -> None:
+def test_main_text_summary_does_not_materialize_specialized_artifact_without_live(tmp_path, capsys) -> None:
     exit_code = main(
         [
             "please build our product website. make it cool, with cool animation dynamic effects",
@@ -1734,19 +2348,15 @@ def test_main_text_summary_materializes_website_artifact(tmp_path, capsys) -> No
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Build: completed" in stdout
-    assert "Website:" in stdout
-    assert "Files:" in stdout
     assert "Organism: super-dan-20 (20 cells, active cap 10)" in stdout
-    assert "Execution Readiness Score:" not in stdout
+    assert "Execution Readiness Score:" in stdout
     assert "Delivery Plan:" not in stdout
     assert "Materialized Artifacts:" not in stdout
+    assert "Website:" not in stdout
+    assert "Files:" not in stdout
     assert "Claim Graph:" not in stdout
     assert "production-ready for complex agent orchestration" not in stdout
-    assert (tmp_path / "website" / "index.html").exists()
-    assert (tmp_path / "website" / "styles.css").exists()
-    assert (tmp_path / "website" / "app.js").exists()
-    assert (tmp_path / "website" / "README.md").exists()
+    assert not (tmp_path / "website").exists()
 
 
 def test_main_text_summary_normalizes_pasted_multiline_objective(tmp_path, capsys) -> None:
@@ -1765,9 +2375,9 @@ def test_main_text_summary_normalizes_pasted_multiline_objective(tmp_path, capsy
         "with cool animation dynamic effects"
     ) in stdout
     assert "Target: please build our product\n" not in stdout
-    assert "Build: completed" in stdout
-    assert stdout.endswith("\n\n")
-    assert (tmp_path / "website" / "index.html").exists()
+    assert "Build: completed" not in stdout
+    assert stdout.endswith("\n")
+    assert not (tmp_path / "website" / "index.html").exists()
 
 
 def test_main_verbose_text_summary_keeps_cli_rows_on_separate_lines(tmp_path, capsys) -> None:
@@ -1785,7 +2395,7 @@ def test_main_verbose_text_summary_keeps_cli_rows_on_separate_lines(tmp_path, ca
     assert "\n- node-004 | ready | 4 cells | Work graph decomposition\n" in stdout
     assert "\n- node-005 | ready | 4 cells | Immune risk and ambiguity challenge\n" in stdout
     assert "\nReallocations:\n- realloc-001:" in stdout
-    assert "\nMaterialized Artifacts:\n- " in stdout
+    assert "\nMaterialized Artifacts:\n- " not in stdout
     assert "Work graph decomposition  - node-005" not in stdout
     assert "Reallocations:                                         - realloc-001" not in stdout
 
@@ -1804,7 +2414,7 @@ def test_main_compact_summary_avoids_long_delivery_rows(tmp_path, capsys) -> Non
     assert "Delivery Plan:" not in stdout
     assert "Reallocations:" not in stdout
     assert "Full trace: rerun with --verbose or --json." in stdout
-    assert "\nFiles:\n- " in stdout
+    assert "\nFiles:\n- " not in stdout
 
 
 def test_main_plan_only_does_not_materialize(tmp_path, capsys) -> None:
@@ -1847,14 +2457,14 @@ def test_main_live_website_build_uses_native_tool_loop(tmp_path, capsys, monkeyp
     stdout = capsys.readouterr().out
     assert "[run] started: can you build a website for this product? make it look cool" in stdout
     assert "[model] preparing provider: fake-live-model" in stdout
-    assert "[build] website lane started:" in stdout
+    assert "[build] generic lane started:" in stdout
     assert (
         "[builder][tool] file_write:" in stdout
         or "[tool] file_write:" in stdout
     )
     assert "[validation] started" in stdout
     assert "[done] completed" in stdout
-    assert "Live Build: completed" in stdout
+    assert "Live Run: completed" in stdout
     assert "\nBuild: completed" not in stdout
     assert "Materialized Artifacts:" not in stdout
     assert "Model: fake-live-model" in stdout
@@ -1913,7 +2523,7 @@ def test_main_live_closes_provider_before_event_loop_shutdown(
     assert fake_provider.close_loop_id in fake_provider.complete_loop_ids
 
 
-def test_main_live_existing_website_layout_prompt_uses_website_lane(
+def test_main_live_existing_website_layout_prompt_uses_generic_lane(
     tmp_path,
     capsys,
     monkeypatch,
@@ -1942,8 +2552,8 @@ def test_main_live_existing_website_layout_prompt_uses_website_lane(
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "[build] website lane started:" in stdout
-    assert "Live Build: completed" in stdout
+    assert "[build] generic lane started:" in stdout
+    assert "Live Run: completed" in stdout
     assert "currently supports website-like" not in stdout
     assert (website / "index.html").read_text(encoding="utf-8").startswith("<!doctype html>")
 
@@ -1974,7 +2584,7 @@ def test_main_live_progress_can_be_disabled(
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Live Build: completed" in stdout
+    assert "Live Run: completed" in stdout
     assert "[run]" not in stdout
     assert "[build]" not in stdout
     assert "[builder][tool]" not in stdout
@@ -2089,7 +2699,7 @@ def test_main_objective_with_model_uses_live_without_live_flag(
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Live Build: completed" in stdout
+    assert "Live Run: completed" in stdout
     assert "\nBuild: completed" not in stdout
     assert (tmp_path / "website" / "index.html").exists()
     assert (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").exists()
@@ -2165,7 +2775,7 @@ def test_vague_website_continuation_objective_expands_from_workspace_and_prior_f
     assert "Existing website redesign changed only 1" in context["previous_failure_hint"]
 
 
-def test_main_vague_website_continuation_uses_default_patch_brief(
+def test_main_vague_website_continuation_uses_generic_workspace_lane(
     tmp_path,
     capsys,
     monkeypatch,
@@ -2193,7 +2803,7 @@ def test_main_vague_website_continuation_uses_default_patch_brief(
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Live Build: completed" in stdout
+    assert "Live Run: completed" in stdout
     assert (workspace / "index.html").exists()
     assert not (workspace / "website" / "index.html").exists()
     event_log_path = workspace / ".dan-super" / "runs" / "turn-01" / "events.jsonl"
@@ -2205,9 +2815,7 @@ def test_main_vague_website_continuation_uses_default_patch_brief(
     normalized = [
         row for row in rows if row.get("event") == "live.objective.normalized"
     ]
-    assert normalized
-    assert normalized[0]["original_objective"] == "can you keep patching this website"
-    assert "concrete maintainability pass" in normalized[0]["effective_objective"]
+    assert not normalized
 
 
 def test_main_live_website_build_retries_transient_provider_overload(
@@ -2235,7 +2843,7 @@ def test_main_live_website_build_retries_transient_provider_overload(
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Live Build: completed" in stdout
+    assert "Live Run: completed" in stdout
     event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
     event_rows = [
         json.loads(line)
@@ -2270,7 +2878,7 @@ def test_main_live_website_build_recovers_from_invalid_direct_write_calls(
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Live Build: completed" in stdout
+    assert "Live Run: completed" in stdout
     assert "Validation: passed" in stdout
     assert "Tool Calls: 6" in stdout
     assert "Token Usage: prompt=114, completion=42, total=156" in stdout
@@ -2296,7 +2904,7 @@ def test_main_live_website_build_recovers_from_invalid_direct_write_calls(
     ).read_text(encoding="utf-8").lower()
 
 
-def test_main_live_website_build_soft_budget_nudges_before_hard_cap(
+def test_main_live_website_build_write_stage_nudges_before_hard_cap(
     tmp_path,
     capsys,
     monkeypatch,
@@ -2329,7 +2937,7 @@ def test_main_live_website_build_soft_budget_nudges_before_hard_cap(
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Live Build: completed" in stdout
+    assert "Live Run: completed" in stdout
     assert "Validation: passed" in stdout
     event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
     event_rows = [
@@ -2337,16 +2945,21 @@ def test_main_live_website_build_soft_budget_nudges_before_hard_cap(
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    soft_budget_nudges = [
+    write_stage_nudges = [
         row
         for row in event_rows
-        if row.get("event") == "toolloop.soft_budget_nudged"
-        and str(row.get("phase") or "").startswith("coding_")
-        and row.get("limit_kind") == "rounds"
-        and row.get("action")
-        in {"narrow_write_stage", "require_direct_write", "force_finalize"}
+        if (
+            row.get("event") == "toolloop.write_stage_first_write_nudged"
+            or (
+                row.get("event") == "toolloop.soft_budget_nudged"
+                and str(row.get("phase") or "").startswith("coding_")
+                and row.get("limit_kind") == "rounds"
+                and row.get("action")
+                in {"narrow_write_stage", "require_direct_write", "force_finalize"}
+            )
+        )
     ]
-    assert soft_budget_nudges, "expected at least one coding-stage soft budget nudge"
+    assert write_stage_nudges, "expected at least one coding-stage write nudge"
     assert not any(
         str(row.get("stop_reason") or "").startswith("max_tool_rounds_exceeded")
         for row in event_rows
@@ -2355,6 +2968,60 @@ def test_main_live_website_build_soft_budget_nudges_before_hard_cap(
     assert "soft budget website" in (
         tmp_path / "website" / "README.md"
     ).read_text(encoding="utf-8").lower()
+
+
+def test_main_live_generic_report_can_continue_after_first_postwrite_edit(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    for index in range(1, 6):
+        (notes / f"input-{index}.txt").write_text(
+            f"seed context {index}\n",
+            encoding="utf-8",
+        )
+    fake_provider = _FakeGenericReportPostwriteBudgetProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "review the existing notes and create a better equity report",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Live Run: completed" in stdout
+    assert "Validation: passed" in stdout
+    assert fake_provider.calls == 9
+    assert fake_provider.max_tokens_seen[:8] == [64000] * 8
+    assert fake_provider.max_tokens_seen[-1] == 12000
+    report_text = (tmp_path / "equity_report.md").read_text(encoding="utf-8")
+    assert "Initial investment thesis" in report_text
+    assert "Comps, estimate bridge" in report_text
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert not any(
+        row.get("event") == "toolloop.soft_budget_nudged"
+        and row.get("phase") == "coding_postwrite"
+        and row.get("action") == "force_finalize"
+        for row in event_rows
+    )
 
 
 def test_main_live_json_outputs_report_and_live_build(tmp_path, capsys, monkeypatch) -> None:
@@ -2429,9 +3096,146 @@ def test_main_live_general_coding_run_mutates_workspace(tmp_path, capsys, monkey
     assert event_log_path.exists()
     assert (tmp_path / "SUPER_DAN_LIVE_NOTE.md").exists()
     assert "native live run" in (tmp_path / "SUPER_DAN_LIVE_NOTE.md").read_text(encoding="utf-8").lower()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    final_validation = next(
+        row for row in event_rows if row.get("event") == "live.validation.completed"
+    )
+    assert final_validation["changed_required_files"] == [
+        str((tmp_path / "SUPER_DAN_LIVE_NOTE.md").resolve())
+    ]
 
 
-def test_main_live_website_build_fails_without_real_file_changes(tmp_path, capsys, monkeypatch) -> None:
+def test_main_live_general_coding_validation_failure_surfaces_comparison_note(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    fake_provider = _FakeLiveCodingValidationFailureProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "make the smoke more vivid in this single-file animation",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 1
+    stdout = capsys.readouterr().out
+    assert "Live Run: failed" in stdout
+    assert "The smoke is still chunky" in stdout
+    assert "live execution failed validation" not in stdout
+
+
+def test_main_live_general_coding_repairs_after_validation_failure(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    fake_provider = _FakeLiveCodingRepairProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "make a single-file smoke animation and make the smoke flowy",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Live Run: completed" in stdout
+    assert "[repair] attempt 1 started" in stdout
+    assert "[repair] attempt 1 completed" in stdout
+    assert "Validation: passed" in stdout
+    assert "flowy smoke" in (tmp_path / "index.html").read_text(encoding="utf-8")
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(row.get("event") == "live.generic_repair.started" for row in event_rows)
+    assert any(row.get("event") == "live.generic_repair.completed" for row in event_rows)
+    final_validation = [
+        row for row in event_rows if row.get("event") == "live.validation.completed"
+    ][-1]
+    assert final_validation["passed"] is True
+    assert final_validation["repair_attempted"] is True
+    assert final_validation["repair_exhausted"] is False
+
+
+def test_main_live_generic_repair_uses_file_state_not_git_baseline(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    report_path = tmp_path / "semiconductor_supply_chain_equity_research.md"
+    report_path.write_text(
+        "# Semiconductor Supply Chain Equity Research\n\nExisting downstream map.\n",
+        encoding="utf-8",
+    )
+    fake_provider = _FakeGenericReportGitBaselineRepairProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "please enrich the equity research report",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Live Run: completed" in stdout
+    assert "[repair] attempt 1 started" in stdout
+    text = report_path.read_text(encoding="utf-8")
+    assert "Existing downstream map" in text
+    assert "Financial Summary" in text
+    assert "Scenario Framework" in text
+    assert fake_provider.calls == 6
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    repair_started = [
+        row for row in event_rows if row.get("event") == "live.generic_repair.started"
+    ][-1]
+    assert repair_started["additive_repair_required"] is True
+    final_validation = [
+        row for row in event_rows if row.get("event") == "live.validation.completed"
+    ][-1]
+    assert final_validation["passed"] is True
+    assert final_validation["repair_attempted"] is True
+
+
+def test_main_live_generic_fails_without_workspace_mutations(tmp_path, capsys, monkeypatch) -> None:
     website = tmp_path / "website"
     website.mkdir()
     (website / "index.html").write_text("<!doctype html><html><body>old site</body></html>\n", encoding="utf-8")
@@ -2439,10 +3243,11 @@ def test_main_live_website_build_fails_without_real_file_changes(tmp_path, capsy
     (website / "app.js").write_text("console.log('old');\n", encoding="utf-8")
     (website / "README.md").write_text("# Old site\n", encoding="utf-8")
 
+    fake_provider = _FakeNoOpWebsiteProvider()
     monkeypatch.setattr(
         super_cli,
         "_build_live_provider",
-        lambda model, api_key=None, base_url=None: _FakeNoOpWebsiteProvider(),
+        lambda model, api_key=None, base_url=None: fake_provider,
     )
 
     exit_code = main(
@@ -2459,29 +3264,37 @@ def test_main_live_website_build_fails_without_real_file_changes(tmp_path, capsy
     assert exit_code == 1
     stdout = capsys.readouterr().out
     assert "Status: failed" in stdout
-    assert "Live Build: failed" in stdout
-    assert "changing any required website files" in stdout
+    assert "Live Run: failed" in stdout
+    assert "workspace file mutations" in stdout
     assert "[retry] first-write recovery 1 started" in stdout
-    assert "[repair]" not in stdout
+    assert "[retry] first-write recovery 2 started" in stdout
+    assert fake_provider.calls == 3
     event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert any(
-        row["event"] == "live.website_first_write_recovery.started"
-        for row in event_rows
-    )
+    assert not any(row["event"] == "live.website_first_write_recovery.started" for row in event_rows)
+    assert sum(
+        1 for row in event_rows if row.get("event") == "live.generic_first_write_recovery.started"
+    ) == 2
+    assert sum(
+        1 for row in event_rows if row.get("event") == "live.generic_first_write_recovery.completed"
+    ) == 2
     assert not any(row["event"] == "live.website_repair.started" for row in event_rows)
     assert not any(
-        row["event"] == "super.hook.packet_enqueued"
+        row.get("event") == "super.hook.packet_enqueued"
         and row.get("inbox_id") == "repair"
         for row in event_rows
     )
+    final_validation = [
+        row for row in event_rows if row.get("event") == "live.validation.completed"
+    ][-1]
+    assert final_validation["first_write_recovery_attempted"] is True
 
 
-def test_main_live_website_build_recovers_from_no_first_write(
+def test_main_live_generic_uses_generic_first_write_recovery(
     tmp_path,
     capsys,
     monkeypatch,
@@ -2513,31 +3326,26 @@ def test_main_live_website_build_recovers_from_no_first_write(
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Live Build: completed" in stdout
+    assert "Live Run: completed" in stdout
     assert "[retry] first-write recovery 1 started" in stdout
-    assert "[retry] first-write recovery 1 completed" in stdout
-    assert "[repair]" not in stdout
-    assert "Validation: passed" in stdout
+    assert fake_provider.calls == 4
     event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert any(
-        row["event"] == "live.website_first_write_recovery.completed"
-        and len(row["changed_required_files"]) >= 2
-        for row in event_rows
-    )
+    assert not any(row["event"] == "live.website_first_write_recovery.completed" for row in event_rows)
+    assert any(row["event"] == "live.generic_first_write_recovery.completed" for row in event_rows)
     assert not any(row["event"] == "live.website_repair.started" for row in event_rows)
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]
     assert final_validation["passed"] is True
-    assert final_validation["first_write_recovery_attempted"] is True
+    assert final_validation["first_write_recovery_attempted"]
 
 
-def test_main_live_website_build_fails_generic_template_even_if_validator_passes(
+def test_main_live_generic_does_not_apply_website_template_static_gate(
     tmp_path,
     capsys,
     monkeypatch,
@@ -2559,17 +3367,12 @@ def test_main_live_website_build_fails_generic_template_even_if_validator_passes
         ]
     )
 
-    assert exit_code == 1
+    assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Status: failed" in stdout
-    assert "Live Build: failed" in stdout
-    assert "Validation: failed" in stdout
-    assert (
-        "generic Super DAN contract/demo template" in stdout
-        or "raw operator prompt" in stdout
-    )
-    assert "Template phrase hits in index.html" in stdout
-    assert "'execution contract'" in stdout
+    assert "Status: completed" in stdout
+    assert "Live Run: completed" in stdout
+    assert "Validation: passed" in stdout
+    assert "Template phrase hits in index.html" not in stdout
     event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
     event_rows = [
         json.loads(line)
@@ -2579,13 +3382,9 @@ def test_main_live_website_build_fails_generic_template_even_if_validator_passes
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]
-    assert final_validation["passed"] is False
-    assert final_validation["repair_attempted"] is True
-    assert final_validation["repair_exhausted"] is True
-    assert any(
-        "Template phrase hits in index.html" in failure
-        for failure in final_validation.get("deterministic_failures") or []
-    )
+    assert final_validation["passed"] is True
+    assert not final_validation["repair_attempted"]
+    assert not final_validation.get("deterministic_failures")
 
 
 def test_website_static_validation_names_template_phrase_hits(tmp_path) -> None:
@@ -2636,7 +3435,7 @@ def test_live_website_repair_task_includes_template_hit_repair_instruction(tmp_p
     assert "fewer than 2 exact template hits remain" in task
 
 
-def test_main_live_website_build_repairs_template_static_failure(
+def test_main_live_generic_template_pass_does_not_run_website_repair(
     tmp_path,
     capsys,
     monkeypatch,
@@ -2662,30 +3461,25 @@ def test_main_live_website_build_repairs_template_static_failure(
     assert exit_code == 0
     stdout = capsys.readouterr().out
     assert "Status: completed" in stdout
-    assert "[repair] attempt 1 started" in stdout
+    assert "[repair] attempt 1 started" not in stdout
     event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
     event_rows = [
         json.loads(line)
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    repair_started = [
-        row for row in event_rows if row.get("event") == "live.website_repair.started"
-    ][-1]
-    assert "Template phrase hits in index.html" in repair_started["reason"]
+    assert not any(row.get("event") == "live.website_repair.started" for row in event_rows)
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]
     assert final_validation["passed"] is True
-    assert final_validation["repair_attempted"] is True
-    assert final_validation["repair_exhausted"] is False
+    assert not final_validation["repair_attempted"]
+    assert not final_validation["repair_exhausted"]
     html = (tmp_path / "website" / "index.html").read_text(encoding="utf-8").lower()
-    assert "execution contract" not in html
-    assert "objective contract" not in html
-    assert "native execution lane" not in html
+    assert "execution contract" in html
 
 
-def test_main_live_website_build_reports_template_hits_after_failed_repair(
+def test_main_live_generic_template_pass_suppresses_website_repair_hooks(
     tmp_path,
     capsys,
     monkeypatch,
@@ -2708,11 +3502,10 @@ def test_main_live_website_build_reports_template_hits_after_failed_repair(
         ]
     )
 
-    assert exit_code == 1
+    assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Status: failed" in stdout
-    assert "Template phrase hits in index.html" in stdout
-    assert "Remove or rename enough exact hits so fewer than 2 remain" in stdout
+    assert "Status: completed" in stdout
+    assert "Template phrase hits in index.html" not in stdout
     event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
     event_rows = [
         json.loads(line)
@@ -2724,13 +3517,9 @@ def test_main_live_website_build_reports_template_hits_after_failed_repair(
         for index, row in enumerate(event_rows)
         if row.get("event") == "live.validation.completed"
     ][-1]
-    assert final_validation["passed"] is False
-    assert final_validation["repair_attempted"] is True
-    assert final_validation["repair_exhausted"] is True
-    assert any(
-        "Template phrase hits in index.html" in failure
-        for failure in final_validation.get("deterministic_failures") or []
-    )
+    assert final_validation["passed"] is True
+    assert not final_validation["repair_attempted"]
+    assert not final_validation.get("deterministic_failures")
     assert not any(
         row.get("event") == "super.hook.packet_enqueued"
         and row.get("inbox_id") == "repair"
@@ -2773,7 +3562,7 @@ def test_main_live_website_build_allows_material_single_file_existing_site_patch
     assert exit_code == 0
     stdout = capsys.readouterr().out
     assert "Status: completed" in stdout
-    assert "Live Build: completed" in stdout
+    assert "Live Run: completed" in stdout
     assert "Validation: passed" in stdout
     assert "coordinated required files" not in stdout
     event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
@@ -2828,7 +3617,7 @@ def test_main_live_website_build_repairs_failed_validation_once(
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Live Build: completed" in stdout
+    assert "Live Run: completed" in stdout
     assert "[repair] attempt 1 started" in stdout
     assert "[repair] attempt 1 completed" in stdout
     event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
@@ -2837,14 +3626,14 @@ def test_main_live_website_build_repairs_failed_validation_once(
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert any(row["event"] == "live.website_repair.started" for row in event_rows)
-    assert any(row["event"] == "live.website_repair.completed" for row in event_rows)
+    assert any(row["event"] == "live.generic_repair.started" for row in event_rows)
+    assert any(row["event"] == "live.generic_repair.completed" for row in event_rows)
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]
     assert final_validation["passed"] is True
     repair_completed = [
-        row for row in event_rows if row.get("event") == "live.website_repair.completed"
+        row for row in event_rows if row.get("event") == "live.generic_repair.completed"
     ][-1]
     assert len(repair_completed["changed_required_files"]) >= 2
     assert "coordinated repair pass" in (website / "README.md").read_text(encoding="utf-8").lower()

@@ -38,6 +38,8 @@ _SUPER_DAN_WEBSITE_TOOL_IDS = (
 _SUPER_DAN_GENERIC_TOOL_IDS = (
     "list_directory",
     "file_read",
+    "workspace_check",
+    "web_search",
     "file_write",
     "file_edit",
     "shell_command",
@@ -312,7 +314,11 @@ def select_orchestrator(intent: str, context: Mapping[str, Any] | None = None) -
 
     command = _command_from_context(context)
     text = _normalize(" ".join([intent, str((context or {}).get("intent", ""))]))
-    intent_signal = resolve_intent_signal(intent, context)
+    signal_context = context
+    if command == "super-organism":
+        signal_context = dict(context or {})
+        signal_context.pop("execution_family", None)
+    intent_signal = resolve_intent_signal(intent, signal_context)
     if command in ("read", "reader"):
         return _choice(
             orchestrator_id="dan-reader",
@@ -363,40 +369,12 @@ def select_orchestrator(intent: str, context: Mapping[str, Any] | None = None) -
                 acceptance_policy={"requires_live_artifact": False},
                 intent_signal=intent_signal,
             )
-        if intent_signal.artifact_target == "website":
-            return _choice(
-                orchestrator_id="super-dan-live-website",
-                brief_composer="templates.coding_brief",
-                plan_template="super-dan-website",
-                rationale=(
-                    "super-organism intent signal selects existing website artifact policy"
-                    if not website_cues
-                    else "super-organism website/build cues select website artifact policy"
-                ),
-                matched_cues=website_cues + build_cues,
-                sampling_policy="creative",
-                tool_policy={
-                    "mode": "workspace-mutation",
-                    "profile": "website",
-                    "allowed_tool_ids": list(_SUPER_DAN_WEBSITE_TOOL_IDS),
-                    "preferred_tool_ids": ["file_write", "file_edit", "file_read", "list_directory"],
-                },
-                artifact_policy={
-                    "required_files": list(_SUPER_DAN_WEBSITE_FILES),
-                    "existing_website_preferred_coordinated_files": _SUPER_DAN_EXISTING_WEBSITE_PREFERRED_COORDINATED_FILES,
-                },
-                acceptance_policy={
-                    "requires_live_artifact": True,
-                    "template_phrases": list(_SUPER_DAN_WEBSITE_TEMPLATE_PHRASES),
-                },
-                intent_signal=intent_signal,
-            )
         return _choice(
-            orchestrator_id="super-dan-live-coding",
-            brief_composer="templates.coding_brief",
-            plan_template="super-dan-coding",
-            rationale="super-organism intent signal maps to generic coding artifact policy",
-            matched_cues=build_cues,
+            orchestrator_id="super-dan-live-general",
+            brief_composer="templates.role_brief",
+            plan_template="super-dan-general-workspace",
+            rationale="super-organism intent signal maps to generic workspace deliverable policy",
+            matched_cues=website_cues + build_cues,
             sampling_policy="creative",
             tool_policy={
                 "mode": "workspace-mutation",
@@ -404,6 +382,7 @@ def select_orchestrator(intent: str, context: Mapping[str, Any] | None = None) -
                 "allowed_tool_ids": list(_SUPER_DAN_GENERIC_TOOL_IDS),
                 "preferred_tool_ids": [
                     "list_directory",
+                    "web_search",
                     "file_read",
                     "file_edit",
                     "file_write",

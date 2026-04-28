@@ -41,6 +41,7 @@ def _validation_event(
     passed: bool = False,
     changed_required_files: list[str] | None = None,
     deterministic_failures: list[str] | None = None,
+    missing_requirements: list[str] | None = None,
     first_write_recovery_attempted: bool = False,
     repair_attempted: bool = False,
     repair_exhausted: bool = False,
@@ -54,6 +55,7 @@ def _validation_event(
         "overall_score": 0.0 if not passed else 0.9,
         "changed_required_files": list(changed_required_files or []),
         "deterministic_failures": list(deterministic_failures or []),
+        "missing_requirements": list(missing_requirements or []),
         "first_write_recovery_attempted": first_write_recovery_attempted,
         "repair_attempted": repair_attempted,
         "repair_exhausted": repair_exhausted,
@@ -103,6 +105,36 @@ def test_super_hook_runtime_routes_material_write_to_validation_and_persists_sta
     assert validation["metrics"]["completed"] == 1
 
 
+def test_super_hook_runtime_routes_generic_repair_completion_to_validation(
+    tmp_path: Path,
+) -> None:
+    runtime = SuperHookRuntime(
+        state_root=tmp_path / ".dan-super" / "state",
+        run_id="super-dan-live:1",
+        turn_id="1",
+        task_id="super-dan-live:1",
+        trace_id="trace:test",
+        reactivity_profile="balanced",
+    )
+
+    events = runtime.process_event(
+        {
+            "event": "live.generic_repair.completed",
+            "sequence": 4,
+            "task_id": "super-dan-live:1",
+            "turn_id": "1",
+            "changed_required_files": ["/tmp/animation/index.html"],
+        }
+    )
+
+    assert any(
+        event["event"] == "super.hook.packet_enqueued"
+        and event["inbox_id"] == "validation"
+        and event["packet_type"] == "validation_requested"
+        for event in events
+    )
+
+
 def test_super_hook_runtime_routes_no_write_validation_to_first_write_recovery(
     tmp_path: Path,
 ) -> None:
@@ -137,6 +169,89 @@ def test_super_hook_runtime_routes_no_write_validation_to_first_write_recovery(
     )
 
 
+def test_super_hook_runtime_routes_generic_no_mutation_validation_to_first_write_recovery(
+    tmp_path: Path,
+) -> None:
+    runtime = SuperHookRuntime(
+        state_root=tmp_path / ".dan-super" / "state",
+        run_id="super-dan-live:1",
+        turn_id="1",
+        task_id="super-dan-live:1",
+        trace_id="trace:test",
+        reactivity_profile="balanced",
+    )
+
+    events = runtime.process_event(
+        _validation_event(
+            4,
+            missing_requirements=["No workspace file mutations were observed."],
+        )
+    )
+
+    assert any(
+        event["event"] == "super.hook.packet_enqueued"
+        and event["inbox_id"] == "first_write_recovery"
+        and event["packet_type"] == "first_write_recovery_requested"
+        for event in events
+    )
+    assert not any(event.get("inbox_id") == "repair" for event in events)
+
+
+def test_super_hook_runtime_routes_generic_first_write_recovery_completion_to_validation(
+    tmp_path: Path,
+) -> None:
+    runtime = SuperHookRuntime(
+        state_root=tmp_path / ".dan-super" / "state",
+        run_id="super-dan-live:1",
+        turn_id="1",
+        task_id="super-dan-live:1",
+        trace_id="trace:test",
+        reactivity_profile="balanced",
+    )
+
+    events = runtime.process_event(
+        {
+            "event": "live.generic_first_write_recovery.completed",
+            "sequence": 4,
+            "task_id": "super-dan-live:1",
+            "turn_id": "1",
+            "changed_required_files": ["/tmp/report.md"],
+        }
+    )
+
+    assert any(
+        event["event"] == "super.hook.packet_enqueued"
+        and event["inbox_id"] == "validation"
+        and event["packet_type"] == "validation_requested"
+        for event in events
+    )
+
+
+def test_super_hook_runtime_ignores_empty_generic_first_write_recovery_completion(
+    tmp_path: Path,
+) -> None:
+    runtime = SuperHookRuntime(
+        state_root=tmp_path / ".dan-super" / "state",
+        run_id="super-dan-live:1",
+        turn_id="1",
+        task_id="super-dan-live:1",
+        trace_id="trace:test",
+        reactivity_profile="balanced",
+    )
+
+    events = runtime.process_event(
+        {
+            "event": "live.generic_first_write_recovery.completed",
+            "sequence": 4,
+            "task_id": "super-dan-live:1",
+            "turn_id": "1",
+            "changed_required_files": [],
+        }
+    )
+
+    assert events == []
+
+
 def test_super_hook_runtime_routes_changed_failed_validation_to_repair(
     tmp_path: Path,
 ) -> None:
@@ -154,6 +269,36 @@ def test_super_hook_runtime_routes_changed_failed_validation_to_repair(
             5,
             changed_required_files=["/tmp/site/index.html"],
             deterministic_failures=["The changed website still echoes the raw prompt."],
+        )
+    )
+
+    assert any(
+        event["event"] == "super.hook.packet_enqueued"
+        and event["inbox_id"] == "repair"
+        and event["packet_type"] == "repair_requested"
+        for event in events
+    )
+    assert not any(event.get("inbox_id") == "first_write_recovery" for event in events)
+
+
+def test_super_hook_runtime_routes_quality_failure_without_changed_required_files_to_repair(
+    tmp_path: Path,
+) -> None:
+    runtime = SuperHookRuntime(
+        state_root=tmp_path / ".dan-super" / "state",
+        run_id="super-dan-live:1",
+        turn_id="1",
+        task_id="super-dan-live:1",
+        trace_id="trace:test",
+        reactivity_profile="balanced",
+    )
+
+    events = runtime.process_event(
+        _validation_event(
+            6,
+            deterministic_failures=[
+                "The smoke is still chunky and needs smaller particles, turbulence, and lighter blending."
+            ],
         )
     )
 

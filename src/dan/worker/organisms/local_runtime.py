@@ -88,10 +88,10 @@ _VALIDATION_REPORT_REQUIRED_KEYS = frozenset(
     }
 )
 _BLOCKED_TOOL_DISABLE_THRESHOLD = 2
-_TOOL_PROMPT_TEXT_LIMIT = 2000
-_EXCLUSIVE_OWNER_FILE_READ_PROMPT_TEXT_LIMIT = 24000
-_OLDER_FILE_READ_PROMPT_TEXT_LIMIT = 700
-_RECENT_FULL_FILE_READ_PROMPT_RESULTS = 2
+_TOOL_PROMPT_TEXT_LIMIT = 24_000
+_EXCLUSIVE_OWNER_FILE_READ_PROMPT_TEXT_LIMIT = 96_000
+_OLDER_FILE_READ_PROMPT_TEXT_LIMIT = 4_000
+_RECENT_FULL_FILE_READ_PROMPT_RESULTS = 4
 _PREWRITE_SUCCESSFUL_READ_NUDGE_THRESHOLD = 3
 _AGGREGATION_PREWRITE_SUCCESSFUL_READ_NUDGE_THRESHOLD = 2
 _PREWRITE_SHELL_ANALYSIS_NUDGE_THRESHOLD = 4
@@ -804,8 +804,8 @@ def _tool_argument_failure_nudge(tool_id: str, error_text: str) -> str | None:
             ' For `file_write`, retry with exactly one complete JSON object such as '
             '`{"path":"website/index.html","content":"<!doctype html>..."}`. '
             "Do not omit `path` or `content`, and do not send prose instead of the JSON arguments. "
-            "Treat large monolithic writes as risky: if the intended content is above roughly 1200 words or 200 lines, "
-            "split it into smaller coherent chunks or switch to `file_edit` for incremental updates to an existing file. "
+            "Treat failed monolithic writes as risky: if the provider or tool failure indicates truncation or oversized content, "
+            "split the next attempt into coherent chunks or switch to `file_edit` for incremental updates to an existing file. "
             "After one failed large write, do not resend the same giant payload."
         )
     elif tool_id == "file_edit":
@@ -906,6 +906,64 @@ def _extract_jsonish_string_field(raw_text: str, field_name: str) -> str | None:
         return json.loads(f'"{match.group(1)}"')
     except Exception:
         return match.group(1)
+
+
+def _extract_jsonish_int_field(raw_text: str, field_name: str) -> int | None:
+    text = str(raw_text or "")
+    if not text.strip():
+        return None
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        parsed = None
+    if isinstance(parsed, dict):
+        value = parsed.get(field_name)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    pattern = re.compile(
+        rf'"{re.escape(field_name)}"\s*:\s*(-?\d+)',
+        re.DOTALL,
+    )
+    match = pattern.search(text)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _recover_tool_arguments_from_raw_text(tool_id: str, raw_text: str) -> dict[str, Any]:
+    parsed = parse_jsonish_payload(raw_text)
+    if isinstance(parsed, dict):
+        return dict(parsed)
+    if tool_id not in {"file_edit", "file_write"}:
+        return {"raw_arguments": raw_text}
+
+    recovered: dict[str, Any] = {}
+    for field_name in (
+        "path",
+        "file_path",
+        "content",
+        "mode",
+        "encoding",
+        "old_string",
+        "new_string",
+    ):
+        value = _extract_jsonish_string_field(raw_text, field_name)
+        if value is not None:
+            recovered[field_name] = value
+    if tool_id == "file_edit":
+        for field_name in ("start_line", "end_line"):
+            value = _extract_jsonish_int_field(raw_text, field_name)
+            if value is not None:
+                recovered[field_name] = value
+    if recovered:
+        recovered["raw_arguments"] = raw_text
+        return recovered
+    return {"raw_arguments": raw_text}
 
 
 def _is_repeated_tool_call(
@@ -1229,6 +1287,67 @@ def _file_write_incremental_edit_required_message(path: str, reason: str) -> str
         f"Downshift now: use `file_edit` for bounded incremental updates to `{path}`. "
         "If exact line numbers are stale, take one targeted `file_read` of that same file first, "
         "then apply the edit. Do not resend another monolithic overwrite of the same existing file."
+    )
+
+
+def _repair_policy_blocked_shrinking_overwrite(
+    request: CompletionRequest,
+    arguments: dict[str, Any],
+    *,
+    workspace_root: Path,
+) -> tuple[str, int, int] | None:
+    policy = request.metadata.get("repair_policy")
+    if not isinstance(policy, dict):
+        return None
+    if not bool(policy.get("forbid_shrinking_existing_artifacts")):
+        return None
+    mode = str(arguments.get("mode") or "overwrite").strip().lower()
+    if mode != "overwrite":
+        return None
+    content = arguments.get("content")
+    if not isinstance(content, str):
+        return None
+    relative_path = _relative_workspace_path(
+        arguments.get("path") or arguments.get("file_path"),
+        workspace_root=workspace_root,
+    )
+    if not relative_path:
+        return None
+    target_paths = {
+        path
+        for path in (
+            _relative_workspace_path(item, workspace_root=workspace_root)
+            for item in (policy.get("target_paths") or [])
+        )
+        if path
+    }
+    if target_paths and relative_path not in target_paths:
+        return None
+    candidate = (workspace_root / relative_path).resolve(strict=False)
+    try:
+        current_size = candidate.stat().st_size
+    except OSError:
+        return None
+    encoding = str(arguments.get("encoding") or "utf-8")
+    try:
+        new_size = len(content.encode(encoding))
+    except Exception:
+        new_size = len(content.encode("utf-8", errors="ignore"))
+    if new_size >= current_size:
+        return None
+    return relative_path, current_size, new_size
+
+
+def _repair_policy_shrinking_overwrite_message(
+    path: str,
+    current_size: int,
+    new_size: int,
+) -> str:
+    return (
+        f"Repair policy blocked a whole-file overwrite of `{path}` because validation is asking for an additive "
+        f"repair and the proposed replacement would shrink the existing artifact from {current_size} bytes to "
+        f"{new_size} bytes. Preserve the current substance. Use `file_edit`, append, or a complete expanded "
+        "replacement that addresses the validator feedback without turning the artifact into a smaller baseline."
     )
 
 
@@ -3420,6 +3539,27 @@ class ToolLoopCompletionProvider:
         blocked_tool_counts: dict[str, int] = {}
         disabled_tool_ids: set[str] = set()
         file_write_incremental_edit_paths: dict[str, str] = {}
+        soft_budget_tracked_phase: str | None = None
+        soft_budget_phase_start_rounds = 0
+        soft_budget_phase_start_tool_calls = 0
+
+        def _soft_budget_phase_consumed(
+            phase: str | None,
+            *,
+            limit_kind: str,
+        ) -> int:
+            nonlocal soft_budget_tracked_phase
+            nonlocal soft_budget_phase_start_rounds
+            nonlocal soft_budget_phase_start_tool_calls
+            if phase != soft_budget_tracked_phase:
+                soft_budget_tracked_phase = phase
+                soft_budget_phase_start_rounds = rounds
+                soft_budget_phase_start_tool_calls = total_tool_calls
+            if phase is None:
+                return 0
+            if limit_kind == "rounds":
+                return max(0, rounds - soft_budget_phase_start_rounds)
+            return max(0, total_tool_calls - soft_budget_phase_start_tool_calls)
 
         def _completion_raw(
             *,
@@ -3475,10 +3615,14 @@ class ToolLoopCompletionProvider:
                     for tool in request_tool_schemas
                     if isinstance(tool, dict)
                 )
-                for limit_kind, consumed, hard_limit in (
-                    ("rounds", rounds, self._max_rounds),
-                    ("tool_calls", total_tool_calls, self._max_tool_calls),
+                for limit_kind, hard_limit in (
+                    ("rounds", self._max_rounds),
+                    ("tool_calls", self._max_tool_calls),
                 ):
+                    consumed = _soft_budget_phase_consumed(
+                        soft_phase,
+                        limit_kind=limit_kind,
+                    )
                     soft_limit = _soft_budget_limit(
                         soft_phase,
                         limit_kind=limit_kind,
@@ -4004,6 +4148,7 @@ class ToolLoopCompletionProvider:
             repeated_tool_call_nudges: list[tuple[str, str]] = []
             write_stage_helper_path_nudges: list[tuple[str, str, str]] = []
             file_write_downshift_nudges: list[tuple[str, str]] = []
+            repair_policy_nudges: list[tuple[str, int, int]] = []
             exclusive_owner_read_scope_nudges: list[str] = []
             phase_budget_nudges: list[tuple[str, str, int, dict[str, int]]] = []
             newly_disabled_tool_ids: list[str] = []
@@ -4177,6 +4322,10 @@ class ToolLoopCompletionProvider:
                 total_tool_calls += 1
                 tool_id, tool_call_id, arguments = self._parse_tool_call(raw_call)
                 round_tool_call_ids.append(tool_call_id)
+                round_soft_tool_calls_consumed = _soft_budget_phase_consumed(
+                    round_soft_phase,
+                    limit_kind="tool_calls",
+                )
                 exclusive_owner_has_read_owned_file = (
                     exclusive_write_owner
                     and exclusive_write_owner_path
@@ -4235,7 +4384,7 @@ class ToolLoopCompletionProvider:
                 elif (
                     round_soft_phase is not None
                     and round_soft_tool_call_limit is not None
-                    and total_tool_calls > round_soft_tool_call_limit
+                    and round_soft_tool_calls_consumed > round_soft_tool_call_limit
                     and not _tool_call_allowed_past_soft_budget(
                         tool_id,
                         round_soft_phase,
@@ -4290,6 +4439,26 @@ class ToolLoopCompletionProvider:
                         "error": f"file_write_downshift_required:{downshift_reason}",
                     }
                     file_write_downshift_nudges.append((target_path, downshift_reason))
+                elif (
+                    tool_id == "file_write"
+                    and (
+                        shrink_block := _repair_policy_blocked_shrinking_overwrite(
+                            request,
+                            arguments,
+                            workspace_root=self._tool_runtime.workspace_root,
+                        )
+                    )
+                    is not None
+                ):
+                    blocked_path, current_size, new_size = shrink_block
+                    tool_payload = {
+                        "ok": False,
+                        "error": (
+                            "repair_policy_shrinking_overwrite:"
+                            f"{blocked_path}:{current_size}:{new_size}"
+                        ),
+                    }
+                    repair_policy_nudges.append((blocked_path, current_size, new_size))
                 elif (
                     tool_id in {"file_edit", "file_write"}
                     and (write_stage_first_write_nudged or write_stage_direct_write_required)
@@ -4411,6 +4580,12 @@ class ToolLoopCompletionProvider:
                             reason="file_write_downshift_required",
                         )
                         break
+                    if error_text.startswith("repair_policy_shrinking_overwrite:"):
+                        _skip_remaining_tool_calls(
+                            tool_calls[call_index + 1 :],
+                            reason="repair_policy_shrinking_overwrite",
+                        )
+                        break
                     followup_message = _tool_argument_failure_nudge(tool_id, error_text)
                     if followup_message:
                         invalid_tool_argument_nudges.append((tool_id, followup_message))
@@ -4526,6 +4701,36 @@ class ToolLoopCompletionProvider:
                     "toolloop.file_write_downshift_nudged",
                     paths=_dedupe(affected_paths),
                     reasons=_dedupe(reasons),
+                    enabled_tools=list(request_tool_ids),
+                    blocked_by_tool_call_ids=list(round_tool_call_ids) or None,
+                    tool_calls_executed=len(executed_tools),
+                    **event_context,
+                )
+            if repair_policy_nudges:
+                unique_messages = []
+                seen_messages: set[str] = set()
+                affected_paths: list[str] = []
+                for path, current_size, new_size in repair_policy_nudges:
+                    affected_paths.append(path)
+                    message = _repair_policy_shrinking_overwrite_message(
+                        path,
+                        current_size,
+                        new_size,
+                    )
+                    if message in seen_messages:
+                        continue
+                    seen_messages.add(message)
+                    unique_messages.append(message)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "\n".join(unique_messages),
+                    }
+                )
+                self._emit_event(
+                    "toolloop.repair_policy_nudged",
+                    paths=_dedupe(affected_paths),
+                    policy="forbid_shrinking_existing_artifacts",
                     enabled_tools=list(request_tool_ids),
                     blocked_by_tool_call_ids=list(round_tool_call_ids) or None,
                     tool_calls_executed=len(executed_tools),
@@ -4939,12 +5144,7 @@ class ToolLoopCompletionProvider:
         if isinstance(raw_arguments, dict):
             arguments = dict(raw_arguments)
         elif isinstance(raw_arguments, str) and raw_arguments.strip():
-            try:
-                parsed = json.loads(raw_arguments)
-            except Exception:
-                arguments = {"raw_arguments": raw_arguments}
-            else:
-                arguments = dict(parsed) if isinstance(parsed, dict) else {"arguments": parsed}
+            arguments = _recover_tool_arguments_from_raw_text(tool_id, raw_arguments)
         else:
             arguments = {}
         return tool_id, tool_call_id, arguments

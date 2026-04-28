@@ -39,8 +39,6 @@ def test_universal_cell_builder_is_only_imported_by_universal_organism_runner() 
 def test_cli_cell_builder_and_router_legacy_allowlist_does_not_grow() -> None:
     allowed = {
         "src/dan/cli/super_organism.py": {
-            "_LIVE_FILE_WRITE_SAFE_LINE_LIMIT",
-            "_LIVE_FILE_WRITE_SAFE_WORD_LIMIT",
             "_is_website_objective",
             "_supports_live_execution",
         }

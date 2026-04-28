@@ -48,14 +48,14 @@ def test_select_orchestrator_for_reference_organism() -> None:
     assert choice.organism_plan_template == "reference-project-execution"
 
 
-def test_select_orchestrator_for_super_organism_website_and_generic_build() -> None:
+def test_select_orchestrator_for_super_organism_uses_generic_lane() -> None:
     website = select_orchestrator("build a website with HTML and CSS", {"command": "super-organism"})
     generic = select_orchestrator("implement a small feature", {"command": "super-organism"})
 
-    assert website.orchestrator_id == "super-dan-live-website"
+    assert website.orchestrator_id == "super-dan-live-general"
     assert "website" in website.matched_cues
-    assert website.artifact_policy["required_files"] == ["index.html", "styles.css", "app.js", "README.md"]
-    assert generic.orchestrator_id == "super-dan-live-coding"
+    assert website.tool_policy["profile"] == "generic"
+    assert generic.orchestrator_id == "super-dan-live-general"
     assert generic.tool_policy["profile"] == "generic"
     assert website.intent_signal.artifact_target == "website"
     assert generic.intent_signal.artifact_target == "workspace"
@@ -96,9 +96,33 @@ def test_select_orchestrator_accepts_explicit_intent_signal_without_text_cues() 
         },
     )
 
-    assert choice.orchestrator_id == "super-dan-live-coding"
+    assert choice.orchestrator_id == "super-dan-live-general"
     assert choice.intent_signal.source == "test-classifier"
     assert choice.intent_signal.rationale == "external classifier selected a workspace mutation"
+
+
+def test_select_orchestrator_accepts_explicit_super_workspace_deliverable_mutation() -> None:
+    choice = select_orchestrator(
+        "research the semiconductor supply chain and return a markdown report",
+        {
+            "command": "super-organism",
+            "execution_family": "research",
+            "intent_signal": {
+                "operation": "mutate",
+                "artifact_target": "workspace",
+                "mutation_permission": True,
+                "confidence": 0.9,
+                "source": "super-dan-live-context",
+                "rationale": "explicit live context should execute a workspace report artifact",
+            },
+        },
+    )
+
+    assert choice.orchestrator_id == "super-dan-live-general"
+    assert choice.tool_policy["profile"] == "generic"
+    assert "web_search" in choice.tool_policy["allowed_tool_ids"]
+    assert "workspace_check" in choice.tool_policy["allowed_tool_ids"]
+    assert choice.intent_signal.operation == "mutate"
 
 
 def test_select_orchestrator_accepts_explicit_operation_without_permission_field() -> None:
@@ -112,7 +136,7 @@ def test_select_orchestrator_accepts_explicit_operation_without_permission_field
         },
     )
 
-    assert choice.orchestrator_id == "super-dan-live-coding"
+    assert choice.orchestrator_id == "super-dan-live-general"
     assert choice.intent_signal.operation == "mutate"
     assert choice.intent_signal.mutation_permission is True
 
@@ -126,7 +150,8 @@ def test_select_orchestrator_treats_artifact_only_context_as_routing_evidence() 
         },
     )
 
-    assert choice.orchestrator_id == "super-dan-live-website"
+    assert choice.orchestrator_id == "super-dan-live-general"
+    assert choice.tool_policy["profile"] == "generic"
     assert choice.intent_signal.operation == "mutate"
     assert choice.intent_signal.artifact_target == "website"
     assert "artifact_context:website" in choice.intent_signal.evidence
@@ -185,14 +210,14 @@ def test_select_orchestrator_uses_existing_artifact_context(
         context,
     )
 
-    assert choice.orchestrator_id == "super-dan-live-website"
-    assert choice.tool_policy["profile"] == "website"
+    assert choice.orchestrator_id == "super-dan-live-general"
+    assert choice.tool_policy["profile"] == "generic"
     assert "intent signal" in choice.rationale
     assert choice.intent_signal.artifact_target == "website"
     assert choice.intent_signal.mutation_permission is True
 
 
-def test_select_orchestrator_does_not_infer_website_from_ui_words_without_context() -> None:
+def test_select_orchestrator_does_not_infer_mutation_from_ui_words_without_context() -> None:
     choice = select_orchestrator(
         "can you think harder, the layout now is completely messy",
         {
@@ -208,7 +233,7 @@ def test_select_orchestrator_does_not_infer_website_from_ui_words_without_contex
     assert choice.intent_signal.mutation_permission is False
 
 
-def test_select_orchestrator_keeps_research_family_read_only_in_website_workspace() -> None:
+def test_select_orchestrator_ignores_super_organism_research_family_for_website_workspace() -> None:
     choice = select_orchestrator(
         "research visual design evidence for this homepage",
         {
@@ -218,14 +243,14 @@ def test_select_orchestrator_keeps_research_family_read_only_in_website_workspac
         },
     )
 
-    assert choice.orchestrator_id == "super-dan-showcase"
-    assert choice.tool_policy["mode"] == "read-only"
+    assert choice.orchestrator_id == "super-dan-live-general"
+    assert choice.tool_policy["profile"] == "generic"
     assert "visual" not in choice.matched_cues
-    assert choice.intent_signal.operation == "read_only"
+    assert choice.intent_signal.operation == "mutate"
     assert choice.intent_signal.artifact_target == "website"
 
 
-def test_select_orchestrator_respects_super_organism_execution_family() -> None:
+def test_select_orchestrator_does_not_use_super_organism_execution_family_as_gate() -> None:
     research = select_orchestrator(
         "compare market evidence",
         {"command": "super-organism", "execution_family": "research"},
@@ -237,18 +262,19 @@ def test_select_orchestrator_respects_super_organism_execution_family() -> None:
 
     assert research.orchestrator_id == "super-dan-showcase"
     assert research.acceptance_policy["requires_live_artifact"] is False
-    assert coding.orchestrator_id == "super-dan-live-coding"
+    assert research.intent_signal.operation == "unknown"
+    assert coding.orchestrator_id == "super-dan-live-general"
 
 
-def test_select_orchestrator_keeps_non_code_super_organism_build_cues_read_only() -> None:
+def test_select_orchestrator_allows_super_organism_build_cues_on_generic_lane() -> None:
     choice = select_orchestrator(
         "build a market evidence map",
         {"command": "super-organism", "execution_family": "research"},
     )
 
-    assert choice.orchestrator_id == "super-dan-showcase"
-    assert choice.tool_policy["mode"] == "read-only"
-    assert choice.acceptance_policy["requires_live_artifact"] is False
+    assert choice.orchestrator_id == "super-dan-live-general"
+    assert choice.tool_policy["profile"] == "generic"
+    assert choice.acceptance_policy["requires_live_artifact"] is True
 
 
 def test_select_orchestrator_fallback_website_cues_are_deterministic() -> None:

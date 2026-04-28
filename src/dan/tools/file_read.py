@@ -52,7 +52,7 @@ TOOL_METADATA = {
     "returns": "dict with content, line_count, size, and resolved path",
 }
 
-MAX_FILE_SIZE = 1_048_576  # 1 MB
+MAX_FILE_SIZE = 4_194_304  # 4 MB
 
 
 def _normalize_line_number(value: int | None, *, name: str) -> int | None:

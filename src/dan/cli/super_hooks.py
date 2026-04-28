@@ -674,9 +674,25 @@ class SuperHookRuntime:
         if event_name == "live.validation.completed":
             packet = self._packet_for_validation_completed(row)
             return [packet] if packet is not None else []
-        if event_name == "live.website_repair.completed":
-            return [self._packet_from_rule(self._rule("repair-validation"), row, owner_scope=self._run_owner_scope(row), coalesce_key=self._validation_coalesce_key(row))]
-        if event_name == "live.website_first_write_recovery.completed":
+        if event_name in {"live.website_repair.completed", "live.generic_repair.completed"}:
+            return [
+                self._packet_from_rule(
+                    self._rule("repair-validation"),
+                    row,
+                    owner_scope=self._run_owner_scope(row),
+                    coalesce_key=self._validation_coalesce_key(row),
+                )
+            ]
+        if event_name in {
+            "live.website_first_write_recovery.completed",
+            "live.generic_first_write_recovery.completed",
+        }:
+            changed = row.get("changed_required_files")
+            if not (
+                isinstance(changed, list)
+                and any(_clean_text(item) for item in changed)
+            ):
+                return []
             return [
                 self._packet_from_rule(
                     self._rule("first-write-recovery-validation"),
@@ -765,15 +781,32 @@ class SuperHookRuntime:
     @staticmethod
     def _validation_completed_has_no_required_write(row: Mapping[str, Any]) -> bool:
         changed = row.get("changed_required_files")
-        if isinstance(changed, list):
-            return not any(_clean_text(item) for item in changed)
+        changed_files = (
+            [_clean_text(item) for item in changed if _clean_text(item)]
+            if isinstance(changed, list)
+            else []
+        )
         failures = row.get("deterministic_failures")
+        missing = row.get("missing_requirements")
+        candidates: list[str] = []
         if isinstance(failures, list):
-            return any(
-                "did not change any required website files" in _clean_text(item).lower()
-                for item in failures
-            )
-        return False
+            candidates.extend(_clean_text(item).lower() for item in failures)
+        if isinstance(missing, list):
+            candidates.extend(_clean_text(item).lower() for item in missing)
+        for key in ("repair_brief", "comparison_note", "error"):
+            value = _clean_text(row.get(key)).lower()
+            if value:
+                candidates.append(value)
+        no_write_markers = (
+            "did not change any required website files",
+            "no workspace file mutations were observed",
+            "without any workspace file mutations",
+            "no workspace files were changed",
+        )
+        return not changed_files and any(
+            any(marker in candidate for marker in no_write_markers)
+            for candidate in candidates
+        )
 
     def _packet_from_rule(
         self,
