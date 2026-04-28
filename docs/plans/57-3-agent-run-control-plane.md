@@ -11,11 +11,11 @@
   - [ ] 1-3. `WS /api/agent-runs/{run_id}/events` streams task progress and terminal events
   - [ ] 1-4. `POST /api/agent-runs/{run_id}/stop` cancels or interrupts work
   - [ ] 1-5. `POST /api/agent-runs/{run_id}/retry` starts a bounded retry from the last blocker
-- [ ] 2. Bridge Super DAN as the first Agent backend
-  - [ ] 2-1. Extract a callable backend wrapper around the existing Super DAN live runner without requiring CLI argument parsing
-  - [ ] 2-2. Preserve Super DAN event rows and `.dan-super/runs/.../events.jsonl` traces
-  - [ ] 2-3. Map Super DAN terminal states into the generic Agent run status model
-  - [ ] 2-4. Keep CLI `dan super-organism` behavior unchanged
+- [ ] 2. Call through the organism backend bridge
+  - [ ] 2-1. Depend on the `AgentBackendAdapter` contract defined in [57-5-organism-backend-bridge.md](57-5-organism-backend-bridge.md)
+  - [ ] 2-2. Preserve raw backend event-log refs while exposing generic Agent run status
+  - [ ] 2-3. Keep backend selection internal to the Agent control plane
+  - [ ] 2-4. Keep CLI organism behavior unchanged when the first backend is Super DAN
 - [ ] 3. Define Agent run storage
   - [ ] 3-1. Persist run metadata, profile, workspace, objective, selected backend, event-log path, status, and final summary
   - [ ] 3-2. Link Agent runs back into chat threads via `task_run_ref`
@@ -27,12 +27,13 @@
 - [ ] 5. Validate with narrow end-to-end tests
   - [ ] 5-1. Fake-provider Agent run completes and streams progress
   - [ ] 5-2. Stop/cancel closes streams and persists interrupted state
-  - [ ] 5-3. Super DAN CLI still works after backend extraction
+  - [ ] 5-3. Super DAN CLI still works after backend extraction when Super DAN is the selected adapter
 
 ## Decisions
 - The first Agent backend should be Super DAN because it already has the best live execution UX.
 - The generic Agent run contract must not expose Super-DAN-specific terms as required frontend concepts.
 - A backend wrapper is preferred over shelling out to the CLI.
+- Detailed organism/Super DAN bridge tradeoffs are owned by [57-5-organism-backend-bridge.md](57-5-organism-backend-bridge.md).
 
 ## Notes
 - Server-side organism-log discovery already sees `.dan-super/runs/**/events.jsonl`; this should be reused for V2 task timelines instead of inventing a second trace format.
