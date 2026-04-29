@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 import dan.worker.organisms.local_runtime as local_runtime_module
+from dan.providers import CompletionResult
+from dan.worker.core.interfaces import CompletionRequest
+from dan.worker.organisms.local_runtime import (
+    LocalOrganismToolRuntime,
+    ToolLoopCompletionProvider,
+)
 from dan.worker.organisms.super_organism import (
     DEFAULT_SUPER_ORGANISM_ACTIVE_CELL_CAP,
     DEFAULT_SUPER_ORGANISM_CELL_COUNT,
@@ -13,6 +21,85 @@ from dan.worker.organisms.super_organism import (
     resolve_super_organism_scenario,
     run_super_organism_demo,
 )
+
+
+def _first_event(events: list[dict[str, object]], event_name: str) -> dict[str, object]:
+    return next(event for event in events if event.get("event") == event_name)
+
+
+class _ContextLengthAfterOldWriteProvider:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def complete(self, messages, model, temperature=0.7, max_tokens=None, **kwargs):
+        self.calls.append(
+            {
+                "messages": messages,
+                "model": model,
+                "tools": kwargs.get("tools"),
+            }
+        )
+        call_index = len(self.calls)
+        if call_index == 1:
+            tool_call = {
+                "id": "call-old-write",
+                "type": "function",
+                "function": {
+                    "name": "file_write",
+                    "arguments": json.dumps(
+                        {
+                            "path": "notes/context-pressure.md",
+                            "content": "old-write-payload\n" * 500,
+                        }
+                    ),
+                },
+            }
+            return CompletionResult(
+                text="",
+                model=model,
+                tool_calls=[tool_call],
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [tool_call],
+                },
+            )
+        if call_index == 2:
+            assert "old-write-payload" in json.dumps(messages)
+            tool_call = {
+                "id": "call-latest-list",
+                "type": "function",
+                "function": {
+                    "name": "list_directory",
+                    "arguments": json.dumps({"path": "."}),
+                },
+            }
+            return CompletionResult(
+                text="",
+                model=model,
+                tool_calls=[tool_call],
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [tool_call],
+                },
+            )
+        if call_index == 3:
+            assert "old-write-payload" in json.dumps(messages)
+            raise RuntimeError("maximum context length exceeded: too many tokens")
+
+        replay = json.dumps(messages)
+        assert "old-write-payload" not in replay
+        assert "prompt_replay_compacted" in replay
+        assert "call-latest-list" in replay
+        return CompletionResult(
+            text=json.dumps({"candidate_id": "after-context-length-retry"}),
+            model=model,
+            raw_assistant_message={
+                "role": "assistant",
+                "content": json.dumps({"candidate_id": "after-context-length-retry"}),
+            },
+        )
 
 
 def test_default_distribution_builds_20_logical_cells() -> None:
@@ -254,3 +341,242 @@ def test_super_dan_soft_budget_extends_only_for_real_progress() -> None:
 
     assert tool_limit == 10
     assert round_limit == 5
+
+
+def test_prompt_replay_compaction_preserves_tool_call_structure_under_pressure() -> None:
+    old_write_content = "old write body\n" * 500
+    old_edit_content = "old edit body\n" * 500
+    latest_write_content = "latest write body\n" * 500
+    old_assistant_text = "old assistant analysis\n" * 300
+    old_shell_stdout = "shell output\n" * 500
+    messages = [
+        {"role": "system", "content": "System prompt."},
+        {"role": "user", "content": "Initial task prompt must remain exact."},
+        {
+            "role": "assistant",
+            "content": old_assistant_text,
+            "tool_calls": [
+                {
+                    "id": "call-old-write",
+                    "type": "function",
+                    "function": {
+                        "name": "file_write",
+                        "arguments": json.dumps(
+                            {
+                                "path": "notes/old.md",
+                                "content": old_write_content,
+                            },
+                            sort_keys=True,
+                        ),
+                    },
+                },
+                {
+                    "id": "call-old-edit",
+                    "type": "function",
+                    "function": {
+                        "name": "file_edit",
+                        "arguments": json.dumps(
+                            {
+                                "path": "notes/old.md",
+                                "start_line": 1,
+                                "end_line": 2,
+                                "content": old_edit_content,
+                            },
+                            sort_keys=True,
+                        ),
+                    },
+                },
+                {
+                    "id": "call-old-shell",
+                    "type": "function",
+                    "function": {
+                        "name": "shell_command",
+                        "arguments": json.dumps({"command": "pytest -q"}),
+                    },
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "file_write",
+            "tool_call_id": "call-old-write",
+            "content": json.dumps({"ok": True, "result": {"bytes_written": 10}}),
+        },
+        {
+            "role": "tool",
+            "name": "file_edit",
+            "tool_call_id": "call-old-edit",
+            "content": json.dumps({"ok": True, "result": {"changed": True}}),
+        },
+        {
+            "role": "tool",
+            "name": "shell_command",
+            "tool_call_id": "call-old-shell",
+            "content": json.dumps(
+                {"ok": True, "result": {"stdout": old_shell_stdout}},
+                sort_keys=True,
+            ),
+        },
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-middle-list",
+                    "type": "function",
+                    "function": {
+                        "name": "list_directory",
+                        "arguments": json.dumps({"path": "."}),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "list_directory",
+            "tool_call_id": "call-middle-list",
+            "content": json.dumps({"ok": True, "result": {"files": ["notes"]}}),
+        },
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-latest-write",
+                    "type": "function",
+                    "function": {
+                        "name": "file_write",
+                        "arguments": json.dumps(
+                            {
+                                "path": "notes/latest.md",
+                                "content": latest_write_content,
+                            },
+                            sort_keys=True,
+                        ),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "file_write",
+            "tool_call_id": "call-latest-write",
+            "content": json.dumps({"ok": True, "result": {"bytes_written": 20}}),
+        },
+        {"role": "user", "content": "Latest validation feedback must remain exact."},
+    ]
+
+    compacted_messages, stats = local_runtime_module._compact_messages_for_provider_prompt(
+        messages,
+        budget_chars=2_000,
+        tool_schema_chars=500,
+    )
+
+    assert stats["prompt_context_budget_triggered"] is True
+    assert stats["prompt_context_compacted_non_file_tools"] == 1
+    assert stats["prompt_context_compacted_tool_call_args"] == 2
+    assert stats["prompt_context_compacted_assistant_messages"] == 1
+    assert compacted_messages[1]["content"] == "Initial task prompt must remain exact."
+    assert compacted_messages[10]["content"] == "Latest validation feedback must remain exact."
+
+    old_tool_calls = compacted_messages[2]["tool_calls"]
+    assert old_tool_calls[0]["id"] == "call-old-write"
+    assert old_tool_calls[0]["function"]["name"] == "file_write"
+    old_write_arguments = json.loads(old_tool_calls[0]["function"]["arguments"])
+    assert old_write_arguments["prompt_replay_compacted"] is True
+    assert old_write_arguments["retained"]["path"] == "notes/old.md"
+    assert old_write_arguments["retained"]["content_chars"] == len(old_write_content)
+    assert "old write body" not in old_tool_calls[0]["function"]["arguments"]
+
+    old_edit_arguments = json.loads(old_tool_calls[1]["function"]["arguments"])
+    assert old_edit_arguments["prompt_replay_compacted"] is True
+    assert old_edit_arguments["retained"]["path"] == "notes/old.md"
+    assert old_edit_arguments["retained"]["start_line"] == 1
+    assert old_edit_arguments["retained"]["content_chars"] == len(old_edit_content)
+    assert "old edit body" not in old_tool_calls[1]["function"]["arguments"]
+
+    old_shell_payload = json.loads(str(compacted_messages[5]["content"]))
+    assert old_shell_payload["prompt_context_compacted"] is True
+    assert old_shell_payload["result"]["stdout"] != old_shell_stdout
+    assert compacted_messages[5]["tool_call_id"] == "call-old-shell"
+
+    assert compacted_messages[2]["content"] != old_assistant_text
+    assert compacted_messages[8]["tool_calls"][0]["id"] == "call-latest-write"
+    assert "latest write body" in compacted_messages[8]["tool_calls"][0]["function"]["arguments"]
+    assert messages[2]["content"] == old_assistant_text
+    assert "old write body" in messages[2]["tool_calls"][0]["function"]["arguments"]
+    assert "old edit body" in messages[2]["tool_calls"][1]["function"]["arguments"]
+
+
+@pytest.mark.asyncio
+async def test_super_dan_context_length_retry_uses_emergency_prompt_compaction(tmp_path) -> None:
+    events: list[dict[str, object]] = []
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["file_write", "list_directory"],
+        workspace_root=tmp_path,
+        event_callback=events.append,
+    )
+    provider_impl = _ContextLengthAfterOldWriteProvider()
+    provider = ToolLoopCompletionProvider(
+        provider=provider_impl,
+        tool_runtime=runtime,
+        default_model="gpt-test",
+        max_rounds=None,
+        max_tool_calls=4,
+        event_callback=events.append,
+    )
+
+    response = await provider.complete(
+        CompletionRequest(
+            model="gpt-test",
+            system_prompt="Return compact JSON.",
+            user_prompt="Create a note, inspect the workspace, then finish.",
+            metadata={
+                "worker_id": "super-dan-live-general.worker",
+                "tool_budget_profile": "super_dan_live",
+            },
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "file_write",
+                        "description": "Write a file.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "list_directory",
+                        "description": "List files.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                        },
+                    },
+                },
+            ],
+        )
+    )
+
+    assert json.loads(response.text)["candidate_id"] == "after-context-length-retry"
+    assert len(provider_impl.calls) == 4
+    retry_event = _first_event(events, "model.context_length_retry")
+    assert retry_event["retry_attempt"] == 1
+    requested_events = [
+        event for event in events if event.get("event") == "model.requested"
+    ]
+    assert len(requested_events) == 4
+    assert requested_events[-2]["prompt_context_emergency_compaction"] is False
+    assert requested_events[-1]["prompt_context_emergency_compaction"] is True
+    assert requested_events[-1]["prompt_context_compacted_tool_call_args"] >= 1
+    assert (
+        requested_events[-1]["prompt_context_final_chars"]
+        < requested_events[-2]["prompt_context_final_chars"]
+    )

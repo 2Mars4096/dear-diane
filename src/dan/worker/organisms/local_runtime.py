@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import inspect
 import json
 import os
@@ -92,6 +93,17 @@ _TOOL_PROMPT_TEXT_LIMIT = 24_000
 _EXCLUSIVE_OWNER_FILE_READ_PROMPT_TEXT_LIMIT = 96_000
 _OLDER_FILE_READ_PROMPT_TEXT_LIMIT = 4_000
 _RECENT_FULL_FILE_READ_PROMPT_RESULTS = 4
+_PROMPT_CONTEXT_SUPER_DAN_TARGET_CHARS = 480_000
+_PROMPT_CONTEXT_SUPER_DAN_EMERGENCY_CHARS = 640_000
+_PROMPT_CONTEXT_RECENT_FULL_ROUNDS = 2
+_PROMPT_CONTEXT_EMERGENCY_RECENT_FULL_ROUNDS = 1
+_PROMPT_CONTEXT_OLDER_TOOL_TEXT_LIMIT = 2_000
+_PROMPT_CONTEXT_EMERGENCY_TOOL_TEXT_LIMIT = 800
+_PROMPT_CONTEXT_TOOL_CALL_ARGUMENT_TEXT_LIMIT = 1_000
+_PROMPT_CONTEXT_EMERGENCY_TOOL_CALL_ARGUMENT_TEXT_LIMIT = 500
+_PROMPT_CONTEXT_ASSISTANT_TEXT_LIMIT = 2_000
+_PROMPT_CONTEXT_EMERGENCY_ASSISTANT_TEXT_LIMIT = 800
+_PROMPT_CONTEXT_EMERGENCY_FILE_READ_TEXT_LIMIT = 1_000
 _PREWRITE_SUCCESSFUL_READ_NUDGE_THRESHOLD = 3
 _AGGREGATION_PREWRITE_SUCCESSFUL_READ_NUDGE_THRESHOLD = 2
 _PREWRITE_SHELL_ANALYSIS_NUDGE_THRESHOLD = 4
@@ -243,6 +255,39 @@ def _message_prompt_char_count(messages: Sequence[dict[str, Any]]) -> int:
     return total
 
 
+def _tool_schema_prompt_char_count(tools: Sequence[dict[str, Any]] | None) -> int:
+    if not tools:
+        return 0
+    return len(_message_content_text(list(tools)))
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError):
+        return None
+    return coerced if coerced > 0 else None
+
+
+def _prompt_context_budget_chars(
+    request: CompletionRequest,
+    *,
+    profile: str | None,
+) -> tuple[int | None, int | None]:
+    target = _positive_int(request.metadata.get("prompt_context_budget_chars"))
+    emergency = _positive_int(
+        request.metadata.get("prompt_context_emergency_budget_chars")
+    )
+    if profile == _SOFT_BUDGET_PROFILE_SUPER_DAN:
+        target = target or _PROMPT_CONTEXT_SUPER_DAN_TARGET_CHARS
+        emergency = emergency or _PROMPT_CONTEXT_SUPER_DAN_EMERGENCY_CHARS
+    return target, emergency
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
+
+
 def _compact_middle_text_for_prompt(
     content: str,
     *,
@@ -297,27 +342,304 @@ def _compact_older_file_read_payload_for_prompt(
     return compacted, True, omitted
 
 
+def _prompt_context_total_chars(
+    messages: Sequence[dict[str, Any]],
+    *,
+    tool_schema_chars: int,
+) -> int:
+    return _message_prompt_char_count(messages) + max(0, int(tool_schema_chars))
+
+
+def _over_prompt_context_budget(
+    messages: Sequence[dict[str, Any]],
+    *,
+    budget_chars: int | None,
+    tool_schema_chars: int,
+) -> bool:
+    if budget_chars is None:
+        return False
+    return _prompt_context_total_chars(
+        messages,
+        tool_schema_chars=tool_schema_chars,
+    ) > budget_chars
+
+
+def _protected_prompt_message_indices(
+    messages: Sequence[dict[str, Any]],
+    *,
+    recent_full_rounds: int,
+) -> set[int]:
+    protected: set[int] = set()
+    first_user_index: int | None = None
+    assistant_tool_round_indices: list[int] = []
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "").strip()
+        if role == "system":
+            protected.add(index)
+        elif role == "user" and first_user_index is None:
+            first_user_index = index
+        if role == "assistant" and message.get("tool_calls"):
+            assistant_tool_round_indices.append(index)
+    if first_user_index is not None:
+        protected.add(first_user_index)
+
+    if assistant_tool_round_indices and recent_full_rounds > 0:
+        start = assistant_tool_round_indices[
+            max(0, len(assistant_tool_round_indices) - recent_full_rounds)
+        ]
+        protected.update(range(start, len(messages)))
+    elif messages:
+        protected.update(range(max(0, len(messages) - 4), len(messages)))
+    return protected
+
+
+def _compact_older_tool_message_for_prompt(
+    message: dict[str, Any],
+    *,
+    text_limit: int,
+) -> tuple[bool, int]:
+    if str(message.get("role") or "").strip() != "tool":
+        return False, 0
+    if str(message.get("name") or "").strip() == "file_read":
+        return False, 0
+    content = message.get("content")
+    if not isinstance(content, str):
+        return False, 0
+    original_chars = len(content)
+    try:
+        payload = json.loads(content)
+    except Exception:
+        compacted_content, changed = _truncate_prompt_text(
+            content,
+            limit=text_limit,
+        )
+        if not changed:
+            return False, 0
+        message["content"] = compacted_content
+        return True, max(original_chars - len(compacted_content), 0)
+
+    compacted_payload, changed = _compact_prompt_value(
+        payload,
+        text_limit=text_limit,
+    )
+    if not changed:
+        return False, 0
+    if isinstance(compacted_payload, dict):
+        compacted_payload["prompt_payload_compacted"] = True
+        compacted_payload["prompt_context_compacted"] = True
+        compacted_payload["prompt_context_note"] = (
+            "Older non-file tool output was compacted only for prompt replay. "
+            "The full tool result remains available in runtime logs."
+        )
+    compacted_content = json.dumps(
+        compacted_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    message["content"] = compacted_content
+    return True, max(original_chars - len(compacted_content), 0)
+
+
+def _summarize_text_field_for_prompt(
+    target: dict[str, Any],
+    source: dict[str, Any],
+    key: str,
+) -> None:
+    value = source.get(key)
+    if not isinstance(value, str):
+        return
+    target[f"{key}_chars"] = len(value)
+    target[f"{key}_sha256"] = _sha256_text(value)
+
+
+def _compact_file_write_arguments_for_prompt(
+    payload: dict[str, Any],
+    *,
+    original_chars: int,
+) -> dict[str, Any]:
+    retained: dict[str, Any] = {}
+    for key in ("path", "mode", "append", "encoding"):
+        if key in payload:
+            retained[key] = payload.get(key)
+    _summarize_text_field_for_prompt(retained, payload, "content")
+    return {
+        "prompt_replay_compacted": True,
+        "original_chars": original_chars,
+        "retained": retained,
+        "summary": (
+            "Old file_write arguments omitted from provider replay; full raw "
+            "arguments remain in the event log and executed tool evidence."
+        ),
+    }
+
+
+def _compact_file_edit_arguments_for_prompt(
+    payload: dict[str, Any],
+    *,
+    original_chars: int,
+) -> dict[str, Any]:
+    retained: dict[str, Any] = {}
+    for key in ("path", "mode", "start_line", "end_line"):
+        if key in payload:
+            retained[key] = payload.get(key)
+    for key in ("content", "old_string", "new_string"):
+        _summarize_text_field_for_prompt(retained, payload, key)
+
+    edits = payload.get("edits")
+    if isinstance(edits, list):
+        retained_edits: list[dict[str, Any]] = []
+        for item in edits[:20]:
+            if not isinstance(item, dict):
+                continue
+            retained_item: dict[str, Any] = {}
+            for key in ("path", "mode", "start_line", "end_line"):
+                if key in item:
+                    retained_item[key] = item.get(key)
+            for key in ("content", "old_string", "new_string"):
+                _summarize_text_field_for_prompt(retained_item, item, key)
+            retained_edits.append(retained_item)
+        retained["edits"] = retained_edits
+        if len(edits) > len(retained_edits):
+            retained["omitted_edit_items"] = len(edits) - len(retained_edits)
+
+    return {
+        "prompt_replay_compacted": True,
+        "original_chars": original_chars,
+        "retained": retained,
+        "summary": (
+            "Old file_edit arguments omitted from provider replay; full raw "
+            "arguments remain in the event log and executed tool evidence."
+        ),
+    }
+
+
+def _compact_tool_call_arguments_for_prompt(
+    raw_call: dict[str, Any],
+    *,
+    text_limit: int,
+) -> tuple[bool, int]:
+    function_payload = raw_call.get("function")
+    if not isinstance(function_payload, dict):
+        return False, 0
+    arguments = function_payload.get("arguments")
+    if not isinstance(arguments, str):
+        return False, 0
+    original_chars = len(arguments)
+    function_name = str(function_payload.get("name") or raw_call.get("name") or "").strip()
+    if original_chars <= text_limit and function_name not in {"file_write", "file_edit"}:
+        return False, 0
+
+    try:
+        parsed = json.loads(arguments)
+    except Exception:
+        compacted_payload = {
+            "prompt_replay_compacted": True,
+            "original_chars": original_chars,
+            "summary": (
+                f"Old {function_name or 'tool'} arguments omitted from provider "
+                "replay; full raw arguments remain in the event log."
+            ),
+        }
+    else:
+        if function_name == "file_write" and isinstance(parsed, dict):
+            compacted_payload = _compact_file_write_arguments_for_prompt(
+                parsed,
+                original_chars=original_chars,
+            )
+        elif function_name == "file_edit" and isinstance(parsed, dict):
+            compacted_payload = _compact_file_edit_arguments_for_prompt(
+                parsed,
+                original_chars=original_chars,
+            )
+        else:
+            compacted_payload, changed = _compact_prompt_value(
+                parsed,
+                text_limit=text_limit,
+            )
+            if not changed and original_chars <= text_limit:
+                return False, 0
+            if isinstance(compacted_payload, dict):
+                compacted_payload["prompt_replay_compacted"] = True
+                compacted_payload["original_chars"] = original_chars
+            else:
+                compacted_payload = {
+                    "prompt_replay_compacted": True,
+                    "original_chars": original_chars,
+                    "retained": compacted_payload,
+                }
+
+    compacted_arguments = json.dumps(
+        compacted_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    if len(compacted_arguments) >= original_chars:
+        return False, 0
+    function_payload["arguments"] = compacted_arguments
+    return True, max(original_chars - len(compacted_arguments), 0)
+
+
+def _compact_assistant_message_content_for_prompt(
+    message: dict[str, Any],
+    *,
+    text_limit: int,
+) -> tuple[bool, int]:
+    if str(message.get("role") or "").strip() != "assistant":
+        return False, 0
+    content = message.get("content")
+    if not isinstance(content, str):
+        return False, 0
+    compacted, changed = _truncate_prompt_text(content, limit=text_limit)
+    if not changed:
+        return False, 0
+    message["content"] = compacted
+    return True, max(len(content) - len(compacted), 0)
+
+
 def _compact_messages_for_provider_prompt(
     messages: Sequence[dict[str, Any]],
     *,
     recent_full_file_reads: int = _RECENT_FULL_FILE_READ_PROMPT_RESULTS,
-) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """Return provider-facing messages with older file-read payloads shrunk.
+    budget_chars: int | None = None,
+    emergency_budget_chars: int | None = None,
+    tool_schema_chars: int = 0,
+    emergency: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Return provider-facing messages with old prompt replay payloads shrunk.
 
     Raw tool evidence stays in ``executed_tools`` and event logs. This only trims
-    the replay prompt so dozens of file reads do not keep reloading every prior
-    file excerpt on each model round.
+    the copied replay prompt so old high-volume evidence and tool-call arguments
+    do not keep reloading into every later model call.
     """
 
     copied = [copy.deepcopy(message) for message in messages if isinstance(message, dict)]
     original_chars = _message_prompt_char_count(copied)
+    original_total_chars = original_chars + max(0, int(tool_schema_chars))
+    effective_recent_file_reads = (
+        min(max(0, int(recent_full_file_reads)), 1)
+        if emergency
+        else max(0, int(recent_full_file_reads))
+    )
+    file_read_text_limit = (
+        _PROMPT_CONTEXT_EMERGENCY_FILE_READ_TEXT_LIMIT
+        if emergency
+        else _OLDER_FILE_READ_PROMPT_TEXT_LIMIT
+    )
     file_read_indices = [
         index
         for index, message in enumerate(copied)
         if str(message.get("role") or "").strip() == "tool"
         and str(message.get("name") or "").strip() == "file_read"
     ]
-    keep_indices = set(file_read_indices[-max(0, int(recent_full_file_reads)) :])
+    keep_indices = (
+        set(file_read_indices[-effective_recent_file_reads:])
+        if effective_recent_file_reads > 0
+        else set()
+    )
     compacted_count = 0
     omitted_chars = 0
 
@@ -336,6 +658,7 @@ def _compact_messages_for_provider_prompt(
             continue
         compacted_payload, compacted, omitted = _compact_older_file_read_payload_for_prompt(
             payload,
+            text_limit=file_read_text_limit,
         )
         if not compacted:
             continue
@@ -348,7 +671,102 @@ def _compact_messages_for_provider_prompt(
         compacted_count += 1
         omitted_chars += omitted
 
+    protected_indices = _protected_prompt_message_indices(
+        copied,
+        recent_full_rounds=(
+            _PROMPT_CONTEXT_EMERGENCY_RECENT_FULL_ROUNDS
+            if emergency
+            else _PROMPT_CONTEXT_RECENT_FULL_ROUNDS
+        ),
+    )
+    budget_triggered = emergency or _over_prompt_context_budget(
+        copied,
+        budget_chars=budget_chars,
+        tool_schema_chars=tool_schema_chars,
+    )
+    non_file_tool_count = 0
+    non_file_tool_omitted_chars = 0
+    tool_call_arg_count = 0
+    tool_call_arg_omitted_chars = 0
+    assistant_message_count = 0
+    assistant_message_omitted_chars = 0
+
+    if budget_triggered:
+        tool_text_limit = (
+            _PROMPT_CONTEXT_EMERGENCY_TOOL_TEXT_LIMIT
+            if emergency
+            else _PROMPT_CONTEXT_OLDER_TOOL_TEXT_LIMIT
+        )
+        for index, message in enumerate(copied):
+            if index in protected_indices:
+                continue
+            compacted, omitted = _compact_older_tool_message_for_prompt(
+                message,
+                text_limit=tool_text_limit,
+            )
+            if not compacted:
+                continue
+            non_file_tool_count += 1
+            non_file_tool_omitted_chars += omitted
+
+    if budget_triggered and (
+        emergency
+        or _over_prompt_context_budget(
+            copied,
+            budget_chars=budget_chars,
+            tool_schema_chars=tool_schema_chars,
+        )
+    ):
+        argument_text_limit = (
+            _PROMPT_CONTEXT_EMERGENCY_TOOL_CALL_ARGUMENT_TEXT_LIMIT
+            if emergency
+            else _PROMPT_CONTEXT_TOOL_CALL_ARGUMENT_TEXT_LIMIT
+        )
+        for index, message in enumerate(copied):
+            if index in protected_indices:
+                continue
+            tool_calls = message.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                continue
+            for raw_call in tool_calls:
+                if not isinstance(raw_call, dict):
+                    continue
+                compacted, omitted = _compact_tool_call_arguments_for_prompt(
+                    raw_call,
+                    text_limit=argument_text_limit,
+                )
+                if not compacted:
+                    continue
+                tool_call_arg_count += 1
+                tool_call_arg_omitted_chars += omitted
+
+    if budget_triggered and (
+        emergency
+        or _over_prompt_context_budget(
+            copied,
+            budget_chars=budget_chars,
+            tool_schema_chars=tool_schema_chars,
+        )
+    ):
+        assistant_text_limit = (
+            _PROMPT_CONTEXT_EMERGENCY_ASSISTANT_TEXT_LIMIT
+            if emergency
+            else _PROMPT_CONTEXT_ASSISTANT_TEXT_LIMIT
+        )
+        for index, message in enumerate(copied):
+            if index in protected_indices:
+                continue
+            compacted, omitted = _compact_assistant_message_content_for_prompt(
+                message,
+                text_limit=assistant_text_limit,
+            )
+            if not compacted:
+                continue
+            assistant_message_count += 1
+            assistant_message_omitted_chars += omitted
+
     compacted_chars = _message_prompt_char_count(copied)
+    final_total_chars = compacted_chars + max(0, int(tool_schema_chars))
     return copied, {
         "prompt_message_count": len(copied),
         "prompt_input_chars": compacted_chars,
@@ -357,6 +775,19 @@ def _compact_messages_for_provider_prompt(
         "prompt_context_file_read_messages": len(file_read_indices),
         "prompt_context_compacted_file_reads": compacted_count,
         "prompt_context_omitted_file_read_chars": omitted_chars,
+        "prompt_context_budget_chars": budget_chars,
+        "prompt_context_emergency_budget_chars": emergency_budget_chars,
+        "prompt_context_budget_triggered": bool(budget_triggered),
+        "prompt_context_emergency_compaction": bool(emergency),
+        "prompt_context_tool_schema_chars": max(0, int(tool_schema_chars)),
+        "prompt_context_original_total_chars": original_total_chars,
+        "prompt_context_final_chars": final_total_chars,
+        "prompt_context_compacted_non_file_tools": non_file_tool_count,
+        "prompt_context_omitted_non_file_tool_chars": non_file_tool_omitted_chars,
+        "prompt_context_compacted_tool_call_args": tool_call_arg_count,
+        "prompt_context_omitted_tool_call_arg_chars": tool_call_arg_omitted_chars,
+        "prompt_context_compacted_assistant_messages": assistant_message_count,
+        "prompt_context_omitted_assistant_message_chars": assistant_message_omitted_chars,
     }
 
 
@@ -1975,6 +2406,8 @@ def _write_capable_coding_stage_first_write_nudge_reason(
 def _prewrite_successful_read_nudge_threshold(request: CompletionRequest) -> int:
     if _exclusive_write_owner_path(request):
         return 1
+    if request.metadata.get("first_write_recovery") is True or _recommended_write_paths(request):
+        return 1
     organism_stage = str(request.metadata.get("organism_stage") or "").strip().lower()
     if organism_stage == "aggregation":
         return _AGGREGATION_PREWRITE_SUCCESSFUL_READ_NUDGE_THRESHOLD
@@ -1983,6 +2416,42 @@ def _prewrite_successful_read_nudge_threshold(request: CompletionRequest) -> int
 
 def _exclusive_write_owner_path(request: CompletionRequest) -> str:
     return str(request.metadata.get("exclusive_write_owner_path") or "").strip()
+
+
+def _recommended_write_paths(request: CompletionRequest) -> list[str]:
+    raw_paths = request.metadata.get("recommended_write_paths")
+    paths: list[str] = []
+    if isinstance(raw_paths, str):
+        paths.extend(part.strip() for part in raw_paths.split(","))
+    elif isinstance(raw_paths, Sequence) and not isinstance(raw_paths, (bytes, bytearray)):
+        paths.extend(str(path).strip() for path in raw_paths)
+    owner_path = _exclusive_write_owner_path(request)
+    if owner_path:
+        paths.insert(0, owner_path)
+    seen: set[str] = set()
+    result: list[str] = []
+    for path in paths:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        result.append(path)
+    return result
+
+
+def _recommended_write_paths_sentence(
+    request: CompletionRequest,
+    *,
+    prefix: str = "Recommended first-write targets",
+) -> str:
+    paths = _recommended_write_paths(request)
+    if not paths:
+        return ""
+    rendered = ", ".join(f"`{path}`" for path in paths[:6])
+    first_path = paths[0]
+    return (
+        f" {prefix}: {rendered}. Prefer `{first_path}` for the next durable write unless the "
+        "latest tool evidence proves another listed path is the correct artifact."
+    )
 
 
 def _exclusive_write_owner_prefers_file_edit(
@@ -2012,6 +2481,7 @@ def _exclusive_write_owner_prefers_file_edit(
 def _write_capable_coding_stage_first_write_nudge_message(
     reason: str,
     *,
+    request: CompletionRequest,
     allow_final_read: bool,
     file_write_only: bool = False,
     file_edit_only: bool = False,
@@ -2035,6 +2505,7 @@ def _write_capable_coding_stage_first_write_nudge_message(
         "Controller note: this write-capable coding stage is still read-only after initial discovery "
         f"({reason_text}). Stop auditing and make the first concrete project write now using the direct file tools "
         f"that are already enabled. {direct_tool_instruction}"
+        f"{_recommended_write_paths_sentence(request)}"
         f"{final_read_sentence} Create one or two small real files first, then continue incrementally. Prefer a "
         "minimal runnable slice over a complete project in one giant tool call. If you truly cannot materialize any "
         "bounded file set in this turn, return an explicit blocked candidate now instead of doing more discovery."
@@ -2150,14 +2621,18 @@ def _write_capable_coding_stage_direct_write_required_reason(
     return "returned_without_materializing_workspace_patch"
 
 
-def _write_capable_coding_stage_direct_write_required_message(reason: str) -> str:
+def _write_capable_coding_stage_direct_write_required_message(
+    reason: str,
+    *,
+    request: CompletionRequest,
+) -> str:
     reason_text = reason.replace("_", " ")
     return (
         "Controller note: this write-capable coding stage still has no materialized workspace patch "
         f"({reason_text}). Returning prose-only patch instructions is not enough here. The next response must "
         "either call `file_edit` or `file_write` to apply the bounded change directly in the checked-out "
-        "workspace, or return an explicit blocked candidate that says no bounded workspace write could be "
-        "completed. Do not propose edits without a real workspace mutation."
+        f"workspace, or return an explicit blocked candidate that says no bounded workspace write could be "
+        f"completed.{_recommended_write_paths_sentence(request)} Do not propose edits without a real workspace mutation."
     )
 
 
@@ -2496,6 +2971,7 @@ def _soft_budget_action_for_phase(phase: str | None) -> str | None:
 def _soft_budget_message(
     phase: str,
     *,
+    request: CompletionRequest,
     limit_kind: str,
     allow_final_read: bool,
 ) -> str:
@@ -2503,10 +2979,14 @@ def _soft_budget_message(
     if phase == "coding_prewrite":
         return _write_capable_coding_stage_first_write_nudge_message(
             reason,
+            request=request,
             allow_final_read=allow_final_read,
         )
     if phase == "coding_direct_write":
-        return _write_capable_coding_stage_direct_write_required_message(reason)
+        return _write_capable_coding_stage_direct_write_required_message(
+            reason,
+            request=request,
+        )
     if phase == "coding_postwrite":
         return _write_capable_coding_stage_finalize_message(reason)
     if phase == "validator_read_only":
@@ -2543,6 +3023,38 @@ def _provider_prompt_filter_error(exc: BaseException) -> bool:
     if "content_filter" in text or "high risk" in text:
         return True
     return "prompt" in text and ("safety" in text or "rejected" in text or "blocked" in text)
+
+
+def _provider_context_length_error(exc: BaseException) -> bool:
+    """Detect provider-side context-window/token-limit rejections."""
+
+    text_parts = [
+        type(exc).__name__,
+        str(exc),
+        repr(getattr(exc, "body", "")),
+        repr(getattr(exc, "response", "")),
+        str(getattr(exc, "status_code", "") or ""),
+    ]
+    text = " ".join(part for part in text_parts if part).lower()
+    if "content_filter" in text or "high risk" in text or "safety" in text:
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "context_length",
+            "context length",
+            "maximum context",
+            "max context",
+            "context window",
+            "too many tokens",
+            "token limit",
+            "input is too long",
+            "prompt is too long",
+            "prompt too long",
+            "maximum prompt",
+            "reduce the length",
+        )
+    )
 
 
 def _provider_overload_error(exc: BaseException) -> bool:
@@ -2682,6 +3194,12 @@ def _provider_timeout_recovery_messages(
         f"Recovery note: the previous provider call timed out{timeout_text}.",
         "Continue from the bounded evidence below instead of restarting broad discovery.",
     ]
+    target_sentence = _recommended_write_paths_sentence(
+        request,
+        prefix="Recovery write targets",
+    ).strip()
+    if target_sentence:
+        recovery_lines.append(target_sentence)
     if allow_final_read:
         recovery_lines.append(
             "You may take at most one refreshed targeted `file_read` to regain exact line grounding, then the next tool call must be `file_edit` or `file_write`."
@@ -3622,6 +4140,8 @@ class ToolLoopCompletionProvider:
         write_stage_direct_write_reprompted = False
         research_note_finalize_nudged = False
         provider_safety_retry_attempted = False
+        provider_context_length_retry_attempted = False
+        prompt_context_emergency_compaction = False
         provider_timeout_recovery_attempted: set[str] = set()
         provider_overload_retry_attempts = 0
         blocked_by_tool_call_ids: list[str] = []
@@ -3757,6 +4277,7 @@ class ToolLoopCompletionProvider:
                             "role": "user",
                             "content": _soft_budget_message(
                                 soft_phase,
+                                request=request,
                                 limit_kind=limit_kind,
                                 allow_final_read=allow_final_read,
                             ),
@@ -3800,9 +4321,31 @@ class ToolLoopCompletionProvider:
                     write_stage_direct_write_required=write_stage_direct_write_required,
                 )
             )
+            prompt_context_budget_chars, prompt_context_emergency_budget_chars = (
+                _prompt_context_budget_chars(request, profile=soft_budget_profile)
+            )
+            tool_schema_chars = _tool_schema_prompt_char_count(request_tool_schemas)
             provider_messages, prompt_context_stats = _compact_messages_for_provider_prompt(
                 messages,
+                budget_chars=prompt_context_budget_chars,
+                emergency_budget_chars=prompt_context_emergency_budget_chars,
+                tool_schema_chars=tool_schema_chars,
+                emergency=prompt_context_emergency_compaction,
             )
+            if (
+                not prompt_context_emergency_compaction
+                and prompt_context_emergency_budget_chars is not None
+                and int(prompt_context_stats.get("prompt_context_final_chars") or 0)
+                > prompt_context_emergency_budget_chars
+            ):
+                prompt_context_emergency_compaction = True
+                provider_messages, prompt_context_stats = _compact_messages_for_provider_prompt(
+                    messages,
+                    budget_chars=prompt_context_budget_chars,
+                    emergency_budget_chars=prompt_context_emergency_budget_chars,
+                    tool_schema_chars=tool_schema_chars,
+                    emergency=True,
+                )
             self._emit_event(
                 "model.requested",
                 model=model,
@@ -3834,6 +4377,24 @@ class ToolLoopCompletionProvider:
                 )
             except Exception as exc:
                 if (
+                    _provider_context_length_error(exc)
+                    and not provider_context_length_retry_attempted
+                ):
+                    provider_context_length_retry_attempted = True
+                    prompt_context_emergency_compaction = True
+                    self._emit_event(
+                        "model.context_length_retry",
+                        model=model,
+                        round=rounds + 1,
+                        model_call_id=model_call_id,
+                        retry_attempt=1,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                        **prompt_context_stats,
+                        **event_context,
+                    )
+                    continue
+                if (
                     soft_budget_profile == _SOFT_BUDGET_PROFILE_SUPER_DAN
                     and _provider_overload_error(exc)
                     and provider_overload_retry_attempts
@@ -3863,7 +4424,14 @@ class ToolLoopCompletionProvider:
                     successful_tool_count = sum(
                         1 for tool in executed_tools if tool.get("ok")
                     )
-                    successful_tool_threshold = 1 if exclusive_write_owner else 2
+                    successful_tool_threshold = (
+                        0
+                        if request.metadata.get("first_write_recovery") is True
+                        or _recommended_write_paths(request)
+                        else 1
+                        if exclusive_write_owner
+                        else 2
+                    )
                     timeout_recovery_stage = _timeout_recovery_stage_key(
                         write_stage_direct_write_required=write_stage_direct_write_required,
                         write_stage_final_read_consumed=write_stage_final_read_consumed,
@@ -4123,7 +4691,8 @@ class ToolLoopCompletionProvider:
                             {
                                 "role": "user",
                                 "content": _write_capable_coding_stage_direct_write_required_message(
-                                    direct_write_required_reason
+                                    direct_write_required_reason,
+                                    request=request,
                                 ),
                             }
                         )
@@ -4743,6 +5312,7 @@ class ToolLoopCompletionProvider:
                         "role": "user",
                         "content": _soft_budget_message(
                             phase,
+                            request=request,
                             limit_kind=limit_kind,
                             allow_final_read=allow_final_read,
                         ),
@@ -5118,10 +5688,16 @@ class ToolLoopCompletionProvider:
                         "role": "user",
                         "content": _write_capable_coding_stage_first_write_nudge_message(
                             write_nudge_reason,
+                            request=request,
                             allow_final_read=write_stage_final_read_available,
                             file_write_only=exclusive_write_owner
                             and any(
                                 _tool_schema_name(tool) == "file_write"
+                                for tool in active_tool_schemas
+                            ),
+                            file_edit_only=exclusive_owner_prefers_file_edit
+                            and any(
+                                _tool_schema_name(tool) == "file_edit"
                                 for tool in active_tool_schemas
                             ),
                         ),
