@@ -1343,6 +1343,396 @@ class _FakeFirstWriteRecoveryWebsiteProvider:
         )
 
 
+class _FakeTargetedFirstWriteRecoveryHtmlProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.recovery_tool_names: list[str] = []
+        self.recovery_kwargs: dict[str, object] = {}
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.calls += 1
+        tools = kwargs.get("tools") or []
+        tool_names = [
+            str(tool.get("function", {}).get("name") or "")
+            for tool in tools
+            if isinstance(tool, dict)
+        ]
+        rendered_messages = "\n".join(
+            str(message.get("content") or "")
+            for message in messages
+            if isinstance(message, dict)
+        )
+        if self.calls == 1:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "noop-html-animation-before-recovery",
+                        "change_summary": ["timed out before creating the requested animation"],
+                        "target_files": [],
+                        "test_plan": ["no validation possible"],
+                        "risks": ["no workspace mutation"],
+                        "files_created": [],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                finish_reason="stop",
+            )
+        if self.calls == 2:
+            self.recovery_kwargs = dict(kwargs)
+            self.recovery_tool_names = list(tool_names)
+            assert "Recommended first-write targets" in rendered_messages
+            assert "animation-two-stick-figures-battling.html" in rendered_messages
+            assert "list_directory" not in tool_names
+            assert "web_search" not in tool_names
+            assert "shell_command" not in tool_names
+            tool_calls = [
+                _file_write_call(
+                    "call-html-animation",
+                    "animation-two-stick-figures-battling.html",
+                    (
+                        "<!doctype html><html><head><meta charset=\"utf-8\">"
+                        "<title>Stick Figure Arena</title></head><body><canvas id=\"arena\"></canvas>"
+                        "<script>const c=document.getElementById('arena');"
+                        "const ctx=c.getContext('2d');function frame(){requestAnimationFrame(frame);}"
+                        "frame();</script></body></html>\n"
+                    ),
+                )
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 3:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "targeted-html-first-write-recovered",
+                        "change_summary": ["created the requested HTML animation artifact"],
+                        "target_files": ["animation-two-stick-figures-battling.html"],
+                        "test_plan": ["open the HTML file in a browser"],
+                        "risks": [],
+                        "files_created": ["animation-two-stick-figures-battling.html"],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                finish_reason="stop",
+            )
+        return CompletionResult(
+            text=json.dumps(
+                {
+                    "passed": True,
+                    "overall_score": 0.9,
+                    "dimension_scores": {
+                        "objective_alignment": 0.9,
+                        "artifact_specificity": 0.9,
+                        "execution_quality": 0.9,
+                    },
+                    "repair_brief": "",
+                    "missing_requirements": [],
+                    "comparison_note": "The recovery produced a concrete HTML animation artifact.",
+                },
+                sort_keys=True,
+            ),
+            model=model,
+            finish_reason="stop",
+        )
+
+
+class _FakeFirstWriteRecoveryTimeoutThenAliasProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.recovery_kwargs: list[dict[str, object]] = []
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.calls += 1
+        if self.calls == 1:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "noop-before-alias-recovery",
+                        "change_summary": ["checked workspace but did not write"],
+                        "target_files": [],
+                        "test_plan": ["no validation possible"],
+                        "risks": ["no workspace mutation"],
+                        "files_created": [],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                finish_reason="stop",
+            )
+        if self.calls in {2, 3}:
+            self.recovery_kwargs.append(dict(kwargs))
+            raise TimeoutError("simulated provider timeout before first write")
+        return CompletionResult(
+            text=json.dumps(
+                {
+                    "passed": True,
+                    "overall_score": 0.91,
+                    "dimension_scores": {
+                        "objective_alignment": 0.91,
+                        "artifact_specificity": 0.9,
+                        "execution_quality": 0.92,
+                    },
+                    "repair_brief": "",
+                    "missing_requirements": [],
+                    "comparison_note": "The requested named artifact now exists.",
+                },
+                sort_keys=True,
+            ),
+            model=model,
+            finish_reason="stop",
+        )
+
+
+class _FakeOperatorPolicyOtherFileReadProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.initial_tool_names: list[str] = []
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.calls += 1
+        tools = kwargs.get("tools") or []
+        tool_names = [
+            str(tool.get("function", {}).get("name") or "")
+            for tool in tools
+            if isinstance(tool, dict)
+        ]
+        rendered_messages = "\n".join(
+            str(message.get("content") or "")
+            for message in messages
+            if isinstance(message, dict)
+        )
+        if self.calls == 1:
+            self.initial_tool_names = list(tool_names)
+            assert "operator_intent_policy" in rendered_messages
+            assert "Do not read, inspect, list, or otherwise use other workspace files" in rendered_messages
+            assert "operator_prompt_only_creation" in rendered_messages
+            assert '"delivery_plan"' not in rendered_messages
+            assert "list_directory" not in tool_names
+            assert "git_status" not in tool_names
+            assert tool_names == ["file_write"]
+            tool_calls = [
+                _file_write_call(
+                    "call-create-arena-from-prompt",
+                    "arena.html",
+                    (
+                        "<!doctype html><html><head><meta charset=\"utf-8\">"
+                        "<title>Original Arena</title></head><body><canvas id=\"arena\"></canvas>"
+                        "<script>const ctx=document.getElementById('arena').getContext('2d');"
+                        "function frame(){ctx.fillRect(0,0,20,20);requestAnimationFrame(frame);}frame();"
+                        "</script></body></html>\n"
+                    ),
+                )
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 2:
+            assert "operator_intent_policy" in rendered_messages
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "policy-created-arena",
+                        "change_summary": ["created arena.html without reading other workspace files"],
+                        "target_files": ["arena.html"],
+                        "test_plan": ["open arena.html"],
+                        "risks": [],
+                        "files_created": ["arena.html"],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                finish_reason="stop",
+            )
+        return CompletionResult(
+            text=json.dumps(
+                {
+                    "passed": True,
+                    "overall_score": 0.9,
+                    "dimension_scores": {
+                        "objective_alignment": 0.9,
+                        "artifact_specificity": 0.9,
+                        "execution_quality": 0.9,
+                    },
+                    "repair_brief": "",
+                    "missing_requirements": [],
+                    "comparison_note": "The target artifact was created and validated without using other workspace files.",
+                },
+                sort_keys=True,
+            ),
+            model=model,
+            finish_reason="stop",
+        )
+
+
+class _FakeAdditiveFirstWriteRecoveryReportProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.calls += 1
+        rendered_messages = "\n".join(
+            str(message.get("content") or "")
+            for message in messages
+            if isinstance(message, dict)
+        )
+        if self.calls == 1:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "noop-report-before-recovery",
+                        "change_summary": ["inspected but did not edit"],
+                        "target_files": [],
+                        "test_plan": ["no validation possible"],
+                        "risks": ["no workspace mutations"],
+                        "files_created": [],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                finish_reason="stop",
+            )
+        if self.calls == 2:
+            assert "first-write recovery" in rendered_messages
+            assert "additive/enrichment objective" in rendered_messages
+            assert "preserve existing content" in rendered_messages.lower()
+            assert "preserving existing tables and quantitative content" in rendered_messages.lower()
+            tool_calls = [
+                _file_write_call(
+                    "call-shrinking-report-overwrite",
+                    "semiconductor_supply_chain_equity_research.md",
+                    "# Generic Semiconductor Report\n\nA short generic overview.\n",
+                )
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 3:
+            assert "Repair policy blocked" in rendered_messages
+            assert "shrink the existing artifact" in rendered_messages
+            tool_calls = [
+                {
+                    "id": "call-report-section-edit",
+                    "type": "function",
+                    "function": {
+                        "name": "file_edit",
+                        "arguments": json.dumps(
+                            {
+                                "path": "semiconductor_supply_chain_equity_research.md",
+                                "start_line": 6,
+                                "mode": "insert_after",
+                                "content": (
+                                    "\nAdditional Section 3 evidence: AI accelerator TAM is now a "
+                                    "$100B+ annualized market, with NVIDIA, Broadcom custom ASICs, "
+                                    "AMD, and hyperscaler silicon all competing for packaging-limited supply.\n"
+                                ),
+                            }
+                        ),
+                    },
+                }
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 4:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "report-first-write-recovered",
+                        "change_summary": ["enriched section 3 without replacing the report"],
+                        "target_files": ["semiconductor_supply_chain_equity_research.md"],
+                        "test_plan": ["read sections 3 and 4"],
+                        "risks": [],
+                        "files_created": [],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                finish_reason="stop",
+            )
+        return CompletionResult(
+            text=json.dumps(
+                {
+                    "passed": True,
+                    "overall_score": 0.9,
+                    "dimension_scores": {
+                        "objective_alignment": 0.9,
+                        "artifact_specificity": 0.9,
+                        "execution_quality": 0.9,
+                    },
+                    "repair_brief": "",
+                    "missing_requirements": [],
+                    "comparison_note": "The additive recovery preserved the original report and enriched section 3.",
+                },
+                sort_keys=True,
+            ),
+            model=model,
+            finish_reason="stop",
+        )
+
+
 class _FakeTemplateWebsiteProvider:
     def __init__(self) -> None:
         self.calls = 0
@@ -2280,8 +2670,8 @@ def test_main_json_outputs_default_20_cell_report(tmp_path, capsys) -> None:
     assert written["final_verdict"] == payload["final_verdict"]
 
 
-def test_main_default_runs_universal_agent_showcase(capsys) -> None:
-    exit_code = main([])
+def test_main_report_mode_can_render_default_universal_agent_showcase(capsys) -> None:
+    exit_code = main(["--plan-only"])
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
@@ -2291,6 +2681,38 @@ def test_main_default_runs_universal_agent_showcase(capsys) -> None:
     assert "Delivery Plan:" not in stdout
     assert "Claim Graph:" not in stdout
     assert "operator objective" in stdout
+
+
+def test_main_no_objective_non_tty_requires_objective(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(super_cli.sys.stdin, "isatty", lambda: False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--workspace", str(tmp_path)])
+
+    assert exc_info.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "objective required in non-interactive mode" in stderr
+    assert not (tmp_path / ".dan-super").exists()
+
+
+def test_main_no_objective_non_tty_live_requires_objective(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(super_cli.sys.stdin, "isatty", lambda: False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--workspace", str(tmp_path), "--live", "--json"])
+
+    assert exc_info.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "objective required for --live" in stderr
+    assert not (tmp_path / ".dan-super").exists()
 
 
 def test_main_no_objective_tty_starts_interactive_prompt(capsys, monkeypatch) -> None:
@@ -2303,6 +2725,123 @@ def test_main_no_objective_tty_starts_interactive_prompt(capsys, monkeypatch) ->
     stdout = capsys.readouterr().out
     assert "Super DAN interactive" in stdout
     assert "Type an objective" in stdout
+    assert "/reset [all|state]" in stdout
+
+
+def test_main_no_objective_tty_reset_archives_super_context(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    state_dir = tmp_path / ".dan-super" / "state"
+    run_dir = tmp_path / ".dan-super" / "runs" / "turn-01"
+    state_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+    (state_dir / "inboxes.json").write_text('{"inboxes": {}}\n', encoding="utf-8")
+    (run_dir / "events.jsonl").write_text("{}\n", encoding="utf-8")
+    commands = iter(["/reset", "/exit"])
+    monkeypatch.setattr(super_cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(commands))
+
+    exit_code = main(["--workspace", str(tmp_path)])
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Archived Super DAN context" in stdout
+    assert not (tmp_path / ".dan-super").exists()
+    backups = list(tmp_path.glob(".dan-super.backup-*"))
+    assert len(backups) == 1
+    assert (backups[0] / "state" / "inboxes.json").exists()
+    assert (backups[0] / "runs" / "turn-01" / "events.jsonl").exists()
+
+
+def test_main_no_objective_tty_reset_state_only_archives_queue_state(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    state_dir = tmp_path / ".dan-super" / "state"
+    run_dir = tmp_path / ".dan-super" / "runs" / "turn-01"
+    state_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+    (state_dir / "inboxes.json").write_text('{"inboxes": {}}\n', encoding="utf-8")
+    (run_dir / "events.jsonl").write_text("{}\n", encoding="utf-8")
+    commands = iter(["/reset state", "/exit"])
+    monkeypatch.setattr(super_cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(commands))
+
+    exit_code = main(["--workspace", str(tmp_path)])
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Archived Super DAN state" in stdout
+    assert (tmp_path / ".dan-super").exists()
+    assert not state_dir.exists()
+    assert (run_dir / "events.jsonl").exists()
+    backups = list((tmp_path / ".dan-super").glob("state.backup-*"))
+    assert len(backups) == 1
+    assert (backups[0] / "inboxes.json").exists()
+
+
+def test_operator_intent_policy_runtime_decision_blocks_other_workspace_inputs(tmp_path) -> None:
+    policy = super_cli._operator_intent_policy_from_objective(
+        "create arena.html and do not read other files in this folder",
+        workspace_root=tmp_path,
+    )
+
+    allowed, reason = super_cli._operator_policy_tool_decision(
+        policy,
+        tool_id="file_read",
+        arguments={"path": "arena-kimi-k26.html"},
+        workspace_root=tmp_path,
+    )
+    assert not allowed
+    assert reason == "operator_intent_blocks_file_read:arena-kimi-k26.html"
+
+    allowed, reason = super_cli._operator_policy_tool_decision(
+        policy,
+        tool_id="file_read",
+        arguments={"path": "arena.html"},
+        workspace_root=tmp_path,
+    )
+    assert allowed
+    assert reason == ""
+
+    allowed, reason = super_cli._operator_policy_tool_decision(
+        policy,
+        tool_id="list_directory",
+        arguments={"path": str(tmp_path)},
+        workspace_root=tmp_path,
+    )
+    assert not allowed
+    assert reason == "operator_intent_blocks_directory_listing"
+
+    allowed, reason = super_cli._operator_policy_tool_decision(
+        policy,
+        tool_id="git_status",
+        arguments={"path": str(tmp_path)},
+        workspace_root=tmp_path,
+    )
+    assert not allowed
+    assert reason == "operator_intent_blocks_git_context"
+
+    allowed, reason = super_cli._operator_policy_tool_decision(
+        policy,
+        tool_id="file_write",
+        arguments={"path": "arena.html", "content": "<html></html>"},
+        workspace_root=tmp_path,
+    )
+    assert allowed
+    assert reason == ""
+
+    allowed, reason = super_cli._operator_policy_tool_decision(
+        policy,
+        tool_id="file_write",
+        arguments={"path": "other.html", "content": "<html></html>"},
+        workspace_root=tmp_path,
+    )
+    assert not allowed
+    assert reason == "operator_intent_blocks_file_write:other.html"
 
 
 def test_main_verbose_text_summary_prints_full_trace(capsys) -> None:
@@ -3338,6 +3877,355 @@ def test_main_live_generic_uses_generic_first_write_recovery(
     assert not any(row["event"] == "live.website_first_write_recovery.completed" for row in event_rows)
     assert any(row["event"] == "live.generic_first_write_recovery.completed" for row in event_rows)
     assert not any(row["event"] == "live.website_repair.started" for row in event_rows)
+    final_validation = [
+        row for row in event_rows if row.get("event") == "live.validation.completed"
+    ][-1]
+    assert final_validation["passed"] is True
+    assert final_validation["first_write_recovery_attempted"]
+
+
+def test_main_live_generic_first_write_recovery_targets_html_animation_write(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    (tmp_path / "index.html").write_text(
+        "<!doctype html><html><body>old animation</body></html>\n",
+        encoding="utf-8",
+    )
+    fake_provider = _FakeTargetedFirstWriteRecoveryHtmlProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            (
+                "Use HTML/JavaScript to write a complex and detail-rich application that creates "
+                "an animation of two stick figures battling in an arena."
+            ),
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Live Run: completed" in stdout
+    assert "[retry] first-write recovery 1 started" in stdout
+    assert fake_provider.calls == 4
+    assert fake_provider.recovery_tool_names == ["file_read", "file_write", "file_edit"]
+    assert fake_provider.recovery_kwargs["thinking"] == {"type": "disabled"}
+    assert fake_provider.recovery_kwargs["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "file_write"},
+    }
+    html_path = tmp_path / "animation-two-stick-figures-battling.html"
+    assert html_path.exists()
+    assert "Stick Figure Arena" in html_path.read_text(encoding="utf-8")
+
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    recovery_started = next(
+        row for row in event_rows if row.get("event") == "live.generic_first_write_recovery.started"
+    )
+    assert recovery_started["recommended_write_paths"][0] == (
+        "animation-two-stick-figures-battling.html"
+    )
+    recovery_worker_started = next(
+        row
+        for row in event_rows
+        if row.get("event") == "worker.started"
+        and row.get("worker_id") == "super-dan.live.general-first-write-recovery"
+    )
+    assert recovery_worker_started["tool_count"] == 3
+    final_validation = [
+        row for row in event_rows if row.get("event") == "live.validation.completed"
+    ][-1]
+    assert final_validation["passed"] is True
+    assert final_validation["first_write_recovery_attempted"]
+
+
+def test_main_live_generic_first_write_recovery_materializes_named_html_alias_after_timeout(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    source_html = (
+        "<!doctype html><html><head><title>Arena</title></head>"
+        "<body><canvas id=\"arena\"></canvas><script>requestAnimationFrame(()=>{});</script></body></html>\n"
+    )
+    (tmp_path / "arena-kimi-k26.html").write_text(source_html, encoding="utf-8")
+    fake_provider = _FakeFirstWriteRecoveryTimeoutThenAliasProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            (
+                "Use HTML/JavaScript to write a complex and detail-rich application that creates "
+                "an animation of twostick figures battling in an arena. The animationshould include "
+                "special effects and particleeffects, and the overall production should be highquality. "
+                "name it arena.html"
+            ),
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Live Run: completed" in stdout
+    assert "[retry] first-write recovery 1 completed changed=arena.html" in stdout
+    assert fake_provider.calls == 4
+    assert fake_provider.recovery_kwargs
+    assert fake_provider.recovery_kwargs[0]["thinking"] == {"type": "disabled"}
+    assert fake_provider.recovery_kwargs[0]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "file_write"},
+    }
+    assert (tmp_path / "arena.html").read_text(encoding="utf-8") == source_html
+
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    recovery_started = next(
+        row for row in event_rows if row.get("event") == "live.generic_first_write_recovery.started"
+    )
+    assert recovery_started["recommended_write_paths"][0] == "arena.html"
+    assert recovery_started["additive_recovery_required"] is False
+    alias_event = next(
+        row
+        for row in event_rows
+        if row.get("event") == "live.generic_first_write_recovery.alias_materialized"
+    )
+    assert alias_event["source_path"] == "arena-kimi-k26.html"
+    assert alias_event["target_path"].endswith("/arena.html")
+    final_validation = [
+        row for row in event_rows if row.get("event") == "live.validation.completed"
+    ][-1]
+    assert final_validation["passed"] is True
+    assert final_validation["first_write_recovery_attempted"]
+
+
+def test_main_live_generic_operator_policy_blocks_other_file_reads_and_alias_reuse(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    source_html = (
+        "<!doctype html><html><head><title>Copied Arena</title></head>"
+        "<body><canvas id=\"copied\"></canvas></body></html>\n"
+    )
+    (tmp_path / "arena-kimi-k26.html").write_text(source_html, encoding="utf-8")
+    fake_provider = _FakeOperatorPolicyOtherFileReadProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            (
+                "Use HTML/JavaScript to write a complex and detail-rich application that creates "
+                "an animation of twostick figures battling in an arena. The animation should include "
+                "special effects and particle effects, and the overall production should be high quality. "
+                "name the file arena.html do not read other files in this folder"
+            ),
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Live Run: completed" in stdout
+    assert fake_provider.calls == 3
+    assert fake_provider.initial_tool_names == ["file_write"]
+    assert (tmp_path / "arena.html").read_text(encoding="utf-8") != source_html
+
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert not any(
+        row.get("event") == "live.generic_first_write_recovery.alias_materialized"
+        for row in event_rows
+    )
+    assert not any(
+        row.get("event") == "tool.completed" and row.get("tool_id") == "list_directory"
+        for row in event_rows
+    )
+    assert not any(
+        row.get("event") == "tool.completed" and row.get("tool_id") in {"git_status", "git_diff", "git_log"}
+        for row in event_rows
+    )
+    assert not any(
+        row.get("event") == "tool.completed"
+        and row.get("tool_id") == "file_read"
+        and (row.get("arguments") or {}).get("path") == "arena-kimi-k26.html"
+        for row in event_rows
+    )
+    assert not any(
+        row.get("event") == "live.generic_first_write_recovery.started"
+        for row in event_rows
+    )
+    build_started = next(row for row in event_rows if row.get("event") == "worker.started")
+    assert build_started["tool_count"] == 1
+    final_validation = [
+        row for row in event_rows if row.get("event") == "live.validation.completed"
+    ][-1]
+    assert final_validation["passed"] is True
+
+
+def test_main_live_generic_operator_policy_disables_alias_materialization_after_timeout(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    source_html = (
+        "<!doctype html><html><head><title>Arena</title></head>"
+        "<body><canvas id=\"arena\"></canvas><script>requestAnimationFrame(()=>{});</script></body></html>\n"
+    )
+    (tmp_path / "arena-kimi-k26.html").write_text(source_html, encoding="utf-8")
+    fake_provider = _FakeFirstWriteRecoveryTimeoutThenAliasProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            (
+                "Use HTML/JavaScript to write a complex and detail-rich application that creates "
+                "an animation of twostick figures battling in an arena. The animation should include "
+                "special effects and particle effects, and the overall production should be high quality. "
+                "name it arena.html do not read other files in this folder"
+            ),
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 1
+    stdout = capsys.readouterr().out
+    assert "Live Run: failed" in stdout
+    assert not (tmp_path / "arena.html").exists()
+    assert fake_provider.calls == 6
+
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert not any(
+        row.get("event") == "live.generic_first_write_recovery.alias_materialized"
+        for row in event_rows
+    )
+    recovery_started = next(
+        row for row in event_rows if row.get("event") == "live.generic_first_write_recovery.started"
+    )
+    assert recovery_started["recommended_write_paths"][0] == "arena.html"
+    assert "arena-kimi-k26.html" not in recovery_started["recommended_write_paths"]
+    recovery_worker_started = next(
+        row
+        for row in event_rows
+        if row.get("event") == "worker.started"
+        and row.get("worker_id") == "super-dan.live.general-first-write-recovery"
+    )
+    assert recovery_worker_started["tool_count"] == 1
+
+
+def test_main_live_generic_first_write_recovery_blocks_additive_report_shrink(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    report_path = tmp_path / "semiconductor_supply_chain_equity_research.md"
+    report_path.write_text(
+        "# Semiconductor Supply Chain Equity Research\n\n"
+        "## 3. Midstream: Semiconductors\n\n"
+        "| Company | Segment | Share |\n"
+        "| --- | --- | ---: |\n"
+        "| TSMC | Foundry | ~60% |\n\n"
+        "## 4. Upstream: Equipment & Materials\n\n"
+        "| Company | Segment |\n"
+        "| --- | --- |\n"
+        "| ASML | Lithography |\n",
+        encoding="utf-8",
+    )
+    fake_provider = _FakeAdditiveFirstWriteRecoveryReportProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "can you enrich section 3 and 4?",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Live Run: completed" in stdout
+    assert "[retry] first-write recovery 1 started" in stdout
+    assert fake_provider.calls == 5
+    text = report_path.read_text(encoding="utf-8")
+    assert "# Generic Semiconductor Report" not in text
+    assert "| TSMC | Foundry | ~60% |" in text
+    assert "| ASML | Lithography |" in text
+    assert "Additional Section 3 evidence" in text
+
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    recovery_started = [
+        row for row in event_rows if row.get("event") == "live.generic_first_write_recovery.started"
+    ][-1]
+    assert recovery_started["additive_recovery_required"] is True
+    policy_event = next(
+        row for row in event_rows if row.get("event") == "toolloop.repair_policy_nudged"
+    )
+    assert policy_event["paths"] == ["semiconductor_supply_chain_equity_research.md"]
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]

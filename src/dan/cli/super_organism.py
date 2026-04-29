@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -68,6 +69,50 @@ _SUPER_DAN_WORKER_MAX_TOKENS = 64_000
 _SUPER_DAN_REPAIR_MAX_TOKENS = 64_000
 _SUPER_DAN_VALIDATOR_MAX_TOKENS = 12_000
 _SUPER_DAN_GENERIC_FIRST_WRITE_RECOVERY_ATTEMPTS = 2
+_GENERIC_ALIAS_TEXT_EXTENSIONS = frozenset(
+    {
+        ".css",
+        ".csv",
+        ".html",
+        ".js",
+        ".json",
+        ".md",
+        ".py",
+        ".txt",
+    }
+)
+
+
+@dataclass(frozen=True)
+class OperatorIntentPolicy:
+    """Structured operator constraints that must survive prompt/runtime boundaries."""
+
+    active: bool = False
+    target_artifacts: tuple[str, ...] = ()
+    allowed_read_paths: tuple[str, ...] = ()
+    allowed_write_paths: tuple[str, ...] = ()
+    forbid_other_workspace_inputs: bool = False
+    allow_directory_listing: bool = True
+    allow_git_context: bool = True
+    allow_shell_command: bool = True
+    allow_existing_artifact_reuse: bool = True
+    source_scope: str = "workspace_allowed"
+    constraints: tuple[str, ...] = ()
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "active": bool(self.active),
+            "target_artifacts": list(self.target_artifacts),
+            "allowed_read_paths": list(self.allowed_read_paths),
+            "allowed_write_paths": list(self.allowed_write_paths),
+            "forbid_other_workspace_inputs": bool(self.forbid_other_workspace_inputs),
+            "allow_directory_listing": bool(self.allow_directory_listing),
+            "allow_git_context": bool(self.allow_git_context),
+            "allow_shell_command": bool(self.allow_shell_command),
+            "allow_existing_artifact_reuse": bool(self.allow_existing_artifact_reuse),
+            "source_scope": self.source_scope,
+            "constraints": list(self.constraints),
+        }
 
 
 def _live_pacing_policy(*, forbid_scratch_files: bool = False) -> dict[str, Any]:
@@ -171,8 +216,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Operator objective. Omit in a terminal to start an interactive Super DAN session; "
-            "non-interactive calls still run the default universal-agent objective "
-            f"({DEFAULT_SUPER_ORGANISM_TARGET!r})."
+            "non-interactive live work requires an explicit objective. Explicit report flags can "
+            f"still render the default universal-agent showcase ({DEFAULT_SUPER_ORGANISM_TARGET!r})."
         ),
     )
     parser.add_argument(
@@ -1019,12 +1064,25 @@ def _super_live_choice(
         "command": "super-organism",
     }
     code_like_live = args is not None and bool(getattr(args, "_code_like_live", False))
-    existing_website_workspace = code_like_live and _existing_website_workspace_context(args)
+    workspace_root = normalize_workspace_root(str(args.workspace)) if args is not None else Path(".")
+    operator_policy = _operator_intent_policy_from_objective(
+        str(report.target or ""),
+        workspace_root=workspace_root,
+    )
+    skip_workspace_context = bool(operator_policy.forbid_other_workspace_inputs)
+    existing_website_workspace = (
+        code_like_live
+        and not skip_workspace_context
+        and _existing_website_workspace_context(args)
+    )
     single_file_html_workspace = (
         code_like_live
+        and not skip_workspace_context
         and not existing_website_workspace
         and _single_file_html_workspace_context(args)
     )
+    if operator_policy.active:
+        context["operator_intent_policy"] = operator_policy.to_payload()
     if existing_website_workspace:
         context["existing_website_workspace"] = True
         context["workspace_kind"] = "website"
@@ -1677,8 +1735,7 @@ def _looks_like_git_baseline_rejection(text: str) -> bool:
     )
 
 
-def _generic_validation_requests_additive_repair(validation: Mapping[str, Any]) -> bool:
-    text = _validation_repair_brief(validation, [])
+def _text_requests_additive_update(text: str) -> bool:
     lowered = text.lower()
     additive_terms = (
         "add",
@@ -1697,6 +1754,10 @@ def _generic_validation_requests_additive_repair(validation: Mapping[str, Any]) 
         any(term in lowered for term in removal_terms)
         and not any(term in lowered for term in ("add", "expand", "include", "missing"))
     )
+
+
+def _generic_validation_requests_additive_repair(validation: Mapping[str, Any]) -> bool:
+    return _text_requests_additive_update(_validation_repair_brief(validation, []))
 
 
 def _generic_validation_repair_brief(validation: Mapping[str, Any]) -> str:
@@ -1809,14 +1870,37 @@ def _live_generic_task(
     report: SuperOrganismReport,
     *,
     workspace_root: Path,
+    operator_intent_policy: OperatorIntentPolicy | None = None,
+    prompt_only_creation_target: str | None = None,
 ) -> str:
+    policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
+    constrained_creation_note = ""
+    if prompt_only_creation_target:
+        constrained_creation_note = (
+            "Constrained creation condition: the operator forbids other workspace inputs and the explicit target "
+            f"`{prompt_only_creation_target}` is missing. Create the target from the objective and binding policy alone. "
+            "Do not spend a tool call on directory inventory, git context, existing-artifact reuse, or target-existence checks before the first write. "
+        )
+    workspace_context_sentence = (
+        "Create from the operator objective and allowed target path; do not inspect existing workspace context before the first write. "
+        if prompt_only_creation_target
+        else "Inspect the existing project or workspace as needed. "
+    )
+    coordination_sentence = (
+        "Use the constrained creation packet as the execution context. "
+        if prompt_only_creation_target
+        else "Honor the supplied ticket ownership and handoff packets instead of freeforming a generic build summary. "
+    )
     return (
         "Execute the operator objective in the current workspace now, using the enabled tools to produce the requested deliverable. "
         f"Operator objective: {report.target}. "
         f"Workspace root: {workspace_root}. "
-        "Honor the supplied ticket ownership and handoff packets instead of freeforming a generic build summary. "
+        f"{policy_note} "
+        f"{constrained_creation_note}"
+        f"{coordination_sentence}"
         f"{_live_pacing_contract()} "
-        "Inspect the existing project or workspace as needed. If the objective asks for current external facts, use web_search "
+        f"{workspace_context_sentence}"
+        "If the objective asks for current external facts, use web_search "
         "instead of guessing. If it asks to save, export, return, or eventually produce a file, create or update the appropriate "
         "workspace artifact; markdown/report requests should be materialized as a markdown file with source notes or links when "
         "available. If it asks for software, make the bounded implementation and run focused verification when useful. "
@@ -1830,13 +1914,53 @@ def _live_generic_first_write_recovery_task(
     workspace_root: Path,
     failure_reason: str,
     attempt: int,
+    recommended_write_paths: Sequence[str] | None = None,
+    additive_recovery_required: bool = False,
+    operator_intent_policy: OperatorIntentPolicy | None = None,
+    prompt_only_creation_target: str | None = None,
 ) -> str:
+    policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
+    preservation_note = ""
+    if additive_recovery_required:
+        preservation_note = (
+            "This is an additive/enrichment objective against an existing workspace artifact. "
+            "Preserve the existing artifact substance, tables, headings, and quantitative details. "
+            "Do not replace an existing report/document with a shorter generic scaffold. "
+            "For existing files, prefer targeted file_edit or append-style file_write; use whole-file overwrite only "
+            "for a complete expanded replacement that preserves all prior substance. "
+        )
+    target_paths = [
+        str(path).strip()
+        for path in (recommended_write_paths or [])
+        if str(path).strip()
+    ]
+    target_note = ""
+    if target_paths:
+        rendered_targets = ", ".join(f"`{path}`" for path in target_paths[:6])
+        first_target = target_paths[0]
+        target_note = (
+            f"Recommended first-write targets, in priority order: {rendered_targets}. "
+            f"Make the first durable write to `{first_target}` unless that path is clearly incompatible. "
+            "If the chosen path already exists, use a targeted file_edit or append-style file_write; "
+            "if it does not exist, create it with file_write. "
+        )
+    constrained_creation_note = ""
+    if prompt_only_creation_target:
+        constrained_creation_note = (
+            "Constrained creation condition: other workspace inputs are forbidden and the explicit target "
+            f"`{prompt_only_creation_target}` is missing. Create that target from the objective and policy alone. "
+            "Do not take a read-only/checking call before the first write. "
+        )
     return (
         "Run a generic Super DAN first-write recovery now. "
         f"Attempt: {attempt}. "
         f"Operator objective: {report.target}. "
         f"Workspace root: {workspace_root}. "
         f"Previous failure reason: {failure_reason or 'no workspace files were changed'}. "
+        f"{policy_note} "
+        f"{preservation_note}"
+        f"{target_note}"
+        f"{constrained_creation_note}"
         "The previous worker returned or timed out without a durable workspace mutation. Do not summarize, plan, or keep "
         "researching. Make at least one concrete file_write or file_edit call before finalizing. If the objective asks for "
         "a report or markdown deliverable, create or update the report artifact directly. If an existing relevant artifact "
@@ -1851,7 +1975,9 @@ def _live_generic_validation_task(
     workspace_root: Path,
     pre_run_file_state: Mapping[str, Mapping[str, Any]] | None = None,
     post_run_file_state: Mapping[str, Mapping[str, Any]] | None = None,
+    operator_intent_policy: OperatorIntentPolicy | None = None,
 ) -> str:
+    policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
     state_note = ""
     if pre_run_file_state:
         state_note = (
@@ -1868,6 +1994,7 @@ def _live_generic_validation_task(
         "Validate the live workspace deliverable now in read-only mode. "
         f"Operator objective: {report.target}. "
         f"Workspace root: {workspace_root}. "
+        f"{policy_note} "
         f"{state_note}"
         "Inspect the mutated files and relevant read-only evidence, then decide whether the result materially advances the "
         "objective. For report or markdown objectives, verify that a report-like artifact was actually written and is not just "
@@ -1884,7 +2011,9 @@ def _live_generic_repair_task(
     repair_brief: str | None = None,
     pre_run_file_state: Mapping[str, Mapping[str, Any]] | None = None,
     current_file_state: Mapping[str, Mapping[str, Any]] | None = None,
+    operator_intent_policy: OperatorIntentPolicy | None = None,
 ) -> str:
+    policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
     effective_repair_brief = repair_brief or _generic_validation_repair_brief(validation)
     changed = ", ".join(str(path) for path in mutated_paths) or "none recorded"
     state_note = ""
@@ -1898,6 +2027,7 @@ def _live_generic_repair_task(
         f"Operator objective: {report.target}. "
         f"Workspace root: {workspace_root}. "
         f"Current mutated files: {changed}. "
+        f"{policy_note} "
         f"{state_note}"
         f"Validation feedback: {effective_repair_brief or 'validator rejected the previous deliverable'}. "
         "Make concrete workspace edits that address that feedback; do not return a summary-only response. If the deliverable is "
@@ -1956,6 +2086,339 @@ def _log_live_event(
     logger.emit({"event": event, **payload})
 
 
+def _safe_workspace_artifact_path(
+    raw_path: str,
+    *,
+    workspace_root: Path,
+) -> Path | None:
+    raw = str(raw_path or "").strip()
+    if not raw:
+        return None
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        candidate = workspace_root / candidate
+    relative = _relative_workspace_artifact_path(candidate, workspace_root=workspace_root)
+    if not relative:
+        return None
+    return (workspace_root / relative).resolve(strict=False)
+
+
+def _objective_forbids_other_workspace_inputs(objective: str) -> bool:
+    lowered = " ".join(str(objective or "").lower().split())
+    if not lowered:
+        return False
+    patterns = (
+        r"\bdo\s+not\s+(?:read|inspect|open|look\s+at|use)\s+(?:any\s+)?other\s+files?\b",
+        r"\bdon['’]?t\s+(?:read|inspect|open|look\s+at|use)\s+(?:any\s+)?other\s+files?\b",
+        r"\bdont\s+(?:read|inspect|open|look\s+at|use)\s+(?:any\s+)?other\s+files?\b",
+        r"\bwithout\s+(?:reading|inspecting|opening|using)\s+(?:any\s+)?other\s+files?\b",
+        r"\bdo\s+not\s+(?:read|inspect|open|look\s+at|use)\s+(?:this\s+)?(?:folder|directory|workspace)\b",
+        r"\bdon['’]?t\s+(?:read|inspect|open|look\s+at|use)\s+(?:this\s+)?(?:folder|directory|workspace)\b",
+    )
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
+def _objective_forbids_existing_artifact_reuse(objective: str) -> bool:
+    lowered = " ".join(str(objective or "").lower().split())
+    if not lowered:
+        return False
+    patterns = (
+        r"\bfrom\s+scratch\b",
+        r"\bdo\s+not\s+use\s+(?:any\s+)?existing\b",
+        r"\bdon['’]?t\s+use\s+(?:any\s+)?existing\b",
+        r"\bdont\s+use\s+(?:any\s+)?existing\b",
+        r"\bwithout\s+using\s+(?:any\s+)?existing\b",
+    )
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
+def _operator_intent_policy_from_objective(
+    objective: str,
+    *,
+    workspace_root: Path,
+) -> OperatorIntentPolicy:
+    target_artifacts = tuple(
+        _explicit_objective_artifact_paths(
+            objective,
+            workspace_root=workspace_root,
+        )
+    )
+    forbid_other_inputs = _objective_forbids_other_workspace_inputs(objective)
+    forbid_existing_reuse = _objective_forbids_existing_artifact_reuse(objective)
+    constraints: list[str] = []
+    if forbid_other_inputs:
+        constraints.append("Do not read, inspect, list, or otherwise use other workspace files.")
+    if forbid_existing_reuse:
+        constraints.append("Do not reuse existing workspace artifacts as source material.")
+    if not constraints:
+        return OperatorIntentPolicy(target_artifacts=target_artifacts)
+
+    allowed_targets = target_artifacts
+    return OperatorIntentPolicy(
+        active=True,
+        target_artifacts=target_artifacts,
+        allowed_read_paths=allowed_targets if forbid_other_inputs else (),
+        allowed_write_paths=allowed_targets,
+        forbid_other_workspace_inputs=forbid_other_inputs,
+        allow_directory_listing=not forbid_other_inputs,
+        allow_git_context=not forbid_other_inputs,
+        allow_shell_command=not forbid_other_inputs,
+        allow_existing_artifact_reuse=not (forbid_other_inputs or forbid_existing_reuse),
+        source_scope=(
+            "operator_prompt_and_target_artifacts_only"
+            if forbid_other_inputs
+            else "workspace_allowed_without_existing_artifact_reuse"
+        ),
+        constraints=tuple(constraints),
+    )
+
+
+def _operator_intent_policy_from_request(request: ExecutionRequest) -> OperatorIntentPolicy:
+    raw = getattr(request, "metadata", {}).get("operator_intent_policy")
+    if not isinstance(raw, Mapping):
+        return OperatorIntentPolicy()
+    return OperatorIntentPolicy(
+        active=bool(raw.get("active")),
+        target_artifacts=tuple(str(path) for path in raw.get("target_artifacts") or ()),
+        allowed_read_paths=tuple(str(path) for path in raw.get("allowed_read_paths") or ()),
+        allowed_write_paths=tuple(str(path) for path in raw.get("allowed_write_paths") or ()),
+        forbid_other_workspace_inputs=bool(raw.get("forbid_other_workspace_inputs")),
+        allow_directory_listing=bool(raw.get("allow_directory_listing", True)),
+        allow_git_context=bool(raw.get("allow_git_context", True)),
+        allow_shell_command=bool(raw.get("allow_shell_command", True)),
+        allow_existing_artifact_reuse=bool(raw.get("allow_existing_artifact_reuse", True)),
+        source_scope=str(raw.get("source_scope") or "workspace_allowed"),
+        constraints=tuple(str(item) for item in raw.get("constraints") or ()),
+    )
+
+
+def _operator_intent_policy_prompt(policy: OperatorIntentPolicy) -> str:
+    if not policy.active:
+        return ""
+    lines = [
+        "Binding operator intent policy:",
+        f"- Source scope: {policy.source_scope}.",
+    ]
+    if policy.target_artifacts:
+        lines.append(f"- Target artifacts: {', '.join(policy.target_artifacts)}.")
+    if policy.allowed_read_paths:
+        lines.append(f"- Allowed workspace reads: {', '.join(policy.allowed_read_paths)}.")
+    elif policy.forbid_other_workspace_inputs:
+        lines.append("- Allowed workspace reads: none before the target artifact exists.")
+    if policy.allowed_write_paths:
+        lines.append(f"- Allowed workspace writes: {', '.join(policy.allowed_write_paths)}.")
+    for constraint in policy.constraints:
+        lines.append(f"- {constraint}")
+    if not policy.allow_directory_listing:
+        lines.append("- Do not list or inventory the workspace directory.")
+    if not policy.allow_git_context:
+        lines.append("- Do not use git status, git diff, or git log as workspace context.")
+    if not policy.allow_existing_artifact_reuse:
+        lines.append("- Do not materialize the target by copying or adapting another workspace artifact.")
+    return " ".join(lines)
+
+
+def _filter_tool_ids_for_operator_intent(
+    tool_ids: Sequence[str],
+    policy: OperatorIntentPolicy,
+) -> list[str]:
+    if not policy.active:
+        return list(tool_ids)
+    blocked: set[str] = set()
+    if not policy.allow_directory_listing:
+        blocked.add("list_directory")
+    if not policy.allow_git_context:
+        blocked.update({"git_status", "git_diff", "git_log"})
+    if not policy.allow_shell_command:
+        blocked.add("shell_command")
+    if policy.forbid_other_workspace_inputs and not policy.allowed_read_paths:
+        blocked.add("file_read")
+    return [str(tool_id) for tool_id in tool_ids if str(tool_id) not in blocked]
+
+
+def _operator_policy_relative_path(raw_path: str, *, workspace_root: Path) -> str | None:
+    raw = str(raw_path or "").strip()
+    if not raw:
+        return None
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        candidate = workspace_root / candidate
+    resolved = candidate.resolve(strict=False)
+    root = workspace_root.resolve(strict=False)
+    if resolved == root:
+        return "."
+    return _relative_workspace_artifact_path(resolved, workspace_root=workspace_root)
+
+
+def _operator_policy_tool_decision(
+    policy: OperatorIntentPolicy,
+    *,
+    tool_id: str,
+    arguments: Mapping[str, Any],
+    workspace_root: Path,
+) -> tuple[bool, str]:
+    if not policy.active:
+        return True, ""
+    tool = str(tool_id)
+    args = dict(arguments or {})
+    allowed_reads = set(policy.allowed_read_paths)
+    allowed_writes = set(policy.allowed_write_paths)
+    allowed_targets = set(policy.target_artifacts) | allowed_reads | allowed_writes
+
+    if tool == "list_directory" and not policy.allow_directory_listing:
+        return False, "operator_intent_blocks_directory_listing"
+    if tool in {"git_status", "git_diff", "git_log"} and not policy.allow_git_context:
+        return False, "operator_intent_blocks_git_context"
+    if tool == "shell_command" and not policy.allow_shell_command:
+        return False, "operator_intent_blocks_shell_context"
+    if tool == "file_read":
+        relative = _operator_policy_relative_path(str(args.get("path") or ""), workspace_root=workspace_root)
+        if not relative or relative not in allowed_reads:
+            return False, f"operator_intent_blocks_file_read:{relative or '(unknown)'}"
+    if tool in {"file_write", "file_edit"} and allowed_writes:
+        relative = _operator_policy_relative_path(str(args.get("path") or ""), workspace_root=workspace_root)
+        if not relative or relative not in allowed_writes:
+            return False, f"operator_intent_blocks_file_write:{relative or '(unknown)'}"
+    if tool == "workspace_check" and policy.forbid_other_workspace_inputs:
+        raw_paths: list[str] = []
+        if str(args.get("path") or "").strip():
+            raw_paths.append(str(args.get("path")))
+        if isinstance(args.get("paths"), (list, tuple)):
+            raw_paths.extend(str(path) for path in args.get("paths") or [])
+        check = str(args.get("check") or "").strip()
+        for raw_path in raw_paths:
+            relative = _operator_policy_relative_path(raw_path, workspace_root=workspace_root)
+            if relative == "." and check == "exists":
+                continue
+            if relative not in allowed_targets:
+                return False, f"operator_intent_blocks_workspace_check:{relative or '(unknown)'}"
+        if check and check != "exists":
+            checked_path = _operator_policy_relative_path(
+                str(args.get("path") or ""),
+                workspace_root=workspace_root,
+            )
+            if checked_path not in allowed_targets:
+                return False, f"operator_intent_blocks_workspace_check:{checked_path or '(unknown)'}"
+    return True, ""
+
+
+def _operator_intent_approval_callback(
+    policy: OperatorIntentPolicy,
+    *,
+    workspace_root: Path,
+    event_callback,
+):
+    if not policy.active:
+        return None
+
+    def approve(tool_id: str, arguments: dict[str, Any], metadata: dict[str, Any]) -> bool:
+        del metadata
+        allowed, reason = _operator_policy_tool_decision(
+            policy,
+            tool_id=tool_id,
+            arguments=arguments,
+            workspace_root=workspace_root,
+        )
+        if not allowed:
+            event_callback(
+                {
+                    "event": "tool.policy_denied",
+                    "tool_id": tool_id,
+                    "arguments": dict(arguments),
+                    "reason": reason,
+                    "operator_intent_policy": policy.to_payload(),
+                }
+            )
+        return allowed
+
+    return approve
+
+
+def _snapshot_workspace_file_metadata_for_intent(
+    workspace_root: Path,
+    policy: OperatorIntentPolicy,
+) -> dict[str, dict[str, Any]]:
+    if not policy.forbid_other_workspace_inputs:
+        return _snapshot_workspace_file_metadata(workspace_root)
+    paths = _dedupe_preserving_order(
+        [
+            *policy.target_artifacts,
+            *policy.allowed_read_paths,
+            *policy.allowed_write_paths,
+        ]
+    )
+    return {
+        str((workspace_root / path).resolve(strict=False)): _file_metadata(workspace_root / path)
+        for path in paths
+    }
+
+
+def _operator_prompt_only_creation_target(
+    policy: OperatorIntentPolicy,
+    *,
+    workspace_root: Path,
+    pre_run_workspace_state: Mapping[str, Mapping[str, Any]] | None = None,
+) -> str | None:
+    if not policy.active or not policy.forbid_other_workspace_inputs:
+        return None
+    if not policy.target_artifacts:
+        return None
+    target = str(policy.target_artifacts[0] or "").strip()
+    if not target:
+        return None
+    if policy.allowed_write_paths and target not in set(policy.allowed_write_paths):
+        return None
+    target_path = _safe_workspace_artifact_path(target, workspace_root=workspace_root)
+    if target_path is None:
+        return None
+    if pre_run_workspace_state is not None:
+        state = pre_run_workspace_state.get(str(target_path.resolve(strict=False)))
+        if isinstance(state, Mapping) and bool(state.get("exists")):
+            return None
+    elif target_path.exists():
+        return None
+    return target
+
+
+def _prompt_only_creation_tool_ids(tool_ids: Sequence[str]) -> list[str]:
+    available = {str(tool_id) for tool_id in tool_ids}
+    if "file_write" in available:
+        return ["file_write"]
+    if "file_edit" in available:
+        return ["file_edit"]
+    return list(tool_ids)
+
+
+def _live_provider_request_overrides(
+    request: ExecutionRequest,
+    *,
+    tool_ids: Sequence[str],
+    workspace_root: Path,
+) -> dict[str, Any]:
+    metadata = getattr(request, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return {}
+    if metadata.get("first_write_recovery") is not True:
+        return {}
+
+    overrides: dict[str, Any] = {"thinking": {"type": "disabled"}}
+    primary_target = str(metadata.get("exclusive_write_owner_path") or "").strip()
+    target_path = _safe_workspace_artifact_path(
+        primary_target,
+        workspace_root=workspace_root,
+    )
+    if (
+        target_path is not None
+        and not target_path.exists()
+        and "file_write" in {str(tool_id) for tool_id in tool_ids}
+    ):
+        overrides["tool_choice"] = {
+            "type": "function",
+            "function": {"name": "file_write"},
+        }
+    return overrides
+
+
 async def _execute_live_request(
     *,
     worker: WorkerDefinition,
@@ -1993,6 +2456,11 @@ async def _execute_live_request(
     tool_runtime = LocalOrganismToolRuntime(
         tool_ids=list(tool_ids),
         workspace_root=workspace_root,
+        approval_callback=_operator_intent_approval_callback(
+            _operator_intent_policy_from_request(request),
+            workspace_root=workspace_root,
+            event_callback=record_event,
+        ),
         event_callback=record_event,
     )
     completion_provider = ToolLoopCompletionProvider(
@@ -2001,6 +2469,11 @@ async def _execute_live_request(
         default_model=model,
         max_rounds=int(args.max_tool_rounds),
         max_tool_calls=int(args.max_tool_calls),
+        provider_request_overrides=_live_provider_request_overrides(
+            request,
+            tool_ids=tool_ids,
+            workspace_root=workspace_root,
+        ),
         event_callback=record_event,
     )
     executor = WorkerCoreExecutor(
@@ -2081,6 +2554,316 @@ def _snapshot_workspace_file_metadata(workspace_root: Path) -> dict[str, dict[st
                 continue
             snapshot[str(path.resolve(strict=False))] = _file_metadata(path)
     return snapshot
+
+
+_GENERIC_FIRST_WRITE_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "app",
+        "application",
+        "build",
+        "can",
+        "complex",
+        "create",
+        "creates",
+        "detail",
+        "detailed",
+        "do",
+        "effects",
+        "eventually",
+        "file",
+        "for",
+        "from",
+        "good",
+        "help",
+        "high",
+        "html",
+        "i",
+        "in",
+        "include",
+        "includes",
+        "javascript",
+        "js",
+        "make",
+        "me",
+        "need",
+        "of",
+        "overall",
+        "please",
+        "production",
+        "quality",
+        "return",
+        "rich",
+        "should",
+        "special",
+        "that",
+        "the",
+        "this",
+        "to",
+        "use",
+        "with",
+        "write",
+        "you",
+    }
+)
+_GENERIC_FIRST_WRITE_EXPLICIT_PATH_RE = re.compile(
+    r"(?<![\w./-])([\w./-]+\.(?:html|htm|md|markdown|txt|json|csv|py|js|css))(?![\w./-])",
+    re.IGNORECASE,
+)
+
+
+def _dedupe_preserving_order(items: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        rendered = str(item).strip()
+        if not rendered or rendered in seen:
+            continue
+        seen.add(rendered)
+        result.append(rendered)
+    return result
+
+
+def _relative_workspace_artifact_path(path: Path, *, workspace_root: Path) -> str | None:
+    try:
+        relative = path.resolve(strict=False).relative_to(workspace_root.resolve(strict=False))
+    except (OSError, ValueError):
+        return None
+    if any(part in _GENERIC_SNAPSHOT_SKIP_DIR_NAMES for part in relative.parts):
+        return None
+    if any(part.startswith(".") for part in relative.parts):
+        return None
+    rendered = relative.as_posix()
+    if not rendered or rendered.startswith("../") or rendered == ".":
+        return None
+    return rendered
+
+
+def _existing_workspace_artifact_paths(
+    snapshot: Mapping[str, Mapping[str, Any]],
+    *,
+    workspace_root: Path,
+) -> list[str]:
+    paths: list[str] = []
+    for raw_path, state in sorted(snapshot.items()):
+        if isinstance(state, Mapping) and not bool(state.get("exists")):
+            continue
+        relative = _relative_workspace_artifact_path(
+            Path(str(raw_path)),
+            workspace_root=workspace_root,
+        )
+        if relative:
+            paths.append(relative)
+    return _dedupe_preserving_order(paths)
+
+
+def _generic_first_write_extension(objective: str) -> str:
+    lowered = objective.lower()
+    if any(token in lowered for token in ("html", "javascript", "canvas", "animation", "web app", "website", "page")):
+        return ".html"
+    if any(token in lowered for token in ("markdown", "report", "research", "memo", "document", "note")):
+        return ".md"
+    if "python" in lowered or re.search(r"\bscript\b|\bcli\b", lowered):
+        return ".py"
+    if "json" in lowered:
+        return ".json"
+    if "csv" in lowered or "spreadsheet" in lowered:
+        return ".csv"
+    return ".md"
+
+
+def _slugify_first_write_stem(objective: str, *, fallback: str) -> str:
+    words: list[str] = []
+    for word in re.findall(r"[a-z0-9]+", objective.lower()):
+        if word in _GENERIC_FIRST_WRITE_STOPWORDS:
+            continue
+        if len(word) <= 1:
+            continue
+        words.append(word)
+        if len(words) >= 5:
+            break
+    return "-".join(words) or fallback
+
+
+def _first_available_artifact_path(
+    stem: str,
+    extension: str,
+    *,
+    existing_paths: Sequence[str],
+) -> str:
+    existing = {str(path).strip() for path in existing_paths if str(path).strip()}
+    candidate = f"{stem}{extension}"
+    if candidate not in existing:
+        return candidate
+    for index in range(2, 100):
+        candidate = f"{stem}-{index}{extension}"
+        if candidate not in existing:
+            return candidate
+    return f"{stem}-{hashlib.sha1(stem.encode('utf-8')).hexdigest()[:8]}{extension}"
+
+
+def _explicit_objective_artifact_paths(
+    objective: str,
+    *,
+    workspace_root: Path,
+) -> list[str]:
+    paths: list[str] = []
+    for match in _GENERIC_FIRST_WRITE_EXPLICIT_PATH_RE.finditer(objective):
+        raw = match.group(1).strip().lstrip("./")
+        if not raw or raw.startswith("../") or "/.dan-super/" in f"/{raw}/":
+            continue
+        path = Path(raw)
+        if path.is_absolute():
+            relative = _relative_workspace_artifact_path(path, workspace_root=workspace_root)
+            if relative:
+                paths.append(relative)
+            continue
+        if any(part in _GENERIC_SNAPSHOT_SKIP_DIR_NAMES or part.startswith(".") for part in path.parts):
+            continue
+        paths.append(path.as_posix())
+    return _dedupe_preserving_order(paths)
+
+
+def _generic_first_write_recovery_targets(
+    objective: str,
+    *,
+    workspace_root: Path,
+    pre_run_workspace_state: Mapping[str, Mapping[str, Any]],
+    additive_recovery_required: bool,
+    operator_intent_policy: OperatorIntentPolicy | None = None,
+) -> list[str]:
+    policy = operator_intent_policy or OperatorIntentPolicy()
+    existing_paths = (
+        []
+        if policy.forbid_other_workspace_inputs or not policy.allow_existing_artifact_reuse
+        else _existing_workspace_artifact_paths(
+            pre_run_workspace_state,
+            workspace_root=workspace_root,
+        )
+    )
+    explicit_paths = _explicit_objective_artifact_paths(
+        objective,
+        workspace_root=workspace_root,
+    )
+    extension = _generic_first_write_extension(objective)
+    existing_by_extension = [
+        path for path in existing_paths if Path(path).suffix.lower() == extension
+    ]
+    fallback_stem = {
+        ".html": "index",
+        ".md": "artifact",
+        ".py": "script",
+        ".json": "artifact",
+        ".csv": "data",
+    }.get(extension, "artifact")
+    generated = _first_available_artifact_path(
+        _slugify_first_write_stem(objective, fallback=fallback_stem),
+        extension,
+        existing_paths=[*existing_paths, *explicit_paths],
+    )
+    if additive_recovery_required:
+        return _dedupe_preserving_order(
+            [*explicit_paths, *existing_by_extension, *existing_paths, generated]
+        )[:6]
+    create_like = bool(
+        re.search(r"\b(build|create|generate|write|produce|implement)\b", objective.lower())
+    )
+    if create_like and generated:
+        return _dedupe_preserving_order(
+            [*explicit_paths, generated, *existing_by_extension, *existing_paths]
+        )[:6]
+    return _dedupe_preserving_order(
+        [*explicit_paths, *existing_by_extension, *existing_paths, generated]
+    )[:6]
+
+
+def _target_missing_in_snapshot(
+    relative_path: str,
+    *,
+    workspace_root: Path,
+    snapshot: Mapping[str, Mapping[str, Any]],
+) -> bool:
+    target_path = _safe_workspace_artifact_path(
+        relative_path,
+        workspace_root=workspace_root,
+    )
+    if target_path is None:
+        return False
+    state = snapshot.get(str(target_path.resolve(strict=False)))
+    if isinstance(state, Mapping):
+        return not bool(state.get("exists"))
+    return not target_path.exists()
+
+
+def _materialize_missing_explicit_target_from_existing_artifact(
+    objective: str,
+    *,
+    workspace_root: Path,
+    recommended_write_paths: Sequence[str],
+) -> dict[str, Any] | None:
+    explicit_paths = set(
+        _explicit_objective_artifact_paths(
+            objective,
+            workspace_root=workspace_root,
+        )
+    )
+    if not explicit_paths or not recommended_write_paths:
+        return None
+
+    target_relative = str(recommended_write_paths[0] or "").strip()
+    if target_relative not in explicit_paths:
+        return None
+    target_path = _safe_workspace_artifact_path(
+        target_relative,
+        workspace_root=workspace_root,
+    )
+    if target_path is None or target_path.exists():
+        return None
+    suffix = target_path.suffix.lower()
+    if suffix not in _GENERIC_ALIAS_TEXT_EXTENSIONS:
+        return None
+
+    target_stem = target_path.stem.lower()
+    for raw_source in list(recommended_write_paths)[1:]:
+        source_relative = str(raw_source or "").strip()
+        if not source_relative or source_relative == target_relative:
+            continue
+        source_path = _safe_workspace_artifact_path(
+            source_relative,
+            workspace_root=workspace_root,
+        )
+        if source_path is None or not source_path.is_file():
+            continue
+        if source_path.suffix.lower() != suffix:
+            continue
+        source_stem = source_path.stem.lower()
+        if target_stem not in source_stem and source_stem not in target_stem:
+            continue
+        try:
+            content = source_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(content, encoding="utf-8")
+        return {
+            "ok": True,
+            "tool_id": "file_write",
+            "arguments": {
+                "path": target_relative,
+                "content": content,
+            },
+            "result": {
+                "path": str(target_path),
+                "bytes": len(content.encode("utf-8")),
+                "created": True,
+                "source_path": source_relative,
+                "fallback": "existing_artifact_alias",
+            },
+            "synthetic": True,
+        }
+    return None
 
 
 def _file_metadata_for_paths(
@@ -3118,18 +3901,89 @@ async def _run_live_generic_execution(
     run_task_id: str,
     event_logger: SuperRunEventLogger | None = None,
 ) -> dict[str, Any]:
-    choice = _super_live_choice(report, args)
-    generic_tool_ids = _live_choice_tool_ids(choice)
-    generic_preferred_tool_ids = _live_choice_preferred_tool_ids(
-        choice,
-        ["list_directory", "web_search", "file_read", "file_edit", "file_write", "git_diff", "shell_command"],
+    workspace_root = normalize_workspace_root(str(args.workspace))
+    operator_intent_policy = _operator_intent_policy_from_objective(
+        str(report.target or ""),
+        workspace_root=workspace_root,
     )
-    generic_read_only_tool_ids = _live_choice_read_only_tool_ids(choice)
+    operator_intent_payload = operator_intent_policy.to_payload()
+    choice = _super_live_choice(report, args)
+    generic_tool_ids = _filter_tool_ids_for_operator_intent(
+        _live_choice_tool_ids(choice),
+        operator_intent_policy,
+    )
+    generic_preferred_tool_ids = _filter_tool_ids_for_operator_intent(
+        _live_choice_preferred_tool_ids(
+            choice,
+            [
+                "list_directory",
+                "web_search",
+                "file_read",
+                "file_edit",
+                "file_write",
+                "git_diff",
+                "shell_command",
+            ],
+        ),
+        operator_intent_policy,
+    )
+    generic_read_only_tool_ids = _filter_tool_ids_for_operator_intent(
+        _live_choice_read_only_tool_ids(choice),
+        operator_intent_policy,
+    )
     pacing_policy = _live_pacing_policy()
     worker_id = "super-dan.live.general-builder"
-    workspace_root = normalize_workspace_root(str(args.workspace))
     workspace_root.mkdir(parents=True, exist_ok=True)
-    pre_run_workspace_state = _snapshot_workspace_file_metadata(workspace_root)
+    pre_run_workspace_state = _snapshot_workspace_file_metadata_for_intent(
+        workspace_root,
+        operator_intent_policy,
+    )
+    prompt_only_creation_target = _operator_prompt_only_creation_target(
+        operator_intent_policy,
+        workspace_root=workspace_root,
+        pre_run_workspace_state=pre_run_workspace_state,
+    )
+    if prompt_only_creation_target:
+        generic_tool_ids = _prompt_only_creation_tool_ids(generic_tool_ids)
+        generic_preferred_tool_ids = _prompt_only_creation_tool_ids(generic_preferred_tool_ids)
+    generic_evidence = [] if prompt_only_creation_target else _super_report_evidence_blocks(report)
+    generic_input_payload: dict[str, Any] = {
+        "objective": report.target,
+        "workspace_root": str(workspace_root),
+        "write_pacing": dict(pacing_policy),
+        "operator_intent_policy": operator_intent_payload,
+    }
+    if prompt_only_creation_target:
+        generic_input_payload.update(
+            {
+                "execution_condition": "operator_prompt_only_creation",
+                "recommended_write_paths": [prompt_only_creation_target],
+                "omitted_context_reason": (
+                    "Operator policy forbids other workspace inputs; prompt replay omits organism board/evidence context "
+                    "that cannot be used before the first write."
+                ),
+            }
+        )
+    else:
+        generic_input_payload.update(
+            {
+                "organism_id": report.organism_id,
+                "cell_count": report.cell_count,
+                "active_cell_cap": report.active_cell_cap,
+                "organ_counts": dict(report.organ_counts),
+                "delivery_plan": [node.model_dump(mode="json") for node in report.delivery_plan],
+                "shared_board": (
+                    report.shared_board.model_dump(mode="json") if report.shared_board is not None else None
+                ),
+                "coordination_tickets": [
+                    ticket.model_dump(mode="json") for ticket in report.coordination_tickets
+                ],
+                "handoff_packets": [packet.model_dump(mode="json") for packet in report.handoff_packets],
+                "final_audit": (
+                    report.final_audit.model_dump(mode="json") if report.final_audit is not None else None
+                ),
+            }
+        )
     worker_brief = role_brief(
             role=RoleSpec(
                 role_label="workspace_worker",
@@ -3141,7 +3995,12 @@ async def _run_live_generic_execution(
                 ],
                 trace_role="super-dan.live.general-builder",
             ),
-            task=_live_generic_task(report, workspace_root=workspace_root),
+            task=_live_generic_task(
+                report,
+                workspace_root=workspace_root,
+                operator_intent_policy=operator_intent_policy,
+                prompt_only_creation_target=prompt_only_creation_target,
+            ),
             scope=f"workspace={workspace_root}; native Super DAN live general workspace execution",
             hard_constraints=[
                 "Actually mutate workspace files before finalizing.",
@@ -3150,6 +4009,7 @@ async def _run_live_generic_execution(
                 "Do not use destructive git reset, checkout, or rm-style cleanup.",
                 "When the requested deliverable is a saved report, markdown file, data note, or other document artifact, write that artifact to the workspace.",
                 "Use web_search for current external facts when the enabled tool is available.",
+                *list(operator_intent_policy.constraints),
             ],
             soft_constraints=[
                 "Prefer a bounded concrete deliverable over broad speculative analysis.",
@@ -3184,27 +4044,8 @@ async def _run_live_generic_execution(
                 "temperature": 0.30,
                 "max_tokens": _SUPER_DAN_WORKER_MAX_TOKENS,
             },
-            evidence=_super_report_evidence_blocks(report),
-            input_payload={
-                "objective": report.target,
-                "workspace_root": str(workspace_root),
-                "organism_id": report.organism_id,
-                "cell_count": report.cell_count,
-                "active_cell_cap": report.active_cell_cap,
-                "organ_counts": dict(report.organ_counts),
-                "delivery_plan": [node.model_dump(mode="json") for node in report.delivery_plan],
-                "write_pacing": dict(pacing_policy),
-                "shared_board": (
-                    report.shared_board.model_dump(mode="json") if report.shared_board is not None else None
-                ),
-                "coordination_tickets": [
-                    ticket.model_dump(mode="json") for ticket in report.coordination_tickets
-                ],
-                "handoff_packets": [packet.model_dump(mode="json") for packet in report.handoff_packets],
-                "final_audit": (
-                    report.final_audit.model_dump(mode="json") if report.final_audit is not None else None
-                ),
-            },
+            evidence=generic_evidence,
+            input_payload=generic_input_payload,
             metadata={
                 "surface": "super_organism",
                 "mode": "live",
@@ -3215,6 +4056,12 @@ async def _run_live_generic_execution(
                 "organ_id": "super-dan.live.general",
                 "organism_stage": "execution",
                 "worker_id": worker_id,
+                "operator_intent_policy": operator_intent_payload,
+                "exclusive_write_owner_path": prompt_only_creation_target or "",
+                "recommended_write_paths": (
+                    [prompt_only_creation_target] if prompt_only_creation_target else []
+                ),
+                "operator_prompt_only_creation": bool(prompt_only_creation_target),
             },
         )
     worker = _live_cell_from_brief(
@@ -3230,6 +4077,7 @@ async def _run_live_generic_execution(
         model=model,
         workspace_root=str(workspace_root),
         tool_ids=list(generic_tool_ids),
+        operator_intent_policy=operator_intent_payload if operator_intent_policy.active else None,
     )
     result, executed_tools, events = await _execute_live_request(
         worker=worker,
@@ -3296,6 +4144,7 @@ async def _run_live_generic_execution(
                     workspace_root=workspace_root,
                     pre_run_file_state=pre_run_file_state,
                     post_run_file_state=post_run_file_state,
+                    operator_intent_policy=operator_intent_policy,
                 ),
                 scope=f"workspace={workspace_root}; native Super DAN general workspace validation",
                 hard_constraints=[
@@ -3304,6 +4153,7 @@ async def _run_live_generic_execution(
                     "Use pre-run file-state metadata as the material-change baseline for untracked workspaces; do not require git commits or git history.",
                     "Fail if the run made only placeholder-style or otherwise non-responsive changes.",
                     "For document/report objectives, inspect the written artifact and fail if no report-like file was produced.",
+                    *list(operator_intent_policy.constraints),
                 ],
                 soft_constraints=[
                     "Prefer concrete missing requirements over vague criticism.",
@@ -3312,7 +4162,10 @@ async def _run_live_generic_execution(
                 allowed_tool_ids=generic_read_only_tool_ids,
                 tool_policy={
                     "allowed_tool_ids": list(generic_read_only_tool_ids),
-                    "preferred_tool_ids": ["git_diff", "file_read", "web_search", "git_status", "list_directory"],
+                    "preferred_tool_ids": _filter_tool_ids_for_operator_intent(
+                        ["git_diff", "file_read", "web_search", "git_status", "list_directory", "workspace_check"],
+                        operator_intent_policy,
+                    ),
                     "max_tool_calls": max(4, min(int(args.max_tool_calls), 24)),
                 },
                 sampling_policy={
@@ -3330,6 +4183,7 @@ async def _run_live_generic_execution(
                     "mutated_paths": list(paths),
                     "pre_run_file_state": pre_run_file_state,
                     "post_run_file_state": post_run_file_state,
+                    "operator_intent_policy": operator_intent_payload,
                 },
                 metadata={
                     "surface": "super_organism",
@@ -3341,6 +4195,7 @@ async def _run_live_generic_execution(
                     "organ_id": "super-dan.live.general",
                     "worker_id": validator_worker_id,
                     "organism_stage": "validation",
+                    "operator_intent_policy": operator_intent_payload,
                 },
             )
         validator_worker = _live_cell_from_brief(
@@ -3367,6 +4222,45 @@ async def _run_live_generic_execution(
         nonlocal first_write_recovery_attempts
         nonlocal result, executed_tools, events, build_token_usage, mutated_paths, error, validation
 
+        additive_recovery_required = _text_requests_additive_update(report.target)
+        explicit_write_paths = _explicit_objective_artifact_paths(
+            report.target,
+            workspace_root=workspace_root,
+        )
+        if (
+            additive_recovery_required
+            and explicit_write_paths
+            and _target_missing_in_snapshot(
+                explicit_write_paths[0],
+                workspace_root=workspace_root,
+                snapshot=pre_run_workspace_state,
+            )
+        ):
+            additive_recovery_required = False
+        pre_existing_workspace_paths = [
+            path
+            for path, state in sorted(pre_run_workspace_state.items())
+            if isinstance(state, Mapping) and bool(state.get("exists"))
+        ]
+        recommended_write_paths = _generic_first_write_recovery_targets(
+            report.target,
+            workspace_root=workspace_root,
+            pre_run_workspace_state=pre_run_workspace_state,
+            additive_recovery_required=additive_recovery_required,
+            operator_intent_policy=operator_intent_policy,
+        )
+        recovery_tool_ids = [
+            tool_id
+            for tool_id in ("file_read", "file_write", "file_edit")
+            if tool_id in set(generic_tool_ids)
+        ] or list(generic_tool_ids)
+        if prompt_only_creation_target:
+            recovery_tool_ids = _prompt_only_creation_tool_ids(recovery_tool_ids)
+        recovery_preferred_tool_ids = [
+            tool_id
+            for tool_id in ("file_write", "file_edit", "file_read")
+            if tool_id in set(recovery_tool_ids)
+        ]
         while (
             not mutated_paths
             and first_write_recovery_attempts < _SUPER_DAN_GENERIC_FIRST_WRITE_RECOVERY_ATTEMPTS
@@ -3383,6 +4277,8 @@ async def _run_live_generic_execution(
                 attempt=first_write_recovery_attempts,
                 model=model,
                 reason=recovery_reason,
+                additive_recovery_required=bool(additive_recovery_required),
+                recommended_write_paths=list(recommended_write_paths),
             )
             recovery_worker_id = "super-dan.live.general-first-write-recovery"
             recovery_brief = role_brief(
@@ -3401,6 +4297,10 @@ async def _run_live_generic_execution(
                     workspace_root=workspace_root,
                     failure_reason=recovery_reason,
                     attempt=first_write_recovery_attempts,
+                    recommended_write_paths=recommended_write_paths,
+                    additive_recovery_required=additive_recovery_required,
+                    operator_intent_policy=operator_intent_policy,
+                    prompt_only_creation_target=prompt_only_creation_target,
                 ),
                 scope=f"workspace={workspace_root}; native Super DAN generic first-write recovery",
                 hard_constraints=[
@@ -3409,16 +4309,19 @@ async def _run_live_generic_execution(
                     "Keep the work inside the current workspace root.",
                     "Do not use destructive git reset, checkout, or rm-style cleanup.",
                     "If the requested deliverable is a saved report, markdown file, data note, or other document artifact, write that artifact to the workspace.",
+                    "For additive/enrichment objectives on existing artifacts, preserve existing content and do not replace the artifact with a shorter scaffold.",
+                    *list(operator_intent_policy.constraints),
                 ],
                 soft_constraints=[
                     "Prefer the smallest coherent durable artifact edit that materially advances the objective.",
                     "If a relevant existing artifact is present, prefer file_edit or append-style file_write over replacing it.",
+                    "When asked to enrich a section, read that section and insert or replace only the necessary local range while preserving existing tables and quantitative content.",
                     "Avoid additional broad discovery unless the next write depends on one exact path or fact.",
                     "For report objectives, write substantive section content rather than another outline or plan.",
                 ],
                 tool_policy={
-                    "allowed_tool_ids": list(generic_tool_ids),
-                    "preferred_tool_ids": list(generic_preferred_tool_ids),
+                    "allowed_tool_ids": list(recovery_tool_ids),
+                    "preferred_tool_ids": list(recovery_preferred_tool_ids),
                     "max_tool_calls": int(args.max_tool_calls),
                 },
                 contract_snippets=[
@@ -3438,13 +4341,29 @@ async def _run_live_generic_execution(
                     "temperature": 0.25,
                     "max_tokens": _SUPER_DAN_REPAIR_MAX_TOKENS,
                 },
-                evidence=_super_report_evidence_blocks(report),
+                evidence=[] if prompt_only_creation_target else _super_report_evidence_blocks(report),
                 input_payload={
                     "objective": report.target,
                     "workspace_root": str(workspace_root),
                     "failure_reason": recovery_reason,
                     "attempt": first_write_recovery_attempts,
                     "write_pacing": dict(pacing_policy),
+                    "additive_recovery_required": bool(additive_recovery_required),
+                    "recommended_write_paths": list(recommended_write_paths),
+                    "pre_run_workspace_file_state": dict(pre_run_workspace_state),
+                    "pre_existing_workspace_paths": list(pre_existing_workspace_paths),
+                    "operator_intent_policy": operator_intent_payload,
+                    **(
+                        {
+                            "execution_condition": "operator_prompt_only_creation",
+                            "omitted_context_reason": (
+                                "Operator policy forbids other workspace inputs; recovery prompt omits broad organism "
+                                "evidence and context that cannot be used before the first write."
+                            ),
+                        }
+                        if prompt_only_creation_target
+                        else {}
+                    ),
                 },
                 metadata={
                     "surface": "super_organism",
@@ -3456,6 +4375,16 @@ async def _run_live_generic_execution(
                     "organ_id": "super-dan.live.general",
                     "organism_stage": "execution",
                     "worker_id": recovery_worker_id,
+                    "exclusive_write_owner_path": (
+                        recommended_write_paths[0] if recommended_write_paths else ""
+                    ),
+                    "recommended_write_paths": list(recommended_write_paths),
+                    "first_write_recovery": True,
+                    "operator_intent_policy": operator_intent_payload,
+                    "repair_policy": {
+                        "forbid_shrinking_existing_artifacts": bool(additive_recovery_required),
+                        "target_paths": list(pre_existing_workspace_paths),
+                    },
                 },
             )
             recovery_worker = _live_cell_from_brief(
@@ -3467,7 +4396,7 @@ async def _run_live_generic_execution(
             recovery_result, recovery_tools, recovery_events = await _execute_live_request(
                 worker=recovery_worker,
                 request=_request_from_live_brief(recovery_brief),
-                tool_ids=generic_tool_ids,
+                tool_ids=recovery_tool_ids,
                 workspace_root=workspace_root,
                 args=args,
                 model=model,
@@ -3484,6 +4413,32 @@ async def _run_live_generic_execution(
             if recovery_result.error:
                 error = recovery_result.error
             mutated_paths = _mutation_paths_from_tools(executed_tools, workspace_root=workspace_root)
+            if not mutated_paths and operator_intent_policy.allow_existing_artifact_reuse:
+                alias_tool = _materialize_missing_explicit_target_from_existing_artifact(
+                    report.target,
+                    workspace_root=workspace_root,
+                    recommended_write_paths=recommended_write_paths,
+                )
+                if alias_tool is not None:
+                    executed_tools.append(alias_tool)
+                    alias_result = (
+                        alias_tool.get("result")
+                        if isinstance(alias_tool.get("result"), Mapping)
+                        else {}
+                    )
+                    alias_event = {
+                        "event": "live.generic_first_write_recovery.alias_materialized",
+                        "attempt": first_write_recovery_attempts,
+                        "target_path": str(alias_result.get("path") or ""),
+                        "source_path": str(alias_result.get("source_path") or ""),
+                        "reason": "explicit_missing_target_alias",
+                    }
+                    events.append(alias_event)
+                    _log_live_event(event_logger, **alias_event)
+                    mutated_paths = _mutation_paths_from_tools(
+                        executed_tools,
+                        workspace_root=workspace_root,
+                    )
             _log_live_event(
                 event_logger,
                 "live.generic_first_write_recovery.completed",
@@ -3554,6 +4509,7 @@ async def _run_live_generic_execution(
                 repair_brief=repair_reason,
                 pre_run_file_state=repair_pre_run_file_state,
                 current_file_state=repair_current_file_state,
+                operator_intent_policy=operator_intent_policy,
             ),
             scope=f"workspace={workspace_root}; native Super DAN general workspace validation repair",
             hard_constraints=[
@@ -3562,6 +4518,7 @@ async def _run_live_generic_execution(
                 "Do not invoke the separate DAN Code or DAN Research product shells.",
                 "Do not use destructive git reset, checkout, or rm-style cleanup.",
                 "Do not create, commit, or overwrite a baseline artifact just to satisfy git-history or before/after evidence.",
+                *list(operator_intent_policy.constraints),
             ],
             soft_constraints=[
                 "Prefer targeted edits over rewriting the whole artifact.",
@@ -3601,6 +4558,7 @@ async def _run_live_generic_execution(
                 "pre_run_file_state": repair_pre_run_file_state,
                 "current_file_state": repair_current_file_state,
                 "write_pacing": dict(pacing_policy),
+                "operator_intent_policy": operator_intent_payload,
             },
             metadata={
                 "surface": "super_organism",
@@ -3612,6 +4570,7 @@ async def _run_live_generic_execution(
                 "organ_id": "super-dan.live.general",
                 "organism_stage": "execution",
                 "worker_id": repair_worker_id,
+                "operator_intent_policy": operator_intent_payload,
                 "repair_policy": {
                     "forbid_shrinking_existing_artifacts": bool(additive_repair_required),
                     "target_paths": list(mutated_paths),
@@ -4176,11 +5135,46 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
     return 0
 
 
+def _timestamped_backup_path(path: Path) -> Path:
+    stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+    candidate = path.with_name(f"{path.name}.backup-{stamp}")
+    if not candidate.exists():
+        return candidate
+    for index in range(2, 1000):
+        numbered = path.with_name(f"{path.name}.backup-{stamp}-{index}")
+        if not numbered.exists():
+            return numbered
+    raise RuntimeError(f"could not allocate backup path for {path}")
+
+
+def _archive_reset_path(path: Path, label: str) -> str:
+    if not path.exists():
+        return f"No Super DAN {label} exists at {path}"
+    try:
+        backup_path = _timestamped_backup_path(path)
+        path.rename(backup_path)
+    except (OSError, RuntimeError) as exc:
+        return f"Reset failed for {path}: {exc}"
+    return f"Archived Super DAN {label}: {path} -> {backup_path}"
+
+
+def _reset_super_context(workspace_root: Path, scope: str = "") -> str:
+    normalized_scope = scope.strip().lower()
+    if normalized_scope in {"", "all", "context"}:
+        return _archive_reset_path(workspace_root / ".dan-super", "context")
+    if normalized_scope in {"state", "queues", "queue"}:
+        return _archive_reset_path(workspace_root / ".dan-super" / "state", "state")
+    return "Usage: /reset [all|state]"
+
+
 def _interactive_loop(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     workspace_root = normalize_workspace_root(str(args.workspace))
     print("Super DAN interactive")
     print(f"workspace: {workspace_root}")
-    print("Type an objective, /plan <objective> for a dry contract, /status for queues, or /exit.")
+    print(
+        "Type an objective, /plan <objective> for a dry contract, "
+        "/status for queues, /reset [all|state], or /exit."
+    )
     while True:
         try:
             text = input("super-dan> ")
@@ -4198,6 +5192,14 @@ def _interactive_loop(args: argparse.Namespace, parser: argparse.ArgumentParser)
             return 0
         if lowered in {"/status", "/queues", "status"}:
             print(format_super_queue_status(workspace_root))
+            continue
+        if lowered in {"/reset", "reset", "/clear", "clear"} or lowered.startswith(
+            ("/reset ", "reset ", "/clear ", "clear ")
+        ):
+            reset_scope = ""
+            if " " in objective:
+                reset_scope = objective.split(maxsplit=1)[1]
+            print(_reset_super_context(workspace_root, reset_scope))
             continue
         plan_only = False
         if lowered.startswith("/plan "):
@@ -4233,6 +5235,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     setattr(args, "_stdin_is_tty", sys.stdin.isatty())
 
     no_objective = not str(getattr(args, "target", "") or "").strip()
+    stdin_is_tty = bool(getattr(args, "_stdin_is_tty", False))
     if no_objective and bool(getattr(args, "queue_status", False)):
         workspace_root = normalize_workspace_root(str(args.workspace))
         print(format_super_queue_status(workspace_root))
@@ -4241,8 +5244,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         bool(getattr(args, field, False))
         for field in ("plan_only", "json", "verbose")
     ) or bool(getattr(args, "output", None))
-    if no_objective and not report_mode_requested and sys.stdin.isatty():
+    if no_objective and not report_mode_requested and stdin_is_tty:
         return _interactive_loop(args, parser)
+    if no_objective and bool(getattr(args, "live", False)):
+        parser.error(
+            "objective required for --live; pass an objective or run in a terminal for interactive mode"
+        )
+    if no_objective and not report_mode_requested:
+        parser.error(
+            "objective required in non-interactive mode; pass an objective, run in a terminal "
+            "for interactive mode, or use --queue-status"
+        )
 
     return _run_super_turn(args, parser)
 
