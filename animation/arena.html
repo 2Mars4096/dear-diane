@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stick Figure Arena Battle</title>
+<style>
+  body { margin: 0; overflow: hidden; background: #111; }
+  canvas { display: block; }
+  #ui {
+    position: absolute; top: 10px; left: 10px; color: #fff; font-family: sans-serif;
+    text-shadow: 0 0 5px #000; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="arena"></canvas>
+<div id="ui">
+  <h2>Arena Battle</h2>
+  <p>Red vs Blue — watch the duel unfold</p>
+</div>
+<script>
+const canvas = document.getElementById('arena');
+const ctx = canvas.getContext('2d');
+let W, H;
+function resize(){ W=canvas.width=window.innerWidth; H=canvas.height=window.innerHeight; }
+window.addEventListener('resize', resize);
+resize();
+
+// Utility
+const rand = (a,b)=>Math.random()*(b-a)+a;
+const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+
+// Particle system
+const particles = [];
+function spawnParticles(x, y, color, count=12, speed=4){
+  for(let i=0;i<count;i++){
+    const angle = rand(0, Math.PI*2);
+    const spd = rand(1, speed);
+    particles.push({
+      x, y,
+      vx: Math.cos(angle)*spd,
+      vy: Math.sin(angle)*spd,
+      life: rand(0.5, 1.2),
+      maxLife: rand(0.5, 1.2),
+      color,
+      size: rand(1, 3)
+    });
+  }
+}
+function updateParticles(dt){
+  for(let i=particles.length-1;i>=0;i--){
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy;
+    p.vy += 0.05; // gravity
+    p.life -= dt;
+    if(p.life <= 0) particles.splice(i, 1);
+  }
+}
+function drawParticles(){
+  for(const p of particles){
+    const a = clamp(p.life/p.maxLife, 0, 1);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+// Arena floor
+function drawArena(){
+  // background vignette
+  const grad = ctx.createRadialGradient(W/2, H/2, W*0.2, W/2, H/2, W*0.7);
+  grad.addColorStop(0, '#2a2a2a');
+  grad.addColorStop(1, '#0b0b0b');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0,0,W,H);
+
+  // floor ellipse
+  ctx.save();
+  ctx.translate(W/2, H*0.75);
+  ctx.scale(1, 0.3);
+  const floorGrad = ctx.createRadialGradient(0,0, W*0.15, 0,0, W*0.45);
+  floorGrad.addColorStop(0, '#3a3a3a');
+  floorGrad.addColorStop(1, '#1a1a1a');
+  ctx.fillStyle = floorGrad;
+  ctx.beginPath();
+  ctx.arc(0,0, W*0.45, 0, Math.PI*2);
+  ctx.fill();
+  ctx.strokeStyle = '#555';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  ctx.restore();
+
+  // grid lines on floor
+  ctx.save();
+  ctx.strokeStyle = 'rgba(100,100,100,0.15)';
+  ctx.lineWidth = 1;
+  for(let i=-5;i<=5;i++){
+    const x = W/2 + i*W*0.08;
+    ctx.beginPath();
+    ctx.moveTo(x, H*0.55);
+    ctx.lineTo(W/2 + i*W*0.25, H*0.9);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// Stick figure class
+class StickFigure {
+  constructor(x, y, color, facing=1){
+    this.x = x; this.y = y;
+    this.color = color;
+    this.facing = facing; // 1 right, -1 left
+    this.vx = 0; this.vy = 0;
+    this.state = 'idle'; // idle, run, attack, hit, block
+    this.stateTimer = 0;
+    this.hp = 100;
+    this.maxHp = 100;
+    this.animFrame = 0;
+    this.flash = 0;
+    this.weaponGlow = 0;
+  }
+
+  setState(s, t=0.3){
+    if(this.state === s) return;
+    this.state = s;
+    this.stateTimer = t;
+  }
+
+  update(dt, opponent){
+    this.animFrame += dt * 8;
+    this.stateTimer -= dt;
+    this.flash = Math.max(0, this.flash - dt * 5);
+    this.weaponGlow = Math.max(0, this.weaponGlow - dt * 4);
+
+    const dx = opponent.x - this.x;
+    const dy = opponent.y - this.y;
+    const dist = Math.hypot(dx, dy);
+
+    if(this.state === 'idle'){
+      this.vx *= 0.9; this.vy *= 0.9;
+      if(dist > 140){
+        this.setState('run');
+      } else if(Math.random() < 0.02){
+        this.setState('attack', 0.35);
+        this.weaponGlow = 1;
+      }
+    } else if(this.state === 'run'){
+      const speed = 180;
+      this.vx = (dx/dist)*speed;
+      this.vy = (dy/dist)*speed*0.3;
+      if(dist < 130) this.setState('idle');
+    } else if(this.state === 'attack'){
+      this.vx *= 0.7; this.vy *= 0.7;
+      if(this.stateTimer < 0.15 && dist < 160){
+        // hit window
+        if(opponent.state !== 'block' && opponent.state !== 'hit'){
+          opponent.hp -= 1.2;
+          opponent.setState('hit', 0.25);
+          opponent.flash = 1;
+          spawnParticles(opponent.x, opponent.y - 60, opponent.color, 10, 5);
+          spawnParticles(opponent.x, opponent.y - 60, '#fff', 6, 3);
+        } else if(opponent.state === 'block'){
+          spawnParticles((this.x+opponent.x)/2, (this.y+opponent.y)/2 - 50, '#aaa', 8, 2);
+        }
+      }
+      if(this.stateTimer <= 0) this.setState('idle');
+    } else if(this.state === 'hit'){
+      this.vx = -this.facing * 120;
+      this.vy = -30;
+      if(this.stateTimer <= 0) this.setState('idle');
+    } else if(this.state === 'block'){
+      this.vx *= 0.8; this.vy *= 0.8;
+      if(this.stateTimer <= 0) this.setState('idle');
+    }
+
+    // random block
+    if(this.state === 'idle' && opponent.state === 'attack' && Math.random() < 0.015){
+      this.setState('block', 0.4);
+    }
+
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
+
+    // arena bounds
+    this.x = clamp(this.x, W*0.15, W*0.85);
+    this.y = clamp(this.y, H*0.45, H*0.82);
+
+    // face opponent
+    this.facing = dx > 0 ? 1 : -1;
+
+    // death / respawn
+    if(this.hp <= 0){
+      spawnParticles(this.x, this.y - 50, this.color, 40, 7);
+      this.hp = this.maxHp;
+      this.x = this.facing > 0 ? W*0.2 : W*0.8;
+      this.y = H*0.65;
+      this.setState('idle');
+    }
+  }
+
+  draw(){
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.scale(this.facing, 1);
+
+    const bob = Math.sin(this.animFrame) * 3;
+    const runLean = (this.state === 'run') ? 15 : 0;
+
+    // shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 25, 6, 0, 0, Math.PI*2);
+    ctx.fill();
+
+    // stick body
+    ctx.strokeStyle = this.flash > 0.5 ? '#fff' : this.color;
+    ctx.lineWidth = 4;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // legs
+    const legSwing = (this.state === 'run') ? Math.sin(this.animFrame*2)*20 : Math.sin(this.animFrame)*3;
+    ctx.beginPath();
+    ctx.moveTo(0, -40 + bob);
+    ctx.lineTo(-12 + legSwing, -5);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, -40 + bob);
+    ctx.lineTo(12 - legSwing, -5);
+    ctx.stroke();
+
+    // torso
+    ctx.beginPath();
+    ctx.moveTo(0, -40 + bob);
+    ctx.lineTo(runLean, -85 + bob);
+    ctx.stroke();
+
+    // arms
+    let armAngle = 0;
+    if(this.state === 'attack'){
+      const t = 1 - (this.stateTimer/0.35);
+      armAngle = Math.sin(t*Math.PI) * 2.5;
+    } else if(this.state === 'block'){
+      armAngle = -1.0;
+    } else if(this.state === 'hit'){
+      armAngle = 1.2;
+    }
+    ctx.beginPath();
+    ctx.moveTo(runLean*0.5, -70 + bob);
+    ctx.lineTo(runLean*0.5 + Math.cos(armAngle)*25, -70 + bob + Math.sin(armAngle)*25);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(runLean*0.5, -70 + bob);
+    ctx.lineTo(runLean*0.5 - Math.cos(armAngle)*20, -70 + bob - Math.sin(armAngle)*20);
+    ctx.stroke();
+
+    // head
+    ctx.fillStyle = this.flash > 0.5 ? '#fff' : this.color;
+    ctx.beginPath();
+    ctx.arc(runLean*0.3, -100 + bob, 10, 0, Math.PI*2);
+    ctx.fill();
+
+    // weapon (sword)
+    const handX = runLean*0.5 + Math.cos(armAngle)*25;
+    const handY = -70 + bob + Math.sin(armAngle)*25;
+    ctx.save();
+    ctx.translate(handX, handY);
+    ctx.rotate(armAngle - 0.5);
+    // glow
+    if(this.weaponGlow > 0){
+      ctx.shadowColor = this.color;
+      ctx.shadowBlur = 15 * this.weaponGlow;
+    }
+    ctx.strokeStyle = '#ddd';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(0,0);
+    ctx.lineTo(35, -5);
+    ctx.stroke();
+    // hilt
+    ctx.strokeStyle = '#888';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-4,0); ctx.lineTo(4,0);
+    ctx.stroke();
+    ctx.restore();
+
+    // shield (if blocking)
+    if(this.state === 'block'){
+      ctx.fillStyle = 'rgba(200,200,200,0.8)';
+      ctx.strokeStyle = '#aaa';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(-15, -65 + bob, 14, 22, -0.2, 0, Math.PI*2);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    ctx.restore();
+
+    // HP bar
+    const barW = 50, barH = 5;
+    const bx = this.x - barW/2, by = this.y - 130;
+    ctx.fillStyle = '#333';
+    ctx.fillRect(bx, by, barW, barH);
+    ctx.fillStyle = this.color;
+    ctx.fillRect(bx, by, barW * (this.hp/this.maxHp), barH);
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bx, by, barW, barH);
+  }
+}
+
+// Combat effects
+const slashes = [];
+function spawnSlash(x, y, color, facing){
+  slashes.push({x, y, color, facing, life: 0.15, maxLife: 0.15, angle: rand(-0.3, 0.3)});
+}
+function updateSlashes(dt){
+  for(let i=slashes.length-1;i>=0;i--){
+    slashes[i].life -= dt;
+    if(slashes[i].life <= 0) slashes.splice(i, 1);
+  }
+}
+function drawSlashes(){
+  for(const s of slashes){
+    const a = clamp(s.life/s.maxLife, 0, 1);
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    ctx.scale(s.facing, 1);
+    ctx.rotate(s.angle);
+    ctx.globalAlpha = a;
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 3;
+    ctx.shadowColor = s.color;
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.arc(0, 0, 40, -1, 1);
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur = 0;
+}
+
+// Actors
+const red = new StickFigure(W*0.3, H*0.65, '#ff4444', 1);
+const blue = new StickFigure(W*0.7, H*0.65, '#4488ff', -1);
+
+let last = performance.now();
+function loop(now){
+  const dt = Math.min((now - last)/1000, 0.05);
+  last = now;
+
+  // update
+  red.update(dt, blue);
+  blue.update(dt, red);
+  updateParticles(dt);
+  updateSlashes(dt);
+
+  // spawn slash visuals on attack
+  if(red.state === 'attack' && red.stateTimer > 0.12 && red.stateTimer < 0.22 && Math.random()<0.3){
+    spawnSlash(red.x + red.facing*50, red.y - 70, '#ff8888', red.facing);
+  }
+  if(blue.state === 'attack' && blue.stateTimer > 0.12 && blue.stateTimer < 0.22 && Math.random()<0.3){
+    spawnSlash(blue.x + blue.facing*50, blue.y - 70, '#88bbff', blue.facing);
+  }
+
+  // draw
+  ctx.clearRect(0,0,W,H);
+  drawArena();
+
+  // sort by y for pseudo-depth
+  const actors = [red, blue].sort((a,b)=>a.y-b.y);
+  for(const a of actors) a.draw();
+
+  drawParticles();
+  drawSlashes();
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
