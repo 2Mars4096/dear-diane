@@ -43,6 +43,28 @@ function normalizeRunRef(value: unknown): ChatMessage["runRef"] {
   };
 }
 
+function normalizeTaskRunRef(value: unknown): ChatMessage["taskRunRef"] {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const taskId = typeof raw.task_id === "string" ? raw.task_id : null;
+  const runId = typeof raw.run_id === "string" ? raw.run_id : null;
+  const status = typeof raw.status === "string" ? raw.status : "";
+  const workspaceRoot =
+    typeof raw.workspace_root === "string" ? raw.workspace_root : "";
+  const workspaceId =
+    typeof raw.workspace_id === "string" ? raw.workspace_id : "";
+  if (!taskId && !runId && !status && !workspaceRoot && !workspaceId) {
+    return null;
+  }
+  return {
+    taskId,
+    runId,
+    status,
+    workspaceRoot,
+    workspaceId,
+  };
+}
+
 function normalizeToolCalls(value: unknown): ToolCallInfo[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.map((entry, index) => {
@@ -90,6 +112,15 @@ export function toBackendMessage(m: ChatMessage): Record<string, unknown> {
           target_subgraph_key: m.runRef.targetSubgraphKey ?? null,
         }
       : null,
+    task_run_ref: m.taskRunRef
+      ? {
+          task_id: m.taskRunRef.taskId ?? null,
+          run_id: m.taskRunRef.runId ?? null,
+          status: m.taskRunRef.status,
+          workspace_root: m.taskRunRef.workspaceRoot ?? "",
+          workspace_id: m.taskRunRef.workspaceId ?? "",
+        }
+      : null,
     mentions: m.mentions ?? [],
     tool_calls:
       m.toolCalls?.map((tc) => ({
@@ -120,6 +151,7 @@ export function fromBackendMessage(m: Record<string, unknown>): ChatMessage {
     mutationStatus:
       (m.mutation_status as ChatMessage["mutationStatus"]) ?? null,
     runRef: normalizeRunRef(m.run_ref),
+    taskRunRef: normalizeTaskRunRef(m.task_run_ref),
     mentions: (m.mentions as ChatMessage["mentions"]) ?? [],
     toolCalls: normalizeToolCalls(m.tool_calls),
     runEvents: (m.run_events as ChatMessage["runEvents"]) ?? undefined,

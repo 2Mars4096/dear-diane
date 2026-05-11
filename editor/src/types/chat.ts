@@ -42,6 +42,13 @@ export interface ChatMessage {
     targetNodeId?: string;
     targetSubgraphKey?: string;
   } | null;
+  taskRunRef?: {
+    taskId?: string | null;
+    runId?: string | null;
+    status: string;
+    workspaceRoot?: string;
+    workspaceId?: string;
+  } | null;
   mentions?: Array<{ name: string; type: string; id: string }>;
   toolCalls?: ToolCallInfo[];
   reviewableFileEdits?: ReviewableFileEdit[];
