@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from dan.worker.organism_log_analysis import analyze_organism_log_rows
+from dan.worker.prompt_pressure_analysis import analyze_prompt_pressure_rows
 from dan.worker.scheduler import analyze_scheduler_replay_rows
 from dan.worker.organism_log_adapters import (
     OrganismLogImportConfig,
@@ -124,6 +125,35 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     scheduler_parser.set_defaults(func=_cmd_scheduler_replay)
+
+    prompt_pressure_parser = subparsers.add_parser(
+        "prompt-pressure",
+        help=(
+            "Calibrate provider prompt-pressure budgets from Super DAN or "
+            "organism-log JSONL traces."
+        ),
+    )
+    prompt_pressure_parser.add_argument(
+        "source",
+        nargs="+",
+        help=(
+            "Trace file(s) or directory/directories. Directories are scanned for "
+            "events.jsonl and *.events.jsonl files."
+        ),
+    )
+    prompt_pressure_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the prompt-pressure calibration payload as JSON.",
+    )
+    prompt_pressure_parser.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Max high-pressure model calls and retries to print (default: 5).",
+    )
+    prompt_pressure_parser.set_defaults(func=_cmd_prompt_pressure)
     return parser
 
 
@@ -250,6 +280,51 @@ def _cmd_scheduler_replay(args: argparse.Namespace) -> int:
     else:
         _print_scheduler_replay(analysis, limit=max(1, int(args.limit)))
     return 0
+
+
+def _cmd_prompt_pressure(args: argparse.Namespace) -> int:
+    source_paths = _expand_prompt_pressure_sources(args.source)
+    rows: list[dict[str, object]] = []
+    for source_path in source_paths:
+        for row in read_import_rows(source_path):
+            tagged = dict(row)
+            tagged["_source_path"] = str(source_path)
+            rows.append(tagged)
+    analysis = analyze_prompt_pressure_rows(
+        rows,
+        limit=max(1, int(args.limit)),
+        source_file_count=len(source_paths),
+    ).model_dump(mode="json")
+    analysis["source_paths"] = [str(path) for path in source_paths]
+    if args.json:
+        print(json.dumps(analysis, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        _print_prompt_pressure(analysis, limit=max(1, int(args.limit)))
+    return 0
+
+
+def _expand_prompt_pressure_sources(raw_sources: Sequence[str]) -> list[Path]:
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for raw_source in raw_sources:
+        source = Path(raw_source).expanduser().resolve()
+        candidates: list[Path]
+        if source.is_dir():
+            candidates = sorted(
+                {
+                    *source.rglob("events.jsonl"),
+                    *source.rglob("*.events.jsonl"),
+                    *source.glob("*.jsonl"),
+                }
+            )
+        else:
+            candidates = [source]
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            paths.append(candidate)
+    return paths
 
 
 def _print_summary(payload: dict[str, object], *, include_output: bool) -> None:
@@ -448,6 +523,79 @@ def _print_scheduler_replay(payload: dict[str, object], *, limit: int) -> None:
                 f"  {int(row.get('estimated_gain_upper_bound_ms') or 0):>6} ms ub{lane_part}  "
                 f"{source_label} -> {target_label}{wait_part}"
             )
+
+
+def _print_prompt_pressure(payload: dict[str, object], *, limit: int) -> None:
+    print(
+        "Prompt pressure: "
+        f"requests={int(payload.get('model_request_count') or 0)}; "
+        f"budget_triggered={int(payload.get('budget_triggered_count') or 0)}; "
+        f"emergency={int(payload.get('emergency_compaction_count') or 0)}; "
+        f"context_retries={int(payload.get('context_length_retry_count') or 0)}"
+    )
+    print(
+        "Rows: "
+        f"{int(payload.get('source_row_count') or 0)} rows from "
+        f"{int(payload.get('source_file_count') or 0)} file(s)"
+    )
+    target = payload.get("current_target_chars")
+    emergency = payload.get("current_emergency_chars")
+    peak = payload.get("max_final_chars")
+    schemas = int(payload.get("max_tool_schema_chars") or 0)
+    target_text = str(int(target)) if target is not None else "unknown"
+    emergency_text = str(int(emergency)) if emergency is not None else "unknown"
+    peak_text = str(int(peak)) if peak is not None else "unknown"
+    print(
+        "Budgets: "
+        f"target={target_text} chars; emergency={emergency_text} chars; "
+        f"peak_final={peak_text} chars; max_tool_schema={schemas} chars"
+    )
+    token_count = int(payload.get("prompt_token_observation_count") or 0)
+    if token_count:
+        avg_ratio = float(payload.get("avg_chars_per_prompt_token") or 0.0)
+        max_tokens = int(payload.get("max_prompt_tokens") or 0)
+        print(
+            "Prompt tokens: "
+            f"observations={token_count}; avg_chars_per_prompt_token={avg_ratio:.3f}; "
+            f"max_prompt_tokens={max_tokens}"
+        )
+    print(f"Recommendation: {str(payload.get('calibration_recommendation') or '')}")
+
+    calls = list(payload.get("highest_pressure_calls") or [])
+    if calls:
+        print("Highest pressure:")
+        for item in calls[:limit]:
+            row = dict(item)
+            call_id = str(row.get("model_call_id") or "").strip() or "(no model_call_id)"
+            worker_id = str(row.get("worker_id") or "").strip()
+            final_chars = int(row.get("final_chars") or 0)
+            ratio = row.get("final_to_emergency_ratio") or row.get("final_to_budget_ratio")
+            ratio_part = f" ratio={float(ratio):.3f}" if ratio is not None else ""
+            prompt_tokens = row.get("prompt_tokens")
+            token_part = f" prompt_tokens={int(prompt_tokens)}" if prompt_tokens else ""
+            worker_part = f" worker={worker_id}" if worker_id else ""
+            print(
+                f"  {final_chars:>8} chars{ratio_part}{token_part}{worker_part} "
+                f"call={call_id}"
+            )
+
+    retries = list(payload.get("context_length_retries") or [])
+    if retries:
+        print("Context retries:")
+        for item in retries[:limit]:
+            row = dict(item)
+            call_id = str(row.get("model_call_id") or "").strip() or "(no model_call_id)"
+            error_type = str(row.get("error_type") or "").strip()
+            final_chars = row.get("final_chars")
+            final_part = f" final_chars={int(final_chars)}" if final_chars else ""
+            error_part = f" error_type={error_type}" if error_type else ""
+            print(f"  call={call_id}{final_part}{error_part}")
+
+    notes = [str(note).strip() for note in list(payload.get("notes") or []) if str(note).strip()]
+    if notes:
+        print("Notes:")
+        for note in notes[:limit]:
+            print(f"  - {note}")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

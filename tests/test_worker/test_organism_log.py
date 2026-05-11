@@ -13,6 +13,7 @@ from dan.worker.organism_log import (
     readable_organism_log_v1_rows,
     stable_output_contract_id,
 )
+from dan.worker.prompt_pressure_analysis import analyze_prompt_pressure_rows
 
 
 def test_stable_output_contract_id_ignores_instance_identity() -> None:
@@ -28,6 +29,118 @@ def test_stable_output_contract_id_ignores_instance_identity() -> None:
     )
 
     assert stable_output_contract_id(contract_a) == stable_output_contract_id(contract_b)
+
+
+def test_prompt_pressure_analysis_correlates_usage_and_retries() -> None:
+    rows = [
+        {
+            "timestamp": "2026-04-29T00:00:00Z",
+            "event": "model.requested",
+            "model_call_id": "call-low",
+            "worker_id": "super-dan-live-general.worker",
+            "model": "kimi-test",
+            "round": 1,
+            "prompt_context_budget_chars": 480_000,
+            "prompt_context_emergency_budget_chars": 640_000,
+            "prompt_context_budget_triggered": False,
+            "prompt_context_emergency_compaction": False,
+            "prompt_context_original_total_chars": 120_000,
+            "prompt_context_final_chars": 120_000,
+            "prompt_context_tool_schema_chars": 20_000,
+        },
+        {
+            "timestamp": "2026-04-29T00:00:02Z",
+            "event": "model.responded",
+            "model_call_id": "call-low",
+            "usage": {"prompt_tokens": 30_000, "total_tokens": 31_000},
+        },
+        {
+            "timestamp": "2026-04-29T00:01:00Z",
+            "event": "model.requested",
+            "model_call_id": "call-high",
+            "worker_id": "super-dan-live-general.worker",
+            "model": "kimi-test",
+            "round": 2,
+            "prompt_context_budget_chars": 480_000,
+            "prompt_context_emergency_budget_chars": 640_000,
+            "prompt_context_budget_triggered": True,
+            "prompt_context_emergency_compaction": True,
+            "prompt_context_original_total_chars": 980_000,
+            "prompt_context_final_chars": 650_000,
+            "prompt_context_tool_schema_chars": 80_000,
+            "prompt_context_compacted_file_reads": 2,
+            "prompt_context_compacted_non_file_tools": 3,
+            "prompt_context_compacted_tool_call_args": 4,
+            "prompt_context_compacted_assistant_messages": 1,
+            "prompt_context_omitted_file_read_chars": 100_000,
+            "prompt_context_omitted_non_file_tool_chars": 25_000,
+            "prompt_context_omitted_tool_call_arg_chars": 200_000,
+            "prompt_context_omitted_assistant_message_chars": 5_000,
+        },
+        {
+            "timestamp": "2026-04-29T00:01:03Z",
+            "event": "model.context_length_retry",
+            "model_call_id": "call-high",
+            "model": "kimi-test",
+            "round": 2,
+            "retry_attempt": 1,
+            "error_type": "BadRequestError",
+            "error": "context length exceeded",
+            "prompt_context_final_chars": 650_000,
+            "prompt_context_emergency_budget_chars": 640_000,
+        },
+        {
+            "timestamp": "2026-04-29T00:01:10Z",
+            "event": "model.responded",
+            "model_call_id": "call-high",
+            "usage": {"prompt_tokens": 130_000, "total_tokens": 131_000},
+        },
+    ]
+
+    analysis = analyze_prompt_pressure_rows(rows, source_file_count=1)
+
+    assert analysis.source_file_count == 1
+    assert analysis.source_row_count == 5
+    assert analysis.model_request_count == 2
+    assert analysis.budget_triggered_count == 1
+    assert analysis.emergency_compaction_count == 1
+    assert analysis.context_length_retry_count == 1
+    assert analysis.current_target_chars == 480_000
+    assert analysis.current_emergency_chars == 640_000
+    assert analysis.max_final_chars == 650_000
+    assert analysis.max_prompt_tokens == 130_000
+    assert analysis.avg_chars_per_prompt_token == 4.5
+    assert analysis.max_final_to_emergency_ratio == 1.016
+    assert (
+        analysis.calibration_recommendation
+        == "review_lower_threshold_or_stronger_compaction"
+    )
+    assert analysis.highest_pressure_calls[0].model_call_id == "call-high"
+    assert analysis.highest_pressure_calls[0].omitted_chars == 330_000
+    assert analysis.highest_pressure_calls[0].chars_per_prompt_token == 5.0
+    assert analysis.context_length_retries[0].model_call_id == "call-high"
+    assert any("Context-length retry" in note for note in analysis.notes)
+
+
+def test_prompt_pressure_analysis_keeps_thresholds_without_retries() -> None:
+    rows = [
+        {
+            "event": "model.requested",
+            "model_call_id": "call-1",
+            "prompt_context_budget_chars": 480_000,
+            "prompt_context_emergency_budget_chars": 640_000,
+            "prompt_context_budget_triggered": True,
+            "prompt_context_final_chars": 430_000,
+            "prompt_context_tool_schema_chars": 30_000,
+        }
+    ]
+
+    analysis = analyze_prompt_pressure_rows(rows)
+
+    assert analysis.calibration_recommendation == "keep_current_thresholds"
+    assert analysis.budget_triggered_count == 1
+    assert analysis.context_length_retry_count == 0
+    assert any("without context-length retries" in note for note in analysis.notes)
 
 
 def test_organism_log_writer_projects_model_and_tool_spans(tmp_path) -> None:
