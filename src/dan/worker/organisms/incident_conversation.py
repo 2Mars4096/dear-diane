@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, Field
 
@@ -100,6 +100,7 @@ _APPROVAL_CUES = (
 _RETRY_CUES = ("retry", "rerun", "run again", "refresh")
 _CONTAIN_CUES = ("contain", "pause", "stop the bleeding", "limit blast", "disable")
 _REPAIR_CUES = ("repair", "patch", "fix code", "fix the build", "broken build", "ci failed")
+_INCIDENT_TERMINAL_STATE_VALUES = [str(state) for state in get_args(IncidentTerminalState)]
 
 
 def build_incident_commander_worker(
@@ -137,7 +138,7 @@ def build_incident_commander_worker(
         ),
         metadata={
             "lane_family": ["code", "legacy"],
-            "terminal_states": [state.value for state in IncidentTerminalState],
+            "terminal_states": list(_INCIDENT_TERMINAL_STATE_VALUES),
         },
     )
 
@@ -215,14 +216,7 @@ def _conversation_turn_schema() -> dict[str, Any]:
             "clarifying_question": {"type": "string"},
             "terminal_state": {
                 "type": "string",
-                "enum": [
-                    "open",
-                    "resolved",
-                    "contained",
-                    "blocked",
-                    "escalated",
-                    "needs_approval",
-                ],
+                "enum": list(_INCIDENT_TERMINAL_STATE_VALUES),
             },
             "incident_scenario_id": {"type": "string"},
             "severity": {"type": "string", "enum": ["low", "medium", "high"]},

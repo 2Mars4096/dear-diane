@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import get_args
+
 from dan.worker.organisms.dan_conversation import SupervisorBrief
 from dan.worker.organisms.incident_conversation import (
     IncidentCommanderController,
@@ -7,9 +9,11 @@ from dan.worker.organisms.incident_conversation import (
     IncidentConversationFacts,
     IncidentConversationTurnDecision,
     _fallback_turn_decision,
+    build_incident_commander_worker,
 )
 from dan.worker.organisms.incident_execution import (
     FROZEN_INCIDENT_SCENARIOS,
+    IncidentTerminalState,
     classify_incident_scenario,
 )
 
@@ -53,6 +57,15 @@ def test_frozen_incident_matrix_has_three_proving_scenarios() -> None:
         "broken_coding_run_or_stale_run_state",
         "failed_external_surface_session",
     }
+
+
+def test_incident_commander_worker_uses_literal_terminal_state_metadata() -> None:
+    worker = build_incident_commander_worker(
+        worker_id="dan.incident-commander.test",
+        model="gpt-test",
+    )
+
+    assert worker.metadata["terminal_states"] == list(get_args(IncidentTerminalState))
 
 
 def test_classifies_failed_scheduled_workflow() -> None:
