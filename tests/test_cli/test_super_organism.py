@@ -1016,6 +1016,424 @@ class _FakeLivePlannerProvider:
         )
 
 
+class _FakeLiveDagPlannerProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.rendered_messages: list[str] = []
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.calls += 1
+        rendered = "\n".join(str(message.get("content") or "") for message in messages)
+        self.rendered_messages.append(rendered)
+        task_graph = [
+            {
+                "task_id": "1-1",
+                "goal": "Create the shared local core",
+                "depends_on": [],
+                "owned_paths": ["src/core.js"],
+                "deliverables": ["src/core.js"],
+                "validation": ["node --check src/core.js"],
+                "parallel_safe": True,
+            },
+            {
+                "task_id": "1-2",
+                "goal": "Create the gallery shell",
+                "depends_on": [],
+                "owned_paths": ["apps/index.html"],
+                "deliverables": ["apps/index.html"],
+                "validation": ["link check"],
+                "parallel_safe": True,
+            },
+            {
+                "task_id": "2-1",
+                "goal": "Create the first app demo",
+                "depends_on": ["1-1", "1-2"],
+                "owned_paths": ["apps/edu-cell/"],
+                "deliverables": ["apps/edu-cell/index.html"],
+                "validation": ["open app page"],
+                "parallel_safe": True,
+            },
+        ]
+        if self.calls == 1:
+            assert "dependency task graph" in rendered
+            assert "ready frontier" in rendered
+            tool_calls = [
+                _file_write_call(
+                    "plan",
+                    ".dan-super/runs/turn-01/plans/1-foundation.md",
+                    (
+                        "# 1: Foundation\n\n"
+                        "**Status:** in-progress\n"
+                        "**Goal:** Build the shared core and gallery shell.\n\n"
+                        "## Tasks\n"
+                        "- [ ] 1-1. Create the shared local core\n"
+                        "- [ ] 1-2. Create the gallery shell\n\n"
+                        "## Decisions\n- Ready frontier: 1-1, 1-2.\n\n"
+                        "## Notes\n- App demos depend on the shared core and gallery shell.\n"
+                    ),
+                ),
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                usage={"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28},
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 2:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "plan_files": [".dan-super/runs/turn-01/plans/1-foundation.md"],
+                        "phase_summary": ["1: shared foundation", "2: app demos"],
+                        "task_graph": task_graph,
+                        "ready_task_ids": ["1-1", "1-2"],
+                        "deferred_task_ids": ["2-1"],
+                        "first_build_slice": ["1-1", "1-2"],
+                        "notes": ["Run the independent foundation tasks first."],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                finish_reason="stop",
+            )
+        if self.calls == 3:
+            assert "dependency-ready frontier" in rendered
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "passed": True,
+                        "overall_score": 0.91,
+                        "task_graph": task_graph,
+                        "ready_task_ids": ["1-1", "1-2"],
+                        "deferred_task_ids": ["2-1"],
+                        "first_build_slice": ["1-1", "1-2"],
+                        "blocking_issues": [],
+                        "suggested_fixes": [],
+                        "dependency_revisions": [],
+                        "comparison_note": "The DAG has a clear non-conflicting ready frontier.",
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 9, "completion_tokens": 4, "total_tokens": 13},
+                finish_reason="stop",
+            )
+        if self.calls == 4:
+            assert "Dependency-frontier execution contract" in rendered
+            assert "1-1, 1-2" in rendered
+            assert "2-1" in rendered
+            tool_calls = [
+                _file_write_call(
+                    "core",
+                    "src/core.js",
+                    "export const coreReady = true;\n",
+                ),
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                usage={"prompt_tokens": 30, "completion_tokens": 10, "total_tokens": 40},
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 5:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "dag-frontier-001",
+                        "change_summary": ["created the shared local core"],
+                        "target_files": ["src/core.js"],
+                        "test_plan": ["node --check src/core.js"],
+                        "risks": ["gallery shell remains for a later ready task"],
+                        "files_created": ["src/core.js"],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                finish_reason="stop",
+            )
+        assert "Dependency-frontier validation contract" in rendered
+        return CompletionResult(
+            text=json.dumps(
+                {
+                    "passed": False,
+                    "overall_score": 0.68,
+                    "dimension_scores": {
+                        "objective_alignment": 0.72,
+                        "artifact_specificity": 0.76,
+                        "execution_quality": 0.7,
+                    },
+                    "repair_brief": "Do not implement deferred app demos in this repair.",
+                    "missing_requirements": ["2-1 app demo remains deferred"],
+                    "blocking_current_task_failures": [],
+                    "ready_next_task_ids": ["1-2"],
+                    "dependency_revisions": [],
+                    "completion_scope": "current_frontier",
+                    "comparison_note": "The current frontier made material progress; downstream app work is queued.",
+                },
+                sort_keys=True,
+            ),
+            model=model,
+            usage={"prompt_tokens": 8, "completion_tokens": 3, "total_tokens": 11},
+            finish_reason="stop",
+        )
+
+
+class _FakeLiveWorktreeParallelProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.rendered_messages: list[str] = []
+
+    @staticmethod
+    def _has_tool_response(messages) -> bool:
+        return any(
+            isinstance(message, dict) and message.get("role") == "tool"
+            for message in messages
+        )
+
+    @staticmethod
+    def _task_graph() -> list[dict]:
+        return [
+            {
+                "task_id": "1-1",
+                "goal": "Create the shared local core",
+                "depends_on": [],
+                "owned_paths": ["src/core.js"],
+                "deliverables": ["src/core.js"],
+                "validation": ["node --check src/core.js"],
+                "parallel_safe": True,
+            },
+            {
+                "task_id": "1-2",
+                "goal": "Create the gallery shell",
+                "depends_on": [],
+                "owned_paths": ["apps/index.html"],
+                "deliverables": ["apps/index.html"],
+                "validation": ["read apps/index.html"],
+                "parallel_safe": True,
+            },
+            {
+                "task_id": "2-1",
+                "goal": "Create the first app demo",
+                "depends_on": ["1-1", "1-2"],
+                "owned_paths": ["apps/edu-cell/"],
+                "deliverables": ["apps/edu-cell/index.html"],
+                "validation": ["open app page"],
+                "parallel_safe": True,
+            },
+        ]
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.calls += 1
+        rendered = "\n".join(str(message.get("content") or "") for message in messages)
+        self.rendered_messages.append(rendered)
+        has_tool_response = self._has_tool_response(messages)
+        task_graph = self._task_graph()
+
+        if "Create a run-local Super DAN execution plan" in rendered:
+            if not has_tool_response:
+                tool_calls = [
+                    _file_write_call(
+                        "plan",
+                        ".dan-super/runs/turn-01/plans/1-foundation.md",
+                        (
+                            "# 1: Foundation\n\n"
+                            "**Status:** in-progress\n"
+                            "**Goal:** Build the shared core and gallery shell.\n\n"
+                            "## Tasks\n"
+                            "- [ ] 1-1. Create the shared local core\n"
+                            "- [ ] 1-2. Create the gallery shell\n\n"
+                            "## Decisions\n- Ready frontier: 1-1, 1-2.\n\n"
+                            "## Notes\n- App demos depend on both ready tasks.\n"
+                        ),
+                    )
+                ]
+                return CompletionResult(
+                    text="",
+                    model=model,
+                    usage={"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28},
+                    tool_calls=tool_calls,
+                    finish_reason="tool_calls",
+                    raw_assistant_message={
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": tool_calls,
+                    },
+                )
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "plan_files": [".dan-super/runs/turn-01/plans/1-foundation.md"],
+                        "phase_summary": ["1: shared foundation", "2: app demos"],
+                        "task_graph": task_graph,
+                        "ready_task_ids": ["1-1", "1-2"],
+                        "deferred_task_ids": ["2-1"],
+                        "first_build_slice": ["1-1", "1-2"],
+                        "notes": ["Run the independent foundation tasks first."],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                finish_reason="stop",
+            )
+
+        if "Validate the run-local Super DAN plan" in rendered:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "passed": True,
+                        "overall_score": 0.94,
+                        "task_graph": task_graph,
+                        "ready_task_ids": ["1-1", "1-2"],
+                        "deferred_task_ids": ["2-1"],
+                        "first_build_slice": ["1-1", "1-2"],
+                        "blocking_issues": [],
+                        "suggested_fixes": [],
+                        "dependency_revisions": [],
+                        "comparison_note": "The ready frontier is disjoint and parallel-safe.",
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 9, "completion_tokens": 4, "total_tokens": 13},
+                finish_reason="stop",
+            )
+
+        if "Execute one Super DAN dependency-frontier task inside this isolated worktree" in rendered:
+            assert "Task id: 1-2" in rendered
+            assert "Do not implement sibling ready tasks" in rendered
+            if not has_tool_response:
+                tool_calls = [
+                    _file_write_call(
+                        "gallery",
+                        "apps/index.html",
+                        "<!doctype html><html><body><h1>Super DAN Apps</h1></body></html>\n",
+                    )
+                ]
+                return CompletionResult(
+                    text="",
+                    model=model,
+                    usage={"prompt_tokens": 24, "completion_tokens": 7, "total_tokens": 31},
+                    tool_calls=tool_calls,
+                    finish_reason="tool_calls",
+                    raw_assistant_message={
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": tool_calls,
+                    },
+                )
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "worktree-1-2",
+                        "change_summary": ["created the gallery shell in an isolated worktree"],
+                        "target_files": ["apps/index.html"],
+                        "test_plan": ["read apps/index.html"],
+                        "risks": [],
+                        "files_created": ["apps/index.html"],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                finish_reason="stop",
+            )
+
+        if "Execute the operator objective in the current workspace now" in rendered:
+            assert "Execute the current ready frontier: 1-1" in rendered
+            assert "Parallel worktree tasks already admitted elsewhere" in rendered
+            assert "1-2" in rendered
+            if not has_tool_response:
+                tool_calls = [
+                    _file_write_call(
+                        "core",
+                        "src/core.js",
+                        "export const coreReady = true;\n",
+                    )
+                ]
+                return CompletionResult(
+                    text="",
+                    model=model,
+                    usage={"prompt_tokens": 30, "completion_tokens": 10, "total_tokens": 40},
+                    tool_calls=tool_calls,
+                    finish_reason="tool_calls",
+                    raw_assistant_message={
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": tool_calls,
+                    },
+                )
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "main-1-1",
+                        "change_summary": ["created the shared local core"],
+                        "target_files": ["src/core.js"],
+                        "test_plan": ["node --check src/core.js"],
+                        "risks": [],
+                        "files_created": ["src/core.js"],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                finish_reason="stop",
+            )
+
+        assert "Validate the live workspace deliverable now" in rendered
+        assert "Dependency-frontier validation contract" in rendered
+        return CompletionResult(
+            text=json.dumps(
+                {
+                    "passed": True,
+                    "overall_score": 0.93,
+                    "dimension_scores": {
+                        "objective_alignment": 0.94,
+                        "artifact_specificity": 0.92,
+                        "execution_quality": 0.93,
+                    },
+                    "repair_brief": "",
+                    "missing_requirements": [],
+                    "deferred_task_gaps": ["2-1 app demo remains deferred"],
+                    "completion_scope": "current_frontier",
+                    "comparison_note": "Both ready tasks are present and downstream work remains deferred.",
+                },
+                sort_keys=True,
+            ),
+            model=model,
+            usage={"prompt_tokens": 8, "completion_tokens": 3, "total_tokens": 11},
+            finish_reason="stop",
+        )
+
+
 class _FakeLiveCodingValidationFailureProvider(_FakeLiveCodingProvider):
     async def complete(
         self,
@@ -3902,6 +4320,117 @@ def test_main_live_generic_uses_optional_run_local_planner_for_broad_work(
     assert final_validation["changed_required_files"] == [
         str((tmp_path / "cleaned-dataset-validation.md").resolve())
     ]
+
+
+def test_main_live_generic_dag_deferred_tasks_do_not_trigger_repair(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    fake_provider = _FakeLiveDagPlannerProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "help me build a multi-part local project system with a shared core, gallery, and app demos",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Live Run: completed" in stdout
+    assert fake_provider.calls == 6
+    assert (tmp_path / "src" / "core.js").exists()
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    plan_validation = next(
+        row for row in event_rows if row.get("event") == "live.plan_validation.completed"
+    )
+    assert plan_validation["ready_task_ids"] == ["1-1", "1-2"]
+    assert plan_validation["deferred_task_ids"] == ["2-1"]
+    assert not any(row.get("event") == "live.generic_repair.started" for row in event_rows)
+    final_validation = [
+        row for row in event_rows if row.get("event") == "live.validation.completed"
+    ][-1]
+    assert final_validation["passed"] is True
+    assert final_validation["completion_scope"] == "current_frontier"
+    assert final_validation["deferred_task_gaps"] == ["2-1 app demo remains deferred"]
+    assert final_validation.get("deterministic_failures") in (None, [])
+
+
+def test_main_live_generic_admits_ready_frontier_worktree_task(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    fake_provider = _FakeLiveWorktreeParallelProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "help me build a multi-part local project system with a shared core, gallery, and app demos",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+            "--worktree-parallelism",
+            "1",
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "[worktree] frontier started: 1-2" in stdout
+    assert "[worktree] diff admitted" in stdout
+    assert "Live Run: completed" in stdout
+    assert fake_provider.calls == 8
+    assert (tmp_path / "src" / "core.js").read_text(encoding="utf-8") == (
+        "export const coreReady = true;\n"
+    )
+    assert "Super DAN Apps" in (tmp_path / "apps" / "index.html").read_text(encoding="utf-8")
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(row.get("event") == "live.worktree_frontier.started" for row in event_rows)
+    assert any(row.get("event") == "super.worktree.task_planned" for row in event_rows)
+    assert any(row.get("event") == "super.worktree.diff_admitted" for row in event_rows)
+    assert any(row.get("event") == "live.worktree.diff_applied" for row in event_rows)
+    final_validation = [
+        row for row in event_rows if row.get("event") == "live.validation.completed"
+    ][-1]
+    assert final_validation["passed"] is True
+    assert final_validation["completion_scope"] == "current_frontier"
+    assert str((tmp_path / "src" / "core.js").resolve()) in final_validation["changed_required_files"]
+    assert str((tmp_path / "apps" / "index.html").resolve()) in final_validation["changed_required_files"]
+    state = json.loads(
+        (tmp_path / ".dan-super" / "state" / "inboxes.json").read_text(encoding="utf-8")
+    )
+    assert state["worktrees"]["total_tasks"] == 1
+    assert state["worktrees"]["total_diffs"] == 1
+    diff = next(iter(state["worktrees"]["diffs"].values()))
+    assert diff["status"] == "admitted"
+    assert diff["changed_files"] == ["apps/index.html"]
 
 
 def test_main_live_general_coding_validation_failure_surfaces_comparison_note(

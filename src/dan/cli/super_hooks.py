@@ -738,6 +738,8 @@ class SuperHookRuntime:
         status = _clean_text(row.get("status") or "completed")
         if tool_id not in {"file_write", "file_edit"} or status in {"failed", "denied"}:
             return []
+        if self._is_worktree_tool_row(row):
+            return []
         return [
             self._packet_from_rule(
                 self._rule("material-write-validation"),
@@ -746,6 +748,39 @@ class SuperHookRuntime:
                 coalesce_key=self._validation_coalesce_key(row),
             )
         ]
+
+    def _is_worktree_tool_row(self, row: Mapping[str, Any]) -> bool:
+        worker_id = _clean_text(row.get("worker_id"))
+        if ".worktree." in worker_id:
+            return True
+        worktree_root = (self.state_root.parent / "worktrees").resolve(strict=False)
+        for key in ("workspace_root", "artifact_root"):
+            raw_root = _clean_text(row.get(key))
+            if not raw_root:
+                continue
+            try:
+                Path(raw_root).expanduser().resolve(strict=False).relative_to(worktree_root)
+                return True
+            except ValueError:
+                pass
+        arguments = row.get("arguments") if isinstance(row.get("arguments"), dict) else {}
+        result = row.get("result") if isinstance(row.get("result"), dict) else {}
+        raw_path = _clean_text(
+            result.get("path")
+            or arguments.get("path")
+            or arguments.get("file_path")
+            or row.get("path")
+        )
+        if not raw_path:
+            return False
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            return False
+        try:
+            path.resolve(strict=False).relative_to(worktree_root)
+            return True
+        except ValueError:
+            return False
 
     def _packet_for_validation_completed(self, row: Mapping[str, Any]) -> SuperPacket | None:
         passed = bool(row.get("passed"))

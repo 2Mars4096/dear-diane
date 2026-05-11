@@ -105,6 +105,39 @@ def test_super_hook_runtime_routes_material_write_to_validation_and_persists_sta
     assert validation["metrics"]["completed"] == 1
 
 
+def test_super_hook_runtime_ignores_isolated_worktree_material_write(
+    tmp_path: Path,
+) -> None:
+    runtime = SuperHookRuntime(
+        state_root=tmp_path / ".dan-super" / "state",
+        run_id="super-dan-live:1",
+        turn_id="1",
+        task_id="super-dan-live:1",
+        trace_id="trace:test",
+        reactivity_profile="balanced",
+        worktree_parallelism=1,
+    )
+    worktree_path = (
+        tmp_path
+        / ".dan-super"
+        / "worktrees"
+        / "super-worktree-1"
+        / "apps"
+        / "index.html"
+    )
+    row = _write_event(3, str(worktree_path))
+    row["worker_id"] = "super-dan.live.worktree.1-2"
+    row["workspace_root"] = str(worktree_path.parent.parent)
+
+    events = runtime.process_event(row)
+
+    assert events == []
+    state = runtime.snapshot()
+    validation = state["inboxes"]["validation"]
+    assert validation["pending_packet_ids"] == []
+    assert validation["metrics"]["enqueued"] == 0
+
+
 def test_super_hook_runtime_routes_generic_repair_completion_to_validation(
     tmp_path: Path,
 ) -> None:

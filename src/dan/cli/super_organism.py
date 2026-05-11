@@ -10,6 +10,7 @@ import inspect
 import json
 import os
 import re
+import shutil
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -356,6 +357,288 @@ def _super_plan_task_state(
     return tasks
 
 
+def _super_plan_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _super_plan_task_graph(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, Mapping):
+        raw_items = value.get("tasks") or value.get("task_graph") or []
+    else:
+        raw_items = value
+    if not isinstance(raw_items, list):
+        return []
+    tasks: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if not isinstance(item, Mapping):
+            continue
+        task_id = str(
+            item.get("task_id")
+            or item.get("id")
+            or item.get("number")
+            or ""
+        ).strip()
+        if not task_id or task_id in seen:
+            continue
+        seen.add(task_id)
+        depends_on = _super_plan_string_list(
+            item.get("depends_on") or item.get("dependencies") or []
+        )
+        owned_paths = _super_plan_string_list(
+            item.get("owned_paths") or item.get("owner_paths") or item.get("paths") or []
+        )
+        deliverables = _super_plan_string_list(item.get("deliverables") or [])
+        validation = _super_plan_string_list(
+            item.get("validation") or item.get("checks") or item.get("acceptance") or []
+        )
+        status = str(item.get("status") or "planned").strip() or "planned"
+        parallel_raw = item.get("parallel_safe")
+        task: dict[str, Any] = {
+            "task_id": task_id,
+            "goal": str(item.get("goal") or item.get("summary") or "").strip(),
+            "depends_on": depends_on,
+            "owned_paths": owned_paths,
+            "deliverables": deliverables,
+            "validation": validation,
+            "parallel_safe": bool(parallel_raw) if parallel_raw is not None else True,
+            "status": status,
+        }
+        if item.get("risk") is not None:
+            task["risk"] = str(item.get("risk") or "").strip()
+        if item.get("confidence") is not None:
+            task["confidence"] = _coerce_float(item.get("confidence"))
+        tasks.append(task)
+    return tasks
+
+
+def _super_plan_ready_task_ids(
+    task_graph: Sequence[Mapping[str, Any]],
+    *,
+    completed_task_ids: Sequence[str] = (),
+) -> list[str]:
+    completed = {str(item).strip() for item in completed_task_ids if str(item).strip()}
+    ready: list[str] = []
+    for task in task_graph:
+        task_id = str(task.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        status = str(task.get("status") or "").strip().lower()
+        if task_id in completed or status in {"done", "complete", "completed", "x"}:
+            continue
+        depends_on = _super_plan_string_list(task.get("depends_on") or [])
+        if all(dep in completed for dep in depends_on):
+            ready.append(task_id)
+    return ready
+
+
+def _super_plan_deferred_task_ids(
+    task_graph: Sequence[Mapping[str, Any]],
+    ready_task_ids: Sequence[str],
+    *,
+    completed_task_ids: Sequence[str] = (),
+) -> list[str]:
+    ready = {str(item).strip() for item in ready_task_ids if str(item).strip()}
+    completed = {str(item).strip() for item in completed_task_ids if str(item).strip()}
+    deferred: list[str] = []
+    for task in task_graph:
+        task_id = str(task.get("task_id") or "").strip()
+        if not task_id or task_id in ready or task_id in completed:
+            continue
+        status = str(task.get("status") or "").strip().lower()
+        if status in {"done", "complete", "completed", "x"}:
+            continue
+        deferred.append(task_id)
+    return deferred
+
+
+def _super_plan_deferred_match_terms(plan_context: Mapping[str, Any] | None) -> set[str]:
+    if not isinstance(plan_context, Mapping):
+        return set()
+    deferred_ids = {
+        str(item).strip()
+        for item in (plan_context.get("deferred_task_ids") or [])
+        if str(item).strip()
+    }
+    if not deferred_ids:
+        return set()
+    generic_terms = {
+        "apps",
+        "app",
+        "src",
+        "lib",
+        "index",
+        "html",
+        "app.js",
+        "styles",
+        "styles.css",
+        "readme",
+        "readme.md",
+        "page",
+        "demo",
+        "demos",
+        "task",
+        "tasks",
+    }
+    terms: set[str] = {task_id.lower() for task_id in deferred_ids}
+    for task in _super_plan_task_graph(plan_context.get("task_graph") or []):
+        task_id = str(task.get("task_id") or "").strip()
+        if task_id not in deferred_ids:
+            continue
+        for path in [
+            *_super_plan_string_list(task.get("owned_paths") or []),
+            *_super_plan_string_list(task.get("deliverables") or []),
+        ]:
+            normalized = str(path or "").strip().lower()
+            if normalized and normalized not in generic_terms:
+                terms.add(normalized)
+            for part in re.split(r"[/_.\s]+", normalized):
+                part = part.strip("-")
+                if len(part) >= 4 and part not in generic_terms:
+                    terms.add(part)
+        goal = str(task.get("goal") or "").strip().lower()
+        for part in re.split(r"[^a-z0-9-]+", goal):
+            part = part.strip("-")
+            if len(part) >= 5 and part not in generic_terms:
+                terms.add(part)
+    return terms
+
+
+def _super_plan_text_mentions_deferred(text: str, plan_context: Mapping[str, Any] | None) -> bool:
+    lowered = str(text or "").lower()
+    if not lowered:
+        return False
+    return any(term and term in lowered for term in _super_plan_deferred_match_terms(plan_context))
+
+
+def _super_plan_task_graph_fragment(task_graph: Sequence[Mapping[str, Any]], *, limit: int = 8) -> str:
+    fragments: list[str] = []
+    for task in list(task_graph)[:limit]:
+        task_id = str(task.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        depends = ",".join(_super_plan_string_list(task.get("depends_on") or [])) or "-"
+        owned = ",".join(_super_plan_string_list(task.get("owned_paths") or [])[:3]) or "-"
+        goal = str(task.get("goal") or "").strip()
+        if len(goal) > 90:
+            goal = goal[:87].rstrip() + "..."
+        fragments.append(f"{task_id}(deps={depends}; owns={owned}; goal={goal or '-'})")
+    if len(task_graph) > limit:
+        fragments.append(f"+{len(task_graph) - limit} more")
+    return "; ".join(fragments)
+
+
+def _super_plan_task_map(plan_context: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+    if not isinstance(plan_context, Mapping):
+        return {}
+    return {
+        str(task.get("task_id") or "").strip(): dict(task)
+        for task in _super_plan_task_graph(plan_context.get("task_graph") or [])
+        if str(task.get("task_id") or "").strip()
+    }
+
+
+def _super_plan_ready_tasks(plan_context: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(plan_context, Mapping):
+        return []
+    task_map = _super_plan_task_map(plan_context)
+    ready_ids = _super_plan_string_list(
+        plan_context.get("ready_task_ids") or plan_context.get("assigned_task_ids") or []
+    )
+    return [task_map[task_id] for task_id in ready_ids if task_id in task_map]
+
+
+def _super_plan_task_owned_paths(task: Mapping[str, Any]) -> list[str]:
+    paths = [
+        *_super_plan_string_list(task.get("owned_paths") or []),
+        *_super_plan_string_list(task.get("deliverables") or []),
+    ]
+    seen: set[str] = set()
+    unique: list[str] = []
+    for path in paths:
+        normalized = path.strip().strip("/")
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(normalized)
+    return unique
+
+
+def _super_plan_rel_paths_overlap(left: str, right: str) -> bool:
+    left_norm = str(left or "").strip().strip("/")
+    right_norm = str(right or "").strip().strip("/")
+    if not left_norm or not right_norm:
+        return False
+    return (
+        left_norm == right_norm
+        or left_norm.startswith(f"{right_norm}/")
+        or right_norm.startswith(f"{left_norm}/")
+    )
+
+
+def _super_plan_tasks_conflict(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    left_paths = _super_plan_task_owned_paths(left)
+    right_paths = _super_plan_task_owned_paths(right)
+    if not left_paths or not right_paths:
+        return True
+    return any(
+        _super_plan_rel_paths_overlap(left_path, right_path)
+        for left_path in left_paths
+        for right_path in right_paths
+    )
+
+
+def _super_plan_parallel_frontier(
+    plan_context: Mapping[str, Any] | None,
+    *,
+    max_worktree_tasks: int,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    if max_worktree_tasks <= 0:
+        return None, []
+    ready_tasks = [
+        task
+        for task in _super_plan_ready_tasks(plan_context)
+        if _super_plan_task_owned_paths(task)
+    ]
+    if len(ready_tasks) < 2:
+        return (ready_tasks[0] if ready_tasks else None), []
+    main_task = ready_tasks[0]
+    selected: list[dict[str, Any]] = []
+    for task in ready_tasks[1:]:
+        if len(selected) >= max_worktree_tasks:
+            break
+        if not bool(task.get("parallel_safe", True)):
+            continue
+        if _super_plan_tasks_conflict(main_task, task):
+            continue
+        if any(_super_plan_tasks_conflict(existing, task) for existing in selected):
+            continue
+        selected.append(task)
+    return main_task, selected
+
+
+def _super_plan_context_for_frontier_main(
+    plan_context: Mapping[str, Any] | None,
+    main_task: Mapping[str, Any] | None,
+    worktree_tasks: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    if not isinstance(plan_context, Mapping) or not main_task or not worktree_tasks:
+        return dict(plan_context) if isinstance(plan_context, Mapping) else None
+    main_id = str(main_task.get("task_id") or "").strip()
+    worktree_ids = [
+        str(task.get("task_id") or "").strip()
+        for task in worktree_tasks
+        if str(task.get("task_id") or "").strip()
+    ]
+    payload = dict(plan_context)
+    payload["assigned_task_ids"] = [main_id]
+    payload["ready_task_ids"] = [main_id]
+    payload["parallel_worktree_task_ids"] = worktree_ids
+    return payload
+
+
 def _super_plan_context_payload(
     plan_context: Mapping[str, Any] | None,
     *,
@@ -371,6 +654,12 @@ def _super_plan_context_payload(
         "plan_root_relative": str(plan_context.get("plan_root_relative") or ""),
         "plan_files": list(plan_context.get("plan_files") or []),
         "assigned_task_ids": list(plan_context.get("assigned_task_ids") or []),
+        "ready_task_ids": list(plan_context.get("ready_task_ids") or []),
+        "deferred_task_ids": list(plan_context.get("deferred_task_ids") or []),
+        "task_graph": _super_plan_task_graph(plan_context.get("task_graph") or []),
+        "dependency_revisions": list(plan_context.get("dependency_revisions") or []),
+        "execution_mode": str(plan_context.get("execution_mode") or "dependency_frontier"),
+        "parallel_worktree_task_ids": list(plan_context.get("parallel_worktree_task_ids") or []),
         "validation": dict(plan_context.get("validation") or {}),
     }
     if include_task_state_key and plan_root is not None and workspace_root is not None:
@@ -393,6 +682,10 @@ def _super_plan_file_contract(plan_root_relative: str) -> str:
         "`1-*` and `2-*` rather than forcing them under `1-1` and `1-2`.\n"
         "- Sub-plans must be coherent slices of their parent phase. Keep simple tasks to one top-level plan file.\n"
         "- Keep checklist nesting to at most two levels and make each checkbox evidence-checkable by a validator.\n"
+        "- For broad tasks, predict a dependency task graph: each executable task should have a stable digit task id, "
+        "`depends_on`, `owned_paths`, deliverables, validation checks, and whether it is parallel-safe.\n"
+        "- The ready frontier is the set of tasks whose dependencies are already satisfied and whose owned paths do not "
+        "conflict. Downstream tasks remain queued until their dependencies are complete.\n"
         "- Use sections: Status, Goal, Tasks, Decisions, Notes. Sub-plan files should include a Parent link.\n"
         "- Leave tasks unchecked until an executor actually completes them; executors may tick completed tasks later."
     )
@@ -402,12 +695,27 @@ def _super_plan_executor_contract(plan_context: Mapping[str, Any] | None) -> str
     payload = _super_plan_context_payload(plan_context)
     if not payload:
         return ""
-    assigned = ", ".join(payload.get("assigned_task_ids") or []) or "the highest-value unchecked slice"
+    ready_ids = list(payload.get("ready_task_ids") or payload.get("assigned_task_ids") or [])
+    ready = ", ".join(str(item) for item in ready_ids) or "the highest-value ready frontier"
+    parallel_worktree = ", ".join(str(item) for item in (payload.get("parallel_worktree_task_ids") or [])[:8])
+    parallel_note = (
+        f" Parallel worktree tasks already admitted elsewhere, do not duplicate them in this lane: {parallel_worktree}."
+        if parallel_worktree
+        else ""
+    )
+    deferred = ", ".join(str(item) for item in (payload.get("deferred_task_ids") or [])[:8])
+    deferred_note = f" Deferred or blocked tasks, not for this worker unless dependencies change: {deferred}." if deferred else ""
     plan_files = ", ".join(str(item) for item in (payload.get("plan_files") or [])[:6]) or "run-local plan files"
+    graph = _super_plan_task_graph_fragment(payload.get("task_graph") or [])
+    graph_note = f" Dependency graph: {graph}." if graph else ""
     return (
-        "Plan execution contract: a run-local plan has already been validated for this broad objective. "
-        f"Plan files: {plan_files}. Execute {assigned}. You may update plan checkboxes only for work you actually "
-        "complete with concrete workspace evidence. Leave partial or blocked work unchecked and add a short note instead. "
+        "Plan execution contract / Dependency-frontier execution contract: a run-local plan has already been validated for this broad objective. "
+        f"Plan files: {plan_files}. Execute the current ready frontier: {ready}.{parallel_note}{deferred_note}{graph_note} "
+        "You may complete one or more ready tasks when their owned paths are compatible, but do not expand into blocked "
+        "downstream tasks merely because the full objective mentions them. If the dependency prediction is wrong, update "
+        "the plan notes or dependency revisions with evidence and stop at the smallest coherent correction. "
+        "You may update plan checkboxes only for work you actually complete with concrete workspace evidence. "
+        "Leave partial or blocked work unchecked and add a short note instead. "
         "Plan-file edits alone do not count as the deliverable mutation; create or edit the actual requested artifact too."
     )
 
@@ -416,11 +724,21 @@ def _super_plan_validation_contract(plan_context: Mapping[str, Any] | None) -> s
     payload = _super_plan_context_payload(plan_context)
     if not payload:
         return ""
+    ready = ", ".join(str(item) for item in (payload.get("ready_task_ids") or payload.get("assigned_task_ids") or []))
+    deferred = ", ".join(str(item) for item in (payload.get("deferred_task_ids") or [])[:8])
+    frontier_note = (
+        f"Current ready frontier: {ready or 'highest-value ready tasks'}. "
+        f"Deferred or blocked tasks: {deferred or 'none recorded'}. "
+    )
     return (
-        "Plan-progress audit contract: compare plan checkbox state with changed deliverable files and available evidence. "
+        "Plan-progress audit contract / Dependency-frontier validation contract: validate the current ready frontier, not the entire future DAG at once. "
+        f"{frontier_note}"
+        "Compare plan checkbox state with changed deliverable files and available evidence. "
         "Any task newly marked `[x]` must be supported by actual implementation, dataset/report changes, or verification. "
-        "Fail or list a missing requirement when the run only ticks plan files, ticks work that was not completed, or "
-        "uses an incoherent plan as proof of success."
+        "Fail or list `blocking_current_task_failures` only when the current frontier is incomplete, broken, or unsupported. "
+        "Put future downstream gaps under `deferred_task_gaps` / `remaining_work`; do not turn queued DAG tasks into a "
+        "repair brief for the current worker. If the current frontier is materially complete and only deferred tasks remain, "
+        "return `passed=true` with `completion_scope=\"current_frontier\"`."
     )
 
 
@@ -552,6 +870,37 @@ class SuperRunEventLogger:
             return None
         return self._hook_runtime.snapshot()
 
+    def plan_worktree_task(
+        self,
+        packet_id: str,
+        *,
+        owner_scope: str,
+        reason: str,
+    ) -> Any | None:
+        if self._hook_runtime is None:
+            return None
+        task, events = self._hook_runtime.plan_worktree_task(
+            packet_id,
+            owner_scope=owner_scope,
+            reason=reason,
+        )
+        for event in events:
+            row = self._writer.emit(dict(event))
+            if self._progress_callback is not None:
+                self._progress_callback(dict(row))
+        return task
+
+    def admit_worktree_diff(self, diff_packet: Mapping[str, Any]) -> list[dict[str, Any]]:
+        if self._hook_runtime is None:
+            return []
+        emitted: list[dict[str, Any]] = []
+        for event in self._hook_runtime.admit_worktree_diff(diff_packet):
+            row = self._writer.emit(dict(event))
+            emitted.append(dict(row))
+            if self._progress_callback is not None:
+                self._progress_callback(dict(row))
+        return emitted
+
     def close(self) -> None:
         self._writer.close()
 
@@ -676,8 +1025,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help=(
-            "Maximum planned isolated worktree patch lanes for conflicting owners. "
-            "Current live execution remains main-lane authoritative."
+            "Maximum isolated worktree workers admitted from the validated dependency-ready frontier. "
+            "Diffs are copied back only after hook admission."
         ),
     )
     parser.add_argument(
@@ -1151,6 +1500,39 @@ class SuperProgressRenderer:
             verdict = "passed" if event.get("passed") else "failed"
             score = _coerce_float(event.get("overall_score"))
             self._emit(event, f"[planning] validation {verdict} {score:.2f}")
+            return
+        if name == "live.worktree_frontier.started":
+            task_ids = ",".join(str(item) for item in (event.get("task_ids") or [])[:8])
+            suffix = f": {task_ids}" if task_ids else ""
+            self._emit(event, f"[worktree] frontier started{suffix}")
+            return
+        if name == "super.worktree.task_planned":
+            task_id = _truncate_text(event.get("owner_scope") or event.get("task_id") or "", limit=120)
+            self._emit(event, f"[worktree] planned {task_id}")
+            return
+        if name == "super.worktree.diff_admitted":
+            changed = [
+                _path_basename(path)
+                for path in (event.get("changed_files") or [])
+                if str(path).strip()
+            ]
+            suffix = f" changed={','.join(changed)}" if changed else ""
+            self._emit(event, f"[worktree] diff admitted{suffix}")
+            return
+        if name == "live.worktree.diff_applied":
+            task_id = str(event.get("plan_task_id") or event.get("task_id") or "task")
+            changed = [
+                _path_basename(path)
+                for path in (event.get("changed_files") or [])
+                if str(path).strip()
+            ]
+            suffix = f" changed={','.join(changed)}" if changed else " changed=none"
+            self._emit(event, f"[worktree] applied {task_id}{suffix}")
+            return
+        if name == "live.worktree_task.completed":
+            task_id = str(event.get("plan_task_id") or "task")
+            status = str(event.get("status") or "completed")
+            self._emit(event, f"[worktree] {task_id} {status}")
             return
         if name == "model.requested":
             span_id = str(event.get("span_id") or event.get("model_call_id") or "")
@@ -1936,6 +2318,12 @@ def _live_validation_return_shape() -> str:
             },
             "repair_brief": "",
             "missing_requirements": [],
+            "blocking_current_task_failures": [],
+            "deferred_task_gaps": [],
+            "remaining_work": [],
+            "ready_next_task_ids": [],
+            "dependency_revisions": [],
+            "completion_scope": "full_objective | current_frontier",
             "comparison_note": "The result materially satisfies the operator objective and is not just a generic demo shell.",
         },
         ensure_ascii=False,
@@ -1948,8 +2336,23 @@ def _live_plan_return_shape() -> str:
         {
             "plan_files": [".dan-super/runs/turn-01/plans/1-coherent-phase.md"],
             "phase_summary": ["1: coherent large feature chunk"],
-            "first_build_slice": ["1.1"],
-            "notes": ["why the first slice is the right one to execute now"],
+            "task_graph": [
+                {
+                    "task_id": "1-1",
+                    "goal": "first executable task",
+                    "depends_on": [],
+                    "owned_paths": ["relative/path"],
+                    "deliverables": ["relative/path"],
+                    "validation": ["focused check"],
+                    "parallel_safe": True,
+                    "risk": "low",
+                    "confidence": 0.8,
+                }
+            ],
+            "ready_task_ids": ["1-1"],
+            "deferred_task_ids": ["1-2"],
+            "first_build_slice": ["1-1"],
+            "notes": ["why the ready frontier is the right work to execute now"],
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -1961,9 +2364,23 @@ def _live_plan_validation_return_shape() -> str:
         {
             "passed": True,
             "overall_score": 0.9,
-            "first_build_slice": ["1.1"],
+            "task_graph": [
+                {
+                    "task_id": "1-1",
+                    "goal": "first executable task",
+                    "depends_on": [],
+                    "owned_paths": ["relative/path"],
+                    "deliverables": ["relative/path"],
+                    "validation": ["focused check"],
+                    "parallel_safe": True,
+                }
+            ],
+            "ready_task_ids": ["1-1"],
+            "deferred_task_ids": ["1-2"],
+            "first_build_slice": ["1-1"],
             "blocking_issues": [],
             "suggested_fixes": [],
+            "dependency_revisions": [],
             "comparison_note": "The numeric plan is coherent and ready for execution.",
         },
         ensure_ascii=False,
@@ -2113,6 +2530,9 @@ def _validation_repair_brief(
     deterministic_failures: Sequence[str],
 ) -> str:
     parts: list[str] = []
+    blocking = validation.get("blocking_current_task_failures")
+    if isinstance(blocking, list):
+        parts.extend(_display_text(item) for item in blocking if str(item).strip())
     for key in ("repair_brief", "comparison_note", "error"):
         value = _display_text(validation.get(key) or "")
         if value:
@@ -2128,6 +2548,58 @@ def _validation_repair_brief(
             seen.add(part)
             compact.append(part)
     return " ".join(compact)
+
+
+def _super_plan_scoped_validation_payload(
+    validation: Mapping[str, Any],
+    plan_context: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    normalized = _normalize_validation_payload(dict(validation))
+    for key in ("status", "tool_calls", "event_count", "error", "token_usage"):
+        if key in validation:
+            normalized[key] = validation.get(key)
+    if not isinstance(plan_context, Mapping):
+        return normalized
+    deferred_gaps = _super_plan_string_list(normalized.get("deferred_task_gaps") or [])
+    remaining_work = _super_plan_string_list(normalized.get("remaining_work") or [])
+    blocking = _super_plan_string_list(normalized.get("blocking_current_task_failures") or [])
+    if deferred_gaps and remaining_work:
+        normalized["deferred_task_gaps"] = list(dict.fromkeys([*deferred_gaps, *remaining_work]))
+    elif remaining_work:
+        normalized["deferred_task_gaps"] = remaining_work
+    deferred_gaps = _super_plan_string_list(normalized.get("deferred_task_gaps") or [])
+    missing = _super_plan_string_list(normalized.get("missing_requirements") or [])
+    if not deferred_gaps and missing:
+        deferred_like = [
+            item for item in missing if _super_plan_text_mentions_deferred(item, plan_context)
+        ]
+        if deferred_like:
+            deferred_gaps = deferred_like
+            normalized["deferred_task_gaps"] = deferred_like
+            normalized["missing_requirements"] = [
+                item for item in missing if item not in set(deferred_like)
+            ]
+            missing = _super_plan_string_list(normalized.get("missing_requirements") or [])
+    if blocking:
+        normalized["passed"] = False
+        normalized["missing_requirements"] = blocking
+        if not str(normalized.get("repair_brief") or "").strip():
+            normalized["repair_brief"] = blocking[0]
+        return normalized
+    if deferred_gaps:
+        deferred_set = set(deferred_gaps)
+        only_deferred_missing = not missing or all(item in deferred_set for item in missing)
+        scope = str(normalized.get("completion_scope") or "").strip()
+        if only_deferred_missing or scope == "current_frontier":
+            normalized["passed"] = True
+            normalized["completion_scope"] = "current_frontier"
+            normalized["missing_requirements"] = []
+            normalized["repair_brief"] = ""
+            comparison = str(normalized.get("comparison_note") or "").strip()
+            if "deferred" not in comparison.lower():
+                suffix = "Deferred DAG tasks remain queued for later ready-frontier waves."
+                normalized["comparison_note"] = f"{comparison} {suffix}".strip()
+    return normalized
 
 
 def _looks_like_git_baseline_rejection(text: str) -> bool:
@@ -2164,8 +2636,13 @@ def _generic_validation_requests_additive_repair(validation: Mapping[str, Any]) 
     return _text_requests_additive_update(_validation_repair_brief(validation, []))
 
 
-def _generic_validation_repair_brief(validation: Mapping[str, Any]) -> str:
-    raw = _validation_repair_brief(validation, [])
+def _generic_validation_repair_brief(
+    validation: Mapping[str, Any],
+    *,
+    plan_context: Mapping[str, Any] | None = None,
+) -> str:
+    scoped_validation = _super_plan_scoped_validation_payload(validation, plan_context)
+    raw = _validation_repair_brief(scoped_validation, [])
     if not _looks_like_git_baseline_rejection(raw):
         return raw
     sentences = [
@@ -2200,8 +2677,9 @@ def _generic_repair_validation_payload(
     validation: Mapping[str, Any],
     *,
     repair_brief: str,
+    plan_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    payload = dict(validation)
+    payload = _super_plan_scoped_validation_payload(validation, plan_context)
     payload["repair_brief"] = repair_brief
     if _looks_like_git_baseline_rejection(_validation_repair_brief(validation, [])):
         payload["comparison_note"] = (
@@ -2287,7 +2765,10 @@ def _live_generic_planner_task(
         f"{policy_note} "
         "Do not implement the deliverable in this stage. Inspect only the context needed to make the plan coherent. "
         "Break the work into at most two file levels: top-level numeric phase files and optional numeric sub-plan files. "
-        "Choose one first build slice that a builder can execute now and a validator can later audit against changed files."
+        "Predict a dependency task graph even if the dependencies are imperfect: each task should name its prerequisites, "
+        "owned paths, deliverables, validation checks, and whether it can run in parallel with other ready tasks. "
+        "Choose the current ready frontier: tasks whose dependencies are satisfied now and whose owned paths do not conflict. "
+        "Downstream tasks should be marked deferred/blocked instead of becoming immediate repair work."
     )
 
 
@@ -2310,7 +2791,9 @@ def _live_generic_plan_validation_task(
         f"{policy_note} "
         "Read the plan files, then decide whether they are coherent, numeric, non-contradictory, and ready for a builder. "
         "Reject plans that use alphabet placeholders, create third-level plan files, mix unrelated sub-plans under one "
-        "phase, or fail to identify a first executable slice."
+        "phase, or fail to identify a dependency-ready frontier. Audit the predicted DAG: dependencies may be imperfect, "
+        "but ready tasks must have satisfied prerequisites and non-conflicting owned paths. Return corrected `task_graph`, "
+        "`ready_task_ids`, `deferred_task_ids`, and `dependency_revisions` when the plan is mostly usable."
     )
 
 
@@ -2357,6 +2840,40 @@ def _live_generic_task(
         "workspace artifact; markdown/report requests should be materialized as a markdown file with source notes or links when "
         "available. If it asks for software, make the bounded implementation and run focused verification when useful. "
         "Actually mutate workspace files before finalizing, then return the requested compact JSON-like completion summary."
+    )
+
+
+def _live_generic_worktree_task(
+    report: SuperOrganismReport,
+    *,
+    main_workspace_root: Path,
+    worktree_root: Path,
+    task: Mapping[str, Any],
+    plan_context: Mapping[str, Any] | None = None,
+    operator_intent_policy: OperatorIntentPolicy | None = None,
+) -> str:
+    policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
+    task_id = str(task.get("task_id") or "").strip()
+    goal = str(task.get("goal") or "").strip()
+    owned = ", ".join(_super_plan_task_owned_paths(task)) or "the task-owned files"
+    checks = ", ".join(_super_plan_string_list(task.get("validation") or [])) or "focused local inspection"
+    plan_note = _super_plan_executor_contract(plan_context)
+    if plan_note:
+        plan_note += " "
+    return (
+        "Execute one Super DAN dependency-frontier task inside this isolated worktree. "
+        f"Operator objective: {report.target}. "
+        f"Task id: {task_id}. "
+        f"Task goal: {goal or 'complete the assigned ready task'}. "
+        f"Authoritative workspace root: {main_workspace_root}. "
+        f"Isolated worktree root for this worker: {worktree_root}. "
+        f"Owned paths for this worker: {owned}. "
+        f"Expected validation evidence: {checks}. "
+        f"{policy_note} "
+        f"{plan_note}"
+        "Only edit files under the owned paths for this task. Do not implement sibling ready tasks or deferred downstream tasks. "
+        "Do not edit `.dan-super` state or plan files from a worktree worker. "
+        "Make concrete file_write or file_edit calls in the isolated worktree, then return the compact completion summary."
     )
 
 
@@ -2451,6 +2968,13 @@ def _live_generic_validation_task(
             "Post-run file-state metadata for mutated paths is also available; use it to notice destructive shrinkage "
             "or missing artifacts. "
         )
+    frontier_note = ""
+    if plan_note:
+        frontier_note = (
+            "This run may be one wave of a broader dependency DAG. Judge whether the current ready frontier is complete, "
+            "safe, and supported by changed-file evidence. Do not fail solely because deferred downstream DAG tasks remain; "
+            "record those under deferred_task_gaps or remaining_work. "
+        )
     return (
         "Validate the live workspace deliverable now in read-only mode. "
         f"Operator objective: {report.target}. "
@@ -2458,6 +2982,7 @@ def _live_generic_validation_task(
         f"{policy_note} "
         f"{state_note}"
         f"{plan_note}"
+        f"{frontier_note}"
         "Inspect the mutated files and relevant read-only evidence, then decide whether the result materially advances the "
         "objective. For report or markdown objectives, verify that a report-like artifact was actually written and is not just "
         "a generic planning memo. For software objectives, inspect the implementation and verification evidence."
@@ -2488,6 +3013,12 @@ def _live_generic_repair_task(
             "Use the supplied file-state metadata as before/after context. Do not treat missing git commits, empty git log, "
             "or an untracked workspace as proof that a new baseline must be created. "
         )
+    frontier_note = ""
+    if plan_note:
+        frontier_note = (
+            "Repair only blockers for the current ready frontier. Do not implement deferred downstream DAG tasks as part of "
+            "this repair unless the validator explicitly revised the dependency graph and marked them ready. "
+        )
     return (
         "Repair the previous Super DAN live deliverable now. "
         f"Operator objective: {report.target}. "
@@ -2496,6 +3027,7 @@ def _live_generic_repair_task(
         f"{policy_note} "
         f"{plan_note}"
         f"{state_note}"
+        f"{frontier_note}"
         f"Validation feedback: {effective_repair_brief or 'validator rejected the previous deliverable'}. "
         "Make concrete workspace edits that address that feedback; do not return a summary-only response. If the deliverable is "
         "a report or markdown artifact, edit that artifact directly and improve grounding or coverage as needed. "
@@ -3350,6 +3882,107 @@ def _file_metadata_for_paths(
     return states
 
 
+def _super_copy_workspace_to_worktree(
+    workspace_root: Path,
+    worktree_root: Path,
+) -> None:
+    source_root = workspace_root.resolve(strict=False)
+    target_root = worktree_root.resolve(strict=False)
+    allowed_parent = (source_root / ".dan-super" / "worktrees").resolve(strict=False)
+    if not _path_is_under(target_root, allowed_parent):
+        raise ValueError(f"refusing to prepare worktree outside {allowed_parent}: {target_root}")
+    if target_root.exists():
+        shutil.rmtree(target_root)
+    target_root.mkdir(parents=True, exist_ok=True)
+    skip_names = set(_GENERIC_SNAPSHOT_SKIP_DIR_NAMES)
+    skip_names.add(".dan-super")
+    for child in source_root.iterdir() if source_root.exists() else []:
+        if child.name in skip_names:
+            continue
+        if child.is_symlink():
+            continue
+        destination = target_root / child.name
+        if child.is_dir():
+            shutil.copytree(
+                child,
+                destination,
+                ignore=shutil.ignore_patterns(*sorted(skip_names)),
+                symlinks=False,
+            )
+        elif child.is_file():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(child, destination)
+
+
+def _super_worktree_owner_scope(task: Mapping[str, Any]) -> str:
+    task_id = str(task.get("task_id") or "").strip() or "ready-task"
+    owned = ",".join(_super_plan_task_owned_paths(task)) or task_id
+    return f"plan-task:{task_id}:{owned}"
+
+
+def _super_worktree_packet_id(task: Mapping[str, Any], run_task_id: str) -> str:
+    task_id = str(task.get("task_id") or "").strip() or "ready-task"
+    return f"super-frontier:{hashlib.sha256(f'{run_task_id}:{task_id}'.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _super_worktree_relative_mutation_paths(
+    worktree_paths: Sequence[str],
+    *,
+    worktree_root: Path,
+    task: Mapping[str, Any],
+) -> list[str]:
+    allowed = _super_plan_task_owned_paths(task)
+    relative_paths: list[str] = []
+    seen: set[str] = set()
+    for raw_path in worktree_paths:
+        path = Path(str(raw_path)).expanduser().resolve(strict=False)
+        try:
+            relative = path.relative_to(worktree_root.resolve(strict=False)).as_posix()
+        except ValueError:
+            continue
+        if allowed and not any(_super_plan_rel_paths_overlap(relative, owner) for owner in allowed):
+            continue
+        if relative in seen:
+            continue
+        seen.add(relative)
+        relative_paths.append(relative)
+    return relative_paths
+
+
+def _super_apply_worktree_files(
+    *,
+    worktree_root: Path,
+    workspace_root: Path,
+    relative_paths: Sequence[str],
+) -> list[dict[str, Any]]:
+    synthetic_tools: list[dict[str, Any]] = []
+    for relative in relative_paths:
+        source = (worktree_root / relative).resolve(strict=False)
+        target = (workspace_root / relative).resolve(strict=False)
+        if not _path_is_under(target, workspace_root):
+            continue
+        if not source.is_file():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        synthetic_tools.append(
+            {
+                "ok": True,
+                "tool_id": "file_write",
+                "arguments": {"path": relative},
+                "result": {
+                    "path": str(target),
+                    "bytes": int(target.stat().st_size),
+                    "created": True,
+                    "source_path": str(source),
+                    "fallback": "worktree_admitted_diff_apply",
+                },
+                "synthetic": True,
+            }
+        )
+    return synthetic_tools
+
+
 def _current_file_metadata_for_paths(paths: Sequence[str]) -> dict[str, dict[str, Any]]:
     return {
         str(Path(str(raw_path)).expanduser().resolve(strict=False)): _file_metadata(
@@ -3470,6 +4103,15 @@ def _normalize_validation_payload(payload: Any) -> dict[str, Any]:
         )
     dimension_scores = payload.get("dimension_scores")
     missing_requirements = payload.get("missing_requirements")
+    blocking_current = _super_plan_string_list(payload.get("blocking_current_task_failures") or [])
+    deferred_gaps = _super_plan_string_list(payload.get("deferred_task_gaps") or [])
+    remaining_work = _super_plan_string_list(payload.get("remaining_work") or [])
+    ready_next = _super_plan_string_list(payload.get("ready_next_task_ids") or [])
+    dependency_revisions = [
+        dict(item)
+        for item in (payload.get("dependency_revisions") or [])
+        if isinstance(item, Mapping)
+    ] if isinstance(payload.get("dependency_revisions"), list) else []
     return {
         "passed": bool(payload.get("passed")),
         "overall_score": _coerce_float(payload.get("overall_score")),
@@ -3480,6 +4122,12 @@ def _normalize_validation_payload(payload: Any) -> dict[str, Any]:
             if isinstance(missing_requirements, list)
             else []
         ),
+        "blocking_current_task_failures": blocking_current,
+        "deferred_task_gaps": deferred_gaps,
+        "remaining_work": remaining_work,
+        "ready_next_task_ids": ready_next,
+        "dependency_revisions": dependency_revisions,
+        "completion_scope": str(payload.get("completion_scope") or "").strip(),
         "comparison_note": str(payload.get("comparison_note") or "").strip(),
     }
 
@@ -3519,16 +4167,38 @@ def _normalize_plan_validation_payload(
             "suggested_fixes": [],
             "comparison_note": "Plan validation returned an unstructured response.",
             "plan_files": list(plan_files),
+            "task_graph": [],
+            "ready_task_ids": [],
+            "deferred_task_ids": [],
+            "dependency_revisions": [],
         }
     blocking = payload.get("blocking_issues")
     suggested = payload.get("suggested_fixes")
+    task_graph = _super_plan_task_graph(payload.get("task_graph") or [])
     first_slice = payload.get("first_build_slice") or payload.get("assigned_task_ids")
     if not isinstance(first_slice, list):
         first_slice = []
+    ready_ids = _super_plan_string_list(payload.get("ready_task_ids") or [])
+    if not ready_ids:
+        ready_ids = [str(item).strip() for item in first_slice if str(item).strip()]
+    if not ready_ids and task_graph:
+        ready_ids = _super_plan_ready_task_ids(task_graph)
+    deferred_ids = _super_plan_string_list(payload.get("deferred_task_ids") or [])
+    if not deferred_ids and task_graph:
+        deferred_ids = _super_plan_deferred_task_ids(task_graph, ready_ids)
+    dependency_revisions = [
+        dict(item)
+        for item in (payload.get("dependency_revisions") or [])
+        if isinstance(item, Mapping)
+    ] if isinstance(payload.get("dependency_revisions"), list) else []
     return {
         "passed": bool(payload.get("passed")),
         "overall_score": _coerce_float(payload.get("overall_score")),
-        "first_build_slice": [str(item).strip() for item in first_slice if str(item).strip()],
+        "first_build_slice": [str(item).strip() for item in first_slice if str(item).strip()] or list(ready_ids),
+        "ready_task_ids": list(ready_ids),
+        "deferred_task_ids": list(deferred_ids),
+        "task_graph": task_graph,
+        "dependency_revisions": dependency_revisions,
         "blocking_issues": (
             [str(item).strip() for item in blocking if str(item).strip()]
             if isinstance(blocking, list)
@@ -3656,6 +4326,12 @@ def _log_final_validation_event(
         status=validation.get("status"),
         passed=validation.get("passed"),
         overall_score=validation.get("overall_score"),
+        completion_scope=validation.get("completion_scope") or None,
+        blocking_current_task_failures=list(validation.get("blocking_current_task_failures") or []) or None,
+        deferred_task_gaps=list(validation.get("deferred_task_gaps") or []) or None,
+        remaining_work=list(validation.get("remaining_work") or []) or None,
+        ready_next_task_ids=list(validation.get("ready_next_task_ids") or []) or None,
+        dependency_revisions=list(validation.get("dependency_revisions") or []) or None,
         deterministic_failures=list(deterministic_failures or []) or None,
         changed_required_files=list(changed_required_files or []),
         builder_retry_attempted=retry_attempted,
@@ -4564,7 +5240,7 @@ async def _run_live_generic_execution(
                 success_criteria=[
                     "Temporary numeric plan files are written under the run-local plan root.",
                     "Top-level phases are coherent large feature chunks, not unrelated buckets.",
-                    "The output identifies the first executable slice for the builder.",
+                    "The output predicts a dependency task graph and identifies the current ready frontier.",
                 ],
                 artifact_targets=[plan_root_relative],
                 trace_role="super-dan.live.general.planner",
@@ -4589,6 +5265,7 @@ async def _run_live_generic_execution(
                 "Default to a small plan; a simple broad task may need one top-level phase and no sub-plan files.",
                 "Create sub-plans only when they are coherent slices of the same parent phase.",
                 "Make each checkbox specific enough that a later validator can audit it against changed files.",
+                "Prefer several disjoint ready tasks over one giant task when their owned paths can be executed independently.",
             ],
             tool_policy={
                 "allowed_tool_ids": list(planner_tool_ids),
@@ -4658,10 +5335,25 @@ async def _run_live_generic_execution(
         plan_files = _super_plan_files(plan_root, workspace_root)
         planner_payload = _extract_validation_payload(dict(planner_result.outputs))
         initial_slice: list[str] = []
+        initial_task_graph: list[dict[str, Any]] = []
+        initial_ready_task_ids: list[str] = []
+        initial_deferred_task_ids: list[str] = []
         if isinstance(planner_payload, Mapping):
             raw_slice = planner_payload.get("first_build_slice")
             if isinstance(raw_slice, list):
                 initial_slice = [str(item).strip() for item in raw_slice if str(item).strip()]
+            initial_task_graph = _super_plan_task_graph(planner_payload.get("task_graph") or [])
+            initial_ready_task_ids = _super_plan_string_list(planner_payload.get("ready_task_ids") or [])
+            if not initial_ready_task_ids:
+                initial_ready_task_ids = list(initial_slice)
+            if not initial_ready_task_ids and initial_task_graph:
+                initial_ready_task_ids = _super_plan_ready_task_ids(initial_task_graph)
+            initial_deferred_task_ids = _super_plan_string_list(planner_payload.get("deferred_task_ids") or [])
+            if not initial_deferred_task_ids and initial_task_graph:
+                initial_deferred_task_ids = _super_plan_deferred_task_ids(
+                    initial_task_graph,
+                    initial_ready_task_ids,
+                )
         _log_live_event(
             event_logger,
             "live.planning.completed",
@@ -4691,7 +5383,7 @@ async def _run_live_generic_execution(
                 responsibility="Audit the run-local execution plan before a builder follows it.",
                 success_criteria=[
                     "Plan files are inspected in read-only mode.",
-                    "Numeric naming, phase coherence, and first-slice clarity are verified.",
+                    "Numeric naming, phase coherence, dependency graph, and ready-frontier clarity are verified.",
                     "Contradictions or incoherent phase grouping are rejected.",
                 ],
                 artifact_targets=list(plan_files),
@@ -4709,11 +5401,12 @@ async def _run_live_generic_execution(
                 "Read-only validation only; do not write or edit files.",
                 "Reject alphabetic plan ids, `N-M` placeholders, and third-level plan file names.",
                 "Reject unrelated sub-plans grouped under one parent phase.",
+                "Reject missing or incoherent dependency-frontier metadata for broad multi-task objectives.",
                 "Return the structured plan validation payload only.",
                 *list(operator_intent_policy.constraints),
             ],
             soft_constraints=[
-                "Prefer a small actionable first slice over over-planning.",
+                "Prefer a small actionable ready frontier over over-planning.",
                 "Name blocking issues precisely enough for a planner retry or human review.",
             ],
             allowed_tool_ids=plan_validator_tool_ids,
@@ -4792,6 +5485,14 @@ async def _run_live_generic_execution(
             ]
         if not plan_validation.get("first_build_slice") and initial_slice:
             plan_validation["first_build_slice"] = list(initial_slice)
+        if not plan_validation.get("task_graph") and initial_task_graph:
+            plan_validation["task_graph"] = list(initial_task_graph)
+        if not plan_validation.get("ready_task_ids") and initial_ready_task_ids:
+            plan_validation["ready_task_ids"] = list(initial_ready_task_ids)
+        if not plan_validation.get("deferred_task_ids") and initial_deferred_task_ids:
+            plan_validation["deferred_task_ids"] = list(initial_deferred_task_ids)
+        if not plan_validation.get("first_build_slice") and plan_validation.get("ready_task_ids"):
+            plan_validation["first_build_slice"] = list(plan_validation.get("ready_task_ids") or [])
         _log_live_event(
             event_logger,
             "live.plan_validation.completed",
@@ -4802,6 +5503,8 @@ async def _run_live_generic_execution(
             tool_calls=len(plan_validation_tools),
             event_count=len(plan_validation_events),
             plan_files=list(plan_files),
+            ready_task_ids=list(plan_validation.get("ready_task_ids") or []),
+            deferred_task_ids=list(plan_validation.get("deferred_task_ids") or []),
             blocking_issues=list(plan_validation.get("blocking_issues") or []),
         )
         if not plan_validation.get("passed"):
@@ -4814,13 +5517,364 @@ async def _run_live_generic_execution(
                 "plan_root": str(plan_root),
                 "plan_root_relative": plan_root_relative,
                 "plan_files": list(plan_files),
-                "assigned_task_ids": list(plan_validation.get("first_build_slice") or []),
+                "assigned_task_ids": list(
+                    plan_validation.get("ready_task_ids")
+                    or plan_validation.get("first_build_slice")
+                    or []
+                ),
+                "ready_task_ids": list(plan_validation.get("ready_task_ids") or []),
+                "deferred_task_ids": list(plan_validation.get("deferred_task_ids") or []),
+                "task_graph": list(plan_validation.get("task_graph") or []),
+                "dependency_revisions": list(plan_validation.get("dependency_revisions") or []),
+                "execution_mode": "dependency_frontier",
                 "validation": plan_validation,
             },
             usage,
         )
 
     plan_context, planning_token_usage = await run_optional_planner()
+    full_plan_context = dict(plan_context) if isinstance(plan_context, Mapping) else None
+    worktree_prepared_tasks: list[dict[str, Any]] = []
+    main_frontier_task: dict[str, Any] | None = None
+    worktree_frontier_tasks: list[dict[str, Any]] = []
+    if full_plan_context:
+        main_frontier_task, worktree_frontier_tasks = _super_plan_parallel_frontier(
+            full_plan_context,
+            max_worktree_tasks=max(0, int(getattr(args, "worktree_parallelism", 0) or 0)),
+        )
+    if worktree_frontier_tasks and event_logger is not None:
+        for frontier_task in worktree_frontier_tasks:
+            packet_id = _super_worktree_packet_id(frontier_task, run_task_id)
+            owner_scope = _super_worktree_owner_scope(frontier_task)
+            runtime_task = event_logger.plan_worktree_task(
+                packet_id,
+                owner_scope=owner_scope,
+                reason="ready_frontier_parallel",
+            )
+            plan_task_id = str(frontier_task.get("task_id") or "").strip()
+            if runtime_task is None:
+                _log_live_event(
+                    event_logger,
+                    "live.worktree_task.skipped",
+                    plan_task_id=plan_task_id,
+                    packet_id=packet_id,
+                    owner_scope=owner_scope,
+                    reason="worktree task was not admitted by hook runtime",
+                )
+                continue
+            worktree_root = Path(str(runtime_task.worktree_path)).expanduser()
+            try:
+                _super_copy_workspace_to_worktree(workspace_root, worktree_root)
+            except Exception as exc:
+                _log_live_event(
+                    event_logger,
+                    "live.worktree_task.skipped",
+                    plan_task_id=plan_task_id,
+                    task_id=runtime_task.task_id,
+                    packet_id=runtime_task.packet_id,
+                    owner_scope=runtime_task.owner_scope,
+                    worktree_root=str(worktree_root),
+                    reason=f"worktree preparation failed: {type(exc).__name__}: {exc}",
+                )
+                continue
+            worktree_prepared_tasks.append(
+                {
+                    "plan_task": dict(frontier_task),
+                    "runtime_task": runtime_task,
+                    "worktree_root": worktree_root,
+                }
+            )
+        if worktree_prepared_tasks:
+            plan_context = _super_plan_context_for_frontier_main(
+                full_plan_context,
+                main_frontier_task,
+                [dict(item["plan_task"]) for item in worktree_prepared_tasks],
+            )
+            _log_live_event(
+                event_logger,
+                "live.worktree_frontier.started",
+                model=model,
+                task_ids=[
+                    str(item["plan_task"].get("task_id") or "").strip()
+                    for item in worktree_prepared_tasks
+                ],
+                worktree_roots=[str(item["worktree_root"]) for item in worktree_prepared_tasks],
+                main_task_id=str((main_frontier_task or {}).get("task_id") or ""),
+            )
+
+    async def run_prepared_worktree_frontier() -> dict[str, Any]:
+        if not worktree_prepared_tasks:
+            return {
+                "synthetic_tools": [],
+                "tool_calls": 0,
+                "event_count": 0,
+                "token_usage": None,
+                "applied_task_ids": [],
+                "events": [],
+            }
+        total_tool_calls = 0
+        total_event_count = 0
+        token_usage: dict[str, int] | None = None
+        synthetic_tools: list[dict[str, Any]] = []
+        collected_events: list[dict[str, Any]] = []
+        applied_task_ids: list[str] = []
+
+        async def run_one(prepared: Mapping[str, Any]) -> dict[str, Any]:
+            frontier_task = dict(prepared.get("plan_task") or {})
+            runtime_task = prepared.get("runtime_task")
+            worktree_root = Path(str(prepared.get("worktree_root") or "")).expanduser()
+            plan_task_id = str(frontier_task.get("task_id") or "").strip()
+            task_plan_context = dict(full_plan_context or {})
+            task_plan_context["assigned_task_ids"] = [plan_task_id] if plan_task_id else []
+            task_plan_context["ready_task_ids"] = [plan_task_id] if plan_task_id else []
+            task_plan_context["parallel_worktree_task_ids"] = []
+            worker_id_for_task = (
+                "super-dan.live.worktree."
+                + re.sub(r"[^A-Za-z0-9_.-]+", "-", plan_task_id or "ready-task").strip("-")
+            )
+            owned_paths = _super_plan_task_owned_paths(frontier_task)
+            worktree_brief = role_brief(
+                role=RoleSpec(
+                    role_label="workspace_worker",
+                    responsibility="Execute one dependency-ready Super DAN task in an isolated worktree.",
+                    success_criteria=[
+                        "Only task-owned files are created or edited.",
+                        "The isolated patch materially completes the assigned ready task.",
+                        "The final response reports changed files and validation evidence.",
+                    ],
+                    artifact_targets=list(owned_paths),
+                    trace_role=worker_id_for_task,
+                ),
+                task=_live_generic_worktree_task(
+                    report,
+                    main_workspace_root=workspace_root,
+                    worktree_root=worktree_root,
+                    task=frontier_task,
+                    plan_context=task_plan_context,
+                    operator_intent_policy=operator_intent_policy,
+                ),
+                scope=f"workspace={worktree_root}; isolated Super DAN ready-frontier task {plan_task_id}",
+                hard_constraints=[
+                    "Only create or edit files under the task-owned paths.",
+                    "Do not edit the authoritative main workspace directly from this worker.",
+                    "Do not update `.dan-super` state, run logs, or plan files from this worktree worker.",
+                    "Do not implement sibling ready tasks or deferred downstream tasks.",
+                    *list(operator_intent_policy.constraints),
+                ],
+                soft_constraints=[
+                    "Keep the patch small enough that admission can copy it back cleanly.",
+                    "Prefer targeted file_edit when a task-owned file already exists.",
+                    "Run focused verification only when useful for the assigned task.",
+                ],
+                tool_policy={
+                    "allowed_tool_ids": list(generic_tool_ids),
+                    "preferred_tool_ids": list(generic_preferred_tool_ids),
+                    "max_tool_calls": max(2, min(int(args.max_tool_calls), 32)),
+                },
+                contract_snippets=[
+                    *_super_dan_stage_snippets("builder", tool_ids=generic_tool_ids),
+                    _super_plan_executor_contract(task_plan_context),
+                    _live_pacing_contract(pacing_policy),
+                    snippets.incremental_edit_contract(),
+                    snippets.no_scratch_files_contract(),
+                ],
+                output_contract=OutputContract(
+                    definition_of_done=(
+                        "The assigned dependency-ready task is implemented in the isolated worktree and changed files are named."
+                    ),
+                    expected_return_shape=_live_expected_return_shape(),
+                ),
+                sampling_policy={
+                    "profile": choice.sampling_policy,
+                    "temperature": 0.25,
+                    "max_tokens": _SUPER_DAN_WORKER_MAX_TOKENS,
+                },
+                evidence=generic_evidence,
+                input_payload={
+                    "objective": report.target,
+                    "main_workspace_root": str(workspace_root),
+                    "workspace_root": str(worktree_root),
+                    "plan_task": frontier_task,
+                    "owned_paths": list(owned_paths),
+                    "operator_intent_policy": operator_intent_payload,
+                    "plan_context": _super_plan_context_payload(
+                        task_plan_context,
+                        plan_root=plan_root,
+                        workspace_root=workspace_root,
+                    ),
+                },
+                metadata={
+                    "surface": "super_organism",
+                    "mode": "live",
+                    "tool_budget_profile": "super_dan_live",
+                    "trace_id": run_trace_id,
+                    "root_task_id": run_task_id,
+                    "organism_id": report.organism_id,
+                    "organ_id": "super-dan.live.general",
+                    "organism_stage": "execution",
+                    "worker_id": worker_id_for_task,
+                    "operator_intent_policy": operator_intent_payload,
+                    "super_dan_worktree": True,
+                    "plan_task_id": plan_task_id,
+                    "owned_paths": list(owned_paths),
+                },
+            )
+            worker_for_task = _live_cell_from_brief(
+                model=model,
+                brief=worktree_brief,
+                worker_id=worker_id_for_task,
+                organism_stage="execution",
+            )
+            _log_live_event(
+                event_logger,
+                "live.worktree_task.started",
+                model=model,
+                plan_task_id=plan_task_id,
+                task_id=getattr(runtime_task, "task_id", ""),
+                packet_id=getattr(runtime_task, "packet_id", ""),
+                owner_scope=getattr(runtime_task, "owner_scope", ""),
+                worktree_root=str(worktree_root),
+                owned_paths=list(owned_paths),
+            )
+            worktree_result, worktree_tools, worktree_events = await _execute_live_request(
+                worker=worker_for_task,
+                request=_request_from_live_brief(worktree_brief),
+                tool_ids=generic_tool_ids,
+                workspace_root=worktree_root,
+                args=args,
+                model=model,
+                provider=provider,
+                event_logger=event_logger,
+            )
+            worktree_mutated_paths = _mutation_paths_from_tools(
+                worktree_tools,
+                workspace_root=worktree_root,
+                exclude_roots=(),
+            )
+            relative_mutations = _super_worktree_relative_mutation_paths(
+                worktree_mutated_paths,
+                worktree_root=worktree_root,
+                task=frontier_task,
+            )
+            summary_text = str(
+                worktree_result.outputs.get("result")
+                or worktree_result.outputs.get("text")
+                or ""
+            ).strip()
+            admission_events = []
+            if event_logger is not None:
+                admission_events = event_logger.admit_worktree_diff(
+                    {
+                        "task_id": getattr(runtime_task, "task_id", ""),
+                        "packet_id": getattr(runtime_task, "packet_id", ""),
+                        "owner_scope": getattr(runtime_task, "owner_scope", ""),
+                        "changed_files": list(relative_mutations),
+                        "summary": summary_text or f"worktree task {plan_task_id} completed",
+                        "validation_evidence": _super_plan_string_list(
+                            frontier_task.get("validation") or []
+                        ),
+                        "candidate_score": 0.75 if worktree_result.status == "completed" else 0.25,
+                        "merge_risk": "bounded_owned_path_copy",
+                        "diff_ref": str(worktree_root),
+                    }
+                )
+            admitted = any(
+                row.get("event") == "super.worktree.diff_admitted"
+                for row in admission_events
+            )
+            applied_tools: list[dict[str, Any]] = []
+            if admitted:
+                applied_tools = _super_apply_worktree_files(
+                    worktree_root=worktree_root,
+                    workspace_root=workspace_root,
+                    relative_paths=relative_mutations,
+                )
+                _log_live_event(
+                    event_logger,
+                    "live.worktree.diff_applied",
+                    plan_task_id=plan_task_id,
+                    task_id=getattr(runtime_task, "task_id", ""),
+                    packet_id=getattr(runtime_task, "packet_id", ""),
+                    owner_scope=getattr(runtime_task, "owner_scope", ""),
+                    changed_files=list(relative_mutations),
+                    applied_files=[
+                        str(
+                            (
+                                tool.get("result")
+                                if isinstance(tool.get("result"), Mapping)
+                                else {}
+                            ).get("path")
+                            or ""
+                        )
+                        for tool in applied_tools
+                    ],
+                )
+            else:
+                _log_live_event(
+                    event_logger,
+                    "live.worktree.diff_skipped",
+                    plan_task_id=plan_task_id,
+                    task_id=getattr(runtime_task, "task_id", ""),
+                    packet_id=getattr(runtime_task, "packet_id", ""),
+                    owner_scope=getattr(runtime_task, "owner_scope", ""),
+                    changed_files=list(relative_mutations),
+                    reason="diff was not admitted",
+                )
+            _log_live_event(
+                event_logger,
+                "live.worktree_task.completed",
+                model=model,
+                plan_task_id=plan_task_id,
+                task_id=getattr(runtime_task, "task_id", ""),
+                packet_id=getattr(runtime_task, "packet_id", ""),
+                owner_scope=getattr(runtime_task, "owner_scope", ""),
+                status=worktree_result.status,
+                tool_calls=len(worktree_tools),
+                event_count=len(worktree_events),
+                changed_files=list(relative_mutations),
+                applied=bool(applied_tools),
+                error=worktree_result.error,
+            )
+            return {
+                "plan_task_id": plan_task_id,
+                "status": worktree_result.status,
+                "tool_calls": len(worktree_tools),
+                "event_count": len(worktree_events),
+                "token_usage": _extract_execution_usage(worktree_result),
+                "synthetic_tools": applied_tools,
+                "events": list(worktree_events),
+                "applied": bool(applied_tools),
+            }
+
+        worktree_results = await asyncio.gather(
+            *(run_one(prepared) for prepared in worktree_prepared_tasks),
+            return_exceptions=True,
+        )
+        for item in worktree_results:
+            if isinstance(item, Exception):
+                _log_live_event(
+                    event_logger,
+                    "live.worktree_task.failed",
+                    error_type=type(item).__name__,
+                    error=str(item),
+                )
+                continue
+            total_tool_calls += int(item.get("tool_calls") or 0)
+            total_event_count += int(item.get("event_count") or 0)
+            token_usage = _merge_token_usage(token_usage, item.get("token_usage"))
+            synthetic_tools.extend(list(item.get("synthetic_tools") or []))
+            collected_events.extend(list(item.get("events") or []))
+            if item.get("applied"):
+                applied_task_ids.append(str(item.get("plan_task_id") or ""))
+        return {
+            "synthetic_tools": synthetic_tools,
+            "tool_calls": total_tool_calls,
+            "event_count": total_event_count,
+            "token_usage": token_usage,
+            "applied_task_ids": [task_id for task_id in applied_task_ids if task_id],
+            "events": collected_events,
+        }
+
     if plan_context:
         generic_input_payload["plan_context"] = _super_plan_context_payload(
             plan_context,
@@ -4924,35 +5978,65 @@ async def _run_live_generic_execution(
         organism_stage="execution",
     )
     request = _request_from_live_brief(worker_brief)
-    _log_live_event(
-        event_logger,
-        "live.generic_build.started",
-        model=model,
-        workspace_root=str(workspace_root),
-        tool_ids=list(generic_tool_ids),
-        operator_intent_policy=operator_intent_payload if operator_intent_policy.active else None,
-    )
-    result, executed_tools, events = await _execute_live_request(
-        worker=worker,
-        request=request,
-        tool_ids=generic_tool_ids,
-        workspace_root=workspace_root,
-        args=args,
-        model=model,
-        provider=provider,
-        event_logger=event_logger,
-    )
-    _log_live_event(
-        event_logger,
-        "live.generic_build.completed",
-        model=model,
-        status=result.status,
-        tool_calls=len(executed_tools),
-        event_count=len(events),
-    )
+    async def run_main_builder() -> tuple[Any, list[dict[str, Any]], list[dict[str, Any]]]:
+        _log_live_event(
+            event_logger,
+            "live.generic_build.started",
+            model=model,
+            workspace_root=str(workspace_root),
+            tool_ids=list(generic_tool_ids),
+            operator_intent_policy=operator_intent_payload if operator_intent_policy.active else None,
+            main_task_id=str((main_frontier_task or {}).get("task_id") or ""),
+            parallel_worktree_task_ids=[
+                str(item["plan_task"].get("task_id") or "").strip()
+                for item in worktree_prepared_tasks
+            ],
+        )
+        main_result, main_tools, main_events = await _execute_live_request(
+            worker=worker,
+            request=request,
+            tool_ids=generic_tool_ids,
+            workspace_root=workspace_root,
+            args=args,
+            model=model,
+            provider=provider,
+            event_logger=event_logger,
+        )
+        _log_live_event(
+            event_logger,
+            "live.generic_build.completed",
+            model=model,
+            status=main_result.status,
+            tool_calls=len(main_tools),
+            event_count=len(main_events),
+        )
+        return main_result, main_tools, main_events
+
+    if worktree_prepared_tasks:
+        (result, executed_tools, events), worktree_summary = await asyncio.gather(
+            run_main_builder(),
+            run_prepared_worktree_frontier(),
+        )
+    else:
+        result, executed_tools, events = await run_main_builder()
+        worktree_summary = {
+            "synthetic_tools": [],
+            "tool_calls": 0,
+            "event_count": 0,
+            "token_usage": None,
+            "applied_task_ids": [],
+            "events": [],
+        }
+    executed_tools.extend(list(worktree_summary.get("synthetic_tools") or []))
+    events.extend(list(worktree_summary.get("events") or []))
+    if worktree_prepared_tasks and full_plan_context:
+        plan_context = full_plan_context
     build_token_usage = _merge_token_usage(
         planning_token_usage,
-        _extract_execution_usage(result),
+        _merge_token_usage(
+            _extract_execution_usage(result),
+            worktree_summary.get("token_usage"),
+        ),
     )
     mutated_paths = _mutation_paths_from_tools(
         executed_tools,
@@ -5094,7 +6178,7 @@ async def _run_live_generic_execution(
             organism_stage="validation",
         )
         validator_request = _request_from_live_brief(validator_brief)
-        return await _run_live_validation(
+        validation_payload = await _run_live_validation(
             worker=validator_worker,
             request=validator_request,
             tool_ids=generic_read_only_tool_ids,
@@ -5103,6 +6187,10 @@ async def _run_live_generic_execution(
             model=model,
             provider=provider,
             event_logger=event_logger,
+        )
+        return _super_plan_scoped_validation_payload(
+            validation_payload,
+            validator_plan_context,
         )
 
     builder_retry_attempts = 0
@@ -5385,10 +6473,11 @@ async def _run_live_generic_execution(
     repair_attempts = 0
     if result.status == "completed" and mutated_paths and not bool(validation.get("passed")):
         repair_attempts = 1
-        repair_reason = _generic_validation_repair_brief(validation)
+        repair_reason = _generic_validation_repair_brief(validation, plan_context=plan_context)
         repair_validation = _generic_repair_validation_payload(
             validation,
             repair_brief=repair_reason,
+            plan_context=plan_context,
         )
         repair_pre_run_file_state = _file_metadata_for_paths(pre_run_workspace_state, mutated_paths)
         repair_current_file_state = _current_file_metadata_for_paths(mutated_paths)
@@ -5569,7 +6658,10 @@ async def _run_live_generic_execution(
         repair_exhausted=bool(repair_attempts and not validation.get("passed")),
     )
     if not validation.get("passed") and not error:
-        error = _validation_repair_brief(validation, []) or "live execution failed validation"
+        error = (
+            _generic_validation_repair_brief(validation, plan_context=plan_context)
+            or "live execution failed validation"
+        )
     status = (
         "completed"
         if result.status == "completed" and mutated_paths and bool(validation.get("passed"))
@@ -5587,7 +6679,12 @@ async def _run_live_generic_execution(
         "files": list(mutated_paths),
         "required_files": [],
         "missing_files": [],
-        "tool_calls": len(executed_tools) + validation_tool_calls_total + planning_tool_calls_total,
+        "tool_calls": (
+            len(executed_tools)
+            + validation_tool_calls_total
+            + planning_tool_calls_total
+            + int(worktree_summary.get("tool_calls") or 0)
+        ),
         "mutated_paths": list(mutated_paths),
         "event_count": len(events) + validation_event_count_total + planning_event_count_total,
         "summary": result.outputs.get("result") or result.outputs.get("text") or "",
