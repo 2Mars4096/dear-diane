@@ -45,6 +45,7 @@
 - The first implementation wraps the existing Super DAN runner through opt-in progress-renderer and live-report hooks instead of changing the default `dan super-organism` output.
 - Until the full checkpoint/progress vocabulary lands, the Rich TUI intentionally renders only a compact header and one `Recent Events` panel.
 - Skill semantics belong below the TUI. The TUI can autocomplete, disambiguate, and pass selected skill tokens, but actual skill packet injection and preflight execution live in the shared invocation layer plus Super DAN runner.
+- The next TUI UX direction is split into follow-up plans: [57-14](57-14-super-dan-tui-conversational-timeline.md) for flowing conversational progress and [57-15](57-15-super-dan-tui-session-transcript.md) for Codex-like visible transcript continuity across turns.
 
 ## Notes
 - This plan captures the user request for a Codex-like CLI experience with terminal-native color and panel affordances.
@@ -59,3 +60,4 @@
 - 2026-05-11: Fixed prompt completions so typing `/` opens command suggestions and typing bare `$` opens the skill dropdown with a visible terminal color highlight.
 - 2026-05-11: Fixed a prompt-toolkit import compatibility issue that made the dropdown path fall back to readline in environments where `CompleteStyle` lives under `prompt_toolkit.shortcuts`.
 - 2026-05-11: Added output-only Rich semantic highlighting for paths, tools, skills, model names, and status terms in the existing `Recent Events` panel; plain output remains unchanged.
+- 2026-05-11: Follow-up plans split the next desired TUI behavior out of this base shell plan: conversational event narration in `57-14` and persistent visible transcript/reset semantics in `57-15`.

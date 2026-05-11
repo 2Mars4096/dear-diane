@@ -28,6 +28,8 @@
 - [ ] 14. Add shared progress and checkpoint UX via [57-11-progress-and-checkpoint-ux.md](57-11-progress-and-checkpoint-ux.md)
 - [ ] 15. Add a terminal-first Super DAN TUI via [57-12-super-dan-terminal-tui.md](57-12-super-dan-terminal-tui.md) — in progress: first local TUI/event-log slice landed with a boxed message composer and richer one-panel progress/results projection; active-run command steering remains under 57-10
 - [ ] 16. Add skill mention and autocomplete UX via [57-13-skill-mention-ux.md](57-13-skill-mention-ux.md) — in progress: shared `$skill-name` parsing/metadata/preflight now lives below surfaces, TUI and plain Super DAN CLI pass selected skills to the runner, explicit Super DAN skill-packet forcing with selected-skill constraints/reference excerpts landed; GUI composer and V2/Telegram metadata remain open
+- [ ] 17. Add Super DAN TUI conversational timeline rendering via [57-14-super-dan-tui-conversational-timeline.md](57-14-super-dan-tui-conversational-timeline.md)
+- [ ] 18. Add Super DAN TUI session transcript continuity via [57-15-super-dan-tui-session-transcript.md](57-15-super-dan-tui-session-transcript.md)
 
 ## Decisions
 - The user-facing product modes are only **Chat** and **Agent**.
@@ -67,3 +69,4 @@
 - The Telegram target flow is: Telegram message/media -> surface ingress -> triage -> existing/new task binding -> topic queue -> Agent run retrieval/execution -> throttled Telegram message edits/progress -> final result and artifacts.
 - Branching must remain visibly distinct from queueing: a branch creates a sibling thread/task lineage, while checkpoint append and continue-after-current stay attached to the current task.
 - 2026-05-11: Idea-cart UX items were checked out into four follow-up plans: active-run operator steering, progress/checkpoint rendering, a terminal-first TUI, and skill mention UX. GUI and TUI are sibling surfaces over shared V2 command/event contracts, not competing owners of task semantics.
+- 2026-05-11: Later TUI feedback was checked out into two additional follow-up plans: default progress should become a flowing conversational timeline with raw telemetry as a debug view, and the TUI should preserve visible chat history across turns until `/reset`.
