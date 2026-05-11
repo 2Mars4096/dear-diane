@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-05-11
+- [docs] Added an orientation requirement to the new TUI follow-up plans: the narrative flow and persistent transcript must be compact but sufficient for users to track prior context, current activity, changes, next steps, outcomes, and trace refs without opening raw logs.
+- [docs] Tightened the new TUI follow-up plans to keep Super DAN core changes minimal: future work should expose only necessary event descriptions/text fields for progressive feedback while keeping narration, transcript storage, and reset presentation in the TUI/session layer.
+- [docs] Checked out the latest TUI idea-cart items into Plan 57 follow-ups: `57-14` for conversational timeline rendering plus raw debug replay, and `57-15` for persistent visible TUI transcript history with `/reset` as the boundary.
+- [docs] Carted the next Super DAN TUI UX direction: progress should render as a flowing conversational timeline, raw telemetry should be a debug view, visible chat history should persist across turns, and reset should be the transcript boundary.
 - [feat] Strengthened shell-command affordances across Super DAN and the shared local tool runtime. The shell tool metadata and runtime prompt now describe platform context, common terminal utilities, command availability checks, safe install posture, and when shell is more faithful than reconstructing files through structured tools; write-stage narrowing now keeps `shell_command` available whenever it was already enabled.
 - [feat] Added semantic highlighting to the Super DAN TUI `Recent Events` panel without changing runner behavior or event schemas. Rich rendering now emphasizes paths, tool names, selected `$skill-name` mentions, model names, step labels, and success/failure/waiting terms while plain CLI/fallback output stays muted text.
 - [fix] Fixed Super DAN TUI prompt-toolkit compatibility after the dropdown trigger change. `CompleteStyle` now imports from `prompt_toolkit.shortcuts`, and tests build a real `PromptSession` so `/` and bare `$` dropdowns do not silently fall back to readline Tab completion.

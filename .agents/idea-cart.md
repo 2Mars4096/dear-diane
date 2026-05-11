@@ -4,6 +4,46 @@ Last reviewed: 2026-05-11
 
 ## Active Items
 
+### IC-017 - Render TUI Progress As A Conversational Timeline
+- Status: committed
+- Priority: high
+- Kind: decision
+- Scope: Super DAN TUI progress UX
+- Point: The TUI should render live progress as a flowing conversational timeline driven by stage/tool/checkpoint events, not as fixed sections such as Progress, Results, and Risks.
+- Why: Fixed sections still feel like a dashboard; a timeline better matches Codex-style work narration and lets updates appear naturally at start, end, and intermittent progress moments.
+- Checkout target: [57-14-super-dan-tui-conversational-timeline](../docs/plans/57-14-super-dan-tui-conversational-timeline.md)
+- Acceptance: A live run appends natural progress messages at meaningful event boundaries without requiring a rigid six-section layout.
+
+### IC-018 - Keep Raw Events As A Debug View
+- Status: committed
+- Priority: medium
+- Kind: constraint
+- Scope: Super DAN TUI event rendering
+- Point: Raw event names, tool ids, model rounds, and trace details should remain available through a debug/raw view, while the default TUI shows human-readable narration.
+- Why: Operators need debuggability without forcing normal progress reading to look like telemetry.
+- Checkout target: [57-14-super-dan-tui-conversational-timeline](../docs/plans/57-14-super-dan-tui-conversational-timeline.md)
+- Acceptance: Users can inspect raw event details when needed, but the default live panel translates them into concise work updates.
+
+### IC-019 - Preserve Visible Chat History Across Turns
+- Status: committed
+- Priority: high
+- Kind: idea
+- Scope: Super DAN TUI session UX
+- Point: The TUI should keep the prior user/assistant conversation visible across new turns until an explicit reset, instead of treating every run turn as a fresh visual screen.
+- Why: Codex-style CLI use feels continuous because the transcript remains the user's working context even when each task/run has its own internal event trace.
+- Checkout target: [57-15-super-dan-tui-session-transcript](../docs/plans/57-15-super-dan-tui-session-transcript.md)
+- Acceptance: Starting a new TUI turn appends to the existing visible transcript and run timeline, while each run still keeps its separate `.dan-super/runs/turn-XX/events.jsonl` trace.
+
+### IC-020 - Treat Reset As The Transcript Boundary
+- Status: committed
+- Priority: high
+- Kind: constraint
+- Scope: Super DAN TUI reset/session semantics
+- Point: `/reset` should be the explicit boundary that archives or clears visible TUI chat history; before reset, turns should read as one continuous session.
+- Why: Users need a clear mental model: turns segment execution logs, while reset segments the human-facing conversation.
+- Checkout target: [57-15-super-dan-tui-session-transcript](../docs/plans/57-15-super-dan-tui-session-transcript.md)
+- Acceptance: Reset behavior distinguishes hidden run/state archival from clearing the displayed transcript, and no ordinary new turn erases prior visible chat history.
+
 ### IC-001 - Use Chat/Agent V2 for Human Run Messages
 - Status: committed
 - Priority: high
@@ -167,6 +207,9 @@ Last reviewed: 2026-05-11
 ## Checkout Log
 
 ### 2026-05-11
+- IC-017 and IC-018 -> checked out into `57-14-super-dan-tui-conversational-timeline`.
+- IC-019 and IC-020 -> checked out into `57-15-super-dan-tui-session-transcript`.
+- IC-017 through IC-020 -> carted from Super DAN TUI feedback about flowing conversational progress and Codex-like transcript continuity across turns until reset.
 - IC-001 through IC-016 -> checked out into Plan 57 follow-up docs: `57-10-active-run-operator-steering`, `57-11-progress-and-checkpoint-ux`, `57-12-super-dan-terminal-tui`, and `57-13-skill-mention-ux`.
 - IC-015 and IC-016 -> originally carted from skill invocation UX discussion.
 - IC-014 -> originally carted from planner/executor progress UX discussion.
