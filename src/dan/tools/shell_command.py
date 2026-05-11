@@ -14,7 +14,19 @@ TOOL_METADATA = {
     "description": (
         "Execute a shell command and capture its output. "
         "Runs as a subprocess with configurable timeout, working directory, "
-        "and environment variables. Supports an allowlist via DAN_SHELL_ALLOW "
+        "and environment variables. Use for real command-line work such as "
+        "running tests/builds/scripts, invoking project CLIs, checking command "
+        "availability with command -v, and faithful filesystem operations that "
+        "are better handled by the OS than by text reconstruction: mkdir, cp, "
+        "mv, rsync, find, du, wc, sha256sum/shasum, tar, gzip, unzip, and similar "
+        "standard utilities. Prefer structured file_read/file_write/file_edit "
+        "for small precise file inspection or edits; prefer shell_command for "
+        "bulk copies, directory transfers, checksums, archive operations, and "
+        "commands whose output/result is the artifact being validated. Think of "
+        "this as access to the local platform's command-line toolbox: when a task "
+        "sounds like something an engineer would do in a terminal, actively choose "
+        "the existing CLI, project script, Python one-liner, or POSIX utility that "
+        "does the job most faithfully. Supports an allowlist via DAN_SHELL_ALLOW "
         "for security-sensitive deployments."
     ),
     "parameters": {
@@ -48,6 +60,17 @@ TOOL_METADATA = {
         {
             "input": {"command": "ls -la", "working_directory": "src"},
             "output": {"exit_code": 0, "stdout": "total 8\n...", "stderr": ""},
+        },
+        {
+            "input": {
+                "command": "mkdir -p imported && cp -R /path/to/source imported/source",
+                "working_directory": "/workspace",
+            },
+            "output": {"exit_code": 0, "stdout": "", "stderr": ""},
+        },
+        {
+            "input": {"command": "find imported -maxdepth 2 -type f | head -50"},
+            "output": {"exit_code": 0, "stdout": "imported/source/file.py\n...", "stderr": ""},
         },
     ],
     "category": "system",

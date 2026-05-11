@@ -8,6 +8,7 @@ import hashlib
 import inspect
 import json
 import os
+import platform
 from pathlib import Path
 import re
 import subprocess
@@ -947,7 +948,19 @@ def _tool_use_policy(tool_ids: Sequence[str]) -> str:
     mutation_capable = any(
         tool_id in _READ_ONLY_TOOL_EXCLUSIONS for tool_id in available
     )
+    shell_name = Path(str(os.environ.get("SHELL") or "")).name or "unknown"
+    platform_name = platform.system() or os.name
+    platform_release = platform.release()
+    machine = platform.machine()
     lines = [
+        "Runtime platform context:",
+        f"- OS/platform: {platform_name} {platform_release} {machine}".strip(),
+        f"- Default shell: {shell_name}",
+        "- `shell_command` runs from the workspace root by default unless a working_directory is supplied.",
+        "- Prefer commands and flags that match the current platform; macOS/Darwin and GNU/Linux utilities can differ.",
+        "- Before relying on optional binaries, check availability with `command -v <name>`.",
+        "- Prefer built-in POSIX/project tools. Do not install new packages or CLIs unless the operator explicitly asks, or the task cannot reasonably proceed without them and you first explain the need.",
+        "",
         "Local tool-use policy:",
         "- Prefer the most specific structured tool available for the job.",
         "- Keep tool calls targeted and incremental. Avoid duplicate discovery once you already have the needed fact.",
@@ -1020,7 +1033,19 @@ def _tool_use_policy(tool_ids: Sequence[str]) -> str:
         )
     if "shell_command" in available:
         lines.append(
-            "- Use `shell_command` only when the structured tools cannot express the task, such as focused validation/build commands or narrow one-off searches."
+            "- Use `shell_command` for genuine terminal work: running tests, build scripts, project CLIs, small validation commands, command availability checks, filesystem transfers, checksums, archive/extract operations, and large directory enumeration that is more faithfully handled by the OS."
+        )
+        lines.append(
+            "- Treat `shell_command` as the local platform's command-line toolbox: when a task sounds terminal-native, actively consider what existing CLI, project script, Python one-liner, or POSIX utility can do it more faithfully than manual reconstruction."
+        )
+        lines.append(
+            "- Common shell utilities that may be appropriate when available include `mkdir`, `cp`, `mv`, `rsync`, `find`, `du`, `wc`, `grep`, `sed`, `awk`, `sort`, `uniq`, `head`, `tail`, `tar`, `gzip`, `unzip`, `shasum`/`sha256sum`, `python`, and project package-manager commands."
+        )
+        lines.append(
+            "- Prefer `shell_command` over reconstructing files through `file_read` + `file_write` when the task is to faithfully copy, move, archive, extract, checksum, or execute existing files/directories."
+        )
+        lines.append(
+            "- Prefer structured `file_read`, `file_edit`, and `file_write` for small precise source inspection and source edits; do not use shell heredocs or redirection to simulate those structured tools."
         )
         if not ({"git_status", "git_diff", "git_log"} & set(available)):
             lines.append(
@@ -2503,7 +2528,11 @@ def _write_capable_coding_stage_first_write_nudge_message(
         else "The next tool call should be `file_write` with complete replacement content for the owned file, "
         "not `file_edit`, another read, search, or final prose-only answer."
         if file_write_only
-        else "The next tool call should be `file_write` or `file_edit`, not another read, search, or final prose-only answer."
+        else (
+            "The next tool call should be `file_write`, `file_edit`, or `shell_command` when the direct "
+            "workspace mutation/verification is naturally a command-line operation, not another read, search, "
+            "or final prose-only answer."
+        )
     )
     return (
         "Controller note: this write-capable coding stage is still read-only after initial discovery "
@@ -2634,8 +2663,9 @@ def _write_capable_coding_stage_direct_write_required_message(
     return (
         "Controller note: this write-capable coding stage still has no materialized workspace patch "
         f"({reason_text}). Returning prose-only patch instructions is not enough here. The next response must "
-        "either call `file_edit` or `file_write` to apply the bounded change directly in the checked-out "
-        f"workspace, or return an explicit blocked candidate that says no bounded workspace write could be "
+        "call `file_edit`, `file_write`, or `shell_command` when the direct workspace operation is naturally a "
+        "command-line operation, to apply the bounded change directly in the checked-out workspace; otherwise "
+        f"return an explicit blocked candidate that says no bounded workspace write could be "
         f"completed.{_recommended_write_paths_sentence(request)} Do not propose edits without a real workspace mutation."
     )
 
@@ -2690,6 +2720,8 @@ def _write_stage_tool_schemas(
         preferred_names = {"file_edit", "file_write"}
     if allow_final_read:
         preferred_names.add("file_read")
+    if "shell_command" in available_names:
+        preferred_names.add("shell_command")
     narrowed: list[dict[str, Any]] = []
     for tool in tool_schemas:
         function = tool.get("function") if isinstance(tool, dict) else None
@@ -2716,6 +2748,8 @@ def _direct_write_tool_schemas(
         preferred_names = {"file_write"}
     else:
         preferred_names = {"file_write", "file_edit"}
+    if "shell_command" in available_names:
+        preferred_names.add("shell_command")
     direct_write_tools = []
     for tool in tool_schemas:
         function = tool.get("function") if isinstance(tool, dict) else None
@@ -3007,9 +3041,9 @@ def _tool_call_allowed_past_soft_budget(
     allow_final_read: bool,
 ) -> bool:
     if phase == "coding_prewrite":
-        return tool_id in {"file_edit", "file_write"}
+        return tool_id in {"file_edit", "file_write", "shell_command"}
     if phase == "coding_direct_write":
-        if tool_id in {"file_edit", "file_write"}:
+        if tool_id in {"file_edit", "file_write", "shell_command"}:
             return True
         return allow_final_read and tool_id == "file_read"
     return False
