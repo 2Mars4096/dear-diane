@@ -179,7 +179,7 @@ def default_super_queue_policies(profile: str = "balanced") -> dict[str, SuperQu
         return {
             "brain.review": SuperQueuePolicy("brain.review", max_pending=1, max_active_leases=1, max_wait_ms=0, queue_full_action="coalesce"),
             "validation": SuperQueuePolicy("validation", max_pending=1, max_active_leases=1, max_wait_ms=0, queue_full_action="coalesce"),
-            "first_write_recovery": SuperQueuePolicy("first_write_recovery", max_pending=1, max_active_leases=1, max_wait_ms=0, queue_full_action="priority_preempt"),
+            "builder.retry": SuperQueuePolicy("builder.retry", max_pending=1, max_active_leases=1, max_wait_ms=0, queue_full_action="priority_preempt"),
             "repair": SuperQueuePolicy("repair", max_pending=1, max_active_leases=1, max_wait_ms=0, queue_full_action="priority_preempt"),
             "immune": SuperQueuePolicy("immune", max_pending=2, max_active_leases=1, max_wait_ms=0, queue_full_action="priority_preempt"),
             "synthesis": SuperQueuePolicy("synthesis", max_pending=1, max_active_leases=1, max_wait_ms=0, queue_full_action="coalesce"),
@@ -188,7 +188,7 @@ def default_super_queue_policies(profile: str = "balanced") -> dict[str, SuperQu
         return {
             "brain.review": SuperQueuePolicy("brain.review", max_pending=16, max_active_leases=1, max_wait_ms=2500, queue_full_action="coalesce"),
             "validation": SuperQueuePolicy("validation", max_pending=4, max_active_leases=1, max_wait_ms=1200, queue_full_action="coalesce"),
-            "first_write_recovery": SuperQueuePolicy("first_write_recovery", max_pending=2, max_active_leases=1, max_wait_ms=500, queue_full_action="priority_preempt"),
+            "builder.retry": SuperQueuePolicy("builder.retry", max_pending=2, max_active_leases=1, max_wait_ms=500, queue_full_action="priority_preempt"),
             "repair": SuperQueuePolicy("repair", max_pending=2, max_active_leases=1, max_wait_ms=500, queue_full_action="priority_preempt"),
             "immune": SuperQueuePolicy("immune", max_pending=8, max_active_leases=1, max_wait_ms=0, queue_full_action="priority_preempt"),
             "synthesis": SuperQueuePolicy("synthesis", max_pending=4, max_active_leases=1, max_wait_ms=1000, queue_full_action="coalesce"),
@@ -196,7 +196,7 @@ def default_super_queue_policies(profile: str = "balanced") -> dict[str, SuperQu
     return {
         "brain.review": SuperQueuePolicy("brain.review", max_pending=6, max_active_leases=1, max_wait_ms=600, queue_full_action="coalesce"),
         "validation": SuperQueuePolicy("validation", max_pending=2, max_active_leases=1, max_wait_ms=250, queue_full_action="coalesce"),
-        "first_write_recovery": SuperQueuePolicy("first_write_recovery", max_pending=1, max_active_leases=1, max_wait_ms=0, queue_full_action="priority_preempt"),
+        "builder.retry": SuperQueuePolicy("builder.retry", max_pending=1, max_active_leases=1, max_wait_ms=0, queue_full_action="priority_preempt"),
         "repair": SuperQueuePolicy("repair", max_pending=1, max_active_leases=1, max_wait_ms=0, queue_full_action="priority_preempt"),
         "immune": SuperQueuePolicy("immune", max_pending=4, max_active_leases=1, max_wait_ms=0, queue_full_action="priority_preempt"),
         "synthesis": SuperQueuePolicy("synthesis", max_pending=2, max_active_leases=1, max_wait_ms=500, queue_full_action="coalesce"),
@@ -222,10 +222,10 @@ def default_super_hook_rules() -> list[SuperHookRule]:
             critical_path=True,
         ),
         SuperHookRule(
-            rule_id="validation-no-write-recovery",
+            rule_id="validation-no-write-builder-retry",
             source_event="live.validation.completed",
-            inbox_id="first_write_recovery",
-            packet_type="first_write_recovery_requested",
+            inbox_id="builder.retry",
+            packet_type="builder_retry_requested",
             priority=96,
             critical_path=True,
         ),
@@ -246,8 +246,8 @@ def default_super_hook_rules() -> list[SuperHookRule]:
             critical_path=True,
         ),
         SuperHookRule(
-            rule_id="first-write-recovery-validation",
-            source_event="live.website_first_write_recovery.completed",
+            rule_id="builder-retry-validation",
+            source_event="live.builder_retry.completed",
             inbox_id="validation",
             packet_type="validation_requested",
             priority=86,
@@ -683,10 +683,7 @@ class SuperHookRuntime:
                     coalesce_key=self._validation_coalesce_key(row),
                 )
             ]
-        if event_name in {
-            "live.website_first_write_recovery.completed",
-            "live.generic_first_write_recovery.completed",
-        }:
+        if event_name == "live.builder_retry.completed":
             changed = row.get("changed_required_files")
             if not (
                 isinstance(changed, list)
@@ -695,7 +692,7 @@ class SuperHookRuntime:
                 return []
             return [
                 self._packet_from_rule(
-                    self._rule("first-write-recovery-validation"),
+                    self._rule("builder-retry-validation"),
                     row,
                     owner_scope=self._run_owner_scope(row),
                     coalesce_key=self._validation_coalesce_key(row),
@@ -755,9 +752,9 @@ class SuperHookRuntime:
         if passed:
             rule_id = "validation-pass-synthesis"
         elif self._validation_completed_has_no_required_write(row):
-            if bool(row.get("first_write_recovery_attempted")):
+            if bool(row.get("builder_retry_attempted")):
                 return None
-            rule_id = "validation-no-write-recovery"
+            rule_id = "validation-no-write-builder-retry"
         elif bool(row.get("repair_exhausted")):
             return None
         else:
@@ -771,8 +768,8 @@ class SuperHookRuntime:
                 f"synthesis:{self.run_id}:{self.turn_id}"
                 if passed
                 else (
-                    f"first_write_recovery:{self.run_id}:{self.turn_id}"
-                    if rule_id == "validation-no-write-recovery"
+                    f"builder.retry:{self.run_id}:{self.turn_id}"
+                    if rule_id == "validation-no-write-builder-retry"
                     else f"repair:{self.run_id}:{self.turn_id}"
                 )
             ),
@@ -1218,7 +1215,7 @@ class SuperHookRuntime:
             "error",
             "elapsed_seconds",
             "finish_reason",
-            "first_write_recovery_attempted",
+            "builder_retry_attempted",
         )
         payload = {key: row.get(key) for key in keys if row.get(key) is not None}
         changed = row.get("changed_required_files")
@@ -1250,7 +1247,7 @@ class SuperHookRuntime:
             return "super-dan.brain"
         if inbox_id == "validation":
             return "super-dan.validator"
-        if inbox_id == "first_write_recovery":
+        if inbox_id == "builder.retry":
             return "super-dan.builder.retry"
         if inbox_id == "repair":
             return "super-dan.immune.repair"

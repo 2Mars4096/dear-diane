@@ -2406,12 +2406,16 @@ def _write_capable_coding_stage_first_write_nudge_reason(
 def _prewrite_successful_read_nudge_threshold(request: CompletionRequest) -> int:
     if _exclusive_write_owner_path(request):
         return 1
-    if request.metadata.get("first_write_recovery") is True or _recommended_write_paths(request):
+    if _is_builder_retry_request(request) or _recommended_write_paths(request):
         return 1
     organism_stage = str(request.metadata.get("organism_stage") or "").strip().lower()
     if organism_stage == "aggregation":
         return _AGGREGATION_PREWRITE_SUCCESSFUL_READ_NUDGE_THRESHOLD
     return _PREWRITE_SUCCESSFUL_READ_NUDGE_THRESHOLD
+
+
+def _is_builder_retry_request(request: CompletionRequest) -> bool:
+    return request.metadata.get("builder_retry") is True
 
 
 def _exclusive_write_owner_path(request: CompletionRequest) -> str:
@@ -2441,7 +2445,7 @@ def _recommended_write_paths(request: CompletionRequest) -> list[str]:
 def _recommended_write_paths_sentence(
     request: CompletionRequest,
     *,
-    prefix: str = "Recommended first-write targets",
+    prefix: str = "Recommended builder retry targets",
 ) -> str:
     paths = _recommended_write_paths(request)
     if not paths:
@@ -4426,7 +4430,7 @@ class ToolLoopCompletionProvider:
                     )
                     successful_tool_threshold = (
                         0
-                        if request.metadata.get("first_write_recovery") is True
+                        if _is_builder_retry_request(request)
                         or _recommended_write_paths(request)
                         else 1
                         if exclusive_write_owner
@@ -4626,6 +4630,8 @@ class ToolLoopCompletionProvider:
                 model_call_id=model_call_id,
                 tool_calls=[call.get("function", {}).get("name") or call.get("name") for call in tool_calls if isinstance(call, dict)],
                 finish_reason=getattr(last_result, "finish_reason", None),
+                usage=_normalize_usage_totals(getattr(last_result, "usage", None)),
+                usage_totals=dict(usage_totals),
                 text=(last_result.text or "")[:400],
                 streamed=bool((getattr(last_result, "provider_metadata", None) or {}).get("streamed_response")),
                 **event_context,

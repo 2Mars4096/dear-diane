@@ -416,7 +416,7 @@ class _FakeRecoveringLiveWebsiteProvider:
             return CompletionResult(
                 text=json.dumps(
                     {
-                        "candidate_id": "live-website-recovery-001",
+                        "candidate_id": "live-website-builder-retry-001",
                         "change_summary": ["recovered from malformed write calls and completed the website"],
                         "target_files": [
                             "website/index.html",
@@ -832,6 +832,190 @@ class _FakeLiveCodingProvider:
         )
 
 
+class _FakeLivePlannerProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.rendered_messages: list[str] = []
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.calls += 1
+        rendered = "\n".join(str(message.get("content") or "") for message in messages)
+        self.rendered_messages.append(rendered)
+        if self.calls == 1:
+            assert "Run-local plan file contract" in rendered
+            assert "all-digit numeric identifiers" in rendered
+            assert "top-level phase" in rendered.lower()
+            tool_calls = [
+                _file_write_call(
+                    "plan-root",
+                    ".dan-super/runs/turn-01/plans/1-dataset-cleaning-pipeline.md",
+                    (
+                        "# 1: Dataset Cleaning Pipeline\n\n"
+                        "**Status:** in-progress\n"
+                        "**Goal:** Profile, clean, and validate the dataset as one coherent pipeline.\n\n"
+                        "## Tasks\n"
+                        "- [ ] 1. Profile the source columns and obvious data-quality risks\n"
+                        "  - [ ] 1-1. Identify likely missingness, type, duplicate, and outlier checks\n"
+                        "- [ ] 2. Materialize a cleaned dataset note with validation findings\n\n"
+                        "## Decisions\n- Temporary run-local plan only.\n\n"
+                        "## Notes\n- First build slice: 1.1.\n"
+                    ),
+                ),
+                _file_write_call(
+                    "plan-sub",
+                    ".dan-super/runs/turn-01/plans/1-1-profile-and-rules.md",
+                    (
+                        "# 1-1: Profile And Rules\n\n"
+                        "**Parent:** [1-dataset-cleaning-pipeline](1-dataset-cleaning-pipeline.md)\n"
+                        "**Status:** in-progress\n"
+                        "**Goal:** Establish the profiling and cleaning rule checklist for the dataset pipeline.\n\n"
+                        "## Tasks\n"
+                        "- [ ] 1. Capture column-quality checks\n"
+                        "- [ ] 2. Define the first cleaning pass\n\n"
+                        "## Decisions\n- Keep this as a child of the dataset-cleaning phase.\n\n"
+                        "## Notes\n- No unrelated feature work belongs in this phase.\n"
+                    ),
+                ),
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                usage={"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28},
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 2:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "plan_files": [
+                            ".dan-super/runs/turn-01/plans/1-dataset-cleaning-pipeline.md",
+                            ".dan-super/runs/turn-01/plans/1-1-profile-and-rules.md",
+                        ],
+                        "phase_summary": ["1: dataset cleaning pipeline"],
+                        "first_build_slice": ["1.1"],
+                        "notes": ["Execute the profiling slice first."],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                finish_reason="stop",
+            )
+        if self.calls == 3:
+            assert "Validate the run-local Super DAN plan" in rendered
+            assert "Reject alphabetic plan ids" in rendered
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "passed": True,
+                        "overall_score": 0.93,
+                        "first_build_slice": ["1.1"],
+                        "blocking_issues": [],
+                        "suggested_fixes": [],
+                        "comparison_note": "The plan is numeric and coherent.",
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 9, "completion_tokens": 4, "total_tokens": 13},
+                finish_reason="stop",
+            )
+        if self.calls == 4:
+            assert "Plan execution contract" in rendered
+            tool_calls = [
+                _file_write_call(
+                    "write-report",
+                    "cleaned-dataset-validation.md",
+                    (
+                        "# Cleaned Dataset Validation\n\n"
+                        "- Columns reviewed: customer_id, revenue, signup_date.\n"
+                        "- Cleaning rules: trim ids, coerce revenue numeric, flag negative revenue outliers.\n"
+                    ),
+                ),
+                _file_write_call(
+                    "tick-plan",
+                    ".dan-super/runs/turn-01/plans/1-dataset-cleaning-pipeline.md",
+                    (
+                        "# 1: Dataset Cleaning Pipeline\n\n"
+                        "**Status:** in-progress\n"
+                        "**Goal:** Profile, clean, and validate the dataset as one coherent pipeline.\n\n"
+                        "## Tasks\n"
+                        "- [x] 1. Profile the source columns and obvious data-quality risks\n"
+                        "  - [x] 1-1. Identify likely missingness, type, duplicate, and outlier checks\n"
+                        "- [ ] 2. Materialize a cleaned dataset note with validation findings\n\n"
+                        "## Decisions\n- Temporary run-local plan only.\n\n"
+                        "## Notes\n- First build slice completed with cleaned-dataset-validation.md evidence.\n"
+                    ),
+                ),
+            ]
+            return CompletionResult(
+                text="",
+                model=model,
+                usage={"prompt_tokens": 30, "completion_tokens": 10, "total_tokens": 40},
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+            )
+        if self.calls == 5:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "candidate_id": "planned-dataset-cleaning-001",
+                        "change_summary": [
+                            "created cleaned dataset validation note and ticked completed plan items"
+                        ],
+                        "target_files": ["cleaned-dataset-validation.md"],
+                        "test_plan": ["inspect cleaned-dataset-validation.md"],
+                        "risks": [],
+                        "files_created": ["cleaned-dataset-validation.md"],
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                finish_reason="stop",
+            )
+        assert "Plan-progress audit contract" in rendered
+        assert "task_state_after_execution" in rendered
+        return CompletionResult(
+            text=json.dumps(
+                {
+                    "passed": True,
+                    "overall_score": 0.9,
+                    "dimension_scores": {
+                        "objective_alignment": 0.9,
+                        "artifact_specificity": 0.9,
+                        "execution_quality": 0.9,
+                    },
+                    "repair_brief": "",
+                    "missing_requirements": [],
+                    "comparison_note": "The ticked plan items are supported by the validation note.",
+                },
+                sort_keys=True,
+            ),
+            model=model,
+            usage={"prompt_tokens": 8, "completion_tokens": 3, "total_tokens": 11},
+            finish_reason="stop",
+        )
+
+
 class _FakeLiveCodingValidationFailureProvider(_FakeLiveCodingProvider):
     async def complete(
         self,
@@ -1242,7 +1426,7 @@ class _FakeNoOpWebsiteProvider:
         )
 
 
-class _FakeFirstWriteRecoveryWebsiteProvider:
+class _FakeBuilderRetryWebsiteProvider:
     def __init__(self) -> None:
         self.calls = 0
 
@@ -1277,7 +1461,7 @@ class _FakeFirstWriteRecoveryWebsiteProvider:
                 for message in messages
                 if isinstance(message, dict)
             )
-            assert "first-write recovery" in rendered_messages
+            assert "builder retry" in rendered_messages
             tool_calls = [
                 _file_write_call(
                     "call-retry-index",
@@ -1310,7 +1494,7 @@ class _FakeFirstWriteRecoveryWebsiteProvider:
             return CompletionResult(
                 text=json.dumps(
                     {
-                        "candidate_id": "first-write-recovery-001",
+                        "candidate_id": "builder-retry-001",
                         "change_summary": ["recovered with concrete HTML and CSS edits"],
                         "target_files": ["website/index.html", "website/styles.css"],
                         "test_plan": ["open website/index.html"],
@@ -1343,7 +1527,7 @@ class _FakeFirstWriteRecoveryWebsiteProvider:
         )
 
 
-class _FakeTargetedFirstWriteRecoveryHtmlProvider:
+class _FakeTargetedBuilderRetryHtmlProvider:
     def __init__(self) -> None:
         self.calls = 0
         self.recovery_tool_names: list[str] = []
@@ -1370,6 +1554,12 @@ class _FakeTargetedFirstWriteRecoveryHtmlProvider:
             if isinstance(message, dict)
         )
         if self.calls == 1:
+            assert "Super DAN organism context" in rendered_messages
+            assert "Available tool guide" in rendered_messages
+            assert "Decision questions to consider" in rendered_messages
+            assert "Workspace boundary policy" in rendered_messages
+            assert "DAN Code" not in rendered_messages
+            assert "DAN Research" not in rendered_messages
             return CompletionResult(
                 text=json.dumps(
                     {
@@ -1388,7 +1578,10 @@ class _FakeTargetedFirstWriteRecoveryHtmlProvider:
         if self.calls == 2:
             self.recovery_kwargs = dict(kwargs)
             self.recovery_tool_names = list(tool_names)
-            assert "Recommended first-write targets" in rendered_messages
+            assert "Recommended builder retry targets" in rendered_messages
+            assert "Available tool guide" in rendered_messages
+            assert "`file_write`: create new files" in rendered_messages
+            assert "Which recommended target path is the best first durable artifact" in rendered_messages
             assert "animation-two-stick-figures-battling.html" in rendered_messages
             assert "list_directory" not in tool_names
             assert "web_search" not in tool_names
@@ -1421,7 +1614,7 @@ class _FakeTargetedFirstWriteRecoveryHtmlProvider:
             return CompletionResult(
                 text=json.dumps(
                     {
-                        "candidate_id": "targeted-html-first-write-recovered",
+                        "candidate_id": "targeted-html-builder-retry",
                         "change_summary": ["created the requested HTML animation artifact"],
                         "target_files": ["animation-two-stick-figures-battling.html"],
                         "test_plan": ["open the HTML file in a browser"],
@@ -1454,7 +1647,7 @@ class _FakeTargetedFirstWriteRecoveryHtmlProvider:
         )
 
 
-class _FakeFirstWriteRecoveryTimeoutThenAliasProvider:
+class _FakeBuilderRetryTimeoutThenAliasProvider:
     def __init__(self) -> None:
         self.calls = 0
         self.recovery_kwargs: list[dict[str, object]] = []
@@ -1604,7 +1797,7 @@ class _FakeOperatorPolicyOtherFileReadProvider:
         )
 
 
-class _FakeAdditiveFirstWriteRecoveryReportProvider:
+class _FakeAdditiveBuilderRetryReportProvider:
     def __init__(self) -> None:
         self.calls = 0
 
@@ -1639,7 +1832,7 @@ class _FakeAdditiveFirstWriteRecoveryReportProvider:
                 finish_reason="stop",
             )
         if self.calls == 2:
-            assert "first-write recovery" in rendered_messages
+            assert "builder retry" in rendered_messages
             assert "additive/enrichment objective" in rendered_messages
             assert "preserve existing content" in rendered_messages.lower()
             assert "preserving existing tables and quantitative content" in rendered_messages.lower()
@@ -1700,7 +1893,7 @@ class _FakeAdditiveFirstWriteRecoveryReportProvider:
             return CompletionResult(
                 text=json.dumps(
                     {
-                        "candidate_id": "report-first-write-recovered",
+                        "candidate_id": "report-builder-retry",
                         "change_summary": ["enriched section 3 without replacing the report"],
                         "target_files": ["semiconductor_supply_chain_equity_research.md"],
                         "test_plan": ["read sections 3 and 4"],
@@ -2526,12 +2719,22 @@ def test_live_tasks_include_paced_incremental_execution_guidance(tmp_path) -> No
     report = super_cli.run_super_organism_demo("build a cool website for this product")
 
     generic_task = super_cli._live_generic_task(report, workspace_root=tmp_path)
+    stage_contract = "\n".join(
+        super_cli._super_dan_stage_snippets(
+            "builder",
+            tool_ids=["file_read", "file_write", "file_edit"],
+        )
+    )
+    pacing_contract = super_cli._live_pacing_contract()
 
     assert "1200 words" not in generic_task
     assert "200 lines" not in generic_task
     assert "requested deliverable" in generic_task
-    assert "use larger direct writes" in generic_task
     assert "Actually mutate workspace files" in generic_task
+    assert "use larger direct writes" in pacing_contract
+    assert "Super DAN organism context" in stage_contract
+    assert "Available tool guide" in stage_contract
+    assert "Decision questions to consider" in stage_contract
 
 
 def test_super_progress_renderer_prints_compact_live_events(capsys) -> None:
@@ -3648,6 +3851,59 @@ def test_main_live_general_coding_run_mutates_workspace(tmp_path, capsys, monkey
     ]
 
 
+def test_main_live_generic_uses_optional_run_local_planner_for_broad_work(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    fake_provider = _FakeLivePlannerProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "help me clean this dataset and produce a validation report",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "[planning] started" in stdout
+    assert "[planning] validation passed" in stdout
+    assert "Live Run: completed" in stdout
+    assert fake_provider.calls == 6
+    assert (tmp_path / "cleaned-dataset-validation.md").exists()
+    plan_root = tmp_path / ".dan-super" / "runs" / "turn-01" / "plans"
+    assert (plan_root / "1-dataset-cleaning-pipeline.md").exists()
+    assert (plan_root / "1-1-profile-and-rules.md").exists()
+    plan_text = (plan_root / "1-dataset-cleaning-pipeline.md").read_text(encoding="utf-8")
+    assert "- [x] 1. Profile the source columns" in plan_text
+    assert "- [x] 1-1. Identify likely missingness" in plan_text
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(row.get("event") == "live.planning.started" for row in event_rows)
+    assert any(row.get("event") == "live.plan_validation.completed" for row in event_rows)
+    final_validation = [
+        row for row in event_rows if row.get("event") == "live.validation.completed"
+    ][-1]
+    assert final_validation["passed"] is True
+    assert final_validation["changed_required_files"] == [
+        str((tmp_path / "cleaned-dataset-validation.md").resolve())
+    ]
+
+
 def test_main_live_general_coding_validation_failure_surfaces_comparison_note(
     tmp_path, capsys, monkeypatch
 ) -> None:
@@ -3805,8 +4061,8 @@ def test_main_live_generic_fails_without_workspace_mutations(tmp_path, capsys, m
     assert "Status: failed" in stdout
     assert "Live Run: failed" in stdout
     assert "workspace file mutations" in stdout
-    assert "[retry] first-write recovery 1 started" in stdout
-    assert "[retry] first-write recovery 2 started" in stdout
+    assert "[builder] retry 1 started" in stdout
+    assert "[builder] retry 2 started" in stdout
     assert fake_provider.calls == 3
     event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
     event_rows = [
@@ -3814,12 +4070,12 @@ def test_main_live_generic_fails_without_workspace_mutations(tmp_path, capsys, m
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert not any(row["event"] == "live.website_first_write_recovery.started" for row in event_rows)
+    assert not any(str(row["event"]).startswith("live.website_") for row in event_rows)
     assert sum(
-        1 for row in event_rows if row.get("event") == "live.generic_first_write_recovery.started"
+        1 for row in event_rows if row.get("event") == "live.builder_retry.started"
     ) == 2
     assert sum(
-        1 for row in event_rows if row.get("event") == "live.generic_first_write_recovery.completed"
+        1 for row in event_rows if row.get("event") == "live.builder_retry.completed"
     ) == 2
     assert not any(row["event"] == "live.website_repair.started" for row in event_rows)
     assert not any(
@@ -3830,10 +4086,10 @@ def test_main_live_generic_fails_without_workspace_mutations(tmp_path, capsys, m
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]
-    assert final_validation["first_write_recovery_attempted"] is True
+    assert final_validation["builder_retry_attempted"] is True
 
 
-def test_main_live_generic_uses_generic_first_write_recovery(
+def test_main_live_generic_uses_generic_builder_retry(
     tmp_path,
     capsys,
     monkeypatch,
@@ -3845,7 +4101,7 @@ def test_main_live_generic_uses_generic_first_write_recovery(
     (website / "app.js").write_text("console.log('old');\n", encoding="utf-8")
     (website / "README.md").write_text("# Old site\n", encoding="utf-8")
 
-    fake_provider = _FakeFirstWriteRecoveryWebsiteProvider()
+    fake_provider = _FakeBuilderRetryWebsiteProvider()
     monkeypatch.setattr(
         super_cli,
         "_build_live_provider",
@@ -3866,7 +4122,7 @@ def test_main_live_generic_uses_generic_first_write_recovery(
     assert exit_code == 0
     stdout = capsys.readouterr().out
     assert "Live Run: completed" in stdout
-    assert "[retry] first-write recovery 1 started" in stdout
+    assert "[builder] retry 1 started" in stdout
     assert fake_provider.calls == 4
     event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
     event_rows = [
@@ -3874,17 +4130,17 @@ def test_main_live_generic_uses_generic_first_write_recovery(
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert not any(row["event"] == "live.website_first_write_recovery.completed" for row in event_rows)
-    assert any(row["event"] == "live.generic_first_write_recovery.completed" for row in event_rows)
+    assert not any(str(row["event"]).startswith("live.website_") for row in event_rows)
+    assert any(row["event"] == "live.builder_retry.completed" for row in event_rows)
     assert not any(row["event"] == "live.website_repair.started" for row in event_rows)
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]
     assert final_validation["passed"] is True
-    assert final_validation["first_write_recovery_attempted"]
+    assert final_validation["builder_retry_attempted"]
 
 
-def test_main_live_generic_first_write_recovery_targets_html_animation_write(
+def test_main_live_generic_builder_retry_targets_html_animation_write(
     tmp_path,
     capsys,
     monkeypatch,
@@ -3893,7 +4149,7 @@ def test_main_live_generic_first_write_recovery_targets_html_animation_write(
         "<!doctype html><html><body>old animation</body></html>\n",
         encoding="utf-8",
     )
-    fake_provider = _FakeTargetedFirstWriteRecoveryHtmlProvider()
+    fake_provider = _FakeTargetedBuilderRetryHtmlProvider()
     monkeypatch.setattr(
         super_cli,
         "_build_live_provider",
@@ -3917,7 +4173,7 @@ def test_main_live_generic_first_write_recovery_targets_html_animation_write(
     assert exit_code == 0
     stdout = capsys.readouterr().out
     assert "Live Run: completed" in stdout
-    assert "[retry] first-write recovery 1 started" in stdout
+    assert "[builder] retry 1 started" in stdout
     assert fake_provider.calls == 4
     assert fake_provider.recovery_tool_names == ["file_read", "file_write", "file_edit"]
     assert fake_provider.recovery_kwargs["thinking"] == {"type": "disabled"}
@@ -3936,7 +4192,7 @@ def test_main_live_generic_first_write_recovery_targets_html_animation_write(
         if line.strip()
     ]
     recovery_started = next(
-        row for row in event_rows if row.get("event") == "live.generic_first_write_recovery.started"
+        row for row in event_rows if row.get("event") == "live.builder_retry.started"
     )
     assert recovery_started["recommended_write_paths"][0] == (
         "animation-two-stick-figures-battling.html"
@@ -3945,17 +4201,17 @@ def test_main_live_generic_first_write_recovery_targets_html_animation_write(
         row
         for row in event_rows
         if row.get("event") == "worker.started"
-        and row.get("worker_id") == "super-dan.live.general-first-write-recovery"
+        and row.get("worker_id") == "super-dan.live.builder-retry"
     )
     assert recovery_worker_started["tool_count"] == 3
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]
     assert final_validation["passed"] is True
-    assert final_validation["first_write_recovery_attempted"]
+    assert final_validation["builder_retry_attempted"]
 
 
-def test_main_live_generic_first_write_recovery_materializes_named_html_alias_after_timeout(
+def test_main_live_generic_builder_retry_materializes_named_html_alias_after_timeout(
     tmp_path,
     capsys,
     monkeypatch,
@@ -3965,7 +4221,7 @@ def test_main_live_generic_first_write_recovery_materializes_named_html_alias_af
         "<body><canvas id=\"arena\"></canvas><script>requestAnimationFrame(()=>{});</script></body></html>\n"
     )
     (tmp_path / "arena-kimi-k26.html").write_text(source_html, encoding="utf-8")
-    fake_provider = _FakeFirstWriteRecoveryTimeoutThenAliasProvider()
+    fake_provider = _FakeBuilderRetryTimeoutThenAliasProvider()
     monkeypatch.setattr(
         super_cli,
         "_build_live_provider",
@@ -3991,7 +4247,7 @@ def test_main_live_generic_first_write_recovery_materializes_named_html_alias_af
     assert exit_code == 0
     stdout = capsys.readouterr().out
     assert "Live Run: completed" in stdout
-    assert "[retry] first-write recovery 1 completed changed=arena.html" in stdout
+    assert "[builder] retry 1 completed changed=arena.html" in stdout
     assert fake_provider.calls == 4
     assert fake_provider.recovery_kwargs
     assert fake_provider.recovery_kwargs[0]["thinking"] == {"type": "disabled"}
@@ -4008,14 +4264,14 @@ def test_main_live_generic_first_write_recovery_materializes_named_html_alias_af
         if line.strip()
     ]
     recovery_started = next(
-        row for row in event_rows if row.get("event") == "live.generic_first_write_recovery.started"
+        row for row in event_rows if row.get("event") == "live.builder_retry.started"
     )
     assert recovery_started["recommended_write_paths"][0] == "arena.html"
     assert recovery_started["additive_recovery_required"] is False
     alias_event = next(
         row
         for row in event_rows
-        if row.get("event") == "live.generic_first_write_recovery.alias_materialized"
+        if row.get("event") == "live.builder_retry.alias_materialized"
     )
     assert alias_event["source_path"] == "arena-kimi-k26.html"
     assert alias_event["target_path"].endswith("/arena.html")
@@ -4023,7 +4279,7 @@ def test_main_live_generic_first_write_recovery_materializes_named_html_alias_af
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]
     assert final_validation["passed"] is True
-    assert final_validation["first_write_recovery_attempted"]
+    assert final_validation["builder_retry_attempted"]
 
 
 def test_main_live_generic_operator_policy_blocks_other_file_reads_and_alias_reuse(
@@ -4073,7 +4329,7 @@ def test_main_live_generic_operator_policy_blocks_other_file_reads_and_alias_reu
         if line.strip()
     ]
     assert not any(
-        row.get("event") == "live.generic_first_write_recovery.alias_materialized"
+        row.get("event") == "live.builder_retry.alias_materialized"
         for row in event_rows
     )
     assert not any(
@@ -4091,7 +4347,7 @@ def test_main_live_generic_operator_policy_blocks_other_file_reads_and_alias_reu
         for row in event_rows
     )
     assert not any(
-        row.get("event") == "live.generic_first_write_recovery.started"
+        row.get("event") == "live.builder_retry.started"
         for row in event_rows
     )
     build_started = next(row for row in event_rows if row.get("event") == "worker.started")
@@ -4112,7 +4368,7 @@ def test_main_live_generic_operator_policy_disables_alias_materialization_after_
         "<body><canvas id=\"arena\"></canvas><script>requestAnimationFrame(()=>{});</script></body></html>\n"
     )
     (tmp_path / "arena-kimi-k26.html").write_text(source_html, encoding="utf-8")
-    fake_provider = _FakeFirstWriteRecoveryTimeoutThenAliasProvider()
+    fake_provider = _FakeBuilderRetryTimeoutThenAliasProvider()
     monkeypatch.setattr(
         super_cli,
         "_build_live_provider",
@@ -4148,11 +4404,11 @@ def test_main_live_generic_operator_policy_disables_alias_materialization_after_
         if line.strip()
     ]
     assert not any(
-        row.get("event") == "live.generic_first_write_recovery.alias_materialized"
+        row.get("event") == "live.builder_retry.alias_materialized"
         for row in event_rows
     )
     recovery_started = next(
-        row for row in event_rows if row.get("event") == "live.generic_first_write_recovery.started"
+        row for row in event_rows if row.get("event") == "live.builder_retry.started"
     )
     assert recovery_started["recommended_write_paths"][0] == "arena.html"
     assert "arena-kimi-k26.html" not in recovery_started["recommended_write_paths"]
@@ -4160,12 +4416,12 @@ def test_main_live_generic_operator_policy_disables_alias_materialization_after_
         row
         for row in event_rows
         if row.get("event") == "worker.started"
-        and row.get("worker_id") == "super-dan.live.general-first-write-recovery"
+        and row.get("worker_id") == "super-dan.live.builder-retry"
     )
     assert recovery_worker_started["tool_count"] == 1
 
 
-def test_main_live_generic_first_write_recovery_blocks_additive_report_shrink(
+def test_main_live_generic_builder_retry_blocks_additive_report_shrink(
     tmp_path,
     capsys,
     monkeypatch,
@@ -4183,7 +4439,7 @@ def test_main_live_generic_first_write_recovery_blocks_additive_report_shrink(
         "| ASML | Lithography |\n",
         encoding="utf-8",
     )
-    fake_provider = _FakeAdditiveFirstWriteRecoveryReportProvider()
+    fake_provider = _FakeAdditiveBuilderRetryReportProvider()
     monkeypatch.setattr(
         super_cli,
         "_build_live_provider",
@@ -4204,7 +4460,7 @@ def test_main_live_generic_first_write_recovery_blocks_additive_report_shrink(
     assert exit_code == 0
     stdout = capsys.readouterr().out
     assert "Live Run: completed" in stdout
-    assert "[retry] first-write recovery 1 started" in stdout
+    assert "[builder] retry 1 started" in stdout
     assert fake_provider.calls == 5
     text = report_path.read_text(encoding="utf-8")
     assert "# Generic Semiconductor Report" not in text
@@ -4219,7 +4475,7 @@ def test_main_live_generic_first_write_recovery_blocks_additive_report_shrink(
         if line.strip()
     ]
     recovery_started = [
-        row for row in event_rows if row.get("event") == "live.generic_first_write_recovery.started"
+        row for row in event_rows if row.get("event") == "live.builder_retry.started"
     ][-1]
     assert recovery_started["additive_recovery_required"] is True
     policy_event = next(
@@ -4230,7 +4486,7 @@ def test_main_live_generic_first_write_recovery_blocks_additive_report_shrink(
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]
     assert final_validation["passed"] is True
-    assert final_validation["first_write_recovery_attempted"]
+    assert final_validation["builder_retry_attempted"]
 
 
 def test_main_live_generic_does_not_apply_website_template_static_gate(

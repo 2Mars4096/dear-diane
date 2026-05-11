@@ -68,7 +68,10 @@ _GENERIC_SNAPSHOT_SKIP_DIR_NAMES = frozenset(
 _SUPER_DAN_WORKER_MAX_TOKENS = 64_000
 _SUPER_DAN_REPAIR_MAX_TOKENS = 64_000
 _SUPER_DAN_VALIDATOR_MAX_TOKENS = 12_000
-_SUPER_DAN_GENERIC_FIRST_WRITE_RECOVERY_ATTEMPTS = 2
+_SUPER_DAN_PLANNER_MAX_TOKENS = 16_000
+_SUPER_DAN_PLAN_VALIDATOR_MAX_TOKENS = 8_000
+_SUPER_DAN_GENERIC_BUILDER_RETRY_ATTEMPTS = 2
+_SUPER_DAN_PLAN_CHECKBOX_RE = re.compile(r"^(\s*)-\s*\[([ xX])\]\s*(.+?)\s*$")
 _GENERIC_ALIAS_TEXT_EXTENSIONS = frozenset(
     {
         ".css",
@@ -81,6 +84,71 @@ _GENERIC_ALIAS_TEXT_EXTENSIONS = frozenset(
         ".txt",
     }
 )
+
+_SUPER_DAN_CAPABILITY_POINTS: tuple[str, ...] = (
+    "You are one execution cell inside Super DAN, a private multi-agent organism; do not assume the model already knows this project.",
+    "The organism can inspect workspace files, search when available, edit or write artifacts, validate results, repair failed candidates, and pass compact evidence between organs.",
+    "Your job is to contribute a concrete, inspectable step toward the operator objective, not to behave like a generic standalone chatbot.",
+)
+
+_SUPER_DAN_TOOL_DESCRIPTIONS: dict[str, str] = {
+    "list_directory": "discover workspace structure and candidate artifact paths",
+    "file_read": "inspect exact file content before making grounded decisions",
+    "file_edit": "make targeted edits to existing files",
+    "file_write": "create new files or coherent full-file artifacts when appropriate",
+    "workspace_check": "run deterministic existence, count, syntax, or structure checks",
+    "shell_command": "run focused local inspection or verification commands",
+    "git_status": "inspect changed workspace state without mutating it",
+    "git_diff": "inspect concrete before/after workspace changes",
+    "git_log": "inspect recent repository history when relevant",
+    "web_search": "retrieve current external facts when the objective depends on freshness",
+}
+
+_SUPER_DAN_STAGE_QUESTIONS: dict[str, tuple[str, ...]] = {
+    "planner": (
+        "Is the objective narrow enough to build directly, or broad enough to benefit from a run-local plan?",
+        "What coherent large feature chunks or phases exist, and which one should be executed first?",
+        "If multiple sub-plans are needed, are they truly slices of the same parent phase rather than unrelated domains?",
+        "Which unchecked tasks can the executor complete and later justify with changed-file evidence?",
+        "What can stay as a note or backlog item instead of becoming an immediate plan file?",
+    ),
+    "plan_validator": (
+        "Do the plan files use all-digit numeric identifiers only, with no alphabetic or N-M placeholders?",
+        "Does each top-level phase represent one internally coherent large chunk of work?",
+        "Are sub-plan files coherent children of their parent phase instead of unrelated chunks hidden under one prefix?",
+        "Are there contradictions, duplicate ownership claims, or hidden third-level plan-file names?",
+        "Is the first executable build slice clear enough for the builder and validator to audit?",
+    ),
+    "builder": (
+        "What durable artifact, code change, or workspace edit would actually satisfy the operator?",
+        "What file, dataset, or project evidence is necessary before writing?",
+        "Is this a create-new-artifact task, an edit-existing-artifact task, or an investigation that should produce a saved report?",
+        "Which path has the highest value if only one coherent slice can be completed now?",
+        "If a plan context is supplied, which unchecked plan task can be completed and honestly ticked with evidence?",
+        "What focused verification would make the result credible before final success?",
+    ),
+    "builder_retry": (
+        "Did the previous attempt produce useful evidence even though it did not mutate files?",
+        "Is more inspection justified, or is the next attempt ready to make a concrete write?",
+        "Which recommended target path is the best first durable artifact for this objective?",
+        "What existing substance must be preserved if the task is additive?",
+        "What is the smallest coherent write that would unblock validation?",
+    ),
+    "validator": (
+        "Did the changed files materially satisfy the original objective?",
+        "Are these the right files and are the changes substantive rather than a scaffold?",
+        "What concrete evidence supports pass or fail?",
+        "What important outliers, logical inconsistencies, missing artifacts, or objective gaps remain?",
+        "If this fails, what is the smallest repair brief that would make it pass?",
+    ),
+    "repair": (
+        "Which exact validator issue must be fixed before success is honest?",
+        "Can the failure be fixed by targeted edits rather than a broad rewrite?",
+        "What existing substance, structure, or data must be preserved?",
+        "What verification would prove the repair worked?",
+        "Is the correct action repair, or should the run honestly report a blocker?",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -132,6 +200,293 @@ def _live_pacing_policy(*, forbid_scratch_files: bool = False) -> dict[str, Any]
 
 def _live_pacing_contract(policy: Mapping[str, Any] | None = None) -> str:
     return snippets.pacing_contract(policy or _live_pacing_policy())
+
+
+def _bullet_section(title: str, items: Sequence[str]) -> str:
+    cleaned = [str(item).strip() for item in items if str(item).strip()]
+    if not cleaned:
+        return ""
+    return title.rstrip(":") + ":\n" + "\n".join(f"- {item}" for item in cleaned)
+
+
+def _super_dan_identity_snippet(extra_points: Sequence[str] | None = None) -> str:
+    return _bullet_section(
+        "Super DAN organism context",
+        [*_SUPER_DAN_CAPABILITY_POINTS, *list(extra_points or [])],
+    )
+
+
+def _tool_guide_snippet(
+    tool_ids: Sequence[str],
+    *,
+    extra_descriptions: Mapping[str, str] | None = None,
+) -> str:
+    descriptions = {**_SUPER_DAN_TOOL_DESCRIPTIONS, **dict(extra_descriptions or {})}
+    seen: set[str] = set()
+    lines: list[str] = []
+    for raw_tool_id in tool_ids:
+        tool_id = str(raw_tool_id).strip()
+        if not tool_id or tool_id in seen:
+            continue
+        seen.add(tool_id)
+        description = descriptions.get(tool_id, "use only when it directly supports the current stage")
+        lines.append(f"`{tool_id}`: {description}.")
+    return _bullet_section("Available tool guide", lines)
+
+
+def _stage_questions_snippet(
+    stage: str,
+    *,
+    extra_questions: Sequence[str] | None = None,
+) -> str:
+    questions = [
+        *_SUPER_DAN_STAGE_QUESTIONS.get(stage, ()),
+        *list(extra_questions or []),
+    ]
+    return _bullet_section("Decision questions to consider", questions)
+
+
+def _workspace_boundary_snippet() -> str:
+    return (
+        "Workspace boundary policy: default to the current workspace root. Read or write outside it only when "
+        "the operator explicitly names an external path/target and the runtime policy permits it. Never use "
+        "destructive git reset, checkout, or rm-style cleanup unless the operator specifically requests it."
+    )
+
+
+def _super_dan_stage_snippets(
+    stage: str,
+    *,
+    tool_ids: Sequence[str] = (),
+    extra_questions: Sequence[str] | None = None,
+    extra_identity_points: Sequence[str] | None = None,
+) -> list[str]:
+    rendered = [
+        _super_dan_identity_snippet(extra_identity_points),
+        _workspace_boundary_snippet(),
+        _tool_guide_snippet(tool_ids) if tool_ids else "",
+        _stage_questions_snippet(stage, extra_questions=extra_questions),
+    ]
+    return [item for item in rendered if item.strip()]
+
+
+def _path_is_under(path: Path, root: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(root.resolve(strict=False))
+        return True
+    except ValueError:
+        return False
+
+
+def _super_plan_root(
+    *,
+    event_logger: "SuperRunEventLogger | None",
+    workspace_root: Path,
+) -> Path:
+    if event_logger is not None:
+        return (event_logger.path.parent / "plans").resolve(strict=False)
+    return (workspace_root / ".dan-super" / "plans" / "latest").resolve(strict=False)
+
+
+def _super_plan_root_relative(plan_root: Path, workspace_root: Path) -> str:
+    relative = _relative_workspace_artifact_path(
+        plan_root.resolve(strict=False),
+        workspace_root=workspace_root,
+    )
+    return relative or str(plan_root)
+
+
+def _super_plan_files(plan_root: Path, workspace_root: Path) -> list[str]:
+    if not plan_root.exists():
+        return []
+    files: list[str] = []
+    for path in sorted(plan_root.glob("*.md")):
+        if not path.is_file():
+            continue
+        relative = _relative_workspace_artifact_path(
+            path.resolve(strict=False),
+            workspace_root=workspace_root,
+        )
+        files.append(relative or str(path))
+    return files
+
+
+def _super_plan_exclude_roots(plan_context: Mapping[str, Any] | None) -> tuple[Path, ...]:
+    if not isinstance(plan_context, Mapping):
+        return ()
+    raw_root = str(plan_context.get("plan_root") or "").strip()
+    if not raw_root:
+        return ()
+    return (Path(raw_root).expanduser().resolve(strict=False),)
+
+
+def _super_plan_task_state(
+    plan_root: Path,
+    *,
+    workspace_root: Path,
+) -> list[dict[str, Any]]:
+    if not plan_root.exists():
+        return []
+    tasks: list[dict[str, Any]] = []
+    for path in sorted(plan_root.glob("*.md")):
+        if not path.is_file():
+            continue
+        relative = _relative_workspace_artifact_path(
+            path.resolve(strict=False),
+            workspace_root=workspace_root,
+        ) or str(path)
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line_number, line in enumerate(lines, start=1):
+            match = _SUPER_DAN_PLAN_CHECKBOX_RE.match(line)
+            if not match:
+                continue
+            indent, checked, text = match.groups()
+            tasks.append(
+                {
+                    "file": relative,
+                    "line": line_number,
+                    "checked": checked.lower() == "x",
+                    "indent": len(indent.replace("\t", "  ")),
+                    "text": text.strip(),
+                }
+            )
+    return tasks
+
+
+def _super_plan_context_payload(
+    plan_context: Mapping[str, Any] | None,
+    *,
+    plan_root: Path | None = None,
+    workspace_root: Path | None = None,
+    include_task_state_key: str | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(plan_context, Mapping):
+        return None
+    payload = {
+        "persistence": str(plan_context.get("persistence") or "run_temp"),
+        "plan_root": str(plan_context.get("plan_root") or ""),
+        "plan_root_relative": str(plan_context.get("plan_root_relative") or ""),
+        "plan_files": list(plan_context.get("plan_files") or []),
+        "assigned_task_ids": list(plan_context.get("assigned_task_ids") or []),
+        "validation": dict(plan_context.get("validation") or {}),
+    }
+    if include_task_state_key and plan_root is not None and workspace_root is not None:
+        payload[include_task_state_key] = _super_plan_task_state(
+            plan_root,
+            workspace_root=workspace_root,
+        )
+    return payload
+
+
+def _super_plan_file_contract(plan_root_relative: str) -> str:
+    return (
+        "Run-local plan file contract:\n"
+        f"- Write temporary plan markdown only under `{plan_root_relative}/`; do not update permanent `docs/plans/` "
+        "or `docs/todo.md` from the planner stage.\n"
+        "- Use all-digit numeric identifiers only. Top-level phase files are `1-short-name.md`, `2-short-name.md`; "
+        "sub-plan files are `1-1-short-slice.md`, `1-2-short-slice.md`.\n"
+        "- Do not create third-level plan files such as `1-1-1-*`. Put deeper breakdowns inside the nearest plan file.\n"
+        "- A top-level phase must be one internally coherent large feature chunk. If two chunks are unrelated, use "
+        "`1-*` and `2-*` rather than forcing them under `1-1` and `1-2`.\n"
+        "- Sub-plans must be coherent slices of their parent phase. Keep simple tasks to one top-level plan file.\n"
+        "- Keep checklist nesting to at most two levels and make each checkbox evidence-checkable by a validator.\n"
+        "- Use sections: Status, Goal, Tasks, Decisions, Notes. Sub-plan files should include a Parent link.\n"
+        "- Leave tasks unchecked until an executor actually completes them; executors may tick completed tasks later."
+    )
+
+
+def _super_plan_executor_contract(plan_context: Mapping[str, Any] | None) -> str:
+    payload = _super_plan_context_payload(plan_context)
+    if not payload:
+        return ""
+    assigned = ", ".join(payload.get("assigned_task_ids") or []) or "the highest-value unchecked slice"
+    plan_files = ", ".join(str(item) for item in (payload.get("plan_files") or [])[:6]) or "run-local plan files"
+    return (
+        "Plan execution contract: a run-local plan has already been validated for this broad objective. "
+        f"Plan files: {plan_files}. Execute {assigned}. You may update plan checkboxes only for work you actually "
+        "complete with concrete workspace evidence. Leave partial or blocked work unchecked and add a short note instead. "
+        "Plan-file edits alone do not count as the deliverable mutation; create or edit the actual requested artifact too."
+    )
+
+
+def _super_plan_validation_contract(plan_context: Mapping[str, Any] | None) -> str:
+    payload = _super_plan_context_payload(plan_context)
+    if not payload:
+        return ""
+    return (
+        "Plan-progress audit contract: compare plan checkbox state with changed deliverable files and available evidence. "
+        "Any task newly marked `[x]` must be supported by actual implementation, dataset/report changes, or verification. "
+        "Fail or list a missing requirement when the run only ticks plan files, ticks work that was not completed, or "
+        "uses an incoherent plan as proof of success."
+    )
+
+
+def _super_should_run_planner(
+    objective: str,
+    *,
+    operator_intent_policy: OperatorIntentPolicy,
+    prompt_only_creation_target: str | None,
+    tool_ids: Sequence[str],
+) -> bool:
+    if prompt_only_creation_target:
+        return False
+    if operator_intent_policy.forbid_other_workspace_inputs:
+        return False
+    if "file_write" not in set(tool_ids):
+        return False
+    text = " ".join(str(objective or "").lower().split())
+    if not text:
+        return False
+    if re.search(r"\b[\w./-]+\.(?:css|csv|html|js|json|md|py|txt)\b", text):
+        return False
+    word_count = len(text.split())
+    narrow_terms = ("small ", "single ", "one ", "quick ", "bounded ", " note", " file")
+    if word_count <= 14 and any(term in f" {text} " for term in narrow_terms):
+        return False
+    explicit_plan_terms = (
+        "plan",
+        "break down",
+        "breakdown",
+        "todo",
+        "roadmap",
+        "phase",
+        "milestone",
+    )
+    if any(term in text for term in explicit_plan_terms):
+        return True
+    broad_terms = (
+        "project",
+        "repo",
+        "codebase",
+        "dataset",
+        "pipeline",
+        "system",
+        "agent",
+        "organism",
+        "architecture",
+        "refactor",
+        "migration",
+        "end to end",
+        "self evolve",
+    )
+    action_terms = (
+        "build",
+        "improve",
+        "clean",
+        "implement",
+        "create",
+        "fix",
+        "review",
+        "analyze",
+        "migrate",
+        "rewrite",
+    )
+    if any(term in text for term in broad_terms) and any(term in text for term in action_terms):
+        return True
+    return False
 
 
 class SuperRunEventLogger:
@@ -780,6 +1135,23 @@ class SuperProgressRenderer:
             root = _truncate_text(event.get("workspace_root") or "", limit=120)
             self._emit(event, f"[build] generic lane started: {root}")
             return
+        if name == "live.planning.started":
+            root = _truncate_text(event.get("plan_root") or "", limit=120)
+            self._emit(event, f"[planning] started: {root}")
+            return
+        if name == "live.planning.completed":
+            status = str(event.get("status") or "completed")
+            files = int(event.get("plan_file_count") or 0)
+            self._emit(event, f"[planning] {status} files={files}")
+            return
+        if name == "live.plan_validation.started":
+            self._emit(event, "[planning] validation started")
+            return
+        if name == "live.plan_validation.completed":
+            verdict = "passed" if event.get("passed") else "failed"
+            score = _coerce_float(event.get("overall_score"))
+            self._emit(event, f"[planning] validation {verdict} {score:.2f}")
+            return
         if name == "model.requested":
             span_id = str(event.get("span_id") or event.get("model_call_id") or "")
             round_id = str(event.get("round") or "?")
@@ -877,12 +1249,12 @@ class SuperProgressRenderer:
             for failure in failures[:2]:
                 self._emit(event, f"[validation] gap: {failure}")
             return
-        if name in {"live.website_first_write_recovery.started", "live.generic_first_write_recovery.started"}:
+        if name == "live.builder_retry.started":
             attempt = int(event.get("attempt") or 1)
             reason = _truncate_text(event.get("reason") or "no required files changed", limit=160)
-            self._emit(event, f"[retry] first-write recovery {attempt} started: {reason}")
+            self._emit(event, f"[builder] retry {attempt} started: {reason}")
             return
-        if name in {"live.website_first_write_recovery.completed", "live.generic_first_write_recovery.completed"}:
+        if name == "live.builder_retry.completed":
             attempt = int(event.get("attempt") or 1)
             status = str(event.get("status") or "completed")
             changed = [
@@ -891,7 +1263,7 @@ class SuperProgressRenderer:
                 if str(path).strip()
             ]
             suffix = f" changed={','.join(changed)}" if changed else " changed=none"
-            self._emit(event, f"[retry] first-write recovery {attempt} {status}{suffix}")
+            self._emit(event, f"[builder] retry {attempt} {status}{suffix}")
             return
         if name in {"live.website_repair.started", "live.generic_repair.started"}:
             attempt = int(event.get("attempt") or 1)
@@ -991,6 +1363,10 @@ class SuperHeartbeatMonitor:
         if name == "tool.completed":
             self._phase = "post-tool"
             self._detail = str(event.get("tool_id") or "tool")
+            return
+        if name in {"live.planning.started", "live.plan_validation.started"}:
+            self._phase = "planning"
+            self._detail = str(event.get("plan_root") or "run-local plan")
             return
         if name == "live.validation.started":
             self._phase = "validation"
@@ -1567,6 +1943,34 @@ def _live_validation_return_shape() -> str:
     )
 
 
+def _live_plan_return_shape() -> str:
+    return json.dumps(
+        {
+            "plan_files": [".dan-super/runs/turn-01/plans/1-coherent-phase.md"],
+            "phase_summary": ["1: coherent large feature chunk"],
+            "first_build_slice": ["1.1"],
+            "notes": ["why the first slice is the right one to execute now"],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _live_plan_validation_return_shape() -> str:
+    return json.dumps(
+        {
+            "passed": True,
+            "overall_score": 0.9,
+            "first_build_slice": ["1.1"],
+            "blocking_issues": [],
+            "suggested_fixes": [],
+            "comparison_note": "The numeric plan is coherent and ready for execution.",
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
 def _super_report_evidence_blocks(report: SuperOrganismReport) -> list[dict[str, Any]]:
     return [
         {
@@ -1840,7 +2244,7 @@ def _live_website_repair_task(
     )
 
 
-def _live_website_first_write_recovery_task(
+def _live_artifact_builder_retry_task(
     report: SuperOrganismReport,
     *,
     artifact_root: Path,
@@ -1854,15 +2258,59 @@ def _live_website_first_write_recovery_task(
     context = dict(objective_context or {})
     effective_objective = str(context.get("effective_objective") or report.target).strip()
     return (
-        "Recover from the previous website build pass now. The prior builder returned without changing any required "
-        "website file, so this is not a validation repair; it is a first-write recovery. "
+        "Run a focused Super DAN builder retry now. The prior builder returned without changing any required "
+        "artifact file, so this is not a validation repair. "
         f"Operator objective: {effective_objective}. "
         f"Artifact root: {artifact_root}. "
         f"Required relative files: {files}. "
-        f"Failure reason: {recovery_brief or 'no required website files changed'}. "
+        f"Failure reason: {recovery_brief or 'no required artifact files changed'}. "
         "Do not summarize. Make at least one concrete required-file edit with file_write or file_edit before finalizing. "
-        "For an existing website, prefer a small coordinated patch that improves visible HTML plus styling or behavior. "
-        "Keep the recovery bounded, static, dependency-free, and inside the required artifact set."
+        "For an existing artifact, prefer a small coordinated patch that improves the visible/result-bearing files. "
+        "Keep the retry bounded, static, dependency-free, and inside the required artifact set."
+    )
+
+
+def _live_generic_planner_task(
+    report: SuperOrganismReport,
+    *,
+    workspace_root: Path,
+    plan_root: Path,
+    plan_root_relative: str,
+    operator_intent_policy: OperatorIntentPolicy | None = None,
+) -> str:
+    policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
+    return (
+        "Create a run-local Super DAN execution plan for this broad objective, then stop. "
+        f"Operator objective: {report.target}. "
+        f"Workspace root: {workspace_root}. "
+        f"Temporary plan root: {plan_root} (`{plan_root_relative}`). "
+        f"{policy_note} "
+        "Do not implement the deliverable in this stage. Inspect only the context needed to make the plan coherent. "
+        "Break the work into at most two file levels: top-level numeric phase files and optional numeric sub-plan files. "
+        "Choose one first build slice that a builder can execute now and a validator can later audit against changed files."
+    )
+
+
+def _live_generic_plan_validation_task(
+    report: SuperOrganismReport,
+    *,
+    workspace_root: Path,
+    plan_root: Path,
+    plan_files: Sequence[str],
+    operator_intent_policy: OperatorIntentPolicy | None = None,
+) -> str:
+    policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
+    rendered_files = ", ".join(str(path) for path in plan_files) or "none"
+    return (
+        "Validate the run-local Super DAN plan before execution. "
+        f"Operator objective: {report.target}. "
+        f"Workspace root: {workspace_root}. "
+        f"Plan root: {plan_root}. "
+        f"Plan files: {rendered_files}. "
+        f"{policy_note} "
+        "Read the plan files, then decide whether they are coherent, numeric, non-contradictory, and ready for a builder. "
+        "Reject plans that use alphabet placeholders, create third-level plan files, mix unrelated sub-plans under one "
+        "phase, or fail to identify a first executable slice."
     )
 
 
@@ -1872,8 +2320,12 @@ def _live_generic_task(
     workspace_root: Path,
     operator_intent_policy: OperatorIntentPolicy | None = None,
     prompt_only_creation_target: str | None = None,
+    plan_context: Mapping[str, Any] | None = None,
 ) -> str:
     policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
+    plan_note = _super_plan_executor_contract(plan_context)
+    if plan_note:
+        plan_note += " "
     constrained_creation_note = ""
     if prompt_only_creation_target:
         constrained_creation_note = (
@@ -1898,7 +2350,7 @@ def _live_generic_task(
         f"{policy_note} "
         f"{constrained_creation_note}"
         f"{coordination_sentence}"
-        f"{_live_pacing_contract()} "
+        f"{plan_note}"
         f"{workspace_context_sentence}"
         "If the objective asks for current external facts, use web_search "
         "instead of guessing. If it asks to save, export, return, or eventually produce a file, create or update the appropriate "
@@ -1908,7 +2360,7 @@ def _live_generic_task(
     )
 
 
-def _live_generic_first_write_recovery_task(
+def _live_generic_builder_retry_task(
     report: SuperOrganismReport,
     *,
     workspace_root: Path,
@@ -1918,8 +2370,12 @@ def _live_generic_first_write_recovery_task(
     additive_recovery_required: bool = False,
     operator_intent_policy: OperatorIntentPolicy | None = None,
     prompt_only_creation_target: str | None = None,
+    plan_context: Mapping[str, Any] | None = None,
 ) -> str:
     policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
+    plan_note = _super_plan_executor_contract(plan_context)
+    if plan_note:
+        plan_note += " "
     preservation_note = ""
     if additive_recovery_required:
         preservation_note = (
@@ -1939,7 +2395,7 @@ def _live_generic_first_write_recovery_task(
         rendered_targets = ", ".join(f"`{path}`" for path in target_paths[:6])
         first_target = target_paths[0]
         target_note = (
-            f"Recommended first-write targets, in priority order: {rendered_targets}. "
+            f"Recommended builder retry targets, in priority order: {rendered_targets}. "
             f"Make the first durable write to `{first_target}` unless that path is clearly incompatible. "
             "If the chosen path already exists, use a targeted file_edit or append-style file_write; "
             "if it does not exist, create it with file_write. "
@@ -1952,7 +2408,7 @@ def _live_generic_first_write_recovery_task(
             "Do not take a read-only/checking call before the first write. "
         )
     return (
-        "Run a generic Super DAN first-write recovery now. "
+        "Run another Super DAN builder attempt now, narrowed by the previous no-mutation result. "
         f"Attempt: {attempt}. "
         f"Operator objective: {report.target}. "
         f"Workspace root: {workspace_root}. "
@@ -1961,10 +2417,11 @@ def _live_generic_first_write_recovery_task(
         f"{preservation_note}"
         f"{target_note}"
         f"{constrained_creation_note}"
-        "The previous worker returned or timed out without a durable workspace mutation. Do not summarize, plan, or keep "
-        "researching. Make at least one concrete file_write or file_edit call before finalizing. If the objective asks for "
-        "a report or markdown deliverable, create or update the report artifact directly. If an existing relevant artifact "
-        "is present, prefer appending or targeted edits over replacing it. Keep the recovery inside the workspace root, "
+        f"{plan_note}"
+        "The previous builder returned or timed out without a durable workspace mutation. Use any useful evidence it produced, "
+        "then decide whether a concrete write is now justified. If it is, make at least one concrete file_write or file_edit "
+        "call before finalizing. If the objective asks for a report or markdown deliverable, create or update the report "
+        "artifact directly. If an existing relevant artifact is present, prefer appending or targeted edits over replacing it. "
         "then return the requested compact JSON-like completion summary."
     )
 
@@ -1976,8 +2433,12 @@ def _live_generic_validation_task(
     pre_run_file_state: Mapping[str, Mapping[str, Any]] | None = None,
     post_run_file_state: Mapping[str, Mapping[str, Any]] | None = None,
     operator_intent_policy: OperatorIntentPolicy | None = None,
+    plan_context: Mapping[str, Any] | None = None,
 ) -> str:
     policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
+    plan_note = _super_plan_validation_contract(plan_context)
+    if plan_note:
+        plan_note += " "
     state_note = ""
     if pre_run_file_state:
         state_note = (
@@ -1996,6 +2457,7 @@ def _live_generic_validation_task(
         f"Workspace root: {workspace_root}. "
         f"{policy_note} "
         f"{state_note}"
+        f"{plan_note}"
         "Inspect the mutated files and relevant read-only evidence, then decide whether the result materially advances the "
         "objective. For report or markdown objectives, verify that a report-like artifact was actually written and is not just "
         "a generic planning memo. For software objectives, inspect the implementation and verification evidence."
@@ -2012,8 +2474,12 @@ def _live_generic_repair_task(
     pre_run_file_state: Mapping[str, Mapping[str, Any]] | None = None,
     current_file_state: Mapping[str, Mapping[str, Any]] | None = None,
     operator_intent_policy: OperatorIntentPolicy | None = None,
+    plan_context: Mapping[str, Any] | None = None,
 ) -> str:
     policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
+    plan_note = _super_plan_executor_contract(plan_context)
+    if plan_note:
+        plan_note += " "
     effective_repair_brief = repair_brief or _generic_validation_repair_brief(validation)
     changed = ", ".join(str(path) for path in mutated_paths) or "none recorded"
     state_note = ""
@@ -2028,6 +2494,7 @@ def _live_generic_repair_task(
         f"Workspace root: {workspace_root}. "
         f"Current mutated files: {changed}. "
         f"{policy_note} "
+        f"{plan_note}"
         f"{state_note}"
         f"Validation feedback: {effective_repair_brief or 'validator rejected the previous deliverable'}. "
         "Make concrete workspace edits that address that feedback; do not return a summary-only response. If the deliverable is "
@@ -2398,7 +2865,7 @@ def _live_provider_request_overrides(
     metadata = getattr(request, "metadata", None)
     if not isinstance(metadata, Mapping):
         return {}
-    if metadata.get("first_write_recovery") is not True:
+    if metadata.get("builder_retry") is not True:
         return {}
 
     overrides: dict[str, Any] = {"thinking": {"type": "disabled"}}
@@ -2659,7 +3126,7 @@ def _existing_workspace_artifact_paths(
     return _dedupe_preserving_order(paths)
 
 
-def _generic_first_write_extension(objective: str) -> str:
+def _generic_artifact_extension(objective: str) -> str:
     lowered = objective.lower()
     if any(token in lowered for token in ("html", "javascript", "canvas", "animation", "web app", "website", "page")):
         return ".html"
@@ -2674,7 +3141,7 @@ def _generic_first_write_extension(objective: str) -> str:
     return ".md"
 
 
-def _slugify_first_write_stem(objective: str, *, fallback: str) -> str:
+def _slugify_artifact_stem(objective: str, *, fallback: str) -> str:
     words: list[str] = []
     for word in re.findall(r"[a-z0-9]+", objective.lower()):
         if word in _GENERIC_FIRST_WRITE_STOPWORDS:
@@ -2726,7 +3193,7 @@ def _explicit_objective_artifact_paths(
     return _dedupe_preserving_order(paths)
 
 
-def _generic_first_write_recovery_targets(
+def _generic_builder_retry_targets(
     objective: str,
     *,
     workspace_root: Path,
@@ -2747,7 +3214,7 @@ def _generic_first_write_recovery_targets(
         objective,
         workspace_root=workspace_root,
     )
-    extension = _generic_first_write_extension(objective)
+    extension = _generic_artifact_extension(objective)
     existing_by_extension = [
         path for path in existing_paths if Path(path).suffix.lower() == extension
     ]
@@ -2759,7 +3226,7 @@ def _generic_first_write_recovery_targets(
         ".csv": "data",
     }.get(extension, "artifact")
     generated = _first_available_artifact_path(
-        _slugify_first_write_stem(objective, fallback=fallback_stem),
+        _slugify_artifact_stem(objective, fallback=fallback_stem),
         extension,
         existing_paths=[*existing_paths, *explicit_paths],
     )
@@ -3038,6 +3505,45 @@ def _extract_validation_payload(outputs: Any) -> Any:
     return outputs
 
 
+def _normalize_plan_validation_payload(
+    payload: Any,
+    *,
+    plan_files: Sequence[str],
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {
+            "passed": False,
+            "overall_score": 0.0,
+            "first_build_slice": [],
+            "blocking_issues": ["plan validator did not return a structured payload"],
+            "suggested_fixes": [],
+            "comparison_note": "Plan validation returned an unstructured response.",
+            "plan_files": list(plan_files),
+        }
+    blocking = payload.get("blocking_issues")
+    suggested = payload.get("suggested_fixes")
+    first_slice = payload.get("first_build_slice") or payload.get("assigned_task_ids")
+    if not isinstance(first_slice, list):
+        first_slice = []
+    return {
+        "passed": bool(payload.get("passed")),
+        "overall_score": _coerce_float(payload.get("overall_score")),
+        "first_build_slice": [str(item).strip() for item in first_slice if str(item).strip()],
+        "blocking_issues": (
+            [str(item).strip() for item in blocking if str(item).strip()]
+            if isinstance(blocking, list)
+            else []
+        ),
+        "suggested_fixes": (
+            [str(item).strip() for item in suggested if str(item).strip()]
+            if isinstance(suggested, list)
+            else []
+        ),
+        "comparison_note": str(payload.get("comparison_note") or "").strip(),
+        "plan_files": list(plan_files),
+    }
+
+
 def _merge_validation_failures(
     validation: dict[str, Any],
     failures: Sequence[str],
@@ -3137,10 +3643,11 @@ def _log_final_validation_event(
     validation: dict[str, Any],
     deterministic_failures: Sequence[str] | None = None,
     changed_required_files: Sequence[str] | None = None,
-    first_write_recovery_attempted: bool = False,
+    builder_retry_attempted: bool = False,
     repair_attempted: bool = False,
     repair_exhausted: bool = False,
 ) -> None:
+    retry_attempted = bool(builder_retry_attempted)
     _log_live_event(
         event_logger,
         "live.validation.completed",
@@ -3151,7 +3658,7 @@ def _log_final_validation_event(
         overall_score=validation.get("overall_score"),
         deterministic_failures=list(deterministic_failures or []) or None,
         changed_required_files=list(changed_required_files or []),
-        first_write_recovery_attempted=bool(first_write_recovery_attempted),
+        builder_retry_attempted=retry_attempted,
         repair_attempted=bool(repair_attempted),
         repair_exhausted=bool(repair_exhausted),
         tool_calls=int(validation.get("tool_calls") or 0),
@@ -3274,7 +3781,6 @@ async def _run_live_website_build(
             scope=f"workspace={workspace_root}; artifact_root={artifact_root}; native Super DAN live website build",
             hard_constraints=[
                 "Actually create or update all required website files with file_write or file_edit.",
-                "Do not invoke the separate DAN Code or DAN Research product shells.",
                 "Keep writes inside the requested workspace/artifact paths.",
                 "Do not install dependencies or require a build step.",
                 "Do not create scratch or throwaway files outside the required website artifact set.",
@@ -3296,6 +3802,9 @@ async def _run_live_website_build(
                 "preferred_tool_ids": list(website_preferred_tool_ids),
                 "max_tool_calls": int(args.max_tool_calls),
             },
+            contract_snippets=[
+                *_super_dan_stage_snippets("builder", tool_ids=website_tool_ids),
+            ],
             output_contract=OutputContract(
                 definition_of_done=(
                     "All required files exist on disk and the final response names the files created, "
@@ -3443,6 +3952,12 @@ async def _run_live_website_build(
                 "preferred_tool_ids": ["file_read", "list_directory"],
                 "max_tool_calls": max(4, min(int(args.max_tool_calls), 24)),
             },
+            contract_snippets=[
+                *_super_dan_stage_snippets(
+                    "validator",
+                    tool_ids=website_read_only_tool_ids,
+                ),
+            ],
             sampling_policy={
                 "profile": "deterministic",
                 "temperature": 0.0,
@@ -3508,32 +4023,33 @@ async def _run_live_website_build(
     validation_tool_calls_total = int(validation.get("tool_calls") or 0)
     validation_event_count_total = int(validation.get("event_count") or 0)
     validation_token_usage = _merge_token_usage(validation.get("token_usage"))
-    first_write_recovery_attempts = 0
+    builder_retry_attempts = 0
     if result.status == "completed" and not changed_required_paths:
-        first_write_recovery_attempts = 1
+        builder_retry_attempts = 1
         recovery_reason = _validation_repair_brief(validation, static_validation_failures)
         _log_live_event(
             event_logger,
-            "live.website_first_write_recovery.started",
-            attempt=first_write_recovery_attempts,
+            "live.builder_retry.started",
+            attempt=builder_retry_attempts,
             model=model,
             reason=recovery_reason or "no required website files changed",
             changed_required_files=list(changed_required_paths),
+            artifact_kind="website",
         )
-        recovery_worker_id = "super-dan.live.website-first-write-recovery"
+        recovery_worker_id = "super-dan.live.builder-retry"
         recovery_brief = coding_brief(
             role=RoleSpec(
                 role_label="coding_worker",
-                responsibility="Recover a Super DAN website build that produced no required-file edits.",
+                responsibility="Run a focused Super DAN builder retry after a no-mutation attempt.",
                 success_criteria=[
-                    "At least one required website file is concretely edited.",
-                    "The recovery directly advances the operator objective.",
+                    "At least one required artifact file is concretely edited.",
+                    "The retry directly advances the operator objective.",
                     "The result remains static and dependency-free.",
                 ],
                 artifact_targets=list(relative_files),
-                trace_role="super-dan.live.website-first-write-recovery",
+                trace_role="super-dan.live.builder-retry",
             ),
-            task=_live_website_first_write_recovery_task(
+            task=_live_artifact_builder_retry_task(
                 report,
                 artifact_root=artifact_root,
                 relative_files=relative_files,
@@ -3541,12 +4057,12 @@ async def _run_live_website_build(
                 deterministic_failures=static_validation_failures,
                 objective_context=objective_context,
             ),
-            scope=f"workspace={workspace_root}; artifact_root={artifact_root}; Super DAN website first-write recovery",
+            scope=f"workspace={workspace_root}; artifact_root={artifact_root}; Super DAN artifact builder retry",
             hard_constraints=[
-                "Actually edit at least one required website file; do not return a summary-only response.",
+                "Actually edit at least one required artifact file; do not return a summary-only response.",
                 "Keep writes inside the requested workspace/artifact paths.",
                 "Do not install dependencies or require a build step.",
-                "Do not create scratch or throwaway files outside the required website artifact set.",
+                "Do not create scratch or throwaway files outside the required artifact set.",
             ],
             soft_constraints=[
                 "Prefer a small, visible edit over another broad analysis pass.",
@@ -3559,6 +4075,12 @@ async def _run_live_website_build(
                 "preferred_tool_ids": list(website_preferred_tool_ids),
                 "max_tool_calls": int(args.max_tool_calls),
             },
+            contract_snippets=[
+                *_super_dan_stage_snippets(
+                    "builder_retry",
+                    tool_ids=website_tool_ids,
+                ),
+            ],
             output_contract=OutputContract(
                 definition_of_done=(
                     "A concrete required-file edit has been made and the final response names changed files, "
@@ -3604,6 +4126,9 @@ async def _run_live_website_build(
                 "organ_id": "super-dan.live.website",
                 "organism_stage": "execution",
                 "worker_id": recovery_worker_id,
+                "builder_retry": True,
+                "exclusive_write_owner_path": relative_files[0] if relative_files else "",
+                "recommended_write_paths": list(relative_files),
             },
         )
         recovery_worker = _live_cell_from_brief(
@@ -3636,16 +4161,17 @@ async def _run_live_website_build(
         mutated_paths = _mutation_paths_from_tools(executed_tools, workspace_root=workspace_root)
         _log_live_event(
             event_logger,
-            "live.website_first_write_recovery.completed",
-            attempt=first_write_recovery_attempts,
+            "live.builder_retry.completed",
+            attempt=builder_retry_attempts,
             model=model,
             status=recovery_result.status,
             tool_calls=len(recovery_tools),
             event_count=len(recovery_events),
             changed_required_files=list(changed_required_paths),
+            artifact_kind="website",
         )
         validation = _failed_validation_payload(
-            reason=error or "live website first-write recovery did not meet the exit contract",
+            reason=error or "live builder retry did not meet the exit contract",
             missing_requirements=[str(path) for path in missing_paths],
         )
         if not missing_paths and changed_required_paths:
@@ -3726,6 +4252,9 @@ async def _run_live_website_build(
                 "preferred_tool_ids": list(website_preferred_tool_ids),
                 "max_tool_calls": int(args.max_tool_calls),
             },
+            contract_snippets=[
+                *_super_dan_stage_snippets("repair", tool_ids=website_tool_ids),
+            ],
             output_contract=OutputContract(
                 definition_of_done=(
                     "Validation feedback is addressed with concrete required-file edits and the final response names "
@@ -3842,7 +4371,7 @@ async def _run_live_website_build(
         validation=validation,
         deterministic_failures=static_validation_failures,
         changed_required_files=changed_required_paths,
-        first_write_recovery_attempted=bool(first_write_recovery_attempts),
+        builder_retry_attempted=bool(builder_retry_attempts),
         repair_attempted=bool(repair_attempts),
         repair_exhausted=bool(repair_attempts and not validation.get("passed")),
     )
@@ -3884,10 +4413,16 @@ async def _run_live_website_build(
         "summary_label": "Live Build",
         "objective_kind": "website",
         "repair_attempts": repair_attempts,
-        "first_write_recovery_attempts": first_write_recovery_attempts,
+        "builder_retry_attempts": builder_retry_attempts,
         "failed_step": "validation" if not bool(validation.get("passed")) else "",
         "token_usage": token_usage,
         "validation": validation,
+        "plan_context": _super_plan_context_payload(
+            plan_context,
+            plan_root=plan_root,
+            workspace_root=workspace_root,
+            include_task_state_key="task_state_final",
+        ),
     }
 
 
@@ -3984,6 +4519,315 @@ async def _run_live_generic_execution(
                 ),
             }
         )
+    plan_context: dict[str, Any] | None = None
+    planning_token_usage: dict[str, int] | None = None
+    planning_tool_calls_total = 0
+    planning_event_count_total = 0
+    plan_root = _super_plan_root(event_logger=event_logger, workspace_root=workspace_root)
+    plan_root_relative = _super_plan_root_relative(plan_root, workspace_root)
+
+    async def run_optional_planner() -> tuple[dict[str, Any] | None, dict[str, int] | None]:
+        nonlocal planning_tool_calls_total, planning_event_count_total
+        planner_tool_ids = [
+            tool_id
+            for tool_id in ("list_directory", "file_read", "file_write", "file_edit")
+            if tool_id in set(generic_tool_ids)
+        ]
+        plan_validator_tool_ids = [
+            tool_id
+            for tool_id in ("list_directory", "file_read")
+            if tool_id in set(generic_read_only_tool_ids)
+        ]
+        if not planner_tool_ids or not plan_validator_tool_ids:
+            return None, None
+        if not _super_should_run_planner(
+            str(report.target or ""),
+            operator_intent_policy=operator_intent_policy,
+            prompt_only_creation_target=prompt_only_creation_target,
+            tool_ids=planner_tool_ids,
+        ):
+            return None, None
+        plan_root.mkdir(parents=True, exist_ok=True)
+        _log_live_event(
+            event_logger,
+            "live.planning.started",
+            model=model,
+            plan_root=str(plan_root),
+            plan_root_relative=plan_root_relative,
+            tool_ids=list(planner_tool_ids),
+        )
+        planner_worker_id = "super-dan.live.general.planner"
+        planner_brief = role_brief(
+            role=RoleSpec(
+                role_label="workspace_planner",
+                responsibility="Create a coherent run-local execution plan for broad Super DAN workspace work.",
+                success_criteria=[
+                    "Temporary numeric plan files are written under the run-local plan root.",
+                    "Top-level phases are coherent large feature chunks, not unrelated buckets.",
+                    "The output identifies the first executable slice for the builder.",
+                ],
+                artifact_targets=[plan_root_relative],
+                trace_role="super-dan.live.general.planner",
+            ),
+            task=_live_generic_planner_task(
+                report,
+                workspace_root=workspace_root,
+                plan_root=plan_root,
+                plan_root_relative=plan_root_relative,
+                operator_intent_policy=operator_intent_policy,
+            ),
+            scope=f"workspace={workspace_root}; Super DAN run-local temporary planning",
+            hard_constraints=[
+                "Do not implement the final deliverable during the planner stage.",
+                "Write plan markdown only under the supplied run-local plan root.",
+                "Use all-digit numeric plan identifiers only; do not use alphabetic placeholders or `N-M` notation.",
+                "One top-level phase must be one internally coherent large feature chunk.",
+                "Do not update permanent project tracking docs from this stage.",
+                *list(operator_intent_policy.constraints),
+            ],
+            soft_constraints=[
+                "Default to a small plan; a simple broad task may need one top-level phase and no sub-plan files.",
+                "Create sub-plans only when they are coherent slices of the same parent phase.",
+                "Make each checkbox specific enough that a later validator can audit it against changed files.",
+            ],
+            tool_policy={
+                "allowed_tool_ids": list(planner_tool_ids),
+                "preferred_tool_ids": [
+                    tool_id
+                    for tool_id in ("list_directory", "file_read", "file_write", "file_edit")
+                    if tool_id in set(planner_tool_ids)
+                ],
+                "max_tool_calls": max(4, min(int(args.max_tool_calls), 24)),
+            },
+            contract_snippets=[
+                *_super_dan_stage_snippets("planner", tool_ids=planner_tool_ids),
+                _super_plan_file_contract(plan_root_relative),
+                snippets.no_scratch_files_contract(),
+            ],
+            output_contract=OutputContract(
+                definition_of_done=(
+                    "Run-local numeric plan files have been written and the first executable build slice is identified."
+                ),
+                expected_return_shape=_live_plan_return_shape(),
+            ),
+            sampling_policy={
+                "profile": choice.sampling_policy,
+                "temperature": 0.20,
+                "max_tokens": _SUPER_DAN_PLANNER_MAX_TOKENS,
+            },
+            evidence=[] if prompt_only_creation_target else _super_report_evidence_blocks(report),
+            input_payload={
+                "objective": report.target,
+                "workspace_root": str(workspace_root),
+                "plan_root": str(plan_root),
+                "plan_root_relative": plan_root_relative,
+                "operator_intent_policy": operator_intent_payload,
+            },
+            metadata={
+                "surface": "super_organism",
+                "mode": "live",
+                "tool_budget_profile": "super_dan_live",
+                "trace_id": run_trace_id,
+                "root_task_id": run_task_id,
+                "organism_id": report.organism_id,
+                "organ_id": "super-dan.live.general",
+                "organism_stage": "planning",
+                "worker_id": planner_worker_id,
+                "operator_intent_policy": operator_intent_payload,
+            },
+        )
+        planner_worker = _live_cell_from_brief(
+            model=model,
+            brief=planner_brief,
+            worker_id=planner_worker_id,
+            organism_stage="planning",
+        )
+        planner_result, planner_tools, planner_events = await _execute_live_request(
+            worker=planner_worker,
+            request=_request_from_live_brief(planner_brief),
+            tool_ids=planner_tool_ids,
+            workspace_root=workspace_root,
+            args=args,
+            model=model,
+            provider=provider,
+            event_logger=event_logger,
+        )
+        usage = _extract_execution_usage(planner_result)
+        planning_tool_calls_total += len(planner_tools)
+        planning_event_count_total += len(planner_events)
+        plan_files = _super_plan_files(plan_root, workspace_root)
+        planner_payload = _extract_validation_payload(dict(planner_result.outputs))
+        initial_slice: list[str] = []
+        if isinstance(planner_payload, Mapping):
+            raw_slice = planner_payload.get("first_build_slice")
+            if isinstance(raw_slice, list):
+                initial_slice = [str(item).strip() for item in raw_slice if str(item).strip()]
+        _log_live_event(
+            event_logger,
+            "live.planning.completed",
+            model=model,
+            status=planner_result.status,
+            tool_calls=len(planner_tools),
+            event_count=len(planner_events),
+            plan_file_count=len(plan_files),
+            plan_files=list(plan_files),
+            error=planner_result.error,
+        )
+        if planner_result.status != "completed" or planner_result.error or not plan_files:
+            return None, usage
+
+        _log_live_event(
+            event_logger,
+            "live.plan_validation.started",
+            model=model,
+            plan_root=str(plan_root),
+            plan_files=list(plan_files),
+            tool_ids=list(plan_validator_tool_ids),
+        )
+        plan_validator_worker_id = "super-dan.live.general.plan-validator"
+        plan_validator_brief = review_brief(
+            role=RoleSpec(
+                role_label="plan_validator",
+                responsibility="Audit the run-local execution plan before a builder follows it.",
+                success_criteria=[
+                    "Plan files are inspected in read-only mode.",
+                    "Numeric naming, phase coherence, and first-slice clarity are verified.",
+                    "Contradictions or incoherent phase grouping are rejected.",
+                ],
+                artifact_targets=list(plan_files),
+                trace_role="super-dan.live.general.plan-validator",
+            ),
+            task=_live_generic_plan_validation_task(
+                report,
+                workspace_root=workspace_root,
+                plan_root=plan_root,
+                plan_files=plan_files,
+                operator_intent_policy=operator_intent_policy,
+            ),
+            scope=f"workspace={workspace_root}; Super DAN run-local plan validation",
+            hard_constraints=[
+                "Read-only validation only; do not write or edit files.",
+                "Reject alphabetic plan ids, `N-M` placeholders, and third-level plan file names.",
+                "Reject unrelated sub-plans grouped under one parent phase.",
+                "Return the structured plan validation payload only.",
+                *list(operator_intent_policy.constraints),
+            ],
+            soft_constraints=[
+                "Prefer a small actionable first slice over over-planning.",
+                "Name blocking issues precisely enough for a planner retry or human review.",
+            ],
+            allowed_tool_ids=plan_validator_tool_ids,
+            tool_policy={
+                "allowed_tool_ids": list(plan_validator_tool_ids),
+                "preferred_tool_ids": [
+                    tool_id
+                    for tool_id in ("file_read", "list_directory")
+                    if tool_id in set(plan_validator_tool_ids)
+                ],
+                "max_tool_calls": max(4, min(int(args.max_tool_calls), 16)),
+            },
+            contract_snippets=[
+                *_super_dan_stage_snippets("plan_validator", tool_ids=plan_validator_tool_ids),
+                _super_plan_file_contract(plan_root_relative),
+            ],
+            sampling_policy={
+                "profile": "deterministic",
+                "temperature": 0.0,
+                "max_tokens": _SUPER_DAN_PLAN_VALIDATOR_MAX_TOKENS,
+            },
+            output_contract=OutputContract(
+                definition_of_done="Return the plan validation report only.",
+                expected_return_shape=_live_plan_validation_return_shape(),
+            ),
+            input_payload={
+                "objective": report.target,
+                "workspace_root": str(workspace_root),
+                "plan_root": str(plan_root),
+                "plan_root_relative": plan_root_relative,
+                "plan_files": list(plan_files),
+                "plan_task_state": _super_plan_task_state(plan_root, workspace_root=workspace_root),
+                "operator_intent_policy": operator_intent_payload,
+            },
+            metadata={
+                "surface": "super_organism",
+                "mode": "live",
+                "tool_budget_profile": "super_dan_live",
+                "trace_id": run_trace_id,
+                "root_task_id": run_task_id,
+                "organism_id": report.organism_id,
+                "organ_id": "super-dan.live.general",
+                "worker_id": plan_validator_worker_id,
+                "organism_stage": "plan_validation",
+                "operator_intent_policy": operator_intent_payload,
+            },
+        )
+        plan_validator_worker = _live_cell_from_brief(
+            model=model,
+            brief=plan_validator_brief,
+            worker_id=plan_validator_worker_id,
+            organism_stage="plan_validation",
+        )
+        plan_validation_result, plan_validation_tools, plan_validation_events = await _execute_live_request(
+            worker=plan_validator_worker,
+            request=_request_from_live_brief(plan_validator_brief),
+            tool_ids=plan_validator_tool_ids,
+            workspace_root=workspace_root,
+            args=args,
+            model=model,
+            provider=provider,
+            event_logger=event_logger,
+        )
+        usage = _merge_token_usage(usage, _extract_execution_usage(plan_validation_result))
+        planning_tool_calls_total += len(plan_validation_tools)
+        planning_event_count_total += len(plan_validation_events)
+        plan_validation = _normalize_plan_validation_payload(
+            _extract_validation_payload(dict(plan_validation_result.outputs)),
+            plan_files=plan_files,
+        )
+        if plan_validation_result.status != "completed":
+            plan_validation["passed"] = False
+            plan_validation["blocking_issues"] = [
+                *list(plan_validation.get("blocking_issues") or []),
+                plan_validation_result.error or "plan validator did not complete successfully",
+            ]
+        if not plan_validation.get("first_build_slice") and initial_slice:
+            plan_validation["first_build_slice"] = list(initial_slice)
+        _log_live_event(
+            event_logger,
+            "live.plan_validation.completed",
+            model=model,
+            status=plan_validation_result.status,
+            passed=plan_validation.get("passed"),
+            overall_score=plan_validation.get("overall_score"),
+            tool_calls=len(plan_validation_tools),
+            event_count=len(plan_validation_events),
+            plan_files=list(plan_files),
+            blocking_issues=list(plan_validation.get("blocking_issues") or []),
+        )
+        if not plan_validation.get("passed"):
+            return None, usage
+        return (
+            {
+                "enabled": True,
+                "usable": True,
+                "persistence": "run_temp",
+                "plan_root": str(plan_root),
+                "plan_root_relative": plan_root_relative,
+                "plan_files": list(plan_files),
+                "assigned_task_ids": list(plan_validation.get("first_build_slice") or []),
+                "validation": plan_validation,
+            },
+            usage,
+        )
+
+    plan_context, planning_token_usage = await run_optional_planner()
+    if plan_context:
+        generic_input_payload["plan_context"] = _super_plan_context_payload(
+            plan_context,
+            plan_root=plan_root,
+            workspace_root=workspace_root,
+            include_task_state_key="task_state_before_execution",
+        )
     worker_brief = role_brief(
             role=RoleSpec(
                 role_label="workspace_worker",
@@ -4000,14 +4844,21 @@ async def _run_live_generic_execution(
                 workspace_root=workspace_root,
                 operator_intent_policy=operator_intent_policy,
                 prompt_only_creation_target=prompt_only_creation_target,
+                plan_context=plan_context,
             ),
             scope=f"workspace={workspace_root}; native Super DAN live general workspace execution",
             hard_constraints=[
                 "Actually mutate workspace files before finalizing.",
-                "Do not invoke the separate DAN Code or DAN Research product shells.",
-                "Keep the work inside the current workspace root.",
-                "Do not use destructive git reset, checkout, or rm-style cleanup.",
+                "Default to the current workspace root; only use explicit external paths when the operator asks and runtime policy allows.",
                 "When the requested deliverable is a saved report, markdown file, data note, or other document artifact, write that artifact to the workspace.",
+                *(
+                    [
+                        "Follow the supplied run-local plan context, but treat the actual deliverable edit as mandatory; plan-file edits alone do not satisfy the objective.",
+                        "Tick plan checkboxes only for work completed with evidence.",
+                    ]
+                    if plan_context
+                    else []
+                ),
                 "Use web_search for current external facts when the enabled tool is available.",
                 *list(operator_intent_policy.constraints),
             ],
@@ -4028,6 +4879,8 @@ async def _run_live_generic_execution(
                 "max_tool_calls": int(args.max_tool_calls),
             },
             contract_snippets=[
+                *_super_dan_stage_snippets("builder", tool_ids=generic_tool_ids),
+                _super_plan_executor_contract(plan_context),
                 _live_pacing_contract(pacing_policy),
                 snippets.incremental_edit_contract(),
                 snippets.no_scratch_files_contract(),
@@ -4097,8 +4950,15 @@ async def _run_live_generic_execution(
         tool_calls=len(executed_tools),
         event_count=len(events),
     )
-    build_token_usage = _extract_execution_usage(result)
-    mutated_paths = _mutation_paths_from_tools(executed_tools, workspace_root=workspace_root)
+    build_token_usage = _merge_token_usage(
+        planning_token_usage,
+        _extract_execution_usage(result),
+    )
+    mutated_paths = _mutation_paths_from_tools(
+        executed_tools,
+        workspace_root=workspace_root,
+        exclude_roots=_super_plan_exclude_roots(plan_context),
+    )
     error = result.error
     if not mutated_paths and not error:
         error = "live execution finished without any workspace file mutations"
@@ -4127,6 +4987,12 @@ async def _run_live_generic_execution(
         validator_worker_id = "super-dan.live.general.validator"
         pre_run_file_state = _file_metadata_for_paths(pre_run_workspace_state, paths)
         post_run_file_state = _current_file_metadata_for_paths(paths)
+        validator_plan_context = _super_plan_context_payload(
+            plan_context,
+            plan_root=plan_root,
+            workspace_root=workspace_root,
+            include_task_state_key="task_state_after_execution",
+        )
         validator_brief = review_brief(
                 role=RoleSpec(
                     role_label="validator_workspace",
@@ -4145,12 +5011,20 @@ async def _run_live_generic_execution(
                     pre_run_file_state=pre_run_file_state,
                     post_run_file_state=post_run_file_state,
                     operator_intent_policy=operator_intent_policy,
+                    plan_context=validator_plan_context,
                 ),
                 scope=f"workspace={workspace_root}; native Super DAN general workspace validation",
                 hard_constraints=[
                     "Read-only validation only; do not write or edit files.",
                     "Inspect the mutated files and relevant read-only git evidence before deciding.",
                     "Use pre-run file-state metadata as the material-change baseline for untracked workspaces; do not require git commits or git history.",
+                    *(
+                        [
+                            "Audit plan checkbox updates against changed deliverable files and evidence; do not pass a run only because it ticked plan tasks.",
+                        ]
+                        if validator_plan_context
+                        else []
+                    ),
                     "Fail if the run made only placeholder-style or otherwise non-responsive changes.",
                     "For document/report objectives, inspect the written artifact and fail if no report-like file was produced.",
                     *list(operator_intent_policy.constraints),
@@ -4168,6 +5042,20 @@ async def _run_live_generic_execution(
                     ),
                     "max_tool_calls": max(4, min(int(args.max_tool_calls), 24)),
                 },
+                contract_snippets=[
+                    *_super_dan_stage_snippets(
+                        "validator",
+                        tool_ids=generic_read_only_tool_ids,
+                        extra_questions=(
+                            [
+                                "Were any plan tasks ticked, and do the changed files prove those tasks are actually complete?"
+                            ]
+                            if validator_plan_context
+                            else None
+                        ),
+                    ),
+                    _super_plan_validation_contract(validator_plan_context),
+                ],
                 sampling_policy={
                     "profile": "deterministic",
                     "temperature": 0.0,
@@ -4184,6 +5072,7 @@ async def _run_live_generic_execution(
                     "pre_run_file_state": pre_run_file_state,
                     "post_run_file_state": post_run_file_state,
                     "operator_intent_policy": operator_intent_payload,
+                    "plan_context": validator_plan_context,
                 },
                 metadata={
                     "surface": "super_organism",
@@ -4216,10 +5105,10 @@ async def _run_live_generic_execution(
             event_logger=event_logger,
         )
 
-    first_write_recovery_attempts = 0
+    builder_retry_attempts = 0
 
-    async def run_generic_first_write_recovery() -> None:
-        nonlocal first_write_recovery_attempts
+    async def run_generic_builder_retry() -> None:
+        nonlocal builder_retry_attempts
         nonlocal result, executed_tools, events, build_token_usage, mutated_paths, error, validation
 
         additive_recovery_required = _text_requests_additive_update(report.target)
@@ -4242,7 +5131,7 @@ async def _run_live_generic_execution(
             for path, state in sorted(pre_run_workspace_state.items())
             if isinstance(state, Mapping) and bool(state.get("exists"))
         ]
-        recommended_write_paths = _generic_first_write_recovery_targets(
+        recommended_write_paths = _generic_builder_retry_targets(
             report.target,
             workspace_root=workspace_root,
             pre_run_workspace_state=pre_run_workspace_state,
@@ -4263,9 +5152,9 @@ async def _run_live_generic_execution(
         ]
         while (
             not mutated_paths
-            and first_write_recovery_attempts < _SUPER_DAN_GENERIC_FIRST_WRITE_RECOVERY_ATTEMPTS
+            and builder_retry_attempts < _SUPER_DAN_GENERIC_BUILDER_RETRY_ATTEMPTS
         ):
-            first_write_recovery_attempts += 1
+            builder_retry_attempts += 1
             recovery_reason = (
                 error
                 or _validation_repair_brief(validation, [])
@@ -4273,43 +5162,51 @@ async def _run_live_generic_execution(
             )
             _log_live_event(
                 event_logger,
-                "live.generic_first_write_recovery.started",
-                attempt=first_write_recovery_attempts,
+                "live.builder_retry.started",
+                attempt=builder_retry_attempts,
                 model=model,
                 reason=recovery_reason,
                 additive_recovery_required=bool(additive_recovery_required),
                 recommended_write_paths=list(recommended_write_paths),
+                artifact_kind="generic",
             )
-            recovery_worker_id = "super-dan.live.general-first-write-recovery"
+            recovery_worker_id = "super-dan.live.builder-retry"
             recovery_brief = role_brief(
                 role=RoleSpec(
                     role_label="workspace_worker",
-                    responsibility="Recover a Super DAN live run that produced no workspace mutation.",
+                    responsibility="Run a focused Super DAN builder retry after a no-mutation attempt.",
                     success_criteria=[
                         "At least one workspace file is created or edited.",
-                        "The recovery materially advances the original operator objective.",
+                        "The retry materially advances the original operator objective.",
                         "The final answer names changed files, validation plan, and remaining risks.",
                     ],
-                    trace_role="super-dan.live.general-first-write-recovery",
+                    trace_role="super-dan.live.builder-retry",
                 ),
-                task=_live_generic_first_write_recovery_task(
+                task=_live_generic_builder_retry_task(
                     report,
                     workspace_root=workspace_root,
                     failure_reason=recovery_reason,
-                    attempt=first_write_recovery_attempts,
+                    attempt=builder_retry_attempts,
                     recommended_write_paths=recommended_write_paths,
                     additive_recovery_required=additive_recovery_required,
                     operator_intent_policy=operator_intent_policy,
                     prompt_only_creation_target=prompt_only_creation_target,
+                    plan_context=plan_context,
                 ),
-                scope=f"workspace={workspace_root}; native Super DAN generic first-write recovery",
+                scope=f"workspace={workspace_root}; native Super DAN generic builder retry",
                 hard_constraints=[
                     "Actually create or edit at least one workspace file with file_write or file_edit before finalizing.",
-                    "Do not invoke the separate DAN Code or DAN Research product shells.",
-                    "Keep the work inside the current workspace root.",
-                    "Do not use destructive git reset, checkout, or rm-style cleanup.",
+                    "Default to the current workspace root; only use explicit external paths when the operator asks and runtime policy allows.",
                     "If the requested deliverable is a saved report, markdown file, data note, or other document artifact, write that artifact to the workspace.",
                     "For additive/enrichment objectives on existing artifacts, preserve existing content and do not replace the artifact with a shorter scaffold.",
+                    *(
+                        [
+                            "Use the supplied run-local plan context if present, but do not count plan-file edits as the required deliverable mutation.",
+                            "Tick plan checkboxes only for tasks actually completed in this retry.",
+                        ]
+                        if plan_context
+                        else []
+                    ),
                     *list(operator_intent_policy.constraints),
                 ],
                 soft_constraints=[
@@ -4325,6 +5222,11 @@ async def _run_live_generic_execution(
                     "max_tool_calls": int(args.max_tool_calls),
                 },
                 contract_snippets=[
+                    *_super_dan_stage_snippets(
+                        "builder_retry",
+                        tool_ids=recovery_tool_ids,
+                    ),
+                    _super_plan_executor_contract(plan_context),
                     _live_pacing_contract(pacing_policy),
                     snippets.incremental_edit_contract(),
                     snippets.no_scratch_files_contract(),
@@ -4346,13 +5248,19 @@ async def _run_live_generic_execution(
                     "objective": report.target,
                     "workspace_root": str(workspace_root),
                     "failure_reason": recovery_reason,
-                    "attempt": first_write_recovery_attempts,
+                    "attempt": builder_retry_attempts,
                     "write_pacing": dict(pacing_policy),
                     "additive_recovery_required": bool(additive_recovery_required),
                     "recommended_write_paths": list(recommended_write_paths),
                     "pre_run_workspace_file_state": dict(pre_run_workspace_state),
                     "pre_existing_workspace_paths": list(pre_existing_workspace_paths),
                     "operator_intent_policy": operator_intent_payload,
+                    "plan_context": _super_plan_context_payload(
+                        plan_context,
+                        plan_root=plan_root,
+                        workspace_root=workspace_root,
+                        include_task_state_key="task_state_before_retry",
+                    ),
                     **(
                         {
                             "execution_condition": "operator_prompt_only_creation",
@@ -4379,7 +5287,7 @@ async def _run_live_generic_execution(
                         recommended_write_paths[0] if recommended_write_paths else ""
                     ),
                     "recommended_write_paths": list(recommended_write_paths),
-                    "first_write_recovery": True,
+                    "builder_retry": True,
                     "operator_intent_policy": operator_intent_payload,
                     "repair_policy": {
                         "forbid_shrinking_existing_artifacts": bool(additive_recovery_required),
@@ -4412,7 +5320,11 @@ async def _run_live_generic_execution(
             )
             if recovery_result.error:
                 error = recovery_result.error
-            mutated_paths = _mutation_paths_from_tools(executed_tools, workspace_root=workspace_root)
+            mutated_paths = _mutation_paths_from_tools(
+                executed_tools,
+                workspace_root=workspace_root,
+                exclude_roots=_super_plan_exclude_roots(plan_context),
+            )
             if not mutated_paths and operator_intent_policy.allow_existing_artifact_reuse:
                 alias_tool = _materialize_missing_explicit_target_from_existing_artifact(
                     report.target,
@@ -4427,8 +5339,8 @@ async def _run_live_generic_execution(
                         else {}
                     )
                     alias_event = {
-                        "event": "live.generic_first_write_recovery.alias_materialized",
-                        "attempt": first_write_recovery_attempts,
+                        "event": "live.builder_retry.alias_materialized",
+                        "attempt": builder_retry_attempts,
                         "target_path": str(alias_result.get("path") or ""),
                         "source_path": str(alias_result.get("source_path") or ""),
                         "reason": "explicit_missing_target_alias",
@@ -4438,16 +5350,18 @@ async def _run_live_generic_execution(
                     mutated_paths = _mutation_paths_from_tools(
                         executed_tools,
                         workspace_root=workspace_root,
+                        exclude_roots=_super_plan_exclude_roots(plan_context),
                     )
             _log_live_event(
                 event_logger,
-                "live.generic_first_write_recovery.completed",
-                attempt=first_write_recovery_attempts,
+                "live.builder_retry.completed",
+                attempt=builder_retry_attempts,
                 model=model,
                 status=recovery_result.status,
                 tool_calls=len(recovery_tools),
                 event_count=len(recovery_events),
                 changed_required_files=list(mutated_paths),
+                artifact_kind="generic",
             )
             if mutated_paths:
                 if not recovery_result.error:
@@ -4466,7 +5380,7 @@ async def _run_live_generic_execution(
         validation = await run_generic_validator(mutated_paths)
         record_validation_usage(validation)
     elif result.status == "completed":
-        await run_generic_first_write_recovery()
+        await run_generic_builder_retry()
 
     repair_attempts = 0
     if result.status == "completed" and mutated_paths and not bool(validation.get("passed")):
@@ -4510,14 +5424,21 @@ async def _run_live_generic_execution(
                 pre_run_file_state=repair_pre_run_file_state,
                 current_file_state=repair_current_file_state,
                 operator_intent_policy=operator_intent_policy,
+                plan_context=plan_context,
             ),
             scope=f"workspace={workspace_root}; native Super DAN general workspace validation repair",
             hard_constraints=[
                 "Actually edit workspace files; do not return a summary-only response.",
-                "Keep the work inside the current workspace root.",
-                "Do not invoke the separate DAN Code or DAN Research product shells.",
-                "Do not use destructive git reset, checkout, or rm-style cleanup.",
+                "Default to the current workspace root; only use explicit external paths when the operator asks and runtime policy allows.",
                 "Do not create, commit, or overwrite a baseline artifact just to satisfy git-history or before/after evidence.",
+                *(
+                    [
+                        "Use the supplied run-local plan context if present, but do not count plan-file edits as the repair deliverable.",
+                        "Only tick plan checkboxes that the repair actually completes.",
+                    ]
+                    if plan_context
+                    else []
+                ),
                 *list(operator_intent_policy.constraints),
             ],
             soft_constraints=[
@@ -4533,6 +5454,8 @@ async def _run_live_generic_execution(
                 "max_tool_calls": int(args.max_tool_calls),
             },
             contract_snippets=[
+                *_super_dan_stage_snippets("repair", tool_ids=generic_tool_ids),
+                _super_plan_executor_contract(plan_context),
                 _live_pacing_contract(pacing_policy),
                 snippets.incremental_edit_contract(),
                 snippets.no_scratch_files_contract(),
@@ -4559,6 +5482,12 @@ async def _run_live_generic_execution(
                 "current_file_state": repair_current_file_state,
                 "write_pacing": dict(pacing_policy),
                 "operator_intent_policy": operator_intent_payload,
+                "plan_context": _super_plan_context_payload(
+                    plan_context,
+                    plan_root=plan_root,
+                    workspace_root=workspace_root,
+                    include_task_state_key="task_state_before_repair",
+                ),
             },
             metadata={
                 "surface": "super_organism",
@@ -4602,7 +5531,11 @@ async def _run_live_generic_execution(
         )
         if repair_result.error:
             error = repair_result.error
-        mutated_paths = _mutation_paths_from_tools(executed_tools, workspace_root=workspace_root)
+        mutated_paths = _mutation_paths_from_tools(
+            executed_tools,
+            workspace_root=workspace_root,
+            exclude_roots=_super_plan_exclude_roots(plan_context),
+        )
         _log_live_event(
             event_logger,
             "live.generic_repair.completed",
@@ -4631,7 +5564,7 @@ async def _run_live_generic_execution(
         validation=validation,
         deterministic_failures=list(validation.get("missing_requirements") or []),
         changed_required_files=mutated_paths,
-        first_write_recovery_attempted=bool(first_write_recovery_attempts),
+        builder_retry_attempted=bool(builder_retry_attempts),
         repair_attempted=bool(repair_attempts),
         repair_exhausted=bool(repair_attempts and not validation.get("passed")),
     )
@@ -4654,9 +5587,9 @@ async def _run_live_generic_execution(
         "files": list(mutated_paths),
         "required_files": [],
         "missing_files": [],
-        "tool_calls": len(executed_tools) + validation_tool_calls_total,
+        "tool_calls": len(executed_tools) + validation_tool_calls_total + planning_tool_calls_total,
         "mutated_paths": list(mutated_paths),
-        "event_count": len(events) + validation_event_count_total,
+        "event_count": len(events) + validation_event_count_total + planning_event_count_total,
         "summary": result.outputs.get("result") or result.outputs.get("text") or "",
         "error": error,
         "summary_label": "Live Run",
@@ -4718,9 +5651,11 @@ def _mutation_paths_from_tools(
     executed_tools: Sequence[dict[str, Any]],
     *,
     workspace_root: Path,
+    exclude_roots: Sequence[Path] = (),
 ) -> list[str]:
     paths: list[str] = []
     seen: set[str] = set()
+    excluded = [root.resolve(strict=False) for root in exclude_roots]
     for tool in executed_tools:
         if not tool.get("ok") or str(tool.get("tool_id") or "") not in {"file_write", "file_edit"}:
             continue
@@ -4736,7 +5671,10 @@ def _mutation_paths_from_tools(
             continue
         candidate = Path(raw_path).expanduser()
         path = candidate if candidate.is_absolute() else workspace_root / candidate
-        rendered = str(path.resolve(strict=False))
+        resolved = path.resolve(strict=False)
+        if any(_path_is_under(resolved, root) for root in excluded):
+            continue
+        rendered = str(resolved)
         if rendered in seen:
             continue
         seen.add(rendered)
@@ -4912,8 +5850,7 @@ Generated by `dan super-organism` from this objective:
 
 Open `index.html` in a browser, or serve this folder with any static server.
 
-The artifact is deterministic and self-contained. It does not depend on DAN Code
-or DAN Research.
+The artifact is deterministic, self-contained, and dependency-free.
 """
 
 

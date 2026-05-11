@@ -42,7 +42,7 @@ def _validation_event(
     changed_required_files: list[str] | None = None,
     deterministic_failures: list[str] | None = None,
     missing_requirements: list[str] | None = None,
-    first_write_recovery_attempted: bool = False,
+    builder_retry_attempted: bool = False,
     repair_attempted: bool = False,
     repair_exhausted: bool = False,
 ) -> dict[str, object]:
@@ -56,7 +56,7 @@ def _validation_event(
         "changed_required_files": list(changed_required_files or []),
         "deterministic_failures": list(deterministic_failures or []),
         "missing_requirements": list(missing_requirements or []),
-        "first_write_recovery_attempted": first_write_recovery_attempted,
+        "builder_retry_attempted": builder_retry_attempted,
         "repair_attempted": repair_attempted,
         "repair_exhausted": repair_exhausted,
     }
@@ -135,7 +135,7 @@ def test_super_hook_runtime_routes_generic_repair_completion_to_validation(
     )
 
 
-def test_super_hook_runtime_routes_no_write_validation_to_first_write_recovery(
+def test_super_hook_runtime_routes_no_write_validation_to_builder_retry(
     tmp_path: Path,
 ) -> None:
     runtime = SuperHookRuntime(
@@ -158,8 +158,8 @@ def test_super_hook_runtime_routes_no_write_validation_to_first_write_recovery(
 
     assert any(
         event["event"] == "super.hook.packet_enqueued"
-        and event["inbox_id"] == "first_write_recovery"
-        and event["packet_type"] == "first_write_recovery_requested"
+        and event["inbox_id"] == "builder.retry"
+        and event["packet_type"] == "builder_retry_requested"
         for event in events
     )
     assert not any(
@@ -169,7 +169,7 @@ def test_super_hook_runtime_routes_no_write_validation_to_first_write_recovery(
     )
 
 
-def test_super_hook_runtime_routes_generic_no_mutation_validation_to_first_write_recovery(
+def test_super_hook_runtime_routes_generic_no_mutation_validation_to_builder_retry(
     tmp_path: Path,
 ) -> None:
     runtime = SuperHookRuntime(
@@ -190,14 +190,14 @@ def test_super_hook_runtime_routes_generic_no_mutation_validation_to_first_write
 
     assert any(
         event["event"] == "super.hook.packet_enqueued"
-        and event["inbox_id"] == "first_write_recovery"
-        and event["packet_type"] == "first_write_recovery_requested"
+        and event["inbox_id"] == "builder.retry"
+        and event["packet_type"] == "builder_retry_requested"
         for event in events
     )
     assert not any(event.get("inbox_id") == "repair" for event in events)
 
 
-def test_super_hook_runtime_routes_generic_first_write_recovery_completion_to_validation(
+def test_super_hook_runtime_routes_generic_builder_retry_completion_to_validation(
     tmp_path: Path,
 ) -> None:
     runtime = SuperHookRuntime(
@@ -211,7 +211,7 @@ def test_super_hook_runtime_routes_generic_first_write_recovery_completion_to_va
 
     events = runtime.process_event(
         {
-            "event": "live.generic_first_write_recovery.completed",
+            "event": "live.builder_retry.completed",
             "sequence": 4,
             "task_id": "super-dan-live:1",
             "turn_id": "1",
@@ -227,7 +227,7 @@ def test_super_hook_runtime_routes_generic_first_write_recovery_completion_to_va
     )
 
 
-def test_super_hook_runtime_ignores_empty_generic_first_write_recovery_completion(
+def test_super_hook_runtime_ignores_empty_generic_builder_retry_completion(
     tmp_path: Path,
 ) -> None:
     runtime = SuperHookRuntime(
@@ -241,7 +241,7 @@ def test_super_hook_runtime_ignores_empty_generic_first_write_recovery_completio
 
     events = runtime.process_event(
         {
-            "event": "live.generic_first_write_recovery.completed",
+            "event": "live.builder_retry.completed",
             "sequence": 4,
             "task_id": "super-dan-live:1",
             "turn_id": "1",
@@ -278,7 +278,7 @@ def test_super_hook_runtime_routes_changed_failed_validation_to_repair(
         and event["packet_type"] == "repair_requested"
         for event in events
     )
-    assert not any(event.get("inbox_id") == "first_write_recovery" for event in events)
+    assert not any(event.get("inbox_id") == "builder.retry" for event in events)
 
 
 def test_super_hook_runtime_routes_quality_failure_without_changed_required_files_to_repair(
@@ -308,7 +308,7 @@ def test_super_hook_runtime_routes_quality_failure_without_changed_required_file
         and event["packet_type"] == "repair_requested"
         for event in events
     )
-    assert not any(event.get("inbox_id") == "first_write_recovery" for event in events)
+    assert not any(event.get("inbox_id") == "builder.retry" for event in events)
 
 
 def test_super_hook_runtime_suppresses_no_write_recovery_after_attempt_exhausted(
@@ -329,7 +329,7 @@ def test_super_hook_runtime_suppresses_no_write_recovery_after_attempt_exhausted
             deterministic_failures=[
                 "The live run did not change any required website files."
             ],
-            first_write_recovery_attempted=True,
+            builder_retry_attempted=True,
         )
     )
 
