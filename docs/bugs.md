@@ -1,5 +1,8 @@
 # Known Issues & Failed Approaches
 
+- ~~**P2: Super DAN broad-plan repair could overreact by treating deferred roadmap work as immediate validation failure.**~~ **FIXED 2026-05-11.** **Observed from `website/.dan-super/runs/turn-11/events.jsonl`:** the planner created a coherent foundation/app-showcase plan, but the first builder only made a trivial edit and falsely ticked a plan task; the validator then converted all missing downstream app work into one generic repair brief, which pushed the repair worker into broad HTML/JS surgery and left broken `index.html` / `app.js`.
+- **Failed approach recorded:** choosing one hard first slice helps prevent scope leakage, but it is too rigid for Super DAN's intended parallelism. Current behavior records a predicted dependency-frontier DAG with ready/deferred tasks and owned paths; validators repair only current-frontier blockers, deferred downstream gaps stay queued as future DAG work, and `--worktree-parallelism` can run extra non-conflicting ready tasks through admission-gated isolated worktrees.
+
 - ~~**P2: Telegram V2 over-routed ordinary chat into durable Agent/Super DAN runs.**~~ **FIXED 2026-04-30.** **Observed from live Telegram screenshot:** `hi again` consumed a full Agent run with ~219k tokens, then a short OPEC follow-up failed as an Agent task instead of continuing as chat.
 - **Failed approach recorded:** forcing all ordinary Telegram V2 text into `/api/v2/agent-runs` avoided one legacy-stream fallback symptom but broke the product contract: normal phone chat became expensive long-running work. Current routing keeps plain text on V2 Chat, and sends only explicit `/agent` / `/run` / `/build` / `agent:` turns or high-confidence workspace/task text to durable Agent runs.
 

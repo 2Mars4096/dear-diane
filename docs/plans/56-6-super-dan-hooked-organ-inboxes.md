@@ -62,11 +62,12 @@ The hook layer is internal organism infrastructure. It should not start as arbit
   - [ ] 6-3. Serialize validation and synthesis gates for a candidate that touches the same owner scope.
   - [x] 6-4. Allow non-mutating read/scout/memory packets to proceed in parallel when they do not hold the brain lease.
   - [ ] 6-5. Make the final reducer/admission lane the only authority that can mark a live run `completed`, `failed`, or `blocked`.
+  - [x] 6-6. Scope broad-plan execution, validation, and repair to the current dependency-ready frontier so deferred DAG tasks stay queued instead of becoming current repair work.
 
-- [ ] 7. Add worktree parallelism for conflicting owners
-  - [ ] 7-1. Add a worktree execution lane for packets with conflicting write owners or exploratory patch alternatives.
-  - [ ] 7-2. Create isolated worktrees under `.dan-super/worktrees/<task-id>` with deterministic task ids and branch names such as `super-dan/<run-id>/<task-id>`.
-  - [ ] 7-3. Have worktree workers return diff packets with changed files, summary, validation evidence, candidate score, owner scope, and merge risk.
+- [ ] 7. Add worktree parallelism for dependency-frontier owners
+  - [x] 7-1. Add a worktree execution lane for admitted ready-frontier tasks with independent owned paths.
+  - [x] 7-2. Create isolated worktrees under `.dan-super/worktrees/<task-id>` with deterministic task ids and branch names such as `super-dan/<run-id>/<task-id>`.
+  - [x] 7-3. Have worktree workers return diff packets with changed files, summary, validation evidence, candidate score, owner scope, and merge risk.
   - [x] 7-4. Keep worktree candidates non-authoritative until the main merge/admission lane applies or rejects them.
   - [ ] 7-5. Require the merge/admission lane to validate candidate diffs against the current main workspace before applying them.
   - [ ] 7-6. Support cleanup of stale, failed, superseded, or merged worktrees without deleting the event/diff record.
@@ -95,6 +96,8 @@ The hook layer is internal organism infrastructure. It should not start as arbit
   - [x] 10-6. Replay-test `.dan-super` event logs so restart does not duplicate repair, validation, or synthesis.
   - [x] 10-7. Keep existing Super DAN CLI tests passing, including live progress, lenient validation, repair, and interactive UX coverage.
   - [x] 10-8. Cover exact template-hit static validation diagnostics, repair-prompt handoff, successful repair, failed repair, and exhausted-repair hook suppression.
+  - [x] 10-9. Cover dependency-frontier validation where deferred downstream tasks remain queued and do not trigger generic repair.
+  - [x] 10-10. Cover ready-frontier worktree execution, diff admission, copy-back, and final validation over main-lane plus worktree-applied files.
 
 ## Decisions
 
@@ -112,6 +115,9 @@ The hook layer is internal organism infrastructure. It should not start as arbit
 - 2026-04-27 continuation slice: hook state can now be rebuilt idempotently from `.dan-super/runs/turn-XX/events.jsonl`; stale heartbeat packets replace older pending heartbeat packets instead of growing the queue; and worktree diff packets now pass through a non-authoritative admission/rejection record before any future main-lane merge.
 - 2026-04-27 repair-exhaustion slice: final website validation events now carry `repair_attempted` and `repair_exhausted`, and hook routing suppresses another `repair_requested` packet once the one bounded repair pass has already failed. This keeps the hook projection honest until the repair lane becomes a real asynchronous executor with its own retry budget.
 - 2026-05-11 builder-retry normalization slice: no-mutation rows now route through the generic `builder.retry` inbox and `live.builder_retry.*` events. Final validation records `builder_retry_attempted`, and hook routing feeds validation only for retry completions that actually changed files.
+- 2026-05-11 dependency-frontier slice: run-local planner and plan-validator payloads can now carry a predicted task DAG (`depends_on`, owned paths, deliverables, validation checks, ready/deferred task ids, and dependency revisions). Builder prompts execute the ready frontier rather than one hardcoded slice, while validator/repair prompts treat deferred downstream work as queued DAG state instead of immediate repair scope.
+- 2026-05-11 worktree-frontier execution slice: when `--worktree-parallelism N` is enabled, the executor admits non-conflicting extra `ready_task_ids` into isolated `.dan-super/worktrees/...` workers. Their changed owned files are returned as worktree diff packets, admitted through the hook runtime, copied back to the authoritative workspace only after admission, and then audited by the normal final validator together with the main-lane task.
+- Worktree worker `file_write` / `file_edit` events are intentionally ignored by the normal material-write hook route. They become authoritative only through `super.worktree.diff_admitted` plus `live.worktree.diff_applied`.
 - 2026-04-27 no-write slice, updated 2026-05-11: live runs treat "builder completed but changed no required files" as a bounded builder retry instead of validation repair. The CLI logs `[builder] retry ...`, revalidates if a patch lands, and hook routing no longer emits confusing repair packets for exhausted no-write failures.
 - 2026-04-27 generic validation routing slice, updated 2026-05-11: generic live validation rows now carry mutated paths as changed-file evidence, and `live.generic_repair.completed` feeds the validation inbox like website repair completion. Quality failures after a real generic mutation route to repair/revalidation rather than builder retry.
 - Immediate responsiveness can be achieved by setting small `max_wait_ms` and low queue length, but safety still comes from leases, owner locks, coalescing, and deterministic admission.
