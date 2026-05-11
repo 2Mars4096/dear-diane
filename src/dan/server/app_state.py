@@ -29,6 +29,7 @@ class AppState:
     chat_store: ChatStore | None = None
     test_case_store: TestCaseStore | None = None
     run_store: RunStore | None = None
+    chat_v2_store: Any = None
 
     # -- Managers ------------------------------------------------------------
     run_manager: RunManager | None = None
@@ -114,6 +115,13 @@ class AppState:
                 status_code=503, detail="Chat store not initialised"
             )
         return self.chat_store
+
+    def require_chat_v2_store(self) -> Any:
+        if self.chat_v2_store is None:
+            raise HTTPException(
+                status_code=503, detail="Chat V2 store not initialised"
+            )
+        return self.chat_v2_store
 
     def require_test_case_store(self) -> TestCaseStore:
         if self.test_case_store is None:

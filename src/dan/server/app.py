@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from dan.engine.executor import EngineConfig
 from dan.models.graph import Graph
 from dan.server.chat_manager import ChatManager
+from dan.server.chat_v2_store import ChatV2Store
 from dan.server.llm_gateway import resolve_llm_provider
 from dan.server.mention_resolver import MentionResolver
 from dan.server.chat_store import ChatStore
@@ -62,6 +63,7 @@ def _resolve_cache_dir(config: EngineConfig) -> Path:
 _graphs_dir = resolve_graphs_dir()
 _graph_store = GraphStore(base_dir=_graphs_dir)
 _chat_store = ChatStore(base_dir=_graphs_dir)
+_chat_v2_store = ChatV2Store(base_dir=os.path.join(_graphs_dir, "chat_v2"))
 _test_case_store = TestCaseStore(base_dir=_graphs_dir)
 _run_manager: RunManager | None = None
 _chat_manager: ChatManager | None = None
@@ -502,6 +504,7 @@ from dan.server.routers.meta import router as meta_router
 from dan.server.routers.publishing import router as publishing_router
 from dan.server.routers.blocks import router as blocks_router
 from dan.server.routers.chat import router as chat_router
+from dan.server.routers.chat_v2 import router as chat_v2_router
 from dan.server.routers.adapters import router as adapters_router
 from dan.server.routers.furnace import router as furnace_router
 
@@ -514,6 +517,7 @@ app.include_router(meta_router)
 app.include_router(publishing_router)
 app.include_router(blocks_router)
 app.include_router(chat_router)
+app.include_router(chat_v2_router)
 app.include_router(adapters_router)
 app.include_router(furnace_router)
 

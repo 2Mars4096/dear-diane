@@ -71,6 +71,19 @@ def get_chat_store(connection: Any | None = None):
     return _require_app_state(connection).require_chat_store()
 
 
+def get_chat_v2_store(connection: Any | None = None):
+    state = _get_app_state(connection)
+    if state is not None and getattr(state, "chat_v2_store", None) is not None:
+        return state.require_chat_v2_store()
+    store = _get_legacy_app_attr("_chat_v2_store")
+    if store is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Chat V2 store not initialised",
+        )
+    return store
+
+
 def get_run_manager(connection: Any | None = None):
     state = _get_app_state(connection)
     legacy_run_manager = _get_legacy_app_attr("_run_manager")

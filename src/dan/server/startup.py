@@ -649,11 +649,17 @@ def init_learning_tiers() -> None:
 async def init_stores(state: AppState) -> None:
     """Phase 1: create stores and block registry."""
     from dan.blocks import BlockRegistry
+    from dan.server.chat_v2_store import ChatV2Store
     from dan.server.run_store import RunStore
 
     graphs_dir = state.graphs_dir
     runs_dir = os.environ.get("DAN_RUNS_DIR", os.path.join(graphs_dir, "runs"))
     state.run_store = RunStore(base_dir=runs_dir)
+    chat_v2_dir = os.environ.get(
+        "DAN_CHAT_V2_STORE_DIR",
+        os.path.join(graphs_dir, "chat_v2"),
+    )
+    state.chat_v2_store = ChatV2Store(base_dir=chat_v2_dir)
 
     workspace_root = os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())
     state.block_registry = BlockRegistry(workspace=Path(workspace_root))

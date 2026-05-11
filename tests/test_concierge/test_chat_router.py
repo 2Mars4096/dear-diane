@@ -327,6 +327,10 @@ async def test_chat_message_v2_control_plane_direct_response_skips_legacy_runtim
     monkeypatch.setattr(chat_router, "get_dispatcher", lambda: None)
     monkeypatch.setattr(chat_router, "get_control_plane_mode", lambda *_args, **_kwargs: "v2")
     monkeypatch.setattr(chat_router, "get_dan_v2_runtime", lambda *_args, **_kwargs: runtime)
+    monkeypatch.delenv("DAN_TELEGRAM_CONTROL_PLANE", raising=False)
+    monkeypatch.delenv("DAN_ADAPTERS_CONTROL_PLANE", raising=False)
+    monkeypatch.delenv("DAN_EXTERNAL_CONTROL_PLANE", raising=False)
+    monkeypatch.delenv("DAN_TELEGRAM_ALLOW_V1", raising=False)
 
     req = chat_router.ChatMessageRequest(
         workflow_id="wf-1",
@@ -493,6 +497,10 @@ async def test_chat_message_v2_control_plane_handoff_uses_legacy_runtime_with_re
     monkeypatch.setattr(chat_router, "get_dispatcher", lambda: None)
     monkeypatch.setattr(chat_router, "get_control_plane_mode", lambda *_args, **_kwargs: "v2")
     monkeypatch.setattr(chat_router, "get_dan_v2_runtime", lambda *_args, **_kwargs: runtime)
+    monkeypatch.delenv("DAN_TELEGRAM_CONTROL_PLANE", raising=False)
+    monkeypatch.delenv("DAN_ADAPTERS_CONTROL_PLANE", raising=False)
+    monkeypatch.delenv("DAN_EXTERNAL_CONTROL_PLANE", raising=False)
+    monkeypatch.delenv("DAN_TELEGRAM_ALLOW_V1", raising=False)
 
     req = chat_router.ChatMessageRequest(
         workflow_id="wf-1",
@@ -522,7 +530,7 @@ async def test_chat_message_v2_control_plane_handoff_uses_legacy_runtime_with_re
     assert runtime.calls
     assert manager.calls
     assert response["control_plane_mode"] == "v2"
-    assert response["control_plane_mode_source"] == "env"
+    assert response["control_plane_mode_source"] == "surface_default"
     assert "DAN Research handoff" in manager.calls[0]["prompt_context"]
     assert "Delivery target: chat answer" in manager.calls[0]["prompt_context"]
     assert manager.calls[0]["surface"] == "telegram:ops-bot"
@@ -758,10 +766,17 @@ async def test_chat_message_surface_env_override_can_force_v2_when_global_is_v1(
         ),
         (
             {"DAN_CONTROL_PLANE": "v2", "DAN_ADAPTERS_CONTROL_PLANE": "v1"},
-            {"mode": "build", "surface": "telegram:bot-a"},
+            {"mode": "build", "surface": "wechat:bot-a"},
             "v1",
             "adapter_group_env",
             False,
+        ),
+        (
+            {"DAN_CONTROL_PLANE": "v1", "DAN_ADAPTERS_CONTROL_PLANE": "v1"},
+            {"mode": "build", "surface": "telegram:bot-a"},
+            "v2",
+            "adapter_group_env",
+            True,
         ),
         (
             {"DAN_CONTROL_PLANE": "v1", "DAN_ADAPTERS_CONTROL_PLANE": "v1", "DAN_TELEGRAM_CONTROL_PLANE": "v2"},
@@ -777,6 +792,7 @@ async def test_chat_message_surface_env_override_can_force_v2_when_global_is_v1(
         "surface-env-v2",
         "internal-group-v2",
         "adapter-group-v1",
+        "telegram-pure-v2-beats-adapter-v1",
         "surface-env-beats-adapter-group",
     ],
 )
@@ -802,6 +818,15 @@ async def test_chat_message_frozen_control_plane_matrix_persists_selected_mode(
     monkeypatch.setattr(chat_router, "get_dispatcher", lambda: None)
     monkeypatch.setattr(chat_router, "get_control_plane_mode", lambda *_args, **_kwargs: "v1")
     monkeypatch.setattr(chat_router, "get_dan_v2_runtime", lambda *_args, **_kwargs: runtime)
+    for key in (
+        "DAN_TELEGRAM_CONTROL_PLANE",
+        "DAN_ADAPTERS_CONTROL_PLANE",
+        "DAN_EXTERNAL_CONTROL_PLANE",
+        "DAN_INTERNAL_CONTROL_PLANE",
+        "DAN_EDITOR_CONTROL_PLANE",
+        "DAN_TELEGRAM_ALLOW_V1",
+    ):
+        monkeypatch.delenv(key, raising=False)
     for key, value in env_updates.items():
         monkeypatch.setenv(key, value)
 
@@ -942,13 +967,16 @@ async def test_chat_message_external_surface_group_override_can_force_v1_when_gl
     monkeypatch.setattr(chat_router, "get_dispatcher", lambda: None)
     monkeypatch.setattr(chat_router, "get_control_plane_mode", lambda *_args, **_kwargs: "v2")
     monkeypatch.setattr(chat_router, "get_dan_v2_runtime", lambda *_args, **_kwargs: runtime)
+    monkeypatch.delenv("DAN_TELEGRAM_CONTROL_PLANE", raising=False)
+    monkeypatch.delenv("DAN_ADAPTERS_CONTROL_PLANE", raising=False)
+    monkeypatch.delenv("DAN_TELEGRAM_ALLOW_V1", raising=False)
     monkeypatch.setenv("DAN_EXTERNAL_CONTROL_PLANE", "v1")
 
     req = chat_router.ChatMessageRequest(
         workflow_id="wf-1",
         message="Build a simple chain",
         mode="build",
-        surface="telegram:bot-a",
+        surface="wechat:bot-a",
     )
 
     response = await chat_router.chat_message(req, concierge=True)
@@ -1012,7 +1040,7 @@ async def test_chat_message_adapter_group_override_can_force_v1_when_global_is_v
         workflow_id="wf-1",
         message="Build a simple chain",
         mode="build",
-        surface="telegram:bot-a",
+        surface="wechat:bot-a",
     )
 
     response = await chat_router.chat_message(req, concierge=True)

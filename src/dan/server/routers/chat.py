@@ -55,6 +55,10 @@ from dan.server.routers.dependencies import (
     get_concierge,
 )
 from dan.server.control_plane import parse_control_plane_mode
+from dan.server.chat_v2 import (
+    build_v2_bridge_context,
+    summarize_v2_bridge_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -391,6 +395,7 @@ def _surface_control_plane_mode(req: ChatMessageRequest) -> tuple[str | None, st
             surface_type = surface.split(":", 1)[0].strip().lower()
         elif surface:
             surface_type = surface.lower()
+    pure_telegram_v2 = surface_type == "telegram" and not _telegram_surface_allows_v1()
     env_candidates: list[tuple[str, str]] = []
     if surface_type:
         suffix = _control_plane_env_suffix(surface_type)
@@ -407,8 +412,21 @@ def _surface_control_plane_mode(req: ChatMessageRequest) -> tuple[str | None, st
         except ValueError:
             continue
         if parsed is not None:
+            if pure_telegram_v2 and parsed == "v1":
+                return "v2", source
             return parsed, source
+    if pure_telegram_v2:
+        return "v2", "surface_default"
     return None, None
+
+
+def _telegram_surface_allows_v1() -> bool:
+    return str(os.environ.get("DAN_TELEGRAM_ALLOW_V1") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _selected_control_plane(
@@ -712,6 +730,9 @@ async def chat_message(
     _concierge = _resolve_service(get_concierge, request)
     _dispatcher = _resolve_service(get_dispatcher, request)
     selected_control_plane = _selected_control_plane(req, request)
+    v2_bridge_context: dict[str, Any] | None = None
+    if selected_control_plane.mode == "v2":
+        v2_bridge_context = build_v2_bridge_context(req)
 
     async def _produce():
         terminal_event_emitted = False
@@ -1042,6 +1063,11 @@ async def chat_message(
         "status": "processing",
         "control_plane_mode": selected_control_plane.mode,
         "control_plane_mode_source": selected_control_plane.source,
+        **(
+            {"v2_control_plane": summarize_v2_bridge_context(v2_bridge_context)}
+            if v2_bridge_context is not None
+            else {}
+        ),
     }
 
 

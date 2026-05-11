@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from dan.server.control_plane import DANV2Runtime
+from dan.server.control_plane import DANV2Runtime, build_dan_v2_runtime
 from dan.worker.organisms.coding_conversation import CodingConversationTurnDecision
 from dan.worker.organisms.dan_conversation import (
     DANConversationController,
@@ -126,6 +126,22 @@ class _FakeRunManager:
         return self.retry_results.get(run_id, SimpleNamespace(run_id=f"retry-{run_id}"))
 
 
+class _NoopProvider:
+    async def complete(self, messages, model, temperature=0.7, max_tokens=None, **kwargs):
+        raise AssertionError("constructor test should not call provider.complete")
+
+    async def stream(self, messages, model, temperature=0.7, max_tokens=None, **kwargs):
+        raise AssertionError("constructor test should not call provider.stream")
+
+
+class _FakeChatManagerForRuntimeBuild:
+    default_llm_model = "gpt-test"
+
+    def resolve_llm_provider(self, *, model: str):
+        assert model == "gpt-test"
+        return _NoopProvider()
+
+
 def _runtime(
     *,
     top_decision: DANConversationTurnDecision,
@@ -153,6 +169,19 @@ def _runtime(
         else _UnusedController()
     )
     return runtime
+
+
+def test_build_dan_v2_runtime_initializes_incident_controller_metadata() -> None:
+    runtime = build_dan_v2_runtime(chat_manager=_FakeChatManagerForRuntimeBuild())
+
+    assert runtime._incident_controller._worker.metadata["terminal_states"] == [
+        "open",
+        "resolved",
+        "contained",
+        "blocked",
+        "escalated",
+        "needs_approval",
+    ]
 
 
 def _direct_report(**overrides: Any) -> dict[str, Any]:

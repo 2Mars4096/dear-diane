@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "Mention",
     "RunRef",
+    "TaskRunRef",
     "ChatMessage",
     "ChatThread",
     "ChatStore",
@@ -36,6 +37,14 @@ class RunRef(BaseModel):
     status: str
     target_node_id: str | None = None
     target_subgraph_key: str | None = None
+
+
+class TaskRunRef(BaseModel):
+    task_id: str | None = None
+    run_id: str | None = None
+    status: str = ""
+    workspace_root: str = ""
+    workspace_id: str = ""
 
 
 class ChatMessage(BaseModel):
@@ -58,6 +67,7 @@ class ChatMessage(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc)
     )
     run_ref: RunRef | None = None
+    task_run_ref: TaskRunRef | None = None
 
 
 class ChatThread(BaseModel):
