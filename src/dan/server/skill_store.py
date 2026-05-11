@@ -6,7 +6,7 @@ directories on startup:
 
 1. **User-level** — ``~/.dan/skills/<name>/SKILL.md`` (cross-project)
 2. **Project-level** — ``<project>/.dan/skills/<name>/SKILL.md``
-3. **Legacy** — flat ``.md`` files from ``DAN_CUSTOM_SKILLS_DIR``
+3. **External read-through** — existing Codex, Claude Code, Cursor, and legacy skill/rule directories
 
 The frontmatter schema is a superset of the Cursor / Claude Code / Codex
 convention (``name`` + ``description``) so skills authored for DAN remain
@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "SkillDescriptor",
     "SkillStore",
+    "default_external_skill_dirs",
     "parse_skill_md",
 ]
 
@@ -210,6 +211,76 @@ def parse_skill_md(text: str, fallback_name: str = "") -> SkillDescriptor | None
 # ---------------------------------------------------------------------------
 
 _DEFAULT_USER_DIR = Path.home() / ".dan" / "skills"
+def _candidate_home_dirs() -> list[Path]:
+    """Return likely user homes, including account-scoped agent homes."""
+
+    candidates = [Path.home()]
+    try:
+        import pwd
+
+        candidates.append(Path(pwd.getpwuid(os.getuid()).pw_dir))
+    except Exception:
+        pass
+
+    env_home = os.environ.get("DAN_USER_HOME", "").strip()
+    if env_home:
+        candidates.append(Path(env_home).expanduser())
+
+    result: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path.resolve(strict=False))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return result
+
+
+def _default_external_dirs() -> list[Path]:
+    roots: list[Path] = []
+    for home in _candidate_home_dirs():
+        roots.extend(
+            [
+                home / ".codex" / "skills",
+                home / ".claude" / "skills",
+                home / ".cursor" / "skills",
+                home / ".cursor" / "rules",
+            ]
+        )
+    return roots
+
+
+def default_external_skill_dirs() -> list[Path]:
+    """Return existing external skill/rule directories to read in place.
+
+    ``DAN_EXTERNAL_SKILLS_DIRS`` may add more directories, separated by the
+    platform path separator. Set ``DAN_AUTO_EXTERNAL_SKILLS=0`` to disable the
+    built-in Codex/Claude/Cursor read-through roots while still allowing
+    explicit directories from ``DAN_EXTERNAL_SKILLS_DIRS``.
+    """
+
+    result: list[Path] = []
+    auto_enabled = os.environ.get("DAN_AUTO_EXTERNAL_SKILLS", "1").strip().lower()
+    if auto_enabled not in {"0", "false", "no", "off"}:
+        result.extend(path for path in _default_external_dirs() if path.is_dir())
+
+    extra = os.environ.get("DAN_EXTERNAL_SKILLS_DIRS", "").strip()
+    if extra:
+        for item in extra.split(os.pathsep):
+            path = Path(item).expanduser()
+            if path.is_dir():
+                result.append(path)
+
+    seen: set[str] = set()
+    deduped: list[Path] = []
+    for path in result:
+        key = str(path.resolve(strict=False))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped
 
 
 class SkillStore:
@@ -222,7 +293,8 @@ class SkillStore:
     project_dir
         Project-level skills (e.g. ``<project>/.dan/skills/``).
     extra_dirs
-        Additional directories to scan (e.g. from ``DAN_CUSTOM_SKILLS_DIR``).
+        Additional directories to scan in place (Codex/Claude/Cursor roots,
+        legacy ``DAN_CUSTOM_SKILLS_DIR``, or custom external directories).
     """
 
     def __init__(
@@ -374,7 +446,7 @@ class SkillStore:
 
         Supports two layouts:
         1. ``dir/skill-name/SKILL.md`` (directory convention)
-        2. ``dir/skill-name.md`` (flat file convention)
+        2. ``dir/skill-name.md`` or ``dir/skill-name.mdc`` (flat file convention)
         """
         if not directory.is_dir():
             return 0
@@ -392,10 +464,10 @@ class SkillStore:
                 if candidate.exists():
                     skill_md = candidate
                 else:
-                    md_files = sorted(child.glob("*.md"))
+                    md_files = sorted([*child.glob("*.md"), *child.glob("*.mdc")])
                     if md_files:
                         skill_md = md_files[0]
-            elif child.is_file() and child.suffix == ".md":
+            elif child.is_file() and child.suffix in {".md", ".mdc"}:
                 skill_md = child
 
             if skill_md is None:
@@ -441,7 +513,7 @@ async def handle_skill_command(
     arg = parts[2] if len(parts) > 2 else ""
 
     if store is None:
-        store = SkillStore()
+        store = SkillStore(extra_dirs=default_external_skill_dirs())
         store.scan()
 
     if sub == "list":

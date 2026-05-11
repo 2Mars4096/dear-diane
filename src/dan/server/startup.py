@@ -1314,9 +1314,9 @@ async def init_background(state: AppState, app: FastAPI) -> None:
     # Skill store
     state.skill_store = None
     try:
-        from dan.server.skill_store import SkillStore
+        from dan.server.skill_store import SkillStore, default_external_skill_dirs
 
-        _extra_dirs: list[Path] = []
+        _extra_dirs: list[Path] = default_external_skill_dirs()
         _legacy_dir = Path(os.environ.get("DAN_CUSTOM_SKILLS_DIR", "custom_skills"))
         if _legacy_dir.is_dir():
             _extra_dirs.append(_legacy_dir)
