@@ -64,6 +64,8 @@ dan-organism = "dan.cli.organism:main"
 dan-organism-log = "dan.cli.organism_log:main"
 dan-super-organism = "dan.cli.super_organism:main"
 dansuperorganism = "dan.cli.super_organism:main"
+dan-super-tui = "dan.cli.super_tui:main"
+dansupertui = "dan.cli.super_tui:main"
 
 [project.optional-dependencies]
 pdf = ["pypdf>=4.0", "pymupdf>=1.24"]
@@ -80,7 +82,7 @@ jsonschema = ["jsonschema>=4.0"]
 all-rag = ["faiss-cpu>=1.7", "chromadb>=0.5", "sentence-transformers>=3.0"]
 quant = ["pandas>=2.0", "matplotlib>=3.7"]
 equity = ["yfinance>=0.2.40"]
-cli = ["rich>=13.0"]
+cli = ["rich>=13.0", "prompt_toolkit>=3.0"]
 mcp = ["mcp>=1.0"]
 messaging = [
     "python-telegram-bot>=21.0",
@@ -102,6 +104,7 @@ all = [
     "sentence-transformers>=3.0",
     "jsonschema>=4.0",
     "rich>=13.0",
+    "prompt_toolkit>=3.0",
     "mcp>=1.0",
     "python-telegram-bot>=21.0",
     "aiosmtplib>=3.0",

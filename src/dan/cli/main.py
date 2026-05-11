@@ -29,6 +29,7 @@ _SUBCOMMANDS = {
     "organism": ("dan.cli.organism", "main"),
     "organism-log": ("dan.cli.organism_log", "main"),
     "super-organism": ("dan.cli.super_organism", "main"),
+    "super-tui": ("dan.cli.super_tui", "main"),
 }
 
 
@@ -71,6 +72,7 @@ def _print_help() -> None:
     print("  organism   Run the local bounded organism demo CLI")
     print("  organism-log Import or summarize organism_log_v1 traces")
     print("  super-organism Run the deterministic Super DAN organism showcase")
+    print("  super-tui  Run Super DAN through a terminal UI")
     print("  service    Manage background services")
     print("  status     Show server status")
     print("  logs       View server logs")
