@@ -62,6 +62,13 @@
   - [x] 6-4. Prove `model.requested` logs budget target, trigger state, category counts, final replay chars, and tool-schema chars
   - [x] 6-5. Prove context-length provider rejection retries once with emergency compaction and does not loop indefinitely
   - [x] 6-6. Prove provider-facing compaction leaves canonical in-memory messages, raw `executed_tools`, and event-log evidence full-fidelity
+- [ ] 7. Calibrate prompt-pressure budgets from live Super DAN traces
+  - [ ] 7-1. Collect representative `.dan-super/runs/.../events.jsonl` traces that include `model.requested` prompt-pressure telemetry and any `model.context_length_retry` rows
+  - [ ] 7-2. Compare message chars, tool-schema chars, final replay chars, provider prompt-token usage, and context failures to estimate over-compaction and remaining overflow risk
+  - [ ] 7-3. Tune the `super_dan_live` target/emergency char envelopes only if traces show context failures or unnecessary loss of useful recent evidence
+  - [ ] 7-4. Document the observed threshold decision and keep deterministic compaction as the default unless raw refs and retainers prove insufficient
+  - [x] 7-5. Add a deterministic trace analyzer so calibration can be run on one `.dan-super` trace or a run directory without adding an LLM summarizer
+  - [x] 7-6. Run the analyzer on the current workspace's existing Super DAN traces as a baseline before changing thresholds
 
 ## Decisions
 
@@ -98,3 +105,6 @@
 - Prompt-pressure runtime slice landed: the copied-provider-prompt compaction now has a budgeted ladder. It keeps the existing older `file_read` excerpting, then compacts older non-file tool replies, older assistant tool-call arguments, and older assistant prose only under pressure while preserving the initial task, recent rounds, latest validation feedback, and latest read/edit evidence.
 - `super_dan_live` now starts with a target provider replay around `480k` message chars and emergency hard target around `640k` message chars, with tool-schema chars logged separately because provider context failures count both messages and tools. If the normal replay still exceeds the emergency envelope, the runtime switches to aggressive compaction before the provider call.
 - `model.requested` rows now include `prompt_context_budget_chars`, `prompt_context_budget_triggered`, `prompt_context_compacted_tool_call_args`, `prompt_context_compacted_non_file_tools`, `prompt_context_compacted_assistant_messages`, `prompt_context_final_chars`, and `prompt_context_tool_schema_chars`; context-length provider rejections emit one `model.context_length_retry` and retry with emergency deterministic compaction.
+- Prompt-pressure budget calibration is an important follow-up, not a blocker for the deterministic replay patch: use live Super DAN traces to tune the `480k` / `640k` char envelopes against provider token accounting, tool-schema overhead, over-compaction signals, and context-length retry evidence.
+- Calibration tooling landed as `dan-organism-log prompt-pressure`: it reads trace files or run directories, correlates `model.requested` pressure fields with matching provider usage from `model.responded`, surfaces high-pressure calls and context-length retries, and emits a conservative threshold recommendation for the next live-trace pass.
+- Baseline calibration pass on existing workspace traces (`.dan-super/runs`, `research/.dan-super/runs`, `website/.dan-super/runs`, and `animation/.dan-super/runs`) covered `41` trace files, `6866` rows, and `525` model requests. No request triggered budget compaction or context-length retry; peak provider replay was `111647` chars with max tool-schema overhead `10388` chars, so the current traces do not justify threshold changes and a pressure-exercising trace is still needed.

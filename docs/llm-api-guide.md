@@ -13,6 +13,64 @@ from dan.models.context import MergeStrategy, CompactionStrategy, CompactionRule
 from dan.worker import Worker, RoleSpec, WorkerBrief, build_cell, request_from_brief
 ```
 
+### Chat / Agent V2 Ingress
+
+Use `POST /api/v2/chat/message` for the new Chat/Agent V2 entry point. It accepts the legacy `ChatMessageRequest` body for this cutover slice, normalizes the turn into `SurfaceTurn` / `AttachmentRef` metadata, forces `control_plane_mode="v2"`, delegates to the existing chat stream machinery, and returns the usual `message_id`, `stream_channel_id`, and `status` fields plus a compact `v2_control_plane` bridge summary. Existing `/api/chat/message` remains compatible; when a request is explicitly selected for `v2`, it also returns compact bridge metadata without mutating legacy `surface_context`.
+
+The compact response summary is intentionally small and stable:
+
+```json
+{
+  "v2_endpoint": true,
+  "v2_control_plane": {
+    "surface_turn_id": "surface-turn-id",
+    "triage_action": "agent_requested",
+    "task_binding": "new_task",
+    "topic_key": "private:_Users_alice:telegram:dan-bot:user:default",
+    "queue_key": "task:private:_Users_alice:telegram:dan-bot:user:default",
+    "workspace_root": "/Users/alice",
+    "workspace_id": "/Users/alice",
+    "attachment_count": 1,
+    "legacy_bridge": true,
+    "delegated_to": "/api/chat/message",
+    "task_run_ref": {
+      "task_id": "task-id",
+      "run_id": "arun-id",
+      "status": "queued",
+      "workspace_root": "/Users/alice",
+      "workspace_id": "/Users/alice"
+    }
+  }
+}
+```
+
+The V2 ingress contracts live in `src/dan/server/chat_v2.py`:
+- `SurfaceTurn`: canonical user turn from Telegram, frontend, CLI, or other surfaces.
+- `AttachmentRef`: structured file/image/figure/PDF/audio/video/data reference.
+- `AgentRunCommand`, `AgentRunEvent`, `TaskSnapshot`: typed hooks between top-level triage and bounded Agent/organism execution.
+
+For messaging surfaces, keep `history` limited to recent `user` / `assistant` turns and put native reply metadata in `surface_context` instead of pasting quotes into `message`. Telegram V2 recognizes `surface_context.telegram.reply_to_message_id`, `reply_to_text`, sender ids, and `surface_context.conversation` fields such as `conversation_key`, `lane_key`, and `reply_lane_key`. The server stores bounded history plus reply context in `SurfaceTurn.metadata` and Agent start-command payloads so backend Agents can resolve short follow-ups without treating old messages as new tasks.
+
+Every V2 surface session is bound to a workspace. Callers can pass `surface_context["workspace_root"]`, `surface_context["workspace_path"]`, `surface_context["workspace"]="~/project"`, or `surface_context["workspace"]={"id": "...", "root": "..."}`. If omitted, V2 looks for explicit path wording in the user turn, such as `I have this path /repo/app, please fix...`, `repo: ~/project`, or `in /workspace/project`; matching path mentions become `workspace_source="message_path"`. If no explicit or message path is found, V2 binds the session to `~` expanded on the server. The resolved `workspace_root` and `workspace_id` are carried in `SurfaceTurn`, task snapshots, Agent run records, start-command payloads, and compact `v2_control_plane` responses. Once an active task is created from a path-bearing turn, later explicit follow-ups in the same surface topic can inherit that task workspace even if the follow-up omits the path.
+
+`AgentRunEvent` also carries token usage for active management. Per-model-call rows use `type="token_usage_recorded"` with `token_usage_delta`, `token_usage_total`, and `token_usage_round`; task snapshots and run records expose aggregate `token_usage` plus `latest_token_usage_round` / `metadata.token_usage_rounds`. Super DAN backend events pass through provider usage when available, and deterministic test runs emit a provider-free usage record.
+
+Durable task/run state is exposed through the V2 control endpoints:
+- `POST /api/v2/agent-runs`: create or queue a durable V2 Agent task/run from the same chat request body.
+- `POST /api/v2/agent-runs/{run_id}/execute`: execute a queued run through the internal Agent backend adapter. The default backend policy selects Super DAN for mutable workspace tasks; tests and provider-free smokes can request `{"backend":"deterministic"}`.
+- `GET /api/v2/tasks/{task_id}`: retrieve the current `TaskSnapshot`, including queue position, latest progress, artifact refs, blocker, trace refs, token usage, and metadata.
+- `GET /api/v2/threads/{thread_id}/tasks`: list active/recent task snapshots for a chat thread.
+- `GET /api/v2/agent-runs/{run_id}/events`: replay persisted normalized `AgentRunEvent` JSONL for reconnect or inspection.
+- `WS /api/v2/agent-runs/{run_id}/events`: replay persisted events, then stream new events until the run reaches a terminal status.
+- `POST /api/v2/agent-runs/{run_id}/events`: append a normalized Agent event and update the task snapshot.
+- `POST /api/v2/agent-runs/{run_id}/commands`: append a normalized Agent control command such as `stop`, `retry`, `append_followup`, or `continue_after_current`.
+
+The durable store is `src/dan/server/chat_v2_store.py`. It writes JSON task/run snapshots and JSONL event logs. Backend execution is behind `src/dan/server/chat_v2_backend.py`, which defines the generic `AgentBackendAdapter` contract plus Super DAN and deterministic adapters. Super DAN / universal-organism rows can be projected into normalized `AgentRunEvent` values with `src/dan/server/chat_v2_organism.py` while preserving raw source event ids/types/paths. Surface progress rendering is in `src/dan/server/chat_v2_progress.py`; Telegram delivery uses native chat/thread/reply handles, edits an existing progress message when available, sends quiet-period status heartbeats from real Agent event state with total elapsed time and last-event age, and falls back to a new message if editing fails.
+
+Telegram now defaults to pure V2 in both the standalone fleet and in-process adapter bridge. Legacy/v1 Telegram routing is ignored unless `DAN_TELEGRAM_ALLOW_V1=1` is deliberately set for debugging. Ordinary Telegram text stays on V2 Chat; `/agent <task>`, `/run <task>`, `/build <task>`, `agent: <task>`, and obvious workspace/task requests create durable Agent runs. Use `DAN_TELEGRAM_WORKSPACE_ROOT` and optionally `DAN_TELEGRAM_WORKSPACE_ID` to bind those sessions globally, or just mention a path in the task text and let V2 bind that task automatically. Otherwise the V2 default workspace is `~`.
+
+For active Agent follow-ups, V2 queue placement is explicit. Use `/append`, `/inject`, or `surface_context["queue_action"]="append"` / `"checkpoint_append"` to append at the current checkpoint. Use `/continue`, `/continue-after-current`, or `surface_context["queue_action"]="continue_after_current"` to queue work after the active run. A free-text reply to an active task does not auto-append; it produces `triage_action="agent_suggested"`, `task_binding="existing_task"`, and a `queue_key` ending in `:needs-lane` so the surface can ask the user which lane to use.
+
 ---
 
 ## 1. Core Concepts

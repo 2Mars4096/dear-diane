@@ -15,7 +15,7 @@
   - [x] 1-6. Confirm `OutputContract` from `46-7` accommodates brief-supplied `expected_return_shape` + JSON-Schema backstop without changes
 - [ ] 2. Migrate orchestrators to discover roles and emit briefs
   - [ ] 2-1. `coding_execution_organism` emits a task-specific role graph (`RoleSpec` + `WorkerBrief`) instead of assuming orchestrator / worker / aggregator / validator stages
-  - [x] 2-2. `super_organism` live lanes emit task-specific roles, with website-specificity (required files, anti-template phrases, preferred tools) living entirely in role/brief policy data
+  - [x] 2-2. `super_organism` live lanes emit task-specific roles, with website-specificity (required files, anti-template phrases, preferred tools) living entirely in role/brief policy data; broad live tasks can now add optional planner and plan-validator briefs before the builder while narrow edits still go straight to builder
   - [ ] 2-3. `project_execution` and research-reader paths emit task-specific research/review/synthesis roles only when the orchestrator decides they are needed
   - [ ] 2-4. `incident_execution` paths emit task-specific response/verification/communication roles from the incident brief, not from fixed organism code
 - [x] 3. Validators stop being a code concept
@@ -43,6 +43,8 @@
 ## Notes
 
 - 2026-04-26: brief contracts and renderer are now available and wired through `request_from_brief(...)` into the existing `WorkerCoreExecutor`. Product orchestrator migration is still open; legacy code paths remain live until compatibility facades are built.
+- 2026-05-11: Super DAN live brief composition now injects shared, extendable stage snippets for organism self-awareness, workspace boundary policy, tool descriptions, and motivating decision questions across builder, builder retry, validator, and repair roles. The pacing contract stays in contract snippets instead of being repeated inside task text.
+- 2026-05-11 planner slice: Super DAN live now has optional planner and plan-validator brief shapes. The planner creates run-local numeric plan files only for broad objectives, the plan validator audits coherence before execution, and the builder/repair/validator briefs receive a compact `plan_context` so completed checkboxes can be ticked and audited without making planning mandatory.
 - 2026-04-26 follow-up: Super DAN live website/generic lanes now compose `coding_brief(...)` and `review_brief(...)` first, derive universal cells from those briefs, and source website files/tool ids/anti-template phrases from `select_orchestrator(...)` policy data instead of `_build_live_*` worker/validator builders or CLI globals.
 - 2026-04-26 facade follow-up: `src/dan/worker/organisms/legacy_facades.py` now provides additive brief-driven plan composers for coding, project/research, incident, reference-demo, and Super DAN task shapes. These do not yet replace the legacy execution functions, but they establish the compose-then-run compatibility surface for the remaining product rewiring.
 - This is where the duplicated `cli/super_organism.py` builders actually disappear. After 56-3, those ~70-line `_build_live_*_worker` / `_build_live_*_validator` functions become 5–15 line brief composers.

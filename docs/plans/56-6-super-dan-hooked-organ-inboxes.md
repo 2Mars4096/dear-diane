@@ -30,12 +30,12 @@ The hook layer is internal organism infrastructure. It should not start as arbit
 
 - [x] 3. Implement internal hook routing rules
   - [x] 3-1. Route `tool.completed` for material writes to the validation inbox.
-  - [x] 3-2. Route `live.validation.completed` with `passed=false` to first-write recovery when no required edit exists, and to repair only when a concrete patch failed validation.
+  - [x] 3-2. Route `live.validation.completed` with `passed=false` to `builder.retry` when no required edit exists, and to repair only when a concrete patch failed validation.
   - [x] 3-3. Route `live.validation.completed` with `passed=true` to the synthesis inbox.
   - [x] 3-4. Route `live.website_repair.completed` back to the validation inbox.
   - [x] 3-5. Prepare reader/scout hooks for future research-like Super DAN work: `reader.completed` and `scout.completed` enqueue brain review packets instead of directly waking the orchestrator model.
   - [x] 3-6. Route stale heartbeat or long-idle model/tool spans to immune/reallocation packets without interrupting healthy active work.
-  - [x] 3-7. Route `live.website_first_write_recovery.completed` back to validation, while suppressing another recovery hook once the no-write recovery attempt is exhausted.
+  - [x] 3-7. Route `live.builder_retry.completed` back to validation when it changes files, while suppressing another builder retry once the no-mutation retry budget is exhausted.
   - [x] 3-8. Suppress repair packets from terminal failed validation events once the bounded website repair pass is already exhausted.
 
 - [ ] 4. Add queue policy and reactivity controls
@@ -111,9 +111,9 @@ The hook layer is internal organism infrastructure. It should not start as arbit
 - 2026-04-27 implementation slice: `src/dan/cli/super_hooks.py` now provides the first internal hook runtime, durable JSON/JSONL state under `.dan-super/state/`, hook packet idempotency, queue policies, leases, owner locks, worktree policy contracts, live progress hook rows, `--reactivity`, `--queue-status`, `--worktree-parallelism`, and interactive `/status` / `/queues`. Actual worktree execution and external/multi-server queue backends remain open.
 - 2026-04-27 continuation slice: hook state can now be rebuilt idempotently from `.dan-super/runs/turn-XX/events.jsonl`; stale heartbeat packets replace older pending heartbeat packets instead of growing the queue; and worktree diff packets now pass through a non-authoritative admission/rejection record before any future main-lane merge.
 - 2026-04-27 repair-exhaustion slice: final website validation events now carry `repair_attempted` and `repair_exhausted`, and hook routing suppresses another `repair_requested` packet once the one bounded repair pass has already failed. This keeps the hook projection honest until the repair lane becomes a real asynchronous executor with its own retry budget.
-- 2026-04-27 no-write recovery slice: website live runs now treat "builder completed but changed no required files" as first-write recovery instead of validation repair. The CLI runs one bounded direct-write recovery pass, logs `[retry] first-write recovery ...`, revalidates if a patch lands, and hook routing no longer emits confusing repair packets for exhausted no-write failures.
-- 2026-04-28 generic no-mutation routing slice: generic live no-mutation rows now route to first-write recovery rather than repair, final validation suppresses further recovery after the bounded recovery attempts are spent, and `live.generic_first_write_recovery.completed` feeds the validation inbox only when the recovery actually changed files.
-- 2026-04-27 generic validation routing slice, updated 2026-04-28: generic live validation rows now carry mutated paths as changed-file evidence, and `live.generic_repair.completed` feeds the validation inbox like website repair completion. Quality failures after a real generic mutation route to repair/revalidation rather than `first_write_recovery`.
+- 2026-05-11 builder-retry normalization slice: no-mutation rows now route through the generic `builder.retry` inbox and `live.builder_retry.*` events. Final validation records `builder_retry_attempted`, and hook routing feeds validation only for retry completions that actually changed files.
+- 2026-04-27 no-write slice, updated 2026-05-11: live runs treat "builder completed but changed no required files" as a bounded builder retry instead of validation repair. The CLI logs `[builder] retry ...`, revalidates if a patch lands, and hook routing no longer emits confusing repair packets for exhausted no-write failures.
+- 2026-04-27 generic validation routing slice, updated 2026-05-11: generic live validation rows now carry mutated paths as changed-file evidence, and `live.generic_repair.completed` feeds the validation inbox like website repair completion. Quality failures after a real generic mutation route to repair/revalidation rather than builder retry.
 - Immediate responsiveness can be achieved by setting small `max_wait_ms` and low queue length, but safety still comes from leases, owner locks, coalescing, and deterministic admission.
 - If the orchestrator is busy and the queue fills, policy should be packet-specific: reader/scout evidence coalesces, validation failures preempt, builder patches backpressure, and stale heartbeat/progress rows drop.
 - This plan is about Super DAN organism hooks. It is not the older workflow-engine hook model and should not inherit workflow graph semantics unless a later bridge explicitly needs them.
