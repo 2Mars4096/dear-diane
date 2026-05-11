@@ -36,6 +36,12 @@ from dan.adapters.telegram_config import (
     save_fleet_config,
 )
 from dan.adapters.telegram_router import MessageRouter, RoutableBot
+from dan.server.chat_v2 import (
+    format_token_usage,
+    merge_token_usage,
+    normalize_token_usage,
+)
+from dan.server.chat_v2_progress import AgentProgressStateMachine
 
 logger = logging.getLogger(__name__)
 _FLEET_LOCK_FILE = Path.home() / ".dan" / "telegram" / "fleet.lock"
@@ -89,6 +95,9 @@ class BotFleet:
     )
     _PROGRESS_BACKOFF_FACTOR: float = float(
         os.environ.get("DAN_TELEGRAM_PROGRESS_BACKOFF", "1.5")
+    )
+    _V2_AGENT_PROGRESS_INTERVAL: float = float(
+        os.environ.get("DAN_TELEGRAM_V2_PROGRESS_INTERVAL", "10")
     )
 
     def __init__(
@@ -336,6 +345,7 @@ class BotFleet:
             for peer in self._bots.values()
             if peer.name != bot.name and peer.bot_username
         ]
+        workspace = _telegram_workspace_context(bot.name)
         return {
             "identity": {
                 "name": bot.name,
@@ -345,7 +355,40 @@ class BotFleet:
                 "project_focus": list(bot.projects),
             },
             "peers": peers,
+            **workspace,
         }
+
+    def _build_turn_surface_context(
+        self,
+        bot: BotInstance,
+        ctx: MessageContext,
+        *,
+        conversation_key: str | None = None,
+        lane_key: str | None = None,
+        reply_lane_key: str | None = None,
+        history: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        context = self._build_surface_context(bot)
+        context["telegram"] = {
+            "chat_id": ctx.chat_id,
+            "message_id": ctx.message_id,
+            "message_thread_id": ctx.thread_id,
+            "reply_to_message_id": ctx.reply_to_message_id,
+            "reply_to_text": _compact_context_text(ctx.reply_to_text, limit=1200),
+            "chat_type": ctx.chat_type,
+            "from_user_id": ctx.from_user_id,
+            "from_user_username": ctx.from_user_username,
+            "sender_chat_id": ctx.sender_chat_id,
+            "sender_chat_username": ctx.sender_chat_username,
+        }
+        context["conversation"] = {
+            "conversation_key": conversation_key or "",
+            "lane_key": lane_key or "",
+            "reply_lane_key": reply_lane_key or "",
+            "history_turn_count": len(history or []),
+            "history_window": min(len(history or []), 40),
+        }
+        return context
 
     def _remember_outbound_message(
         self,
@@ -631,10 +674,13 @@ class BotFleet:
                     dispatch_params["conversation_key"] = conversation_key
                 if accepts_kwargs or "lane_key" in signature.parameters:
                     dispatch_params["lane_key"] = lane_key
+                if accepts_kwargs or "reply_lane_key" in signature.parameters:
+                    dispatch_params["reply_lane_key"] = reply_lane_key
             except (TypeError, ValueError):
                 dispatch_params = {
                     "conversation_key": conversation_key,
                     "lane_key": lane_key,
+                    "reply_lane_key": reply_lane_key,
                 }
 
             task = asyncio.create_task(
@@ -673,6 +719,7 @@ class BotFleet:
         *,
         conversation_key: str | None = None,
         lane_key: str | None = None,
+        reply_lane_key: str | None = None,
     ) -> None:
         if conversation_key is None:
             conversation_key = _conversation_thread_key(ctx, bot.name)
@@ -681,6 +728,11 @@ class BotFleet:
                 ctx,
                 bot.name,
                 fork_for_parallel=self._conversation_has_active_dispatch(conversation_key),
+            )
+        if reply_lane_key is None:
+            reply_lane_key = self._lookup_message_lane(
+                ctx.chat_id,
+                ctx.reply_to_message_id,
             )
         if bot.adapter is None or self._http is None:
             self._mark_conversation_dispatch_finished(conversation_key)
@@ -733,6 +785,26 @@ class BotFleet:
                     if _strip_media_marker(text)
                     else f"Please review this PDF: {att_path}"
                 )
+            requested_mode, msg_text = _telegram_requested_mode(msg_text)
+            control_plane = _telegram_control_plane_override(bot.name)
+            effective_mode = _telegram_effective_requested_mode(
+                control_plane,
+                requested_mode,
+                msg_text,
+            )
+            if effective_mode == "agent" and not msg_text.strip():
+                await self._send_reply(
+                    bot,
+                    ctx,
+                    "Usage: /agent describe the task to run.",
+                    lane_key=lane_key,
+                    thread_id=ctx.thread_id,
+                )
+                if settings.use_reactions:
+                    await bot.adapter.set_reaction(
+                        ctx.chat_id, ctx.message_id, "❌",
+                    )
+                return
 
             user_turn = {"role": "user", "content": msg_text}
             history = await self._record_user_turn(
@@ -746,16 +818,45 @@ class BotFleet:
                 "history": history,
                 "thread_id": conversation_key,
                 "session_id": lane_key,
-                "mode": "auto",
+                "mode": effective_mode,
                 "surface": surface,
                 "surface_type": surface_type,
                 "surface_id": surface_id,
-                "surface_context": self._build_surface_context(bot),
+                "surface_context": self._build_turn_surface_context(
+                    bot,
+                    ctx,
+                    conversation_key=conversation_key,
+                    lane_key=lane_key,
+                    reply_lane_key=reply_lane_key,
+                    history=history,
+                ),
             }
+            if control_plane:
+                body["control_plane_mode"] = control_plane
             if att_path:
                 body["attachment_path"] = att_path
 
-            resp = await self._http.post("/api/chat/message", json=body)
+            if control_plane == "v2" and effective_mode == "agent":
+                full_reply = await self._run_v2_agent_turn(
+                    bot,
+                    ctx,
+                    body,
+                    lane_key=lane_key,
+                )
+                if full_reply:
+                    await self._append_assistant_turn(
+                        lane_key,
+                        full_reply,
+                        conversation_key=conversation_key,
+                    )
+                if settings.use_reactions:
+                    await bot.adapter.set_reaction(
+                        ctx.chat_id, ctx.message_id, "✅",
+                    )
+                return
+
+            endpoint = "/api/v2/chat/message" if control_plane == "v2" else "/api/chat/message"
+            resp = await self._http.post(endpoint, json=body)
             if resp.status_code != 200:
                 await self._rollback_user_turn(conversation_key, lane_key, user_turn)
                 if settings.use_reactions:
@@ -1436,6 +1537,137 @@ class BotFleet:
                     queue_hint_count = 0
                     yield event
 
+    async def _run_v2_agent_turn(
+        self,
+        bot: BotInstance,
+        ctx: MessageContext,
+        body: dict[str, Any],
+        *,
+        lane_key: str | None = None,
+    ) -> str:
+        """Create, execute, and stream a V2 Agent run for one Telegram turn."""
+
+        assert bot.adapter is not None
+        if self._http is None:
+            raise RuntimeError("Telegram fleet HTTP client is not available")
+
+        create_resp = await self._http.post("/api/v2/agent-runs", json=body)
+        if create_resp.status_code != 200:
+            raise RuntimeError(
+                f"V2 Agent run creation failed: HTTP {create_resp.status_code}",
+            )
+        created = create_resp.json()
+        control = created.get("v2_control_plane") if isinstance(created, dict) else {}
+        control = control if isinstance(control, dict) else {}
+        run_id = str(control.get("run_id") or "").strip()
+        if not run_id:
+            event = created.get("event") if isinstance(created, dict) else {}
+            event = event if isinstance(event, dict) else {}
+            message = (
+                str(event.get("summary") or "").strip()
+                or "This needs an explicit Agent lane. Send `/agent your task` to run it."
+            )
+            await self._send_reply(
+                bot,
+                ctx,
+                _format_for_telegram(message),
+                lane_key=lane_key,
+                already_cleaned=True,
+                thread_id=ctx.thread_id,
+            )
+            return message
+
+        backend = (
+            os.environ.get("DAN_TELEGRAM_V2_AGENT_BACKEND")
+            or os.environ.get("DAN_CHAT_V2_AGENT_BACKEND")
+            or ""
+        ).strip()
+        execute_body: dict[str, Any] = {"background": True}
+        if backend:
+            execute_body["backend"] = backend
+        execute_resp = await self._http.post(
+            f"/api/v2/agent-runs/{run_id}/execute",
+            json=execute_body,
+        )
+        if execute_resp.status_code != 200:
+            raise RuntimeError(
+                f"V2 Agent run execution failed: HTTP {execute_resp.status_code}",
+            )
+        return await self._stream_v2_agent_run_events(
+            bot,
+            ctx,
+            run_id,
+            lane_key=lane_key,
+        )
+
+    async def _stream_v2_agent_run_events(
+        self,
+        bot: BotInstance,
+        ctx: MessageContext,
+        run_id: str,
+        *,
+        lane_key: str | None = None,
+    ) -> str:
+        """Stream normalized Agent events into one Telegram progress message."""
+
+        assert bot.adapter is not None
+        import websockets
+
+        ws_url = self._server_url.replace("http://", "ws://").replace(
+            "https://", "wss://",
+        )
+        url = f"{ws_url}/api/v2/agent-runs/{run_id}/events"
+        current_msg_id: int | None = None
+        terminal_summary = ""
+        progress = AgentProgressStateMachine(run_id=run_id)
+        heartbeat_interval = max(0.0, float(self._V2_AGENT_PROGRESS_INTERVAL))
+
+        async def _send_progress(text: str) -> None:
+            nonlocal current_msg_id
+            current_msg_id = await bot.adapter.send_or_edit(
+                ctx.chat_id,
+                _format_for_telegram(text),
+                current_msg_id,
+                reply_to=ctx.message_id if current_msg_id is None else None,
+                thread_id=ctx.thread_id,
+            )
+            self._remember_outbound_message(
+                ctx.chat_id,
+                current_msg_id,
+                lane_key=lane_key,
+            )
+
+        async with websockets.connect(
+            url, ping_interval=None, ping_timeout=None,
+        ) as ws:
+            while True:
+                try:
+                    if heartbeat_interval > 0:
+                        ws_msg = await asyncio.wait_for(
+                            ws.recv(),
+                            timeout=heartbeat_interval,
+                        )
+                    else:
+                        ws_msg = await ws.recv()
+                except asyncio.TimeoutError:
+                    if not progress.terminal:
+                        await _send_progress(progress.render_status(heartbeat=True))
+                    continue
+                except Exception as exc:
+                    if exc.__class__.__name__.startswith("ConnectionClosed"):
+                        break
+                    raise
+                event = json.loads(ws_msg)
+                if not isinstance(event, dict):
+                    continue
+                snapshot = progress.observe(event)
+                text = progress.render_status()
+                await _send_progress(text)
+                if snapshot.terminal:
+                    terminal_summary = snapshot.latest_summary or snapshot.detail or text
+                    break
+        return terminal_summary or progress.snapshot().latest_summary
+
     async def _send_reply(
         self,
         bot: BotInstance,
@@ -1566,17 +1798,12 @@ class BotFleet:
         return next(iter(self._bots.values()), None)
 
     def _infer_project_commands(self, bot: BotInstance) -> list[tuple[str, str]]:
-        commands: list[tuple[str, str]] = [
-            ("help", "Show available commands"),
+        return [
+            ("agent", "Run a V2 Agent task"),
             ("status", "Check current task status"),
             ("cancel", "Cancel current task"),
+            ("help", "Show available commands"),
         ]
-        project_text = " ".join(bot.projects).lower()
-        if "research" in project_text or "literature" in project_text:
-            commands.append(("search", "Search literature"))
-        if "data" in project_text or "equity" in project_text or "analysis" in project_text:
-            commands.append(("analyze", "Analyze a dataset or report"))
-        return commands[:10]
 
     async def _on_topic_created(
         self,
@@ -1607,6 +1834,244 @@ class BotFleet:
 
 
 # -- helpers ----------------------------------------------------------------
+
+
+def _env_suffix(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "_", str(value or "").strip().upper()).strip("_")
+
+
+def _telegram_allow_v1() -> bool:
+    return str(os.environ.get("DAN_TELEGRAM_ALLOW_V1") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _telegram_control_plane_override(bot_name: str) -> str:
+    allow_v1 = _telegram_allow_v1()
+    suffix = _env_suffix(bot_name)
+    candidates = [
+        f"DAN_TELEGRAM_{suffix}_CONTROL_PLANE" if suffix else "",
+        "DAN_TELEGRAM_CONTROL_PLANE",
+        "DAN_ADAPTERS_CONTROL_PLANE",
+    ]
+    for key in candidates:
+        if not key:
+            continue
+        value = str(os.environ.get(key) or "").strip().lower()
+        if value in {"v1", "legacy"}:
+            return "v1" if allow_v1 else "v2"
+        if value in {"v2", "dan-v2", "dan_v2"}:
+            return "v2"
+    if str(os.environ.get("DAN_TELEGRAM_V2") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return "v2"
+    return "v2"
+
+
+def _telegram_workspace_context(bot_name: str) -> dict[str, Any]:
+    suffix = _env_suffix(bot_name)
+    root = (
+        os.environ.get(f"DAN_TELEGRAM_{suffix}_WORKSPACE_ROOT") if suffix else None
+    ) or os.environ.get("DAN_TELEGRAM_WORKSPACE_ROOT") or os.environ.get(
+        "DAN_WORKSPACE_ROOT",
+    )
+    workspace_id = (
+        os.environ.get(f"DAN_TELEGRAM_{suffix}_WORKSPACE_ID") if suffix else None
+    ) or os.environ.get("DAN_TELEGRAM_WORKSPACE_ID")
+    context: dict[str, Any] = {}
+    if root:
+        context["workspace_root"] = root
+    if workspace_id:
+        context["workspace_id"] = workspace_id
+    return context
+
+
+def _telegram_requested_mode(text: str) -> tuple[str, str]:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return "auto", stripped
+    first, _, rest = stripped.partition(" ")
+    command = first.split("@", 1)[0].lower()
+    if command in {"/agent", "/run", "/build"}:
+        return "agent", rest.strip()
+    if stripped.lower().startswith("agent:"):
+        return "agent", stripped.split(":", 1)[1].strip()
+    return "auto", stripped
+
+
+def _telegram_effective_requested_mode(
+    control_plane: str | None,
+    requested_mode: str,
+    text: str,
+) -> str:
+    mode = str(requested_mode or "auto").strip().lower() or "auto"
+    if (
+        control_plane == "v2"
+        and mode == "auto"
+        and not _telegram_v2_control_command(text)
+        and _telegram_v2_auto_text_should_run_agent(text)
+    ):
+        return "agent"
+    return mode
+
+
+def _telegram_v2_control_command(text: str) -> str:
+    stripped = str(text or "").strip()
+    if not stripped.startswith("/"):
+        return ""
+    first = stripped.split(maxsplit=1)[0].split("@", 1)[0].lower()
+    command = first.lstrip("/")
+    if command in {"status", "cancel", "help", "start"}:
+        return command
+    return ""
+
+
+def _telegram_v2_auto_text_should_run_agent(text: str) -> bool:
+    lower = " ".join(str(text or "").lower().split())
+    if not lower:
+        return False
+    if _extract_attachment(text) or _extract_voice_note(text):
+        return any(
+            cue in lower
+            for cue in (
+                "analyze",
+                "extract",
+                "build",
+                "turn into",
+                "compare",
+                "summarize",
+            )
+        )
+    has_path_context = bool(
+        re.search(r"(^|\s)(/[^ ]+|~/[^ ]+|[a-z]:\\)", lower)
+    ) or any(
+        cue in lower
+        for cue in (
+            "this path",
+            "path:",
+            "repo:",
+            "workspace:",
+            "in /",
+            "in ~/",
+        )
+    )
+    if has_path_context and any(
+        cue in lower
+        for cue in (
+            "help",
+            "do this",
+            "work on",
+            "fix",
+            "patch",
+            "build",
+            "implement",
+            "edit",
+            "modify",
+            "run tests",
+            "create",
+        )
+    ):
+        return True
+    return any(
+        cue in lower
+        for cue in (
+            "implement",
+            "build",
+            "create file",
+            "write to",
+            "refactor",
+            "run tests",
+            "make a website",
+            "patch",
+            "edit the",
+            "modify the",
+            "fix the repo",
+            "fix this repo",
+            "long running",
+        )
+    )
+
+
+def _compact_context_text(value: Any, *, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _format_v2_agent_event_for_telegram(
+    *,
+    event_type: str,
+    summary: str,
+    run_id: str,
+    artifact_refs: list[dict[str, Any]],
+    token_usage: dict[str, int] | None = None,
+    event_token_usage_delta: dict[str, int] | None = None,
+    event_token_usage_total: dict[str, int] | None = None,
+) -> str:
+    status = {
+        "accepted": "Accepted",
+        "queued": "Queued",
+        "planned": "Planning",
+        "worker_started": "Working",
+        "model_text_delta": "Thinking",
+        "tool_used": "Using tools",
+        "artifact_changed": "Updated artifacts",
+        "validation_started": "Validating",
+        "repair_started": "Repairing",
+        "token_usage_recorded": "Tokens",
+        "completed": "Done",
+        "failed": "Failed",
+        "blocked": "Blocked",
+        "stopped": "Stopped",
+    }.get(event_type, event_type.replace("_", " ").title() or "Agent")
+    lines = [f"{status}: {summary or run_id}"]
+    if event_type == "token_usage_recorded":
+        delta_text = format_token_usage(event_token_usage_delta or {})
+        total_text = format_token_usage(event_token_usage_total or token_usage or {})
+        lines = [f"Tokens: {delta_text}"]
+        if total_text != "unavailable":
+            lines[0] += f" (run total: {total_text})"
+    elif event_type in {"completed", "failed", "blocked", "stopped"}:
+        usage_text = format_token_usage(token_usage or event_token_usage_total or {})
+        if usage_text != "unavailable":
+            lines.append("")
+            lines.append(f"Tokens: {usage_text}")
+    if event_type == "completed" and artifact_refs:
+        paths = [str(item.get("path") or "") for item in artifact_refs if item.get("path")]
+        if paths:
+            lines.append("")
+            lines.append("Artifacts:")
+            lines.extend(f"- {path}" for path in paths[:8])
+    return _format_for_telegram("\n".join(lines).strip())
+
+
+def _v2_event_token_usage_total(
+    event: dict[str, Any],
+    *,
+    current_total: dict[str, int],
+) -> dict[str, int]:
+    total = normalize_token_usage(event.get("token_usage_total"))
+    if total:
+        return total
+    delta = normalize_token_usage(event.get("token_usage_delta"))
+    if delta:
+        return merge_token_usage(current_total, delta)
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    total = normalize_token_usage(payload.get("token_usage_total") or payload.get("usage_totals"))
+    if total:
+        return total
+    delta = normalize_token_usage(payload.get("token_usage_delta") or payload.get("usage"))
+    if delta:
+        return merge_token_usage(current_total, delta)
+    return dict(current_total)
 
 
 def _extract_attachment(text: str) -> str | None:

@@ -55,6 +55,8 @@ _adapter_surface_types: dict[str, str] = {}
 _adapter_status_snapshots: dict[str, dict[str, Any]] = {}
 _adapter_event_subscribers: dict[str, set[asyncio.Queue[dict[str, Any] | None]]] = {}
 _adapter_event_snapshots: dict[str, dict[str, dict[str, Any]]] = {}
+_adapter_conversation_history: dict[str, list[dict[str, str]]] = {}
+_adapter_history_locks: dict[str, asyncio.Lock] = {}
 
 _heartbeat_task: asyncio.Task[Any] | None = None
 _heartbeat_interval: int = int(os.environ.get("DAN_ADAPTER_HEARTBEAT_SECONDS", "60"))
@@ -87,6 +89,7 @@ def _control_plane_env_key_suffix(*parts: str) -> str:
 
 
 def _adapter_control_plane_override(adapter_id: str, surface: str) -> str | None:
+    pure_telegram_v2 = surface == "telegram" and not _telegram_adapter_allows_v1()
     candidates: list[str] = []
     for value in (
         _control_plane_env_key_suffix(surface),
@@ -103,11 +106,229 @@ def _adapter_control_plane_override(adapter_id: str, surface: str) -> str | None
         except ValueError:
             continue
         if parsed is not None:
+            if pure_telegram_v2 and parsed == "v1":
+                return "v2"
             return parsed
     try:
-        return parse_control_plane_mode(os.environ.get("DAN_ADAPTERS_CONTROL_PLANE"))
+        parsed = parse_control_plane_mode(os.environ.get("DAN_ADAPTERS_CONTROL_PLANE"))
     except ValueError:
-        return None
+        parsed = None
+    if pure_telegram_v2 and parsed == "v1":
+        return "v2"
+    if parsed is not None:
+        return parsed
+    if pure_telegram_v2:
+        return "v2"
+    return None
+
+
+def _telegram_adapter_allows_v1() -> bool:
+    return str(os.environ.get("DAN_TELEGRAM_ALLOW_V1") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _adapter_requested_mode(text: str) -> tuple[str, str]:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return "auto", stripped
+    first, _, rest = stripped.partition(" ")
+    command = first.split("@", 1)[0].lower()
+    if command in {"/agent", "/run", "/build"}:
+        return "agent", rest.strip()
+    if stripped.lower().startswith("agent:"):
+        return "agent", stripped.split(":", 1)[1].strip()
+    return "auto", stripped
+
+
+def _adapter_effective_requested_mode(
+    *,
+    surface: str,
+    control_plane_mode: str | None,
+    requested_mode: str,
+    text: str,
+) -> str:
+    mode = str(requested_mode or "auto").strip().lower() or "auto"
+    if (
+        str(surface or "").strip().lower() == "telegram"
+        and control_plane_mode == "v2"
+        and mode == "auto"
+        and not _adapter_v2_control_command(text)
+        and _adapter_v2_auto_text_should_run_agent(text)
+    ):
+        return "agent"
+    return mode
+
+
+def _adapter_v2_control_command(text: str) -> str:
+    stripped = str(text or "").strip()
+    if not stripped.startswith("/"):
+        return ""
+    first = stripped.split(maxsplit=1)[0].split("@", 1)[0].lower()
+    command = first.lstrip("/")
+    if command in {"status", "cancel", "help", "start"}:
+        return command
+    return ""
+
+
+def _adapter_v2_auto_text_should_run_agent(text: str) -> bool:
+    lower = " ".join(str(text or "").lower().split())
+    if not lower:
+        return False
+    if "[attachment:" in lower or "[voice note:" in lower:
+        return any(
+            cue in lower
+            for cue in (
+                "analyze",
+                "extract",
+                "build",
+                "turn into",
+                "compare",
+                "summarize",
+            )
+        )
+    has_path_context = bool(
+        re.search(r"(^|\s)(/[^ ]+|~/[^ ]+|[a-z]:\\)", lower)
+    ) or any(
+        cue in lower
+        for cue in (
+            "this path",
+            "path:",
+            "repo:",
+            "workspace:",
+            "in /",
+            "in ~/",
+        )
+    )
+    if has_path_context and any(
+        cue in lower
+        for cue in (
+            "help",
+            "do this",
+            "work on",
+            "fix",
+            "patch",
+            "build",
+            "implement",
+            "edit",
+            "modify",
+            "run tests",
+            "create",
+        )
+    ):
+        return True
+    return any(
+        cue in lower
+        for cue in (
+            "implement",
+            "build",
+            "create file",
+            "write to",
+            "refactor",
+            "run tests",
+            "make a website",
+            "patch",
+            "edit the",
+            "modify the",
+            "fix the repo",
+            "fix this repo",
+            "long running",
+        )
+    )
+
+
+def _adapter_history_key(adapter_id: str, surface: str, external_id: str) -> str:
+    return ":".join(
+        part
+        for part in (
+            str(surface or "adapter").strip() or "adapter",
+            str(adapter_id or "").strip(),
+            str(external_id or "").strip(),
+        )
+        if part
+    )
+
+
+def _compact_adapter_context_text(value: Any, *, limit: int = 1600) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+async def _append_adapter_history_turn(
+    history_key: str,
+    turn: dict[str, str],
+) -> list[dict[str, str]]:
+    lock = _adapter_history_locks.setdefault(history_key, asyncio.Lock())
+    async with lock:
+        history = list(_adapter_conversation_history.get(history_key, []))
+        role = str(turn.get("role") or "").strip()
+        content = _compact_adapter_context_text(turn.get("content"))
+        if role in {"user", "assistant"} and content:
+            history.append({"role": role, "content": content})
+        if len(history) > 40:
+            history = history[-40:]
+        _adapter_conversation_history[history_key] = history
+        return list(history)
+
+
+async def _remove_adapter_history_turn(
+    history_key: str,
+    turn: dict[str, str],
+) -> None:
+    lock = _adapter_history_locks.setdefault(history_key, asyncio.Lock())
+    async with lock:
+        history = list(_adapter_conversation_history.get(history_key, []))
+        role = str(turn.get("role") or "").strip()
+        content = _compact_adapter_context_text(turn.get("content"))
+        for idx in range(len(history) - 1, -1, -1):
+            if history[idx].get("role") == role and history[idx].get("content") == content:
+                del history[idx]
+                break
+        _adapter_conversation_history[history_key] = history
+
+
+def _adapter_reply_context(ctx: Any | None) -> dict[str, str]:
+    if ctx is None:
+        return {}
+    reply_to_message_id = str(getattr(ctx, "reply_to_message_id", "") or "").strip()
+    reply_to_text = _compact_adapter_context_text(
+        getattr(ctx, "reply_to_text", ""),
+        limit=1200,
+    )
+    reply: dict[str, str] = {}
+    if reply_to_message_id:
+        reply["reply_to_message_id"] = reply_to_message_id
+    if reply_to_text:
+        reply["reply_to_text"] = reply_to_text
+    return reply
+
+
+def _adapter_workspace_context(surface: str, adapter_id: str) -> dict[str, Any]:
+    surface_suffix = _control_plane_env_key_suffix(surface)
+    adapter_suffix = _control_plane_env_key_suffix(adapter_id)
+    root = (
+        os.environ.get(f"DAN_{surface_suffix}_WORKSPACE_ROOT") if surface_suffix else None
+    ) or (
+        os.environ.get(f"DAN_{adapter_suffix}_WORKSPACE_ROOT") if adapter_suffix else None
+    ) or os.environ.get("DAN_ADAPTERS_WORKSPACE_ROOT") or os.environ.get(
+        "DAN_WORKSPACE_ROOT",
+    )
+    workspace_id = (
+        os.environ.get(f"DAN_{surface_suffix}_WORKSPACE_ID") if surface_suffix else None
+    ) or (
+        os.environ.get(f"DAN_{adapter_suffix}_WORKSPACE_ID") if adapter_suffix else None
+    ) or os.environ.get("DAN_ADAPTERS_WORKSPACE_ID")
+    context: dict[str, Any] = {}
+    if root:
+        context["workspace_root"] = root
+    if workspace_id:
+        context["workspace_id"] = workspace_id
+    return context
 
 
 class AdapterStopRequest(BaseModel):
@@ -169,17 +390,7 @@ async def _send_adapter_text(adapter: Any, external_id: str, text: str) -> None:
         if hasattr(adapter, "_jid_map"):
             await adapter._send_text(external_id, text)
         else:
-            try:
-                thread_id: int | None = None
-                if ":" in str(external_id):
-                    chat_raw, thread_raw = str(external_id).split(":", 1)
-                    chat_id = int(chat_raw)
-                    thread_id = int(thread_raw) if thread_raw else None
-                else:
-                    chat_id = int(external_id)
-            except (ValueError, TypeError):
-                chat_id = external_id  # type: ignore[assignment]
-                thread_id = None
+            chat_id, thread_id = _adapter_external_target(external_id)
             if isinstance(chat_id, int):
                 await adapter._send_text(chat_id, text, thread_id=thread_id)
             else:
@@ -197,6 +408,104 @@ async def _send_adapter_text(adapter: Any, external_id: str, text: str) -> None:
             await adapter.send_prompt(sid, text)
         else:
             logger.debug("No session for external_id %s, trying direct send", external_id)
+
+
+def _adapter_external_target(external_id: str) -> tuple[int | str, int | None]:
+    try:
+        thread_id: int | None = None
+        if ":" in str(external_id):
+            chat_raw, thread_raw = str(external_id).split(":", 1)
+            chat_id = int(chat_raw)
+            thread_id = int(thread_raw) if thread_raw else None
+        else:
+            chat_id = int(external_id)
+        return chat_id, thread_id
+    except (ValueError, TypeError):
+        return external_id, None
+
+
+async def _send_adapter_progress_or_edit(
+    adapter: Any,
+    external_id: str,
+    text: str,
+    *,
+    message_id: int | None = None,
+) -> int | None:
+    if hasattr(adapter, "send_or_edit") and not hasattr(adapter, "_jid_map"):
+        chat_id, thread_id = _adapter_external_target(external_id)
+        if isinstance(chat_id, int):
+            try:
+                return await adapter.send_or_edit(
+                    chat_id,
+                    text,
+                    message_id,
+                    thread_id=thread_id,
+                )
+            except Exception:
+                logger.debug(
+                    "Adapter progress edit failed for %s",
+                    external_id,
+                    exc_info=True,
+                )
+    await _send_adapter_text(adapter, external_id, text)
+    return message_id
+
+
+async def _stream_v2_agent_run_events_to_adapter(
+    adapter: Any,
+    external_id: str,
+    run_id: str,
+) -> str:
+    """Project a local V2 Agent run event log into one adapter progress bubble."""
+
+    from dan.server.chat_v2_progress import AgentProgressStateMachine
+    from dan.server.routers.dependencies import get_chat_v2_store
+
+    terminal_statuses = {"completed", "failed", "blocked", "stopped"}
+    store = get_chat_v2_store()
+    progress = AgentProgressStateMachine(run_id=run_id)
+    heartbeat_interval = max(
+        0.0,
+        float(os.environ.get("DAN_TELEGRAM_V2_PROGRESS_INTERVAL", "10")),
+    )
+    current_msg_id: int | None = None
+    seen = 0
+    last_progress_at = time.monotonic()
+
+    while True:
+        events = store.load_run_events(run_id)
+        if len(events) > seen:
+            for event in events[seen:]:
+                snapshot = progress.observe(event)
+                current_msg_id = await _send_adapter_progress_or_edit(
+                    adapter,
+                    external_id,
+                    progress.render_status(),
+                    message_id=current_msg_id,
+                )
+                last_progress_at = time.monotonic()
+                if snapshot.terminal:
+                    return snapshot.latest_summary or snapshot.detail
+            seen = len(events)
+            continue
+
+        run = store.get_run(run_id)
+        if run is None or run.status in terminal_statuses:
+            break
+
+        now = time.monotonic()
+        if heartbeat_interval > 0 and now - last_progress_at >= heartbeat_interval:
+            current_msg_id = await _send_adapter_progress_or_edit(
+                adapter,
+                external_id,
+                progress.render_status(heartbeat=True),
+                message_id=current_msg_id,
+            )
+            last_progress_at = now
+        await asyncio.sleep(0.25)
+
+    snapshot = progress.snapshot()
+    return snapshot.latest_summary or snapshot.detail
 
 
 def _mask_secret(value: str) -> str | None:
@@ -1095,15 +1404,18 @@ def _build_adapter_chat_request_body(
     surface: str,
     external_id: str,
     message_text: str,
+    history: list[dict[str, str]] | None = None,
+    ctx: Any | None = None,
     control_plane_mode: str | None = None,
 ) -> dict[str, Any]:
     surface_id = str(adapter_id or surface or "adapter").strip() or "adapter"
     surface_type = str(surface or "adapter").strip() or "adapter"
     session_id = str(external_id or surface_id).strip() or surface_id
+    history_key = _adapter_history_key(adapter_id, surface_type, session_id)
     payload = {
         "workflow_id": "_scratch",
         "message": message_text,
-        "history": [],
+        "history": list(history or []),
         "thread_id": session_id,
         "session_id": session_id,
         "mode": "auto",
@@ -1115,9 +1427,35 @@ def _build_adapter_chat_request_body(
                 "adapter_id": adapter_id,
                 "external_id": external_id,
                 "surface": surface_type,
-            }
+            },
+            **_adapter_workspace_context(surface_type, adapter_id),
         },
     }
+    if surface_type == "telegram":
+        chat_id, thread_id = _adapter_external_target(external_id)
+        native_chat_id = getattr(ctx, "chat_id", None)
+        native_thread_id = getattr(ctx, "thread_id", None)
+        payload["surface_context"]["telegram"] = {
+            "chat_id": native_chat_id if native_chat_id is not None else chat_id,
+            "message_thread_id": (
+                native_thread_id if native_thread_id is not None else thread_id
+            ),
+            "message_id": getattr(ctx, "message_id", None),
+            "reply_to_message_id": getattr(ctx, "reply_to_message_id", None),
+            "reply_to_text": getattr(ctx, "reply_to_text", None),
+            "from_user_id": getattr(ctx, "from_user_id", None),
+            "from_user_username": getattr(ctx, "from_user_username", None),
+            "chat_type": getattr(ctx, "chat_type", "private"),
+            "sender_chat_id": getattr(ctx, "sender_chat_id", None),
+            "sender_chat_username": getattr(ctx, "sender_chat_username", None),
+        }
+        payload["surface_context"]["conversation"] = {
+            "conversation_key": history_key,
+            "lane_key": history_key,
+            "reply_lane_key": history_key if _adapter_reply_context(ctx) else None,
+            "history_turn_count": len(history or []),
+            "history_window": min(len(history or []), 40),
+        }
     if control_plane_mode is not None:
         payload["control_plane_mode"] = control_plane_mode
     return payload
@@ -1576,6 +1914,7 @@ def _run_adapter_message_handler(
     adapter_id: str,
     external_id: str,
     message_text: str,
+    ctx: Any | None = None,
 ) -> None:
     adapter_entry = _active_adapters.get(adapter_id)
     if adapter_entry is None:
@@ -1616,7 +1955,14 @@ def _run_adapter_message_handler(
     _concierge = get_concierge()
     if _dispatcher is not None or _concierge is not None:
         asyncio.create_task(
-            _run_adapter_concierge(adapter_id, adapter, surface, external_id, message_text),
+            _run_adapter_concierge(
+                adapter_id,
+                adapter,
+                surface,
+                external_id,
+                message_text,
+                ctx=ctx,
+            ),
             name=f"adapter-{adapter_id}-dispatch",
         )
         return
@@ -1641,6 +1987,8 @@ async def _run_adapter_concierge(
     surface: str,
     external_id: str,
     message_text: str,
+    *,
+    ctx: Any | None = None,
 ) -> None:
     from dan.server.routers.chat import (
         ChatMessageRequest,
@@ -1649,6 +1997,19 @@ async def _run_adapter_concierge(
     )
 
     control_plane_override = _adapter_control_plane_override(adapter_id, surface)
+    requested_mode, message_text = _adapter_requested_mode(message_text)
+    effective_mode = _adapter_effective_requested_mode(
+        surface=surface,
+        control_plane_mode=control_plane_override,
+        requested_mode=requested_mode,
+        text=message_text,
+    )
+    if effective_mode == "agent" and not message_text.strip():
+        await _send_adapter_text(adapter, external_id, "Usage: /agent describe the task to run.")
+        return
+    history_key = _adapter_history_key(adapter_id, surface, external_id)
+    user_turn = {"role": "user", "content": message_text}
+    history = await _append_adapter_history_turn(history_key, user_turn)
 
     def _event_value(event: Any, field: str, default: Any = "") -> Any:
         if isinstance(event, dict):
@@ -1674,6 +2035,10 @@ async def _run_adapter_concierge(
             content = str(_event_value(event, "content", "") or "")
             if content:
                 await _send_adapter_text(adapter, external_id, content)
+                await _append_adapter_history_turn(
+                    history_key,
+                    {"role": "assistant", "content": content},
+                )
             return
         if evt_type == "chat_error":
             error = str(_event_value(event, "error", "") or "")
@@ -1681,9 +2046,17 @@ async def _run_adapter_concierge(
                 await _send_adapter_text(adapter, external_id, error)
             return
         if evt_type == "chat_multi_part":
+            assistant_parts: list[str] = []
             for part in (_event_value(event, "parts", []) or []):
                 if part:
-                    await _send_adapter_text(adapter, external_id, part)
+                    text = str(part)
+                    assistant_parts.append(text)
+                    await _send_adapter_text(adapter, external_id, text)
+            if assistant_parts:
+                await _append_adapter_history_turn(
+                    history_key,
+                    {"role": "assistant", "content": "\n\n".join(assistant_parts)},
+                )
             return
         if evt_type == "chat_queued":
             queue_position = max(int(_event_value(event, "queue_position", 0) or 0), 1)
@@ -1691,17 +2064,101 @@ async def _run_adapter_concierge(
             await _send_adapter_text(adapter, external_id, queued_text)
             return
 
-    req = ChatMessageRequest.model_validate(
-        _build_adapter_chat_request_body(
-            adapter_id=adapter_id,
-            surface=surface,
-            external_id=external_id,
-            message_text=message_text,
-            control_plane_mode=control_plane_override,
-        )
+    body = _build_adapter_chat_request_body(
+        adapter_id=adapter_id,
+        surface=surface,
+        external_id=external_id,
+        message_text=message_text,
+        history=history,
+        ctx=ctx,
+        control_plane_mode=control_plane_override,
     )
+    body["mode"] = effective_mode
+    req = ChatMessageRequest.model_validate(body)
     try:
-        response = await chat_message(req, concierge=True)
+        if control_plane_override == "v2" and effective_mode == "agent":
+            from dan.server.routers.chat_v2 import (
+                AgentRunExecuteRequest,
+                create_agent_run,
+                execute_agent_run,
+            )
+
+            created = await create_agent_run(req=req)
+            control = created.get("v2_control_plane") if isinstance(created, dict) else {}
+            control = control if isinstance(control, dict) else {}
+            run_id = str(control.get("run_id") or "").strip()
+            if not run_id:
+                event = created.get("event") if isinstance(created, dict) else {}
+                event = event if isinstance(event, dict) else {}
+                await _send_adapter_text(
+                    adapter,
+                    external_id,
+                    str(event.get("summary") or "Agent run was not created."),
+                )
+                return
+            backend = (
+                os.environ.get("DAN_TELEGRAM_V2_AGENT_BACKEND")
+                or os.environ.get("DAN_CHAT_V2_AGENT_BACKEND")
+                or None
+            )
+            if str(surface or "").strip().lower() == "telegram":
+                await execute_agent_run(
+                    run_id,
+                    execute=AgentRunExecuteRequest(backend=backend, background=True),
+                )
+                summary = await _stream_v2_agent_run_events_to_adapter(
+                    adapter,
+                    external_id,
+                    run_id,
+                )
+                if summary:
+                    await _append_adapter_history_turn(
+                        history_key,
+                        {"role": "assistant", "content": summary},
+                    )
+                return
+            await _send_adapter_text(adapter, external_id, "Accepted Agent run. Working...")
+            executed = await execute_agent_run(
+                run_id,
+                execute=AgentRunExecuteRequest(backend=backend),
+            )
+            result = executed.get("result") if isinstance(executed, dict) else {}
+            result = result if isinstance(result, dict) else {}
+            summary = str(result.get("summary") or executed.get("status") or "").strip()
+            token_usage = result.get("token_usage") if isinstance(result, dict) else {}
+            if isinstance(token_usage, dict) and token_usage:
+                from dan.server.chat_v2 import format_token_usage
+
+                usage_text = format_token_usage(token_usage)
+                if usage_text != "unavailable":
+                    summary = f"{summary}\n\nTokens: {usage_text}" if summary else f"Tokens: {usage_text}"
+            artifacts = result.get("artifact_refs") if isinstance(result, dict) else []
+            if isinstance(artifacts, list) and artifacts:
+                paths = [
+                    str(item.get("path") or "")
+                    for item in artifacts
+                    if isinstance(item, dict) and item.get("path")
+                ]
+                if paths:
+                    summary = f"{summary}\n\nArtifacts:\n" + "\n".join(f"- {path}" for path in paths[:8])
+            await _send_adapter_text(
+                adapter,
+                external_id,
+                summary or "Agent run completed.",
+            )
+            if summary:
+                await _append_adapter_history_turn(
+                    history_key,
+                    {"role": "assistant", "content": summary},
+                )
+            return
+
+        if control_plane_override == "v2":
+            from dan.server.routers.chat_v2 import chat_v2_message
+
+            response = await chat_v2_message(req=req, concierge=True)
+        else:
+            response = await chat_message(req, concierge=True)
         channel_id = str(response.get("stream_channel_id") or "").strip()
         if not channel_id:
             return
@@ -1709,6 +2166,7 @@ async def _run_adapter_concierge(
             await _relay_adapter_event(event)
     except Exception:
         logger.exception("Adapter %s chat relay failed", adapter_id)
+        await _remove_adapter_history_turn(history_key, user_turn)
         try:
             await _send_adapter_text(
                 adapter, external_id, "Something went wrong. Please try again.",
@@ -1889,10 +2347,13 @@ async def start_adapter(req: AdapterStartRequest):
 
     renderer = MessagingHumanRenderer(adapter, session_store)
 
-    async def _on_msg(ext_id: str, text: str) -> None:
-        _run_adapter_message_handler(adapter_id, ext_id, text)
+    async def _on_msg(ext_id: str, text: str, ctx: Any | None = None) -> None:
+        _run_adapter_message_handler(adapter_id, ext_id, text, ctx=ctx)
 
-    adapter.set_message_callback(_on_msg)
+    try:
+        adapter.set_message_callback(_on_msg, with_context=True)
+    except TypeError:
+        adapter.set_message_callback(_on_msg)
     if hasattr(adapter, "set_event_callback"):
         adapter.set_event_callback(
             lambda event: _publish_adapter_event(adapter_id, dict(event)),

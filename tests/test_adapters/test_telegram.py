@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -164,6 +165,7 @@ class TestSendMethods:
 
     @pytest.mark.asyncio
     async def test_send_progress_throttled(self, tg_adapter: TelegramAdapter) -> None:
+        tg_adapter.config.progress_throttle = 60.0
         mock_bot = MagicMock()
         mock_bot.send_message = AsyncMock()
         mock_app = MagicMock()
@@ -199,6 +201,14 @@ class TestCommandHandlers:
         update.message.reply_text.assert_awaited_once()
         args = update.message.reply_text.call_args[0]
         assert tg_adapter.config.welcome_message in args[0]
+
+    def test_command_menu_is_v2_focused(self, tg_adapter: TelegramAdapter) -> None:
+        assert tg_adapter._default_dm_commands() == [
+            ("agent", "Run a V2 Agent task"),
+            ("status", "Check current task status"),
+            ("cancel", "Cancel current task"),
+            ("help", "Show available commands"),
+        ]
 
     @pytest.mark.asyncio
     async def test_cmd_status_no_active(self, tg_adapter: TelegramAdapter) -> None:
@@ -300,6 +310,262 @@ class TestTelegramStreamErrorFormatting:
 
 
 class TestTelegramFleetLaneBehavior:
+    def test_v2_agent_command_and_workspace_context(self, monkeypatch: pytest.MonkeyPatch):
+        from dan.adapters.telegram_config import TelegramFleetConfig
+        from dan.adapters.telegram_fleet import (
+            BotFleet,
+            BotInstance,
+            _telegram_effective_requested_mode,
+            _telegram_control_plane_override,
+            _telegram_requested_mode,
+        )
+
+        monkeypatch.delenv("DAN_TELEGRAM_CONTROL_PLANE", raising=False)
+        monkeypatch.delenv("DAN_ADAPTERS_CONTROL_PLANE", raising=False)
+        monkeypatch.delenv("DAN_TELEGRAM_ALLOW_V1", raising=False)
+        monkeypatch.setenv("DAN_TELEGRAM_WORKSPACE_ROOT", "~/dan-work")
+        monkeypatch.setenv("DAN_TELEGRAM_WORKSPACE_ID", "dan-work")
+
+        mode, text = _telegram_requested_mode("/agent build the dashboard")
+        assert mode == "agent"
+        assert text == "build the dashboard"
+        assert _telegram_effective_requested_mode(
+            "v2",
+            "auto",
+            "Help me check again about the UAE quitting OPEC?",
+        ) == "auto"
+        assert _telegram_effective_requested_mode(
+            "v2",
+            "auto",
+            "patch this repo in /tmp/app",
+        ) == "agent"
+        assert _telegram_effective_requested_mode(
+            "v2",
+            "auto",
+            "I have this path /tmp/app, can you help me do this?",
+        ) == "agent"
+        assert _telegram_effective_requested_mode(
+            "v2",
+            "auto",
+            "which workspace are we using?",
+        ) == "auto"
+        assert _telegram_effective_requested_mode(
+            "v2",
+            "auto",
+            "/status",
+        ) == "auto"
+        assert _telegram_control_plane_override("dan") == "v2"
+        monkeypatch.setenv("DAN_TELEGRAM_CONTROL_PLANE", "legacy")
+        assert _telegram_control_plane_override("dan") == "v2"
+        monkeypatch.setenv("DAN_TELEGRAM_ALLOW_V1", "1")
+        assert _telegram_control_plane_override("dan") == "v1"
+
+        fleet = BotFleet(TelegramFleetConfig())
+        context = fleet._build_turn_surface_context(
+            BotInstance(name="dan", token="fake"),
+            MessageContext(
+                chat_id=111,
+                message_id=42,
+                reply_to_message_id=41,
+                reply_to_text="Previous answer about the dashboard",
+                thread_id=7,
+                from_user_id=99,
+                from_user_username="alice",
+                chat_type="private",
+            ),
+            conversation_key="111:7:dan",
+            lane_key="111:7:dan:m41",
+            reply_lane_key="111:7:dan",
+            history=[
+                {"role": "user", "content": "Build a dashboard"},
+                {"role": "assistant", "content": "Accepted."},
+            ],
+        )
+
+        assert context["workspace_root"] == "~/dan-work"
+        assert context["workspace_id"] == "dan-work"
+        assert context["telegram"] == {
+            "chat_id": 111,
+            "message_id": 42,
+            "message_thread_id": 7,
+            "reply_to_message_id": 41,
+            "reply_to_text": "Previous answer about the dashboard",
+            "chat_type": "private",
+            "from_user_id": 99,
+            "from_user_username": "alice",
+            "sender_chat_id": None,
+            "sender_chat_username": None,
+        }
+        assert context["conversation"] == {
+            "conversation_key": "111:7:dan",
+            "lane_key": "111:7:dan:m41",
+            "reply_lane_key": "111:7:dan",
+            "history_turn_count": 2,
+            "history_window": 2,
+        }
+        assert fleet._infer_project_commands(BotInstance(name="dan", token="fake")) == [
+            ("agent", "Run a V2 Agent task"),
+            ("status", "Check current task status"),
+            ("cancel", "Cancel current task"),
+            ("help", "Show available commands"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_v2_plain_telegram_turn_uses_chat_not_agent_run(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from dan.adapters.telegram_config import TelegramFleetConfig
+        from dan.adapters.telegram_fleet import BotFleet, BotInstance
+
+        class _Response:
+            def __init__(self, payload: dict[str, Any], status_code: int = 200) -> None:
+                self._payload = payload
+                self.status_code = status_code
+
+            def json(self) -> dict[str, Any]:
+                return self._payload
+
+        class _Http:
+            def __init__(self) -> None:
+                self.posts: list[tuple[str, dict[str, Any]]] = []
+
+            async def get(self, path: str) -> _Response:
+                assert path.startswith("/api/graphs/")
+                return _Response({"graph": {"nodes": [], "edges": []}})
+
+            async def post(self, path: str, json: dict[str, Any]) -> _Response:
+                self.posts.append((path, json))
+                if path == "/api/v2/chat/message":
+                    return _Response({"stream_channel_id": "chat-v2-1"})
+                raise AssertionError(f"unexpected post path: {path}")
+
+        class _Adapter:
+            def __init__(self) -> None:
+                self.reactions: list[tuple[int, int, str]] = []
+
+            async def set_reaction(self, chat_id: int, message_id: int, emoji: str) -> None:
+                self.reactions.append((chat_id, message_id, emoji))
+
+        monkeypatch.delenv("DAN_TELEGRAM_ALLOW_V1", raising=False)
+        monkeypatch.setenv("DAN_TELEGRAM_CONTROL_PLANE", "v2")
+
+        fleet = BotFleet(TelegramFleetConfig(), server_url="http://server.test")
+        http = _Http()
+        fleet._http = http
+
+        async def _fake_stream(*args: Any, **kwargs: Any) -> str:
+            return "Chat reply."
+
+        monkeypatch.setattr(fleet, "_stream_with_edits", _fake_stream)
+
+        adapter = _Adapter()
+        bot = BotInstance(name="dan", token="fake", adapter=adapter)
+        ctx = MessageContext(
+            chat_id=111,
+            message_id=42,
+            thread_id=7,
+            chat_type="private",
+        )
+
+        await fleet._dispatch(
+            bot,
+            "telegram:111",
+            "Help me check again about the UAE quitting OPEC?",
+            ctx,
+            conversation_key="111:7:dan",
+            lane_key="111:7:dan",
+        )
+
+        assert [path for path, _payload in http.posts] == ["/api/v2/chat/message"]
+        chat_payload = http.posts[0][1]
+        assert chat_payload["mode"] == "auto"
+        assert chat_payload["message"] == "Help me check again about the UAE quitting OPEC?"
+        assert fleet._conversation_history["111:7:dan"] == [
+            {
+                "role": "user",
+                "content": "Help me check again about the UAE quitting OPEC?",
+            },
+            {"role": "assistant", "content": "Chat reply."},
+        ]
+        assert adapter.reactions[-1] == (111, 42, "✅")
+
+    @pytest.mark.asyncio
+    async def test_v2_task_like_telegram_turn_uses_agent_run(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from dan.adapters.telegram_config import TelegramFleetConfig
+        from dan.adapters.telegram_fleet import BotFleet, BotInstance
+
+        class _Response:
+            def __init__(self, payload: dict[str, Any], status_code: int = 200) -> None:
+                self._payload = payload
+                self.status_code = status_code
+
+            def json(self) -> dict[str, Any]:
+                return self._payload
+
+        class _Http:
+            def __init__(self) -> None:
+                self.posts: list[tuple[str, dict[str, Any]]] = []
+
+            async def get(self, path: str) -> _Response:
+                assert path.startswith("/api/graphs/")
+                return _Response({"graph": {"nodes": [], "edges": []}})
+
+            async def post(self, path: str, json: dict[str, Any]) -> _Response:
+                self.posts.append((path, json))
+                if path == "/api/v2/agent-runs":
+                    return _Response({"v2_control_plane": {"run_id": "run-1"}})
+                if path == "/api/v2/agent-runs/run-1/execute":
+                    return _Response({"status": "started"})
+                raise AssertionError(f"unexpected post path: {path}")
+
+        class _Adapter:
+            def __init__(self) -> None:
+                self.reactions: list[tuple[int, int, str]] = []
+
+            async def set_reaction(self, chat_id: int, message_id: int, emoji: str) -> None:
+                self.reactions.append((chat_id, message_id, emoji))
+
+        monkeypatch.delenv("DAN_TELEGRAM_ALLOW_V1", raising=False)
+        monkeypatch.setenv("DAN_TELEGRAM_CONTROL_PLANE", "v2")
+
+        fleet = BotFleet(TelegramFleetConfig(), server_url="http://server.test")
+        http = _Http()
+        fleet._http = http
+
+        async def _fake_stream(*args: Any, **kwargs: Any) -> str:
+            return "Agent done."
+
+        monkeypatch.setattr(fleet, "_stream_v2_agent_run_events", _fake_stream)
+
+        adapter = _Adapter()
+        bot = BotInstance(name="dan", token="fake", adapter=adapter)
+        ctx = MessageContext(
+            chat_id=111,
+            message_id=42,
+            thread_id=7,
+            chat_type="private",
+        )
+
+        await fleet._dispatch(
+            bot,
+            "telegram:111",
+            "patch this repo in /tmp/app",
+            ctx,
+            conversation_key="111:7:dan",
+            lane_key="111:7:dan",
+        )
+
+        paths = [path for path, _payload in http.posts]
+        assert paths == ["/api/v2/agent-runs", "/api/v2/agent-runs/run-1/execute"]
+        agent_payload = http.posts[0][1]
+        assert agent_payload["mode"] == "agent"
+        assert agent_payload["message"] == "patch this repo in /tmp/app"
+        assert adapter.reactions[-1] == (111, 42, "✅")
+
     def test_private_non_reply_stays_on_shared_lane_even_when_parallel(self):
         from dan.adapters.telegram_config import TelegramFleetConfig
         from dan.adapters.telegram_fleet import (
@@ -423,3 +689,114 @@ class TestTelegramFleetLaneBehavior:
             "Summary ready.",
             "Now run the workflow",
         ]
+
+    @pytest.mark.asyncio
+    async def test_v2_agent_stream_sends_quiet_heartbeat_from_backend_state(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import websockets
+
+        from dan.adapters.telegram_config import TelegramFleetConfig
+        from dan.adapters.telegram_fleet import BotFleet, BotInstance
+
+        class _Adapter:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, Any]] = []
+
+            async def send_or_edit(
+                self,
+                chat_id,
+                text,
+                message_id=None,
+                *,
+                reply_to=None,
+                thread_id=None,
+            ):
+                self.calls.append(
+                    {
+                        "chat_id": chat_id,
+                        "text": text,
+                        "message_id": message_id,
+                        "reply_to": reply_to,
+                        "thread_id": thread_id,
+                    }
+                )
+                return 900 if message_id is None else message_id
+
+        class _FakeWebSocket:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def recv(self) -> str:
+                self.calls += 1
+                if self.calls == 1:
+                    return json.dumps(
+                        {
+                            "type": "accepted",
+                            "run_id": "run-1",
+                            "summary": "Accepted.",
+                        }
+                    )
+                if self.calls == 2:
+                    return json.dumps(
+                        {
+                            "type": "tool_used",
+                            "run_id": "run-1",
+                            "source_event_type": "tool.started",
+                            "payload": {
+                                "tool_id": "web_search",
+                                "arguments": {"query": "current docs"},
+                            },
+                        }
+                    )
+                if self.calls == 3:
+                    await asyncio.sleep(0.05)
+                return json.dumps(
+                    {
+                        "type": "completed",
+                        "run_id": "run-1",
+                        "summary": "Done.",
+                    }
+                )
+
+        class _Connect:
+            def __init__(self) -> None:
+                self.ws = _FakeWebSocket()
+
+            async def __aenter__(self):
+                return self.ws
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        monkeypatch.setattr(websockets, "connect", lambda *args, **kwargs: _Connect())
+
+        fleet = BotFleet(TelegramFleetConfig(), server_url="http://server.test")
+        fleet._V2_AGENT_PROGRESS_INTERVAL = 0.01
+        adapter = _Adapter()
+        bot = BotInstance(name="dan", token="fake", adapter=adapter)
+        ctx = MessageContext(
+            chat_id=111,
+            message_id=42,
+            thread_id=7,
+            chat_type="private",
+        )
+
+        result = await fleet._stream_v2_agent_run_events(
+            bot,
+            ctx,
+            "run-1",
+            lane_key="111:main:dan",
+        )
+
+        assert result == "Done."
+        texts = [call["text"] for call in adapter.calls]
+        assert any(
+            "Fetching web evidence" in text
+            and "Elapsed:" in text
+            and "Last backend event" in text
+            for text in texts
+        )
+        assert adapter.calls[0]["message_id"] is None
+        assert any(call["message_id"] == 900 for call in adapter.calls[1:])

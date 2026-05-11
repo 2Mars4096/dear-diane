@@ -740,20 +740,18 @@ class TelegramAdapter:
     async def _cmd_help(self, update: Any, context: Any) -> None:
         if not self._is_allowed(update.effective_chat.id):
             return
-        try:
-            from dan.server.concierge.command_registry import get_default_registry
-
-            help_text = get_default_registry().format_help("telegram")
-        except Exception:
-            help_text = (
-                "Available commands:\n"
-                "/help — Show this help\n"
-                "/status — Check task status\n"
-                "/cancel — Cancel current task\n"
-            )
+        help_text = (
+            "Telegram V2 commands:\n"
+            "/agent <task> — Run a durable Agent task\n"
+            "/status — Check current task status\n"
+            "/cancel — Cancel current task\n"
+            "/help — Show this help\n\n"
+            "You can also type naturally. Replying to a bot message keeps the "
+            "turn attached to that conversation context."
+        )
         if self.config.project_description:
             help_text = f"What this bot does: {self.config.project_description}\n\n{help_text}"
-        await update.message.reply_text(f"{help_text}\n\nOr just type naturally!")
+        await update.message.reply_text(help_text)
 
     async def _on_command_message(self, update: Any, context: Any) -> None:
         if not self._is_allowed(update.effective_chat.id):
@@ -1305,21 +1303,12 @@ class TelegramAdapter:
                 pass
 
     def _default_dm_commands(self) -> list[tuple[str, str]]:
-        try:
-            from dan.server.concierge.command_registry import get_default_registry
-            registry = get_default_registry()
-            return registry.telegram_commands()
-        except Exception:
-            return [
-                ("help", "Show available commands"),
-                ("status", "Check current task status"),
-                ("cancel", "Cancel current task"),
-                ("find", "Find a file on your computer"),
-                ("send", "Send you a file"),
-                ("list", "List saved workflows"),
-                ("show", "Show current workflow"),
-                ("mcp", "List available MCP tools"),
-            ]
+        return [
+            ("agent", "Run a V2 Agent task"),
+            ("status", "Check current task status"),
+            ("cancel", "Cancel current task"),
+            ("help", "Show available commands"),
+        ]
 
     def _default_group_commands(self) -> list[tuple[str, str]]:
         return self._default_dm_commands() + [
