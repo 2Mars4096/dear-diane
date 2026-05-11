@@ -25,6 +25,7 @@ from dan.cli.super_hooks import (
     format_super_queue_status,
 )
 from dan.providers import LLMProvider
+from dan.skills import invocation as skill_invocation
 from dan.server.runtime_config import build_engine_config_from_env
 from dan.worker.brief import RoleSpec, WorkerBrief, request_from_brief
 from dan.worker.cell import build_cell
@@ -98,7 +99,15 @@ _SUPER_DAN_TOOL_DESCRIPTIONS: dict[str, str] = {
     "file_edit": "make targeted edits to existing files",
     "file_write": "create new files or coherent full-file artifacts when appropriate",
     "workspace_check": "run deterministic existence, count, syntax, or structure checks",
-    "shell_command": "run focused local inspection or verification commands",
+    "shell_command": (
+        "run real terminal commands in the workspace for operations that are naturally command-line work: "
+        "tests/builds/scripts, project CLIs, command availability checks, faithful filesystem operations "
+        "such as mkdir/cp/mv/rsync/find/du/wc/checksums/archive commands, and focused verification. "
+        "Think of it as the local platform's command-line toolbox: when a task sounds terminal-native, "
+        "actively choose the existing CLI, project script, Python one-liner, or POSIX utility that does it best. "
+        "Prefer structured file tools for small precise reads/edits; prefer shell_command when the OS "
+        "can copy, move, enumerate, verify, or execute more faithfully than reconstructing text through file tools"
+    ),
     "git_status": "inspect changed workspace state without mutating it",
     "git_diff": "inspect concrete before/after workspace changes",
     "git_log": "inspect recent repository history when relevant",
@@ -272,6 +281,8 @@ def _super_dan_stage_snippets(
 
 
 _SUPER_DAN_SKILL_CONTENT_LIMIT = 3_500
+_SUPER_DAN_EXPLICIT_SKILL_REFERENCE_LIMIT = 4_000
+_SUPER_DAN_EXPLICIT_SKILL_REFERENCE_FILE_LIMIT = 4
 _SUPER_DAN_MAX_AUTO_SKILLS = 3
 _SUPER_DAN_SKILL_STOPWORDS = frozenset(
     {
@@ -303,7 +314,6 @@ _SUPER_DAN_SKILL_STOPWORDS = frozenset(
         "workflow",
     }
 )
-_SUPER_DAN_SKILL_CACHE: dict[str, list[dict[str, Any]]] = {}
 
 
 def _skill_tokenize(text: str) -> set[str]:
@@ -314,71 +324,52 @@ def _skill_tokenize(text: str) -> set[str]:
     }
 
 
-def _super_dan_skill_cache_key(workspace_root: str) -> str:
-    return str(Path(workspace_root or ".").expanduser().resolve(strict=False))
-
-
 def _load_super_dan_skill_catalog(workspace_root: str) -> list[dict[str, Any]]:
     """Load DAN, Codex, Claude, and Cursor skills as advisory Super DAN packets."""
 
-    cache_key = _super_dan_skill_cache_key(workspace_root)
-    if cache_key in _SUPER_DAN_SKILL_CACHE:
-        return [dict(item) for item in _SUPER_DAN_SKILL_CACHE[cache_key]]
+    return skill_invocation.load_skill_catalog(workspace_root)
 
-    catalog: dict[str, dict[str, Any]] = {}
-    try:
-        from dan.server.skill_store import SkillStore, default_external_skill_dirs
 
-        root = Path(workspace_root).expanduser() if workspace_root else Path.cwd()
-        project_skill_dir = root / ".dan" / "skills"
-        store = SkillStore(
-            project_dir=project_skill_dir if project_skill_dir.is_dir() else None,
-            extra_dirs=default_external_skill_dirs(),
-        )
-        store.scan()
-        for desc in store.list_skills():
-            if not desc.enabled:
-                continue
-            skill_id = desc.skill_id or str(desc.name).lower().replace("-", "_")
-            content = str(desc.content or "").strip()
-            if not content:
-                continue
-            catalog[skill_id] = {
-                "id": skill_id,
-                "name": desc.name,
-                "description": desc.description,
-                "tags": list(desc.tags),
-                "source_path": str(desc.source_path or ""),
-                "source_scope": desc.scope,
-                "content": content,
-            }
-    except Exception:
-        pass
+def _super_dan_skill_token(value: Mapping[str, Any]) -> str:
+    return skill_invocation.skill_token(value)
 
-    try:
-        from dan.server.skill_library import SKILL_LIBRARY
 
-        for key, entry in SKILL_LIBRARY.items():
-            if key in catalog:
-                continue
-            content = str(entry.get("text") or "").strip()
-            if not content:
-                continue
-            catalog[key] = {
-                "id": key,
-                "name": str(entry.get("name") or key),
-                "description": str(entry.get("description") or ""),
-                "tags": list(entry.get("tags") or []),
-                "source_path": "builtin:dan.server.skill_library",
-                "source_scope": "builtin",
-                "content": content,
-            }
-    except Exception:
-        pass
+def _super_dan_skill_catalog_by_token(workspace_root: str) -> dict[str, dict[str, Any]]:
+    return skill_invocation.catalog_by_token(_load_super_dan_skill_catalog(workspace_root))
 
-    values = list(catalog.values())
-    _SUPER_DAN_SKILL_CACHE[cache_key] = [dict(item) for item in values]
-    return values
+
+def _parse_super_dan_skill_invocation_text(
+    text: str,
+    *,
+    workspace_root: str,
+) -> skill_invocation.SkillInvocationParse:
+    """Parse leading ``$skill-name`` invocations for all Super DAN surfaces."""
+
+    return skill_invocation.parse_skill_invocation_text(
+        text,
+        catalog=_load_super_dan_skill_catalog(workspace_root),
+        workspace_root=workspace_root,
+        browse_hint="Pick a full skill name",
+    )
+
+
+def _prepare_super_dan_skill_invocation_args(
+    args: argparse.Namespace,
+    *,
+    workspace_root: Path | str | None = None,
+    source: str = "cli",
+) -> skill_invocation.SkillInvocationParse:
+    root = str(workspace_root or normalize_workspace_root(str(getattr(args, "workspace", "."))))
+    parsed = skill_invocation.prepare_skill_invocation_args(
+        args,
+        catalog=_load_super_dan_skill_catalog(root),
+        workspace_root=root,
+        source=source,
+        browse_hint="Pick a full skill name",
+    )
+    if source == "tui" and parsed.selected_tokens:
+        setattr(args, "_tui_selected_skill_mentions", list(parsed.selected_tokens))
+    return parsed
 
 
 def _super_dan_skill_bonus(skill_id: str, text: str) -> int:
@@ -457,35 +448,143 @@ def _select_super_dan_skills(brief: WorkerBrief) -> list[dict[str, Any]]:
     return selected
 
 
-def _render_super_dan_skill_snippet(skill: Mapping[str, Any]) -> str:
-    content = str(skill.get("content") or "").strip()
-    truncated = False
-    if len(content) > _SUPER_DAN_SKILL_CONTENT_LIMIT:
-        content = content[:_SUPER_DAN_SKILL_CONTENT_LIMIT].rstrip()
-        truncated = True
-    meta = {
-        "id": skill.get("id"),
-        "name": skill.get("name"),
-        "description": skill.get("description"),
-        "source": skill.get("source_path"),
-        "source_scope": skill.get("source_scope"),
-        "content_sha256": hashlib.sha256(str(skill.get("content") or "").encode("utf-8")).hexdigest()[:16],
-        "truncated": truncated,
-    }
-    return (
-        "Active DAN skill packet:\n"
-        + json.dumps(meta, ensure_ascii=False, sort_keys=True)
-        + "\nInstructions:\n"
-        + content
+def _super_dan_skill_lookup_keys(value: Any) -> set[str]:
+    return skill_invocation.skill_lookup_keys(value)
+
+
+def _coerce_explicit_super_dan_skill_values(value: Any) -> list[str]:
+    return skill_invocation.coerce_skill_values(value)
+
+
+def _explicit_super_dan_skill_values(brief: WorkerBrief) -> list[str]:
+    payload = dict(brief.input_payload)
+    metadata = dict(brief.metadata)
+    selected: list[str] = []
+    seen: set[str] = set()
+    for source in (metadata, payload):
+        for key in (
+            "explicit_skill_ids",
+            "explicit_skills",
+            "selected_skill_ids",
+            "selected_skill_mentions",
+            "tui_selected_skill_mentions",
+            "_tui_selected_skill_mentions",
+        ):
+            for value in _coerce_explicit_super_dan_skill_values(source.get(key)):
+                normalized = value.lower().lstrip("$")
+                if normalized and normalized not in seen:
+                    selected.append(normalized)
+                    seen.add(normalized)
+    return selected
+
+
+def _select_explicit_super_dan_skills(brief: WorkerBrief) -> list[dict[str, Any]]:
+    requested = _explicit_super_dan_skill_values(brief)
+    if not requested:
+        return []
+    payload = dict(brief.input_payload)
+    metadata = dict(brief.metadata)
+    workspace_root = str(payload.get("workspace_root") or metadata.get("workspace_root") or "")
+    return skill_invocation.select_explicit_skill_items(
+        requested,
+        _load_super_dan_skill_catalog(workspace_root),
+        limit=_SUPER_DAN_MAX_AUTO_SKILLS,
     )
+
+
+def _render_super_dan_skill_snippet(skill: Mapping[str, Any]) -> str:
+    return skill_invocation.render_skill_packet(
+        skill,
+        content_limit=_SUPER_DAN_SKILL_CONTENT_LIMIT,
+        reference_limit=_SUPER_DAN_EXPLICIT_SKILL_REFERENCE_LIMIT,
+        reference_file_limit=_SUPER_DAN_EXPLICIT_SKILL_REFERENCE_FILE_LIMIT,
+        sha256_prefix=lambda text: hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
+    )
+
+
+def _super_dan_skill_dir(skill: Mapping[str, Any]) -> Path | None:
+    return skill_invocation.skill_dir(skill)
+
+
+def _selected_super_dan_skill_catalog_items(
+    workspace_root: Path,
+    tokens: Sequence[str],
+) -> list[dict[str, Any]]:
+    return skill_invocation.selected_catalog_items(
+        _load_super_dan_skill_catalog(str(workspace_root)),
+        tokens,
+    )
+
+
+def _selected_super_dan_skill_script_candidates(skill: Mapping[str, Any]) -> list[str]:
+    return skill_invocation.selected_skill_script_candidates(skill)
+
+
+def _selected_super_dan_skill_preflight_script(skill: Mapping[str, Any]) -> Path | None:
+    return skill_invocation.selected_skill_preflight_script(skill)
+
+
+def _run_super_dan_skill_preflight(
+    *,
+    workspace_root: Path,
+    skill: Mapping[str, Any],
+    objective: str,
+) -> skill_invocation.SkillPreflightResult:
+    return skill_invocation.run_skill_preflight(
+        workspace_root=workspace_root,
+        skill=skill,
+        objective=objective,
+    )
+
+
+def _run_selected_super_dan_skill_preflights(
+    args: argparse.Namespace,
+    *,
+    workspace_root: Path,
+) -> tuple[bool, list[str]]:
+    existing = _selected_super_dan_skill_preflight_notes_from_args(args)
+    if existing:
+        return True, existing
+    if bool(getattr(args, "plan_only", False)):
+        return True, []
+    if not bool(getattr(args, "live", False)):
+        return True, []
+    tokens = _selected_super_dan_skill_mentions_from_args(args)
+    if not tokens:
+        return True, []
+    ok, notes = skill_invocation.run_skill_preflights_for_tokens(
+        workspace_root=workspace_root,
+        tokens=tokens,
+        objective=str(getattr(args, "target", "") or ""),
+        catalog=_load_super_dan_skill_catalog(str(workspace_root)),
+    )
+    if notes:
+        setattr(args, "_selected_skill_preflight_notes", notes)
+        setattr(args, "selected_skill_preflight", notes)
+        if getattr(args, "_selected_skill_source", "") == "tui" or hasattr(args, "_tui_selected_skill_mentions"):
+            setattr(args, "_tui_skill_preflight_notes", notes)
+    return ok, notes
+
+
+def _explicit_super_dan_skill_reference_excerpt(skill: Mapping[str, Any]) -> str:
+    return skill_invocation.explicit_skill_reference_excerpt(
+        skill,
+        char_limit=_SUPER_DAN_EXPLICIT_SKILL_REFERENCE_LIMIT,
+        file_limit=_SUPER_DAN_EXPLICIT_SKILL_REFERENCE_FILE_LIMIT,
+    )
+
+
+def _explicit_super_dan_skill_constraints(selected: Sequence[Mapping[str, Any]]) -> list[str]:
+    return skill_invocation.explicit_skill_constraints(selected)
 
 
 def _apply_auto_super_dan_skills(brief: WorkerBrief) -> WorkerBrief:
     if brief.metadata.get("active_skills"):
         return brief
-    selected = _select_super_dan_skills(brief)
+    selected = _select_explicit_super_dan_skills(brief) or _select_super_dan_skills(brief)
     if not selected:
         return brief
+    explicit_constraints = _explicit_super_dan_skill_constraints(selected)
     public_meta = [
         {
             "id": skill.get("id"),
@@ -494,6 +593,7 @@ def _apply_auto_super_dan_skills(brief: WorkerBrief) -> WorkerBrief:
             "source_path": skill.get("source_path"),
             "source_scope": skill.get("source_scope"),
             "match_score": skill.get("match_score"),
+            "match_reason": skill.get("match_reason"),
             "content_sha256": hashlib.sha256(str(skill.get("content") or "").encode("utf-8")).hexdigest()[:16],
         }
         for skill in selected
@@ -503,6 +603,10 @@ def _apply_auto_super_dan_skills(brief: WorkerBrief) -> WorkerBrief:
             "contract_snippets": [
                 *list(brief.contract_snippets),
                 *[_render_super_dan_skill_snippet(skill) for skill in selected],
+            ],
+            "hard_constraints": [
+                *list(brief.hard_constraints),
+                *explicit_constraints,
             ],
             "prompt_slots": {
                 **dict(brief.prompt_slots),
@@ -2685,8 +2789,59 @@ def _super_report_evidence_blocks(report: SuperOrganismReport) -> list[dict[str,
     ]
 
 
-def _request_from_live_brief(brief: WorkerBrief) -> ExecutionRequest:
-    return request_from_brief(_apply_auto_super_dan_skills(brief))
+def _selected_super_dan_skill_mentions_from_args(args: argparse.Namespace | None) -> list[str]:
+    return skill_invocation.selected_skill_mentions_from_args(args)
+
+
+def _selected_super_dan_skill_preflight_notes_from_args(args: argparse.Namespace | None) -> list[str]:
+    return skill_invocation.selected_skill_preflight_notes_from_args(args)
+
+
+def _brief_with_explicit_super_dan_skills(
+    brief: WorkerBrief,
+    *,
+    args: argparse.Namespace | None = None,
+) -> WorkerBrief:
+    selected = _selected_super_dan_skill_mentions_from_args(args)
+    if not selected:
+        return brief
+    preflight_notes = _selected_super_dan_skill_preflight_notes_from_args(args)
+    existing = _explicit_super_dan_skill_values(brief)
+    source = str(getattr(args, "_selected_skill_source", "") or "operator")
+    combined: list[str] = []
+    seen: set[str] = set()
+    for value in [*existing, *selected]:
+        normalized = value.lower().lstrip("$")
+        if normalized and normalized not in seen:
+            combined.append(normalized)
+            seen.add(normalized)
+    return brief.model_copy(
+        update={
+            "input_payload": {
+                **dict(brief.input_payload),
+                "explicit_skill_ids": combined,
+                "selected_skill_mentions": combined,
+                "selected_skill_source": source,
+                **({"selected_skill_preflight": preflight_notes} if preflight_notes else {}),
+            },
+            "metadata": {
+                **dict(brief.metadata),
+                "explicit_skill_ids": combined,
+                "selected_skill_mentions": combined,
+                "selected_skill_source": source,
+                **({"selected_skill_preflight": preflight_notes} if preflight_notes else {}),
+            },
+        }
+    )
+
+
+def _request_from_live_brief(
+    brief: WorkerBrief,
+    *,
+    args: argparse.Namespace | None = None,
+) -> ExecutionRequest:
+    explicit_brief = _brief_with_explicit_super_dan_skills(brief, args=args)
+    return request_from_brief(_apply_auto_super_dan_skills(explicit_brief))
 
 
 def _live_cell_from_brief(
@@ -4791,7 +4946,7 @@ async def _run_live_website_build(
         worker_id=worker_id,
         organism_stage="execution",
     )
-    request = _request_from_live_brief(worker_brief)
+    request = _request_from_live_brief(worker_brief, args=args)
     _log_live_event(
         event_logger,
         "live.website_build.started",
@@ -4917,7 +5072,7 @@ async def _run_live_website_build(
             worker_id=validator_worker_id,
             organism_stage="validation",
         )
-        validator_request = _request_from_live_brief(validator_brief)
+        validator_request = _request_from_live_brief(validator_brief, args=args)
         return await _run_live_validation(
             worker=validator_worker,
             request=validator_request,
@@ -5061,7 +5216,7 @@ async def _run_live_website_build(
         )
         recovery_result, recovery_tools, recovery_events = await _execute_live_request(
             worker=recovery_worker,
-            request=_request_from_live_brief(recovery_brief),
+            request=_request_from_live_brief(recovery_brief, args=args),
             tool_ids=website_tool_ids,
             workspace_root=workspace_root,
             args=args,
@@ -5232,7 +5387,7 @@ async def _run_live_website_build(
         )
         repair_result, repair_tools, repair_events = await _execute_live_request(
             worker=repair_worker,
-            request=_request_from_live_brief(repair_brief),
+            request=_request_from_live_brief(repair_brief, args=args),
             tool_ids=website_tool_ids,
             workspace_root=workspace_root,
             args=args,
@@ -5567,7 +5722,7 @@ async def _run_live_generic_execution(
         )
         planner_result, planner_tools, planner_events = await _execute_live_request(
             worker=planner_worker,
-            request=_request_from_live_brief(planner_brief),
+            request=_request_from_live_brief(planner_brief, args=args),
             tool_ids=planner_tool_ids,
             workspace_root=workspace_root,
             args=args,
@@ -5708,7 +5863,7 @@ async def _run_live_generic_execution(
         )
         plan_validation_result, plan_validation_tools, plan_validation_events = await _execute_live_request(
             worker=plan_validator_worker,
-            request=_request_from_live_brief(plan_validator_brief),
+            request=_request_from_live_brief(plan_validator_brief, args=args),
             tool_ids=plan_validator_tool_ids,
             workspace_root=workspace_root,
             args=args,
@@ -5984,7 +6139,7 @@ async def _run_live_generic_execution(
             )
             worktree_result, worktree_tools, worktree_events = await _execute_live_request(
                 worker=worker_for_task,
-                request=_request_from_live_brief(worktree_brief),
+                request=_request_from_live_brief(worktree_brief, args=args),
                 tool_ids=generic_tool_ids,
                 workspace_root=worktree_root,
                 args=args,
@@ -6223,7 +6378,8 @@ async def _run_live_generic_execution(
         worker_id=worker_id,
         organism_stage="execution",
     )
-    request = _request_from_live_brief(worker_brief)
+    request = _request_from_live_brief(worker_brief, args=args)
+
     async def run_main_builder() -> tuple[Any, list[dict[str, Any]], list[dict[str, Any]]]:
         _log_live_event(
             event_logger,
@@ -6423,7 +6579,7 @@ async def _run_live_generic_execution(
             worker_id=validator_worker_id,
             organism_stage="validation",
         )
-        validator_request = _request_from_live_brief(validator_brief)
+        validator_request = _request_from_live_brief(validator_brief, args=args)
         validation_payload = await _run_live_validation(
             worker=validator_worker,
             request=validator_request,
@@ -6637,7 +6793,7 @@ async def _run_live_generic_execution(
             )
             recovery_result, recovery_tools, recovery_events = await _execute_live_request(
                 worker=recovery_worker,
-                request=_request_from_live_brief(recovery_brief),
+                request=_request_from_live_brief(recovery_brief, args=args),
                 tool_ids=recovery_tool_ids,
                 workspace_root=workspace_root,
                 args=args,
@@ -6849,7 +7005,7 @@ async def _run_live_generic_execution(
         )
         repair_result, repair_tools, repair_events = await _execute_live_request(
             worker=repair_worker,
-            request=_request_from_live_brief(repair_brief),
+            request=_request_from_live_brief(repair_brief, args=args),
             tool_ids=generic_tool_ids,
             workspace_root=workspace_root,
             args=args,
@@ -7274,6 +7430,8 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
             hook_runtime=hook_runtime,
         )
         try:
+            selected_skill_mentions = _selected_super_dan_skill_mentions_from_args(args)
+            selected_skill_preflight_notes = _selected_super_dan_skill_preflight_notes_from_args(args)
             _log_live_event(
                 event_logger,
                 "run.log.started",
@@ -7285,7 +7443,35 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
                 workspace_root=str(live_workspace_root),
                 workdir=str(live_workdir),
                 requested_model=str(args.model or "").strip() or None,
+                selected_skill_mentions=selected_skill_mentions,
+                selected_skill_preflight=selected_skill_preflight_notes,
             )
+            preflight_ok, preflight_notes = _run_selected_super_dan_skill_preflights(
+                args,
+                workspace_root=live_workspace_root,
+            )
+            for note in preflight_notes:
+                _log_live_event(
+                    event_logger,
+                    "skill.preflight.failed" if not preflight_ok and "failed" in note else "skill.preflight.completed",
+                    selected_skill_mentions=selected_skill_mentions,
+                    note=note,
+                )
+            if not preflight_ok:
+                message = "; ".join(preflight_notes) or "selected skill preflight failed"
+                _log_live_event(
+                    event_logger,
+                    "run.log.failed",
+                    trace_id=live_trace_id,
+                    task_id=live_task_id,
+                    status="failed",
+                    error_type="SkillPreflightError",
+                    error=message,
+                    event_log_path=str(event_logger.path),
+                    event_log_schema=ORGANISM_LOG_SCHEMA_VERSION,
+                )
+                print(message, file=sys.stderr)
+                return 2
             try:
                 model = _resolve_live_model(args.model)
                 _log_live_event(
@@ -7497,6 +7683,17 @@ def _interactive_loop(args: argparse.Namespace, parser: argparse.ArgumentParser)
             continue
         turn_args = copy.copy(args)
         turn_args.target = objective
+        parsed = _prepare_super_dan_skill_invocation_args(
+            turn_args,
+            workspace_root=workspace_root,
+            source="cli",
+        )
+        if parsed.message:
+            print(parsed.message)
+        if not parsed.should_run:
+            continue
+        if not str(turn_args.target or "").strip():
+            continue
         turn_args.plan_only = plan_only
         turn_args.live = bool(getattr(args, "live", False)) or not plan_only
         turn_args.json = False
@@ -7543,6 +7740,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "objective required in non-interactive mode; pass an objective, run in a terminal "
             "for interactive mode, or use --queue-status"
         )
+
+    if not no_objective:
+        parsed = _prepare_super_dan_skill_invocation_args(args, source="cli")
+        if parsed.message and not bool(getattr(args, "json", False)):
+            print(parsed.message)
+        if not parsed.should_run:
+            return 0
 
     return _run_super_turn(args, parser)
 

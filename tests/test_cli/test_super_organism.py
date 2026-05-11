@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 from pathlib import Path
@@ -3133,6 +3134,116 @@ def test_live_worker_contracts_include_paced_large_context_write_guidance() -> N
     assert "use larger direct writes" in pacing_text
 
 
+def test_tui_selected_skill_mentions_force_super_dan_skill_packet(tmp_path, monkeypatch) -> None:
+    skill_root = tmp_path / "skills" / "scaffold-research"
+    skill_root.mkdir(parents=True)
+    skill_path = skill_root / "SKILL.md"
+    skill_path.write_text("# Scaffold Research\n\nCreate the research scaffold.\n", encoding="utf-8")
+    references = skill_root / "references"
+    references.mkdir()
+    (references / "scaffold-research-spec.md").write_text(
+        "# Scaffold: Research Spec\n\nCanonical File Tree\n\n- AGENTS.md\n- ToDo.md\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        super_cli,
+        "_load_super_dan_skill_catalog",
+        lambda workspace_root: [
+            {
+                "id": "scaffold_research",
+                "name": "scaffold-research",
+                "description": "Create a research scaffold",
+                "tags": ["planning"],
+                "source_path": str(skill_path),
+                "source_scope": "test",
+                "content": "Create the research scaffold.",
+            }
+        ],
+    )
+    brief = super_cli.role_brief(
+        role=super_cli.RoleSpec(role_label="workspace_worker", responsibility="Execute the task."),
+        task="Capture follow-up decisions.",
+        input_payload={"workspace_root": str(tmp_path), "objective": "Capture follow-up decisions."},
+        metadata={"surface": "super_organism", "mode": "live"},
+    )
+    args = argparse.Namespace(_tui_selected_skill_mentions=["scaffold-research"])
+
+    request = super_cli._request_from_live_brief(brief, args=args)
+    prompt = request.metadata["brief_rendered_user_prompt"]
+
+    assert request.metadata["selected_skill_mentions"] == ["scaffold-research"]
+    assert request.metadata["active_skill_ids"] == ["scaffold_research"]
+    assert request.metadata["active_skills"][0]["match_score"] == "explicit"
+    assert request.metadata["active_skills"][0]["match_reason"] == "explicit_skill_mention"
+    assert "explicitly selected these DAN skills: $scaffold-research" in prompt
+    assert "Create the research scaffold." in prompt
+    assert "Selected skill companion reference excerpts" in prompt
+    assert "Canonical File Tree" in prompt
+
+
+def test_super_organism_main_parses_skill_mentions_before_runner(tmp_path, monkeypatch) -> None:
+    catalog = [
+        {
+            "id": "idea_cart",
+            "name": "idea-cart",
+            "description": "Capture ideas",
+            "tags": ["notes"],
+            "source_path": "skill:idea-cart",
+            "source_scope": "test",
+            "content": "Capture ideas.",
+        }
+    ]
+    observed: dict[str, object] = {}
+
+    def fake_run(args, parser):
+        del parser
+        observed["target"] = args.target
+        observed["selected"] = list(args._selected_skill_mentions)
+        observed["source"] = args._selected_skill_source
+        return 0
+
+    monkeypatch.setattr(super_cli, "_load_super_dan_skill_catalog", lambda workspace_root: catalog)
+    monkeypatch.setattr(super_cli, "_run_super_turn", fake_run)
+
+    exit_code = main(["$idea-cart capture the open loops", "--workspace", str(tmp_path)])
+
+    assert exit_code == 0
+    assert observed == {
+        "target": "capture the open loops",
+        "selected": ["idea-cart"],
+        "source": "cli",
+    }
+
+
+def test_passive_super_dan_skill_selection_still_works(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        super_cli,
+        "_load_super_dan_skill_catalog",
+        lambda workspace_root: [
+            {
+                "id": "frontend_design",
+                "name": "frontend-design",
+                "description": "Frontend interface design guidance",
+                "tags": ["frontend", "ui"],
+                "source_path": "skill:frontend-design",
+                "source_scope": "test",
+                "content": "Use polished production frontend design guidance.",
+            }
+        ],
+    )
+    brief = super_cli.role_brief(
+        role=super_cli.RoleSpec(role_label="workspace_worker", responsibility="Build the UI."),
+        task="Build a frontend dashboard with a polished UI.",
+        input_payload={"workspace_root": str(tmp_path), "objective": "Build a frontend dashboard."},
+    )
+
+    request = super_cli._request_from_live_brief(brief)
+
+    assert request.metadata["active_skill_ids"] == ["frontend_design"]
+    assert request.metadata["active_skills"][0]["match_score"] != "explicit"
+    assert "Use polished production frontend design guidance." in request.metadata["brief_rendered_user_prompt"]
+
+
 def test_live_tasks_include_paced_incremental_execution_guidance(tmp_path) -> None:
     report = super_cli.run_super_organism_demo("build a cool website for this product")
 
@@ -3153,6 +3264,21 @@ def test_live_tasks_include_paced_incremental_execution_guidance(tmp_path) -> No
     assert "Super DAN organism context" in stage_contract
     assert "Available tool guide" in stage_contract
     assert "Decision questions to consider" in stage_contract
+
+
+def test_super_dan_shell_tool_guide_describes_terminal_filesystem_operations() -> None:
+    stage_contract = "\n".join(
+        super_cli._super_dan_stage_snippets(
+            "builder",
+            tool_ids=["file_read", "file_write", "shell_command"],
+        )
+    )
+
+    assert "run real terminal commands in the workspace" in stage_contract
+    assert "local platform's command-line toolbox" in stage_contract
+    assert "actively choose the existing CLI" in stage_contract
+    assert "mkdir/cp/mv/rsync/find/du/wc/checksums/archive commands" in stage_contract
+    assert "more faithfully than reconstructing text through file tools" in stage_contract
 
 
 def test_super_progress_renderer_prints_compact_live_events(capsys) -> None:
