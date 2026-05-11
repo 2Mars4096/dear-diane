@@ -271,6 +271,252 @@ def _super_dan_stage_snippets(
     return [item for item in rendered if item.strip()]
 
 
+_SUPER_DAN_SKILL_CONTENT_LIMIT = 3_500
+_SUPER_DAN_MAX_AUTO_SKILLS = 3
+_SUPER_DAN_SKILL_STOPWORDS = frozenset(
+    {
+        "about",
+        "agent",
+        "asks",
+        "build",
+        "create",
+        "default",
+        "file",
+        "files",
+        "from",
+        "have",
+        "into",
+        "local",
+        "make",
+        "need",
+        "project",
+        "requested",
+        "super",
+        "task",
+        "that",
+        "this",
+        "tool",
+        "tools",
+        "user",
+        "when",
+        "with",
+        "workflow",
+    }
+)
+_SUPER_DAN_SKILL_CACHE: dict[str, list[dict[str, Any]]] = {}
+
+
+def _skill_tokenize(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9][a-z0-9_.-]{2,}", str(text or "").lower())
+        if token not in _SUPER_DAN_SKILL_STOPWORDS
+    }
+
+
+def _super_dan_skill_cache_key(workspace_root: str) -> str:
+    return str(Path(workspace_root or ".").expanduser().resolve(strict=False))
+
+
+def _load_super_dan_skill_catalog(workspace_root: str) -> list[dict[str, Any]]:
+    """Load DAN, Codex, Claude, and Cursor skills as advisory Super DAN packets."""
+
+    cache_key = _super_dan_skill_cache_key(workspace_root)
+    if cache_key in _SUPER_DAN_SKILL_CACHE:
+        return [dict(item) for item in _SUPER_DAN_SKILL_CACHE[cache_key]]
+
+    catalog: dict[str, dict[str, Any]] = {}
+    try:
+        from dan.server.skill_store import SkillStore, default_external_skill_dirs
+
+        root = Path(workspace_root).expanduser() if workspace_root else Path.cwd()
+        project_skill_dir = root / ".dan" / "skills"
+        store = SkillStore(
+            project_dir=project_skill_dir if project_skill_dir.is_dir() else None,
+            extra_dirs=default_external_skill_dirs(),
+        )
+        store.scan()
+        for desc in store.list_skills():
+            if not desc.enabled:
+                continue
+            skill_id = desc.skill_id or str(desc.name).lower().replace("-", "_")
+            content = str(desc.content or "").strip()
+            if not content:
+                continue
+            catalog[skill_id] = {
+                "id": skill_id,
+                "name": desc.name,
+                "description": desc.description,
+                "tags": list(desc.tags),
+                "source_path": str(desc.source_path or ""),
+                "source_scope": desc.scope,
+                "content": content,
+            }
+    except Exception:
+        pass
+
+    try:
+        from dan.server.skill_library import SKILL_LIBRARY
+
+        for key, entry in SKILL_LIBRARY.items():
+            if key in catalog:
+                continue
+            content = str(entry.get("text") or "").strip()
+            if not content:
+                continue
+            catalog[key] = {
+                "id": key,
+                "name": str(entry.get("name") or key),
+                "description": str(entry.get("description") or ""),
+                "tags": list(entry.get("tags") or []),
+                "source_path": "builtin:dan.server.skill_library",
+                "source_scope": "builtin",
+                "content": content,
+            }
+    except Exception:
+        pass
+
+    values = list(catalog.values())
+    _SUPER_DAN_SKILL_CACHE[cache_key] = [dict(item) for item in values]
+    return values
+
+
+def _super_dan_skill_bonus(skill_id: str, text: str) -> int:
+    skill_id = skill_id.replace("-", "_")
+    lowered = text.lower()
+    bonuses = {
+        "skill_creation": ["skill", "skills", "skill.md", "codex skill", "claude skill", "cursor skill"],
+        "frontend_design": ["frontend", "website", "html", "css", "ui", "landing page", "web app"],
+        "frontend_vibe": ["frontend", "website", "ui", "redesign", "dashboard", "app shell"],
+        "web_artifacts_builder": ["react", "tailwind", "shadcn", "html artifact"],
+        "theme_factory": ["theme", "styling", "colors", "visual style"],
+        "brand_guidelines": ["brand", "branding", "anthropic"],
+        "scientific_writer": ["paper", "manuscript", "literature review", "latex", "academic"],
+        "paper_reader": ["paper", "pdf", "article", "literature review"],
+        "paper_review": ["paper review", "referee", "review report", "manuscript"],
+        "code_review": ["code review", "review diff", "pr review", "pull request"],
+        "kaggle_scaffold": ["kaggle", "competition", "leaderboard", "oof"],
+        "kaggle_project": ["kaggle", "competition", "leaderboard", "oof"],
+        "beamer": ["beamer", "slides", "slide deck", "presentation"],
+        "proposal": ["proposal", "research idea", "hypothesis"],
+        "overleaf_agent": ["overleaf"],
+    }
+    return sum(3 for phrase in bonuses.get(skill_id, []) if phrase in lowered)
+
+
+def _select_super_dan_skills(brief: WorkerBrief) -> list[dict[str, Any]]:
+    payload = dict(brief.input_payload)
+    metadata = dict(brief.metadata)
+    workspace_root = str(payload.get("workspace_root") or metadata.get("workspace_root") or "")
+    objective_text = " ".join(
+        str(value or "")
+        for value in [
+            payload.get("objective"),
+            payload.get("original_objective"),
+            brief.task,
+            brief.role.role_label,
+            brief.role.responsibility,
+        ]
+    )
+    query_tokens = _skill_tokenize(objective_text)
+    if not objective_text.strip() or not query_tokens:
+        return []
+
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for skill in _load_super_dan_skill_catalog(workspace_root):
+        name = str(skill.get("name") or "")
+        skill_id = str(skill.get("id") or name).replace("-", "_")
+        searchable = " ".join(
+            [
+                skill_id.replace("_", " "),
+                name,
+                str(skill.get("description") or ""),
+                " ".join(str(tag) for tag in skill.get("tags") or []),
+            ]
+        )
+        skill_tokens = _skill_tokenize(searchable)
+        overlap = len(query_tokens & skill_tokens)
+        exact = 4 if skill_id.replace("_", "-") in objective_text.lower() or skill_id in objective_text.lower() else 0
+        score = overlap + exact + _super_dan_skill_bonus(skill_id, objective_text)
+        if score >= 3:
+            scored.append((score, skill))
+
+    scored.sort(key=lambda item: (-item[0], str(item[1].get("id") or "")))
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for score, skill in scored:
+        skill_id = str(skill.get("id") or skill.get("name") or "")
+        if not skill_id or skill_id in seen:
+            continue
+        item = dict(skill)
+        item["match_score"] = score
+        selected.append(item)
+        seen.add(skill_id)
+        if len(selected) >= _SUPER_DAN_MAX_AUTO_SKILLS:
+            break
+    return selected
+
+
+def _render_super_dan_skill_snippet(skill: Mapping[str, Any]) -> str:
+    content = str(skill.get("content") or "").strip()
+    truncated = False
+    if len(content) > _SUPER_DAN_SKILL_CONTENT_LIMIT:
+        content = content[:_SUPER_DAN_SKILL_CONTENT_LIMIT].rstrip()
+        truncated = True
+    meta = {
+        "id": skill.get("id"),
+        "name": skill.get("name"),
+        "description": skill.get("description"),
+        "source": skill.get("source_path"),
+        "source_scope": skill.get("source_scope"),
+        "content_sha256": hashlib.sha256(str(skill.get("content") or "").encode("utf-8")).hexdigest()[:16],
+        "truncated": truncated,
+    }
+    return (
+        "Active DAN skill packet:\n"
+        + json.dumps(meta, ensure_ascii=False, sort_keys=True)
+        + "\nInstructions:\n"
+        + content
+    )
+
+
+def _apply_auto_super_dan_skills(brief: WorkerBrief) -> WorkerBrief:
+    if brief.metadata.get("active_skills"):
+        return brief
+    selected = _select_super_dan_skills(brief)
+    if not selected:
+        return brief
+    public_meta = [
+        {
+            "id": skill.get("id"),
+            "name": skill.get("name"),
+            "description": skill.get("description"),
+            "source_path": skill.get("source_path"),
+            "source_scope": skill.get("source_scope"),
+            "match_score": skill.get("match_score"),
+            "content_sha256": hashlib.sha256(str(skill.get("content") or "").encode("utf-8")).hexdigest()[:16],
+        }
+        for skill in selected
+    ]
+    return brief.model_copy(
+        update={
+            "contract_snippets": [
+                *list(brief.contract_snippets),
+                *[_render_super_dan_skill_snippet(skill) for skill in selected],
+            ],
+            "prompt_slots": {
+                **dict(brief.prompt_slots),
+                "active_skills": public_meta,
+            },
+            "metadata": {
+                **dict(brief.metadata),
+                "active_skills": public_meta,
+                "active_skill_ids": [str(item.get("id") or "") for item in public_meta],
+            },
+        }
+    )
+
+
 def _path_is_under(path: Path, root: Path) -> bool:
     try:
         path.resolve(strict=False).relative_to(root.resolve(strict=False))
@@ -2440,7 +2686,7 @@ def _super_report_evidence_blocks(report: SuperOrganismReport) -> list[dict[str,
 
 
 def _request_from_live_brief(brief: WorkerBrief) -> ExecutionRequest:
-    return request_from_brief(brief)
+    return request_from_brief(_apply_auto_super_dan_skills(brief))
 
 
 def _live_cell_from_brief(
@@ -6998,10 +7244,15 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
         live_trace_id = new_trace_id()
         live_task_id = f"super-dan-live:{live_turn_number}"
         objective_kind = "general"
-        progress_renderer = SuperProgressRenderer(
-            enabled=not bool(getattr(args, "json", False))
+        progress_renderer_factory = getattr(args, "_progress_renderer_factory", None)
+        progress_enabled = (
+            not bool(getattr(args, "json", False))
             and not bool(getattr(args, "quiet_progress", False))
         )
+        if callable(progress_renderer_factory):
+            progress_renderer = progress_renderer_factory(enabled=progress_enabled, args=args)
+        else:
+            progress_renderer = SuperProgressRenderer(enabled=progress_enabled)
         hook_runtime = SuperHookRuntime(
             state_root=live_workspace_root / ".dan-super" / "state",
             run_id=live_task_id,
@@ -7146,7 +7397,10 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
         if live_result is not None and live_result.get("status") != "completed":
             return 1
     elif live_result is not None:
-        _print_live_report(
+        live_report_printer = getattr(args, "_live_report_printer", None)
+        if not callable(live_report_printer):
+            live_report_printer = _print_live_report
+        live_report_printer(
             report,
             live_result,
             verbose=bool(getattr(args, "verbose", False)),
