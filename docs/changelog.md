@@ -1,6 +1,11 @@
 # Changelog
 
 ## 2026-05-11
+- [docs] Checked out the idea-cart UX backlog into Plan 57 follow-up docs for active-run operator steering, progress/checkpoint rendering, a terminal-first Super DAN TUI, and skill mention UX while keeping GUI and TUI as sibling surfaces over shared contracts.
+- [feat] Added a default DAN `skill_creation` built-in skill in both `SKILL_LIBRARY` and `src/dan/skills/skill_creation.md`, giving DAN-native guidance for creating/adapting SKILL.md skills while preserving tool and workspace safety boundaries.
+- [feat] Made the server skill store read existing Codex, Claude Code, and Cursor skill/rule roots in place by default, including Cursor `.mdc` rules, while keeping `.dan/skills` as the user/project override layer.
+- [feat] Added Super DAN brief-level automatic skill packets. Live briefs now select a capped set of matching DAN/Codex/Claude/Cursor skills from the read-through catalog, append clipped advisory instructions to `contract_snippets`, and record skill provenance in request metadata without granting extra tools.
+- [test] Revalidated focused built-in-skill coverage for the default `skill_creation` hyperedge and skill-library presence.
 - [feat] Added worktree-backed ready-frontier execution to Super DAN live. With `--worktree-parallelism N`, validated non-conflicting extra `ready_task_ids` now run in isolated `.dan-super/worktrees/...` workspaces, return hook-admitted diff packets, and copy only admitted owned files back into the authoritative workspace before final validation.
 - [fix] Kept isolated worktree material writes out of the main validation inbox. Worktree `file_write` / `file_edit` events now stay non-authoritative until their explicit diff packet is admitted and applied.
 - [test] Added a Super DAN regression proving the main lane and a worktree lane can execute separate ready tasks from one DAG, admit the worktree diff, apply `apps/index.html`, and pass final current-frontier validation alongside the main `src/core.js` change.

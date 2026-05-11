@@ -2234,7 +2234,7 @@ Injects domain-specific prompt prefixes into targeted nodes:
 }
 ```
 
-- `skill` — key from `SKILL_LIBRARY` (`management_science_writing`, `informs_latex_style`)
+- `skill` — key from `SKILL_LIBRARY` (`management_science_writing`, `informs_latex_style`, `skill_creation`)
 - `target_nodes` — list of node IDs to inject the skill prompt into (optional)
 - `target_tag` — target all nodes with this value in `metadata.tags` (optional)
 - Injection: prepends skill prompt to `system_prompt` (or `prompt_template` fallback)
@@ -2245,6 +2245,7 @@ Injects domain-specific prompt prefixes into targeted nodes:
 |---|---|---|
 | `management_science_writing` | `writing`, `review` | Management Science journal conventions: contribution framing, methods rigor, reviewer criteria |
 | `informs_latex_style` | `latex` | INFORMS LaTeX formatting: `informs3.cls`, `plainnat` bibliography, submission package conventions |
+| `skill_creation` | `skill`, `skills`, `authoring`, `capability` | DAN-compatible SKILL.md creation/adaptation guidance and safety boundaries |
 
 #### Build Flow
 

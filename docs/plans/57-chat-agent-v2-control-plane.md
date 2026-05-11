@@ -24,6 +24,10 @@
   - [x] 12-3. Persist per-round and aggregate token usage in Agent events, runs, and task snapshots
   - [ ] 12-4. Add a feature flag or alternate route so V2 can be disabled without touching legacy flows
   - [ ] 12-5. Add focused server/frontend regressions before making V2 the default
+- [ ] 13. Add active-run operator steering via [57-10-active-run-operator-steering.md](57-10-active-run-operator-steering.md)
+- [ ] 14. Add shared progress and checkpoint UX via [57-11-progress-and-checkpoint-ux.md](57-11-progress-and-checkpoint-ux.md)
+- [ ] 15. Add a terminal-first Super DAN TUI via [57-12-super-dan-terminal-tui.md](57-12-super-dan-terminal-tui.md)
+- [ ] 16. Add skill mention and autocomplete UX via [57-13-skill-mention-ux.md](57-13-skill-mention-ux.md)
 
 ## Decisions
 - The user-facing product modes are only **Chat** and **Agent**.
@@ -55,3 +59,4 @@
 - Legacy mode surfaces may still inspect Agent logs later, but they should not be required for the V2 happy path.
 - The Telegram target flow is: Telegram message/media -> surface ingress -> triage -> existing/new task binding -> topic queue -> Agent run retrieval/execution -> throttled Telegram message edits/progress -> final result and artifacts.
 - Branching must remain visibly distinct from queueing: a branch creates a sibling thread/task lineage, while checkpoint append and continue-after-current stay attached to the current task.
+- 2026-05-11: Idea-cart UX items were checked out into four follow-up plans: active-run operator steering, progress/checkpoint rendering, a terminal-first TUI, and skill mention UX. GUI and TUI are sibling surfaces over shared V2 command/event contracts, not competing owners of task semantics.

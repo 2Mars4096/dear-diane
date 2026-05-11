@@ -730,7 +730,7 @@ deep-agent-network/
       exec.py                    # execute_python() — shared Python executor for run_python and run_strategy_script
       graph_store.py             # Filesystem-based graph JSON persistence
       graph_mutator.py           # GraphMutator: applies MutationPlan (add/remove/edit nodes+edges) to graph dicts with transactional semantics + dry-run; worker/default-config, source-port compatibility repair, and pattern helpers live in graph_mutator_helpers.py / graph_mutator_patterns.py; ApplySkill + replace_body_graph mutation ops; auto-scaffolds body sub-graphs for control-flow nodes
-      skill_library.py           # SKILL_LIBRARY: domain-specific prompt-injection skills (management_science_writing, informs_latex_style) targeted by node tags
+      skill_library.py           # SKILL_LIBRARY: prompt-injection skills (management_science_writing, informs_latex_style, skill_creation) targeted by node tags
       capability_registry.py     # Phase 15 (25-1) — ChatCapabilityRegistry, CapabilityContext, CapabilityResult, build_tool_schema(); mode-aware multi-tool dispatch for chat-as-control-plane
       capability_handlers.py     # Phase 15 (25-1–25-4, 25-13, 50-3) — thin capability registration hub; graph delete/apply-last-mutation behavior now lives in `src/dan/server/capabilities/graphs.py` and related domain modules
       chat_manager.py            # ChatManager: graph-aware LLM conversations, tool loop, context window management, and conversation persistence; prompt assembly now delegates to `src/dan/server/chat/prompt_builder.py`, while mutation-preview and workflow smoke helpers live in scoped `chat/*` modules
@@ -1114,11 +1114,15 @@ Skills are stored as `SKILL.md` files with YAML frontmatter — the same format 
 
 1. **User-level** — `~/.dan/skills/<name>/SKILL.md` (cross-project)
 2. **Project-level** — `.dan/skills/<name>/SKILL.md` (per-project)
-3. **Legacy** — flat `.md` files from `DAN_CUSTOM_SKILLS_DIR`
+3. **External read-through** — existing Codex, Claude Code, Cursor, and legacy skill/rule directories
+
+External read-through defaults to `~/.codex/skills`, `~/.claude/skills`, `~/.cursor/skills`, and `~/.cursor/rules`, checking both the agent account home and the OS user home when they differ. Cursor `.mdc` rules are accepted as flat skill files. `DAN_AUTO_EXTERNAL_SKILLS=0` disables default external roots, and `DAN_EXTERNAL_SKILLS_DIRS` adds colon-separated extra roots.
 
 Narrower scopes shadow broader ones (project > user > extra). Each `SkillDescriptor` converts to a `Hyperedge` for engine runtime use. The `/skill import <path>` command imports skills from other IDE skill directories.
 
 The frontmatter schema is a superset: `name` + `description` (shared with all IDEs) plus optional DAN extensions (`tags`, `hyperedge_type`, `hook`, `attach_to_*`, `scope`). DAN skills are readable by other IDE agents because unknown frontmatter keys are silently ignored.
+
+Super DAN consumes the same catalog at the live-brief boundary rather than through workflow hyperedges. `_request_from_live_brief(...)` selects a capped set of matching skill packets from the read-through catalog, appends clipped advisory instructions to `WorkerBrief.contract_snippets`, and records `active_skills` provenance in prompt slots/request metadata. Skill packets do not grant tools or override workspace/operator safety policies.
 
 #### Why Hyperedges, Not Context Edges
 
@@ -1685,7 +1689,7 @@ Bidirectional conversion layer (`graphAdapter.ts`):
 - **Validation gate:** After `GraphMutator.apply()` succeeds, the `apply-mutation` endpoint runs `Graph.model_validate()` + `validate_graph()` before persisting. Fatal validation errors reject the apply; warnings are returned alongside the saved graph.
 - **Mutation normalization + auto-retry:** `GraphMutator` now treats `remove_node` on already-missing ids as an idempotent no-op, normalizes guessed source ports onto the sole declared output for single-output nodes (which fixes recurring drifts like `for_each.item -> results` and `code_operator.output -> result`) before validation runs, and auto-scaffolds empty `body_graph` entries for control-flow nodes that require nested sub-graphs. The chat mutation schema also now exposes `replace_body_graph`, which applies mutation-style operations inside that nested body graph so `for_each` / `composite` authoring from chat can produce valid sub-graphs instead of failing on missing `body_graph` references. If a mutation plan still fails dry-run validation after that normalization, the chat manager feeds the errors back to the LLM for a bounded correction attempt before surfacing the failure to the user.
 - **`TOOL_PORT_MANIFESTS`** — tool-specific port declarations for 10 common tools (`file_read`, `list_directory`, `pdf_read`, `compile_latex`, `save_paper`, `package_submission`, `citation_verifier`, `check_latex_deps`, `rag_index_documents`, `web_search`). Used by `_default_ports` to auto-declare input/output ports for `tool_operator` nodes by `tool_id`.
-- **`ApplySkill` mutation op** — targets nodes by ID or `metadata.tags`; injects domain-specific prompt prefixes from `SKILL_LIBRARY` (in `skill_library.py`) into `system_prompt` (or `prompt_template` fallback). Skills: `management_science_writing`, `informs_latex_style`.
+- **`ApplySkill` mutation op** — targets nodes by ID or `metadata.tags`; injects prompt prefixes from `SKILL_LIBRARY` (in `skill_library.py`) into `system_prompt` (or `prompt_template` fallback). Skills: `management_science_writing`, `informs_latex_style`, `skill_creation`.
 - **Mutator diagnostics (7-8):** When `add_edge` auto-creates a missing target port, a diagnostic is emitted. Optional `strict=True` on the op fails instead of auto-creating.
 - **`clarify_intent()`** — `ChatManager` method that detects underspecified build-mode intents and asks the user for clarification before planning.
 
