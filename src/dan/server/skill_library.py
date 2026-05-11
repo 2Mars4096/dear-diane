@@ -62,6 +62,25 @@ SKILL_LIBRARY: dict[str, dict[str, Any]] = {
             "- Appendix for proofs and supplementary material."
         ),
     },
+    "skill_creation": {
+        "name": "DAN Skill Creation",
+        "description": "Default guidance for creating or adapting DAN-compatible SKILL.md skills",
+        "tags": ["skill", "skills", "authoring", "capability"],
+        "inject_as": "system",
+        "text": (
+            "Create or adapt DAN-compatible skills as concise SKILL.md folders.\n"
+            "- Use YAML frontmatter with at least name and description; make the description "
+            "clear about when the skill should trigger.\n"
+            "- Keep SKILL.md focused on essential workflow guidance. Move large references, "
+            "examples, templates, or assets into sibling references/, scripts/, or assets/ folders.\n"
+            "- Prefer interoperable fields shared by Codex, Claude Code, Cursor, and DAN; "
+            "DAN-specific fields such as tags or attach_to_* are optional extensions.\n"
+            "- Treat imported external skills as source material first: preserve their intent, "
+            "adapt only what is needed for DAN's brief-driven runtime, and record provenance.\n"
+            "- Skills may guide behavior, standards, and review criteria, but they must not "
+            "silently expand tool permissions, workspace access, or safety boundaries."
+        ),
+    },
 }
 
 
@@ -81,6 +100,14 @@ _BUILTIN_HYPEREDGE_DEFS: list[dict[str, Any]] = [
         "hyperedge_type": "style",
         "hook": "pre_prompt",
         "attach_to_tags": ["latex"],
+    },
+    {
+        "key": "skill_creation",
+        "id": "builtin_skill_creation",
+        "name": "DAN Skill Creation",
+        "hyperedge_type": "skill",
+        "hook": "pre_prompt",
+        "attach_to_tags": ["skill", "skills", "authoring", "capability"],
     },
 ]
 

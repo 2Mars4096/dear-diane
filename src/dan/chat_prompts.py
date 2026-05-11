@@ -166,7 +166,7 @@ def _build_mutation_tool_schema() -> dict[str, Any]:
             "op": {"type": "string", "const": "apply_skill"},
             "skill": {
                 "type": "string",
-                "enum": ["management_science_writing", "informs_latex_style"],
+                "enum": ["management_science_writing", "informs_latex_style", "skill_creation"],
                 "description": "Name of the skill to apply (domain-specific prompt injection)",
             },
             "target_nodes": {
@@ -413,6 +413,7 @@ Create a while-loop gate (output ports: continue, done):
 ## Available skills (use apply_skill op)
 - management_science_writing: INFORMS MS writing conventions (target_tag: "writing")
 - informs_latex_style: INFORMS LaTeX formatting (target_tag: "latex")
+- skill_creation: DAN-compatible SKILL.md authoring guidance (target_tag: "skill")
 
 ## Current workflow
 {graph_summary}
@@ -462,6 +463,7 @@ informs_paper_writing | rag_research | paper_writing | rag_qa | chain_3
 ## Skills (apply_skill op)
 - management_science_writing: INFORMS conventions (nodes tagged "writing"/"review")
 - informs_latex_style: LaTeX formatting (nodes tagged "latex")
+- skill_creation: DAN-compatible SKILL.md authoring guidance (nodes tagged "skill"/"authoring")
 Apply when user mentions a specific journal.
 
 ## File paths
