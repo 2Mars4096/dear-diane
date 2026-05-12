@@ -1,11 +1,41 @@
 # Idea Cart
 
-Last reviewed: 2026-05-11
+Last reviewed: 2026-05-12
 
 ## Active Items
 
-### IC-017 - Render TUI Progress As A Conversational Timeline
+### IC-023 - Use Neutral TUI Progress And Result Text
 - Status: committed
+- Priority: high
+- Kind: follow-up
+- Scope: Super DAN TUI progress UX
+- Point: TUI progress should use neutral step-awareness language and show a real answer/result surface, not only first-person narration or event telemetry.
+- Why: The user needs to understand what is happening and what was found or changed without reading model/tool internals.
+- Checkout target: [57-17-super-dan-tui-neutral-progress-and-result-surface](../docs/plans/57-17-super-dan-tui-neutral-progress-and-result-surface.md)
+- Acceptance: Default TUI output shows `You asked`, selected mode, neutral activity updates, result/answer lines, trace refs, and elapsed time while raw details stay in debug mode.
+
+### IC-022 - Route TUI Input Through Four Intent Lanes
+- Status: committed
+- Priority: high
+- Kind: decision
+- Scope: Super DAN TUI front-door routing
+- Point: The TUI intent gate should route every input into exactly one of four lanes: `simple read-only`, `complex read-only`, `simple write`, or `complex write`.
+- Why: Permission and effort should be separate, clear dimensions; small read-only requests should not start autonomous planner/build work.
+- Checkout target: [57-16-super-dan-tui-four-lane-intent-gate](../docs/plans/57-16-super-dan-tui-four-lane-intent-gate.md)
+- Acceptance: The TUI chooses one lane before execution, enforces read-only versus write capabilities, and asks one clarification when the lane is unclear.
+
+### IC-021 - Show Elapsed Working Time In TUI Runs
+- Status: done
+- Priority: medium
+- Kind: follow-up
+- Scope: Super DAN TUI transcript and progress UX
+- Point: The live TUI should show elapsed working time for the active run, such as `Working: 12s`, then `Elapsed: 12s` after completion.
+- Why: Long-running tasks need a lightweight time sense without turning the conversation panel back into raw telemetry.
+- Checkout target: [57-14-super-dan-tui-conversational-timeline](../docs/plans/57-14-super-dan-tui-conversational-timeline.md)
+- Acceptance: The default TUI conversation panel keeps an updating bottom footer for active-run elapsed time and preserves raw event details only in debug mode.
+
+### IC-017 - Render TUI Progress As A Conversational Timeline
+- Status: done
 - Priority: high
 - Kind: decision
 - Scope: Super DAN TUI progress UX
@@ -15,7 +45,7 @@ Last reviewed: 2026-05-11
 - Acceptance: A live run appends natural progress messages at meaningful event boundaries without requiring a rigid six-section layout.
 
 ### IC-018 - Keep Raw Events As A Debug View
-- Status: committed
+- Status: done
 - Priority: medium
 - Kind: constraint
 - Scope: Super DAN TUI event rendering
@@ -25,7 +55,7 @@ Last reviewed: 2026-05-11
 - Acceptance: Users can inspect raw event details when needed, but the default live panel translates them into concise work updates.
 
 ### IC-019 - Preserve Visible Chat History Across Turns
-- Status: committed
+- Status: done
 - Priority: high
 - Kind: idea
 - Scope: Super DAN TUI session UX
@@ -35,7 +65,7 @@ Last reviewed: 2026-05-11
 - Acceptance: Starting a new TUI turn appends to the existing visible transcript and run timeline, while each run still keeps its separate `.dan-super/runs/turn-XX/events.jsonl` trace.
 
 ### IC-020 - Treat Reset As The Transcript Boundary
-- Status: committed
+- Status: done
 - Priority: high
 - Kind: constraint
 - Scope: Super DAN TUI reset/session semantics
@@ -206,7 +236,13 @@ Last reviewed: 2026-05-11
 
 ## Checkout Log
 
+### 2026-05-12
+- IC-022 and IC-023 -> checked out into `57-16` and `57-17` from Super DAN TUI intent-gate and neutral feedback discussion.
+- IC-021 -> implemented in the Super DAN TUI conversation projection with a bottom `Working` / `Elapsed` footer and marked done.
+- IC-021 -> carted from Super DAN TUI feedback requesting elapsed working time in the live panel.
+
 ### 2026-05-11
+- IC-017 through IC-020 -> implemented in `src/dan/cli/super_tui.py`; marked done after tests covered conversational timeline, raw event mode, transcript replay, assistant summaries, and reset-state transcript preservation.
 - IC-017 and IC-018 -> checked out into `57-14-super-dan-tui-conversational-timeline`.
 - IC-019 and IC-020 -> checked out into `57-15-super-dan-tui-session-transcript`.
 - IC-017 through IC-020 -> carted from Super DAN TUI feedback about flowing conversational progress and Codex-like transcript continuity across turns until reset.

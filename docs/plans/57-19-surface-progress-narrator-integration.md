@@ -48,7 +48,7 @@
 - Surface layers own responsiveness and presentation: transcript placement, loading states, color, highlighting, and layout.
 - Core owns narrator safety, prompt contract, snapshot semantics, event names, and stale/fallback behavior.
 - Progress questions should not wait silently for a model call. A deterministic snapshot summary appears first, then the model-written answer can refine it.
-- The default TUI should keep the current single-panel structure, but change what it shows: the answer first, then compact activity/context, then trace refs.
+- The default TUI should keep the current single-panel structure, but change what it shows: the answer first, compact status only, and trace/log detail only under `--raw-events`.
 
 ## Notes
 - This plan depends on [57-18](57-18-core-progress-narrator-layer.md) for the reusable narrator contract.
@@ -57,3 +57,4 @@
 - 2026-05-12: First TUI/plain integration landed. `tell me current progress?`, `/progress`, and `/last` route to `narrator read-only`, render `Answer:` before activity, read the latest `.dan-super` event log or transcript snapshot, optionally ask a model with no tools when a model is explicitly available, and persist `assistant_narrator` transcript entries. GUI/Telegram consumption and true concurrent active-run narration remain open.
 - 2026-05-12: TUI model narration now uses the core async narrator job path and renders stale narrator answers as explicit result lines. The remaining TUI gap is accepting fresh operator input while a direct local live executor run is still occupying the prompt.
 - 2026-05-12: Default narrator presentation was tightened after live feedback: raw workspace-check payloads and narrator lifecycle plumbing are hidden from normal `Activity`, fallback answers use human progress labels, and Rich narrator mode titles the panel `Progress` instead of `Recent Events`.
+- 2026-05-12: Default narrator presentation was tightened again after terminal smoke feedback. The normal TUI narrator view now suppresses context/trace/result telemetry, answers next-step questions with `Next:` first, strips markdown/log formatting from model answers, and leaves detailed logs behind `--raw-events`.
