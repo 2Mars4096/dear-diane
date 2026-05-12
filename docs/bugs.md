@@ -1,5 +1,8 @@
 # Known Issues & Failed Approaches
 
+- **P3: Super DAN TUI can promote tiny/read-only display requests into live planner/build runs.** **Observed 2026-05-12 from `io-similarity/.dan-super/runs/turn-09/events.jsonl`:** interactive `super-tui> show me the todo list` ran `live.planning`, wrote `.dan-super/runs/turn-09/plans/1-todo-consolidation.md`, validated that plan, and then entered `live.generic_build` with write tools instead of simply showing `ToDo.md`.
+- **Failed approach recorded:** a todo-specific local fast path was too narrow and was reverted the same day. The durable fix should be a generic intent gate for tiny/read-only display/status/introspection turns before `force_live=not plan_only`, not a growing list of task-specific exceptions.
+
 - ~~**P3: Super DAN treated terminal-native copy/import work like ordinary text file editing.**~~ **FIXED 2026-05-11.** **Observed from an `io-similarity` Super DAN TUI run:** the generic builder had `shell_command` available in early rounds but chose `list_directory` / `file_read` / `file_write`, then the shared runtime narrowed later rounds to direct file tools so terminal-native copy operations were no longer available.
 - **Failed approach recorded:** only adding a transfer-specific detector would hard-code one command family and repeat the same routing brittleness. The generic fix is to improve root platform/tool context, describe `shell_command` as the local command-line toolbox for terminal-native work, keep install behavior cautious, and preserve already-enabled `shell_command` through narrowed write-capable stages.
 

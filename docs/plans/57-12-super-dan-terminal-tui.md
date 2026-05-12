@@ -16,8 +16,9 @@
     - [x] The idle composer now renders as a compact boxed `Message` area with a dim helper strip under it, while keeping the actual `super-tui>` prompt available for prompt-toolkit completions.
     - [x] Prompt-toolkit sessions now open a dropdown immediately when the operator types `/` or a bare `$`; readline fallback still provides Tab completion.
   - [x] 2-3. Render a live event timeline with color-coded phases for planning, model, tool, write, validation, repair, and completion.
-    - [x] The single `Recent Events` panel now shows `Current`, `Context`, `Progress`, and `Results` lines with model round summaries, tool request/result summaries, changed files, validation results, blockers, and trace paths.
+    - [x] The single `Recent Events` panel now shows a conversational timeline with model, tool, file, validation, blocker, final result, and trace updates rather than fixed `Current / Context / Progress / Results` sections.
     - [x] Rich TUI rows now semantically highlight step labels, file/trace paths, tool names, model names, `$skill-name` mentions, and success/failure/waiting terms without changing event emission.
+    - [x] `--raw-events` keeps raw event names/tool metadata available for debug replay.
   - [ ] 2-4. Render changed files, artifacts, validation gaps, queued messages, and blockers in stable panels.
     - [x] Local events now render changed files, artifacts, validation state, queue state, and blockers.
     - [ ] Active-run human queued-message rendering remains blocked on [57-10](57-10-active-run-operator-steering.md).
@@ -61,3 +62,5 @@
 - 2026-05-11: Fixed a prompt-toolkit import compatibility issue that made the dropdown path fall back to readline in environments where `CompleteStyle` lives under `prompt_toolkit.shortcuts`.
 - 2026-05-11: Added output-only Rich semantic highlighting for paths, tools, skills, model names, and status terms in the existing `Recent Events` panel; plain output remains unchanged.
 - 2026-05-11: Follow-up plans split the next desired TUI behavior out of this base shell plan: conversational event narration in `57-14` and persistent visible transcript/reset semantics in `57-15`.
+- 2026-05-11: `57-14` and `57-15` landed in the TUI layer: progress now renders as a conversational timeline with raw debug replay, and interactive TUI sessions replay visible transcript history from `.dan-super/tui/transcript.jsonl` before the composer.
+- 2026-05-12: `io-similarity` trace review showed that free-text interactive TUI turns can over-promote tiny/read-only requests into live planner/build runs; the earlier todo-specific fast path was reverted in favor of designing a generic intent gate.
