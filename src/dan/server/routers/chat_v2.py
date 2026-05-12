@@ -28,6 +28,8 @@ router = APIRouter(tags=["chat-v2"])
 class AgentRunExecuteRequest(BaseModel):
     backend: str | None = None
     background: bool = False
+    auto_execute_continuations: bool = True
+    max_promoted_continuations: int = 8
     profile_policy: dict[str, Any] = Field(default_factory=dict)
     mutation_policy: dict[str, Any] = Field(default_factory=dict)
     approval_policy: dict[str, Any] = Field(default_factory=dict)
@@ -198,6 +200,8 @@ async def execute_agent_run(
                 run_id,
                 backend_name=execute.backend,
                 overrides=overrides,
+                auto_execute_continuations=execute.auto_execute_continuations,
+                remaining_continuations=execute.max_promoted_continuations,
             )
         )
         store.update_run_metadata(
@@ -205,6 +209,8 @@ async def execute_agent_run(
             {
                 "execution_mode": "background",
                 "requested_backend": execute.backend or "",
+                "auto_execute_continuations": bool(execute.auto_execute_continuations),
+                "max_promoted_continuations": int(execute.max_promoted_continuations),
             },
             status="running",
         )
@@ -321,11 +327,26 @@ async def append_agent_run_command(
     )
     event = store.record_agent_command(normalized)
     snapshot = store.get_task_snapshot(run.task_id)
-    return {
+    response = {
         "command": normalized.model_dump(mode="json"),
         "event": event.model_dump(mode="json"),
         "task": snapshot.model_dump(mode="json") if snapshot is not None else None,
     }
+    branch_task_id = str(event.payload.get("branch_task_id") or "")
+    branch_run_id = str(event.payload.get("branch_run_id") or "")
+    if branch_task_id:
+        branch_snapshot = store.get_task_snapshot(branch_task_id)
+        response["branch_task"] = (
+            branch_snapshot.model_dump(mode="json")
+            if branch_snapshot is not None
+            else None
+        )
+    if branch_run_id:
+        branch_run = store.get_run(branch_run_id)
+        response["branch_run"] = (
+            branch_run.model_dump(mode="json") if branch_run is not None else None
+        )
+    return response
 
 
 def _optional_chat_v2_store(request: Request | None) -> ChatV2Store | None:
@@ -345,6 +366,8 @@ async def _execute_agent_run_background(
     *,
     backend_name: str | None,
     overrides: dict[str, Any],
+    auto_execute_continuations: bool = True,
+    remaining_continuations: int = 8,
 ) -> None:
     try:
         await run_agent_backend(
@@ -352,6 +375,35 @@ async def _execute_agent_run_background(
             run_id,
             backend_name=backend_name,
             overrides=overrides,
+        )
+        if not auto_execute_continuations or remaining_continuations <= 0:
+            return
+        run = store.get_run(run_id)
+        next_run_id = ""
+        if run is not None:
+            next_run_id = str(run.metadata.get("continued_run_id") or "")
+        if not next_run_id:
+            return
+        next_run = store.get_run(next_run_id)
+        if next_run is None or next_run.status != "queued":
+            return
+        store.update_run_metadata(
+            next_run_id,
+            {
+                "execution_mode": "background",
+                "requested_backend": backend_name or "",
+                "auto_execute_continuations": True,
+                "promoted_from_run_id": run_id,
+            },
+            status="running",
+        )
+        await _execute_agent_run_background(
+            store,
+            next_run_id,
+            backend_name=backend_name,
+            overrides=overrides,
+            auto_execute_continuations=True,
+            remaining_continuations=remaining_continuations - 1,
         )
     except Exception:
         logger.exception("Background Chat V2 Agent run failed for %s", run_id)
@@ -371,4 +423,4 @@ def _task_run_ref_from_acceptance(acceptance: Any) -> dict[str, Any] | None:
     }
 
 
-_TERMINAL_RUN_STATUSES = {"completed", "failed", "blocked", "stopped"}
+_TERMINAL_RUN_STATUSES = {"completed", "failed", "blocked", "paused", "stopped"}

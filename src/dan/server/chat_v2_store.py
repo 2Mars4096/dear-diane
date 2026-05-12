@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -27,11 +28,27 @@ TaskStatus = Literal[
     "queued",
     "running",
     "needs_input",
+    "paused",
     "completed",
     "failed",
     "blocked",
     "stopped",
 ]
+_INTERRUPTION_METADATA_KEYS = (
+    "pause_requested",
+    "pause_requested_at",
+    "pause_payload",
+    "pause_surface_turn_id",
+    "pause_confirmed_at",
+    "pause_checkpoint",
+    "stop_requested",
+    "stop_requested_at",
+    "stop_command",
+    "stop_payload",
+    "stop_surface_turn_id",
+    "stop_confirmed_at",
+    "stop_checkpoint",
+)
 QueueLane = Literal["append", "continue_after_current"]
 QueueItemStatus = Literal["queued", "injected", "completed", "cancelled"]
 
@@ -414,12 +431,27 @@ class ChatV2Store:
     def record_agent_command(self, command: AgentRunCommand) -> AgentRunEvent:
         """Persist a control command as a normalized event."""
 
+        if command.command in {"append_followup", "continue_after_current"}:
+            return self.queue_agent_command(command)
+        if command.command in {"stop", "cancel"}:
+            return self.request_agent_run_stop(command)
+        if command.command == "pause":
+            return self.request_agent_run_pause(command)
+        if command.command == "resume":
+            return self.resume_agent_run(command)
+        if command.command == "retry":
+            return self.retry_agent_run(command)
+        if command.command == "status":
+            return self.report_agent_run_status(command)
+        if command.command == "branch_from":
+            return self.branch_agent_run(command)
+
         event_type = {
-            "stop": "stopped",
             "approve": "accepted",
             "deny": "blocked",
             "retry": "queued",
             "resume": "queued",
+            "status": "status_reported",
             "append_followup": "queue_item_added",
             "continue_after_current": "queue_item_added",
             "branch_from": "branch_created",
@@ -438,6 +470,888 @@ class ChatV2Store:
         )
         self.record_agent_event(event)
         return event
+
+    def report_agent_run_status(self, command: AgentRunCommand) -> AgentRunEvent:
+        """Return a read-only status event for an Agent run command surface."""
+
+        run = self.get_run(str(command.run_id or ""))
+        task_id = str(command.task_id or (run.task_id if run is not None else ""))
+        task = self.get_task(task_id) if task_id else None
+        if run is None and task is None:
+            return AgentRunEvent(
+                type="blocked",
+                run_id=command.run_id,
+                task_id=command.task_id,
+                summary="Cannot report status because the Agent run was not found.",
+                source_event_type="chat_v2.command.status_failed",
+                payload={"reason": "run_not_found"},
+            )
+        queued_items = list(task.queue_items if task is not None else [])
+        append_count = sum(
+            1
+            for item in queued_items
+            if item.status == "queued" and item.lane == "append"
+        )
+        continue_count = sum(
+            1
+            for item in queued_items
+            if item.status == "queued" and item.lane == "continue_after_current"
+        )
+        run_status = run.status if run is not None else ""
+        task_status = task.status if task is not None else ""
+        summary_status = run_status or task_status or "unknown"
+        return AgentRunEvent(
+            type="status_reported",
+            run_id=run.run_id if run is not None else command.run_id,
+            task_id=task.task_id if task is not None else command.task_id,
+            summary=f"Agent run status: {summary_status}.",
+            source_event_type="chat_v2.command.status_reported",
+            payload={
+                "command": command.command,
+                "surface_turn_id": command.surface_turn_id,
+                "run_status": run_status,
+                "task_status": task_status,
+                "latest_event_type": run.latest_event_type if run is not None else "",
+                "latest_summary": run.latest_summary if run is not None else "",
+                "task_latest_progress": task.latest_progress if task is not None else "",
+                "append_queue_length": append_count,
+                "continue_queue_length": continue_count,
+                "active_run_id": task.active_run_id if task is not None else "",
+                "workspace_root": task.workspace_root if task is not None else "",
+                "workspace_id": task.workspace_id if task is not None else "",
+                **dict(command.payload or {}),
+            },
+        )
+
+    def request_agent_run_stop(self, command: AgentRunCommand) -> AgentRunEvent:
+        """Record a stop/cancel request without pretending the backend halted mid-step."""
+
+        with self._lock:
+            run = self.get_run(str(command.run_id or ""))
+            task_id = str(command.task_id or (run.task_id if run is not None else ""))
+            task = self.get_task(task_id) if task_id else None
+            if run is None and task is None:
+                return AgentRunEvent(
+                    type="blocked",
+                    run_id=command.run_id,
+                    task_id=command.task_id,
+                    summary="Cannot stop run because the Agent run was not found.",
+                    source_event_type="chat_v2.command.stop_failed",
+                    payload={
+                        "command": command.command,
+                        "reason": "run_not_found",
+                    },
+                )
+
+            now = _now()
+            metadata = {
+                "stop_requested": True,
+                "stop_requested_at": now,
+                "stop_command": command.command,
+                "stop_payload": dict(command.payload or {}),
+                "stop_surface_turn_id": command.surface_turn_id or "",
+            }
+            if run is not None:
+                run.metadata.update(metadata)
+                run.updated_at = now
+                self._save_run(run)
+            if task is not None:
+                task.metadata.update(metadata)
+                task.latest_progress = _stop_requested_summary(command.command)
+                task.updated_at = now
+                self._save_task(task)
+
+            event = AgentRunEvent(
+                type="stop_requested",
+                run_id=run.run_id if run is not None else command.run_id,
+                task_id=task.task_id if task is not None else command.task_id,
+                summary=_stop_requested_summary(command.command),
+                source_event_type="chat_v2.command.stop_requested",
+                payload={
+                    "command": command.command,
+                    "surface_turn_id": command.surface_turn_id,
+                    **dict(command.payload or {}),
+                },
+            )
+            if run is not None:
+                run.latest_event_type = event.type
+                run.latest_summary = event.summary
+                run.updated_at = _now()
+                self._save_run(run)
+                self._append_run_event(run.run_id, event)
+            return event
+
+    def request_agent_run_pause(self, command: AgentRunCommand) -> AgentRunEvent:
+        """Record a pause request without interrupting an unsafe backend step."""
+
+        with self._lock:
+            run = self.get_run(str(command.run_id or ""))
+            task_id = str(command.task_id or (run.task_id if run is not None else ""))
+            task = self.get_task(task_id) if task_id else None
+            if run is None and task is None:
+                return AgentRunEvent(
+                    type="blocked",
+                    run_id=command.run_id,
+                    task_id=command.task_id,
+                    summary="Cannot pause run because the Agent run was not found.",
+                    source_event_type="chat_v2.command.pause_failed",
+                    payload={
+                        "command": command.command,
+                        "reason": "run_not_found",
+                    },
+                )
+
+            now = _now()
+            metadata = {
+                "pause_requested": True,
+                "pause_requested_at": now,
+                "pause_payload": dict(command.payload or {}),
+                "pause_surface_turn_id": command.surface_turn_id or "",
+            }
+            if run is not None:
+                run.metadata.update(metadata)
+                run.latest_event_type = "pause_requested"
+                run.latest_summary = _pause_requested_summary()
+                run.updated_at = now
+                self._save_run(run)
+            if task is not None:
+                task.metadata.update(metadata)
+                task.latest_progress = _pause_requested_summary()
+                task.updated_at = now
+                self._save_task(task)
+
+            event = AgentRunEvent(
+                type="pause_requested",
+                run_id=run.run_id if run is not None else command.run_id,
+                task_id=task.task_id if task is not None else command.task_id,
+                summary=_pause_requested_summary(),
+                source_event_type="chat_v2.command.pause_requested",
+                payload={
+                    "command": command.command,
+                    "surface_turn_id": command.surface_turn_id,
+                    **dict(command.payload or {}),
+                },
+            )
+            if run is not None:
+                self._append_run_event(run.run_id, event)
+            return event
+
+    def confirm_agent_run_stopped(
+        self,
+        run_id: str,
+        *,
+        checkpoint: str,
+        reason: str = "",
+    ) -> AgentRunEvent | None:
+        """Transition a stop-requested run to stopped at a safe checkpoint."""
+
+        with self._lock:
+            run = self.get_run(run_id)
+            if run is None:
+                return None
+            task = self.get_task(run.task_id)
+            if run.status == "stopped":
+                return AgentRunEvent(
+                    type="stopped",
+                    run_id=run.run_id,
+                    task_id=run.task_id,
+                    summary=run.latest_summary or "Run stopped.",
+                    source_event_type="chat_v2.command.stop_already_confirmed",
+                    payload={"checkpoint": checkpoint},
+                )
+            run.metadata["stop_confirmed_at"] = _now()
+            run.metadata["stop_checkpoint"] = checkpoint
+            self._save_run(run)
+            event = AgentRunEvent(
+                type="stopped",
+                run_id=run.run_id,
+                task_id=run.task_id,
+                summary=reason or f"Stopped at safe checkpoint: {checkpoint}.",
+                source_event_type="chat_v2.command.stop_confirmed",
+                payload={
+                    "checkpoint": checkpoint,
+                    "stop_command": run.metadata.get("stop_command", "stop"),
+                },
+            )
+            self.record_agent_event(event)
+            if task is not None:
+                task.metadata["stop_checkpoint"] = checkpoint
+                task.updated_at = _now()
+                self._save_task(task)
+            return event
+
+    def confirm_agent_run_paused(
+        self,
+        run_id: str,
+        *,
+        checkpoint: str,
+        reason: str = "",
+    ) -> AgentRunEvent | None:
+        """Transition a pause-requested run to paused at a safe checkpoint."""
+
+        with self._lock:
+            run = self.get_run(run_id)
+            if run is None:
+                return None
+            task = self.get_task(run.task_id)
+            if run.status == "paused":
+                return AgentRunEvent(
+                    type="paused",
+                    run_id=run.run_id,
+                    task_id=run.task_id,
+                    summary=run.latest_summary or "Run paused.",
+                    source_event_type="chat_v2.command.pause_already_confirmed",
+                    payload={"checkpoint": checkpoint},
+                )
+            run.metadata["pause_confirmed_at"] = _now()
+            run.metadata["pause_checkpoint"] = checkpoint
+            self._save_run(run)
+            event = AgentRunEvent(
+                type="paused",
+                run_id=run.run_id,
+                task_id=run.task_id,
+                summary=reason or f"Paused at safe checkpoint: {checkpoint}.",
+                source_event_type="chat_v2.command.pause_confirmed",
+                payload={"checkpoint": checkpoint},
+            )
+            self.record_agent_event(event)
+            if task is not None:
+                task.metadata["pause_checkpoint"] = checkpoint
+                task.updated_at = _now()
+                self._save_task(task)
+            return event
+
+    def resume_agent_run(self, command: AgentRunCommand) -> AgentRunEvent:
+        """Clear pause state and queue the run for explicit resumed execution."""
+
+        with self._lock:
+            run = self.get_run(str(command.run_id or ""))
+            task_id = str(command.task_id or (run.task_id if run is not None else ""))
+            task = self.get_task(task_id) if task_id else None
+            if run is None or task is None:
+                return AgentRunEvent(
+                    type="blocked",
+                    run_id=command.run_id,
+                    task_id=command.task_id,
+                    summary="Cannot resume run because the paused Agent run was not found.",
+                    source_event_type="chat_v2.command.resume_failed",
+                    payload={"reason": "run_not_found"},
+                )
+            if run.status != "paused":
+                event = AgentRunEvent(
+                    type="blocked",
+                    run_id=run.run_id,
+                    task_id=run.task_id,
+                    summary="Only paused Agent runs can be resumed.",
+                    source_event_type="chat_v2.command.resume_blocked",
+                    payload={
+                        "current_status": run.status,
+                        "surface_turn_id": command.surface_turn_id,
+                    },
+                )
+                self.record_agent_event(event)
+                return event
+
+            for key in (
+                "pause_requested",
+                "pause_requested_at",
+                "pause_payload",
+                "pause_surface_turn_id",
+                "pause_confirmed_at",
+                "pause_checkpoint",
+            ):
+                run.metadata.pop(key, None)
+                task.metadata.pop(key, None)
+            run.metadata["resume_requested_at"] = _now()
+            run.metadata["resume_payload"] = dict(command.payload or {})
+            run.metadata["resume_policy"] = "restart_backend_run_from_paused_boundary"
+            run.status = "queued"
+            run.latest_event_type = "queued"
+            run.latest_summary = "Resume queued for paused Agent run."
+            run.updated_at = _now()
+            task.status = "queued"
+            task.latest_progress = run.latest_summary
+            task.metadata["resume_policy"] = run.metadata["resume_policy"]
+            task.updated_at = _now()
+            self._save_run(run)
+            self._save_task(task)
+            event = AgentRunEvent(
+                type="queued",
+                run_id=run.run_id,
+                task_id=run.task_id,
+                summary=run.latest_summary,
+                source_event_type="chat_v2.command.resume_queued",
+                payload={
+                    "surface_turn_id": command.surface_turn_id,
+                    "resume_policy": run.metadata["resume_policy"],
+                    **dict(command.payload or {}),
+                },
+            )
+            self._append_run_event(run.run_id, event)
+            return event
+
+    def retry_agent_run(self, command: AgentRunCommand) -> AgentRunEvent:
+        """Queue a terminal run for a fresh execution attempt."""
+
+        with self._lock:
+            run = self.get_run(str(command.run_id or ""))
+            task_id = str(command.task_id or (run.task_id if run is not None else ""))
+            task = self.get_task(task_id) if task_id else None
+            if run is None or task is None:
+                return AgentRunEvent(
+                    type="blocked",
+                    run_id=command.run_id,
+                    task_id=command.task_id,
+                    summary="Cannot retry run because the Agent run was not found.",
+                    source_event_type="chat_v2.command.retry_failed",
+                    payload={"reason": "run_not_found"},
+                )
+            retryable_statuses = {"completed", "failed", "blocked", "stopped"}
+            if run.status not in retryable_statuses:
+                event = AgentRunEvent(
+                    type="blocked",
+                    run_id=run.run_id,
+                    task_id=run.task_id,
+                    summary="Only terminal Agent runs can be retried.",
+                    source_event_type="chat_v2.command.retry_blocked",
+                    payload={
+                        "current_status": run.status,
+                        "surface_turn_id": command.surface_turn_id,
+                    },
+                )
+                self._append_run_event(run.run_id, event)
+                return event
+
+            now = _now()
+            previous_attempt = {
+                "status": run.status,
+                "latest_event_type": run.latest_event_type,
+                "latest_summary": run.latest_summary,
+                "backend_result": dict(run.metadata.get("backend_result") or {}),
+                "stop_checkpoint": run.metadata.get("stop_checkpoint", ""),
+                "pause_checkpoint": run.metadata.get("pause_checkpoint", ""),
+                "recorded_at": now,
+            }
+            retry_history = [
+                dict(item)
+                for item in run.metadata.get("retry_history", [])
+                if isinstance(item, dict)
+            ]
+            retry_history.append(previous_attempt)
+            retry_count = int(run.metadata.get("retry_count") or 0) + 1
+            for key in _INTERRUPTION_METADATA_KEYS:
+                run.metadata.pop(key, None)
+                task.metadata.pop(key, None)
+            run.metadata.pop("backend_result", None)
+            run.metadata["retry_count"] = retry_count
+            run.metadata["retry_requested_at"] = now
+            run.metadata["retry_payload"] = dict(command.payload or {})
+            run.metadata["retry_surface_turn_id"] = command.surface_turn_id or ""
+            run.metadata["retry_policy"] = "restart_backend_run_from_original_request"
+            run.metadata["retry_history"] = retry_history[-20:]
+            run.status = "queued"
+            run.latest_event_type = "queued"
+            run.latest_summary = "Retry queued for Agent run."
+            run.updated_at = now
+
+            task.status = "queued"
+            task.phase = "retry_queued"
+            task.active_run_id = run.run_id
+            task.latest_progress = run.latest_summary
+            task.blocker = ""
+            task.metadata["retry_count"] = retry_count
+            task.metadata["retry_policy"] = run.metadata["retry_policy"]
+            task.metadata["retry_history"] = list(run.metadata["retry_history"])
+            task.updated_at = now
+            self._save_run(run)
+            self._save_task(task)
+
+            event = AgentRunEvent(
+                type="queued",
+                run_id=run.run_id,
+                task_id=run.task_id,
+                summary=run.latest_summary,
+                source_event_type="chat_v2.command.retry_queued",
+                payload={
+                    "surface_turn_id": command.surface_turn_id,
+                    "retry_count": retry_count,
+                    "previous_status": previous_attempt["status"],
+                    "retry_policy": run.metadata["retry_policy"],
+                    **dict(command.payload or {}),
+                },
+            )
+            self._append_run_event(run.run_id, event)
+            return event
+
+    def branch_agent_run(self, command: AgentRunCommand) -> AgentRunEvent:
+        """Create a sibling queued Agent task/run from an existing run."""
+
+        with self._lock:
+            source_run = self.get_run(str(command.run_id or ""))
+            source_task_id = str(
+                command.task_id
+                or (source_run.task_id if source_run is not None else "")
+            )
+            source_task = self.get_task(source_task_id) if source_task_id else None
+            if source_run is None or source_task is None:
+                return AgentRunEvent(
+                    type="blocked",
+                    run_id=command.run_id,
+                    task_id=command.task_id,
+                    summary="Cannot branch because the source Agent run was not found.",
+                    source_event_type="chat_v2.command.branch_failed",
+                    payload={"reason": "run_not_found"},
+                )
+
+            payload = dict(command.payload or {})
+            source_payload = dict(source_run.command.payload or {})
+            objective = _queue_text_from_command(command) or str(
+                source_payload.get("text") or ""
+            )
+            label = " ".join(str(payload.get("branch_label") or "").split())
+            branch_seed = _stable_id(
+                "branch",
+                source_run.run_id,
+                command.idempotency_key or "",
+                command.surface_turn_id or "",
+                objective,
+                label,
+            )
+            branch_task_id = _stable_id("branch-task", source_task.task_id, branch_seed)
+            branch_run_id = f"arun-branch-{branch_seed[:12]}"
+            existing_run = self.get_run(branch_run_id)
+            if existing_run is not None:
+                event = AgentRunEvent(
+                    type="branch_created",
+                    run_id=source_run.run_id,
+                    task_id=source_task.task_id,
+                    summary=f"Branch already exists as Agent run {branch_run_id}.",
+                    source_event_type="chat_v2.command.branch_coalesced",
+                    payload={
+                        "branch_task_id": branch_task_id,
+                        "branch_run_id": branch_run_id,
+                        "branched_from_run_id": source_run.run_id,
+                        "branched_from_task_id": source_task.task_id,
+                    },
+                )
+                self._append_run_event(source_run.run_id, event)
+                return event
+
+            suffix = branch_seed[:8]
+            branch_topic = f"{source_task.topic_key}:branch:{suffix}"
+            branch_thread = str(payload.get("thread_id") or "").strip() or (
+                f"{source_run.thread_id or source_task.thread_id}:branch:{suffix}"
+            )
+            attachments = list(payload.get("attachments") or source_payload.get("attachments") or [])
+            history = list(payload.get("history") or source_payload.get("history") or [])
+            reply_context = dict(
+                payload.get("reply_context") or source_payload.get("reply_context") or {}
+            )
+            surface_context = dict(
+                payload.get("surface_context") or source_payload.get("surface_context") or {}
+            )
+            branch_task = V2TaskRecord(
+                task_id=branch_task_id,
+                thread_id=branch_thread,
+                workspace_root=source_task.workspace_root,
+                workspace_id=source_task.workspace_id,
+                topic_key=branch_topic,
+                queue_key=f"task:{branch_topic}",
+                status="queued",
+                phase="branch_queued",
+                active_run_id=branch_run_id,
+                latest_progress=(
+                    f"Branch queued from Agent run {source_run.run_id}."
+                ),
+                surface_turn_ids=[command.surface_turn_id] if command.surface_turn_id else [],
+                metadata={
+                    "branch": True,
+                    "branch_label": label,
+                    "branched_from_run_id": source_run.run_id,
+                    "branched_from_task_id": source_task.task_id,
+                    "branched_from_thread_id": source_run.thread_id,
+                    "workspace_root": source_task.workspace_root,
+                    "workspace_id": source_task.workspace_id,
+                },
+            )
+            start_payload = {
+                "text": objective,
+                "attachments": attachments,
+                "workspace_root": source_task.workspace_root,
+                "workspace_id": source_task.workspace_id,
+                "triage_action": "branch_from",
+                "topic_key": branch_topic,
+                "history": history,
+                "reply_context": reply_context,
+                "surface_context": surface_context,
+                "branch_label": label,
+                "branched_from_run_id": source_run.run_id,
+                "branched_from_task_id": source_task.task_id,
+                "operator_context": _structured_operator_context(
+                    objective,
+                    attachments=[
+                        dict(item) if isinstance(item, dict) else {"path": str(item)}
+                        for item in attachments
+                    ],
+                ),
+            }
+            branch_command = AgentRunCommand(
+                command="start",
+                task_id=branch_task_id,
+                run_id=branch_run_id,
+                surface_turn_id=command.surface_turn_id,
+                idempotency_key=_stable_id("branch-start", branch_task_id, branch_run_id),
+                payload=start_payload,
+            )
+            branch_run = AgentRunRecord(
+                run_id=branch_run_id,
+                task_id=branch_task_id,
+                thread_id=branch_thread,
+                workspace_root=source_task.workspace_root,
+                workspace_id=source_task.workspace_id,
+                status="queued",
+                command=branch_command,
+                surface_turn_id=command.surface_turn_id,
+                metadata={
+                    "branch": True,
+                    "branch_label": label,
+                    "queue_key": branch_task.queue_key,
+                    "workspace_root": source_task.workspace_root,
+                    "workspace_id": source_task.workspace_id,
+                    "branched_from_run_id": source_run.run_id,
+                    "branched_from_task_id": source_task.task_id,
+                },
+            )
+            self._save_task(branch_task)
+            self._save_run(branch_run)
+            accepted = AgentRunEvent(
+                type="accepted",
+                run_id=branch_run_id,
+                task_id=branch_task_id,
+                summary=branch_task.latest_progress,
+                source_event_type="chat_v2.run.branch_accepted",
+                payload={
+                    "surface_turn_id": command.surface_turn_id,
+                    "branched_from_run_id": source_run.run_id,
+                    "branched_from_task_id": source_task.task_id,
+                    "branch_label": label,
+                    "workspace_root": source_task.workspace_root,
+                    "workspace_id": source_task.workspace_id,
+                },
+            )
+            self._append_run_event(branch_run_id, accepted)
+
+            event = AgentRunEvent(
+                type="branch_created",
+                run_id=source_run.run_id,
+                task_id=source_task.task_id,
+                summary=f"Created branch Agent run {branch_run_id}.",
+                source_event_type="chat_v2.command.branch_created",
+                payload={
+                    "branch_task_id": branch_task_id,
+                    "branch_run_id": branch_run_id,
+                    "branch_thread_id": branch_thread,
+                    "branch_label": label,
+                    "branched_from_run_id": source_run.run_id,
+                    "branched_from_task_id": source_task.task_id,
+                    "workspace_root": source_task.workspace_root,
+                    "workspace_id": source_task.workspace_id,
+                },
+            )
+            self._append_run_event(source_run.run_id, event)
+            return event
+
+    def queue_agent_command(self, command: AgentRunCommand) -> AgentRunEvent:
+        """Persist an explicit active-run queue command as a durable queue item."""
+
+        lane: QueueLane = (
+            "append"
+            if command.command == "append_followup"
+            else "continue_after_current"
+        )
+        with self._lock:
+            run = self.get_run(str(command.run_id or ""))
+            task_id = str(command.task_id or (run.task_id if run is not None else ""))
+            task = self.get_task(task_id) if task_id else None
+            if task is None:
+                event = AgentRunEvent(
+                    type="blocked",
+                    run_id=command.run_id,
+                    task_id=command.task_id,
+                    summary="Cannot queue command because the Agent task was not found.",
+                    source_event_type="chat_v2.command.queue_failed",
+                    payload={
+                        "command": command.command,
+                        "reason": "task_not_found",
+                    },
+                )
+                if run is not None:
+                    self._append_run_event(run.run_id, event)
+                return event
+
+            run_id = str(command.run_id or task.active_run_id or "")
+            text = _queue_text_from_command(command)
+            dedup_key = str(command.idempotency_key or "").strip() or _stable_id(
+                "command-queue",
+                task.task_id,
+                lane,
+                command.surface_turn_id or "",
+                text,
+            )
+            for item in task.queue_items:
+                if item.dedup_key == dedup_key and item.status == "queued":
+                    event = AgentRunEvent(
+                        type="queue_item_added",
+                        run_id=run_id or None,
+                        task_id=task.task_id,
+                        summary=f"Already queued in {lane.replace('_', '-')} lane.",
+                        source_event_type="chat_v2.command.queue_coalesced",
+                        payload={
+                            "command": command.command,
+                            "queue_item_id": item.id,
+                            "lane": lane,
+                            "queue_position": item.position,
+                            "surface_turn_id": command.surface_turn_id,
+                        },
+                    )
+                    if run_id:
+                        self._append_run_event(run_id, event)
+                    return event
+
+            position = 1 + sum(
+                1
+                for item in task.queue_items
+                if item.lane == lane and item.status == "queued"
+            )
+            item = QueueItemRecord(
+                id=_stable_id(
+                    "command-queue-item",
+                    task.task_id,
+                    lane,
+                    command.surface_turn_id or "",
+                    dedup_key,
+                ),
+                task_id=task.task_id,
+                lane=lane,
+                surface_turn_id=command.surface_turn_id or command.idempotency_key or "",
+                text=text,
+                dedup_key=dedup_key,
+                position=position,
+                metadata={
+                    "command": command.command,
+                    "command_payload": dict(command.payload or {}),
+                    "idempotency_key": command.idempotency_key or "",
+                    "queue_key": task.queue_key,
+                    "workspace_root": task.workspace_root,
+                    "workspace_id": task.workspace_id,
+                    "operator_context": _structured_operator_context(
+                        text,
+                        attachments=list(
+                            dict(command.payload or {}).get("attachments") or []
+                        ),
+                    ),
+                },
+            )
+            task.queue_items.append(item)
+            task.latest_progress = _queue_progress(lane, position)
+            if task.status not in {"running", "needs_input", "blocked", "paused"}:
+                task.status = "queued"
+            task.updated_at = _now()
+            self._save_task(task)
+
+            event = AgentRunEvent(
+                type="queue_item_added",
+                run_id=run_id or None,
+                task_id=task.task_id,
+                summary=task.latest_progress,
+                source_event_type="chat_v2.command.queue_added",
+                payload={
+                    "command": command.command,
+                    "queue_item_id": item.id,
+                    "lane": lane,
+                    "queue_position": position,
+                    "surface_turn_id": command.surface_turn_id,
+                    "workspace_root": task.workspace_root,
+                    "workspace_id": task.workspace_id,
+                    "text": text,
+                },
+            )
+            if run_id:
+                self._update_run_progress_for_event(run_id, event)
+                self._append_run_event(run_id, event)
+            return event
+
+    def claim_queued_run_items(
+        self,
+        run_id: str,
+        *,
+        lane: QueueLane = "append",
+        checkpoint: str = "",
+        limit: int = 16,
+    ) -> list[QueueItemRecord]:
+        """Mark queued active-run items as admitted at a safe backend checkpoint."""
+
+        with self._lock:
+            run = self.get_run(run_id)
+            if run is None:
+                return []
+            task = self.get_task(run.task_id)
+            if task is None:
+                return []
+            queued = [
+                item
+                for item in task.queue_items
+                if item.lane == lane and item.status == "queued"
+            ][: max(1, limit)]
+            if not queued:
+                return []
+
+            now = _now()
+            events: list[AgentRunEvent] = []
+            for item in queued:
+                item.status = "injected"
+                item.updated_at = now
+                item.metadata["admitted_at"] = now
+                item.metadata["admission_checkpoint"] = checkpoint
+                events.append(
+                    AgentRunEvent(
+                        type="queue_item_injected",
+                        run_id=run.run_id,
+                        task_id=task.task_id,
+                        summary=_queue_injected_summary(item, checkpoint=checkpoint),
+                        source_event_type="chat_v2.command.queue_injected",
+                        payload={
+                            "queue_item_id": item.id,
+                            "lane": item.lane,
+                            "checkpoint": checkpoint,
+                            "surface_turn_id": item.surface_turn_id,
+                            "text": item.text,
+                            "metadata": dict(item.metadata),
+                        },
+                    )
+                )
+            task.latest_progress = events[-1].summary
+            task.status = "running"
+            task.updated_at = now
+            self._save_task(task)
+
+            for event in events:
+                self.record_agent_event(event)
+            return [item.model_copy(deep=True) for item in queued]
+
+    def promote_next_continue_after_current(
+        self,
+        run_id: str,
+    ) -> AgentRunRecord | None:
+        """Promote one queued after-current item into the next queued Agent run."""
+
+        with self._lock:
+            run = self.get_run(run_id)
+            if run is None or run.status not in {"completed", "failed", "blocked", "stopped"}:
+                return None
+            task = self.get_task(run.task_id)
+            if task is None:
+                return None
+            item = next(
+                (
+                    candidate
+                    for candidate in task.queue_items
+                    if candidate.lane == "continue_after_current"
+                    and candidate.status == "queued"
+                ),
+                None,
+            )
+            if item is None:
+                return None
+
+            next_run_id = f"arun-{uuid.uuid4().hex[:12]}"
+            now = _now()
+            item.status = "injected"
+            item.updated_at = now
+            item.metadata["admitted_at"] = now
+            item.metadata["admission_checkpoint"] = "terminal"
+            item.metadata["continued_run_id"] = next_run_id
+            self._save_task(task)
+
+            injected = AgentRunEvent(
+                type="queue_item_injected",
+                run_id=run.run_id,
+                task_id=task.task_id,
+                summary=(
+                    "Promoted after-current follow-up "
+                    f"to queued Agent run {next_run_id}."
+                ),
+                source_event_type="chat_v2.command.continue_promoted",
+                payload={
+                    "queue_item_id": item.id,
+                    "lane": item.lane,
+                    "checkpoint": "terminal",
+                    "continued_run_id": next_run_id,
+                    "surface_turn_id": item.surface_turn_id,
+                    "text": item.text,
+                    "metadata": dict(item.metadata),
+                },
+            )
+            self.record_agent_event(injected)
+
+            run = self.get_run(run.run_id)
+            if run is not None:
+                run.metadata["continued_run_id"] = next_run_id
+                run.metadata["continued_queue_item_id"] = item.id
+                run.updated_at = _now()
+                self._save_run(run)
+
+            command = AgentRunCommand(
+                command="start",
+                task_id=task.task_id,
+                run_id=next_run_id,
+                surface_turn_id=item.surface_turn_id,
+                idempotency_key=_stable_id("continue-start", task.task_id, item.id),
+                payload=_start_payload_from_queue_item(task, item, previous_run_id=run_id),
+            )
+            next_run = AgentRunRecord(
+                run_id=next_run_id,
+                task_id=task.task_id,
+                thread_id=task.thread_id,
+                workspace_root=task.workspace_root,
+                workspace_id=task.workspace_id,
+                status="queued",
+                command=command,
+                surface_turn_id=item.surface_turn_id,
+                metadata={
+                    "queue_key": task.queue_key,
+                    "workspace_root": task.workspace_root,
+                    "workspace_id": task.workspace_id,
+                    "continued_from_run_id": run_id,
+                    "queue_item_id": item.id,
+                },
+            )
+            task.active_run_id = next_run_id
+            task.status = "queued"
+            task.phase = "queued_continue_after_current"
+            task.latest_progress = (
+                f"Queued after-current follow-up as Agent run {next_run_id}."
+            )
+            task.updated_at = _now()
+            self._save_run(next_run)
+            self._save_task(task)
+            accepted = AgentRunEvent(
+                type="accepted",
+                run_id=next_run_id,
+                task_id=task.task_id,
+                summary=task.latest_progress,
+                source_event_type="chat_v2.run.continue_accepted",
+                payload={
+                    "surface_turn_id": item.surface_turn_id,
+                    "queue_item_id": item.id,
+                    "continued_from_run_id": run_id,
+                    "queue_key": task.queue_key,
+                    "workspace_root": task.workspace_root,
+                    "workspace_id": task.workspace_id,
+                },
+            )
+            self._append_run_event(next_run_id, accepted)
+            return next_run
 
     def _resolve_task_for_turn(
         self,
@@ -518,6 +1432,13 @@ class ChatV2Store:
                 "history": list(turn.metadata.get("history") or []),
                 "reply_context": dict(turn.metadata.get("reply_context") or {}),
                 "surface_context": dict(turn.metadata.get("surface_context") or {}),
+                "operator_context": _structured_operator_context(
+                    turn.text,
+                    attachments=[
+                        ref.model_dump(mode="json")
+                        for ref in turn.attachments
+                    ],
+                ),
             },
         )
         run = AgentRunRecord(
@@ -636,6 +1557,13 @@ class ChatV2Store:
                 "history": list(turn.metadata.get("history") or []),
                 "reply_context": dict(turn.metadata.get("reply_context") or {}),
                 "surface_context": dict(turn.metadata.get("surface_context") or {}),
+                "operator_context": _structured_operator_context(
+                    turn.text,
+                    attachments=[
+                        ref.model_dump(mode="json")
+                        for ref in turn.attachments
+                    ],
+                ),
             },
         )
         task.queue_items.append(item)
@@ -672,7 +1600,7 @@ class ChatV2Store:
         )
 
     def _latest_active_task_for_topic(self, topic_key: str) -> V2TaskRecord | None:
-        active_status = {"queued", "running", "needs_input", "blocked"}
+        active_status = {"queued", "running", "needs_input", "blocked", "paused"}
         matches = [
             task
             for task in self._iter_tasks()
@@ -687,7 +1615,7 @@ class ChatV2Store:
     ) -> V2TaskRecord | None:
         if not surface_topic_key:
             return None
-        active_status = {"queued", "running", "needs_input", "blocked"}
+        active_status = {"queued", "running", "needs_input", "blocked", "paused"}
         matches = [
             task
             for task in self._iter_tasks()
@@ -753,6 +1681,20 @@ class ChatV2Store:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(event.model_dump_json() + "\n")
+
+    def _update_run_progress_for_event(
+        self,
+        run_id: str,
+        event: AgentRunEvent,
+    ) -> None:
+        run = self.get_run(run_id)
+        if run is None:
+            return
+        run.latest_event_type = event.type
+        run.latest_summary = event.summary
+        run.status = _status_for_event(event.type, fallback=run.status)
+        run.updated_at = _now()
+        self._save_run(run)
 
 
 def _safe_id(value: str) -> str:
@@ -871,6 +1813,13 @@ def _prefer_token_usage_total(
 
 
 def _status_for_event(event_type: str, *, fallback: TaskStatus) -> TaskStatus:
+    if event_type == "queue_item_injected" and fallback in {
+        "completed",
+        "failed",
+        "blocked",
+        "stopped",
+    }:
+        return fallback
     if event_type in {
         "accepted",
         "planned",
@@ -881,13 +1830,27 @@ def _status_for_event(event_type: str, *, fallback: TaskStatus) -> TaskStatus:
         "validation_started",
         "repair_started",
         "queue_item_injected",
+        "status_reported",
+        "pause_requested",
+        "stop_requested",
         "token_usage_recorded",
     }:
+        if event_type == "status_reported":
+            return fallback
         return "running"
+    if event_type == "queue_item_added" and fallback in {
+        "running",
+        "needs_input",
+        "blocked",
+        "paused",
+    }:
+        return fallback
     if event_type in {"queued", "queue_item_added"}:
         return "queued"
     if event_type == "needs_input":
         return "needs_input"
+    if event_type == "paused":
+        return "paused"
     if event_type == "completed":
         return "completed"
     if event_type == "failed":
@@ -900,8 +1863,12 @@ def _status_for_event(event_type: str, *, fallback: TaskStatus) -> TaskStatus:
 
 
 def _summary_for_command(command: AgentRunCommand) -> str:
-    if command.command == "stop":
-        return "Stop command accepted."
+    if command.command == "status":
+        return "Status command accepted."
+    if command.command == "pause":
+        return _pause_requested_summary()
+    if command.command in {"stop", "cancel"}:
+        return _stop_requested_summary(command.command)
     if command.command == "retry":
         return "Retry command accepted."
     if command.command == "append_followup":
@@ -913,7 +1880,128 @@ def _summary_for_command(command: AgentRunCommand) -> str:
     return f"{command.command} command accepted."
 
 
+def _stop_requested_summary(command: str) -> str:
+    label = "Cancel" if command == "cancel" else "Stop"
+    return f"{label} requested; the run will stop at the next safe checkpoint."
+
+
+def _pause_requested_summary() -> str:
+    return "Pause requested; the run will pause at the next safe checkpoint."
+
+
 def _queue_progress(lane: QueueLane, position: int) -> str:
     if lane == "append":
         return f"Queued for checkpoint append at position {position}."
     return f"Queued to continue after the current run at position {position}."
+
+
+def _queue_text_from_command(command: AgentRunCommand) -> str:
+    payload = dict(command.payload or {})
+    for key in ("text", "message", "objective", "content"):
+        text = " ".join(str(payload.get(key) or "").split())
+        if text:
+            return text
+    return ""
+
+
+def _queue_injected_summary(item: QueueItemRecord, *, checkpoint: str = "") -> str:
+    lane = "checkpoint append" if item.lane == "append" else "after-current follow-up"
+    text = " ".join(str(item.text or "").split())
+    if len(text) > 140:
+        text = text[:137].rstrip() + "..."
+    suffix = f" at {checkpoint}" if checkpoint else ""
+    if text:
+        return f"Admitted {lane}{suffix}: {text}"
+    return f"Admitted {lane}{suffix}."
+
+
+def _start_payload_from_queue_item(
+    task: V2TaskRecord,
+    item: QueueItemRecord,
+    *,
+    previous_run_id: str,
+) -> dict[str, Any]:
+    metadata = dict(item.metadata or {})
+    return {
+        "text": item.text,
+        "attachments": list(metadata.get("attachments") or []),
+        "workspace_root": task.workspace_root,
+        "workspace_id": task.workspace_id,
+        "triage_action": "continue_after_current",
+        "topic_key": task.topic_key,
+        "history": list(metadata.get("history") or []),
+        "reply_context": dict(metadata.get("reply_context") or {}),
+        "surface_context": dict(metadata.get("surface_context") or {}),
+        "continued_from_run_id": previous_run_id,
+        "queue_item_id": item.id,
+        "operator_context": dict(metadata.get("operator_context") or {}),
+    }
+
+
+def _structured_operator_context(
+    text: str,
+    *,
+    attachments: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    clean = " ".join(str(text or "").split())
+    lower = clean.lower()
+    context: dict[str, Any] = {
+        "raw_text": clean,
+        "hard_constraints": [],
+        "soft_preferences": [],
+        "target_paths": _operator_context_paths(clean),
+        "validation_requirements": [],
+        "follow_up_objective": clean,
+        "attachments": list(attachments or []),
+    }
+    if _contains_any(
+        lower,
+        (
+            "do not",
+            "don't",
+            "must not",
+            "never",
+            "only ",
+            "must ",
+            "required",
+            "require ",
+        ),
+    ):
+        context["hard_constraints"].append(clean)
+    if _contains_any(lower, ("prefer", "if possible", "nice to", "try to", "should ")):
+        context["soft_preferences"].append(clean)
+    if _contains_any(
+        lower,
+        (
+            "test",
+            "tests",
+            "pytest",
+            "validate",
+            "validation",
+            "verify",
+            "check ",
+            "lint",
+            "typecheck",
+        ),
+    ):
+        context["validation_requirements"].append(clean)
+    return context
+
+
+def _operator_context_paths(text: str) -> list[str]:
+    pattern = re.compile(
+        r"(?<![\w$])(?:[./~\w-]+/)?[\w.-]+\."
+        r"(?:py|md|txt|json|jsonl|yaml|yml|toml|html|css|js|jsx|ts|tsx|csv|parquet|sql|sh)"
+    )
+    seen: set[str] = set()
+    paths: list[str] = []
+    for match in pattern.finditer(text):
+        value = match.group(0).strip(".,;:()[]{}\"'")
+        if value and value not in seen:
+            seen.add(value)
+            paths.append(value)
+    return paths[:20]
+
+
+def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
+    return any(needle in text for needle in needles)

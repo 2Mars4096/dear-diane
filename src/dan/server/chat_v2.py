@@ -43,7 +43,10 @@ AgentRunCommandType = Literal[
     "continue_after_current",
     "approve",
     "deny",
+    "status",
+    "pause",
     "stop",
+    "cancel",
     "retry",
     "branch_from",
     "reprioritize",
@@ -55,6 +58,9 @@ AgentRunEventType = Literal[
     "queued",
     "queue_item_added",
     "queue_item_injected",
+    "status_reported",
+    "pause_requested",
+    "stop_requested",
     "planned",
     "worker_started",
     "model_text_delta",
@@ -68,6 +74,7 @@ AgentRunEventType = Literal[
     "completed",
     "failed",
     "blocked",
+    "paused",
     "stopped",
 ]
 

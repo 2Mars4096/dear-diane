@@ -10,10 +10,31 @@ from pydantic import BaseModel, Field
 
 from dan.server.chat_v2 import AgentRunEvent, normalize_token_usage
 from dan.server.chat_v2_organism import map_organism_log_row_to_agent_event
-from dan.server.chat_v2_store import AgentRunRecord, ChatV2Store, V2TaskRecord
+from dan.server.chat_v2_store import (
+    AgentRunRecord,
+    ChatV2Store,
+    QueueItemRecord,
+    V2TaskRecord,
+)
 
 
 AgentEventSink = Callable[[AgentRunEvent], None]
+
+
+class AgentBackendStopped(RuntimeError):
+    """Raised when a V2 Agent backend stops at an admitted safe checkpoint."""
+
+    def __init__(self, message: str, *, checkpoint: str) -> None:
+        super().__init__(message)
+        self.checkpoint = checkpoint
+
+
+class AgentBackendPaused(RuntimeError):
+    """Raised when a V2 Agent backend pauses at an admitted safe checkpoint."""
+
+    def __init__(self, message: str, *, checkpoint: str) -> None:
+        super().__init__(message)
+        self.checkpoint = checkpoint
 
 
 class AgentBackendRunRequest(BaseModel):
@@ -50,6 +71,56 @@ class AgentBackendRunResult(BaseModel):
     raw_result: dict[str, Any] = Field(default_factory=dict)
 
 
+class AgentBackendRuntime:
+    """Runtime bridge from backend execution into durable V2 run control."""
+
+    def __init__(self, store: ChatV2Store, *, run_id: str, task_id: str) -> None:
+        self._store = store
+        self.run_id = run_id
+        self.task_id = task_id
+
+    def admit_checkpoint(
+        self,
+        checkpoint: str,
+        *,
+        limit: int = 16,
+    ) -> list[QueueItemRecord]:
+        """Admit pending checkpoint-append messages at a safe boundary."""
+
+        return self._store.claim_queued_run_items(
+            self.run_id,
+            lane="append",
+            checkpoint=checkpoint,
+            limit=limit,
+        )
+
+    def raise_if_stop_requested(self, checkpoint: str) -> None:
+        run = self._store.get_run(self.run_id)
+        if run is None or not bool(run.metadata.get("stop_requested")):
+            return
+        event = self._store.confirm_agent_run_stopped(
+            self.run_id,
+            checkpoint=checkpoint,
+        )
+        summary = event.summary if event is not None else "Run stopped."
+        raise AgentBackendStopped(summary, checkpoint=checkpoint)
+
+    def raise_if_pause_requested(self, checkpoint: str) -> None:
+        run = self._store.get_run(self.run_id)
+        if run is None or not bool(run.metadata.get("pause_requested")):
+            return
+        event = self._store.confirm_agent_run_paused(
+            self.run_id,
+            checkpoint=checkpoint,
+        )
+        summary = event.summary if event is not None else "Run paused."
+        raise AgentBackendPaused(summary, checkpoint=checkpoint)
+
+    def raise_if_interrupted(self, checkpoint: str) -> None:
+        self.raise_if_stop_requested(checkpoint)
+        self.raise_if_pause_requested(checkpoint)
+
+
 class AgentBackendAdapter(Protocol):
     """Backend interface used by V2 Agent runs."""
 
@@ -59,6 +130,7 @@ class AgentBackendAdapter(Protocol):
         self,
         request: AgentBackendRunRequest,
         emit_event: AgentEventSink,
+        runtime: AgentBackendRuntime | None = None,
     ) -> AgentBackendRunResult:
         ...
 
@@ -72,7 +144,10 @@ class DeterministicAgentBackendAdapter:
         self,
         request: AgentBackendRunRequest,
         emit_event: AgentEventSink,
+        runtime: AgentBackendRuntime | None = None,
     ) -> AgentBackendRunResult:
+        if runtime is not None:
+            runtime.raise_if_interrupted("deterministic.start")
         usage_delta = {
             "prompt_tokens": max(1, len(request.objective.split())),
             "completion_tokens": 8,
@@ -146,6 +221,7 @@ class SuperDanBackendAdapter:
         self,
         request: AgentBackendRunRequest,
         emit_event: AgentEventSink,
+        runtime: AgentBackendRuntime | None = None,
     ) -> AgentBackendRunResult:
         mutation_mode = str(
             request.mutation_policy.get("mode")
@@ -224,6 +300,10 @@ class SuperDanBackendAdapter:
         )
 
         def _on_raw_row(row: dict[str, Any]) -> None:
+            if runtime is not None and _is_safe_backend_checkpoint(row):
+                checkpoint = _checkpoint_name(row)
+                runtime.admit_checkpoint(checkpoint)
+                runtime.raise_if_interrupted(checkpoint)
             event = map_organism_log_row_to_agent_event(
                 dict(row),
                 run_id=request.run_id,
@@ -320,6 +400,48 @@ class SuperDanBackendAdapter:
                     event_logger=event_logger,
                     objective_kind="general",
                 )
+            except AgentBackendStopped as exc:
+                super_cli._log_live_event(
+                    event_logger,
+                    "run.log.stopped",
+                    trace_id=trace_id,
+                    task_id=request.task_id,
+                    status="stopped",
+                    checkpoint=exc.checkpoint,
+                    event_log_path=str(event_log_path),
+                    event_log_schema=super_cli.ORGANISM_LOG_SCHEMA_VERSION,
+                )
+                return AgentBackendRunResult(
+                    status="stopped",
+                    backend=self.backend_name,
+                    summary=str(exc),
+                    trace_refs=[str(event_log_path)],
+                    raw_result={
+                        "status": "stopped",
+                        "checkpoint": exc.checkpoint,
+                    },
+                )
+            except AgentBackendPaused as exc:
+                super_cli._log_live_event(
+                    event_logger,
+                    "run.log.paused",
+                    trace_id=trace_id,
+                    task_id=request.task_id,
+                    status="paused",
+                    checkpoint=exc.checkpoint,
+                    event_log_path=str(event_log_path),
+                    event_log_schema=super_cli.ORGANISM_LOG_SCHEMA_VERSION,
+                )
+                return AgentBackendRunResult(
+                    status="paused",
+                    backend=self.backend_name,
+                    summary=str(exc),
+                    trace_refs=[str(event_log_path)],
+                    raw_result={
+                        "status": "paused",
+                        "checkpoint": exc.checkpoint,
+                    },
+                )
             except Exception as exc:
                 super_cli._log_live_event(
                     event_logger,
@@ -406,6 +528,30 @@ async def run_agent_backend(
         raise KeyError(run_id)
     task = store.get_task(run.task_id)
     request = build_agent_backend_request(run, task, overrides=overrides)
+    runtime = AgentBackendRuntime(store, run_id=run_id, task_id=run.task_id)
+    initial_operator_items = runtime.admit_checkpoint("backend.start")
+    if initial_operator_items:
+        request = _request_with_admitted_operator_messages(
+            request,
+            initial_operator_items,
+            checkpoint="backend.start",
+        )
+    try:
+        runtime.raise_if_interrupted("backend.start")
+    except (AgentBackendStopped, AgentBackendPaused) as exc:
+        status = "paused" if isinstance(exc, AgentBackendPaused) else "stopped"
+        result = AgentBackendRunResult(
+            status=status,
+            backend=str(backend_name or "unknown"),
+            summary=str(exc),
+            raw_result={"status": status, "checkpoint": exc.checkpoint},
+        )
+        store.update_run_metadata(
+            run_id,
+            {"backend_result": result.model_dump(mode="json")},
+            status=status,  # type: ignore[arg-type]
+        )
+        return result
     try:
         selected = adapter or select_agent_backend_adapter(request, backend_name=backend_name)
     except Exception as exc:
@@ -455,7 +601,21 @@ async def run_agent_backend(
         store.record_agent_event(normalized)
 
     try:
-        result = await selected.run(request, _emit)
+        result = await selected.run(request, _emit, runtime=runtime)
+    except AgentBackendStopped as exc:
+        result = AgentBackendRunResult(
+            status="stopped",
+            backend=selected.backend_name,
+            summary=str(exc),
+            raw_result={"status": "stopped", "checkpoint": exc.checkpoint},
+        )
+    except AgentBackendPaused as exc:
+        result = AgentBackendRunResult(
+            status="paused",
+            backend=selected.backend_name,
+            summary=str(exc),
+            raw_result={"status": "paused", "checkpoint": exc.checkpoint},
+        )
     except Exception as exc:
         failed = AgentRunEvent(
             type="failed",
@@ -484,6 +644,7 @@ async def run_agent_backend(
         },
         status=_terminal_status(result.status),
     )
+    store.promote_next_continue_after_current(run_id)
     return result
 
 
@@ -625,7 +786,7 @@ def _build_super_dan_args(
 
 def _terminal_status(status: str) -> str:
     normalized = str(status or "").strip().lower()
-    if normalized in {"completed", "failed", "blocked", "stopped"}:
+    if normalized in {"completed", "failed", "blocked", "paused", "stopped"}:
         return normalized
     return "failed" if normalized else "completed"
 
@@ -665,6 +826,31 @@ def _normalize_history(raw_history: Any) -> list[dict[str, str]]:
 def _objective_with_surface_context(request: AgentBackendRunRequest) -> str:
     objective = " ".join(str(request.objective or "").split())
     context_lines: list[str] = []
+    admitted_messages = _admitted_operator_messages(request.metadata)
+    if admitted_messages:
+        context_lines.append("Operator updates admitted from the active-run queue:")
+        for item in admitted_messages[-10:]:
+            lane = str(item.get("lane") or "append").replace("_", "-")
+            text = _compact_context_text(item.get("text"), limit=1200)
+            if text:
+                context_lines.append(f"- {lane}: {text}")
+            operator_context = (
+                item.get("operator_context")
+                if isinstance(item.get("operator_context"), dict)
+                else {}
+            )
+            paths = [
+                str(path)
+                for path in list(operator_context.get("target_paths") or [])[:8]
+                if path
+            ]
+            if paths:
+                context_lines.append(f"  target paths: {', '.join(paths)}")
+            if operator_context.get("validation_requirements"):
+                context_lines.append("  includes validation requirement")
+            if operator_context.get("hard_constraints"):
+                context_lines.append("  includes hard constraint")
+
     reply_text = _compact_context_text(
         request.reply_context.get("reply_to_text"),
         limit=1200,
@@ -683,9 +869,9 @@ def _objective_with_surface_context(request: AgentBackendRunRequest) -> str:
         return objective
     return (
         f"Operator request: {objective}\n\n"
-        "Telegram context for resolving references only:\n"
+        "Additional surface context for resolving references and active-run updates:\n"
         + "\n".join(context_lines)
-        + "\n\nSatisfy the operator request above; do not treat the context as extra tasks."
+        + "\n\nSatisfy the operator request and admitted updates above; do not treat older chat context as extra tasks."
     )
 
 
@@ -707,6 +893,84 @@ def _compact_context_text(value: Any, *, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _request_with_admitted_operator_messages(
+    request: AgentBackendRunRequest,
+    items: list[QueueItemRecord],
+    *,
+    checkpoint: str,
+) -> AgentBackendRunRequest:
+    metadata = dict(request.metadata or {})
+    existing = [
+        dict(item)
+        for item in metadata.get("admitted_operator_messages", [])
+        if isinstance(item, dict)
+    ]
+    existing.extend(
+        _operator_message_from_queue_item(item, checkpoint=checkpoint)
+        for item in items
+    )
+    metadata["admitted_operator_messages"] = existing[-50:]
+    return request.model_copy(update={"metadata": metadata})
+
+
+def _operator_message_from_queue_item(
+    item: QueueItemRecord,
+    *,
+    checkpoint: str,
+) -> dict[str, Any]:
+    return {
+        "queue_item_id": item.id,
+        "lane": item.lane,
+        "text": item.text,
+        "surface_turn_id": item.surface_turn_id,
+        "checkpoint": checkpoint,
+        "operator_context": dict(item.metadata.get("operator_context") or {}),
+        "metadata": dict(item.metadata),
+    }
+
+
+def _admitted_operator_messages(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = metadata.get("admitted_operator_messages") if isinstance(metadata, dict) else []
+    if not isinstance(raw, list):
+        return []
+    return [dict(item) for item in raw if isinstance(item, dict)]
+
+
+def _is_safe_backend_checkpoint(row: dict[str, Any]) -> bool:
+    event = str(row.get("event") or row.get("event_type") or row.get("type") or "").lower()
+    if event == "tool.started" and _is_mutating_tool_row(row):
+        return True
+    if event in {
+        "live.generic_build.started",
+        "model.responded",
+        "tool.completed",
+        "tool.ok",
+        "live.validation.started",
+        "live.generic_repair.started",
+        "live.builder_retry.started",
+    }:
+        return True
+    return False
+
+
+def _is_mutating_tool_row(row: dict[str, Any]) -> bool:
+    tool_id = str(
+        row.get("tool_id")
+        or row.get("tool")
+        or row.get("name")
+        or row.get("function")
+        or ""
+    ).strip()
+    return tool_id in {"file_write", "file_edit", "shell_command"}
+
+
+def _checkpoint_name(row: dict[str, Any]) -> str:
+    event = str(row.get("event") or row.get("event_type") or row.get("type") or "").strip()
+    if not event:
+        return "backend.event"
+    return event
 
 
 def _deterministic_summary(objective: str) -> str:

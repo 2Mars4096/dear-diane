@@ -19,7 +19,10 @@ from dan.server.chat_v2 import (
 )
 from dan.server.chat_v2_progress import AgentProgressStateMachine, TelegramProgressSink
 from dan.server.chat_v2_organism import map_organism_log_row_to_agent_event
-from dan.server.chat_v2_backend import build_agent_backend_request
+from dan.server.chat_v2_backend import (
+    _is_safe_backend_checkpoint,
+    build_agent_backend_request,
+)
 from dan.server.chat_v2_store import ChatV2Store
 from dan.server.routers.chat import ChatMessageRequest
 from dan.server.routers import chat_v2 as chat_v2_router
@@ -338,6 +341,21 @@ def test_v2_maps_organism_log_rows_to_normalized_agent_events() -> None:
     assert usage.token_usage_round["round"] == 2
 
 
+def test_v2_backend_runtime_treats_mutating_tool_start_as_safe_checkpoint() -> None:
+    assert _is_safe_backend_checkpoint(
+        {"event": "tool.started", "tool_id": "file_write"}
+    )
+    assert _is_safe_backend_checkpoint(
+        {"event": "tool.started", "tool_id": "file_edit"}
+    )
+    assert _is_safe_backend_checkpoint(
+        {"event": "tool.started", "tool_id": "shell_command"}
+    )
+    assert not _is_safe_backend_checkpoint(
+        {"event": "tool.started", "tool_id": "file_read"}
+    )
+
+
 def test_v2_store_persists_tasks_runs_and_explicit_queue_lanes(tmp_path) -> None:
     store = ChatV2Store(tmp_path / "chat_v2")
     req = ChatMessageRequest(
@@ -495,7 +513,10 @@ def test_v2_store_inherits_active_task_workspace_for_followups(tmp_path) -> None
     assert appended.task_id == accepted.task_id
     assert appended.snapshot is not None
     assert appended.snapshot.metadata["workspace_root"] == str(workspace.resolve())
-    assert appended.snapshot.metadata["queue_items"][0]["metadata"]["workspace_root"] == str(workspace.resolve())
+    queue_metadata = appended.snapshot.metadata["queue_items"][0]["metadata"]
+    assert queue_metadata["workspace_root"] == str(workspace.resolve())
+    assert queue_metadata["operator_context"]["raw_text"] == "/append also update tests"
+    assert queue_metadata["operator_context"]["validation_requirements"]
 
 
 @pytest.mark.asyncio
@@ -574,6 +595,688 @@ async def test_v2_agent_run_execute_uses_backend_adapter_and_persists_events(
     events = await chat_v2_router.get_agent_run_events(run_id)
     assert [event["type"] for event in events["events"]] == [
         "accepted",
+        "planned",
+        "worker_started",
+        "token_usage_recorded",
+        "completed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_v2_agent_run_append_command_is_admitted_at_backend_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    monkeypatch.setattr(chat_v2_router, "get_chat_v2_store", lambda request=None: store)
+    created = await chat_v2_router.create_agent_run(
+        req=ChatMessageRequest(
+            workflow_id="_scratch",
+            message="build the landing page",
+            mode="agent",
+            surface_type="web",
+            surface_id="v2",
+            thread_id="thread-web",
+            surface_context={"workspace_root": str(tmp_path / "workspace")},
+        )
+    )
+    run_id = created["v2_control_plane"]["run_id"]
+
+    queued = await chat_v2_router.append_agent_run_command(
+        run_id,
+        AgentRunCommand(
+            command="append_followup",
+            surface_turn_id="turn-followup-1",
+            idempotency_key="followup-1",
+            payload={
+                "text": (
+                    "also document keyboard shortcuts in README.md; "
+                    "do not touch app.py; validate with pytest"
+                )
+            },
+        ),
+    )
+
+    assert queued["event"]["type"] == "queue_item_added"
+    assert queued["task"]["metadata"]["append_queue_length"] == 1
+    operator_context = queued["task"]["metadata"]["queue_items"][0]["metadata"][
+        "operator_context"
+    ]
+    assert operator_context["target_paths"] == ["README.md", "app.py"]
+    assert operator_context["hard_constraints"]
+    assert operator_context["validation_requirements"]
+
+    executed = await chat_v2_router.execute_agent_run(
+        run_id,
+        execute=chat_v2_router.AgentRunExecuteRequest(backend="deterministic"),
+    )
+
+    assert executed["status"] == "completed"
+    assert executed["task"]["metadata"]["append_queue_length"] == 0
+    events = await chat_v2_router.get_agent_run_events(run_id)
+    event_types = [event["type"] for event in events["events"]]
+    assert event_types == [
+        "accepted",
+        "queue_item_added",
+        "queue_item_injected",
+        "planned",
+        "worker_started",
+        "token_usage_recorded",
+        "completed",
+    ]
+    injected = events["events"][2]
+    assert injected["payload"]["checkpoint"] == "backend.start"
+    assert injected["payload"]["text"].startswith("also document keyboard shortcuts")
+    injected_context = injected["payload"]["metadata"]["operator_context"]
+    assert injected_context["target_paths"] == ["README.md", "app.py"]
+
+
+@pytest.mark.asyncio
+async def test_v2_status_command_reports_without_mutating_run_log(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    monkeypatch.setattr(chat_v2_router, "get_chat_v2_store", lambda request=None: store)
+    created = await chat_v2_router.create_agent_run(
+        req=ChatMessageRequest(
+            workflow_id="_scratch",
+            message="build the landing page",
+            mode="agent",
+            surface_type="web",
+            surface_id="v2",
+            thread_id="thread-web",
+        )
+    )
+    run_id = created["v2_control_plane"]["run_id"]
+    task_id = created["v2_control_plane"]["task_id"]
+    await chat_v2_router.append_agent_run_command(
+        run_id,
+        AgentRunCommand(
+            command="append_followup",
+            surface_turn_id="turn-status-append",
+            payload={"text": "also update README.md"},
+        ),
+    )
+    before = await chat_v2_router.get_agent_run_events(run_id)
+
+    reported = await chat_v2_router.append_agent_run_command(
+        run_id,
+        AgentRunCommand(command="status", surface_turn_id="turn-status-1"),
+    )
+    after = await chat_v2_router.get_agent_run_events(run_id)
+
+    assert reported["event"]["type"] == "status_reported"
+    assert reported["event"]["run_id"] == run_id
+    assert reported["event"]["task_id"] == task_id
+    assert reported["event"]["payload"]["run_status"] == "queued"
+    assert reported["event"]["payload"]["task_status"] == "queued"
+    assert reported["event"]["payload"]["append_queue_length"] == 1
+    assert reported["task"]["metadata"]["append_queue_length"] == 1
+    assert [event["type"] for event in after["events"]] == [
+        event["type"] for event in before["events"]
+    ]
+
+
+@pytest.mark.asyncio
+async def test_v2_branch_command_creates_sibling_queued_agent_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    workspace = tmp_path / "workspace"
+    monkeypatch.setattr(chat_v2_router, "get_chat_v2_store", lambda request=None: store)
+    created = await chat_v2_router.create_agent_run(
+        req=ChatMessageRequest(
+            workflow_id="_scratch",
+            message="build the landing page",
+            mode="agent",
+            surface_type="web",
+            surface_id="v2",
+            thread_id="thread-web",
+            surface_context={"workspace_root": str(workspace)},
+        )
+    )
+    source_run_id = created["v2_control_plane"]["run_id"]
+    source_task_id = created["v2_control_plane"]["task_id"]
+
+    branched = await chat_v2_router.append_agent_run_command(
+        source_run_id,
+        AgentRunCommand(
+            command="branch_from",
+            surface_turn_id="turn-branch-1",
+            idempotency_key="branch-1",
+            payload={
+                "text": "try the same page as a docs-focused version in README.md",
+                "branch_label": "docs version",
+            },
+        ),
+    )
+
+    event = branched["event"]
+    branch_task = branched["branch_task"]
+    branch_run = branched["branch_run"]
+    assert event["type"] == "branch_created"
+    assert event["run_id"] == source_run_id
+    assert event["task_id"] == source_task_id
+    assert branch_task["task_id"] != source_task_id
+    assert branch_task["metadata"]["branched_from_task_id"] == source_task_id
+    assert branch_run["run_id"] == event["payload"]["branch_run_id"]
+    assert branch_run["task_id"] == branch_task["task_id"]
+    assert branch_run["status"] == "queued"
+    assert branch_run["metadata"]["branched_from_run_id"] == source_run_id
+    assert branch_run["command"]["payload"]["text"].startswith("try the same page")
+    assert branch_run["command"]["payload"]["operator_context"]["target_paths"] == [
+        "README.md"
+    ]
+    assert store.get_run(source_run_id).status == "queued"
+    source_events = await chat_v2_router.get_agent_run_events(source_run_id)
+    branch_events = await chat_v2_router.get_agent_run_events(branch_run["run_id"])
+    assert [item["type"] for item in source_events["events"]] == [
+        "accepted",
+        "branch_created",
+    ]
+    assert [item["type"] for item in branch_events["events"]] == ["accepted"]
+
+    completed = await chat_v2_router.execute_agent_run(
+        branch_run["run_id"],
+        execute=chat_v2_router.AgentRunExecuteRequest(backend="deterministic"),
+    )
+
+    assert completed["status"] == "completed"
+    assert completed["run"]["metadata"]["branched_from_run_id"] == source_run_id
+
+
+@pytest.mark.asyncio
+async def test_v2_human_queue_stays_out_of_super_dan_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    workspace = tmp_path / "workspace"
+    monkeypatch.setattr(chat_v2_router, "get_chat_v2_store", lambda request=None: store)
+    created = await chat_v2_router.create_agent_run(
+        req=ChatMessageRequest(
+            workflow_id="_scratch",
+            message="build the landing page",
+            mode="agent",
+            surface_type="web",
+            surface_id="v2",
+            thread_id="thread-web",
+            surface_context={"workspace_root": str(workspace)},
+        )
+    )
+    run_id = created["v2_control_plane"]["run_id"]
+
+    queued = await chat_v2_router.append_agent_run_command(
+        run_id,
+        AgentRunCommand(
+            command="append_followup",
+            surface_turn_id="turn-followup-no-super-state",
+            payload={"text": "also update README.md"},
+        ),
+    )
+
+    assert queued["task"]["metadata"]["append_queue_length"] == 1
+    assert not (workspace / ".dan-super" / "state").exists()
+    executed = await chat_v2_router.execute_agent_run(
+        run_id,
+        execute=chat_v2_router.AgentRunExecuteRequest(backend="deterministic"),
+    )
+
+    assert executed["status"] == "completed"
+    assert not (workspace / ".dan-super" / "state").exists()
+
+
+@pytest.mark.asyncio
+async def test_v2_surface_command_payload_aliases_share_queue_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    workspace = tmp_path / "workspace"
+    monkeypatch.setattr(chat_v2_router, "get_chat_v2_store", lambda request=None: store)
+    created = await chat_v2_router.create_agent_run(
+        req=ChatMessageRequest(
+            workflow_id="_scratch",
+            message="build the landing page",
+            mode="agent",
+            surface_type="web",
+            surface_id="v2",
+            thread_id="thread-web",
+            surface_context={"workspace_root": str(workspace)},
+        )
+    )
+    run_id = created["v2_control_plane"]["run_id"]
+    payloads = [
+        ("gui", {"text": "update README.md"}),
+        ("tui", {"message": "update docs/notes.md"}),
+        ("telegram", {"content": "validate with pytest"}),
+        ("cli", {"objective": "only edit app.py"}),
+    ]
+
+    for source, payload in payloads:
+        queued = await chat_v2_router.append_agent_run_command(
+            run_id,
+            AgentRunCommand(
+                command="append_followup",
+                surface_turn_id=f"turn-{source}",
+                idempotency_key=f"append-{source}",
+                payload={"surface": source, **payload},
+            ),
+        )
+        assert queued["event"]["type"] == "queue_item_added"
+
+    snapshot = store.get_task_snapshot(created["v2_control_plane"]["task_id"])
+    assert snapshot is not None
+    queue_items = snapshot.metadata["queue_items"]
+    assert [item["text"] for item in queue_items] == [
+        "update README.md",
+        "update docs/notes.md",
+        "validate with pytest",
+        "only edit app.py",
+    ]
+    assert [item["metadata"]["command"] for item in queue_items] == [
+        "append_followup",
+        "append_followup",
+        "append_followup",
+        "append_followup",
+    ]
+    assert [item["metadata"]["operator_context"]["raw_text"] for item in queue_items] == [
+        "update README.md",
+        "update docs/notes.md",
+        "validate with pytest",
+        "only edit app.py",
+    ]
+    assert all(
+        item["metadata"]["workspace_root"] == str(workspace.resolve())
+        for item in queue_items
+    )
+
+
+@pytest.mark.asyncio
+async def test_v2_continue_after_current_command_promotes_next_run_after_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    monkeypatch.setattr(chat_v2_router, "get_chat_v2_store", lambda request=None: store)
+    created = await chat_v2_router.create_agent_run(
+        req=ChatMessageRequest(
+            workflow_id="_scratch",
+            message="build the landing page",
+            mode="agent",
+            surface_type="web",
+            surface_id="v2",
+            thread_id="thread-web",
+        )
+    )
+    run_id = created["v2_control_plane"]["run_id"]
+
+    queued = await chat_v2_router.append_agent_run_command(
+        run_id,
+        AgentRunCommand(
+            command="continue_after_current",
+            surface_turn_id="turn-followup-2",
+            idempotency_key="followup-2",
+            payload={"text": "then run a polish pass"},
+        ),
+    )
+
+    assert queued["event"]["type"] == "queue_item_added"
+    assert queued["task"]["metadata"]["continue_queue_length"] == 1
+
+    executed = await chat_v2_router.execute_agent_run(
+        run_id,
+        execute=chat_v2_router.AgentRunExecuteRequest(backend="deterministic"),
+    )
+
+    assert executed["status"] == "completed"
+    assert executed["task"]["metadata"]["continue_queue_length"] == 0
+    next_run_id = executed["task"]["metadata"]["active_run_id"]
+    assert next_run_id != run_id
+    next_run = store.get_run(next_run_id)
+    assert next_run is not None
+    assert next_run.status == "queued"
+    assert next_run.command.payload["text"] == "then run a polish pass"
+    assert next_run.command.payload["continued_from_run_id"] == run_id
+    assert store.get_run(run_id).metadata["continued_run_id"] == next_run_id
+    events = await chat_v2_router.get_agent_run_events(run_id)
+    event_types = [event["type"] for event in events["events"]]
+    assert event_types[-2:] == ["completed", "queue_item_injected"]
+    next_events = await chat_v2_router.get_agent_run_events(next_run_id)
+    assert [event["type"] for event in next_events["events"]] == ["accepted"]
+
+    next_executed = await chat_v2_router.execute_agent_run(
+        next_run_id,
+        execute=chat_v2_router.AgentRunExecuteRequest(backend="deterministic"),
+    )
+
+    assert next_executed["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_v2_background_execution_auto_runs_promoted_continue(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    monkeypatch.setattr(chat_v2_router, "get_chat_v2_store", lambda request=None: store)
+    created = await chat_v2_router.create_agent_run(
+        req=ChatMessageRequest(
+            workflow_id="_scratch",
+            message="build the landing page",
+            mode="agent",
+            surface_type="web",
+            surface_id="v2",
+            thread_id="thread-web",
+        )
+    )
+    run_id = created["v2_control_plane"]["run_id"]
+    await chat_v2_router.append_agent_run_command(
+        run_id,
+        AgentRunCommand(
+            command="continue_after_current",
+            surface_turn_id="turn-followup-background",
+            idempotency_key="followup-background",
+            payload={"text": "then add tests"},
+        ),
+    )
+
+    await chat_v2_router._execute_agent_run_background(
+        store,
+        run_id,
+        backend_name="deterministic",
+        overrides={},
+        auto_execute_continuations=True,
+        remaining_continuations=2,
+    )
+
+    first_run = store.get_run(run_id)
+    assert first_run.status == "completed"
+    next_run_id = first_run.metadata["continued_run_id"]
+    next_run = store.get_run(next_run_id)
+    assert next_run is not None
+    assert next_run.status == "completed"
+    assert next_run.metadata["promoted_from_run_id"] == run_id
+    first_events = await chat_v2_router.get_agent_run_events(run_id)
+    next_events = await chat_v2_router.get_agent_run_events(next_run_id)
+    assert first_events["events"][-1]["type"] == "queue_item_injected"
+    assert next_events["events"][-1]["type"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_v2_cancel_command_stops_at_backend_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    monkeypatch.setattr(chat_v2_router, "get_chat_v2_store", lambda request=None: store)
+    created = await chat_v2_router.create_agent_run(
+        req=ChatMessageRequest(
+            workflow_id="_scratch",
+            message="build the landing page",
+            mode="agent",
+            surface_type="web",
+            surface_id="v2",
+            thread_id="thread-web",
+        )
+    )
+    run_id = created["v2_control_plane"]["run_id"]
+
+    requested = await chat_v2_router.append_agent_run_command(
+        run_id,
+        AgentRunCommand(
+            command="cancel",
+            surface_turn_id="turn-cancel-1",
+            payload={"reason": "operator changed priorities"},
+        ),
+    )
+
+    assert requested["event"]["type"] == "stop_requested"
+    assert requested["task"]["status"] == "queued"
+    assert store.get_run(run_id).metadata["stop_requested"] is True
+
+    executed = await chat_v2_router.execute_agent_run(
+        run_id,
+        execute=chat_v2_router.AgentRunExecuteRequest(backend="deterministic"),
+    )
+
+    assert executed["status"] == "stopped"
+    assert executed["run"]["status"] == "stopped"
+    assert executed["task"]["status"] == "stopped"
+    assert executed["run"]["metadata"]["backend_result"]["status"] == "stopped"
+    assert executed["run"]["metadata"]["stop_checkpoint"] == "backend.start"
+    events = await chat_v2_router.get_agent_run_events(run_id)
+    assert [event["type"] for event in events["events"]] == [
+        "accepted",
+        "stop_requested",
+        "stopped",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_v2_pause_command_pauses_at_backend_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    monkeypatch.setattr(chat_v2_router, "get_chat_v2_store", lambda request=None: store)
+    created = await chat_v2_router.create_agent_run(
+        req=ChatMessageRequest(
+            workflow_id="_scratch",
+            message="build the landing page",
+            mode="agent",
+            surface_type="web",
+            surface_id="v2",
+            thread_id="thread-web",
+        )
+    )
+    run_id = created["v2_control_plane"]["run_id"]
+
+    requested = await chat_v2_router.append_agent_run_command(
+        run_id,
+        AgentRunCommand(
+            command="pause",
+            surface_turn_id="turn-pause-1",
+            payload={"reason": "operator wants to inspect"},
+        ),
+    )
+
+    assert requested["event"]["type"] == "pause_requested"
+    assert requested["task"]["status"] == "queued"
+    assert store.get_run(run_id).metadata["pause_requested"] is True
+
+    executed = await chat_v2_router.execute_agent_run(
+        run_id,
+        execute=chat_v2_router.AgentRunExecuteRequest(backend="deterministic"),
+    )
+
+    assert executed["status"] == "paused"
+    assert executed["run"]["status"] == "paused"
+    assert executed["task"]["status"] == "paused"
+    assert executed["run"]["metadata"]["backend_result"]["status"] == "paused"
+    assert executed["run"]["metadata"]["pause_checkpoint"] == "backend.start"
+    assert "paused" in chat_v2_router._TERMINAL_RUN_STATUSES
+    events = await chat_v2_router.get_agent_run_events(run_id)
+    assert [event["type"] for event in events["events"]] == [
+        "accepted",
+        "pause_requested",
+        "paused",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_v2_resume_command_requeues_paused_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    monkeypatch.setattr(chat_v2_router, "get_chat_v2_store", lambda request=None: store)
+    created = await chat_v2_router.create_agent_run(
+        req=ChatMessageRequest(
+            workflow_id="_scratch",
+            message="build the landing page",
+            mode="agent",
+            surface_type="web",
+            surface_id="v2",
+            thread_id="thread-web",
+        )
+    )
+    run_id = created["v2_control_plane"]["run_id"]
+    await chat_v2_router.append_agent_run_command(
+        run_id,
+        AgentRunCommand(command="pause", surface_turn_id="turn-pause-resume"),
+    )
+    paused = await chat_v2_router.execute_agent_run(
+        run_id,
+        execute=chat_v2_router.AgentRunExecuteRequest(backend="deterministic"),
+    )
+    assert paused["status"] == "paused"
+
+    resumed = await chat_v2_router.append_agent_run_command(
+        run_id,
+        AgentRunCommand(
+            command="resume",
+            surface_turn_id="turn-resume-1",
+            payload={"reason": "operator approved continuation"},
+        ),
+    )
+
+    assert resumed["event"]["type"] == "queued"
+    assert store.get_run(run_id).status == "queued"
+    assert store.get_run(run_id).metadata["resume_policy"] == "restart_backend_run_from_paused_boundary"
+    assert "pause_requested" not in store.get_run(run_id).metadata
+
+    completed = await chat_v2_router.execute_agent_run(
+        run_id,
+        execute=chat_v2_router.AgentRunExecuteRequest(backend="deterministic"),
+    )
+
+    assert completed["status"] == "completed"
+    events = await chat_v2_router.get_agent_run_events(run_id)
+    assert [event["type"] for event in events["events"]] == [
+        "accepted",
+        "pause_requested",
+        "paused",
+        "queued",
+        "planned",
+        "worker_started",
+        "token_usage_recorded",
+        "completed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_v2_append_command_preserves_paused_run_status(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    monkeypatch.setattr(chat_v2_router, "get_chat_v2_store", lambda request=None: store)
+    created = await chat_v2_router.create_agent_run(
+        req=ChatMessageRequest(
+            workflow_id="_scratch",
+            message="build the landing page",
+            mode="agent",
+            surface_type="web",
+            surface_id="v2",
+            thread_id="thread-web",
+        )
+    )
+    run_id = created["v2_control_plane"]["run_id"]
+    await chat_v2_router.append_agent_run_command(
+        run_id,
+        AgentRunCommand(command="pause", surface_turn_id="turn-pause-append"),
+    )
+    paused = await chat_v2_router.execute_agent_run(
+        run_id,
+        execute=chat_v2_router.AgentRunExecuteRequest(backend="deterministic"),
+    )
+    assert paused["status"] == "paused"
+
+    queued = await chat_v2_router.append_agent_run_command(
+        run_id,
+        AgentRunCommand(
+            command="append_followup",
+            surface_turn_id="turn-append-while-paused",
+            payload={"text": "when resumed, only update README.md"},
+        ),
+    )
+
+    assert queued["event"]["type"] == "queue_item_added"
+    assert queued["task"]["status"] == "paused"
+    run = store.get_run(run_id)
+    assert run is not None
+    assert run.status == "paused"
+    queue_metadata = queued["task"]["metadata"]["queue_items"][0]["metadata"]
+    assert queue_metadata["operator_context"]["target_paths"] == ["README.md"]
+    assert queue_metadata["operator_context"]["hard_constraints"]
+
+
+@pytest.mark.asyncio
+async def test_v2_retry_command_requeues_stopped_run_and_clears_stop_flags(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    monkeypatch.setattr(chat_v2_router, "get_chat_v2_store", lambda request=None: store)
+    created = await chat_v2_router.create_agent_run(
+        req=ChatMessageRequest(
+            workflow_id="_scratch",
+            message="build the landing page",
+            mode="agent",
+            surface_type="web",
+            surface_id="v2",
+            thread_id="thread-web",
+        )
+    )
+    run_id = created["v2_control_plane"]["run_id"]
+    await chat_v2_router.append_agent_run_command(
+        run_id,
+        AgentRunCommand(command="cancel", surface_turn_id="turn-cancel-retry"),
+    )
+    stopped = await chat_v2_router.execute_agent_run(
+        run_id,
+        execute=chat_v2_router.AgentRunExecuteRequest(backend="deterministic"),
+    )
+    assert stopped["status"] == "stopped"
+    assert store.get_run(run_id).metadata["stop_requested"] is True
+
+    retried = await chat_v2_router.append_agent_run_command(
+        run_id,
+        AgentRunCommand(
+            command="retry",
+            surface_turn_id="turn-retry-1",
+            payload={"reason": "operator wants another attempt"},
+        ),
+    )
+
+    run = store.get_run(run_id)
+    assert retried["event"]["type"] == "queued"
+    assert retried["event"]["payload"]["previous_status"] == "stopped"
+    assert retried["task"]["status"] == "queued"
+    assert run is not None
+    assert run.status == "queued"
+    assert run.metadata["retry_count"] == 1
+    assert run.metadata["retry_policy"] == "restart_backend_run_from_original_request"
+    assert run.metadata["retry_history"][0]["status"] == "stopped"
+    assert "stop_requested" not in run.metadata
+    assert "stop_checkpoint" not in run.metadata
+    assert "backend_result" not in run.metadata
+
+    completed = await chat_v2_router.execute_agent_run(
+        run_id,
+        execute=chat_v2_router.AgentRunExecuteRequest(backend="deterministic"),
+    )
+
+    assert completed["status"] == "completed"
+    events = await chat_v2_router.get_agent_run_events(run_id)
+    assert [event["type"] for event in events["events"]] == [
+        "accepted",
+        "stop_requested",
+        "stopped",
+        "queued",
         "planned",
         "worker_started",
         "token_usage_recorded",
