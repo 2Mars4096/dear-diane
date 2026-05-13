@@ -1288,8 +1288,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--active-cell-cap",
         type=int,
-        default=DEFAULT_SUPER_ORGANISM_ACTIVE_CELL_CAP,
-        help="Maximum logical cells active in one scheduler wave.",
+        default=None,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--plan-only",
@@ -1386,6 +1386,16 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_internal_active_cell_cap(args: argparse.Namespace) -> int:
+    explicit = getattr(args, "active_cell_cap", None)
+    if explicit is not None:
+        return int(explicit)
+    cell_count = int(getattr(args, "cell_count", DEFAULT_SUPER_ORGANISM_CELL_COUNT))
+    if cell_count <= DEFAULT_SUPER_ORGANISM_CELL_COUNT:
+        return DEFAULT_SUPER_ORGANISM_ACTIVE_CELL_CAP
+    return min(20, max(DEFAULT_SUPER_ORGANISM_ACTIVE_CELL_CAP, (cell_count + 4) // 5))
+
+
 def _print_text_report(report: SuperOrganismReport) -> None:
     lines = _text_report_lines(report)
     print("\n".join(lines), end="\n")
@@ -1405,7 +1415,7 @@ def _print_compact_report(
             "Files:",
             *[f"- {path}" for path in paths],
             "",
-            f"Organism: {_display_text(report.organism_id)} ({report.cell_count} cells, active cap {report.active_cell_cap})",
+            f"Organism: {_display_text(report.organism_id)} ({report.cell_count} logical cells)",
             f"Target: {_display_text(report.target)}",
             "Full trace: rerun with --verbose or --json.",
         ]
@@ -1414,7 +1424,7 @@ def _print_compact_report(
 
     lines = [
         f"Status: {_display_text(report.status)}",
-        f"Organism: {_display_text(report.organism_id)} ({report.cell_count} cells, active cap {report.active_cell_cap})",
+        f"Organism: {_display_text(report.organism_id)} ({report.cell_count} logical cells)",
         f"Target: {_display_text(report.target)}",
         f"Verdict: {_display_text(report.final_verdict)}",
         f"{_display_text(report.score_label)}: {report.credibility_score:.2f}",
@@ -1499,7 +1509,7 @@ def _print_live_report(
             f"Tool Calls: {int(live_result.get('tool_calls') or 0)}",
             f"Token Usage: {_format_token_usage(live_result.get('token_usage'))}",
             "",
-            f"Organism: {_display_text(report.organism_id)} ({report.cell_count} cells, active cap {report.active_cell_cap})",
+            f"Organism: {_display_text(report.organism_id)} ({report.cell_count} logical cells)",
             f"Target: {_display_text(report.target)}",
             "Full trace shown below." if verbose else "Full trace: rerun with --verbose or --json.",
         ]
@@ -1517,8 +1527,7 @@ def _text_report_lines(report: SuperOrganismReport) -> list[str]:
         f"Organism Contract: {_display_text(report.scenario.value)}",
         f"Organism: {_display_text(report.organism_id)}",
         f"Target: {_display_text(report.target)}",
-        f"Cells: {report.cell_count} logical | Active cap: {report.active_cell_cap}",
-        f"Max Active Observed: {report.max_active_observed}",
+        f"Cells: {report.cell_count} logical",
         f"Verdict: {_display_text(report.final_verdict)}",
         f"{_display_text(report.score_label)}: {report.credibility_score:.2f}",
         f"Stages: {_display_text(' -> '.join(report.stage_sequence))}",
@@ -7184,7 +7193,6 @@ def _mutation_paths_from_tools(
 def _render_website_html(report: SuperOrganismReport) -> str:
     objective = _html_escape(report.target)
     cell_count = int(report.cell_count)
-    active_cell_cap = int(report.active_cell_cap)
     nodes = "\n".join(
         f"""          <article class="node-card" data-status="{_html_escape(node.status)}">
             <span>{_html_escape(node.node_id)}</span>
@@ -7210,7 +7218,7 @@ def _render_website_html(report: SuperOrganismReport) -> str:
         <p class="lede">{objective}</p>
         <div class="metrics">
           <span>{cell_count} logical cells</span>
-          <span>{active_cell_cap} active cap</span>
+          <span>scheduler-managed waves</span>
           <span>{_html_escape(report.score_label)} {report.credibility_score:.2f}</span>
         </div>
       </div>
@@ -7372,7 +7380,7 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
             args.target,
             organism_id=str(args.organism_id),
             cell_count=int(args.cell_count),
-            active_cell_cap=int(args.active_cell_cap),
+            active_cell_cap=_resolve_internal_active_cell_cap(args),
         )
     except ValueError as exc:
         parser.error(str(exc))

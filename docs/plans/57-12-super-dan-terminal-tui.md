@@ -64,3 +64,4 @@
 - 2026-05-11: Follow-up plans split the next desired TUI behavior out of this base shell plan: conversational event narration in `57-14` and persistent visible transcript/reset semantics in `57-15`.
 - 2026-05-11: `57-14` and `57-15` landed in the TUI layer: progress now renders as a conversational timeline with raw debug replay, and interactive TUI sessions replay visible transcript history from `.dan-super/tui/transcript.jsonl` before the composer.
 - 2026-05-12: `io-similarity` trace review showed that free-text interactive TUI turns can over-promote tiny/read-only requests into live planner/build runs; the earlier todo-specific fast path was reverted in favor of designing a generic intent gate.
+- 2026-05-13: Removed active-cell cap from the normal CLI/TUI surface. `--cell-count` is the visible organism-size knob; scheduler wave sizing stays internal and compact summaries now show only logical cell count.

@@ -65,7 +65,7 @@
 - [x] 14. Downshift the default organism size for cost control
   - [x] 14-1. Change default CLI/report identity from `super-dan-100` to `super-dan-20`
   - [x] 14-2. Scale organ distribution, delivery node counts, and reallocation counts from the 100-cell reference
-  - [x] 14-3. Keep the larger showcase available through `--cell-count 100 --active-cell-cap 20 --organism-id super-dan-100`
+  - [x] 14-3. Keep the larger showcase available through `--cell-count 100 --organism-id super-dan-100` with internal scheduler wave sizing
 - [x] 15. Keep the live write lane convergent after malformed direct-write calls
   - [x] 15-1. Do not temporarily disable `file_write` / `file_edit` inside write-capable coding stages just because the model emitted malformed arguments
   - [x] 15-2. Do not treat disabled direct-write tools as an automatic post-patch finalize reason
@@ -85,7 +85,7 @@
 - The first slice is deterministic and logical. It proves organization, not live external truth.
 - The raw `WorkerCoreExecutor` / `WorkerDefinition` primitive stays untouched.
 - Live execution routes selected cells through Super DAN's own bounded worker/tool lane instead of launching 100 model calls at once.
-- The default operator path is now 20 logical cells with active cap 8. This keeps everyday live runs cheaper while preserving the 100-cell reference as an explicit showcase configuration.
+- The default operator path is now 20 logical cells. Scheduler wave sizing stays internal, so ordinary CLI/TUI users choose organism size with `--cell-count` instead of tuning an exposed active-cell cap.
 - Objective-specific behavior belongs in the showcase layer, not in the raw universal worker core.
 - The main command should be objective-first. Hardcoded scenario flags are not part of the operator-facing contract.
 - Super DAN stays independent from DAN Code and DAN Research for now; it should not call those product shells internally.

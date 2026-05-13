@@ -2838,7 +2838,7 @@ def test_build_parser_defaults() -> None:
     assert args.target is None
     assert args.organism_id == "super-dan-20"
     assert args.cell_count == 20
-    assert args.active_cell_cap == 8
+    assert args.active_cell_cap is None
     assert args.plan_only is False
     assert args.live is False
     assert args.model is None
@@ -2850,6 +2850,12 @@ def test_build_parser_defaults() -> None:
     assert args.json is False
     assert args.verbose is False
     assert args.quiet_progress is False
+
+
+def test_build_parser_hides_internal_active_cell_cap() -> None:
+    parser = build_parser()
+
+    assert "--active-cell-cap" not in parser.format_help()
 
 
 def test_build_parser_rejects_public_scenario_flag() -> None:
@@ -3442,7 +3448,8 @@ def test_main_report_mode_can_render_default_universal_agent_showcase(capsys) ->
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Organism: super-dan-20 (20 cells, active cap 8)" in stdout
+    assert "Organism: super-dan-20 (20 logical cells)" in stdout
+    assert "active cap" not in stdout
     assert "Execution Readiness Score:" in stdout
     assert "Full trace: rerun with --verbose or --json." in stdout
     assert "Delivery Plan:" not in stdout
@@ -3612,12 +3619,13 @@ def test_operator_intent_policy_runtime_decision_blocks_other_workspace_inputs(t
 
 
 def test_main_verbose_text_summary_prints_full_trace(capsys) -> None:
-    exit_code = main(["OpenHands", "--active-cell-cap", "9", "--verbose"])
+    exit_code = main(["OpenHands", "--verbose"])
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
     assert "Status: completed" in stdout
-    assert "Cells: 20 logical | Active cap: 9" in stdout
+    assert "Cells: 20 logical" in stdout
+    assert "Active cap" not in stdout
     assert "Organism Contract: universal_agent" in stdout
     assert "Delivery Plan:" in stdout
     assert "Board:" in stdout
@@ -3629,12 +3637,13 @@ def test_main_verbose_text_summary_prints_full_trace(capsys) -> None:
 
 
 def test_main_text_summary_keeps_objective_first(capsys) -> None:
-    exit_code = main(["OpenHands", "--active-cell-cap", "9"])
+    exit_code = main(["OpenHands"])
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
     assert "Status: completed" in stdout
-    assert "Organism: super-dan-20 (20 cells, active cap 9)" in stdout
+    assert "Organism: super-dan-20 (20 logical cells)" in stdout
+    assert "active cap" not in stdout
     assert "Full trace: rerun with --verbose or --json." in stdout
     assert "Delivery Plan:" not in stdout
     assert "Claim Graph:" not in stdout
@@ -3645,8 +3654,6 @@ def test_main_text_summary_does_not_materialize_specialized_artifact_without_liv
     exit_code = main(
         [
             "please build our product website. make it cool, with cool animation dynamic effects",
-            "--active-cell-cap",
-            "10",
             "--workspace",
             str(tmp_path),
         ]
@@ -3654,7 +3661,8 @@ def test_main_text_summary_does_not_materialize_specialized_artifact_without_liv
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Organism: super-dan-20 (20 cells, active cap 10)" in stdout
+    assert "Organism: super-dan-20 (20 logical cells)" in stdout
+    assert "active cap" not in stdout
     assert "Execution Readiness Score:" in stdout
     assert "Delivery Plan:" not in stdout
     assert "Materialized Artifacts:" not in stdout
@@ -3735,7 +3743,8 @@ def test_main_plan_only_does_not_materialize(tmp_path, capsys) -> None:
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Organism: super-dan-20 (20 cells, active cap 8)" in stdout
+    assert "Organism: super-dan-20 (20 logical cells)" in stdout
+    assert "active cap" not in stdout
     assert "Materialized Artifacts:" not in stdout
     assert not (tmp_path / "website").exists()
 
