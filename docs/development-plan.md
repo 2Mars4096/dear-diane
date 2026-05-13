@@ -157,6 +157,8 @@ The new `54-*` rewrite family is the first direct expression of that packaging g
 
 The next theoretical phase is `55-*` agent-level stochastic orchestration. DAN should move beyond workflow-stage critical-path optimization toward a dynamic scheduler over agent/task DAGs, where quality/time rewards, context quality, streaming reduction, validator-gated artifact promotion, and conservative robustness to misspecified estimates determine what work runs next. The goal is not more named roles; it is a smarter queue over bounded agents.
 
+The next runtime-control phase is `58-*` async core and background execution. The first proof should be narrow: while task A is still running, DAN accepts task B immediately, classifies it conservatively as parallel / queued-behind / append / clarify from a durable task board plus deterministic path/resource evidence, and surfaces that decision without waiting for A's executor. This is the operational version of the narrator/executor split: narrator explains, foreground control admits and schedules, background executors do tool-using work.
+
 ---
 
 ## 5. Design Decisions

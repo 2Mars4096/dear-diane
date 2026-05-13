@@ -1,7 +1,9 @@
 # Changelog
 
 ## 2026-05-13
+- [docs] Refocused Plan 58 around the first async-core acceptance proof: task B must be accepted immediately while task A is still running, then classified conservatively as parallel, queued-behind, append, or clarify from task-board plus deterministic path/resource evidence before adding richer model-assisted scheduling.
 - [feat] Added core workspace `AGENTS.md` instruction injection for universal briefs. `request_from_brief(...)` now loads workspace-root `AGENTS.md` into rendered prompts with source/hash metadata and clear precedence, so Super DAN live workers, validators, repairs, planners, and worktree lanes inherit project instructions by default.
+- [docs] Added Plan 58 for an async core/background runtime. The new plan splits always-responsive foreground admission and task-board control from durable background executor work, with dependency/conflict scheduling, workspace isolation, and narrator/surface integration as sub-plans.
 
 ## 2026-05-12
 - [fix] Made Super DAN TUI narrator output answer-led instead of log-led. Default narrator view now hides context/trace/result telemetry, answers next-step questions with a `Next:` line first, strips markdown/log detail from model answers, and keeps trace refs available through `--raw-events`.
