@@ -15,6 +15,11 @@ from dan.worker.core.contracts import (
     OutputContract,
     ToolUseContract,
 )
+from dan.worker.workspace_instructions import (
+    load_workspace_instructions,
+    render_workspace_instruction_snippet,
+    workspace_root_from_payloads,
+)
 
 
 class RoleSpec(BaseModel):
@@ -201,6 +206,27 @@ def request_from_brief(brief: WorkerBrief | Mapping[str, Any]) -> ExecutionReque
     """Convert a universal worker brief into the existing worker-core request."""
 
     resolved = brief if isinstance(brief, WorkerBrief) else WorkerBrief.model_validate(dict(brief))
+    workspace_root = workspace_root_from_payloads(resolved.input_payload, resolved.metadata, resolved.prompt_slots)
+    workspace_instructions = load_workspace_instructions(workspace_root)
+    workspace_instruction_metadata: dict[str, Any] | None = None
+    if workspace_instructions is not None:
+        workspace_instruction_metadata = workspace_instructions.metadata()
+        resolved = resolved.model_copy(
+            update={
+                "contract_snippets": [
+                    render_workspace_instruction_snippet(workspace_instructions),
+                    *list(resolved.contract_snippets),
+                ],
+                "prompt_slots": {
+                    **dict(resolved.prompt_slots),
+                    "workspace_instructions": workspace_instruction_metadata,
+                },
+                "metadata": {
+                    **dict(resolved.metadata),
+                    "workspace_instructions": workspace_instruction_metadata,
+                },
+            }
+        )
     rendered_prompt = render_brief_prompt(resolved)
     prompt_context = resolved.prompt_context.model_copy(
         update={
@@ -224,6 +250,8 @@ def request_from_brief(brief: WorkerBrief | Mapping[str, Any]) -> ExecutionReque
         "lifecycle_policy": resolved.lifecycle_policy.model_dump(mode="json", exclude_none=True),
         "mailbox_policy": resolved.mailbox_policy.model_dump(mode="json", exclude_none=True),
     }
+    if workspace_instruction_metadata is not None:
+        metadata["workspace_instructions"] = workspace_instruction_metadata
     return ExecutionRequest.from_handoff(
         task=resolved.task,
         scope=resolved.scope,

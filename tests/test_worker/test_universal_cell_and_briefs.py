@@ -37,6 +37,43 @@ def test_brief_renderer_owns_task_specific_prompt() -> None:
     assert WorkerCoreExecutor._build_user_prompt(request, cell.llm_hints) == request.metadata["brief_rendered_user_prompt"]
 
 
+def test_request_from_brief_loads_workspace_agents_md(tmp_path) -> None:
+    (tmp_path / "AGENTS.md").write_text(
+        "# Project Instructions\n\n- Read docs/todo.md before editing.\n- Update docs/changelog.md after changes.\n",
+        encoding="utf-8",
+    )
+    brief = WorkerBrief(
+        role=RoleSpec(role_label="workspace_worker", responsibility="change files"),
+        task="Make the requested project change.",
+        input_payload={"workspace_root": str(tmp_path), "objective": "Make the change."},
+    )
+
+    request = request_from_brief(brief)
+    prompt = request.metadata["brief_rendered_user_prompt"]
+
+    assert "Workspace instructions loaded from AGENTS.md" in prompt
+    assert "Read docs/todo.md before editing." in prompt
+    assert "DAN safety and tool boundaries override these workspace instructions." in prompt
+    assert request.metadata["workspace_instructions"]["relative_path"] == "AGENTS.md"
+    assert len(request.metadata["workspace_instructions"]["content_sha256_prefix"]) == 16
+
+
+def test_request_from_brief_can_disable_workspace_agents_md(tmp_path, monkeypatch) -> None:
+    (tmp_path / "AGENTS.md").write_text("# Project Instructions\n\nDo project tracking.\n", encoding="utf-8")
+    monkeypatch.setenv("DAN_WORKSPACE_INSTRUCTIONS", "0")
+    brief = WorkerBrief(
+        role=RoleSpec(role_label="workspace_worker", responsibility="change files"),
+        task="Make the requested project change.",
+        input_payload={"workspace_root": str(tmp_path)},
+    )
+
+    request = request_from_brief(brief)
+    prompt = request.metadata["brief_rendered_user_prompt"]
+
+    assert "Workspace instructions loaded from AGENTS.md" not in prompt
+    assert "workspace_instructions" not in request.metadata
+
+
 def test_reviewer_read_only_policy_is_explicit_not_role_inferred() -> None:
     brief = WorkerBrief(
         role=RoleSpec(role_label="anything", responsibility="review only"),

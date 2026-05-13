@@ -3181,6 +3181,26 @@ def test_tui_selected_skill_mentions_force_super_dan_skill_packet(tmp_path, monk
     assert "Canonical File Tree" in prompt
 
 
+def test_super_dan_live_brief_includes_workspace_agents_md(tmp_path) -> None:
+    (tmp_path / "AGENTS.md").write_text(
+        "# Workspace Policy\n\n- Keep tracking docs current after meaningful changes.\n",
+        encoding="utf-8",
+    )
+    brief = super_cli.role_brief(
+        role=super_cli.RoleSpec(role_label="workspace_worker", responsibility="Execute the task."),
+        task="Update the project.",
+        input_payload={"workspace_root": str(tmp_path), "objective": "Update the project."},
+        metadata={"surface": "super_organism", "mode": "live"},
+    )
+
+    request = super_cli._request_from_live_brief(brief)
+    prompt = request.metadata["brief_rendered_user_prompt"]
+
+    assert "Workspace instructions loaded from AGENTS.md" in prompt
+    assert "Keep tracking docs current after meaningful changes." in prompt
+    assert request.metadata["workspace_instructions"]["relative_path"] == "AGENTS.md"
+
+
 def test_super_organism_main_parses_skill_mentions_before_runner(tmp_path, monkeypatch) -> None:
     catalog = [
         {

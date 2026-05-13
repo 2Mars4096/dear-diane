@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-05-13
+- [feat] Added core workspace `AGENTS.md` instruction injection for universal briefs. `request_from_brief(...)` now loads workspace-root `AGENTS.md` into rendered prompts with source/hash metadata and clear precedence, so Super DAN live workers, validators, repairs, planners, and worktree lanes inherit project instructions by default.
+
 ## 2026-05-12
 - [fix] Made Super DAN TUI narrator output answer-led instead of log-led. Default narrator view now hides context/trace/result telemetry, answers next-step questions with a `Next:` line first, strips markdown/log detail from model answers, and keeps trace refs available through `--raw-events`.
 - [fix] Tightened Super DAN TUI narrator progress output. Default narrator answers now use human status lines (`State`, `Last completed`, `Current work`, `Changed`, `Validation`, `Blockers`, `Trace`), hide raw workspace-check payloads and narrator plumbing from `Activity`, and rename the Rich panel to `Progress` for narrator mode.
