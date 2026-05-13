@@ -14,6 +14,8 @@ import re
 import shlex
 import shutil
 import sys
+import textwrap
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -23,12 +25,16 @@ from typing import Any, Mapping, Sequence
 from dan.agent_runtime.progress_narrator import (
     NARRATOR_READ_ONLY,
     NarratorRequest,
+    NarratorReport,
     RunNarratorSnapshot,
     TranscriptRef,
     classify_agent_turn_intent,
+    deterministic_narrator_report,
     deterministic_narrator_response,
     generate_narrator_response,
+    route_agent_turn_intent_with_model,
     start_narrator_job,
+    tokenize_intent_text,
 )
 from dan.cli import _try_import_rich, load_env, normalize_workspace_root
 from dan.cli.super_hooks import format_super_queue_status
@@ -76,6 +82,10 @@ _RICH_STATUS_STYLES = (
     (r"\b(?:running|started|starting|planning|model|validation|builder|workspace|read-only|write)\b", "bold cyan"),
     (r"\b(?:waiting|queued|queue|repair|retry|pending|fallback|still)\b", "bold yellow"),
 )
+_TUI_STREAM_PREFIX = "dan:"
+_TUI_STREAM_PREFIX_RE = re.compile(r"^(?:\[tui\]|dan:)")
+_ANSWER_LINE_LIMIT = 4000
+_ANSWER_LINE_COUNT_LIMIT = 80
 _RICH_PATH_RE = re.compile(
     r"(?<![\w$])(?:"
     r"~|/|\./|\.\./|\.dan-super/|docs/|src/|tests/|apps/|website/|data/|raw/|figures/|tables/|logs/|beamer/"
@@ -225,6 +235,33 @@ def _human_progress_phase(phase: Any) -> str:
     return text.replace("_", " ")
 
 
+def _narrator_trigger_for_event(event_name: str, event: Mapping[str, Any]) -> str:
+    name = str(event_name or "").strip()
+    if not name or name.startswith("narrator."):
+        return ""
+    if name == "run.log.started":
+        return "opening"
+    if name in {"model.requested", "tool.started"}:
+        return "progress"
+    if name == "tool.completed":
+        return "checkpoint" if str(event.get("tool_id") or "") in {"file_write", "file_edit"} else "progress"
+    if name in {
+        "live.validation.started",
+        "live.validation.completed",
+        "super.hook.packet_enqueued",
+    }:
+        return "checkpoint"
+    if name in {"tool.failed", "tool.denied"}:
+        return "blocker"
+    if name in {"live.builder_retry.started", "live.website_repair.started", "live.generic_repair.started"}:
+        return "checkpoint"
+    if name == "super.heartbeat":
+        return "heartbeat"
+    if name in {"run.log.completed", "run.log.failed"}:
+        return "final"
+    return ""
+
+
 def _is_relative_to_path(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -328,16 +365,114 @@ def _format_transcript_line(entry: TuiTranscriptEntry) -> str:
         "system_notice": "system",
         "debug_ref": "trace",
     }.get(role, role or "system")
-    text = _clip(entry.text, limit=180)
-    return f"{label}: {text}"
+    raw_text = str(entry.text or "").strip()
+    if role in {"assistant_final", "assistant_narrator"}:
+        text = raw_text
+    elif role == "user":
+        text = _clip(raw_text, limit=600)
+    else:
+        text = _clip(raw_text, limit=240)
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return f"{label}:"
+    if len(lines) == 1:
+        return f"{label}: {lines[0]}"
+    return "\n".join([f"{label}: {lines[0]}"] + [f"  {line}" for line in lines[1:]])
 
 
-def _rich_semantic_text(line: str) -> Any:
+def _stream_line_without_prefix(line: str) -> str:
+    text = str(line or "").strip()
+    if text.startswith(_TUI_STREAM_PREFIX):
+        return text[len(_TUI_STREAM_PREFIX) :].strip()
+    if text.startswith("[tui]"):
+        return text[len("[tui]") :].strip()
+    return text
+
+
+def _tui_line_base_style(line: str) -> str:
+    text = _stream_line_without_prefix(line)
+    lowered = text.lower()
+    if not text:
+        return "grey50"
+    if text.startswith(("- ", "  - ")):
+        return "white"
+    important_prefixes = (
+        "Answer:",
+        "Result:",
+        "Results:",
+        "Changed:",
+        "Artifact:",
+        "Validation:",
+        "Blocker:",
+        "Source:",
+    )
+    if text.startswith(important_prefixes):
+        return "white"
+    progress_prefixes = (
+        "Activity:",
+        "Context:",
+        "Current:",
+        "Mode:",
+        "Narrator:",
+        "Progress:",
+        "Queue:",
+        "Run:",
+        "Selected skills:",
+        "Tool started:",
+        "Model round:",
+        "Repair started:",
+        "Working:",
+        "Elapsed:",
+    )
+    if text.startswith(progress_prefixes):
+        return "grey50"
+    progress_starts = (
+        "checking ",
+        "read-only review",
+        "review started",
+        "thinking through",
+        "relevant context",
+        "still working",
+        "the executor",
+        "the run is",
+    )
+    if lowered.startswith(progress_starts):
+        return "grey50"
+    return "grey62"
+
+
+def _dim_rich_style(style: str) -> str:
+    if "red" in style:
+        return style
+    if "green" in style:
+        return "green"
+    if "yellow" in style:
+        return "dark_orange"
+    if "cyan" in style:
+        return "dark_cyan"
+    if "blue" in style:
+        return "blue"
+    if "magenta" in style:
+        return "magenta"
+    if "white" in style:
+        return "grey70"
+    return style
+
+
+def _rich_semantic_text(line: str, *, base_style: str | None = None) -> Any:
     from rich.text import Text
 
-    text = Text(str(line or ""), style="grey62")
+    resolved_base_style = base_style or _tui_line_base_style(str(line or ""))
+    is_low_importance = resolved_base_style in {"grey50", "dim", "dim white"}
+    text = Text(str(line or ""), style=resolved_base_style)
     plain = text.plain
-    label = re.match(r"^(\s*(?:-\s*)?)([A-Z][A-Za-z /_-]*)(:)", plain)
+    tui_prefix = _TUI_STREAM_PREFIX_RE.match(plain)
+    if tui_prefix:
+        text.stylize("cyan" if is_low_importance else "bold cyan", tui_prefix.start(), tui_prefix.end())
+    label = re.match(
+        r"^(\s*(?:(?:\[tui\]|dan:)\s*)?(?:-\s*)?)([A-Z][A-Za-z /_-]*)(:)",
+        plain,
+    )
     if label:
         start, end = label.span(2)
         label_style = {
@@ -368,6 +503,17 @@ def _rich_semantic_text(line: str) -> Any:
             "Run": "bold cyan",
             "Selected skills": "bold magenta",
         }.get(label.group(2), "bold white")
+        if is_low_importance and label.group(2) not in {
+            "Answer",
+            "Result",
+            "Results",
+            "Changed",
+            "Artifact",
+            "Validation",
+            "Blocker",
+            "Source",
+        }:
+            label_style = _dim_rich_style(label_style)
         text.stylize(label_style, start, end)
 
     for match in _RICH_PATH_RE.finditer(plain):
@@ -385,9 +531,137 @@ def _rich_semantic_text(line: str) -> Any:
 
     for pattern, style in _RICH_STATUS_STYLES:
         for match in re.finditer(pattern, plain, flags=re.IGNORECASE):
-            text.stylize(style, match.start(), match.end())
+            text.stylize(_dim_rich_style(style) if is_low_importance else style, match.start(), match.end())
 
     return text
+
+
+def _print_tui_stream_line(text: str, *, plain: bool = False) -> None:
+    rendered = f"{_TUI_STREAM_PREFIX} {str(text or '').strip()}"
+    if plain:
+        print(rendered, flush=True)
+        return
+    Console, _ = _try_import_rich()
+    if Console is None:
+        print(rendered, flush=True)
+        return
+    try:
+        console = Console(highlight=False)
+        console.print(_rich_semantic_text(rendered), soft_wrap=True)
+    except Exception:
+        print(rendered, flush=True)
+
+
+def _wrap_tui_stream_lines(lines: Sequence[str], *, width: int | None = None) -> list[str]:
+    columns = int(width or shutil.get_terminal_size((120, 24)).columns or 120)
+    wrap_width = max(48, columns - 8)
+    wrapped: list[str] = []
+    for raw_line in lines:
+        line = str(raw_line or "").rstrip()
+        if not line:
+            continue
+        if len(line) <= wrap_width:
+            wrapped.append(line)
+            continue
+        prefix_match = re.match(r"^(\s*(?:[-*]\s+|\d+[.)]\s+)?)", line)
+        prefix = prefix_match.group(1) if prefix_match else ""
+        wrapped.extend(
+            textwrap.wrap(
+                line,
+                width=wrap_width,
+                subsequent_indent=" " * len(prefix),
+                break_long_words=False,
+                break_on_hyphens=False,
+            )
+            or [line]
+        )
+    return wrapped
+
+
+def _print_tui_stream_block(title: str, lines: Sequence[str], *, plain: bool = False) -> None:
+    title_text = str(title or "").strip() or "Answer"
+    visible_lines = _wrap_tui_stream_lines([str(line or "").rstrip() for line in lines if str(line or "").strip()])
+    if not visible_lines:
+        return
+    if plain:
+        print(f"{_TUI_STREAM_PREFIX} {title_text}:", flush=True)
+        for line in visible_lines:
+            print(f"  {line}", flush=True)
+        return
+    Console, _ = _try_import_rich()
+    if Console is None:
+        print(f"{_TUI_STREAM_PREFIX} {title_text}:", flush=True)
+        for line in visible_lines:
+            print(f"  {line}", flush=True)
+        return
+    try:
+        from rich.panel import Panel
+
+        body = _rich_semantic_text("\n".join(visible_lines), base_style="white")
+        console = Console(highlight=False)
+        console.print(
+            Panel(
+                body,
+                title=title_text,
+                border_style="cyan",
+                padding=(0, 1),
+            )
+        )
+    except Exception:
+        print(f"{_TUI_STREAM_PREFIX} {title_text}:", flush=True)
+        for line in visible_lines:
+            print(f"  {line}", flush=True)
+
+
+def _write_tui_clock_line(footer: str) -> bool:
+    text = str(footer or "").strip()
+    if not text:
+        return False
+    sys.stdout.write("\r\x1b[2K" + f"{_TUI_STREAM_PREFIX} {text}")
+    sys.stdout.flush()
+    return True
+
+
+def _clear_tui_clock_line(active: bool) -> None:
+    if not active:
+        return
+    sys.stdout.write("\r\x1b[2K")
+    sys.stdout.flush()
+
+
+def _run_with_tui_working_clock(args: argparse.Namespace, callback: Any) -> Any:
+    """Run a blocking callback while refreshing one visible Working line."""
+
+    if bool(getattr(args, "json", False)) or bool(getattr(args, "quiet_progress", False)):
+        return callback()
+
+    result: dict[str, Any] = {}
+    error: dict[str, BaseException] = {}
+
+    def _worker() -> None:
+        try:
+            result["value"] = callback()
+        except BaseException as exc:  # pragma: no cover - re-raised in caller thread
+            error["value"] = exc
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    started = time.monotonic()
+    last_footer = ""
+    clock_active = False
+    thread.start()
+    while thread.is_alive():
+        elapsed_seconds = time.monotonic() - started
+        if elapsed_seconds >= 1.0:
+            footer = f"Working: {_format_elapsed_duration(elapsed_seconds)}"
+            if footer != last_footer:
+                clock_active = _write_tui_clock_line(footer) or clock_active
+                last_footer = footer
+        time.sleep(0.25)
+    thread.join()
+    _clear_tui_clock_line(clock_active)
+    if "value" in error:
+        raise error["value"]
+    return result.get("value")
 
 
 @dataclass(frozen=True)
@@ -461,29 +735,6 @@ class TuiSimpleWritePlan:
     destination: str = ""
 
 
-_READ_ONLY_INTENT_RE = re.compile(
-    r"\b(?:show|list|read|view|open|display|explain|summari[sz]e|find|search|check|inspect|review|status|"
-    r"what|where|which|why|how|tell)\b",
-    flags=re.IGNORECASE,
-)
-_WRITE_INTENT_RE = re.compile(
-    r"\b(?:fix|add|update|create|touch|refactor|implement|delete|remove|write|build|generate|patch|modify|change|"
-    r"edit|scaffold|install|rename|move|copy|migrate|continue|proceed|capture|collect)\b",
-    flags=re.IGNORECASE,
-)
-_COMPLEX_INTENT_RE = re.compile(
-    r"\b(?:summari[sz]e|explain|review|compare|analy[sz]e|investigate|debug|search|find|across|all|workspace|"
-    r"project|docs?|plans?|scaffold|benchmark|validate|test|tests|tracking|architecture|roadmap)\b",
-    flags=re.IGNORECASE,
-)
-_SIMPLE_READ_RE = re.compile(
-    r"^\s*(?:please\s+)?(?:show|list|read|view|open|display|status|check)\b",
-    flags=re.IGNORECASE,
-)
-_SIMPLE_WRITE_RE = re.compile(
-    r"\b(?:rename|move|copy|cp|mv|touch)\b",
-    flags=re.IGNORECASE,
-)
 _READ_ONLY_SOURCE_STOPWORDS = {
     "about",
     "again",
@@ -527,6 +778,21 @@ _READ_ONLY_FILE_SUFFIXES = {
     ".html",
     ".css",
 }
+_CODE_REVIEW_FILE_SUFFIXES = {
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".html",
+    ".css",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".sql",
+    ".r",
+    ".jl",
+}
 _READ_ONLY_SKIP_PARTS = {
     ".git",
     ".dan-super",
@@ -553,6 +819,7 @@ def _classify_tui_intent(
     *,
     selected_skills: Sequence[str] = (),
 ) -> TuiIntentDecision:
+    del selected_skills
     stripped = str(text or "").strip()
     if not stripped:
         return TuiIntentDecision(
@@ -562,62 +829,53 @@ def _classify_tui_intent(
             rationale="empty input",
             clarification="What should Super DAN do?",
         )
-    lowered = stripped.lower()
-    has_read = bool(_READ_ONLY_INTENT_RE.search(lowered))
-    has_write = bool(_WRITE_INTENT_RE.search(lowered))
-    has_skill = any(str(token or "").strip() for token in selected_skills)
-    token_count = len(re.findall(r"[A-Za-z0-9_./-]+", stripped))
-
-    if has_write:
-        permission = "write"
-        permission_reason = "mutation intent detected"
-    elif has_read:
-        permission = "read-only"
-        permission_reason = "inspection or answer intent detected"
-    else:
-        return TuiIntentDecision(
-            permission="",
-            complexity="",
-            confidence=0.35,
-            rationale="no clear read-only or write verb",
-            clarification=(
-                "Should this be a read-only answer, or should Super DAN change the workspace?"
-            ),
-        )
-
-    has_path_hint = bool(_extract_read_only_path_mentions(stripped))
-    complex_signal = bool(_COMPLEX_INTENT_RE.search(lowered)) or token_count > 16 or has_skill
-    if permission == "read-only":
-        if _SIMPLE_READ_RE.search(lowered) and token_count <= 12 and not re.search(
-            r"\b(?:summari[sz]e|explain|review|compare|analy[sz]e|workspace|project|all)\b",
-            lowered,
-        ):
-            complexity = "simple"
-            complexity_reason = "bounded display request"
-        elif has_path_hint and token_count <= 8 and not complex_signal:
-            complexity = "simple"
-            complexity_reason = "single source requested"
-        else:
-            complexity = "complex"
-            complexity_reason = "synthesis or broader inspection requested"
-    else:
-        if (
-            _SIMPLE_WRITE_RE.search(lowered)
-            and _parse_simple_write_request(stripped) is not None
-            and token_count <= 12
-            and not has_skill
-        ):
-            complexity = "simple"
-            complexity_reason = "bounded file operation requested"
-        else:
-            complexity = "complex"
-            complexity_reason = "planner/build flow needed"
-
     return TuiIntentDecision(
-        permission=permission,
-        complexity=complexity,
-        confidence=0.82 if permission == "write" else 0.78,
-        rationale=f"{permission_reason}; {complexity_reason}",
+        permission="",
+        complexity="",
+        confidence=0.35,
+        rationale="free-text routing requires model-assisted intent classification",
+        clarification=(
+            "I need the model router to decide whether this is progress, read-only inspection, "
+            "or workspace-changing work."
+        ),
+    )
+
+
+def _tui_decision_from_core_decision(decision: Any) -> TuiIntentDecision:
+    lane = str(getattr(decision, "lane", "") or "").strip()
+    confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
+    rationale = str(getattr(decision, "rationale", "") or "").strip() or "model-assisted route"
+    effort = str(getattr(decision, "executor_effort", "") or "complex").strip().lower()
+    if effort not in {"simple", "complex"}:
+        effort = "complex"
+    if lane == NARRATOR_READ_ONLY:
+        return TuiIntentDecision(
+            permission="read-only",
+            complexity="narrator",
+            confidence=confidence,
+            rationale=rationale,
+        )
+    if lane == "executor read-only":
+        return TuiIntentDecision(
+            permission="read-only",
+            complexity=effort,
+            confidence=confidence,
+            rationale=rationale,
+        )
+    if lane == "executor write":
+        return TuiIntentDecision(
+            permission="write",
+            complexity=effort,
+            confidence=confidence,
+            rationale=rationale,
+        )
+    return TuiIntentDecision(
+        permission="",
+        complexity="",
+        confidence=confidence,
+        rationale=rationale,
+        clarification=str(getattr(decision, "clarification", "") or "").strip()
+        or "Should this be progress/status, read-only inspection, or workspace-changing work?",
     )
 
 
@@ -843,6 +1101,27 @@ def _summarize_source(path: Path, text: str, workspace_root: Path) -> list[str]:
     done_count = sum(1 for line in lines if re.search(r"- \[[xX]\]", line))
     open_count = sum(1 for line in lines if re.search(r"- \[ \]", line))
     result = [f"Source: {rel} ({len(lines)} lines)."]
+    if path.suffix.lower() in _CODE_REVIEW_FILE_SUFFIXES:
+        imports = sum(1 for line in lines if re.match(r"\s*(?:from\s+\S+\s+import|import\s+\S+)", line))
+        classes = [match.group(1) for line in lines if (match := re.match(r"\s*class\s+([A-Za-z_][A-Za-z0-9_]*)", line))]
+        functions = [match.group(1) for line in lines if (match := re.match(r"\s*def\s+([A-Za-z_][A-Za-z0-9_]*)", line))]
+        doc_hint = ""
+        joined = "\n".join(lines[:12])
+        doc_match = re.search(r'"""(.*?)"""|\'\'\'(.*?)\'\'\'', joined, flags=re.DOTALL)
+        if doc_match:
+            doc_hint = " ".join((doc_match.group(1) or doc_match.group(2) or "").split())
+        result.append(
+            f"Code summary: {imports} import(s), {len(classes)} class(es), {len(functions)} function(s)."
+        )
+        if classes:
+            result.append("Classes: " + ", ".join(classes[:6]))
+        if functions:
+            result.append("Functions: " + ", ".join(functions[:8]))
+        if doc_hint:
+            result.append("Purpose hint: " + _clip(doc_hint, limit=160))
+        if len(result) == 2:
+            result.append("No top-level definitions detected in the inspected preview.")
+        return result
     if open_count or done_count:
         result.append(f"Tasks: {open_count} open, {done_count} completed.")
     if headings:
@@ -878,10 +1157,10 @@ def _build_read_only_answer(
     sources = _resolve_read_only_sources(workspace_root, objective)
     activity: list[str] = []
     answer: list[str] = []
-    lowered = objective.lower()
-    if re.search(r"\b(?:find|search|grep)\b", lowered):
+    token_set = set(tokenize_intent_text(objective))
+    if token_set & {"find", "grep", "search"}:
         return _search_sources(workspace_root, objective)
-    wants_summary = bool(re.search(r"\b(?:summari[sz]e|summary|explain|review|analy[sz]e)\b", lowered))
+    wants_summary = bool(token_set & {"analyse", "analyze", "explain", "review", "summarise", "summarize", "summary"})
 
     if sources:
         for source in sources:
@@ -908,7 +1187,7 @@ def _build_read_only_answer(
                 answer.extend(_excerpt_source(source, text, workspace_root))
         return activity, answer
 
-    if re.search(r"\b(?:workspace|project|status|list|show|what|where)\b", lowered):
+    if token_set & {"list", "project", "show", "status", "what", "where", "workspace"}:
         activity.append("Workspace listed.")
         answer.extend(_workspace_overview_lines(workspace_root))
         return activity, answer
@@ -1040,7 +1319,9 @@ def _tui_read_only_system_prompt(tool_ids: Sequence[str]) -> str:
         "Allowed tools: "
         + ", ".join(tool_ids)
         + ". Use concise tool calls only when they materially improve the answer. "
-        "Return a direct answer with cited workspace paths or path:line references when useful."
+        "Return a direct answer with cited workspace paths or path:line references when useful. "
+        "For project or code review, use a short opening paragraph followed by compact bullets when useful. "
+        "Do not paste raw source code, imports, docstrings, markdown tables, or long file excerpts unless the user explicitly asks for source text."
     )
 
 
@@ -1052,22 +1333,28 @@ def _tui_read_only_user_prompt(workspace_root: Path, objective: str) -> str:
     )
 
 
-def _split_answer_lines(text: str, *, limit: int = 14) -> list[str]:
+def _split_answer_lines(text: str, *, limit: int = _ANSWER_LINE_COUNT_LIMIT) -> list[str]:
     lines = []
+    in_code_block = False
     for raw_line in str(text or "").splitlines():
-        line = raw_line.strip()
+        line = raw_line.rstrip()
         if not line:
             continue
-        line = re.sub(r"^\s*[-*]\s+", "", line)
+        line = line.strip()
+        if line.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
         line = re.sub(r"\*\*([^*]+)\*\*", r"\1", line)
         line = re.sub(r"`([^`]+)`", r"\1", line)
         lines.append(line.strip())
     if not lines and str(text or "").strip():
         lines = [str(text).strip()]
-    return [_clip(line, limit=220) for line in lines[:limit]]
+    return [_clip(line, limit=_ANSWER_LINE_LIMIT) for line in lines[:limit]]
 
 
-def _narrator_visible_answer_lines(values: Sequence[str], *, limit: int = 5) -> list[str]:
+def _narrator_visible_answer_lines(values: Sequence[str], *, limit: int = _ANSWER_LINE_COUNT_LIMIT) -> list[str]:
     visible: list[str] = []
     for value in values:
         line = str(value or "").strip()
@@ -1075,10 +1362,145 @@ def _narrator_visible_answer_lines(values: Sequence[str], *, limit: int = 5) -> 
             continue
         if re.match(r"^(?:Trace|Event Log|Source|Context|Activity|Raw|Tool)\s*:", line, flags=re.IGNORECASE):
             continue
-        visible.append(_clip(line, limit=180))
+        visible.append(_clip(line, limit=_ANSWER_LINE_LIMIT))
         if len(visible) >= limit:
             break
     return visible
+
+
+def _looks_like_markdown_table_line(line: str) -> bool:
+    text = str(line or "").strip()
+    return text.count("|") >= 2 or bool(re.fullmatch(r"[:|\-\s]+", text))
+
+
+def _looks_like_raw_code_line(line: str) -> bool:
+    text = str(line or "").strip()
+    if not text:
+        return False
+    if re.match(
+        r"^(?:from\s+\S+\s+import|import\s+\S+|def\s+\w+|class\s+\w+|return\b|if\s+__name__|"
+        r"elif\b|else:|try:|except\b|finally:|with\s+|for\s+|while\s+)",
+        text,
+    ):
+        return True
+    if '"""' in text or "'''" in text:
+        return True
+    code_markers = sum(text.count(marker) for marker in ("{", "}", "=>", "==", "!=", "&&", "||", "::", ";"))
+    return len(text) > 140 and code_markers >= 2
+
+
+def _answer_lines_have_useful_prose(lines: Sequence[str]) -> bool:
+    for line in lines:
+        text = str(line or "").strip()
+        if not text:
+            continue
+        if re.match(r"^(?:Source|Path|File|Trace|Event Log)\s*:", text, flags=re.IGNORECASE):
+            continue
+        if _looks_like_markdown_table_line(text) or _looks_like_raw_code_line(text):
+            continue
+        if len(re.findall(r"[A-Za-z][A-Za-z]{2,}", text)) >= 4:
+            return True
+    return False
+
+
+def _read_only_tool_evidence_text(events: Sequence[Mapping[str, Any]], *, limit: int = 6000) -> str:
+    chunks: list[str] = []
+    for event in events:
+        if str(event.get("event") or "") != "tool.completed":
+            continue
+        tool_id = str(event.get("tool_id") or "").strip()
+        result = event.get("result") if isinstance(event.get("result"), dict) else {}
+        arguments = event.get("arguments") if isinstance(event.get("arguments"), dict) else {}
+        path = str(result.get("path") or arguments.get("path") or "").strip()
+        if tool_id == "file_read":
+            content = str(result.get("content") or "").strip()
+            line_count = result.get("line_count") or result.get("lines") or ""
+            header = f"file_read {path}".strip()
+            if line_count:
+                header += f" ({line_count} lines)"
+            chunks.append(header)
+            if content:
+                chunks.append(_clip(content, limit=2000))
+        elif tool_id == "list_directory":
+            entries = result.get("entries")
+            if isinstance(entries, list):
+                names = []
+                for item in entries[:40]:
+                    if isinstance(item, dict):
+                        names.append(str(item.get("path") or item.get("name") or "").strip())
+                    else:
+                        names.append(str(item).strip())
+                chunks.append(f"list_directory {path}: " + ", ".join(name for name in names if name))
+            else:
+                chunks.append(f"list_directory {path}: {_clip(result, limit=1200)}")
+        elif tool_id == "workspace_check":
+            chunks.append(f"workspace_check: {_clip(json.dumps(result, sort_keys=True, default=str), limit=1600)}")
+        elif tool_id in {"git_status", "git_diff"}:
+            chunks.append(f"{tool_id}: {_clip(json.dumps(result, sort_keys=True, default=str), limit=1600)}")
+    text = "\n\n".join(chunk for chunk in chunks if chunk.strip())
+    return _clip(text, limit=limit)
+
+
+def _tui_read_only_followup_messages(
+    *,
+    workspace_root: Path,
+    objective: str,
+    evidence: str,
+) -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are the read-only answer lane for Super DAN TUI. "
+                "Write the final answer from the provided tool evidence only. "
+                "Do not claim to read more files or call tools. Do not paste raw source code, imports, docstrings, markdown tables, or long excerpts. "
+                "For project/code review, give concise findings with cited paths and concrete next steps."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Workspace root: {workspace_root}\n"
+                f"User request: {objective}\n\n"
+                "Tool evidence already gathered:\n"
+                f"{evidence or '(no tool evidence was captured)'}\n\n"
+                "Now provide the user-facing answer in 3-8 concise lines."
+                " Use a short paragraph plus bullets when that is easier to read."
+            ),
+        },
+    ]
+
+
+def _tui_stream_output(args: argparse.Namespace) -> bool:
+    return not (
+        bool(getattr(args, "plain", False))
+        or bool(getattr(args, "json", False))
+        or bool(getattr(args, "quiet_progress", False))
+        or bool(getattr(args, "raw_events", False))
+    )
+
+
+def _emit_tui_stream_line(args: argparse.Namespace, line: Any) -> None:
+    if not _tui_stream_output(args):
+        return
+    text = str(line or "").strip()
+    if not text:
+        return
+    if text == str(getattr(args, "_tui_last_stream_line", "") or ""):
+        return
+    setattr(args, "_tui_last_stream_line", text)
+    _print_tui_stream_line(text, plain=bool(getattr(args, "plain", False)))
+
+
+def _emit_tui_stream_answer(args: argparse.Namespace, state: "SuperTuiState") -> None:
+    lines = [str(line or "").strip() for line in state.answer_lines if str(line or "").strip()]
+    if not lines:
+        return
+    block_text = "\n".join(lines)
+    if block_text == str(getattr(args, "_tui_last_stream_answer_block", "") or ""):
+        return
+    setattr(args, "_tui_last_stream_answer_block", block_text)
+    _print_tui_stream_block("Answer", lines, plain=bool(getattr(args, "plain", False)))
 
 
 def _run_tui_read_only_model_answer(
@@ -1098,7 +1520,7 @@ def _run_tui_read_only_model_answer(
         state._record_progress(f"Read-only model loop skipped: {_clip(exc, limit=160)}")
         return False
 
-    async def _run() -> tuple[str, list[dict[str, Any]]]:
+    async def _run() -> tuple[str, list[dict[str, Any]], bool]:
         provider = _build_tui_read_only_live_provider(args, model)
         tool_events: list[dict[str, Any]] = []
 
@@ -1135,23 +1557,47 @@ def _run_tui_read_only_model_answer(
                     },
                 )
             )
-            return response.text, tool_events
+            text = response.text
+            answer_lines = _split_answer_lines(text)
+            used_followup = False
+            if not _answer_lines_have_useful_prose(answer_lines):
+                evidence = _read_only_tool_evidence_text(tool_events)
+                if evidence:
+                    followup = await provider.complete(
+                        messages=_tui_read_only_followup_messages(
+                            workspace_root=workspace_root,
+                            objective=objective,
+                            evidence=evidence,
+                        ),
+                        model=model,
+                        temperature=0.2,
+                        max_tokens=1200,
+                    )
+                    text = str(followup.text or "").strip()
+                    used_followup = True
+            return text, tool_events, used_followup
         finally:
             await super_cli._close_live_provider(provider)
 
     state.model = model
     state._record_progress("Read-only model loop started.")
     try:
-        text, events = asyncio.run(_run())
+        text, events, used_followup = asyncio.run(_run())
     except Exception as exc:
         state._record_result(f"Read-only model loop failed: {_clip(exc, limit=180)}")
         return False
 
-    for line in _split_answer_lines(text):
+    answer_lines = _split_answer_lines(text)
+    for line in answer_lines:
         state._record_answer(line)
     state._record_progress(
         f"Read-only model loop completed: {sum(1 for event in events if str(event.get('event')) == 'tool.completed')} tool result(s)."
     )
+    if used_followup:
+        state._record_progress("Model wrote the final answer from gathered read-only evidence.")
+    if not state.answer_lines or not _answer_lines_have_useful_prose(state.answer_lines):
+        state._record_result("Read-only model loop did not return a usable textual answer.")
+        return False
     return True
 
 
@@ -1455,6 +1901,8 @@ class SuperTuiState:
     blockers: list[str] = field(default_factory=list)
     activity_lines: list[str] = field(default_factory=list)
     answer_lines: list[str] = field(default_factory=list)
+    narrator_lines: list[str] = field(default_factory=list)
+    narrator_reports: list[dict[str, Any]] = field(default_factory=list)
     trace_lines: list[str] = field(default_factory=list)
     progress: list[str] = field(default_factory=list)
     results: list[str] = field(default_factory=list)
@@ -1465,6 +1913,7 @@ class SuperTuiState:
     _coalesce_indexes: dict[str, int] = field(default_factory=dict)
     started_at_monotonic: float = 0.0
     ended_at_monotonic: float = 0.0
+    _last_narrator_report_key: str = ""
 
     def _record_timeline(self, line: Any, *, coalesce_key: str = "", limit: int = 120) -> None:
         text = str(line or "").strip()
@@ -1495,8 +1944,100 @@ class SuperTuiState:
     def _record_result(self, line: Any, *, limit: int = 10) -> None:
         _append_unique(self.results, line, limit=limit)
 
-    def _record_answer(self, line: Any, *, limit: int = 40) -> None:
+    def _record_answer(self, line: Any, *, limit: int = _ANSWER_LINE_COUNT_LIMIT) -> None:
         _append_unique(self.answer_lines, line, limit=limit)
+
+    def _narrator_snapshot(self) -> RunNarratorSnapshot:
+        elapsed = 0.0
+        if self.started_at_monotonic:
+            end = self.ended_at_monotonic or time.monotonic()
+            elapsed = max(0.0, end - self.started_at_monotonic)
+        trace_refs = [self.event_log_path] if self.event_log_path else []
+        trace_refs.extend(self.trace_lines[-3:])
+        snapshot_id = ":".join(
+            part
+            for part in (
+                self.task_id or "tui",
+                str(len(self.timeline) + len(self.results) + len(self.narrator_lines)),
+                self.status,
+                self.phase,
+            )
+            if part
+        )
+        return RunNarratorSnapshot(
+            snapshot_id=snapshot_id,
+            run_id=self.task_id,
+            task_id=self.task_id,
+            objective=self.objective,
+            workspace=self.workspace,
+            status=self.status,
+            phase=self.phase,
+            current_step=self.current_step,
+            elapsed_seconds=elapsed,
+            model=self.model,
+            mode_line=self.mode_line,
+            recent_events=tuple(self.recent[-8:]),
+            activity=tuple(self.activity_lines[-10:] or self.timeline[-10:]),
+            results=tuple(self._result_event_lines(include_answers=False)[-10:]),
+            changed_files=tuple(self.changed_files[-8:]),
+            artifacts=tuple(self.artifacts[-8:]),
+            validation=self.validation,
+            validation_score=self.validation_score,
+            blockers=tuple(self.blockers[-6:]),
+            queued_work=self.queue_status,
+            trace_refs=tuple(path for path in trace_refs if path),
+            source_event_count=len(self.raw_events),
+        )
+
+    def _record_narrator_report(self, report: NarratorReport, *, limit: int = 10) -> None:
+        text = str(report.text or "").strip()
+        if not text:
+            return
+        if report.kind == "opening":
+            return
+        if report.kind == "final":
+            previous_final_texts = {
+                str(payload.get("text") or "").strip()
+                for payload in self.narrator_reports
+                if isinstance(payload, dict) and payload.get("kind") == "final"
+            }
+            if previous_final_texts:
+                self.narrator_lines = [
+                    line for line in self.narrator_lines if line not in previous_final_texts
+                ]
+                self.narrator_reports = [
+                    payload
+                    for payload in self.narrator_reports
+                    if not (isinstance(payload, dict) and payload.get("kind") == "final")
+                ]
+                self.answer_lines = [
+                    line for line in self.answer_lines if line not in previous_final_texts
+                ]
+        key = f"{report.kind}:{text}"
+        if key == self._last_narrator_report_key:
+            return
+        self._last_narrator_report_key = key
+        _append_unique(self.narrator_lines, text, limit=limit)
+        self.narrator_reports.append(report.to_payload())
+        if report.kind == "final":
+            _append_unique(self.answer_lines, text, limit=_ANSWER_LINE_COUNT_LIMIT)
+        if len(self.narrator_reports) > limit:
+            del self.narrator_reports[: len(self.narrator_reports) - limit]
+
+    def _maybe_record_narrator_report(self, event_name: str, event: Mapping[str, Any]) -> None:
+        if self.debug_events:
+            return
+        trigger = _narrator_trigger_for_event(event_name, event)
+        if not trigger:
+            return
+        report = deterministic_narrator_report(
+            self._narrator_snapshot(),
+            trigger=trigger,
+            event_name=event_name,
+            event_payload=event,
+        )
+        if report is not None:
+            self._record_narrator_report(report)
 
     def set_intent_decision(self, decision: TuiIntentDecision | None) -> None:
         if decision is None:
@@ -1780,6 +2321,7 @@ class SuperTuiState:
             line = f"Narrator failed: {message}"
             self._record_progress(line)
             self._record_result(line)
+        self._maybe_record_narrator_report(name, event)
         if line:
             _append_unique(self.recent, line, limit=8)
         return line
@@ -1812,8 +2354,21 @@ class SuperTuiState:
         self._record_timeline(final_line)
         _append_unique(self.activity_lines, final_line, limit=12)
         _append_unique(self.recent, f"Final result: {self.status}", limit=8)
+        report = deterministic_narrator_report(
+            self._narrator_snapshot(),
+            trigger="final",
+            event_name="run.log.completed" if self.status == "completed" else "run.log.failed",
+            event_payload=dict(live_result),
+        )
+        if report is not None:
+            self._record_narrator_report(report)
 
     def transcript_summary(self, *, exit_code: int | None = None) -> str:
+        if self.answer_lines and self.status in {"completed", "failed", "blocked", "stopped"}:
+            answer = "\n".join(str(line or "").rstrip() for line in self.answer_lines if str(line or "").strip()).strip()
+            if self.event_log_path:
+                return f"{answer} Trace: {self.event_log_path}"
+            return answer
         status = self.status or ("completed" if exit_code == 0 else "finished")
         pieces = [f"{status}"]
         if self.validation:
@@ -1836,21 +2391,102 @@ class SuperTuiState:
     def is_narrator_mode(self) -> bool:
         return self.mode_line.startswith(NARRATOR_READ_ONLY)
 
+    def _visible_narrator_lines(self, *, limit: int = 6) -> list[str]:
+        answer_texts = {str(item or "").strip() for item in self.answer_lines}
+        lines = [
+            line
+            for line in self.narrator_lines
+            if str(line or "").strip() and str(line or "").strip() not in answer_texts
+        ]
+        return lines[-limit:]
+
+    def is_terminal(self) -> bool:
+        return self.status in {"completed", "failed", "blocked", "stopped"}
+
+    def final_answer_lines(self, *, limit: int = _ANSWER_LINE_COUNT_LIMIT) -> list[str]:
+        if self.is_narrator_mode():
+            lines = _narrator_visible_answer_lines(self.answer_lines, limit=limit)
+        else:
+            lines = [str(line or "").strip() for line in self.answer_lines if str(line or "").strip()]
+        if lines:
+            return lines[:limit]
+        if self.status == "completed":
+            return ["Done."]
+        if self.status in {"failed", "blocked", "stopped"}:
+            for item in reversed(self.results):
+                text = str(item or "").strip()
+                if text and not text.startswith("Final result:"):
+                    return [_clip(text, limit=220)]
+            if self.blockers:
+                return [f"Blocker: {_clip(self.blockers[-1], limit=180)}"]
+        if self.status in {"failed", "blocked", "stopped"}:
+            return [f"The run {self.status} before completing the request."]
+        if self.current_step:
+            return [_clip(self.current_step, limit=180)]
+        return []
+
+    def final_outcome_lines(self, *, include_trace: bool = False, limit: int = 12) -> list[str]:
+        lines: list[str] = []
+        if self.status and self.status != "completed":
+            lines.append(f"- Status: {self.status}")
+        if self.validation:
+            score = f" ({self.validation_score})" if self.validation_score else ""
+            lines.append(f"- Validation: {self.validation}{score}")
+        seen_paths: set[str] = set()
+        for path in self.changed_files[-6:]:
+            text = str(path or "").strip()
+            if text and text not in seen_paths:
+                seen_paths.add(text)
+                lines.append(f"- Changed: {text}")
+        for path in self.artifacts[-6:]:
+            text = str(path or "").strip()
+            if text and text not in seen_paths:
+                seen_paths.add(text)
+                lines.append(f"- Artifact: {text}")
+        for item in self.blockers[-4:]:
+            lines.append(f"- Blocker: {_clip(item, limit=140)}")
+        if self.status in {"failed", "blocked", "stopped"}:
+            for item in self.results[-4:]:
+                text = str(item or "").strip()
+                if not text or text.startswith("Final result:") or text.startswith("Validation:"):
+                    continue
+                rendered = f"- {text}"
+                if rendered not in lines:
+                    lines.append(rendered)
+        if include_trace and self.event_log_path:
+            lines.append(f"- Trace: {self.event_log_path}")
+        return lines[:limit]
+
+    def final_summary_lines(self, *, include_trace: bool = False) -> list[str]:
+        lines: list[str] = []
+        answer = self.final_answer_lines()
+        if answer:
+            lines.append("Answer:")
+            lines.extend(answer)
+        outcome = self.final_outcome_lines(include_trace=include_trace)
+        if outcome:
+            lines.append("Outcome:")
+            lines.extend(outcome)
+        footer = self.elapsed_footer()
+        if footer:
+            lines.append(footer)
+        return lines or [self.current_step or "No visible result."]
+
     def plain_snapshot(self) -> str:
+        if self.is_terminal() and not self.debug_events:
+            return "\n".join(self.final_summary_lines(include_trace=False))
         narrator_mode = self.is_narrator_mode()
         if narrator_mode and not self.debug_events:
             lines = [
                 "Super DAN TUI",
                 f"Status: {self.status}",
             ]
-            if self.objective:
-                lines.append(f"You asked: {_clip(self.objective, limit=140)}")
             if self.mode_line:
                 lines.append(f"Mode: {_clip(self.mode_line, limit=180)}")
-            answer_lines = _narrator_visible_answer_lines(self.answer_lines, limit=6)
+            answer_lines = _narrator_visible_answer_lines(self.answer_lines, limit=_ANSWER_LINE_COUNT_LIMIT)
             if answer_lines:
                 lines.append("Answer:")
-                lines.extend(_tui_list_item(item) for item in answer_lines)
+                lines.extend(answer_lines)
             elif self.results:
                 lines.append("Status detail:")
                 lines.extend(_tui_list_item(item) for item in self.results[-3:])
@@ -1893,13 +2529,20 @@ class SuperTuiState:
             lines.append(f"Event Log: {self.event_log_path}")
         if narrator_mode and self.answer_lines:
             lines.append("Answer:")
-            lines.extend(_tui_list_item(item) for item in _narrator_visible_answer_lines(self.answer_lines, limit=12))
-        if not narrator_mode and (self.activity_lines or self.timeline):
+            lines.extend(_narrator_visible_answer_lines(self.answer_lines, limit=_ANSWER_LINE_COUNT_LIMIT))
+        if not narrator_mode and self.answer_lines:
+            lines.append("Answer:")
+            lines.extend(_tui_list_item(item) for item in self.answer_lines[:_ANSWER_LINE_COUNT_LIMIT])
+        visible_narrator = self._visible_narrator_lines(limit=6)
+        if not narrator_mode and visible_narrator:
+            lines.append("Narrator:")
+            lines.extend(_tui_list_item(item) for item in visible_narrator)
+        if not narrator_mode and not self.narrator_lines and (self.activity_lines or self.timeline):
             lines.append("Activity:")
             activity = self.activity_lines[-12:] if self.activity_lines else self.timeline[-12:]
             lines.extend(_tui_list_item(item) for item in activity)
         result_lines = self._result_event_lines(include_answers=not narrator_mode)
-        if result_lines:
+        if result_lines and not (self.narrator_lines and not self.debug_events):
             lines.append("Result:")
             lines.extend(_tui_list_item(item) for item in result_lines[-12:])
         footer = self.elapsed_footer()
@@ -1910,7 +2553,7 @@ class SuperTuiState:
     def _result_event_lines(self, *, include_answers: bool = True) -> list[str]:
         result_lines: list[str] = []
         if include_answers:
-            result_lines.extend(self.answer_lines[:12])
+            result_lines.extend(self.answer_lines[:_ANSWER_LINE_COUNT_LIMIT])
         if self.validation:
             score = f" ({self.validation_score})" if self.validation_score else ""
             result_lines.append(f"Validation: {self.validation}{score}")
@@ -1929,16 +2572,16 @@ class SuperTuiState:
             if self.event_log_path:
                 lines.append(f"Trace: {self.event_log_path}")
             return lines or ["Waiting for raw events."]
+        if self.is_terminal():
+            return self.final_summary_lines(include_trace=False)
         lines: list[str] = []
         narrator_mode = self.is_narrator_mode()
         if narrator_mode:
-            if self.objective:
-                lines.append(f"You asked: {_clip(self.objective, limit=120)}")
-            answer_lines = _narrator_visible_answer_lines(self.answer_lines, limit=6)
+            answer_lines = _narrator_visible_answer_lines(self.answer_lines, limit=_ANSWER_LINE_COUNT_LIMIT)
             if answer_lines:
                 lines.append("Answer:")
                 for item in answer_lines:
-                    lines.append(_tui_list_item(item, indent="  "))
+                    lines.append(f"  {item}")
             elif self.results:
                 lines.append("Status detail:")
                 for item in self.results[-3:]:
@@ -1948,12 +2591,10 @@ class SuperTuiState:
             footer = self.elapsed_footer()
             if footer:
                 lines.append(footer)
-            return lines[-12:] or ["Waiting for progress."]
-        if self.objective:
-            lines.append(f"You asked: {_clip(self.objective, limit=120)}")
+            return lines or ["Waiting for progress."]
         if self.mode_line:
             lines.append(f"Mode: {_clip(self.mode_line, limit=180)}")
-        if self.current_step and not (
+        if self.current_step and not self.narrator_lines and not (
             narrator_mode
             and (
                 self.current_step.startswith("Narrator")
@@ -1961,37 +2602,47 @@ class SuperTuiState:
             )
         ):
             lines.append(f"Current: {_clip(self.current_step, limit=120)}")
-        if self.workspace:
+        if self.workspace and not self.narrator_lines:
             lines.append(f"Context: workspace={self.workspace}")
-        if self.model:
+        if self.model and not self.narrator_lines:
             lines.append(f"Context: model={self.model}")
-        if self.queue_status:
+        if self.queue_status and not self.narrator_lines:
             lines.append(f"Queue: {self.queue_status}")
         if narrator_mode and self.answer_lines:
             lines.append("Answer:")
-            for item in self.answer_lines[:8]:
+            for item in self.answer_lines[:_ANSWER_LINE_COUNT_LIMIT]:
+                lines.append(f"  {item}")
+        if not narrator_mode and self.answer_lines:
+            lines.append("Answer:")
+            for item in self.answer_lines[:_ANSWER_LINE_COUNT_LIMIT]:
+                lines.append(_tui_list_item(item, indent="  "))
+        visible_narrator = self._visible_narrator_lines(limit=5)
+        if not narrator_mode and visible_narrator:
+            lines.append("Narrator:")
+            for item in visible_narrator:
                 lines.append(_tui_list_item(item, indent="  "))
         activity = [
             item
             for item in (self.activity_lines[-12:] if self.activity_lines else self.timeline[-12:])
             if item and not item.startswith("You asked:")
         ]
-        if activity and not narrator_mode:
+        if activity and not narrator_mode and not self.narrator_lines:
             lines.append("Activity:")
             lines.extend(_tui_list_item(item, indent="  ") for item in activity[-10:])
         result_lines = self._result_event_lines(include_answers=not narrator_mode)
-        if result_lines:
+        if result_lines and not (self.narrator_lines and not self.debug_events):
             lines.append("Result:")
             for item in result_lines[-9:]:
                 lines.append(_tui_list_item(item, indent="  "))
-        if self.event_log_path:
+        if self.event_log_path and not self.narrator_lines:
             lines.append(f"Trace: {self.event_log_path}")
-        for trace in self.trace_lines[-3:]:
-            lines.append(f"Trace: {trace}")
+        if not self.narrator_lines:
+            for trace in self.trace_lines[-3:]:
+                lines.append(f"Trace: {trace}")
         footer = self.elapsed_footer()
         if footer:
             lines.append(footer)
-        return lines[-28:] or ["Waiting for events."]
+        return lines[-80:] or ["Waiting for events."]
 
     def rich_renderable(self) -> Any:
         from rich.console import Group
@@ -2018,7 +2669,15 @@ class SuperTuiState:
         for line in self.recent_event_lines():
             recent.add_row(_rich_semantic_text(line))
 
-        panel_title = "Raw Events" if self.debug_events else "Progress" if self.is_narrator_mode() else "Recent Events"
+        panel_title = (
+            "Raw Events"
+            if self.debug_events
+            else "Summary"
+            if self.is_terminal()
+            else "Progress"
+            if self.is_narrator_mode()
+            else "Recent Events"
+        )
         return Group(
             Panel(header, border_style="cyan"),
             Panel(recent, title=panel_title, border_style="magenta"),
@@ -2047,11 +2706,28 @@ class SuperTuiProgressRenderer:
         self._live_cls = None
         self._rich_enabled = False
         self._last_line = ""
+        self._last_narrator_line = ""
+        self._sidecar_args: argparse.Namespace | None = None
+        self._sidecar_thread: threading.Thread | None = None
+        self._sidecar_lock = threading.Lock()
+        self._sidecar_last_started_at = 0.0
+        self._sidecar_last_snapshot_id = ""
+        self._quiet_narrator_interval_seconds = 10.0
+        self._quiet_narrator_last_started_at = 0.0
+        self._quiet_narrator_last_signature = ""
+        self._clock_stop = threading.Event()
+        self._clock_thread: threading.Thread | None = None
+        self._clock_last_footer = ""
+        self._clock_interval_seconds = 1.0
+        self._clock_line_active = False
+
+    def configure_model_sidecar(self, args: argparse.Namespace) -> None:
+        self._sidecar_args = args
 
     def __enter__(self) -> "SuperTuiProgressRenderer":
         if not self.enabled:
             return self
-        if not self._plain:
+        if not self._plain and self._force_rich:
             Console, _ = _try_import_rich()
             if Console is not None:
                 try:
@@ -2076,25 +2752,236 @@ class SuperTuiProgressRenderer:
                 print(f"objective: {_clip(self.state.objective, limit=140)}", flush=True)
             if self.state.mode_line:
                 print(f"mode: {_clip(self.state.mode_line, limit=180)}", flush=True)
+        self._start_clock()
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self._stop_clock()
+        self._clear_clock_line()
         if self._live is not None:
             self._live.stop()
             self._live = None
 
+    def _start_clock(self) -> None:
+        if not self.enabled:
+            return
+        self._clock_stop.clear()
+        self._clock_thread = threading.Thread(target=self._clock_loop, daemon=True)
+        self._clock_thread.start()
+
+    def _stop_clock(self) -> None:
+        self._clock_stop.set()
+        if self._clock_thread is not None and self._clock_thread.is_alive():
+            self._clock_thread.join(timeout=0.5)
+        self._clock_thread = None
+
+    def _clock_loop(self) -> None:
+        while not self._clock_stop.wait(self._clock_interval_seconds):
+            self._clock_tick_once()
+
+    def _clock_tick_once(self) -> None:
+        if not self.enabled or self.state.debug_events or self.state.is_terminal():
+            return
+        if not self.state.started_at_monotonic:
+            return
+        now = time.monotonic()
+        self._maybe_start_quiet_model_narrator(now)
+        footer = self.state.elapsed_footer()
+        if not footer or footer == self._clock_last_footer:
+            return
+        self._clock_last_footer = footer
+        if self._rich_enabled and self._live is not None:
+            self._live.refresh()
+            return
+        self._write_clock_line(footer)
+
+    def _write_clock_line(self, footer: str) -> None:
+        rendered = f"{_TUI_STREAM_PREFIX} {str(footer or '').strip()}"
+        sys.stdout.write("\r\x1b[2K" + rendered)
+        sys.stdout.flush()
+        self._clock_line_active = True
+
+    def _clear_clock_line(self) -> None:
+        if not self._clock_line_active:
+            return
+        sys.stdout.write("\r\x1b[2K")
+        sys.stdout.flush()
+        self._clock_line_active = False
+
     def __call__(self, event: dict[str, Any]) -> None:
         if not self.enabled:
             return
+        event_name = str(event.get("event") or "").strip()
+        previous_narrator_count = len(self.state.narrator_lines)
         line = self.state.observe(event)
+        if event_name == "super.heartbeat" and self._model_sidecar_enabled():
+            self._drop_latest_deterministic_heartbeat(previous_narrator_count)
+        self._maybe_start_model_sidecar(event)
         if self.state.debug_events and self.state.raw_events:
             line = self.state.raw_events[-1]
         if self._rich_enabled and self._live is not None:
             self._live.refresh()
             return
-        if line and line != self._last_line:
+        if not self.state.debug_events and self.state.narrator_lines:
+            narrator_line = self.state.narrator_lines[-1]
+            latest_report = self.state.narrator_reports[-1] if self.state.narrator_reports else {}
+            if isinstance(latest_report, dict) and latest_report.get("kind") == "final":
+                return
+            if narrator_line and narrator_line != self._last_narrator_line:
+                self._last_narrator_line = narrator_line
+                self._last_line = narrator_line
+                self._clear_clock_line()
+                _print_tui_stream_line(narrator_line, plain=self._plain)
+            return
+        if self.state.debug_events and line and line != self._last_line:
             self._last_line = line
-            print(f"[tui] {line}", flush=True)
+            self._clear_clock_line()
+            _print_tui_stream_line(line, plain=self._plain)
+
+    def _model_sidecar_enabled(self) -> bool:
+        args = self._sidecar_args
+        return bool(args is not None and not self.state.debug_events and getattr(args, "_tui_routed_with_model", False))
+
+    def _drop_latest_deterministic_heartbeat(self, previous_narrator_count: int) -> None:
+        if len(self.state.narrator_lines) <= previous_narrator_count:
+            return
+        if not self.state.narrator_reports:
+            return
+        latest = self.state.narrator_reports[-1]
+        if not isinstance(latest, dict) or latest.get("kind") != "heartbeat":
+            return
+        text = str(latest.get("text") or "").strip()
+        if text and self.state.narrator_lines and self.state.narrator_lines[-1] == text:
+            self.state.narrator_lines.pop()
+        self.state.narrator_reports.pop()
+        self.state._last_narrator_report_key = ""
+
+    def _quiet_narrator_signature(self) -> str:
+        payload = {
+            "phase": self.state.phase,
+            "current_step": self.state.current_step,
+            "source_event_count": len(self.state.raw_events),
+            "changed_files": list(self.state.changed_files[-4:]),
+            "artifacts": list(self.state.artifacts[-4:]),
+            "validation": self.state.validation,
+            "validation_score": self.state.validation_score,
+            "blockers": list(self.state.blockers[-3:]),
+            "queue_status": self.state.queue_status,
+        }
+        return json.dumps(payload, sort_keys=True, default=str)
+
+    def _maybe_start_quiet_model_narrator(self, now: float) -> None:
+        args = self._sidecar_args
+        if not self._model_sidecar_enabled() or self.state.is_terminal():
+            return
+        elapsed = now - float(self.state.started_at_monotonic or now)
+        if elapsed < self._quiet_narrator_interval_seconds:
+            return
+        if now - self._quiet_narrator_last_started_at < self._quiet_narrator_interval_seconds:
+            return
+        signature = self._quiet_narrator_signature()
+        if signature and signature == self._quiet_narrator_last_signature:
+            return
+        event = {
+            "event": "super.heartbeat",
+            "phase": self.state.phase or "model",
+            "detail": self.state.current_step,
+            "elapsed_seconds": elapsed,
+        }
+        if self._maybe_start_model_sidecar(event, force=True):
+            self._quiet_narrator_last_started_at = now
+            self._quiet_narrator_last_signature = signature
+
+    def _maybe_start_model_sidecar(self, event: Mapping[str, Any], *, force: bool = False) -> bool:
+        args = self._sidecar_args
+        if args is None or self.state.debug_events:
+            return False
+        if not bool(getattr(args, "_tui_routed_with_model", False)):
+            return False
+        name = str(event.get("event") or "").strip()
+        trigger = _narrator_trigger_for_event(name, event)
+        if trigger not in {"opening", "progress", "checkpoint", "blocker", "heartbeat"}:
+            return False
+        snapshot = self.state._narrator_snapshot()
+        if not snapshot.has_run_context:
+            return False
+        now = time.monotonic()
+        with self._sidecar_lock:
+            if self._sidecar_thread is not None and self._sidecar_thread.is_alive():
+                return False
+            if not force and snapshot.snapshot_id and snapshot.snapshot_id == self._sidecar_last_snapshot_id:
+                return False
+            if not force and trigger not in {"opening", "blocker", "heartbeat"} and now - self._sidecar_last_started_at < 8.0:
+                return False
+            self._sidecar_last_started_at = now
+            self._sidecar_last_snapshot_id = snapshot.snapshot_id
+            request = NarratorRequest(
+                request_id=f"tui-sidecar-{int(time.time() * 1000)}",
+                question=self.state.objective or "Explain current executor progress.",
+                snapshot=snapshot,
+                surface="super-tui",
+                max_tokens=420,
+            )
+            thread = threading.Thread(
+                target=self._run_model_sidecar,
+                args=(args, request, trigger),
+                daemon=True,
+            )
+            self._sidecar_thread = thread
+            thread.start()
+            return True
+
+    def _run_model_sidecar(self, args: argparse.Namespace, request: NarratorRequest, trigger: str) -> None:
+        with self._sidecar_lock:
+            recent_narrator = tuple(self.state.narrator_lines[-3:])
+        text, _error = _run_tui_narrator_model_text(
+            args,
+            request,
+            purpose=f"executor-{trigger}",
+            recent_narrator=recent_narrator,
+        )
+        if not text:
+            return
+        lines = _split_answer_lines(text, limit=4)
+        if not lines:
+            return
+        with self._sidecar_lock:
+            if self.state.is_terminal():
+                return
+            current_snapshot = self.state._narrator_snapshot()
+            if (
+                request.snapshot.snapshot_id
+                and current_snapshot.snapshot_id
+                and request.snapshot.snapshot_id != current_snapshot.snapshot_id
+            ):
+                self.state.narrator_reports.append(
+                    {
+                        "kind": "model",
+                        "text": "\n".join(lines),
+                        "stale": True,
+                        "source_snapshot_id": request.snapshot.snapshot_id,
+                        "current_snapshot_id": current_snapshot.snapshot_id,
+                    }
+                )
+                if len(self.state.narrator_reports) > 10:
+                    del self.state.narrator_reports[: len(self.state.narrator_reports) - 10]
+                return
+            block_text = "\n".join(lines)
+            _append_unique(self.state.narrator_lines, block_text, limit=10)
+            self.state.narrator_reports.append(
+                {
+                    "kind": "model",
+                    "text": block_text,
+                    "source_snapshot_id": request.snapshot.snapshot_id,
+                }
+            )
+            if len(self.state.narrator_reports) > 10:
+                del self.state.narrator_reports[: len(self.state.narrator_reports) - 10]
+        if self._rich_enabled and self._live is not None:
+            self._live.refresh()
+            return
+        self._clear_clock_line()
+        _print_tui_stream_block("Narrator", lines, plain=self._plain)
 
     def note(self, line: str) -> None:
         text = str(line or "").strip()
@@ -2107,15 +2994,32 @@ class SuperTuiProgressRenderer:
             return
         if text != self._last_line:
             self._last_line = text
-            print(f"[tui] {text}", flush=True)
+            self._clear_clock_line()
+            _print_tui_stream_line(text, plain=self._plain)
 
     def print_live_report(self, report: Any, live_result: dict[str, Any], *, verbose: bool = False) -> None:
         del report, verbose
         self.state.apply_live_result(live_result)
+        self.print_current_live_report()
+
+    def print_current_live_report(self) -> None:
         if self._rich_enabled and self._live is not None:
             self._live.refresh()
             return
-        print(self.state.plain_snapshot(), flush=True)
+        if self.state.debug_events:
+            self._clear_clock_line()
+            print(self.state.plain_snapshot(), flush=True)
+            return
+        answer = self.state.final_answer_lines()
+        self._clear_clock_line()
+        if answer:
+            _print_tui_stream_block("Answer", answer, plain=self._plain)
+        outcome = self.state.final_outcome_lines(include_trace=False)
+        if outcome:
+            _print_tui_stream_block("Outcome", outcome, plain=self._plain)
+        footer = self.state.elapsed_footer()
+        if footer:
+            _print_tui_stream_line(footer, plain=self._plain)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2128,7 +3032,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.epilog = (
         "Interactive commands: /plan, /progress, /last, /status, /skills, /reset [all|state], /help, /exit. "
         "Typing / opens command suggestions and typing $ opens skill suggestions when prompt_toolkit is available. "
-        "Natural-language input is routed first as narrator read-only, executor read-only, or executor write. "
+        "Explicit slash commands route locally; natural-language input is model-routed as narrator read-only, executor read-only, executor write, or clarification. "
         "Progress/status questions use the snapshot-only narrator lane; workspace inspection stays read-only; "
         "write requests use direct simple writes or the normal Super DAN execution path. "
         "Planned active-run commands /append, /continue, /pause, and /cancel "
@@ -2188,6 +3092,7 @@ def _run_tui_turn(
         debug_events=bool(getattr(args, "raw_events", False)),
     )
     renderer.state.set_intent_decision(getattr(args, "_tui_intent_decision", None))
+    renderer.configure_model_sidecar(args)
     for token in getattr(args, "_tui_selected_skill_mentions", []) or []:
         _append_unique(renderer.state.recent, f"skill selected: ${token}", limit=8)
 
@@ -2196,7 +3101,14 @@ def _run_tui_turn(
         return renderer
 
     args._progress_renderer_factory = _renderer_factory
-    args._live_report_printer = renderer.print_live_report
+
+    def _live_report_printer(report: Any, live_result: dict[str, Any], *, verbose: bool = False) -> None:
+        del report, verbose
+        renderer.state.apply_live_result(live_result)
+        _run_tui_final_model_answer(args, renderer.state)
+        renderer.print_current_live_report()
+
+    args._live_report_printer = _live_report_printer
     with renderer:
         exit_code = super_cli._run_super_turn(args, parser)
     transcript_workspace = str(getattr(args, "_tui_transcript_workspace", "") or "").strip()
@@ -2209,6 +3121,7 @@ def _run_tui_turn(
                 "status": renderer.state.status,
                 "turn_id": renderer.state.task_id,
                 "event_log_path": renderer.state.event_log_path,
+                "narrator_final_summary": _latest_final_narrator_summary(renderer.state),
                 "lane": getattr(getattr(args, "_tui_intent_decision", None), "lane", ""),
                 "intent_rationale": getattr(getattr(args, "_tui_intent_decision", None), "rationale", ""),
             },
@@ -2310,6 +3223,17 @@ def _read_event_log(path: Path) -> list[dict[str, Any]]:
 
 def _render_static_state(state: SuperTuiState, *, plain: bool, raw_events: bool = False) -> None:
     state.debug_events = bool(raw_events)
+    if state.is_terminal() and not state.debug_events:
+        answer = state.final_answer_lines()
+        if answer:
+            _print_tui_stream_block("Answer", answer, plain=plain)
+        outcome = state.final_outcome_lines(include_trace=False)
+        if outcome:
+            _print_tui_stream_block("Outcome", outcome, plain=plain)
+        footer = state.elapsed_footer()
+        if footer:
+            _print_tui_stream_line(footer, plain=plain)
+        return
     if not plain:
         Console, _ = _try_import_rich()
         if Console is not None:
@@ -2320,6 +3244,18 @@ def _render_static_state(state: SuperTuiState, *, plain: bool, raw_events: bool 
             except Exception:
                 pass
     print(state.plain_snapshot())
+
+
+def _latest_final_narrator_summary(state: SuperTuiState) -> str:
+    for payload in reversed(state.narrator_reports):
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("kind") != "final":
+            continue
+        text = str(payload.get("text") or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _resolve_transcript_event_log_path(workspace_root: Path, entry: TuiTranscriptEntry) -> Path | None:
@@ -2373,9 +3309,30 @@ def _load_narrator_source_state(
     return state, len(rows)
 
 
+def _latest_transcript_narrator_answer(
+    transcript_entries: Sequence[TuiTranscriptEntry],
+    *,
+    snapshot: RunNarratorSnapshot | None = None,
+) -> list[str]:
+    for entry in reversed(transcript_entries):
+        if entry.role != "assistant_narrator":
+            continue
+        if snapshot is not None:
+            entry_log = str(entry.metadata.get("event_log_path") or "").strip()
+            if snapshot.trace_refs and not entry_log:
+                continue
+            if entry_log and snapshot.trace_refs and entry_log not in set(snapshot.trace_refs):
+                continue
+        lines = _split_answer_lines(entry.text, limit=_ANSWER_LINE_COUNT_LIMIT)
+        if lines:
+            return lines
+    return []
+
+
 def _build_tui_narrator_snapshot(workspace_root: Path) -> RunNarratorSnapshot:
     transcript_entries = _read_tui_transcript(workspace_root, limit=16)
     source_state, event_count = _load_narrator_source_state(workspace_root, transcript_entries)
+    latest_narrator_answer = _latest_transcript_narrator_answer(transcript_entries)
     trace_refs = [source_state.event_log_path] if source_state.event_log_path else []
     trace_refs.extend(source_state.trace_lines[-3:])
     elapsed = 0.0
@@ -2384,6 +3341,8 @@ def _build_tui_narrator_snapshot(workspace_root: Path) -> RunNarratorSnapshot:
         elapsed = max(0.0, end - source_state.started_at_monotonic)
     has_run_context = bool(event_count or source_state.task_id or source_state.objective)
     recent_events = tuple(source_state.recent_event_lines()[-10:]) if has_run_context else ()
+    if latest_narrator_answer:
+        recent_events = tuple([f"Latest narrator answer: {line}" for line in latest_narrator_answer[-4:]]) + recent_events
     activity = tuple(source_state.activity_lines[-12:] or source_state.timeline[-12:]) if has_run_context else ()
     results = tuple(source_state._result_event_lines()[-12:]) if has_run_context else ()
     snapshot_id = ":".join(
@@ -2435,47 +3394,260 @@ def _build_tui_narrator_live_provider(args: argparse.Namespace, model: str) -> A
     )
 
 
+def _build_tui_intent_router_live_provider(args: argparse.Namespace, model: str) -> Any:
+    return super_cli._build_live_provider(
+        model,
+        api_key=getattr(args, "api_key", None),
+        base_url=getattr(args, "base_url", None),
+    )
+
+
+def _build_tui_final_answer_live_provider(args: argparse.Namespace, model: str) -> Any:
+    return super_cli._build_live_provider(
+        model,
+        api_key=getattr(args, "api_key", None),
+        base_url=getattr(args, "base_url", None),
+    )
+
+
+def _tui_narrator_model_messages(
+    request: NarratorRequest,
+    *,
+    purpose: str = "answer",
+    recent_narrator: Sequence[str] = (),
+) -> list[dict[str, str]]:
+    is_heartbeat = "heartbeat" in str(purpose or "").lower()
+    recent = "\n".join(f"- {line}" for line in recent_narrator if str(line or "").strip()) or "- none"
+    if is_heartbeat:
+        style_instruction = (
+            "This is a quiet heartbeat during a wait. Write exactly one short natural sentence. "
+            "Do not relist stable files, folders, or facts that appeared in recent narrator messages. "
+            "Say only what changed since the last visible update, or if nothing changed, say what the executor is still waiting on in plain words."
+        )
+    else:
+        style_instruction = (
+            "Use one concise paragraph; add bullets only when they materially improve readability. "
+            "Avoid repeating stable facts already present in recent narrator messages unless they changed."
+        )
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are the narrator voice for Super DAN TUI. Use only the sanitized run snapshot below. "
+                "Do not call tools, do not claim to inspect files now, do not steer the executor, and do not invent hidden state. "
+                "Write like a Codex-style assistant: direct, natural, and grounded. Do not echo the user's question. "
+                "Do not output a mechanical field list with labels like Status, Next, Validation, or Blockers unless the user explicitly asks for a raw status report. "
+                "Explain what the executor appears to be doing or has finished, why it matters for the request, what remains, and the most useful next step. "
+                "For quiet heartbeat purposes, say what is visible now and what is still unknown instead of repeating a timer. "
+                "If the visible executor activity appears unrelated to the user's request, say that as possible drift without trying to correct or steer it. "
+                f"{style_instruction}"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Purpose: {purpose}\n"
+                f"Recent narrator messages to avoid repeating:\n{recent}\n\n"
+                f"{request.to_prompt_text()}\n\n"
+                "Write the narrator response now."
+            ),
+        },
+    ]
+
+
+def _run_tui_narrator_model_text(
+    args: argparse.Namespace,
+    request: NarratorRequest,
+    *,
+    purpose: str = "answer",
+    recent_narrator: Sequence[str] = (),
+) -> tuple[str, str]:
+    try:
+        model = super_cli._resolve_live_model(str(getattr(args, "model", "") or ""))
+    except ValueError as exc:
+        return "", str(exc)
+
+    async def _run() -> str:
+        provider = _build_tui_narrator_live_provider(args, model)
+        try:
+            response = await provider.complete(
+                messages=_tui_narrator_model_messages(
+                    request,
+                    purpose=purpose,
+                    recent_narrator=recent_narrator,
+                ),
+                model=model,
+                temperature=0.3,
+                max_tokens=min(int(getattr(request, "max_tokens", 700) or 700), 700),
+            )
+            return str(getattr(response, "text", "") or "").strip()
+        finally:
+            await super_cli._close_live_provider(provider)
+
+    try:
+        text = asyncio.run(_run())
+    except Exception as exc:
+        return "", str(exc)
+    lines = _split_answer_lines(text, limit=_ANSWER_LINE_COUNT_LIMIT)
+    if not _answer_lines_have_useful_prose(lines):
+        return "", "model returned no usable narrator prose"
+    return "\n".join(lines), ""
+
+
+def _route_tui_intent_with_model(args: argparse.Namespace) -> tuple[TuiIntentDecision, bool]:
+    target = str(getattr(args, "target", "") or "").strip()
+    try:
+        model = super_cli._resolve_live_model(str(getattr(args, "model", "") or ""))
+    except ValueError as exc:
+        return (
+            TuiIntentDecision(
+                permission="",
+                complexity="",
+                confidence=0.0,
+                rationale="model router unavailable",
+                clarification=f"Model-assisted routing is required for free text, but no route model is configured: {_clip(exc, limit=160)}",
+            ),
+            False,
+        )
+
+    transcript_workspace = str(getattr(args, "_tui_transcript_workspace", "") or "").strip()
+    transcript_tail = _read_tui_transcript(Path(transcript_workspace), limit=6) if transcript_workspace else []
+    selected_skills = list(getattr(args, "_tui_selected_skill_mentions", []) or [])
+
+    async def _run() -> Any:
+        provider = _build_tui_intent_router_live_provider(args, model)
+        try:
+            return await route_agent_turn_intent_with_model(
+                provider,
+                target,
+                model=model,
+                transcript_tail=transcript_tail,
+                selected_skills=selected_skills,
+                surface="super-tui",
+            )
+        finally:
+            await super_cli._close_live_provider(provider)
+
+    try:
+        core_decision = _run_with_tui_working_clock(args, lambda: asyncio.run(_run()))
+    except Exception as exc:
+        return (
+            TuiIntentDecision(
+                permission="",
+                complexity="",
+                confidence=0.0,
+                rationale="model router failed",
+                clarification=f"I could not route that request safely: {_clip(exc, limit=180)}",
+            ),
+            False,
+        )
+    return _tui_decision_from_core_decision(core_decision), True
+
+
+def _tui_final_answer_messages(state: SuperTuiState) -> list[dict[str, str]]:
+    changed = "\n".join(f"- {path}" for path in state.changed_files[-8:]) or "- none"
+    artifacts = "\n".join(f"- {path}" for path in state.artifacts[-8:]) or "- none"
+    blockers = "\n".join(f"- {item}" for item in state.blockers[-6:]) or "- none"
+    recent = "\n".join(f"- {line}" for line in state.narrator_lines[-6:]) or "- none"
+    validation = state.validation or "unknown"
+    if state.validation_score:
+        validation = f"{validation} ({state.validation_score})"
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are the final answer writer for Super DAN TUI. "
+                "Use only the sanitized run summary below. Do not call tools, do not claim to inspect files now, and do not invent work. "
+                "Write naturally to the user. Avoid formulaic wording like 'Completed <original request>'. "
+                "Mention the concrete outcome, important changed paths, validation, and any useful next step. "
+                "Keep it concise: one short paragraph plus bullets only if they improve readability."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"User request: {state.objective or '(unknown)'}\n"
+                f"Status: {state.status or 'unknown'}\n"
+                f"Validation: {validation}\n"
+                f"Elapsed: {state.elapsed_footer() or 'unknown'}\n"
+                f"Changed files:\n{changed}\n\n"
+                f"Artifacts:\n{artifacts}\n\n"
+                f"Blockers:\n{blockers}\n\n"
+                f"Recent run summary:\n{recent}\n\n"
+                "Write the final answer now."
+            ),
+        },
+    ]
+
+
+def _run_tui_final_model_answer(args: argparse.Namespace, state: SuperTuiState) -> bool:
+    if state.debug_events or not bool(getattr(args, "_tui_routed_with_model", False)):
+        return False
+    try:
+        model = super_cli._resolve_live_model(str(getattr(args, "model", "") or ""))
+    except ValueError:
+        return False
+
+    async def _run() -> str:
+        provider = _build_tui_final_answer_live_provider(args, model)
+        try:
+            response = await provider.complete(
+                messages=_tui_final_answer_messages(state),
+                model=model,
+                temperature=0.3,
+                max_tokens=700,
+            )
+            return str(getattr(response, "text", "") or "").strip()
+        finally:
+            await super_cli._close_live_provider(provider)
+
+    try:
+        text = _run_with_tui_working_clock(args, lambda: asyncio.run(_run()))
+    except Exception:
+        return False
+    lines = _split_answer_lines(text, limit=_ANSWER_LINE_COUNT_LIMIT)
+    if not _answer_lines_have_useful_prose(lines):
+        return False
+    state.answer_lines.clear()
+    for line in lines:
+        state._record_answer(line)
+    return True
+
+
 def _run_tui_narrator_model_answer(
     args: argparse.Namespace,
     request: NarratorRequest,
     state: SuperTuiState,
 ) -> bool:
-    workspace_root = normalize_workspace_root(str(args.workspace))
-    try:
-        model = super_cli._resolve_live_model(str(getattr(args, "model", "") or ""))
-    except ValueError as exc:
-        state._record_result(f"Narrator model skipped: {_clip(exc, limit=160)}")
-        return False
-
-    async def _run() -> Any:
-        provider = _build_tui_narrator_live_provider(args, model)
-        try:
-            handle = start_narrator_job(
-                provider,
-                request,
-                model=model,
-                latest_snapshot_getter=lambda: _build_tui_narrator_snapshot(workspace_root),
-                event_callback=state.observe,
-            )
-            return await handle.wait()
-        finally:
-            await super_cli._close_live_provider(provider)
-
-    state.model = model
     state.current_step = "Narrator is preparing an answer"
-    try:
-        response = asyncio.run(_run())
-    except Exception as exc:
-        state._record_result(f"Narrator model failed: {_clip(exc, limit=180)}")
+    text, error = _run_tui_narrator_model_text(args, request, purpose="answer")
+    if error:
+        state._record_result(f"Narrator model failed: {_clip(error, limit=180)}")
+    if not text:
         return False
     state.answer_lines.clear()
-    for line in _split_answer_lines(response.text):
+    for line in _split_answer_lines(text):
         state._record_answer(line)
-    if response.stale:
-        state._record_result("Narrator answer is based on an older snapshot.")
-    if response.fallback_used and response.failure:
-        state._record_result(f"Narrator fallback used: {_clip(response.failure, limit=160)}")
     return True
+
+
+def _wait_for_tui_narrator_model(args: argparse.Namespace, state: SuperTuiState, thread: threading.Thread) -> None:
+    if not thread.is_alive():
+        return
+    last_footer = ""
+    clock_line_active = False
+    while thread.is_alive():
+        footer = state.elapsed_footer()
+        if footer and footer != last_footer:
+            rendered = f"{_TUI_STREAM_PREFIX} {footer}"
+            sys.stdout.write("\r\x1b[2K" + rendered)
+            sys.stdout.flush()
+            clock_line_active = True
+            last_footer = footer
+        time.sleep(0.25)
+    if clock_line_active:
+        sys.stdout.write("\r\x1b[2K")
+        sys.stdout.flush()
 
 
 def _run_tui_narrator(
@@ -2506,18 +3678,33 @@ def _run_tui_narrator(
         snapshot=snapshot,
         surface="super-tui",
     )
-    fallback = deterministic_narrator_response(request)
-    for line in _split_answer_lines(fallback.text):
-        state._record_answer(line)
-    if bool(getattr(args, "raw_events", False)):
-        state._record_progress("Narrator fallback summary ready.")
+    transcript_entries = _read_tui_transcript(workspace_root, limit=16)
+    latest_narrator_answer = _latest_transcript_narrator_answer(transcript_entries, snapshot=snapshot)
     if use_model_loop:
-        _render_static_state(
-            state,
-            plain=bool(getattr(args, "plain", False)),
-            raw_events=bool(getattr(args, "raw_events", False)),
-        )
-        _run_tui_narrator_model_answer(args, request, state)
+        result: dict[str, bool] = {"answered": False}
+
+        def _model_worker() -> None:
+            result["answered"] = _run_tui_narrator_model_answer(args, request, state)
+
+        thread = threading.Thread(target=_model_worker, daemon=True)
+        thread.start()
+        _wait_for_tui_narrator_model(args, state, thread)
+        thread.join()
+        model_answered = result["answered"]
+    else:
+        model_answered = False
+    if not model_answered and latest_narrator_answer:
+        state.answer_lines.clear()
+        for line in latest_narrator_answer:
+            state._record_answer(line)
+        state._record_progress("Reused the latest visible narrator answer from this TUI session.")
+        model_answered = True
+    if not model_answered:
+        fallback = deterministic_narrator_response(request)
+        for line in _split_answer_lines(fallback.text):
+            state._record_answer(line)
+        if bool(getattr(args, "raw_events", False)):
+            state._record_progress("Narrator fallback summary ready.")
     state.status = "completed"
     state.phase = "done"
     state.current_step = "Narrator answer ready"
@@ -2532,13 +3719,14 @@ def _run_tui_narrator(
         _append_tui_transcript_entry(
             Path(transcript_workspace),
             role="assistant_narrator",
-            text="\n".join(state.answer_lines[:8]) or state.transcript_summary(exit_code=0),
+            text="\n".join(state.answer_lines) or state.transcript_summary(exit_code=0),
             metadata={
                 "status": state.status,
                 "lane": decision.lane,
                 "intent_rationale": decision.rationale,
                 "snapshot_id": snapshot.snapshot_id,
                 "event_log_path": snapshot.trace_refs[-1] if snapshot.trace_refs else "",
+                "source_event_count": snapshot.source_event_count,
             },
         )
     return 0
@@ -2567,21 +3755,31 @@ def _run_tui_read_only(
     if decision.complexity == "complex" and use_model_loop:
         model_answered = _run_tui_read_only_model_answer(args, decision, state)
     if not model_answered:
-        activity, answer = _build_read_only_answer(workspace_root, objective, decision)
-        for line in activity:
-            state._record_progress(line)
-        for line in answer:
-            state._record_answer(line)
+        if use_model_loop:
+            state._record_answer("I could not get a usable model-written answer from the read-only review. No files were changed.")
+        else:
+            activity, answer = _build_read_only_answer(workspace_root, objective, decision)
+            for line in activity:
+                state._record_progress(line)
+                _emit_tui_stream_line(args, line)
+            for line in answer:
+                state._record_answer(line)
     state.status = "completed"
     state.phase = "done"
     state.current_step = "Read-only answer ready"
     state.ended_at_monotonic = time.monotonic()
     state._record_progress("Read-only answer completed.")
-    _render_static_state(
-        state,
-        plain=bool(getattr(args, "plain", False)),
-        raw_events=bool(getattr(args, "raw_events", False)),
-    )
+    if _tui_stream_output(args):
+        _emit_tui_stream_answer(args, state)
+        footer = state.elapsed_footer()
+        if footer:
+            _emit_tui_stream_line(args, footer)
+    else:
+        _render_static_state(
+            state,
+            plain=bool(getattr(args, "plain", False)),
+            raw_events=bool(getattr(args, "raw_events", False)),
+        )
     transcript_workspace = str(getattr(args, "_tui_transcript_workspace", "") or "").strip()
     if transcript_workspace:
         _append_tui_transcript_entry(
@@ -2706,29 +3904,24 @@ def _dispatch_tui_turn(
     force_live: bool = False,
 ) -> int:
     core_decision = classify_agent_turn_intent(str(getattr(args, "target", "") or ""))
-    if core_decision.is_narrator and not bool(getattr(args, "plan_only", False)):
-        decision = TuiIntentDecision(
-            permission="read-only",
-            complexity="narrator",
-            confidence=core_decision.confidence,
-            rationale=core_decision.rationale,
-        )
-        setattr(args, "_tui_intent_decision", decision)
-        use_model_loop = bool(force_live or getattr(args, "live", False) or getattr(args, "_model_explicit", False))
-        return _run_tui_narrator(args, decision, use_model_loop=use_model_loop)
-    decision = _classify_tui_intent(
-        str(getattr(args, "target", "") or ""),
-        selected_skills=list(getattr(args, "_tui_selected_skill_mentions", []) or []),
-    )
+    routed_with_model = False
+    if core_decision.needs_clarification:
+        decision, routed_with_model = _route_tui_intent_with_model(args)
+    else:
+        decision = _tui_decision_from_core_decision(core_decision)
+    setattr(args, "_tui_routed_with_model", routed_with_model)
     setattr(args, "_tui_intent_decision", decision)
     if decision.needs_clarification:
         return _render_tui_clarification(args, decision)
+    if decision.complexity == "narrator" and not bool(getattr(args, "plan_only", False)):
+        use_model_loop = bool(routed_with_model or force_live or getattr(args, "live", False) or getattr(args, "_model_explicit", False))
+        return _run_tui_narrator(args, decision, use_model_loop=use_model_loop)
     if decision.permission == "read-only" and not bool(getattr(args, "plan_only", False)):
-        use_model_loop = bool(force_live or getattr(args, "live", False) or getattr(args, "_model_explicit", False))
+        use_model_loop = bool(routed_with_model or force_live or getattr(args, "live", False) or getattr(args, "_model_explicit", False))
         return _run_tui_read_only(args, decision, use_model_loop=use_model_loop)
     if decision.lane == "simple write" and not bool(getattr(args, "plan_only", False)):
         return _run_tui_simple_write(args, decision)
-    return _run_tui_turn(args, parser, force_live=force_live)
+    return _run_tui_turn(args, parser, force_live=bool(force_live or routed_with_model))
 
 
 def _render_composer_hint(workspace_root: Path, *, plain: bool, skill_count: int) -> None:

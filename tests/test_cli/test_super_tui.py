@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import threading
 import tomllib
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,30 @@ def _write_event_log(path: Path, rows: list[dict]) -> None:
     path.write_text(
         "\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n",
         encoding="utf-8",
+    )
+
+
+def _patch_tui_route(
+    monkeypatch,
+    *,
+    permission: str,
+    complexity: str,
+    routed_with_model: bool = False,
+    confidence: float = 0.9,
+    rationale: str = "test model route",
+    clarification: str = "",
+) -> None:
+    decision = super_tui.TuiIntentDecision(
+        permission=permission,
+        complexity=complexity,
+        confidence=confidence,
+        rationale=rationale,
+        clarification=clarification,
+    )
+    monkeypatch.setattr(
+        super_tui,
+        "_route_tui_intent_with_model",
+        lambda args: (decision, routed_with_model),
     )
 
 
@@ -87,17 +113,12 @@ def test_super_tui_plain_status_renders_event_log_projection(tmp_path, capsys) -
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Super DAN TUI" in stdout
-    assert "Status: completed" in stdout
-    assert "Phase: done" in stdout
-    assert "Run: super-dan-live:1" in stdout
-    assert "Objective: build dashboard" in stdout
-    assert "Workspace: /tmp/ws" in stdout
-    assert "Model: fake-live-model" in stdout
+    assert "Answer:" in stdout
+    assert "Outcome:" in stdout
+    assert "Run finished successfully" in stdout
     assert "Validation: passed (0.92)" in stdout
-    assert "Changed:" in stdout
-    assert "- website/index.html" in stdout
-    assert "Event Log: .dan-super/runs/turn-01/events.jsonl" in stdout
+    assert "Changed: website/index.html" in stdout
+    assert "Event Log:" not in stdout
 
 
 def test_super_tui_projection_tracks_validation_failures_and_repair_state() -> None:
@@ -199,16 +220,16 @@ def test_super_tui_rich_and_plain_render_show_four_lane_sections() -> None:
         state._record_result(f"{lane} result")
 
         plain = state.plain_snapshot()
-        assert f"Mode: {lane} - test rationale" in plain
-        assert "Activity:" in plain
-        assert "Result:" in plain
+        assert "Answer:" in plain
+        assert f"{lane} answer" in plain
+        assert "Activity:" not in plain
 
         console = Console(file=io.StringIO(), force_terminal=False, width=120, record=True)
         console.print(state.rich_renderable())
         rich_text = console.export_text()
-        assert f"Mode: {lane} - test rationale" in rich_text
-        assert "Activity:" in rich_text
-        assert "Result:" in rich_text
+        assert "Summary" in rich_text
+        assert f"{lane} answer" in rich_text
+        assert "Activity:" not in rich_text
 
 
 def test_super_tui_rich_semantic_text_highlights_operational_terms() -> None:
@@ -237,6 +258,151 @@ def test_super_tui_rich_semantic_text_highlights_operational_terms() -> None:
     assert has_style("$scaffold-research", "magenta")
     assert has_style("failed", "red")
     assert has_style("kimi-k2.6", "cyan")
+
+
+def test_super_tui_rich_semantic_text_highlights_stream_prefix_and_answer_label() -> None:
+    try:
+        from rich.text import Text
+    except ImportError:
+        pytest.skip("rich not installed")
+
+    line = "dan: Answer: changed docs/todo.md with file_read -> passed $idea-cart"
+    rendered = super_tui._rich_semantic_text(line)
+
+    assert isinstance(rendered, Text)
+    assert rendered.plain == line
+
+    def has_style(term: str, expected: str) -> bool:
+        start = rendered.plain.index(term)
+        end = start + len(term)
+        return any(
+            span.start <= start and span.end >= end and expected in str(span.style)
+            for span in rendered.spans
+        )
+
+    assert has_style("dan:", "cyan")
+    assert has_style("Answer", "white")
+    assert has_style("docs/todo.md", "cyan")
+    assert has_style("file_read", "blue")
+    assert has_style("passed", "green")
+    assert has_style("$idea-cart", "magenta")
+
+
+def test_super_tui_rich_semantic_text_dims_progress_but_keeps_answers_white() -> None:
+    try:
+        from rich.text import Text
+    except ImportError:
+        pytest.skip("rich not installed")
+
+    progress = super_tui._rich_semantic_text("dan: Thinking through the next step for this project.")
+    answer = super_tui._rich_semantic_text("This is the actual project summary.", base_style="white")
+
+    assert isinstance(progress, Text)
+    assert isinstance(answer, Text)
+    assert "grey50" in str(progress.style)
+    assert "white" in str(answer.style)
+
+
+def test_super_tui_split_answer_preserves_bullets_and_long_text() -> None:
+    long_text = "This paragraph should stay visible because the terminal renderer wraps the answer block. " * 6
+    lines = super_tui._split_answer_lines(
+        f"{long_text}\n- Pipeline: docs/plan.md\n- Next: inspect src/app.py"
+    )
+
+    assert lines[0].startswith("This paragraph should stay visible")
+    assert len(lines[0]) > 220
+    assert lines[1] == "- Pipeline: docs/plan.md"
+    assert lines[2] == "- Next: inspect src/app.py"
+
+
+def test_super_tui_stream_block_wraps_long_answer_lines() -> None:
+    line = "This answer should wrap across several visible terminal rows instead of disappearing past the right edge. " * 3
+
+    wrapped = super_tui._wrap_tui_stream_lines([line], width=72)
+
+    assert len(wrapped) > 1
+    assert " ".join(part.strip() for part in wrapped) == line.strip()
+
+
+def test_super_tui_stream_answer_plain_renders_single_block(capsys) -> None:
+    args = Namespace(plain=True, json=False, quiet_progress=False, raw_events=False)
+    state = super_tui.SuperTuiState()
+    state._record_answer("This is the project overview.")
+    state._record_answer("- Pipeline: docs/plan.md")
+
+    super_tui._emit_tui_stream_answer(args, state)
+
+    stdout = capsys.readouterr().out
+    assert stdout.count("dan: Answer:") == 1
+    assert "dan: Answer: This is the project overview." not in stdout
+    assert "  This is the project overview." in stdout
+    assert "  - Pipeline: docs/plan.md" in stdout
+
+
+def test_super_tui_transcript_summary_keeps_full_answer() -> None:
+    state = super_tui.SuperTuiState(status="completed", phase="done")
+    state._record_answer("This is the project overview.")
+    state._record_answer("- Pipeline: docs/plan.md")
+
+    summary = state.transcript_summary()
+
+    assert "This is the project overview." in summary
+    assert "- Pipeline: docs/plan.md" in summary
+
+
+def test_super_tui_transcript_history_keeps_full_assistant_answer() -> None:
+    long_answer = "This answer should stay visible in the conversation transcript. " * 8
+    entry = super_tui.TuiTranscriptEntry(
+        role="assistant_final",
+        text=long_answer,
+        created_at="",
+        metadata={},
+    )
+
+    formatted = super_tui._format_transcript_line(entry)
+
+    assert long_answer.strip() in formatted
+    assert not formatted.endswith("...")
+
+
+def test_super_tui_terminal_summary_keeps_many_answer_lines() -> None:
+    state = super_tui.SuperTuiState(status="completed", phase="done")
+    for index in range(30):
+        state._record_answer(f"Answer detail {index}")
+
+    visible = "\n".join(state.recent_event_lines())
+
+    assert "Answer detail 0" in visible
+    assert "Answer detail 29" in visible
+
+
+def test_super_tui_static_terminal_render_omits_redundant_header(capsys) -> None:
+    state = super_tui.SuperTuiState(status="completed", phase="done")
+    state._record_answer("This is the final answer.")
+
+    super_tui._render_static_state(state, plain=False)
+
+    stdout = capsys.readouterr().out
+    assert "This is the final answer." in stdout
+    assert "Super DAN TUI" not in stdout
+
+
+def test_super_tui_working_clock_refreshes_during_blocking_model_wait(capsys, monkeypatch) -> None:
+    args = Namespace(json=False, quiet_progress=False)
+    current = {"value": 10.0}
+    monkeypatch.setattr(super_tui.time, "monotonic", lambda: current["value"])
+
+    def callback() -> str:
+        current["value"] = 12.0
+        threading.Event().wait(0.3)
+        return "done"
+
+    result = super_tui._run_with_tui_working_clock(args, callback)
+
+    stdout = capsys.readouterr().out
+    assert result == "done"
+    assert "dan: Working: 2s" in stdout
+    assert "\n" not in stdout
 
 
 def test_super_tui_narrative_timeline_coalesces_noisy_tools() -> None:
@@ -279,11 +445,165 @@ def test_super_tui_narrative_timeline_coalesces_noisy_tools() -> None:
     assert "tool(s) available" not in joined
     assert "file_read" not in joined
     assert "shell_command" not in joined
-    assert "You asked: copy source files" in joined
-    assert "Workspace context checked (2 items); latest:" in joined
-    assert joined.count("Workspace context checked") >= 1
-    assert "Terminal command started: copying files." in joined
-    assert "Terminal command finished (exit 0):" in joined
+    assert "You asked: copy source files" not in joined
+    assert "Narrator:" in joined
+    assert "Relevant context is available for copy source files" in joined
+    assert "The terminal command finished; using that result for copy source files." in joined
+    assert "Activity:" not in joined
+
+
+def test_super_tui_narrator_reports_follow_executor_events() -> None:
+    state = super_tui.SuperTuiState(mode_line="complex write - test")
+
+    for row in [
+        {
+            "event": "run.log.started",
+            "objective": "update the todo list",
+            "task_id": "super-dan-live:7",
+            "workspace_root": "/tmp/ws",
+        },
+        {
+            "event": "tool.completed",
+            "tool_id": "file_write",
+            "result": {"path": "docs/todo.md"},
+        },
+        {
+            "event": "live.validation.started",
+        },
+        {
+            "event": "super.heartbeat",
+            "phase": "validation",
+            "detail": "read-only validator",
+            "elapsed_seconds": 10,
+        },
+        {
+            "event": "live.validation.completed",
+            "passed": True,
+            "overall_score": 0.92,
+        },
+        {
+            "event": "run.log.completed",
+            "status": "completed",
+        },
+    ]:
+        state.observe(row)
+
+    joined = "\n".join(state.narrator_lines)
+    assert "Got it. Starting with the relevant context." not in joined
+    assert "Changed docs/todo.md for update the todo list." in joined
+    assert "Still working after 10s." in joined
+    assert "Validation passed" in joined
+    assert "Run finished successfully" in joined
+    assert state.answer_lines[-1].startswith("Run finished successfully")
+    visible = "\n".join(state.recent_event_lines())
+    assert "Answer:" in visible
+    assert "Outcome:" in visible
+    assert visible.count("Run finished successfully") == 1
+
+
+def test_super_tui_plain_renderer_suppresses_fallback_lines_after_narrator(capsys) -> None:
+    renderer = super_tui.SuperTuiProgressRenderer(enabled=True, plain=True)
+
+    with renderer:
+        renderer(
+            {
+                "event": "run.log.started",
+                "objective": "check docs",
+                "task_id": "super-dan-live:8",
+                "workspace_root": "/tmp/ws",
+            }
+        )
+        renderer({"event": "provider.build.completed", "model": "fake-live-model"})
+        renderer({"event": "tool.started", "tool_id": "file_read", "arguments": {"path": "README.md"}})
+        renderer({"event": "tool.started", "tool_id": "file_read", "arguments": {"path": "docs/todo.md"}})
+
+    stdout = capsys.readouterr().out
+    assert "Got it. Starting with the relevant context." not in stdout
+    assert stdout.count("Checking the relevant workspace context") == 1
+    assert "Model provider ready." not in stdout
+    assert "You asked:" not in stdout
+    assert "Reading workspace context." not in stdout
+
+
+def test_super_tui_executor_sidecar_prints_model_narration(tmp_path, capsys, monkeypatch) -> None:
+    parser = super_tui.build_parser()
+    args = parser.parse_args(["build docs", "--workspace", str(tmp_path), "--model", "fake-model", "--plain"])
+    super_tui._prepare_args(args, [])
+    args._tui_routed_with_model = True
+
+    class FakeProvider:
+        def __init__(self) -> None:
+            self.kwargs = {}
+
+        async def complete(self, **kwargs):
+            self.kwargs = dict(kwargs)
+            return CompletionResult(
+                text="The executor has started from the project context and is checking what needs to change before it edits anything."
+            )
+
+    provider = FakeProvider()
+    monkeypatch.setattr(super_tui, "_build_tui_narrator_live_provider", lambda args, model: provider)
+
+    renderer = super_tui.SuperTuiProgressRenderer(enabled=True, objective="build docs", workspace=str(tmp_path), plain=True)
+    renderer.configure_model_sidecar(args)
+    with renderer:
+        renderer(
+            {
+                "event": "run.log.started",
+                "objective": "build docs",
+                "task_id": "super-dan-live:11",
+                "workspace_root": str(tmp_path),
+            }
+        )
+        assert renderer._sidecar_thread is not None
+        renderer._sidecar_thread.join(timeout=2)
+
+    stdout = capsys.readouterr().out
+    assert "dan: Narrator:" in stdout
+    assert "The executor has started from the project context" in stdout
+    assert "You asked:" not in stdout
+    assert "tools" not in provider.kwargs
+
+
+def test_super_tui_executor_sidecar_discards_stale_model_narration(tmp_path, capsys, monkeypatch) -> None:
+    parser = super_tui.build_parser()
+    args = parser.parse_args(["build docs", "--workspace", str(tmp_path), "--model", "fake-model", "--plain"])
+    super_tui._prepare_args(args, [])
+
+    renderer = super_tui.SuperTuiProgressRenderer(enabled=True, objective="build docs", workspace=str(tmp_path), plain=True)
+    renderer.state.observe(
+        {
+            "event": "run.log.started",
+            "objective": "build docs",
+            "task_id": "super-dan-live:12",
+            "workspace_root": str(tmp_path),
+        }
+    )
+    request = super_tui.NarratorRequest(
+        request_id="sidecar-old",
+        question="build docs",
+        snapshot=renderer.state._narrator_snapshot(),
+        surface="super-tui",
+    )
+    renderer.state.observe(
+        {
+            "event": "tool.completed",
+            "tool_id": "file_read",
+            "result": {"path": "README.md"},
+        }
+    )
+    monkeypatch.setattr(
+        super_tui,
+        "_run_tui_narrator_model_text",
+        lambda *args, **kwargs: ("This old narrator answer should not be printed.", ""),
+    )
+
+    renderer._run_model_sidecar(args, request, "progress")
+
+    stdout = capsys.readouterr().out
+    assert "This old narrator answer should not be printed" not in stdout
+    assert renderer.state.narrator_reports[-1]["stale"] is True
+    assert renderer.state.narrator_reports[-1]["source_snapshot_id"] == request.snapshot.snapshot_id
 
 
 def test_super_tui_conversation_footer_shows_elapsed_working_time(monkeypatch) -> None:
@@ -297,6 +617,188 @@ def test_super_tui_conversation_footer_shows_elapsed_working_time(monkeypatch) -
     state.status = "completed"
     state.ended_at_monotonic = 75.0
     assert state.recent_event_lines()[-1] == "Elapsed: 1m 05s"
+
+
+def test_super_tui_renderer_clock_tick_prints_live_elapsed(capsys, monkeypatch) -> None:
+    renderer = super_tui.SuperTuiProgressRenderer(enabled=True, plain=True)
+    renderer.state.status = "running"
+    renderer.state.phase = "model"
+    renderer.state.started_at_monotonic = 10.0
+    monkeypatch.setattr(super_tui.time, "monotonic", lambda: 12.0)
+
+    renderer._clock_tick_once()
+
+    stdout = capsys.readouterr().out
+    assert "dan: Working: 2s" in stdout
+
+
+def test_super_tui_renderer_clock_tick_refreshes_one_line_when_not_plain(capsys, monkeypatch) -> None:
+    renderer = super_tui.SuperTuiProgressRenderer(enabled=True, plain=False)
+    renderer.state.status = "running"
+    renderer.state.phase = "model"
+    renderer.state.started_at_monotonic = 10.0
+    current_time = {"value": 12.0}
+    monkeypatch.setattr(super_tui.time, "monotonic", lambda: current_time["value"])
+
+    renderer._clock_tick_once()
+    current_time["value"] = 13.0
+    renderer._clock_tick_once()
+
+    stdout = capsys.readouterr().out
+    assert "dan: Working: 2s" in stdout
+    assert "dan: Working: 3s" in stdout
+    assert "\n" not in stdout
+
+
+def test_super_tui_renderer_quiet_clock_starts_narrator_sidecar(capsys, monkeypatch, tmp_path) -> None:
+    parser = super_tui.build_parser()
+    args = parser.parse_args(["merge data", "--workspace", str(tmp_path), "--model", "fake-model", "--plain"])
+    super_tui._prepare_args(args, [])
+    args._tui_routed_with_model = True
+    calls: list[str] = []
+
+    def fake_narrator(*_args, **kwargs):
+        calls.append(str(kwargs.get("purpose") or ""))
+        return (
+            "The executor is still deciding how to inspect the data before it changes anything; no file update is visible yet.",
+            "",
+        )
+
+    monkeypatch.setattr(super_tui, "_run_tui_narrator_model_text", fake_narrator)
+    current_time = {"value": 22.0}
+    monkeypatch.setattr(super_tui.time, "monotonic", lambda: current_time["value"])
+
+    renderer = super_tui.SuperTuiProgressRenderer(enabled=True, objective="merge data", workspace=str(tmp_path), plain=True)
+    renderer.configure_model_sidecar(args)
+    renderer.state.started_at_monotonic = 10.0
+    renderer.state.observe(
+        {
+            "event": "run.log.started",
+            "objective": "merge data",
+            "task_id": "super-dan-live:13",
+            "workspace_root": str(tmp_path),
+        }
+    )
+    renderer.state.observe({"event": "model.requested", "round": 1, "model": "fake-model"})
+
+    renderer._clock_tick_once()
+    assert renderer._sidecar_thread is not None
+    renderer._sidecar_thread.join(timeout=2)
+
+    stdout = capsys.readouterr().out
+    assert calls == ["executor-heartbeat"]
+    assert "dan: Narrator:" in stdout
+    assert "still deciding how to inspect the data" in stdout
+    assert "dan: Working: 12s" in stdout
+
+
+def test_super_tui_renderer_quiet_narrator_heartbeat_is_throttled(monkeypatch, tmp_path) -> None:
+    parser = super_tui.build_parser()
+    args = parser.parse_args(["merge data", "--workspace", str(tmp_path), "--model", "fake-model", "--plain"])
+    super_tui._prepare_args(args, [])
+    args._tui_routed_with_model = True
+    calls: list[str] = []
+
+    def fake_narrator(*_args, **kwargs):
+        calls.append(str(kwargs.get("purpose") or ""))
+        return ("Still waiting on the model decision from the current snapshot.", "")
+
+    monkeypatch.setattr(super_tui, "_run_tui_narrator_model_text", fake_narrator)
+    current_time = {"value": 22.0}
+    monkeypatch.setattr(super_tui.time, "monotonic", lambda: current_time["value"])
+
+    renderer = super_tui.SuperTuiProgressRenderer(enabled=True, objective="merge data", workspace=str(tmp_path), plain=True)
+    renderer.configure_model_sidecar(args)
+    renderer.state.started_at_monotonic = 10.0
+    renderer.state.observe(
+        {
+            "event": "run.log.started",
+            "objective": "merge data",
+            "task_id": "super-dan-live:14",
+            "workspace_root": str(tmp_path),
+        }
+    )
+
+    renderer._clock_tick_once()
+    assert renderer._sidecar_thread is not None
+    renderer._sidecar_thread.join(timeout=2)
+    current_time["value"] = 26.0
+    renderer._clock_tick_once()
+    if renderer._sidecar_thread is not None:
+        renderer._sidecar_thread.join(timeout=2)
+
+    assert calls == ["executor-heartbeat"]
+
+
+def test_super_tui_renderer_skips_duplicate_quiet_narrator_snapshot(monkeypatch, tmp_path) -> None:
+    parser = super_tui.build_parser()
+    args = parser.parse_args(["merge data", "--workspace", str(tmp_path), "--model", "fake-model", "--plain"])
+    super_tui._prepare_args(args, [])
+    args._tui_routed_with_model = True
+    calls: list[str] = []
+
+    def fake_narrator(*_args, **kwargs):
+        calls.append(str(kwargs.get("purpose") or ""))
+        return ("Still waiting on the same visible model decision.", "")
+
+    monkeypatch.setattr(super_tui, "_run_tui_narrator_model_text", fake_narrator)
+    current_time = {"value": 22.0}
+    monkeypatch.setattr(super_tui.time, "monotonic", lambda: current_time["value"])
+
+    renderer = super_tui.SuperTuiProgressRenderer(enabled=True, objective="merge data", workspace=str(tmp_path), plain=True)
+    renderer.configure_model_sidecar(args)
+    renderer.state.started_at_monotonic = 10.0
+    renderer.state.observe(
+        {
+            "event": "run.log.started",
+            "objective": "merge data",
+            "task_id": "super-dan-live:15",
+            "workspace_root": str(tmp_path),
+        }
+    )
+    renderer.state.observe({"event": "model.requested", "round": 1, "model": "fake-model"})
+
+    renderer._clock_tick_once()
+    assert renderer._sidecar_thread is not None
+    renderer._sidecar_thread.join(timeout=2)
+    current_time["value"] = 45.0
+    renderer._clock_tick_once()
+    if renderer._sidecar_thread is not None:
+        renderer._sidecar_thread.join(timeout=2)
+
+    assert calls == ["executor-heartbeat"]
+
+
+def test_super_tui_renderer_suppresses_deterministic_heartbeat_when_model_sidecar_enabled(
+    capsys,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    parser = super_tui.build_parser()
+    args = parser.parse_args(["merge data", "--workspace", str(tmp_path), "--model", "fake-model", "--plain"])
+    super_tui._prepare_args(args, [])
+    args._tui_routed_with_model = True
+    monkeypatch.setattr(super_tui, "_run_tui_narrator_model_text", lambda *args, **kwargs: ("", ""))
+
+    renderer = super_tui.SuperTuiProgressRenderer(enabled=True, objective="merge data", workspace=str(tmp_path), plain=True)
+    renderer.configure_model_sidecar(args)
+    with renderer:
+        renderer(
+            {
+                "event": "run.log.started",
+                "objective": "merge data",
+                "task_id": "super-dan-live:16",
+                "workspace_root": str(tmp_path),
+            }
+        )
+        if renderer._sidecar_thread is not None:
+            renderer._sidecar_thread.join(timeout=2)
+        renderer({"event": "super.heartbeat", "phase": "model", "elapsed_seconds": 10})
+        if renderer._sidecar_thread is not None:
+            renderer._sidecar_thread.join(timeout=2)
+
+    stdout = capsys.readouterr().out
+    assert "Still working after" not in stdout
 
 
 def test_super_tui_raw_events_mode_keeps_debug_telemetry() -> None:
@@ -338,7 +840,7 @@ def test_super_tui_workspace_check_summary_hides_raw_payload() -> None:
         }
     )
 
-    output = "\n".join(state.recent_event_lines())
+    output = "\n".join(state.activity_lines)
     assert "Workspace context checked" in output
     assert "exists passed: /tmp/ws/docs/todo.md" in output
     assert "results" not in output
@@ -431,9 +933,92 @@ def test_super_tui_run_turn_persists_assistant_transcript_summary(
     entries = super_tui._read_tui_transcript(tmp_path)
     assert len(entries) == 1
     assert entries[0].role == "assistant_final"
-    assert "Run completed" in entries[0].text
+    assert "Run finished successfully" in entries[0].text
     assert "website/index.html" in entries[0].text
     assert "turn-09/events.jsonl" in entries[0].text
+    assert entries[0].metadata["narrator_final_summary"].startswith("Run finished successfully")
+
+
+def test_super_tui_model_routed_run_uses_model_final_answer(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    parser = super_tui.build_parser()
+    args = parser.parse_args(
+        [
+            "help me review, if there are two readmes consolidate them",
+            "--workspace",
+            str(tmp_path),
+            "--model",
+            "fake-model",
+            "--live",
+            "--plain",
+        ]
+    )
+    super_tui._prepare_args(args, [])
+    args._tui_routed_with_model = True
+
+    class FakeProvider:
+        def __init__(self) -> None:
+            self.kwargs = {}
+
+        async def complete(self, **kwargs):
+            self.kwargs = dict(kwargs)
+            return CompletionResult(
+                text=(
+                    "I consolidated the README content into the main `README.md` and kept the file-map in sync. "
+                    "Validation passed, so the project now has a single README entry point."
+                )
+            )
+
+    provider = FakeProvider()
+
+    def fake_run(run_args, parser):
+        del parser
+        renderer = run_args._progress_renderer_factory(enabled=True, args=run_args)
+        renderer(
+            {
+                "event": "run.log.started",
+                "objective": run_args.target,
+                "task_id": "super-dan-live:10",
+                "workspace_root": str(tmp_path),
+                "requested_model": "fake-model",
+            }
+        )
+        renderer(
+            {
+                "event": "tool.completed",
+                "tool_id": "file_write",
+                "result": {"path": "README.md"},
+            }
+        )
+        run_args._live_report_printer(
+            object(),
+            {
+                "status": "completed",
+                "files": ["README.md"],
+                "validation": {"passed": True, "overall_score": 0.88},
+            },
+            verbose=False,
+        )
+        return 0
+
+    monkeypatch.setattr(super_tui.super_cli, "_run_super_turn", fake_run)
+    monkeypatch.setattr(
+        super_tui,
+        "_build_tui_final_answer_live_provider",
+        lambda args, model: provider,
+    )
+
+    exit_code = super_tui._run_tui_turn(args, parser, force_live=True)
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "I consolidated the README content into the main" in stdout
+    assert "README.md" in stdout
+    assert "Completed help me review" not in stdout
+    assert "tools" not in provider.kwargs
 
 
 def test_super_tui_reset_state_preserves_visible_transcript(tmp_path) -> None:
@@ -462,8 +1047,8 @@ def test_super_tui_plain_fallback_when_rich_unavailable(tmp_path, capsys, monkey
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Super DAN TUI" in stdout
-    assert "Status: completed" in stdout
+    assert "Answer:" in stdout
+    assert "Run finished successfully" in stdout
 
 
 def test_super_tui_status_missing_event_log_is_actionable(tmp_path, capsys) -> None:
@@ -686,6 +1271,7 @@ def test_super_tui_leading_skill_mention_is_stripped_and_recorded(capsys, monkey
     monkeypatch.setattr(super_tui, "_render_static_state", lambda state, *, plain: print("<idle-panel>"))
     monkeypatch.setattr(super_tui, "_read_interactive_line", fake_prompt)
     monkeypatch.setattr(super_tui, "_run_tui_turn", fake_run)
+    _patch_tui_route(monkeypatch, permission="write", complexity="complex")
 
     exit_code = super_tui._interactive_loop(args, parser)
 
@@ -747,6 +1333,7 @@ def test_super_tui_selected_skill_passes_core_metadata_without_surface_preflight
 
     monkeypatch.setattr(skill_invocation, "load_skill_catalog", lambda workspace_root: catalog)
     monkeypatch.setattr(super_tui.super_cli, "_run_super_turn", fake_run)
+    _patch_tui_route(monkeypatch, permission="write", complexity="complex")
 
     exit_code = super_tui.main(
         [
@@ -912,6 +1499,8 @@ def test_super_tui_ambiguous_skill_prefix_does_not_run(capsys, monkeypatch) -> N
 
 
 def test_super_tui_main_wraps_super_runner_with_plain_renderer(tmp_path, capsys, monkeypatch) -> None:
+    _patch_tui_route(monkeypatch, permission="write", complexity="complex")
+
     def fake_run(args, parser):
         del parser
         assert args.live is True
@@ -969,16 +1558,21 @@ def test_super_tui_main_wraps_super_runner_with_plain_renderer(tmp_path, capsys,
     stdout = capsys.readouterr().out
     assert "Super DAN TUI" in stdout
     assert "objective: build a dashboard" in stdout
-    assert "[tui] You asked: build a dashboard" in stdout
-    assert "File changed: website/index.html" in stdout
+    assert "Got it. Starting with the relevant context." not in stdout
+    assert "dan: You asked:" not in stdout
+    assert "dan: Answer:" in stdout
+    assert "dan: Outcome:" in stdout
+    assert "Run finished successfully" in stdout
+    assert "Changed website/index.html" in stdout
     assert "Validation: passed (0.90)" in stdout
     assert "Elapsed:" in stdout
-    assert "Event Log:" in stdout
+    assert "Event Log:" not in stdout
     assert "[run] started:" not in stdout
 
 
 def test_super_tui_direct_target_routes_read_only_without_live_runner(capsys, monkeypatch) -> None:
     observed = {}
+    _patch_tui_route(monkeypatch, permission="read-only", complexity="complex")
 
     def fake_run(args, parser):
         del parser
@@ -995,36 +1589,241 @@ def test_super_tui_direct_target_routes_read_only_without_live_runner(capsys, mo
     assert exit_code == 0
     assert observed == {}
     stdout = capsys.readouterr().out
-    assert "Mode: complex read-only" in stdout
-    assert "Result:" in stdout
+    assert "Answer:" in stdout
+    assert "Mode: complex read-only" not in stdout
 
 
-def test_super_tui_intent_gate_classifies_four_lanes() -> None:
-    assert super_tui._classify_tui_intent("show me the todo list").lane == "simple read-only"
-    assert super_tui._classify_tui_intent("summarize docs/todo.md").lane == "complex read-only"
-    assert super_tui._classify_tui_intent("copy docs/source.md to docs/copy.md").lane == "simple write"
-    assert super_tui._classify_tui_intent("update the todo list").permission == "write"
-    assert super_tui._classify_tui_intent("fix the bug in todo handling").lane == "complex write"
-    assert (
-        super_tui._classify_tui_intent(
-            "show docs/todo.md",
-            selected_skills=["idea-cart"],
-        ).permission
-        == "read-only"
+def test_super_tui_current_project_review_routes_to_read_only(tmp_path, capsys, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\n\nA small project.\n", encoding="utf-8")
+    _patch_tui_route(monkeypatch, permission="read-only", complexity="complex")
+
+    def fail_narrator(*args, **kwargs):
+        raise AssertionError("project review requests must not use the progress narrator lane")
+
+    def fail_live_runner(*args, **kwargs):
+        raise AssertionError("read-only project review must not start a write/executor run")
+
+    monkeypatch.setattr(super_tui, "_run_tui_narrator", fail_narrator)
+    monkeypatch.setattr(super_tui, "_run_tui_turn", fail_live_runner)
+
+    exit_code = super_tui.main(
+        [
+            "help me review current project",
+            "--workspace",
+            str(workspace),
+            "--plain",
+        ]
     )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Answer:" in stdout
+    assert "narrator read-only" not in stdout
+    assert not list(workspace.glob(".dan-super/runs/**/plans"))
+
+
+def test_super_tui_intent_gate_does_not_keyword_route_free_text() -> None:
+    assert super_tui._classify_tui_intent("show me the todo list").needs_clarification is True
+    assert super_tui._classify_tui_intent("summarize docs/todo.md").needs_clarification is True
+    assert super_tui._classify_tui_intent("help me review current project").needs_clarification is True
+    assert super_tui._classify_tui_intent("copy docs/source.md to docs/copy.md").needs_clarification is True
+    assert super_tui._classify_tui_intent("update the todo list").needs_clarification is True
+    assert super_tui._classify_tui_intent("fix the bug in todo handling").needs_clarification is True
+    assert super_tui._classify_tui_intent("can you help me consolidate the readme files").needs_clarification is True
     assert super_tui._classify_tui_intent("$idea-cart").needs_clarification is True
 
 
-def test_super_tui_core_progress_intent_routes_three_lanes() -> None:
-    assert super_tui.classify_agent_turn_intent("tell me current progress?").lane == "narrator read-only"
-    assert super_tui.classify_agent_turn_intent("what is happening right now").lane == "narrator read-only"
+def test_super_tui_core_command_router_does_not_keyword_route_free_text() -> None:
     assert super_tui.classify_agent_turn_intent("/progress").lane == "narrator read-only"
     assert super_tui.classify_agent_turn_intent("/last").lane == "narrator read-only"
-    assert super_tui.classify_agent_turn_intent("summarize docs/todo.md").lane == "executor read-only"
-    assert super_tui.classify_agent_turn_intent("show me the todo list").lane == "executor read-only"
-    assert super_tui.classify_agent_turn_intent("update the todo list").lane == "executor write"
-    assert super_tui.classify_agent_turn_intent("continue building this").lane == "executor write"
+    assert super_tui.classify_agent_turn_intent("tell me current progress?").needs_clarification is True
+    assert super_tui.classify_agent_turn_intent("help me review current project").needs_clarification is True
+    assert super_tui.classify_agent_turn_intent("summarize docs/todo.md").needs_clarification is True
+    assert super_tui.classify_agent_turn_intent("show me the todo list").needs_clarification is True
+    assert super_tui.classify_agent_turn_intent("update the todo list").needs_clarification is True
+    assert super_tui.classify_agent_turn_intent("continue building this").needs_clarification is True
+    assert super_tui.classify_agent_turn_intent("can you help me consolidate the readme files").needs_clarification is True
     assert super_tui.classify_agent_turn_intent("blue theme").needs_clarification is True
+
+
+def test_super_tui_core_model_router_parses_structured_lane() -> None:
+    class FakeProvider:
+        async def complete(self, **kwargs):
+            assert "tools" not in kwargs
+            assert "keyword" in kwargs["messages"][0]["content"]
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "lane": "executor_write",
+                        "complexity": "complex",
+                        "confidence": 0.91,
+                        "rationale": "The user asks to consolidate existing files, which requires workspace changes.",
+                        "clarification": "",
+                    }
+                )
+            )
+
+    decision = asyncio.run(
+        super_tui.route_agent_turn_intent_with_model(
+            FakeProvider(),
+            "can you help me consolidate the readme files",
+            model="fake-router",
+        )
+    )
+
+    assert decision.lane == "executor write"
+    assert decision.executor_effort == "complex"
+    assert decision.confidence == 0.91
+
+
+def test_super_tui_core_model_router_repairs_malformed_route() -> None:
+    class FakeProvider:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def complete(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return CompletionResult(text="This should use the executor to do analysis work.")
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "lane": "executor_write",
+                        "complexity": "complex",
+                        "confidence": 0.86,
+                        "rationale": "The request needs data processing and likely workspace changes.",
+                        "clarification": "",
+                    }
+                )
+            )
+
+    provider = FakeProvider()
+    decision = asyncio.run(
+        super_tui.route_agent_turn_intent_with_model(
+            provider,
+            "yeah can you combine the tnic data with panjiva and then run regression to answer the research question?",
+            model="fake-router",
+        )
+    )
+
+    assert decision.lane == "executor write"
+    assert decision.executor_effort == "complex"
+    assert len(provider.calls) == 2
+    repair_prompt = provider.calls[1]["messages"][1]["content"]
+    assert "Previous router output was invalid" in repair_prompt
+    assert "Return JSON only" in repair_prompt
+
+
+def test_super_tui_core_model_router_reconsiders_write_confirmation_clarification() -> None:
+    class FakeProvider:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def complete(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return CompletionResult(
+                    text=json.dumps(
+                        {
+                            "lane": "clarification",
+                            "complexity": "complex",
+                            "confidence": 0.72,
+                            "rationale": "The request may change files.",
+                            "clarification": "Are you authorizing write operations?",
+                        }
+                    )
+                )
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "lane": "executor_write",
+                        "complexity": "complex",
+                        "confidence": 0.9,
+                        "rationale": "The user directly requested workspace-changing analysis.",
+                        "clarification": "",
+                    }
+                )
+            )
+
+    provider = FakeProvider()
+    decision = asyncio.run(
+        super_tui.route_agent_turn_intent_with_model(
+            provider,
+            "ok whats next, can you merge the tnic data with panjiva input similarity data",
+            model="fake-router",
+        )
+    )
+
+    assert decision.lane == "executor write"
+    assert decision.executor_effort == "complex"
+    assert len(provider.calls) == 2
+    review_prompt = provider.calls[1]["messages"][1]["content"]
+    assert "verify that clarification is truly necessary" in review_prompt
+
+
+def test_super_tui_core_model_router_preserves_long_clarification() -> None:
+    long_clarification = (
+        "I need a specific workspace path or dataset name before I can choose a safe lane. "
+        * 8
+    ) + "tail marker"
+
+    class FakeProvider:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def complete(self, **kwargs):
+            self.calls.append(kwargs)
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "lane": "clarification",
+                        "complexity": "complex",
+                        "confidence": 0.68,
+                        "rationale": "The target is underspecified.",
+                        "clarification": long_clarification,
+                    }
+                )
+            )
+
+    provider = FakeProvider()
+    decision = asyncio.run(
+        super_tui.route_agent_turn_intent_with_model(
+            provider,
+            "merge that data",
+            model="fake-router",
+        )
+    )
+
+    assert decision.needs_clarification is True
+    assert "tail marker" in decision.clarification
+    assert len(decision.clarification) > 300
+    assert len(provider.calls) == 2
+
+
+def test_super_tui_core_model_router_clarifies_after_failed_repair() -> None:
+    class FakeProvider:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def complete(self, **kwargs):
+            self.calls.append(kwargs)
+            return CompletionResult(text="not a route")
+
+    provider = FakeProvider()
+    decision = asyncio.run(
+        super_tui.route_agent_turn_intent_with_model(
+            provider,
+            "please handle this",
+            model="fake-router",
+        )
+    )
+
+    assert decision.needs_clarification is True
+    assert decision.lane == "clarification"
+    assert "could not route" in decision.clarification
+    assert len(provider.calls) == 2
 
 
 def test_super_tui_core_narrator_response_uses_snapshot_only() -> None:
@@ -1084,6 +1883,55 @@ def test_super_tui_core_narrator_next_step_answers_directly() -> None:
     assert "Status: running" in response.text
 
 
+def test_super_tui_core_deterministic_narrator_report_is_snapshot_only() -> None:
+    snapshot = super_tui.RunNarratorSnapshot(
+        snapshot_id="run-2:4",
+        run_id="super-dan-live:2",
+        objective="update the todo list",
+        status="running",
+        phase="validation",
+        current_step="Validator is checking the result",
+        changed_files=("docs/todo.md",),
+        validation="running",
+    )
+
+    report = super_tui.deterministic_narrator_report(
+        snapshot,
+        trigger="checkpoint",
+        event_name="live.validation.started",
+    )
+
+    assert report is not None
+    assert report.kind == "checkpoint"
+    assert "Validation is checking" in report.text
+    assert "update the todo list" in report.text
+    assert report.source_snapshot_id == "run-2:4"
+
+
+def test_super_tui_core_heartbeat_report_avoids_recursive_status_text() -> None:
+    snapshot = super_tui.RunNarratorSnapshot(
+        snapshot_id="run-2:5",
+        run_id="super-dan-live:2",
+        objective="create status note",
+        status="running",
+        phase="model",
+        current_step="Still running: model",
+        elapsed_seconds=10,
+    )
+
+    report = super_tui.deterministic_narrator_report(
+        snapshot,
+        trigger="heartbeat",
+        event_name="super.heartbeat",
+        event_payload={"elapsed_seconds": 10},
+    )
+
+    assert report is not None
+    assert "Still working after 10s." in report.text
+    assert "waiting for the model response" in report.text
+    assert "Still running: model" not in report.text
+
+
 def test_super_tui_core_model_narrator_gets_no_tools() -> None:
     class FakeProvider:
         def __init__(self) -> None:
@@ -1109,6 +1957,30 @@ def test_super_tui_core_model_narrator_gets_no_tools() -> None:
     assert provider.kwargs["model"] == "fake-model"
     assert "messages" in provider.kwargs
     assert "tools" not in provider.kwargs
+
+
+def test_super_tui_heartbeat_narrator_prompt_asks_for_non_repeating_sentence() -> None:
+    request = super_tui.NarratorRequest(
+        question="merge data",
+        snapshot=super_tui.RunNarratorSnapshot(
+            objective="merge data",
+            status="running",
+            phase="model",
+            current_step="waiting for the model response",
+        ),
+        surface="super-tui",
+    )
+
+    messages = super_tui._tui_narrator_model_messages(
+        request,
+        purpose="executor-heartbeat",
+        recent_narrator=("The executor has loaded ToDo.md and README.md.",),
+    )
+
+    combined = "\n".join(message["content"] for message in messages)
+    assert "exactly one short natural sentence" in combined
+    assert "Do not relist stable files" in combined
+    assert "The executor has loaded ToDo.md and README.md." in combined
 
 
 def test_super_tui_core_narrator_job_emits_stale_event() -> None:
@@ -1203,6 +2075,7 @@ def test_super_tui_simple_read_only_shows_matching_file_without_run_plans(
     def fail_run(*args, **kwargs):
         raise AssertionError("read-only request must not start Super DAN runner")
 
+    _patch_tui_route(monkeypatch, permission="read-only", complexity="simple")
     monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
 
     exit_code = super_tui.main(
@@ -1216,7 +2089,7 @@ def test_super_tui_simple_read_only_shows_matching_file_without_run_plans(
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Mode: simple read-only" in stdout
+    assert "Answer:" in stdout
     assert "Source: docs/todo.md" in stdout
     assert "Implement the TUI gate" in stdout
     assert not list(workspace.glob(".dan-super/runs/**/plans"))
@@ -1237,6 +2110,7 @@ def test_super_tui_complex_read_only_summarizes_file_without_writes(
     def fail_run(*args, **kwargs):
         raise AssertionError("read-only summary must not start Super DAN runner")
 
+    _patch_tui_route(monkeypatch, permission="read-only", complexity="complex")
     monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
 
     exit_code = super_tui.main(
@@ -1250,7 +2124,7 @@ def test_super_tui_complex_read_only_summarizes_file_without_writes(
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Mode: complex read-only" in stdout
+    assert "Answer:" in stdout
     assert "Tasks: 1 open, 1 completed." in stdout
     assert "Open task" in stdout
     assert not list(workspace.glob(".dan-super/runs/**/plans"))
@@ -1269,6 +2143,7 @@ def test_super_tui_complex_read_only_searches_workspace_without_writes(
     def fail_run(*args, **kwargs):
         raise AssertionError("read-only search must not start Super DAN runner")
 
+    _patch_tui_route(monkeypatch, permission="read-only", complexity="complex")
     monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
 
     exit_code = super_tui.main(
@@ -1282,8 +2157,7 @@ def test_super_tui_complex_read_only_searches_workspace_without_writes(
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Mode: complex read-only" in stdout
-    assert "Search completed: 2 match(es) for needle value." in stdout
+    assert "Answer:" in stdout
     assert "docs/a.md:2: needle value" in stdout
     assert "docs/b.md:1: other needle value" in stdout
     assert not list(workspace.glob(".dan-super/runs/**/plans"))
@@ -1345,6 +2219,7 @@ def test_super_tui_complex_read_only_live_uses_model_tool_loop(
     def fail_run(*args, **kwargs):
         raise AssertionError("read-only live lane must not start Super DAN runner")
 
+    _patch_tui_route(monkeypatch, permission="read-only", complexity="complex")
     monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
     monkeypatch.setattr(
         super_tui,
@@ -1367,10 +2242,98 @@ def test_super_tui_complex_read_only_live_uses_model_tool_loop(
     assert exit_code == 0
     assert provider.calls == 2
     stdout = capsys.readouterr().out
-    assert "Mode: complex read-only" in stdout
-    assert "Read-only model loop started." in stdout
-    assert "Workspace context checked" in stdout
+    assert "Answer:" in stdout
     assert "Summary: Alpha finding from docs/info.md." in stdout
+    assert not list(workspace.glob(".dan-super/runs/**/plans"))
+
+
+def test_super_tui_complex_read_only_streams_answer_when_model_returns_empty_text(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    (workspace / "docs").mkdir(parents=True)
+    (workspace / "docs" / "info.md").write_text("# Info\n\nAlpha finding.\n", encoding="utf-8")
+
+    class FakeProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return CompletionResult(
+                    text="",
+                    model=kwargs.get("model"),
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        {
+                            "id": "call-read",
+                            "type": "function",
+                            "function": {
+                                "name": "file_read",
+                                "arguments": '{"path":"docs/info.md"}',
+                            },
+                        }
+                    ],
+                    raw_assistant_message={
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call-read",
+                                "type": "function",
+                                "function": {
+                                    "name": "file_read",
+                                    "arguments": '{"path":"docs/info.md"}',
+                                },
+                            }
+                        ],
+                    },
+                )
+            if self.calls == 2:
+                return CompletionResult(text="", model=kwargs.get("model"), finish_reason="stop")
+            return CompletionResult(
+                text="The review found one source: docs/info.md contains the Alpha finding.",
+                model=kwargs.get("model"),
+                finish_reason="stop",
+            )
+
+    provider = FakeProvider()
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("read-only live lane must not start Super DAN runner")
+
+    _patch_tui_route(monkeypatch, permission="read-only", complexity="complex")
+    monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
+    monkeypatch.setattr(
+        super_tui,
+        "_build_tui_read_only_live_provider",
+        lambda args, model: provider,
+    )
+
+    exit_code = super_tui.main(
+        [
+            "explain docs/info.md",
+            "--workspace",
+            str(workspace),
+            "--model",
+            "fake-model",
+            "--live",
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert provider.calls == 3
+    assert "Read-only review" not in stdout
+    assert "Answer" in stdout
+    assert "The review found one source" in stdout
+    assert "Source: docs/info.md" not in stdout
+    assert "Headings: # Info" not in stdout
+    assert "Recent Events" not in stdout
+    assert "Super DAN TUI\nStatus:" not in stdout
     assert not list(workspace.glob(".dan-super/runs/**/plans"))
 
 
@@ -1417,6 +2380,7 @@ def test_super_tui_progress_question_routes_to_narrator_without_executor(
     def fail_executor(*args, **kwargs):
         raise AssertionError("progress questions must not start executor lanes")
 
+    _patch_tui_route(monkeypatch, permission="read-only", complexity="narrator")
     monkeypatch.setattr(super_tui, "_run_tui_read_only", fail_executor)
     monkeypatch.setattr(super_tui, "_run_tui_turn", fail_executor)
 
@@ -1431,7 +2395,6 @@ def test_super_tui_progress_question_routes_to_narrator_without_executor(
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Mode: narrator read-only" in stdout
     assert "Answer:" in stdout
     assert "Status: complete" in stdout
     assert "Activity:" not in stdout
@@ -1458,6 +2421,7 @@ def test_super_tui_progress_narrator_model_call_gets_no_tools(
             return CompletionResult(text="Model answer: the previous run state is idle.")
 
     provider = FakeProvider()
+    _patch_tui_route(monkeypatch, permission="read-only", complexity="narrator")
     monkeypatch.setattr(
         super_tui,
         "_build_tui_narrator_live_provider",
@@ -1488,7 +2452,7 @@ def test_super_tui_progress_narrator_persists_flat_transcript(tmp_path) -> None:
     parser = super_tui.build_parser()
     args = parser.parse_args(
         [
-            "tell me current progress?",
+            "/progress",
             "--workspace",
             str(tmp_path),
             "--plain",
@@ -1505,6 +2469,37 @@ def test_super_tui_progress_narrator_persists_flat_transcript(tmp_path) -> None:
     assert "no active or recent run" in entries[-1].text
 
 
+def test_super_tui_progress_narrator_reuses_latest_visible_narrator_answer(
+    tmp_path,
+    capsys,
+) -> None:
+    parser = super_tui.build_parser()
+    super_tui._append_tui_transcript_entry(
+        tmp_path,
+        role="assistant_narrator",
+        text="The previous run is still validating the README update.\nNext useful step: wait for validation.",
+        metadata={"snapshot_id": "old"},
+    )
+    args = parser.parse_args(
+        [
+            "/progress",
+            "--workspace",
+            str(tmp_path),
+            "--plain",
+        ]
+    )
+    super_tui._prepare_args(args, [])
+    args._tui_transcript_workspace = str(tmp_path)
+
+    exit_code = super_tui._dispatch_tui_turn(args, parser)
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "The previous run is still validating the README update." in stdout
+    assert "Next useful step: wait for validation." in stdout
+    assert "no active or recent run" not in stdout
+
+
 def test_super_tui_simple_write_copies_file_without_live_runner(
     tmp_path,
     capsys,
@@ -1517,6 +2512,7 @@ def test_super_tui_simple_write_copies_file_without_live_runner(
     def fail_run(*args, **kwargs):
         raise AssertionError("simple write must not start Super DAN runner")
 
+    _patch_tui_route(monkeypatch, permission="write", complexity="simple")
     monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
 
     exit_code = super_tui.main(
@@ -1531,11 +2527,9 @@ def test_super_tui_simple_write_copies_file_without_live_runner(
     assert exit_code == 0
     assert (workspace / "docs" / "copy.md").read_text(encoding="utf-8") == "# Source\n"
     stdout = capsys.readouterr().out
-    assert "Mode: simple write" in stdout
-    assert "Simple write route selected." in stdout
-    assert "Copied: docs/source.md -> docs/copy.md" in stdout
-    assert "Changed:" in stdout
-    assert "- docs/copy.md" in stdout
+    assert "Answer:" in stdout
+    assert "Outcome:" in stdout
+    assert "Changed: docs/copy.md" in stdout
 
 
 def test_super_tui_simple_write_blocks_outside_workspace(
@@ -1551,6 +2545,7 @@ def test_super_tui_simple_write_blocks_outside_workspace(
     def fail_run(*args, **kwargs):
         raise AssertionError("blocked simple write must not start Super DAN runner")
 
+    _patch_tui_route(monkeypatch, permission="write", complexity="simple")
     monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
 
     exit_code = super_tui.main(
@@ -1579,17 +2574,18 @@ def test_super_tui_write_intent_enters_live_dispatch_path(monkeypatch) -> None:
         return 0
 
     monkeypatch.setattr(super_tui, "_run_tui_turn", fake_run)
+    _patch_tui_route(monkeypatch, permission="write", complexity="complex", routed_with_model=True)
 
     parser = super_tui.build_parser()
     args = parser.parse_args(["--plain"])
     super_tui._prepare_args(args, [])
-    args.target = "update the todo list"
+    args.target = "can you help me consolidate the readme files"
 
     exit_code = super_tui._dispatch_tui_turn(args, parser, force_live=True)
 
     assert exit_code == 0
     assert observed == {
-        "target": "update the todo list",
+        "target": "can you help me consolidate the readme files",
         "force_live": True,
         "lane": "complex write",
     }
@@ -1599,13 +2595,20 @@ def test_super_tui_ambiguous_input_asks_clarification(capsys, monkeypatch) -> No
     def fail_run(*args, **kwargs):
         raise AssertionError("ambiguous input must not start a run")
 
+    _patch_tui_route(
+        monkeypatch,
+        permission="",
+        complexity="",
+        clarification="Should this be a read-only answer, or should Super DAN change the workspace?",
+    )
     monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
 
     exit_code = super_tui.main(["blue theme", "--plain"])
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "Mode: clarification needed" in stdout
+    assert "Answer:" in stdout
+    assert "Status: blocked" in stdout
     assert "Should this be a read-only answer" in stdout
 
 

@@ -1,0 +1,118 @@
+# 57-20: Always-On Narrator Response Layer
+
+**Parent:** [57-chat-agent-v2-control-plane](57-chat-agent-v2-control-plane.md)
+**Status:** in-progress
+**Goal:** Make the narrator a passive, always-on response layer for Agent/Super DAN runs: it explains executor progress, keeps the user oriented, reports checkpoints, detects uncertainty/drift, and writes the final conclusion without receiving tools or mutation authority.
+
+## Tasks
+- [x] 1. Define the narrator responsibility contract
+  - [x] 1-1. Treat the narrator as the response layer for executor runs, not only a handler for explicit progress questions.
+  - [x] 1-2. Document the narrator responsibilities: explain what the executor is doing, why it matters for the request, what is done, what remains, and the final conclusion.
+  - [x] 1-3. Add supporting responsibilities: user orientation, noise filtering, continuity with the original request, uncertainty disclosure, drift detection, blocker/choice surfacing, verbosity control, and final handoff.
+  - [x] 1-4. State hard boundaries: narrator receives sanitized snapshots/events only; it gets no workspace read tools, shell, write tools, approval authority, or steering authority.
+- [x] 2. Add a core narrator event/snapshot contract
+  - [x] 2-1. Define a compact `NarratorRunSnapshot` / extension over `RunNarratorSnapshot` with original request, current phase, current action summary, completed steps, changed-file summary, validation state, blockers, queued work, elapsed time, and trace refs.
+  - [x] 2-2. Define typed narrator report events such as `narrator.opening`, `narrator.progress`, `narrator.checkpoint`, `narrator.uncertainty`, `narrator.drift`, `narrator.blocker`, and `narrator.final`.
+  - [x] 2-3. Include report fields for `text`, `relation_to_request`, `done`, `remaining`, `next`, `confidence`, `stale`, `verbosity`, and `source_snapshot_id`.
+  - [x] 2-4. Keep raw executor events separate from narrator reports so surfaces can show human output by default and raw logs only in debug mode.
+- [ ] 3. Build the narrator hook policy
+  - [x] 3-1. Trigger an opening report immediately after the user submits a run: what lane was selected and what the executor will check/do first.
+  - [x] 3-2. Trigger grounded micro-updates on major executor events: model start, read/context completion, file mutation, shell completion, validation start/completion, queue/dependency changes, blocker/failure, and terminal completion.
+  - [x] 3-3. Trigger checkpoint reflections after meaningful progress: enough context gathered, first material change, validation boundary, repair boundary, or several coalesced events.
+  - [x] 3-4. Add quiet-period reporting when no visible event arrives for a configurable interval, e.g. `Still working; last visible step was validation`.
+  - [x] 3-5. Throttle LLM narrator calls so they never block the executor: cheap snapshot reports can keep the terminal alive, but semantic narration/answers should be model-authored when a model is available.
+  - [x] 3-6. Cancel, discard, or label stale narrator reports when newer snapshots arrive before the report is rendered.
+- [ ] 4. Make reports address the core request
+  - [x] 4-1. Carry the original user request into every narrator snapshot and report prompt.
+  - [x] 4-2. Require progress reports to explain why the current executor activity matters for that request.
+  - [x] 4-3. Require checkpoint reports to summarize what has been accomplished relative to the request and what remains.
+  - [x] 4-4. Detect possible drift when executor activity appears unrelated to the request; report it without trying to repair or steer the executor.
+  - [x] 4-5. Keep natural phrasing available without overclaiming agency: prefer `The run is checking...` / `The executor is reading...` over implying the narrator itself touched files.
+- [ ] 5. Add final response synthesis
+  - [x] 5-1. Emit `narrator.final` when the executor reaches completed, failed, blocked, stopped, or paused.
+  - [x] 5-2. Summarize completed work, validation outcome, important changed files/artifacts, blockers or limitations, and the next useful user action.
+  - [x] 5-3. Replace raw final logs in the default TUI view with the narrator final summary while keeping trace refs available for inspection.
+  - [x] 5-4. For model-routed executor runs, ask the LLM to write the final user-facing answer from the sanitized run summary instead of exposing deterministic `Completed <request>` wording.
+  - [x] 5-5. Persist the final narrator summary into the same flat conversation transcript as the user-visible assistant response.
+- [ ] 6. Surface the narrator consistently
+  - [x] 6-1. Update Super TUI to render narrator reports as the conversation/progress stream and hide raw executor telemetry by default.
+  - [x] 6-2. Keep `--raw-events` as the escape hatch for raw executor and narrator lifecycle events.
+  - [x] 6-3. Apply a visual hierarchy in Rich output: dim progress/status narration and bright answer/result content.
+  - [x] 6-4. Use a consistent terminal completion shape for every TUI lane: `Answer` first, compact `Outcome` second, raw diagnostics only through `--raw-events`.
+  - [x] 6-5. Keep active elapsed time live during narrator/executor waits, updating `Working: ...` once per second in human-readable format.
+  - [ ] 6-6. Expose the same report stream to GUI and Telegram as chat/progress bubbles over the shared core events.
+  - [x] 6-7. Ensure explicit progress questions read from the latest narrator report stream first, then snapshot fallback if no report exists.
+  - [x] 6-8. Preserve generous user-facing answer text in final blocks and transcript replay while keeping progress/status telemetry compact.
+  - [x] 6-9. Show the same in-place `Working: ...` clock during model-router and final-answer waits, before the executor/narrator renderer has started.
+  - [x] 6-10. Avoid repeating the `Super DAN TUI` chrome on every completed turn; keep repeated transcript output focused on `Answer`, `Outcome`, and elapsed time.
+  - [x] 6-11. During quiet executor/model waits, trigger narrator sidecar heartbeats from the current sanitized snapshot instead of only updating the elapsed timer.
+  - [x] 6-12. Keep quiet narrator heartbeats natural and non-repetitive by passing recent narrator text, asking for one short sentence, and skipping unchanged quiet snapshots.
+- [ ] 7. Add regression coverage
+  - [x] 7-1. A write/executor run emits an opening narrator report before the first long-running model/tool wait.
+  - [x] 7-2. File-read/tool telemetry is coalesced into a human progress report without leaking raw payloads.
+  - [x] 7-3. Validation completion emits a checkpoint report with done/remaining/next fields.
+  - [x] 7-4. A completed run emits a final narrator summary tied to the original request.
+  - [x] 7-5. Narrator reports never receive or invoke read/write/shell tools.
+  - [x] 7-6. Throttling prevents report spam during dense event bursts.
+  - [x] 7-7. Stale async narrator reports are discarded or labeled.
+  - [x] 7-8. Project-review requests containing `current`, such as `help me review current project`, route to executor read-only review instead of narrator progress/status.
+  - [x] 7-9. Intent routing no longer uses regex phrase matching; explicit slash commands remain local while free-text routing is model-authored.
+  - [x] 7-10. Streamed final answers preserve paragraphs/bullets, render as one wrapped answer block, and persist the full answer text in the transcript.
+  - [x] 7-11. Rich output dims low-importance progress lines while keeping answer blocks white.
+  - [x] 7-12. Completed narrator, read-only, simple-write, and executor-write turns all render the same final `Answer`/`Outcome` structure.
+  - [x] 7-13. Model-routed write-style follow-up requests route to executor-write instead of clarification without adding natural-language keyword rules.
+  - [x] 7-14. Free-text routing no longer depends on keyword or regex matching; explicit slash commands stay deterministic, while natural-language turns use a model-authored structured lane decision or ask clarification.
+  - [x] 7-15. Answer rendering regressions cover full assistant transcript lines, many-line terminal answers, and one-line elapsed timer refresh.
+  - [x] 7-16. Progress/narrator regressions cover stale sidecar discard, latest narrator-answer reuse, and final narrator summary transcript metadata.
+  - [x] 7-17. TUI render regressions cover no redundant completed-turn header and one-line clock output during blocking model waits.
+  - [x] 7-18. Model-router regressions cover malformed/prose route output: the TUI asks the same model once to repair into the strict route schema before clarifying.
+  - [x] 7-19. Model-router regressions cover over-eager write-confirmation clarification and long clarification text, while stream-block rendering wraps long answer lines.
+  - [x] 7-20. Renderer regressions cover quiet clock ticks launching throttled narrator sidecar heartbeats during long model waits.
+  - [x] 7-21. Renderer regressions cover duplicate quiet-snapshot suppression, recent-narrator prompt context, and hiding deterministic heartbeat lines when the model narrator sidecar is active.
+- [ ] 8. Update docs
+  - [x] 8-1. Update README/TUI help once the always-on narrator behavior lands.
+  - [x] 8-2. Update architecture docs with the narrator sidecar boundary and report event contract.
+  - [x] 8-3. Update changelog and todo when implementation lands.
+
+## Decisions
+- The narrator is an observer and response layer, not an executor, planner, validator, or steering agent.
+- The executor remains the only component that can read files, call shell commands, write files, validate, repair, or change run state.
+- Deterministic code should handle plumbing, safety fallbacks, elapsed time, and sanitized snapshot assembly. Semantic detection, substantive progress narration, and final user-facing answers should be model-authored when a model is available.
+- LLM narration must be throttled and should not block the executor critical path.
+- The default user-facing surface should show narrator reports, not raw executor telemetry. Raw events stay available only through explicit debug views.
+- Narrator reports must stay grounded in sanitized event snapshots. If the snapshot is incomplete, the narrator should say what is unknown.
+
+## Notes
+- This generalizes [57-18](57-18-core-progress-narrator-layer.md) and [57-19](57-19-surface-progress-narrator-integration.md). Those plans cover explicit progress/status questions; this plan makes narration continuous during normal executor runs.
+- The motivating UX failure is that TUI progress can still look like event logs or go silent during model/tool waits. The desired behavior is a compact human response stream: opening orientation, progressive feedback, checkpoint reflection, and final conclusion.
+- Example target flow:
+  - Opening: `This is a write run. The executor is checking the current project state first.`
+  - Progress: `The executor found the relevant tracking docs and is preparing changes.`
+  - Checkpoint: `So far, the todo plan and inventory have been updated; validation is now checking them.`
+  - Final: `The todo consolidation work is in place: the plan was updated, the inventory was created, and validation passed. Next useful step: review the generated inventory.`
+- 2026-05-12: First implementation slice landed. Core now has `NarratorReport`, typed `narrator.<kind>` report event payloads, and grounded snapshot report generation from `RunNarratorSnapshot`. Super TUI builds snapshots from live executor state, emits narrator opening/progress/checkpoint/heartbeat/final reports, hides activity/result telemetry by default when narrator reports exist, and Super DAN quiet heartbeats now repeat every 10 seconds.
+- 2026-05-12: Live plain-mode testing exposed that duplicate/non-narrated executor events could still print fallback summaries after narrator output had started. The plain progress renderer now suppresses those fallback lines while keeping raw telemetry available through `--raw-events`.
+- 2026-05-12: Live validation also exposed two narration polish issues. Heartbeats now translate stale internal phases into human current-step text, and internal validation-model completion no longer creates a duplicate user-facing validation report before the final validation-completed event.
+- 2026-05-12: User feedback clarified that progress narration is not enough without an explicit textual answer. Final narrator reports now become visible `Answer:` lines and are persisted as the assistant transcript response, while the narrator still only summarizes sanitized run state.
+- 2026-05-12: Final snapshots now avoid duplicating the terminal answer under `Narrator:`. The final conclusion appears once as `Answer:`, while `Narrator:` remains a progress/orientation stream.
+- 2026-05-12: User testing showed complex read-only turns could complete after workspace context gathering without a textual answer. The read-only model loop now treats empty model text as incomplete, falls back to the local read-only answer path, and default non-plain read-only turns stream progress and `Answer:` lines instead of rendering one final boxed panel.
+- 2026-05-12: Streamed active-turn lines now use a cleaner `dan:` prefix instead of `[tui]`, and the same semantic color highlighter is applied to streamed output as to panel/replay output.
+- 2026-05-12: Follow-up feedback rejected substantive deterministic review answers. Live complex read-only turns now use a model-authored no-tool final-answer follow-up from already gathered evidence when the first tool loop returns empty or code-like output; deterministic local summaries remain only for non-live/no-model fallback paths.
+- 2026-05-12: User testing exposed that `help me review current project` was routed as a progress/status question because `current` matched the narrator gate. The shared intent classifier now gives explicit project/workspace review language priority over generic progress wording.
+- 2026-05-12: Follow-up feedback rejected regex-based intent matching. Explicit slash commands remain local, but free-text lane selection is now model-authored; regex uses stay limited to non-intent parsing such as rendering, markdown/code summaries, and completion helpers.
+- 2026-05-12: User testing showed streamed read-only answers were hard to read because each line was prefixed and clipped. The stream now renders final answers as a single wrapped `Answer` block, preserves bullet markers, and stores the full answer text for transcript replay.
+- 2026-05-12: Follow-up feedback asked for progressive updates to recede visually. Rich output now uses dim grey base text for progress/narrator chatter and white base text for answer/result content, while retaining colored highlights for paths, status terms, tools, and skills.
+- 2026-05-12: User testing showed write/executor turns still ended with a diagnostic snapshot even after conversational progress. Terminal completion output is now lane-consistent: `Answer`, optional `Outcome`, elapsed time, with status/phase/workspace/event-log dumps reserved for raw/debug paths.
+- 2026-05-12: User testing showed a follow-up request to consolidate README files was blocked for clarification. This first exposed the danger of extending a token list for every new phrasing; the follow-up fix replaces natural-language token routing with model-authored lane selection.
+- 2026-05-12: Follow-up feedback rejected keyword-based routing entirely. Free-text TUI routing now goes through a model-authored JSON lane decision; the deterministic core classifier only handles explicit slash commands and otherwise asks for model-assisted routing/clarification.
+- 2026-05-12: User testing showed deterministic final wording such as `Done. Completed <original request>` still felt mechanical. Model-routed executor runs now ask the LLM for the final answer from sanitized status, changed files, validation, blockers, and recent narrator context; fallback text no longer repeats the whole original request as the answer.
+- 2026-05-12: Follow-up testing showed even a neutral fixed opening like `Got it` still felt unlike a Codex-style agent shell. The TUI now suppresses canned pre-router, read-only setup, and deterministic opening narration; those remain internal snapshot/status scaffolding only. User-facing natural-language turns wait for model-authored routing/answers or explicit fallback/error text.
+- 2026-05-12: Follow-up feedback clarified that the narrator and executor should run in parallel. Super TUI now has a TUI-local, no-tool narrator model sidecar for model-routed executor turns: significant executor events launch throttled background narrator calls from sanitized snapshots and print model-authored `Narrator` prose while the executor keeps running. Explicit narrator turns now also use the TUI natural narrator prompt as primary and only fall back to field-list snapshots if the model is unavailable.
+- 2026-05-12: Follow-up feedback asked for live elapsed seconds. Super TUI now runs a renderer clock during active waits so `Working: ...` updates once per second from monotonic time; Rich live views refresh in place and plain streams emit sparse clock lines.
+- 2026-05-12: Follow-up feedback showed important answers were still being clipped in transcript and terminal summary paths. User-facing answer bodies now use generous line and character limits across final blocks, narrator answers, and assistant transcript replay, while telemetry/status rows keep compact clipping. Plain and non-Rich elapsed timers now refresh one line instead of appending repeated `Working:` rows.
+- 2026-05-12: Remaining local TUI/core narrator tasks landed. TUI sidecar reports are discarded and labeled stale when their snapshot is superseded before rendering, explicit progress questions reuse the latest persisted narrator answer before falling back to reconstructed event-log snapshots, final narrator summaries are persisted on the flat assistant transcript row, and the narrator prompt now asks model-authored reports to call out possible drift without steering execution.
+- 2026-05-12: User testing showed the second message could still sit silently while the model router or final-answer writer ran, and completed turns repeated the TUI header. Model-router and final-answer waits now share the in-place `Working: ...` clock, explicit narrator waits use that same one-line clock instead of a transient Rich panel, and completed turn summaries omit the repeated `Super DAN TUI` header.
+- 2026-05-12: User testing showed a valid workspace-changing analysis request could still be blocked when the model router returned prose instead of the required JSON. Free-text routing still has no natural-language keyword fallback; malformed or unsupported model-router output now gets one model-only repair pass into the strict route schema before the TUI asks for clarification.
+- 2026-05-12: User testing showed the model router could still block an ordinary workspace-changing request by asking for extra write authorization, and the answer panel clipped the resulting clarification. Clarification routes now get a model-only re-review that treats the user's ordinary workspace-changing request as authorization to select `executor_write`, route clarification text keeps a larger display budget, and streamed answer panels wrap long lines to the terminal width.
+- 2026-05-12: Follow-up feedback clarified that final answers can stay as one block, but intermediate progress still needs narrator responses. The TUI clock thread now starts throttled no-tool narrator sidecar heartbeats during quiet executor/model waits, so long waits can produce separate `Narrator` progress blocks from the current sanitized snapshot instead of only refreshing `Working: ...`.
+- 2026-05-13: User testing showed the new heartbeat narration had the right feel but repeated the same workspace facts too often. Quiet narrator sidecars now skip unchanged quiet snapshots, pass recent narrator text into the model prompt, ask heartbeat narration for one short non-repeating sentence, and suppress deterministic `Still working...` heartbeat lines when the model sidecar is active.

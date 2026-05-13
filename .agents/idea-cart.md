@@ -4,6 +4,16 @@ Last reviewed: 2026-05-12
 
 ## Active Items
 
+### IC-024 - Productize A Durable Operator Board Projection
+- Status: carted
+- Priority: high
+- Kind: decision
+- Scope: V2 Agent / Super DAN operator UX
+- Point: Treat current TUI status and narrator output as active-run explanation, and add a durable board projection over existing V2 run, queue, hook/inbox, retry, branch, and event-log state.
+- Why: Users need both "what is happening now" and "what tasks/runs exist, what state are they in, and what controls are available" without mistaking narration for the control surface.
+- Checkout target: Plan 57 board/status follow-up
+- Acceptance: A `/board` command or default TUI pane shows queued/running/waiting/blocked/paused/done runs with objective, owner/backend, last event, elapsed time, validation state, trace refs, and available actions such as append, pause, resume, retry, branch, and open log.
+
 ### IC-023 - Use Neutral TUI Progress And Result Text
 - Status: committed
 - Priority: high
@@ -237,6 +247,7 @@ Last reviewed: 2026-05-12
 ## Checkout Log
 
 ### 2026-05-12
+- IC-024 -> carted from the Hermes comparison follow-up: DAN already has status/narrator/board-ish state, but needs a visible durable operator board projection distinct from active-run narration.
 - IC-022 and IC-023 -> checked out into `57-16` and `57-17` from Super DAN TUI intent-gate and neutral feedback discussion.
 - IC-021 -> implemented in the Super DAN TUI conversation projection with a bottom `Working` / `Elapsed` footer and marked done.
 - IC-021 -> carted from Super DAN TUI feedback requesting elapsed working time in the live panel.

@@ -32,8 +32,9 @@
 - [x] 18. Add Super DAN TUI session transcript continuity via [57-15-super-dan-tui-session-transcript.md](57-15-super-dan-tui-session-transcript.md)
 - [x] 19. Add a four-lane Super DAN TUI intent gate via [57-16-super-dan-tui-four-lane-intent-gate.md](57-16-super-dan-tui-four-lane-intent-gate.md)
 - [x] 20. Add neutral TUI progress and result surfaces via [57-17-super-dan-tui-neutral-progress-and-result-surface.md](57-17-super-dan-tui-neutral-progress-and-result-surface.md)
-- [ ] 21. Add a core progress narrator lane via [57-18-core-progress-narrator-layer.md](57-18-core-progress-narrator-layer.md)
+- [x] 21. Add a core progress narrator lane via [57-18-core-progress-narrator-layer.md](57-18-core-progress-narrator-layer.md)
 - [ ] 22. Integrate progress narration across surfaces via [57-19-surface-progress-narrator-integration.md](57-19-surface-progress-narrator-integration.md)
+- [ ] 23. Add an always-on narrator response layer via [57-20-always-on-narrator-response-layer.md](57-20-always-on-narrator-response-layer.md)
 
 ## Decisions
 - The user-facing product modes are only **Chat** and **Agent**.
@@ -90,3 +91,6 @@
 - 2026-05-12: Added follow-up plans for a separate core `narrator read-only` lane plus TUI/GUI/CLI narrator integration. The new top-level intent split is `narrator read-only`, `executor read-only`, and `executor write`; `simple` versus `complex` remains an executor-effort hint rather than the primary permission boundary.
 - 2026-05-12: The first `57-18` / `57-19` slice landed: core narrator contracts live in `src/dan/agent_runtime/progress_narrator.py`, and Super TUI progress/status turns route to `narrator read-only` with immediate snapshot fallback, optional no-tool model narration, `Answer:` rendering, and flat `assistant_narrator` transcript persistence.
 - 2026-05-12: `57-18` is complete: the core narrator now has cancellable async jobs, lifecycle events, stale-response marking, and repeated-question cancellation. `57-19` remains open for GUI/Telegram consumption plus direct-local active-run prompt concurrency.
+- 2026-05-12: Added `57-20` to generalize narration from explicit progress/status questions into an always-on passive response layer over executor runs: opening orientation, progress feedback, checkpoint reflection, drift/uncertainty/blocker reporting, and final summary without any read/write/shell authority.
+- 2026-05-12: First `57-20` implementation slice landed for Super TUI: core deterministic `NarratorReport` payloads, TUI-side snapshot reports for executor events, default narrator-first rendering, more aggressive next-step routing, and 10-second quiet heartbeats.
+- 2026-05-12: Super TUI active turns now stream narrator/progress and `Answer:` lines into terminal history instead of relying on one large live panel. Complex read-only model loops also fall back to local read-only answers when the model/tool loop returns no final text.

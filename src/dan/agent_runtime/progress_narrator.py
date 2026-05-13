@@ -12,7 +12,7 @@ import json
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 
 NARRATOR_READ_ONLY = "narrator read-only"
@@ -20,39 +20,30 @@ EXECUTOR_READ_ONLY = "executor read-only"
 EXECUTOR_WRITE = "executor write"
 CLARIFICATION = "clarification"
 
-_WRITE_INTENT_RE = re.compile(
-    r"\b(?:fix|add|update|create|touch|refactor|implement|delete|remove|write|build|generate|patch|modify|change|"
-    r"edit|scaffold|install|rename|move|copy|migrate|continue|proceed|capture|collect|run|execute)\b",
-    flags=re.IGNORECASE,
-)
-_READ_INTENT_RE = re.compile(
-    r"\b(?:show|list|read|view|open|display|explain|summari[sz]e|find|search|check|inspect|review|what|where|"
-    r"which|why|how|tell)\b",
-    flags=re.IGNORECASE,
-)
-_PROGRESS_INTENT_RE = re.compile(
-    r"\b(?:current|latest|recent|last|active|running|progress|status|state|phase|step|elapsed|working|work|"
-    r"happening|going on|where are we|what now|what's next|next expected)\b",
-    flags=re.IGNORECASE,
-)
-_STATUS_PHRASE_RE = re.compile(
-    r"(?:what(?:'s| is)\s+(?:happening|going on|the status|the progress)|"
-    r"where\s+are\s+we|"
-    r"tell\s+me\s+(?:the\s+)?(?:current\s+)?(?:progress|status)|"
-    r"current\s+(?:progress|status)|"
-    r"(?:show|summari[sz]e|explain)\s+(?:the\s+)?(?:current\s+)?(?:progress|status|run state)|"
-    r"/(?:progress|last|narrate)\b)",
-    flags=re.IGNORECASE,
-)
-_NEXT_STEP_RE = re.compile(
-    r"\b(?:what(?:'s| is)?\s+next|next\s+step|what\s+now|next\s+expected|where\s+next|whats\s+next)\b",
-    flags=re.IGNORECASE,
-)
-_PATH_HINT_RE = re.compile(
-    r"(?<![\w$])(?:~|/|\./|\.\./|\.dan-super/|docs/|src/|tests/|apps/|website/|data/|raw/|figures/|tables/|logs/|beamer/)"
-    r"[^\s,;:)]+"
-    r"|(?<![\w$])[\w.-]+\.(?:py|md|jsonl?|html|css|js|ts|tsx|txt|csv|parquet|tex|pdf|png|jpg|jpeg|svg)(?![\w])"
-)
+def tokenize_intent_text(text: str) -> tuple[str, ...]:
+    """Return lowercase word tokens for non-routing local text utilities."""
+
+    normalized = str(text or "").lower().replace("’", "'")
+    normalized = normalized.replace("what's", "what is").replace("whats", "what is")
+    tokens: list[str] = []
+    current: list[str] = []
+    for char in normalized:
+        if char.isalnum():
+            current.append(char)
+            continue
+        if current:
+            tokens.append("".join(current))
+            current = []
+    if current:
+        tokens.append("".join(current))
+    return tuple(tokens)
+
+
+def _intent_command(text: str) -> str:
+    stripped = str(text or "").strip()
+    if not stripped.startswith("/"):
+        return ""
+    return stripped.split(maxsplit=1)[0].lower()
 
 
 def _now_iso() -> str:
@@ -128,8 +119,48 @@ def _format_elapsed(seconds: float) -> str:
     return f"{hours}h {minutes:02d}m"
 
 
+def _heartbeat_visible_step(snapshot: RunNarratorSnapshot) -> str:
+    phase = str(snapshot.phase or "").strip().lower()
+    current = _clean_progress_line(snapshot.current_step) or _clip(snapshot.current_step, limit=120)
+    if current.lower().startswith(("still running:", "still working", "waiting on ")):
+        current = ""
+    if current:
+        return current
+    if "model" in phase:
+        return "waiting for the model response"
+    if "valid" in phase:
+        return "validation is still running"
+    if "repair" in phase or "retry" in phase:
+        return "the repair pass is still running"
+    if "tool" in phase:
+        return "waiting for the active tool to finish"
+    if phase:
+        return f"{phase.replace('_', ' ')} is still running"
+    return ""
+
+
 def _is_next_step_question(text: str) -> bool:
-    return bool(_NEXT_STEP_RE.search(str(text or "")))
+    """Detect next-step phrasing for deterministic narration only, not routing."""
+
+    tokens = tokenize_intent_text(text)
+    phrases = (
+        ("what", "is", "next"),
+        ("what", "now"),
+        ("next", "step"),
+        ("next", "expected"),
+        ("where", "next"),
+        ("what", "shall", "we", "do", "next"),
+        ("what", "should", "we", "do", "next"),
+        ("what", "can", "we", "do", "next"),
+    )
+    for phrase in phrases:
+        width = len(phrase)
+        if width > len(tokens):
+            continue
+        for index in range(len(tokens) - width + 1):
+            if tuple(tokens[index : index + width]) == phrase:
+                return True
+    return False
 
 
 def _status_line(snapshot: RunNarratorSnapshot) -> str:
@@ -187,12 +218,11 @@ class AgentTurnIntentDecision:
 
 
 def classify_agent_turn_intent(text: str) -> AgentTurnIntentDecision:
-    """Classify a surface turn into narrator/read-only/write executor lanes.
+    """Classify only explicit command turns without keyword or regex routing.
 
-    The classifier is deliberately conservative and lexical. Model-assisted
-    routing can replace this later, but the capability boundary should stay the
-    same: narrator requests answer from state snapshots, executor read-only may
-    inspect workspace context, and executor write may mutate.
+    Free-text requests should go through ``route_agent_turn_intent_with_model``.
+    This function intentionally refuses to guess natural-language intent when a
+    model router is unavailable.
     """
 
     stripped = str(text or "").strip()
@@ -203,40 +233,305 @@ def classify_agent_turn_intent(text: str) -> AgentTurnIntentDecision:
             rationale="empty input",
             clarification="What should Super DAN do?",
         )
-    lowered = stripped.lower()
-    has_write = bool(_WRITE_INTENT_RE.search(lowered))
-    has_read = bool(_READ_INTENT_RE.search(lowered))
-    has_path = bool(_PATH_HINT_RE.search(stripped))
-    is_progress_command = lowered.startswith(("/progress", "/last", "/narrate"))
-    has_progress = bool(_PROGRESS_INTENT_RE.search(lowered) or _STATUS_PHRASE_RE.search(lowered))
-
-    if has_write:
-        return AgentTurnIntentDecision(
-            lane=EXECUTOR_WRITE,
-            confidence=0.84,
-            rationale="mutation or execution intent detected",
-            executor_effort="complex",
-        )
-    if has_progress and (not has_path or is_progress_command):
+    command = _intent_command(stripped)
+    if command in {"/progress", "/last", "/narrate"}:
         return AgentTurnIntentDecision(
             lane=NARRATOR_READ_ONLY,
-            confidence=0.86,
-            rationale="progress/status question over current or recent run state",
-        )
-    if has_read:
-        effort = "complex" if re.search(r"\b(?:summari[sz]e|explain|review|search|find|workspace|project|all)\b", lowered) else "simple"
-        return AgentTurnIntentDecision(
-            lane=EXECUTOR_READ_ONLY,
-            confidence=0.78,
-            rationale="workspace inspection or answer request detected",
-            executor_effort=effort,
+            confidence=1.0,
+            rationale="explicit progress command",
         )
     return AgentTurnIntentDecision(
         lane=CLARIFICATION,
         confidence=0.35,
-        rationale="no clear narrator, read-only executor, or write executor intent",
-        clarification="Should this be a progress/status answer, a read-only workspace answer, or workspace-changing work?",
+        rationale="free-text routing requires model-assisted intent classification",
+        clarification=(
+            "I need the model router to decide whether this is progress, read-only inspection, "
+            "or workspace-changing work."
+        ),
     )
+
+
+def _first_json_object(text: str) -> dict[str, Any] | None:
+    """Extract the first JSON object from model text without regex."""
+
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    candidates = [raw]
+    start = raw.find("{")
+    if start >= 0:
+        depth = 0
+        in_string = False
+        escape = False
+        for index in range(start, len(raw)):
+            char = raw[index]
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    candidates.append(raw[start : index + 1])
+                    break
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _coerce_confidence(value: Any) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(1.0, confidence))
+
+
+def _normalize_model_route_lane(value: Any) -> str:
+    return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _lane_from_model_route_text(value: Any) -> str:
+    lane_text = _normalize_model_route_lane(value)
+    if lane_text in {"narrator", "narrator_read_only", "progress", "status"}:
+        return NARRATOR_READ_ONLY
+    if lane_text in {"executor_read_only", "read_only", "readonly"}:
+        return EXECUTOR_READ_ONLY
+    if lane_text in {"executor_write", "write", "workspace_write"}:
+        return EXECUTOR_WRITE
+    if lane_text == CLARIFICATION:
+        return CLARIFICATION
+    return ""
+
+
+def _model_route_payload_issue(payload: Mapping[str, Any] | None) -> str:
+    if payload is None:
+        return "no JSON object was found"
+    lane_value = payload.get("lane") or payload.get("route")
+    if not str(lane_value or "").strip():
+        return "the route object is missing lane"
+    if not _lane_from_model_route_text(lane_value):
+        return f"unsupported lane: {lane_value}"
+    return ""
+
+
+def _decision_from_model_route_payload(payload: Mapping[str, Any]) -> AgentTurnIntentDecision:
+    lane = _lane_from_model_route_text(payload.get("lane") or payload.get("route"))
+    effort = str(payload.get("complexity") or payload.get("executor_effort") or "complex").strip().lower()
+    if effort not in {"simple", "complex"}:
+        effort = "complex"
+    rationale = _clip(payload.get("rationale") or payload.get("reason") or "model-assisted route", limit=220)
+    confidence = _coerce_confidence(payload.get("confidence"))
+    clarification = _clip(payload.get("clarification") or "", limit=1200)
+    if lane == NARRATOR_READ_ONLY:
+        return AgentTurnIntentDecision(
+            lane=NARRATOR_READ_ONLY,
+            confidence=confidence or 0.7,
+            rationale=rationale,
+        )
+    if lane == EXECUTOR_READ_ONLY:
+        return AgentTurnIntentDecision(
+            lane=EXECUTOR_READ_ONLY,
+            confidence=confidence or 0.7,
+            rationale=rationale,
+            executor_effort=effort,
+        )
+    if lane == EXECUTOR_WRITE:
+        return AgentTurnIntentDecision(
+            lane=EXECUTOR_WRITE,
+            confidence=confidence or 0.7,
+            rationale=rationale,
+            executor_effort=effort,
+        )
+    return AgentTurnIntentDecision(
+        lane=CLARIFICATION,
+        confidence=confidence,
+        rationale=rationale or "model route requested clarification",
+        clarification=clarification
+        or "Should this be progress/status, read-only workspace inspection, or workspace-changing work?",
+    )
+
+
+def _router_transcript_lines(transcript_tail: Sequence[Any]) -> list[str]:
+    lines: list[str] = []
+    for item in transcript_tail[-6:]:
+        if isinstance(item, Mapping):
+            role = str(item.get("role") or "").strip()
+            text = str(item.get("text") or "").strip()
+        else:
+            role = str(getattr(item, "role", "") or "").strip()
+            text = str(getattr(item, "text", "") or "").strip()
+        if not text:
+            continue
+        lines.append(f"{role or 'message'}: {_clip(text, limit=500)}")
+    return lines
+
+
+def _agent_turn_router_messages(
+    *,
+    text: str,
+    transcript_tail: Sequence[Any] = (),
+    selected_skills: Sequence[str] = (),
+    surface: str = "super-tui",
+) -> list[dict[str, str]]:
+    transcript = "\n".join(_router_transcript_lines(transcript_tail)) or "(none)"
+    skills = ", ".join(str(skill).strip() for skill in selected_skills if str(skill).strip()) or "(none)"
+    return [
+        {
+            "role": "system",
+            "content": (
+                "Route the user's Super DAN turn by meaning and recent context, not by keywords. "
+                "Return exactly one JSON object with keys lane, complexity, confidence, rationale, clarification. "
+                "lane is narrator_read_only for current/recent run status only, executor_read_only for workspace inspection with no file changes, "
+                "executor_write for edits/execution/generated artifacts, or clarification when choosing would be unsafe. "
+                "For ordinary workspace-changing work, the user's request is authorization to select executor_write; "
+                "do not ask for a second confirmation merely because files may change, commands may run, or an analysis will create artifacts. "
+                "Use clarification sparingly. Follow-up questions about progress, outcome, what remains, or the next step should usually be narrator_read_only "
+                "when the recent transcript gives enough session context. "
+                "Use clarification only when the goal, target, or capability boundary is genuinely missing or unsafe to choose. "
+                "complexity is simple only for a bounded single-source read or exact single-file operation; otherwise complex. "
+                "Leave clarification empty unless lane is clarification."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Surface: {surface}\n"
+                f"Selected skills: {skills}\n"
+                f"Recent visible transcript:\n{transcript}\n\n"
+                f"User turn:\n{text}\n\n"
+                "Route this turn now."
+            ),
+        },
+    ]
+
+
+def _agent_turn_router_repair_messages(
+    *,
+    text: str,
+    bad_response: str,
+    issue: str,
+    transcript_tail: Sequence[Any] = (),
+    selected_skills: Sequence[str] = (),
+    surface: str = "super-tui",
+) -> list[dict[str, str]]:
+    transcript = "\n".join(_router_transcript_lines(transcript_tail)) or "(none)"
+    skills = ", ".join(str(skill).strip() for skill in selected_skills if str(skill).strip()) or "(none)"
+    return [
+        {
+            "role": "system",
+            "content": (
+                "Repair a Super DAN routing response. Decide by meaning and recent context, not by keyword matching. "
+                "Return only one JSON object with this exact shape: "
+                '{"lane":"narrator_read_only|executor_read_only|executor_write|clarification",'
+                '"complexity":"simple|complex","confidence":0.0,"rationale":"short reason","clarification":""}. '
+                "Use narrator_read_only only for current/recent run status. Use executor_read_only for inspection or answers that should not change files. "
+                "Use executor_write when the request needs edits, generated artifacts, command execution, data processing, or other workspace-changing work. "
+                "For ordinary workspace-changing work, the user's request is authorization to select executor_write; "
+                "do not ask for a second confirmation merely because files may change, commands may run, or an analysis will create artifacts. "
+                "Use clarification only when the goal, target, or capability boundary is genuinely missing or unsafe to choose."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Surface: {surface}\n"
+                f"Selected skills: {skills}\n"
+                f"Recent visible transcript:\n{transcript}\n\n"
+                f"User turn:\n{text}\n\n"
+                f"Previous router output was invalid because: {issue}\n"
+                f"Previous router output:\n{_clip(bad_response, limit=900)}\n\n"
+                "Repair the route now. Return JSON only."
+            ),
+        },
+    ]
+
+
+async def route_agent_turn_intent_with_model(
+    provider: Any,
+    text: str,
+    *,
+    model: str,
+    transcript_tail: Sequence[Any] = (),
+    selected_skills: Sequence[str] = (),
+    surface: str = "super-tui",
+) -> AgentTurnIntentDecision:
+    """Route a free-text turn through a model-authored structured decision."""
+
+    response = await provider.complete(
+        messages=_agent_turn_router_messages(
+            text=text,
+            transcript_tail=transcript_tail,
+            selected_skills=selected_skills,
+            surface=surface,
+        ),
+        model=model,
+        temperature=0.0,
+        max_tokens=300,
+    )
+    raw_text = getattr(response, "text", "")
+    payload = _first_json_object(raw_text)
+    issue = _model_route_payload_issue(payload)
+    if issue:
+        repair_response = await provider.complete(
+            messages=_agent_turn_router_repair_messages(
+                text=text,
+                bad_response=raw_text,
+                issue=issue,
+                transcript_tail=transcript_tail,
+                selected_skills=selected_skills,
+                surface=surface,
+            ),
+            model=model,
+            temperature=0.0,
+            max_tokens=300,
+        )
+        repair_payload = _first_json_object(getattr(repair_response, "text", ""))
+        repair_issue = _model_route_payload_issue(repair_payload)
+        if not repair_issue and repair_payload is not None:
+            payload = repair_payload
+        else:
+            return AgentTurnIntentDecision(
+                lane=CLARIFICATION,
+                confidence=0.0,
+                rationale=f"model router did not return a usable structured route: {repair_issue or issue}",
+                clarification="I could not route that request safely. Please say whether this should read, write, or report progress.",
+            )
+    if _lane_from_model_route_text(payload.get("lane") or payload.get("route")) == CLARIFICATION:
+        review_response = await provider.complete(
+            messages=_agent_turn_router_repair_messages(
+                text=text,
+                bad_response=json.dumps(dict(payload), ensure_ascii=False, sort_keys=True),
+                issue=(
+                    "the route selected clarification; verify that clarification is truly necessary "
+                    "and not only asking for extra permission to perform requested workspace-changing work"
+                ),
+                transcript_tail=transcript_tail,
+                selected_skills=selected_skills,
+                surface=surface,
+            ),
+            model=model,
+            temperature=0.0,
+            max_tokens=300,
+        )
+        review_payload = _first_json_object(getattr(review_response, "text", ""))
+        review_issue = _model_route_payload_issue(review_payload)
+        if not review_issue and review_payload is not None:
+            payload = review_payload
+    return _decision_from_model_route_payload(payload)
 
 
 @dataclass(frozen=True)
@@ -372,6 +667,43 @@ class NarratorResponse:
         return bool(self.snapshot_id and snapshot.snapshot_id and self.snapshot_id != snapshot.snapshot_id)
 
 
+@dataclass(frozen=True)
+class NarratorReport:
+    """Human report emitted by the passive narrator sidecar.
+
+    Reports are generated from sanitized run snapshots/events. They are not
+    tool calls and they do not grant the narrator read, write, shell, approval,
+    or steering authority.
+    """
+
+    kind: str
+    text: str
+    relation_to_request: str = ""
+    done: tuple[str, ...] = ()
+    remaining: str = ""
+    next: str = ""
+    confidence: float = 0.8
+    stale: bool = False
+    verbosity: str = "compact"
+    source_snapshot_id: str = ""
+    created_at: str = field(default_factory=_now_iso)
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "text": self.text,
+            "relation_to_request": self.relation_to_request,
+            "done": list(self.done),
+            "remaining": self.remaining,
+            "next": self.next,
+            "confidence": self.confidence,
+            "stale": self.stale,
+            "verbosity": self.verbosity,
+            "source_snapshot_id": self.source_snapshot_id,
+            "created_at": self.created_at,
+        }
+
+
 NarratorEventCallback = Callable[[dict[str, Any]], None]
 NarratorSnapshotGetter = Callable[[], RunNarratorSnapshot]
 
@@ -441,6 +773,183 @@ def build_narrator_event(
         "error": error or (response.failure if response is not None else ""),
         "created_at": _now_iso(),
     }
+
+
+def build_narrator_report_event(report: NarratorReport) -> dict[str, Any]:
+    """Return a normalized event row for a passive narrator report."""
+
+    payload = report.to_payload()
+    return {
+        "event": f"narrator.{report.kind}",
+        "report": payload,
+        **payload,
+    }
+
+
+def _request_subject(snapshot: RunNarratorSnapshot) -> str:
+    objective = _clip(snapshot.objective, limit=120)
+    return objective or "the request"
+
+
+def _changed_summary(snapshot: RunNarratorSnapshot, *, limit: int = 2) -> tuple[str, ...]:
+    return tuple(
+        _display_path(path, snapshot.workspace)
+        for path in snapshot.changed_files[-limit:]
+        if str(path or "").strip()
+    )
+
+
+def _done_items(snapshot: RunNarratorSnapshot) -> tuple[str, ...]:
+    items: list[str] = []
+    changed = _changed_summary(snapshot, limit=3)
+    if changed:
+        items.append("changed " + ", ".join(changed))
+    if snapshot.validation and snapshot.validation != "running":
+        score = f" ({snapshot.validation_score})" if snapshot.validation_score else ""
+        items.append(f"validation {snapshot.validation}{score}")
+    latest = _latest_clean_progress((*snapshot.activity, *snapshot.results))
+    if latest and latest.rstrip(".").lower() not in {"done", "run completed"}:
+        items.append(latest.rstrip("."))
+    return _compact_list(items, limit=4)
+
+
+def deterministic_narrator_report(
+    snapshot: RunNarratorSnapshot,
+    *,
+    trigger: str,
+    event_name: str = "",
+    event_payload: Mapping[str, Any] | None = None,
+) -> NarratorReport | None:
+    """Build a passive narrator report from a sanitized snapshot/event.
+
+    This function is deliberately deterministic and side-effect free. It never
+    reads files, calls tools, or mutates state.
+    """
+
+    trigger = str(trigger or "").strip().lower()
+    event_name = str(event_name or "").strip()
+    event_payload = event_payload or {}
+    subject = _request_subject(snapshot)
+    done = _done_items(snapshot)
+    next_step = _next_step_line(snapshot)
+    relation = f"Report is grounded in the current run state for: {subject}"
+    kind = trigger if trigger in {
+        "opening",
+        "progress",
+        "checkpoint",
+        "uncertainty",
+        "drift",
+        "blocker",
+        "final",
+        "heartbeat",
+    } else "progress"
+    text = ""
+    remaining = ""
+
+    if kind == "opening":
+        return None
+    elif kind == "heartbeat":
+        elapsed = event_payload.get("elapsed_seconds") or snapshot.elapsed_seconds
+        elapsed_text = _format_elapsed(float(elapsed or 0.0))
+        current = _heartbeat_visible_step(snapshot)
+        if current:
+            text = f"Still working after {elapsed_text}. Current visible step: {current}."
+        else:
+            text = f"Still working after {elapsed_text}. No newer executor event is visible yet."
+        remaining = next_step
+    elif kind == "final":
+        status = str(snapshot.status or "finished").strip().lower()
+        if status in {"completed", "done"}:
+            summary = "; ".join(done)
+            if summary:
+                text = f"Run finished successfully: {summary}."
+            else:
+                text = "Run finished successfully."
+            remaining = "No blocker is visible in the final snapshot."
+        elif status in {"failed", "blocked", "stopped"}:
+            blocker = "; ".join(_clip(item, limit=120) for item in snapshot.blockers[-3:]) or "the run did not complete cleanly"
+            text = f"The run did not complete cleanly. Status: {status}; blocker: {blocker}."
+            remaining = "A follow-up or repair pass is needed."
+        else:
+            text = f"The run finished with status {status or 'unknown'}."
+            remaining = next_step
+    elif kind == "blocker":
+        blocker = "; ".join(_clip(item, limit=120) for item in snapshot.blockers[-3:]) or _clip(snapshot.current_step, limit=120)
+        text = f"A blocker is visible for {subject}: {blocker}."
+        remaining = "The executor needs a repair, retry, or user decision before this can finish cleanly."
+    elif kind == "checkpoint":
+        if event_name == "live.validation.started":
+            text = f"Validation is checking whether the current work satisfies {subject}."
+            remaining = "The next visible result should be validation passed, validation failed, or queued repair work."
+        elif event_name in {"live.validation.completed", "live.validation.model_completed"}:
+            score = f" ({snapshot.validation_score})" if snapshot.validation_score else ""
+            if snapshot.validation == "passed":
+                text = f"Validation passed{score}; the run is close to a clean finish for {subject}."
+                remaining = "The executor should finish or hand off any queued follow-up."
+            else:
+                text = f"Validation failed{score}; the executor needs to repair the visible gaps for {subject}."
+                remaining = "A repair or follow-up validation step remains."
+        elif event_name == "super.hook.packet_enqueued" or snapshot.queued_work:
+            text = f"Follow-up work was queued for {subject}: {_clip(snapshot.queued_work, limit=120)}."
+            remaining = next_step
+        elif _changed_summary(snapshot):
+            text = f"Changed {', '.join(_changed_summary(snapshot))} for {subject}."
+            remaining = "The next step is to validate or continue from that change."
+        else:
+            summary = "; ".join(done) if done else _clip(snapshot.current_step, limit=120)
+            text = f"Checkpoint for {subject}: {summary or 'the run advanced'}."
+            remaining = next_step
+    else:
+        if event_name == "model.requested":
+            text = f"Thinking through the next step for {subject}."
+            remaining = "It should either call a tool, validate, or prepare a response."
+        elif event_name == "tool.started":
+            tool_id = str(event_payload.get("tool_id") or "").strip()
+            if tool_id in {"file_read", "list_directory", "workspace_check"}:
+                text = f"Checking the relevant workspace context for {subject}."
+            elif tool_id in {"file_write", "file_edit"}:
+                text = f"Preparing a workspace change for {subject}."
+            elif tool_id == "shell_command":
+                text = f"Using a terminal command because it is the direct way to advance {subject}."
+            else:
+                text = f"Running a project tool for {subject}."
+            remaining = next_step
+        elif event_name == "tool.completed":
+            tool_id = str(event_payload.get("tool_id") or "").strip()
+            if tool_id in {"file_read", "list_directory", "workspace_check"}:
+                text = f"Relevant context is available for {subject}; moving toward an answer."
+            elif tool_id in {"file_write", "file_edit"}:
+                changed = ", ".join(_changed_summary(snapshot)) or "workspace files"
+                text = f"A workspace change landed for {subject}: {changed}."
+            elif tool_id == "shell_command":
+                text = f"The terminal command finished; using that result for {subject}."
+            else:
+                text = f"A project tool finished for {subject}."
+            remaining = next_step
+        elif event_name == "super.heartbeat":
+            return deterministic_narrator_report(
+                snapshot,
+                trigger="heartbeat",
+                event_name=event_name,
+                event_payload=event_payload,
+            )
+        else:
+            current = _clean_progress_line(snapshot.current_step) or _clip(snapshot.current_step, limit=120)
+            text = f"The run is progressing on {subject}: {current or snapshot.phase}."
+            remaining = next_step
+
+    if not text:
+        return None
+    return NarratorReport(
+        kind=kind,
+        text=_clip(text, limit=240),
+        relation_to_request=relation,
+        done=done,
+        remaining=_clip(remaining, limit=180),
+        next=_clip(next_step, limit=180),
+        confidence=0.78 if snapshot.has_run_context else 0.58,
+        source_snapshot_id=snapshot.snapshot_id,
+    )
 
 
 def deterministic_narrator_response(request: NarratorRequest) -> NarratorResponse:

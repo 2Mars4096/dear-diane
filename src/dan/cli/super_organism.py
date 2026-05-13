@@ -2055,7 +2055,7 @@ class SuperHeartbeatMonitor:
         event_callback,
         enabled: bool,
         idle_seconds: float = 10.0,
-        repeat_seconds: float = 15.0,
+        repeat_seconds: float = 10.0,
         poll_seconds: float = 2.0,
     ) -> None:
         self._event_callback = event_callback
