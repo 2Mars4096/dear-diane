@@ -1108,22 +1108,17 @@ def _super_should_run_planner(
     text = " ".join(str(objective or "").lower().split())
     if not text:
         return False
-    if re.search(r"\b[\w./-]+\.(?:css|csv|html|js|json|md|py|txt)\b", text):
+    if _super_mentions_source_file_path(text):
+        return False
+    if re.search(r"\bsmall\s+(?:grounded\s+)?edits?\b", text):
         return False
     word_count = len(text.split())
     narrow_terms = ("small ", "single ", "one ", "quick ", "bounded ", " note", " file")
     if word_count <= 14 and any(term in f" {text} " for term in narrow_terms):
         return False
-    explicit_plan_terms = (
-        "plan",
-        "break down",
-        "breakdown",
-        "todo",
-        "roadmap",
-        "phase",
-        "milestone",
-    )
-    if any(term in text for term in explicit_plan_terms):
+    if _super_is_interactive_source_implementation_objective(text):
+        return False
+    if _super_explicitly_requests_run_local_planning(text):
         return True
     broad_terms = (
         "project",
@@ -1155,6 +1150,158 @@ def _super_should_run_planner(
     if any(term in text for term in broad_terms) and any(term in text for term in action_terms):
         return True
     return False
+
+
+_SUPER_SOURCE_FILE_EXTENSIONS = (
+    "c",
+    "cc",
+    "cpp",
+    "cs",
+    "css",
+    "go",
+    "gd",
+    "gds",
+    "h",
+    "hpp",
+    "html",
+    "java",
+    "js",
+    "json",
+    "jsx",
+    "kt",
+    "lua",
+    "md",
+    "php",
+    "py",
+    "rb",
+    "rs",
+    "scala",
+    "scss",
+    "sh",
+    "svelte",
+    "swift",
+    "ts",
+    "tsx",
+    "txt",
+    "vue",
+    "xml",
+    "yaml",
+    "yml",
+)
+
+
+def _super_mentions_source_file_path(text: str) -> bool:
+    normalized = " ".join(str(text or "").lower().split())
+    if not normalized:
+        return False
+    extensions = "|".join(re.escape(ext) for ext in _SUPER_SOURCE_FILE_EXTENSIONS)
+    return bool(re.search(rf"\b[\w./-]+\.({extensions})\b", normalized))
+
+
+def _super_explicitly_requests_run_local_planning(text: str) -> bool:
+    normalized = " ".join(str(text or "").lower().split())
+    if not normalized:
+        return False
+    planning_patterns = (
+        r"\b(?:break\s+down|breakdown|roadmap|todo|milestone)\b",
+        r"\b(?:create|draft|make|outline|prepare|produce|write)\s+(?:a\s+|the\s+)?(?:run-local\s+)?plan\b",
+        r"\b(?:help\s+me\s+|please\s+)?plan\s+(?:the|this|out|for|how)\b",
+        r"^\s*(?:please\s+)?plan\b",
+        r"\bplanning\s+only\b",
+        r"\bno\s+execution\b.*\bplan\b",
+    )
+    return any(re.search(pattern, normalized) for pattern in planning_patterns)
+
+
+def _super_is_interactive_source_implementation_objective(text: str) -> bool:
+    normalized = " ".join(str(text or "").lower().split())
+    if not normalized:
+        return False
+    action_terms = (
+        "build",
+        "create",
+        "develop",
+        "extend",
+        "fix",
+        "improve",
+        "implement",
+        "make",
+        "polish",
+        "repair",
+        "ship",
+        "upgrade",
+    )
+    interaction_terms = (
+        "animation",
+        "animations",
+        "button",
+        "click",
+        "controls",
+        "dashboard",
+        "demo",
+        "drag",
+        "editor",
+        "flow",
+        "form",
+        "game",
+        "gameplay",
+        "input",
+        "interactive",
+        "live",
+        "loop",
+        "operate",
+        "operable",
+        "playable",
+        "player",
+        "prototype",
+        "realtime",
+        "round",
+        "rounds",
+        "simulation",
+        "stateful",
+        "tool",
+        "turn",
+        "turns",
+        "usable",
+        "visualization",
+        "wave",
+        "waves",
+        "workflow",
+    )
+    implementation_context_terms = (
+        "assets",
+        "code",
+        "component",
+        "components",
+        "compile",
+        "edit",
+        "edits",
+        "file",
+        "files",
+        "function",
+        "functions",
+        "implementation",
+        "module",
+        "modules",
+        "project",
+        "run",
+        "scene",
+        "scenes",
+        "script",
+        "scripts",
+        "source",
+        "test",
+        "validator",
+        "workspace",
+    )
+    has_action = any(re.search(rf"\b{re.escape(term)}\b", normalized) for term in action_terms)
+    has_interaction = any(
+        re.search(rf"\b{re.escape(term)}\b", normalized) for term in interaction_terms
+    )
+    has_implementation_context = any(
+        re.search(rf"\b{re.escape(term)}\b", normalized) for term in implementation_context_terms
+    ) or _super_mentions_source_file_path(normalized)
+    return has_action and has_interaction and has_implementation_context
 
 
 class SuperRunEventLogger:
@@ -1327,6 +1474,29 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=128,
         help="Maximum local tool calls for --live. Defaults to 128.",
+    )
+    parser.add_argument(
+        "--validation-command",
+        action="append",
+        default=[],
+        help=(
+            "Run this shell command from the workspace after live validation. "
+            "May be supplied multiple times; nonzero exits or runtime/compiler error output fail the run."
+        ),
+    )
+    parser.add_argument(
+        "--validation-timeout",
+        type=int,
+        default=120,
+        help="Timeout in seconds for each --validation-command. Defaults to 120.",
+    )
+    parser.add_argument(
+        "--validation-continue-on-failure",
+        action="store_true",
+        help=(
+            "Run all --validation-command entries even after one fails. "
+            "By default validation stops at the first failed command to avoid expensive checks after a mandatory gate fails."
+        ),
     )
     parser.add_argument(
         "--workspace",
@@ -1686,10 +1856,18 @@ def _tool_result_summary(tool_id: str, payload: Mapping[str, Any]) -> str:
             return summary
         if tool_id == "file_read":
             parts: list[str] = []
-            if result.get("line_count") is not None:
-                parts.append(f"lines={result.get('line_count')}")
+            returned = result.get("returned_line_count", result.get("line_count"))
+            total = result.get("total_line_count")
+            if returned is not None and total is not None and total != returned:
+                parts.append(f"lines={returned}/{total}")
+            elif returned is not None:
+                parts.append(f"lines={returned}")
             if result.get("size") is not None:
-                parts.append(f"bytes={result.get('size')}")
+                file_size = result.get("file_size")
+                if file_size is not None and file_size != result.get("size"):
+                    parts.append(f"bytes={result.get('size')}/{file_size}")
+                else:
+                    parts.append(f"bytes={result.get('size')}")
             path = result.get("path")
             if path:
                 parts.append(f"path={_path_basename(path)}")
@@ -1977,6 +2155,20 @@ class SuperProgressRenderer:
         if name == "live.validation.model_completed":
             verdict = "passed" if event.get("passed") else "failed"
             self._emit(event, f"[validation] model {verdict}")
+            return
+        if name == "live.validation.shell_check.started":
+            command = _truncate_text(event.get("command") or "validation command", limit=140)
+            self._emit(event, f"[validation] command started: {command}")
+            return
+        if name == "live.validation.shell_check.completed":
+            verdict = "passed" if event.get("passed") else "failed"
+            command = _truncate_text(event.get("command") or "validation command", limit=100)
+            exit_code = event.get("exit_code")
+            suffix = f" exit={exit_code}" if exit_code is not None else ""
+            self._emit(event, f"[validation] command {verdict}{suffix}: {command}")
+            failure = str(event.get("failure") or "").strip()
+            if failure:
+                self._emit(event, f"[validation] gap: {_truncate_text(failure, limit=180)}")
             return
         if name == "live.validation.completed":
             verdict = "passed" if event.get("passed") else "failed"
@@ -3236,6 +3428,16 @@ def _live_generic_task(
         if prompt_only_creation_target
         else "Honor the supplied ticket ownership and handoff packets instead of freeforming a generic build summary. "
     )
+    interactive_source_note = ""
+    if _super_is_interactive_source_implementation_objective(str(report.target or "")):
+        interactive_source_note = (
+            "Interactive source implementation condition: this objective asks for a usable application, "
+            "prototype, tool, visualization, or demo that a person can operate. Treat product source, scene/state files, scripts, UI, "
+            "assets, and validation/tests as the deliverable surface. Do not use `.dan-super` plan files or notes "
+            "as the first durable output. Inspect only enough structure to identify the right source files, then "
+            "make concrete source or validation edits that create user actions, visible feedback, state transitions, "
+            "and a repeatable short interaction loop. "
+        )
     return (
         "Execute the operator objective in the current workspace now, using the enabled tools to produce the requested deliverable. "
         f"Operator objective: {report.target}. "
@@ -3244,6 +3446,7 @@ def _live_generic_task(
         f"{constrained_creation_note}"
         f"{coordination_sentence}"
         f"{plan_note}"
+        f"{interactive_source_note}"
         f"{workspace_context_sentence}"
         "If the objective asks for current external facts, use web_search "
         "instead of guessing. If it asks to save, export, return, or eventually produce a file, create or update the appropriate "
@@ -3439,6 +3642,10 @@ def _live_generic_repair_task(
         f"{state_note}"
         f"{frontier_note}"
         f"Validation feedback: {effective_repair_brief or 'validator rejected the previous deliverable'}. "
+        "When validation feedback lists exact files, missing source markers, compiler diagnostics, or shell guard "
+        "FAIL lines, treat those as the repair targets. Re-read only the focused range needed for the edit, then "
+        "mutate the named source or validation files directly before any broad re-audit. Editing a secondary "
+        "validator/helper file alone is not sufficient when the feedback also names broken product source. "
         "Make concrete workspace edits that address that feedback; do not return a summary-only response. If the deliverable is "
         "a report or markdown artifact, edit that artifact directly and improve grounding or coverage as needed. "
         "Do not overwrite a substantive existing artifact with a shorter baseline, scaffold, or outline to manufacture "
@@ -4646,6 +4853,167 @@ def _merge_validation_failures(
     return merged
 
 
+_VALIDATION_ERROR_LINE_RE = re.compile(
+    r"(?im)^\s*(?:"
+    r"ERROR\b|ERROR:|SCRIPT ERROR\b|FATAL\b|CRITICAL\b|PANIC\b|"
+    r"FAIL\b|FAIL:|FAILED\b|"
+    r"(?:\[[^\n\]]+\]\s*)?Status:\s*FAIL\b|"
+    r"Traceback \(most recent call last\)|Parser Error\b|Parse Error\b|"
+    r"Unhandled exception\b|AssertionError\b|Segmentation fault\b"
+    r")"
+)
+
+
+def _validation_commands_from_args(args: argparse.Namespace) -> list[str]:
+    commands: list[str] = []
+    seen: set[str] = set()
+    for raw in getattr(args, "validation_command", []) or []:
+        command = str(raw or "").strip()
+        if not command or command in seen:
+            continue
+        seen.add(command)
+        commands.append(command)
+    return commands
+
+
+def _validation_output_preview(text: str, *, limit: int = 4000) -> str:
+    value = str(text or "")
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 20)] + "\n...[truncated]..."
+
+
+def _validation_error_lines(stdout: str, stderr: str, *, limit: int = 3) -> list[str]:
+    combined = "\n".join(part for part in (stderr, stdout) if str(part or "").strip())
+    lines: list[str] = []
+    for match in _VALIDATION_ERROR_LINE_RE.finditer(combined):
+        line_start = combined.rfind("\n", 0, match.start()) + 1
+        line_end = combined.find("\n", match.end())
+        if line_end < 0:
+            line_end = len(combined)
+        line = _display_text(combined[line_start:line_end])
+        if line and line not in lines:
+            lines.append(line)
+        if len(lines) >= limit:
+            break
+    return lines
+
+
+def _validation_shell_failure(
+    *,
+    command: str,
+    exit_code: int,
+    stdout: str,
+    stderr: str,
+) -> str | None:
+    error_lines = _validation_error_lines(stdout, stderr)
+    if exit_code != 0:
+        detail = error_lines[0] if error_lines else _display_text(stderr or stdout)
+        suffix = f": {_truncate_text(detail, limit=220)}" if detail else ""
+        return f"Validation command failed: `{command}` exited {exit_code}{suffix}"
+    if error_lines:
+        return (
+            "Validation command reported runtime/compiler errors or validation failure output despite exit 0: "
+            f"`{command}`: {_truncate_text(error_lines[0], limit=220)}"
+        )
+    return None
+
+
+async def _run_validation_shell_commands(
+    *,
+    args: argparse.Namespace,
+    workspace_root: Path,
+    model: str,
+    worker_id: str,
+    event_logger: SuperRunEventLogger | None,
+) -> list[str]:
+    commands = _validation_commands_from_args(args)
+    if not commands:
+        return []
+    timeout = max(1, int(getattr(args, "validation_timeout", 120) or 120))
+    continue_on_failure = bool(getattr(args, "validation_continue_on_failure", False))
+    failures: list[str] = []
+    for index, command in enumerate(commands, start=1):
+        _log_live_event(
+            event_logger,
+            "live.validation.shell_check.started",
+            worker_id=worker_id,
+            model=model,
+            command=command,
+            command_index=index,
+            timeout_seconds=timeout,
+            workspace_root=str(workspace_root),
+        )
+        env = dict(os.environ)
+        env["DAN_WORKSPACE_ROOT"] = str(workspace_root)
+        env["PWD"] = str(workspace_root)
+        exit_code = -1
+        stdout = ""
+        stderr = ""
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(workspace_root),
+                env=env,
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=timeout,
+            )
+            exit_code = int(proc.returncode or 0)
+            stdout = (stdout_bytes or b"").decode("utf-8", errors="replace")
+            stderr = (stderr_bytes or b"").decode("utf-8", errors="replace")
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()  # type: ignore[name-defined]
+                await proc.wait()  # type: ignore[name-defined]
+            except Exception:
+                pass
+            stderr = f"Command timed out after {timeout} seconds."
+        except Exception as exc:
+            stderr = f"{type(exc).__name__}: {exc}"
+        failure = _validation_shell_failure(
+            command=command,
+            exit_code=exit_code,
+            stdout=stdout,
+            stderr=stderr,
+        )
+        error_lines = _validation_error_lines(stdout, stderr)
+        if failure:
+            failures.append(failure)
+        _log_live_event(
+            event_logger,
+            "live.validation.shell_check.completed",
+            worker_id=worker_id,
+            model=model,
+            command=command,
+            command_index=index,
+            exit_code=exit_code,
+            passed=not bool(failure),
+            failure=failure,
+            error_lines=list(error_lines),
+            stdout_preview=_validation_output_preview(stdout),
+            stderr_preview=_validation_output_preview(stderr),
+        )
+        if failure and not continue_on_failure:
+            remaining = len(commands) - index
+            if remaining > 0:
+                _log_live_event(
+                    event_logger,
+                    "live.validation.shell_check.short_circuited",
+                    worker_id=worker_id,
+                    model=model,
+                    failed_command=command,
+                    failed_command_index=index,
+                    skipped_count=remaining,
+                    reason="previous validation command failed",
+                )
+            break
+    return failures
+
+
 def _existing_required_files_from_snapshot(
     snapshot: dict[str, str | None],
     required_paths: Sequence[Path],
@@ -4770,6 +5138,46 @@ async def _run_live_validation(
         model=model,
         tool_ids=list(tool_ids),
     )
+    shell_validation_ran = bool(_validation_commands_from_args(args))
+    deterministic_failures: list[str] = []
+    if shell_validation_ran:
+        pre_model_shell_failures = await _run_validation_shell_commands(
+            args=args,
+            workspace_root=workspace_root,
+            model=model,
+            worker_id=worker.id,
+            event_logger=event_logger,
+        )
+        if pre_model_shell_failures:
+            deterministic_failures.extend(pre_model_shell_failures)
+            validation = _merge_validation_failures(
+                _normalize_validation_payload(
+                    {
+                        "passed": False,
+                        "overall_score": 0.0,
+                        "repair_brief": pre_model_shell_failures[0],
+                        "missing_requirements": list(pre_model_shell_failures),
+                        "comparison_note": pre_model_shell_failures[0],
+                    }
+                ),
+                pre_model_shell_failures,
+            )
+            validation["status"] = "failed"
+            validation["tool_calls"] = 0
+            validation["event_count"] = 0
+            validation["error"] = pre_model_shell_failures[0]
+            validation["token_usage"] = {}
+            validation["deterministic_failures"] = list(deterministic_failures)
+            _log_live_event(
+                event_logger,
+                "live.validation.model_skipped",
+                worker_id=worker.id,
+                model=model,
+                reason="validation command failed before model validation",
+                passed=False,
+            )
+            return validation
+
     result, executed_tools, events = await _execute_live_request(
         worker=worker,
         request=request,
@@ -4804,6 +5212,26 @@ async def _run_live_validation(
         tool_calls=len(executed_tools),
         event_count=len(events),
     )
+    deterministic_failures.extend(
+        str(item).strip()
+        for item in (validation.get("deterministic_failures") or [])
+        if str(item).strip()
+    )
+    shell_failures = []
+    if not shell_validation_ran:
+        shell_failures = await _run_validation_shell_commands(
+            args=args,
+            workspace_root=workspace_root,
+            model=model,
+            worker_id=worker.id,
+            event_logger=event_logger,
+        )
+    if shell_failures:
+        validation = _merge_validation_failures(validation, shell_failures)
+        for failure in shell_failures:
+            if failure not in deterministic_failures:
+                deterministic_failures.append(failure)
+    validation["deterministic_failures"] = list(deterministic_failures)
     return validation
 
 
@@ -5105,7 +5533,18 @@ async def _run_live_website_build(
         validation,
         static_validation_failures,
     )
-    validation["deterministic_failures"] = list(static_validation_failures)
+    validation["deterministic_failures"] = list(
+        dict.fromkeys(
+            [
+                *[
+                    str(item).strip()
+                    for item in (validation.get("deterministic_failures") or [])
+                    if str(item).strip()
+                ],
+                *list(static_validation_failures),
+            ]
+        )
+    )
     validation_tool_calls_total = int(validation.get("tool_calls") or 0)
     validation_event_count_total = int(validation.get("event_count") or 0)
     validation_token_usage = _merge_token_usage(validation.get("token_usage"))
@@ -5272,7 +5711,18 @@ async def _run_live_website_build(
             validation,
             static_validation_failures,
         )
-        validation["deterministic_failures"] = list(static_validation_failures)
+        validation["deterministic_failures"] = list(
+            dict.fromkeys(
+                [
+                    *[
+                        str(item).strip()
+                        for item in (validation.get("deterministic_failures") or [])
+                        if str(item).strip()
+                    ],
+                    *list(static_validation_failures),
+                ]
+            )
+        )
         validation_tool_calls_total += int(validation.get("tool_calls") or 0)
         validation_event_count_total += int(validation.get("event_count") or 0)
         validation_token_usage = _merge_token_usage(
@@ -5443,7 +5893,18 @@ async def _run_live_website_build(
             validation,
             static_validation_failures,
         )
-        validation["deterministic_failures"] = list(static_validation_failures)
+        validation["deterministic_failures"] = list(
+            dict.fromkeys(
+                [
+                    *[
+                        str(item).strip()
+                        for item in (validation.get("deterministic_failures") or [])
+                        if str(item).strip()
+                    ],
+                    *list(static_validation_failures),
+                ]
+            )
+        )
         validation_tool_calls_total += int(validation.get("tool_calls") or 0)
         validation_event_count_total += int(validation.get("event_count") or 0)
         validation_token_usage = _merge_token_usage(
@@ -5455,7 +5916,7 @@ async def _run_live_website_build(
         worker_id="super-dan.live.website.validator",
         model=model,
         validation=validation,
-        deterministic_failures=static_validation_failures,
+        deterministic_failures=list(validation.get("deterministic_failures") or []),
         changed_required_files=changed_required_paths,
         builder_retry_attempted=bool(builder_retry_attempts),
         repair_attempted=bool(repair_attempts),
@@ -6292,6 +6753,15 @@ async def _run_live_generic_execution(
             workspace_root=workspace_root,
             include_task_state_key="task_state_before_execution",
         )
+    interactive_source_implementation = _super_is_interactive_source_implementation_objective(
+        str(report.target or "")
+    )
+    if interactive_source_implementation:
+        generic_input_payload["execution_condition"] = "interactive_source_implementation"
+        generic_input_payload["first_write_expectation"] = (
+            "After minimal source/scene inspection, the live worker should make product source, scene/state, "
+            "UI, asset, or validation/test edits rather than continuing reconnaissance."
+        )
     worker_brief = role_brief(
             role=RoleSpec(
                 role_label="workspace_worker",
@@ -6313,6 +6783,13 @@ async def _run_live_generic_execution(
             scope=f"workspace={workspace_root}; native Super DAN live general workspace execution",
             hard_constraints=[
                 "Actually mutate workspace files before finalizing.",
+                *(
+                    [
+                        "For interactive source implementation objectives, after minimal inspection the first durable output must be product source, scene/state, UI, asset, or validation/test edits, not `.dan-super` plans or analysis notes.",
+                    ]
+                    if interactive_source_implementation
+                    else []
+                ),
                 "Default to the current workspace root; only use explicit external paths when the operator asks and runtime policy allows.",
                 "When the requested deliverable is a saved report, markdown file, data note, or other document artifact, write that artifact to the workspace.",
                 *(
@@ -6379,6 +6856,7 @@ async def _run_live_generic_execution(
                     [prompt_only_creation_target] if prompt_only_creation_target else []
                 ),
                 "operator_prompt_only_creation": bool(prompt_only_creation_target),
+                "interactive_source_implementation": interactive_source_implementation,
             },
         )
     worker = _live_cell_from_brief(
@@ -6929,6 +7407,8 @@ async def _run_live_generic_execution(
             scope=f"workspace={workspace_root}; native Super DAN general workspace validation repair",
             hard_constraints=[
                 "Actually edit workspace files; do not return a summary-only response.",
+                "Treat validator-named files and missing source markers as required repair targets; do not stop after changing only an adjacent helper or validator file.",
+                "After one focused read of a named repair target, make a concrete file_edit/file_write/shell_command mutation or report a precise blocker.",
                 "Default to the current workspace root; only use explicit external paths when the operator asks and runtime policy allows.",
                 "Do not create, commit, or overwrite a baseline artifact just to satisfy git-history or before/after evidence.",
                 *(
@@ -7000,6 +7480,9 @@ async def _run_live_generic_execution(
                 "organism_stage": "execution",
                 "worker_id": repair_worker_id,
                 "operator_intent_policy": operator_intent_payload,
+                "validation_repair": True,
+                "recommended_write_paths": list(mutated_paths),
+                "required_repair_paths": list(mutated_paths),
                 "repair_policy": {
                     "forbid_shrinking_existing_artifacts": bool(additive_repair_required),
                     "target_paths": list(mutated_paths),
@@ -7478,7 +7961,8 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
                     event_log_path=str(event_logger.path),
                     event_log_schema=ORGANISM_LOG_SCHEMA_VERSION,
                 )
-                print(message, file=sys.stderr)
+                if not bool(getattr(args, "_suppress_live_failed_stderr", False)):
+                    print(message, file=sys.stderr)
                 return 2
             try:
                 model = _resolve_live_model(args.model)
@@ -7520,6 +8004,8 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
                     event_log_path=str(event_logger.path),
                     event_log_schema=ORGANISM_LOG_SCHEMA_VERSION,
                 )
+                if bool(getattr(args, "_suppress_live_failed_stderr", False)):
+                    return 2
                 parser.error(str(exc))
                 return 2
             try:
@@ -7547,10 +8033,11 @@ def _run_super_turn(args: argparse.Namespace, parser: argparse.ArgumentParser) -
                     event_log_path=str(event_logger.path),
                     event_log_schema=ORGANISM_LOG_SCHEMA_VERSION,
                 )
-                print(
-                    f"Live Super DAN failed: {type(exc).__name__}: {exc}",
-                    file=sys.stderr,
-                )
+                if not bool(getattr(args, "_suppress_live_failed_stderr", False)):
+                    print(
+                        f"Live Super DAN failed: {type(exc).__name__}: {exc}",
+                        file=sys.stderr,
+                    )
                 return 1
             live_result = {
                 **dict(live_result or {}),

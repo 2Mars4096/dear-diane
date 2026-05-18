@@ -9,6 +9,10 @@ import os
 import re
 from typing import Any
 
+from dan.tools._source_structure import (
+    source_shape_profile_for_path,
+    suspicious_source_structure_issues,
+)
 from dan.tools._workspace import validate_path
 
 MAX_CHECK_FILE_SIZE = 1_048_576
@@ -36,7 +40,7 @@ TOOL_METADATA = {
     "description": (
         "Run deterministic read-only checks against workspace files. Use this before "
         "shell_command for file existence, literal or regex counts, HTML tag balance, "
-        "and lightweight Python/JSON syntax checks."
+        "and lightweight Python/JSON/HTML or registered source-profile syntax checks."
     ),
     "parameters": {
         "type": "object",
@@ -67,7 +71,7 @@ TOOL_METADATA = {
             },
             "syntax": {
                 "type": "string",
-                "enum": ["auto", "python", "json", "html"],
+                "enum": ["auto", "python", "json", "html", "gdscript"],
                 "description": "Syntax flavor for syntax checks.",
                 "default": "auto",
             },
@@ -281,7 +285,13 @@ def _infer_syntax(path: str, syntax: str | None) -> str:
         return "json"
     if lower.endswith((".html", ".htm")):
         return "html"
-    raise ValueError("workspace_check syntax=auto only supports .py, .json, .html, and .htm files.")
+    source_profile = source_shape_profile_for_path(path)
+    if source_profile:
+        return source_profile
+    raise ValueError(
+        "workspace_check syntax=auto only supports .py, .json, .html, .htm, "
+        "or files with a registered source-shape profile."
+    )
 
 
 def _syntax_result(path: str, content: str, size: int, syntax: str | None) -> dict[str, Any]:
@@ -308,8 +318,23 @@ def _syntax_result(path: str, content: str, size: int, syntax: str | None) -> di
             "html": html_result,
             "error": "" if html_result["passed"] else "; ".join(html_result["issues"]),
         }
+    elif kind in {"gdscript", "gd"}:
+        issues = suspicious_source_structure_issues(path, content, profile="gdscript")
+        error = "; ".join(issues)
+        return {
+            "check": "syntax",
+            "path": path,
+            "syntax": "gdscript",
+            "passed": not issues,
+            "size": size,
+            "error": error,
+            "issues": issues,
+        }
     else:
-        raise ValueError("workspace_check syntax supports only auto, python, json, or html.")
+        raise ValueError(
+            "workspace_check syntax supports only auto, python, json, html, "
+            "or a registered source-shape profile."
+        )
     return {
         "check": "syntax",
         "path": path,

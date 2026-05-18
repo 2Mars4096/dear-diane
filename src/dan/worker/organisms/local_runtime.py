@@ -792,11 +792,12 @@ def _compact_messages_for_provider_prompt(
     }
 
 
-def _line_numbered_prompt_content(content: str) -> str:
+def _line_numbered_prompt_content(content: str, *, start_line: int = 1) -> str:
     lines = content.splitlines()
     if content.endswith("\n"):
         lines.append("")
-    return "\n".join(f"{index + 1:>6}| {line}" for index, line in enumerate(lines))
+    first = max(1, int(start_line or 1))
+    return "\n".join(f"{first + index:>6}| {line}" for index, line in enumerate(lines))
 
 
 def _file_read_payload_with_line_numbers(tool_payload: dict[str, Any]) -> dict[str, Any]:
@@ -807,7 +808,12 @@ def _file_read_payload_with_line_numbers(tool_payload: dict[str, Any]) -> dict[s
     content = result.get("content")
     if not isinstance(content, str):
         return prompt_payload
-    result["content"] = _line_numbered_prompt_content(content)
+    arguments = prompt_payload.get("arguments") if isinstance(prompt_payload.get("arguments"), dict) else {}
+    try:
+        start_line = int(result.get("line_start") or arguments.get("start_line") or 1)
+    except (TypeError, ValueError):
+        start_line = 1
+    result["content"] = _line_numbered_prompt_content(content, start_line=start_line)
     result["content_format"] = "line_numbered"
     return prompt_payload
 
@@ -1350,6 +1356,14 @@ def _tool_argument_failure_nudge(tool_id: str, error_text: str) -> str | None:
             "After one failed large write, do not resend the same giant payload."
         )
     elif tool_id == "file_edit":
+        stale_anchor_guidance = ""
+        if "old_string was not found" in detail or "old_string matched multiple" in detail:
+            stale_anchor_guidance = (
+                " The old_string anchor is stale or ambiguous; do not retry the same exact-text edit "
+                "and do not switch to a whole-file rewrite unless the task explicitly asks for a complete overwrite. "
+                "Re-read the target file with a focused line range around the intended change, then retry with "
+                "`start_line`/`end_line` plus `content` copied against the current file."
+            )
         extra_guidance = (
             ' For `file_edit`, first choose the edit intent: replacement uses '
             '`{"path":"src/app.py","start_line":12,"end_line":14,"mode":"replace","content":"..."}`; '
@@ -1360,12 +1374,50 @@ def _tool_argument_failure_nudge(tool_id: str, error_text: str) -> str | None:
             "Every item in `edits` must include `start_line`, or a unique exact-text compatibility pair "
             "such as `old_string` plus `new_string` copied from a recent `file_read`. "
             "If you do not know the line numbers or exact old text, call `file_read` first."
+            f"{stale_anchor_guidance}"
         )
     return (
         f"Tool correction: the previous `{tool_id}` call failed because {detail}. "
         "Retry only with a complete JSON argument object that satisfies the tool schema exactly. "
         "If you do not know the missing values yet, use a different valid tool call first."
         f"{extra_guidance}"
+    )
+
+
+def _source_structure_failure_nudge(
+    tool_id: str,
+    error_text: str,
+    arguments: dict[str, Any],
+) -> str | None:
+    if tool_id not in {"file_edit", "file_write"}:
+        return None
+    normalized = " ".join(str(error_text or "").lower().split())
+    markers = (
+        "suspicious source structure",
+        "suspicious source shrink",
+        "duplicate function definitions",
+        "unreachable statement after return",
+        "invalid edit shape for file_edit",
+        "invalid content for file_write",
+        "empty control block",
+        "unexpected indentation",
+    )
+    if not any(marker in normalized for marker in markers):
+        return None
+    path = str(arguments.get("path") or arguments.get("file_path") or "").strip()
+    line_hint = ""
+    start_line = arguments.get("start_line")
+    end_line = arguments.get("end_line")
+    if start_line not in {None, ""} or end_line not in {None, ""}:
+        line_hint = f" around lines {start_line or 1}-{end_line or 'EOF'}"
+    target = f"`{path}`" if path else "the target source file"
+    return (
+        f"Source-structure guard: the previous `{tool_id}` was rejected for {error_text}. "
+        f"Treat {target} as unchanged and do not retry the same patch. "
+        "If the requested invariant in that file already holds, leave that file alone and move to the next failing requirement. "
+        f"Otherwise take one focused `file_read` of {target}{line_hint}, then make a smaller line-range edit. "
+        "For duplicate-function failures, add only missing code or edit inside an existing function; do not paste a second copy of an existing function. "
+        "For unreachable-code failures, move the assignment before the return or remove it."
     )
 
 
@@ -2433,6 +2485,10 @@ def _prewrite_successful_read_nudge_threshold(request: CompletionRequest) -> int
         return 1
     if _is_builder_retry_request(request) or _recommended_write_paths(request):
         return 1
+    if _is_validation_repair_request(request):
+        return 1
+    if _interactive_source_implementation_request(request):
+        return 2
     organism_stage = str(request.metadata.get("organism_stage") or "").strip().lower()
     if organism_stage == "aggregation":
         return _AGGREGATION_PREWRITE_SUCCESSFUL_READ_NUDGE_THRESHOLD
@@ -2441,6 +2497,10 @@ def _prewrite_successful_read_nudge_threshold(request: CompletionRequest) -> int
 
 def _is_builder_retry_request(request: CompletionRequest) -> bool:
     return request.metadata.get("builder_retry") is True
+
+
+def _interactive_source_implementation_request(request: CompletionRequest) -> bool:
+    return request.metadata.get("interactive_source_implementation") is True
 
 
 def _exclusive_write_owner_path(request: CompletionRequest) -> str:
@@ -2465,6 +2525,51 @@ def _recommended_write_paths(request: CompletionRequest) -> list[str]:
         seen.add(path)
         result.append(path)
     return result
+
+
+def _is_validation_repair_request(request: CompletionRequest) -> bool:
+    return request.metadata.get("validation_repair") is True
+
+
+def _required_repair_write_paths(request: CompletionRequest) -> list[str]:
+    raw_paths = request.metadata.get("required_repair_paths")
+    paths: list[str] = []
+    if isinstance(raw_paths, str):
+        paths.extend(part.strip() for part in raw_paths.split(","))
+    elif isinstance(raw_paths, Sequence) and not isinstance(raw_paths, (bytes, bytearray)):
+        paths.extend(str(path).strip() for path in raw_paths)
+    seen: set[str] = set()
+    result: list[str] = []
+    for path in paths:
+        normalized = str(path or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
+def _missing_required_repair_write_paths(
+    request: CompletionRequest,
+    executed_tools: Sequence[dict[str, Any]],
+    *,
+    workspace_root: Path,
+) -> list[str]:
+    required = _required_repair_write_paths(request)
+    if not required:
+        return []
+    materialized = set(
+        _successful_workspace_mutation_paths(
+            executed_tools,
+            workspace_root=workspace_root,
+        )
+    )
+    missing: list[str] = []
+    for raw_path in required:
+        normalized = _normalized_tool_path(raw_path, workspace_root=workspace_root) or raw_path
+        if normalized not in materialized:
+            missing.append(normalized)
+    return missing
 
 
 def _recommended_write_paths_sentence(
@@ -2640,11 +2745,19 @@ def _write_capable_coding_stage_direct_write_required_reason(
     workspace_root: Path,
     direct_write_required: bool,
 ) -> str | None:
-    if not direct_write_required:
-        return None
     if _coding_output_kind(request) is None:
         return None
     if _tool_ids_are_read_only(tool_ids):
+        return None
+    missing_repair_paths = _missing_required_repair_write_paths(
+        request,
+        executed_tools,
+        workspace_root=workspace_root,
+    )
+    if missing_repair_paths:
+        rendered = ",".join(missing_repair_paths[:4])
+        return f"validation_repair_missing_required_paths:{rendered}"
+    if not direct_write_required:
         return None
     if _successful_workspace_mutation_paths(
         executed_tools,
@@ -2660,6 +2773,16 @@ def _write_capable_coding_stage_direct_write_required_message(
     request: CompletionRequest,
 ) -> str:
     reason_text = reason.replace("_", " ")
+    if reason.startswith("validation_repair_missing_required_paths:"):
+        _, _, raw_paths = reason.partition(":")
+        rendered_paths = ", ".join(f"`{path}`" for path in raw_paths.split(",") if path)
+        return (
+            "Controller note: this validation-repair stage has not yet mutated every required repair target "
+            f"({rendered_paths or 'the listed repair paths'}). A partial repair or prose-only summary is not enough. "
+            "The next response must call `file_edit`, `file_write`, or a naturally mutating `shell_command` against "
+            "one of the missing paths, or return an explicit blocked candidate explaining why no bounded workspace "
+            "write can be completed. Do not re-audit the whole project before making that targeted repair."
+        )
     return (
         "Controller note: this write-capable coding stage still has no materialized workspace patch "
         f"({reason_text}). Returning prose-only patch instructions is not enough here. The next response must "
@@ -4257,10 +4380,13 @@ class ToolLoopCompletionProvider:
                     write_stage_first_write_nudged=write_stage_first_write_nudged,
                     write_stage_direct_write_required=write_stage_direct_write_required,
                 )
-                allow_final_read = any(
-                    _tool_schema_name(tool) == "file_read"
-                    for tool in request_tool_schemas
-                    if isinstance(tool, dict)
+                allow_final_read = (
+                    not _interactive_source_implementation_request(request)
+                    and any(
+                        _tool_schema_name(tool) == "file_read"
+                        for tool in request_tool_schemas
+                        if isinstance(tool, dict)
+                    )
                 )
                 for limit_kind, hard_limit in (
                     ("rounds", self._max_rounds),
@@ -4843,6 +4969,7 @@ class ToolLoopCompletionProvider:
             round_tool_call_ids: list[str] = []
             invalid_tool_argument_nudges: list[tuple[str, str]] = []
             availability_tool_nudges: list[tuple[str, str]] = []
+            source_structure_nudges: list[tuple[str, str]] = []
             repeated_tool_call_nudges: list[tuple[str, str]] = []
             write_stage_helper_path_nudges: list[tuple[str, str, str]] = []
             file_write_downshift_nudges: list[tuple[str, str]] = []
@@ -5284,6 +5411,18 @@ class ToolLoopCompletionProvider:
                             reason="repair_policy_shrinking_overwrite",
                         )
                         break
+                    followup_message = _source_structure_failure_nudge(
+                        tool_id,
+                        error_text,
+                        arguments,
+                    )
+                    if followup_message:
+                        source_structure_nudges.append((tool_id, followup_message))
+                        _skip_remaining_tool_calls(
+                            tool_calls[call_index + 1 :],
+                            reason="source_structure_nudge",
+                        )
+                        break
                     followup_message = _tool_argument_failure_nudge(tool_id, error_text)
                     if followup_message:
                         invalid_tool_argument_nudges.append((tool_id, followup_message))
@@ -5313,10 +5452,13 @@ class ToolLoopCompletionProvider:
             if phase_budget_nudges:
                 phase, limit_kind, soft_limit, progress = phase_budget_nudges[0]
                 action = _soft_budget_action_for_phase(phase)
-                allow_final_read = any(
-                    _tool_schema_name(tool) == "file_read"
-                    for tool in request_tool_schemas
-                    if isinstance(tool, dict)
+                allow_final_read = (
+                    not _interactive_source_implementation_request(request)
+                    and any(
+                        _tool_schema_name(tool) == "file_read"
+                        for tool in request_tool_schemas
+                        if isinstance(tool, dict)
+                    )
                 )
                 if action == "narrow_write_stage":
                     write_stage_first_write_nudged = True
@@ -5489,6 +5631,45 @@ class ToolLoopCompletionProvider:
                         for tool in active_tool_schemas
                         if isinstance(tool, dict)
                     ],
+                    blocked_by_tool_call_ids=list(round_tool_call_ids) or None,
+                    tool_calls_executed=len(executed_tools),
+                    **event_context,
+                )
+            if source_structure_nudges:
+                unique_messages: list[str] = []
+                seen_messages: set[str] = set()
+                affected_tool_ids: list[str] = []
+                for tool_id, message in source_structure_nudges:
+                    affected_tool_ids.append(tool_id)
+                    if message in seen_messages:
+                        continue
+                    seen_messages.add(message)
+                    unique_messages.append(message)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "\n".join(unique_messages),
+                    }
+                )
+                if any(
+                    _tool_schema_name(tool) == "file_read"
+                    for tool in request_tool_schemas
+                    if isinstance(tool, dict)
+                ):
+                    source_recovery_tool_schemas = _write_stage_tool_schemas(
+                        request_tool_schemas,
+                        allow_final_read=True,
+                        prefer_file_write_only=exclusive_write_owner,
+                        prefer_file_edit_only=exclusive_owner_prefers_file_edit,
+                    )
+                    if source_recovery_tool_schemas:
+                        active_tool_schemas = source_recovery_tool_schemas
+                        disabled_tool_ids.clear()
+                        write_stage_final_read_available = True
+                        write_stage_direct_write_required = False
+                self._emit_event(
+                    "toolloop.source_structure_nudged",
+                    tool_ids=_dedupe(affected_tool_ids),
                     blocked_by_tool_call_ids=list(round_tool_call_ids) or None,
                     tool_calls_executed=len(executed_tools),
                     **event_context,
@@ -5707,7 +5888,10 @@ class ToolLoopCompletionProvider:
             )
             if write_nudge_reason is not None and not write_stage_first_write_nudged:
                 write_stage_first_write_nudged = True
-                allow_write_nudge_final_read = not _exclusive_write_owner_path(request)
+                allow_write_nudge_final_read = (
+                    not _exclusive_write_owner_path(request)
+                    and not _interactive_source_implementation_request(request)
+                )
                 write_stage_final_read_available = allow_write_nudge_final_read and any(
                     _tool_schema_name(tool) == "file_read"
                     for tool in request_tool_schemas

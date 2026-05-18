@@ -5,7 +5,32 @@ from __future__ import annotations
 import ast
 import os
 
+from dan.tools._source_structure import suspicious_source_structure_issues
 from dan.tools._workspace import validate_path
+
+_SOURCE_SHRINK_GUARD_EXTENSIONS = {
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cs",
+    ".gd",
+    ".go",
+    ".h",
+    ".hpp",
+    ".java",
+    ".js",
+    ".jsx",
+    ".kt",
+    ".mjs",
+    ".php",
+    ".py",
+    ".rb",
+    ".rs",
+    ".swift",
+    ".ts",
+    ".tsx",
+    ".vue",
+}
 
 TOOL_METADATA = {
     "tool_id": "file_edit",
@@ -771,6 +796,43 @@ def _apply_edit_to_lines(
     ]
 
 
+def _guard_suspicious_source_shrink_edit(
+    *,
+    path: str,
+    original_lines: list[str],
+    updated_lines: list[str],
+) -> None:
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in _SOURCE_SHRINK_GUARD_EXTENSIONS:
+        return
+    original_count = len(original_lines)
+    updated_count = len(updated_lines)
+    if original_count < 80:
+        return
+    if updated_count > max(20, int(original_count * 0.25)):
+        return
+    original_chars = max(len("".join(original_lines).strip()), 1)
+    updated_chars = len("".join(updated_lines).strip())
+    if updated_chars > original_chars * 0.35:
+        return
+    raise _tool_argument_error(
+        "invalid edit shape for file_edit: suspicious source shrink would reduce an existing source file "
+        f"from {original_count} lines to {updated_count} lines. Use smaller targeted edits, "
+        "or provide a complete source-file replacement rather than a stub/truncated module."
+    )
+
+
+def _guard_suspicious_source_structure_edit(*, path: str, updated_text: str) -> None:
+    issues = suspicious_source_structure_issues(path, updated_text)
+    if not issues:
+        return
+    raise _tool_argument_error(
+        "invalid edit shape for file_edit: suspicious source structure after edit: "
+        + "; ".join(issues)
+        + ". Re-read the focused range and apply a smaller syntactically complete edit."
+    )
+
+
 def _edit_spec_is_noop(
     spec: dict[str, object],
     *,
@@ -941,6 +1003,15 @@ async def file_edit(
 
     updated_text = "".join(updated_lines)
     if changed:
+        _guard_suspicious_source_shrink_edit(
+            path=effective_path,
+            original_lines=original_lines,
+            updated_lines=updated_lines,
+        )
+        _guard_suspicious_source_structure_edit(
+            path=effective_path,
+            updated_text=updated_text,
+        )
         with open(resolved, "w", encoding=encoding) as f:
             f.write(updated_text)
 

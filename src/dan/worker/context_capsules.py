@@ -555,11 +555,15 @@ def _file_read_capsules(
     end_line = _int_or_none(arguments.get("end_line"))
     content = str(result.get("content") or "")
     line_count = _int_or_none(result.get("line_count"))
+    returned_line_count = _int_or_none(result.get("returned_line_count")) or line_count
+    total_line_count = _int_or_none(result.get("total_line_count"))
     summary = f"Read `{path or 'unknown file'}`"
     if start_line or end_line:
         summary += f" lines {start_line or 1}-{end_line or 'end'}"
-    if line_count is not None:
-        summary += f" ({line_count} returned lines)"
+    if returned_line_count is not None and total_line_count is not None and total_line_count != returned_line_count:
+        summary += f" ({returned_line_count} returned lines, {total_line_count} total lines)"
+    elif returned_line_count is not None:
+        summary += f" ({returned_line_count} returned lines)"
     raw_ref = _raw_ref_for_tool(
         tool_record,
         kind="file",
@@ -583,7 +587,10 @@ def _file_read_capsules(
                     line_end=end_line,
                     metadata={
                         "line_count": line_count,
+                        "returned_line_count": returned_line_count,
+                        "total_line_count": total_line_count,
                         "size": result.get("size"),
+                        "file_size": result.get("file_size"),
                     },
                 )
             ]
@@ -593,7 +600,13 @@ def _file_read_capsules(
             relevance="File content was inspected and may ground downstream code, research, or validation work.",
             confidence=0.9,
             unlocks=[f"file_context:{path}"] if path else ["file_context"],
-            metadata={"line_count": line_count, "size": result.get("size")},
+            metadata={
+                "line_count": line_count,
+                "returned_line_count": returned_line_count,
+                "total_line_count": total_line_count,
+                "size": result.get("size"),
+                "file_size": result.get("file_size"),
+            },
             source_task_id=source_task_id,
             source_worker_id=source_worker_id,
             source_trace_id=source_trace_id,

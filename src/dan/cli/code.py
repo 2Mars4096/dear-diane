@@ -980,13 +980,20 @@ def _tool_result_summary(tool_id: str, payload: dict[str, Any]) -> str:
             return summary
         if tool_id == "file_read":
             size = result.get("size")
-            line_count = result.get("line_count")
+            line_count = result.get("returned_line_count", result.get("line_count"))
+            total_line_count = result.get("total_line_count")
             path = result.get("path") or "(unknown path)"
             pieces: list[str] = []
-            if line_count is not None:
+            if line_count is not None and total_line_count is not None and total_line_count != line_count:
+                pieces.append(f"lines={line_count}/{total_line_count}")
+            elif line_count is not None:
                 pieces.append(f"lines={line_count}")
             if size is not None:
-                pieces.append(f"bytes={size}")
+                file_size = result.get("file_size")
+                if file_size is not None and file_size != size:
+                    pieces.append(f"bytes={size}/{file_size}")
+                else:
+                    pieces.append(f"bytes={size}")
             prefix = " ".join(pieces) if pieces else "read file"
             return f"{prefix} path={path}"
         if tool_id == "file_write":

@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import shlex
+import sys
 from pathlib import Path
 
 import pytest
@@ -764,6 +766,7 @@ def _file_write_call(call_id: str, path: str, content: str) -> dict:
 class _FakeLiveCodingProvider:
     def __init__(self) -> None:
         self.calls = 0
+        self.rendered_messages: list[str] = []
 
     async def complete(
         self,
@@ -774,6 +777,8 @@ class _FakeLiveCodingProvider:
         **kwargs,
     ) -> CompletionResult:
         self.calls += 1
+        rendered = "\n".join(str(message.get("content") or "") for message in messages)
+        self.rendered_messages.append(rendered)
         if self.calls == 1:
             tool_calls = [
                 _file_write_call(
@@ -4424,6 +4429,205 @@ def test_main_live_general_coding_run_mutates_workspace(tmp_path, capsys, monkey
     ]
 
 
+def test_main_live_validation_command_error_output_fails_even_when_model_passes(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    fake_provider = _FakeLiveCodingProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+    script = "import sys; print('ERROR: runtime exploded', file=sys.stderr)"
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+
+    exit_code = main(
+        [
+            "implement a small workspace note for this project",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+            "--validation-command",
+            command,
+        ]
+    )
+
+    assert exit_code == 1
+    stdout = capsys.readouterr().out
+    assert "Live Run: failed" in stdout
+    assert "Validation: failed" in stdout
+    assert "runtime/compiler errors" in stdout
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    shell_checks = [
+        row for row in event_rows if row.get("event") == "live.validation.shell_check.completed"
+    ]
+    assert shell_checks
+    assert shell_checks[-1]["exit_code"] == 0
+    assert shell_checks[-1]["passed"] is False
+    final_validation = [
+        row for row in event_rows if row.get("event") == "live.validation.completed"
+    ][-1]
+    assert final_validation["passed"] is False
+    assert any(
+        "runtime/compiler errors" in str(item)
+        for item in final_validation.get("deterministic_failures") or []
+    )
+
+
+def test_main_live_validation_command_fail_output_fails_even_with_zero_exit(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    fake_provider = _FakeLiveCodingProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+    script = "print('FAIL: PlayabilityValidator | rounds=1 | reason=timeout')"
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+
+    exit_code = main(
+        [
+            "implement a small workspace note for this project",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+            "--validation-command",
+            command,
+        ]
+    )
+
+    assert exit_code == 1
+    stdout = capsys.readouterr().out
+    assert "Live Run: failed" in stdout
+    assert "runtime/compiler errors" in stdout
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    shell_checks = [
+        row for row in event_rows if row.get("event") == "live.validation.shell_check.completed"
+    ]
+    assert shell_checks
+    assert shell_checks[-1]["exit_code"] == 0
+    assert shell_checks[-1]["passed"] is False
+    assert shell_checks[-1]["error_lines"] == [
+        "FAIL: PlayabilityValidator | rounds=1 | reason=timeout"
+    ]
+
+
+def test_main_live_validation_command_nonzero_exit_fails(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    fake_provider = _FakeLiveCodingProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+    script = "import sys; print('boom', file=sys.stderr); sys.exit(3)"
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+
+    exit_code = main(
+        [
+            "implement a small workspace note for this project",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+            "--validation-command",
+            command,
+        ]
+    )
+
+    assert exit_code == 1
+    stdout = capsys.readouterr().out
+    assert "Live Run: failed" in stdout
+    assert "exited 3" in stdout
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    shell_checks = [
+        row for row in event_rows if row.get("event") == "live.validation.shell_check.completed"
+    ]
+    assert shell_checks
+    assert shell_checks[-1]["exit_code"] == 3
+
+
+def test_main_live_validation_commands_fail_fast_by_default(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    fake_provider = _FakeLiveCodingProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+    marker = tmp_path / "second-command-ran.txt"
+    first = f"{shlex.quote(sys.executable)} -c {shlex.quote('import sys; sys.exit(3)')}"
+    second_script = f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')"
+    second = f"{shlex.quote(sys.executable)} -c {shlex.quote(second_script)}"
+
+    exit_code = main(
+        [
+            "implement a small workspace note for this project",
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+            "--validation-command",
+            first,
+            "--validation-command",
+            second,
+        ]
+    )
+
+    assert exit_code == 1
+    capsys.readouterr()
+    assert not marker.exists()
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    shell_checks = [
+        row for row in event_rows if row.get("event") == "live.validation.shell_check.completed"
+    ]
+    assert shell_checks
+    assert all(row["command"] == first for row in shell_checks)
+    short_circuits = [
+        row for row in event_rows if row.get("event") == "live.validation.shell_check.short_circuited"
+    ]
+    assert short_circuits
+    assert short_circuits[-1]["skipped_count"] == 1
+    assert shell_checks[-1]["passed"] is False
+
+
 def test_main_live_generic_uses_optional_run_local_planner_for_broad_work(
     tmp_path,
     capsys,
@@ -4475,6 +4679,70 @@ def test_main_live_generic_uses_optional_run_local_planner_for_broad_work(
     assert final_validation["changed_required_files"] == [
         str((tmp_path / "cleaned-dataset-validation.md").resolve())
     ]
+
+
+def test_main_live_interactive_source_objective_skips_run_local_planner(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    fake_provider = _FakeLiveCodingProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            (
+                "Improve this project into a playable interactive demo with controls, "
+                "animation, rounds, and validation tests in the source workspace. "
+                "Do not stop after planning notes."
+            ),
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "[planning] started" not in stdout
+    assert "Live Run: completed" in stdout
+    assert fake_provider.calls == 3
+    assert fake_provider.rendered_messages
+    assert "Interactive source implementation condition" in fake_provider.rendered_messages[0]
+    assert "Do not use `.dan-super` plan files" in fake_provider.rendered_messages[0]
+    assert "interactive_source_implementation" in fake_provider.rendered_messages[0]
+    assert (tmp_path / "SUPER_DAN_LIVE_NOTE.md").exists()
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert not any(row.get("event") == "live.planning.started" for row in event_rows)
+
+
+def test_source_file_repair_objective_skips_run_local_planner() -> None:
+    objective = (
+        "Repair GameLoop.gd with small grounded edits: add drag controls, animation state, "
+        "and validation hooks without rewriting the file."
+    )
+
+    assert super_cli._super_is_interactive_source_implementation_objective(objective)
+    assert (
+        super_cli._super_should_run_planner(
+            objective,
+            operator_intent_policy=super_cli.OperatorIntentPolicy(),
+            prompt_only_creation_target=None,
+            tool_ids=["file_read", "file_write", "file_edit"],
+        )
+        is False
+    )
 
 
 def test_main_live_generic_dag_deferred_tasks_do_not_trigger_repair(

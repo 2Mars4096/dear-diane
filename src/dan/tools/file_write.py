@@ -5,7 +5,32 @@ from __future__ import annotations
 import ast
 import os
 
+from dan.tools._source_structure import suspicious_source_structure_issues
 from dan.tools._workspace import validate_path
+
+_SOURCE_OVERWRITE_GUARD_EXTENSIONS = {
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cs",
+    ".gd",
+    ".go",
+    ".h",
+    ".hpp",
+    ".java",
+    ".js",
+    ".jsx",
+    ".kt",
+    ".mjs",
+    ".php",
+    ".py",
+    ".rb",
+    ".rs",
+    ".swift",
+    ".ts",
+    ".tsx",
+    ".vue",
+}
 
 TOOL_METADATA = {
     "tool_id": "file_write",
@@ -136,6 +161,56 @@ def _guard_suspicious_python_overwrite(
     )
 
 
+def _guard_suspicious_source_shrink_overwrite(
+    *,
+    resolved_path: str,
+    content: str,
+    mode: str,
+    encoding: str,
+) -> None:
+    if mode != "overwrite" or not os.path.exists(resolved_path):
+        return
+    ext = os.path.splitext(resolved_path)[1].lower()
+    if ext not in _SOURCE_OVERWRITE_GUARD_EXTENSIONS:
+        return
+    try:
+        with open(resolved_path, "r", encoding=encoding) as existing_file:
+            original_text = existing_file.read()
+    except Exception:
+        return
+    original_lines = original_text.splitlines()
+    updated_lines = content.splitlines()
+    if len(original_lines) < 80 or not original_text.strip():
+        return
+    if len(updated_lines) > max(20, int(len(original_lines) * 0.25)):
+        return
+    if len(content.strip()) > len(original_text.strip()) * 0.35:
+        return
+    raise _tool_argument_error(
+        "invalid content for file_write: suspicious full-file overwrite would shrink an existing source file "
+        f"from {len(original_lines)} lines to {len(updated_lines)} lines. Use file_edit for localized edits, "
+        "or provide a complete source-file replacement rather than a stub/truncated module."
+    )
+
+
+def _guard_suspicious_source_structure_write(
+    *,
+    path: str,
+    content: str,
+    mode: str,
+) -> None:
+    if mode != "overwrite":
+        return
+    issues = suspicious_source_structure_issues(path, content)
+    if not issues:
+        return
+    raise _tool_argument_error(
+        "invalid content for file_write: suspicious source structure in overwrite content: "
+        + "; ".join(issues)
+        + ". Provide syntactically complete source before overwriting the file."
+    )
+
+
 async def file_write(
     path: str | None = None,
     content: str | None = None,
@@ -162,6 +237,17 @@ async def file_write(
         content=content,
         mode=mode,
         encoding=encoding,
+    )
+    _guard_suspicious_source_shrink_overwrite(
+        resolved_path=resolved,
+        content=content,
+        mode=mode,
+        encoding=encoding,
+    )
+    _guard_suspicious_source_structure_write(
+        path=effective_path,
+        content=content,
+        mode=mode,
     )
 
     os.makedirs(os.path.dirname(resolved), exist_ok=True)

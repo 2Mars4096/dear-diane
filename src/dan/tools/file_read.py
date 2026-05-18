@@ -41,15 +41,33 @@ TOOL_METADATA = {
     "examples": [
         {
             "input": {"path": "src/main.py"},
-            "output": {"content": "print('hello')\n", "line_count": 1, "size": 15, "path": "src/main.py"},
+            "output": {
+                "content": "print('hello')\n",
+                "line_count": 1,
+                "returned_line_count": 1,
+                "total_line_count": 1,
+                "size": 15,
+                "file_size": 15,
+                "path": "src/main.py",
+            },
         },
         {
             "input": {"path": "README.md", "start_line": 1, "end_line": 5},
-            "output": {"content": "# Project\n\nA short readme.\n", "line_count": 3, "size": 27, "path": "README.md"},
+            "output": {
+                "content": "# Project\n\nA short readme.\n",
+                "line_count": 3,
+                "returned_line_count": 3,
+                "total_line_count": 3,
+                "line_start": 1,
+                "line_end": 3,
+                "size": 27,
+                "file_size": 27,
+                "path": "README.md",
+            },
         },
     ],
     "category": "file",
-    "returns": "dict with content, line_count, size, and resolved path",
+    "returns": "dict with content, returned/total line counts, byte counts, selected line range, and resolved path",
 }
 
 MAX_FILE_SIZE = 4_194_304  # 4 MB
@@ -107,23 +125,36 @@ async def file_read(
         first_line = normalized_start or 1
         last_line = normalized_end
         selected_lines: list[str] = []
+        total_line_count = 0
         with open(resolved, encoding=encoding) as f:
             for line_number, line in enumerate(f, start=1):
+                total_line_count = line_number
                 if line_number < first_line:
                     continue
                 if last_line is not None and line_number > last_line:
-                    break
+                    continue
                 selected_lines.append(line)
         content = "".join(selected_lines)
-        line_count = len(selected_lines)
+        returned_line_count = len(selected_lines)
+        line_start = first_line
+        line_end = first_line + returned_line_count - 1 if returned_line_count else first_line - 1
     else:
         with open(resolved, encoding=encoding) as f:
             content = f.read()
-        line_count = len(content.splitlines())
+        returned_line_count = len(content.splitlines())
+        total_line_count = returned_line_count
+        line_start = 1
+        line_end = returned_line_count
 
     return {
         "content": content,
-        "line_count": line_count,
+        "line_count": returned_line_count,
+        "returned_line_count": returned_line_count,
+        "total_line_count": total_line_count,
+        "line_start": line_start,
+        "line_end": line_end,
         "size": len(content.encode(encoding)),
+        "file_size": size,
+        "range_requested": reading_range,
         "path": effective_path,
     }

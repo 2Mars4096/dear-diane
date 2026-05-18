@@ -6,6 +6,7 @@ import pytest
 
 import dan.worker.organisms.local_runtime as local_runtime_module
 from dan.providers import CompletionResult
+from dan.worker.core.contracts import OutputContract
 from dan.worker.core.interfaces import CompletionRequest
 from dan.worker.organisms.local_runtime import (
     LocalOrganismToolRuntime,
@@ -21,6 +22,27 @@ from dan.worker.organisms.super_organism import (
     resolve_super_organism_scenario,
     run_super_organism_demo,
 )
+
+
+def test_ranged_file_read_prompt_line_numbers_keep_source_offsets():
+    payload = {
+        "name": "file_read",
+        "arguments": {"path": "src/example.py", "start_line": 700, "end_line": 702},
+        "result": {
+            "path": "src/example.py",
+            "content": "alpha\nbeta\ngamma\n",
+            "line_start": 700,
+            "line_end": 702,
+            "returned_line_count": 3,
+            "total_line_count": 854,
+        },
+    }
+
+    numbered = local_runtime_module._file_read_payload_with_line_numbers(payload)
+
+    assert "   700| alpha" in numbered["result"]["content"]
+    assert "   702| gamma" in numbered["result"]["content"]
+    assert "     1|" not in numbered["result"]["content"]
 
 
 def _first_event(events: list[dict[str, object]], event_name: str) -> dict[str, object]:
@@ -121,6 +143,62 @@ def test_default_distribution_builds_20_logical_cells() -> None:
     assert cells[0].cell_id == "brain-001"
     assert cells[-1].cell_id == "synthesis-002"
     assert cells[0].organ == SuperOrgan.BRAIN
+
+
+def test_file_edit_stale_old_string_nudge_prefers_line_range_not_rewrite() -> None:
+    message = local_runtime_module._tool_argument_failure_nudge(
+        "file_edit",
+        (
+            "ValueError: tool_arguments_invalid: invalid arguments for file_edit: "
+            "old_string was not found in the target file. Provide start_line/end_line explicitly."
+        ),
+    )
+
+    assert message is not None
+    assert "old_string anchor is stale or ambiguous" in message
+    assert "Re-read the target file with a focused line range" in message
+    assert "do not switch to a whole-file rewrite" in message
+
+
+def test_source_structure_failure_nudge_allows_focused_recovery() -> None:
+    message = local_runtime_module._source_structure_failure_nudge(
+        "file_edit",
+        (
+            "ValueError: invalid edit shape for file_edit: suspicious source structure after edit: "
+            "duplicate function definitions [profile]: spawn"
+        ),
+        {"path": "src/core/store.gd", "start_line": 140, "end_line": 160},
+    )
+
+    assert message is not None
+    assert "do not retry the same patch" in message
+    assert "one focused `file_read`" in message
+    assert "If the requested invariant in that file already holds" in message
+    assert "do not paste a second copy" in message
+
+
+def test_source_structure_failure_nudge_covers_empty_control_blocks() -> None:
+    message = local_runtime_module._source_structure_failure_nudge(
+        "file_edit",
+        "ValueError: invalid edit shape for file_edit: empty control block at line 295",
+        {"path": "src/app.py", "start_line": 280, "end_line": 320},
+    )
+
+    assert message is not None
+    assert "one focused `file_read`" in message
+    assert "smaller line-range edit" in message
+
+
+def test_source_structure_failure_nudge_covers_unexpected_indentation() -> None:
+    message = local_runtime_module._source_structure_failure_nudge(
+        "file_edit",
+        "ValueError: invalid edit shape for file_edit: unexpected indentation at line(s): 157",
+        {"path": "src/app.py", "start_line": 150, "end_line": 170},
+    )
+
+    assert message is not None
+    assert "do not retry the same patch" in message
+    assert "one focused `file_read`" in message
 
 
 def test_100_cell_showcase_distribution_is_still_available() -> None:
@@ -341,6 +419,78 @@ def test_super_dan_soft_budget_extends_only_for_real_progress() -> None:
 
     assert tool_limit == 10
     assert round_limit == 5
+
+
+def test_interactive_source_requests_force_earlier_first_write() -> None:
+    normal_request = CompletionRequest(
+        model="fake",
+        system_prompt="",
+        user_prompt="Build a project.",
+        metadata={"organism_stage": "execution"},
+    )
+    interactive_request = CompletionRequest(
+        model="fake",
+        system_prompt="",
+        user_prompt="Build an interactive project demo.",
+        metadata={
+            "organism_stage": "execution",
+            "interactive_source_implementation": True,
+        },
+    )
+
+    assert local_runtime_module._prewrite_successful_read_nudge_threshold(normal_request) == 3
+    assert local_runtime_module._prewrite_successful_read_nudge_threshold(interactive_request) == 2
+
+
+def test_validation_repair_requires_all_required_paths_before_finalize(tmp_path) -> None:
+    request = CompletionRequest(
+        model="fake",
+        system_prompt="Return compact JSON.",
+        user_prompt="Repair the validation failure.",
+        output_contract=OutputContract(
+            expected_return_shape=json.dumps(
+                {
+                    "candidate_id": "",
+                    "change_summary": [],
+                    "target_files": [],
+                    "test_plan": [],
+                    "risks": [],
+                }
+            )
+        ),
+        metadata={
+            "validation_repair": True,
+            "required_repair_paths": ["src/core/GameLoop.gd", "src/core/PlayabilityValidator.gd"],
+        },
+    )
+    executed_tools = [
+        {
+            "ok": True,
+            "tool_id": "file_edit",
+            "arguments": {"path": "src/core/PlayabilityValidator.gd"},
+            "result": {
+                "path": "src/core/PlayabilityValidator.gd",
+                "changed": True,
+            },
+        }
+    ]
+
+    reason = local_runtime_module._write_capable_coding_stage_direct_write_required_reason(
+        request=request,
+        tool_ids=["file_read", "file_edit", "file_write"],
+        executed_tools=executed_tools,
+        workspace_root=tmp_path,
+        direct_write_required=False,
+    )
+
+    assert reason == "validation_repair_missing_required_paths:src/core/GameLoop.gd"
+    message = local_runtime_module._write_capable_coding_stage_direct_write_required_message(
+        reason,
+        request=request,
+    )
+    assert "validation-repair stage has not yet mutated every required repair target" in message
+    assert "src/core/GameLoop.gd" in message
+    assert "Do not re-audit the whole project" in message
 
 
 def test_prompt_replay_compaction_preserves_tool_call_structure_under_pressure() -> None:
