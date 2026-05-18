@@ -56,7 +56,8 @@ Every V2 surface session is bound to a workspace. Callers can pass `surface_cont
 `AgentRunEvent` also carries token usage for active management. Per-model-call rows use `type="token_usage_recorded"` with `token_usage_delta`, `token_usage_total`, and `token_usage_round`; task snapshots and run records expose aggregate `token_usage` plus `latest_token_usage_round` / `metadata.token_usage_rounds`. Super DAN backend events pass through provider usage when available, and deterministic test runs emit a provider-free usage record.
 
 Durable task/run state is exposed through the V2 control endpoints:
-- `POST /api/v2/agent-runs`: create or queue a durable V2 Agent task/run from the same chat request body.
+- `POST /api/v2/agent-runs`: foreground-admit a durable V2 Agent task/run from the same chat request body. The async admission layer reads the compact task board first and returns `admission` plus `board` payloads.
+- `POST /api/v2/agent-runs/admit`: send `{"chat_request": ChatMessageRequest, "background": true, "execute": {"backend": "deterministic"}}` or `{"turn": SurfaceTurn, ...}` to classify the turn as `chat_or_status`, `append_to_active`, `queue_after`, `start_parallel`, `ask_clarification`, or `reject_or_defer`; independent work can start in background immediately, while conflicting same-path work is persisted as `waiting_dependency`.
 - `POST /api/v2/agent-runs/{run_id}/execute`: execute a queued run through the internal Agent backend adapter. The default backend policy selects Super DAN for mutable workspace tasks; tests and provider-free smokes can request `{"backend":"deterministic"}`.
 - `GET /api/v2/tasks/{task_id}`: retrieve the current `TaskSnapshot`, including queue position, latest progress, artifact refs, blocker, trace refs, token usage, and metadata.
 - `GET /api/v2/threads/{thread_id}/tasks`: list active/recent task snapshots for a chat thread.
@@ -65,7 +66,7 @@ Durable task/run state is exposed through the V2 control endpoints:
 - `POST /api/v2/agent-runs/{run_id}/events`: append a normalized Agent event and update the task snapshot.
 - `POST /api/v2/agent-runs/{run_id}/commands`: append a normalized Agent control command such as `stop`, `retry`, `append_followup`, or `continue_after_current`.
 
-The durable store is `src/dan/server/chat_v2_store.py`. It writes JSON task/run snapshots and JSONL event logs. Backend execution is behind `src/dan/server/chat_v2_backend.py`, which defines the generic `AgentBackendAdapter` contract plus Super DAN and deterministic adapters. Super DAN / universal-organism rows can be projected into normalized `AgentRunEvent` values with `src/dan/server/chat_v2_organism.py` while preserving raw source event ids/types/paths. Surface progress rendering is in `src/dan/server/chat_v2_progress.py`; Telegram delivery uses native chat/thread/reply handles, edits an existing progress message when available, sends quiet-period status heartbeats from real Agent event state with total elapsed time and last-event age, and falls back to a new message if editing fails.
+The durable store is `src/dan/server/chat_v2_store.py`. It writes JSON task/run snapshots and JSONL event logs, including async board states such as `waiting_dependency` and `background_run_started`. `src/dan/server/chat_v2_async_core.py` projects those records into `TaskBoard` / `BoardTask` / `BoardRun` / `BoardQueueItem` snapshots for foreground admission; it uses deterministic command and path evidence rather than raw executor transcripts. Backend execution is behind `src/dan/server/chat_v2_backend.py`, which defines the generic `AgentBackendAdapter` contract plus Super DAN and deterministic adapters. Super DAN / universal-organism rows can be projected into normalized `AgentRunEvent` values with `src/dan/server/chat_v2_organism.py` while preserving raw source event ids/types/paths. Surface progress rendering is in `src/dan/server/chat_v2_progress.py`; Telegram delivery uses native chat/thread/reply handles, edits an existing progress message when available, sends quiet-period status heartbeats from real Agent event state with total elapsed time and last-event age, and falls back to a new message if editing fails.
 
 Telegram now defaults to pure V2 in both the standalone fleet and in-process adapter bridge. Legacy/v1 Telegram routing is ignored unless `DAN_TELEGRAM_ALLOW_V1=1` is deliberately set for debugging. Ordinary Telegram text stays on V2 Chat; `/agent <task>`, `/run <task>`, `/build <task>`, `agent: <task>`, and obvious workspace/task requests create durable Agent runs. Use `DAN_TELEGRAM_WORKSPACE_ROOT` and optionally `DAN_TELEGRAM_WORKSPACE_ID` to bind those sessions globally, or just mention a path in the task text and let V2 bind that task automatically. Otherwise the V2 default workspace is `~`.
 
@@ -608,7 +609,7 @@ Runtime notes:
 
 Use context capsules when you need to pass useful partial evidence between agents without replaying full tool transcripts. Capsules preserve raw references plus small retained exact spans, so downstream agents can act quickly and rehydrate exact evidence only when needed.
 
-For deterministic file checks, prefer the built-in `workspace_check` tool before shell commands. It returns structured `validation_result` capsules for existence checks, literal/regex counts, HTML tag balance, and Python/JSON syntax checks.
+For deterministic file checks, prefer the built-in `workspace_check` tool before shell commands. It returns structured `validation_result` capsules for existence checks, literal/regex counts, HTML tag balance, Python/JSON syntax checks, and registered source-shape profile checks where available.
 
 ```python
 from dan.worker import build_tool_context_capsules, assemble_context_packet
@@ -620,7 +621,15 @@ capsules = build_tool_context_capsules(
         "model_call_id": "model-1",
         "arguments": {"path": "src/app.py", "start_line": 20, "end_line": 60},
         "ok": True,
-        "result": {"path": "src/app.py", "content": "...", "line_count": 41},
+        "result": {
+            "path": "src/app.py",
+            "content": "...",
+            "line_count": 41,
+            "returned_line_count": 41,
+            "total_line_count": 240,
+            "line_start": 20,
+            "line_end": 60,
+        },
     },
     source_task_id="task-a",
     source_worker_id="worker-a",
@@ -1397,6 +1406,8 @@ DAN ships batteries-included tools, auto-registered during server startup. Each 
 `pdf_read` parameters: `path` (required), optional `mode`, `start_page`, `end_page`, `vision_model`, and `vision_prompt`. In `mode="vision"`, the tool reports `pages_requested`, `pages_returned`, `truncated`, and `warning` so callers can tell when a long PDF was capped to the first 25 pages.
 
 `list_directory` parameters: `path` (required), optional `glob_pattern`, `recursive`, `limit`, and `start_after`. Results are sorted by relative path and report page metadata: `count` (entries returned in this page), `total_count` (entries matching the current filter/cursor), `remaining_count`, `truncated`, and `next_start_after`. When `truncated=true`, callers should continue with `start_after=next_start_after` or narrow the listing with `glob_pattern` instead of inferring that later entries are absent.
+
+`file_read` parameters: `path` (required), optional `start_line`, `end_line`, and `encoding`. For ranged reads, `line_count` is kept as the returned line count for compatibility; callers should prefer `returned_line_count`, `total_line_count`, `line_start`, and `line_end` when summarizing context so a line window is not mistaken for the full file.
 
 `file_edit` parameters: `path` plus either a line-based edit (`start_line`, optional `end_line`, `content`, `mode`) or `edits=[...]` for multiple non-overlapping edits in the same file. Each batch item must include `start_line` or a unique exact-text compatibility pair (`old_string` plus `new_string`) copied from a recent `file_read`; unanchored batch items such as `{"content": "..."}` are rejected and should be repaired by reading the target lines first. Provider-facing local tool schemas may be compacted to avoid strict backend schema-size limits, but the runtime still validates the full `file_edit` contract before applying any disk mutation.
 

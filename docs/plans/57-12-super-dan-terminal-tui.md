@@ -12,15 +12,45 @@
   - [x] 1-4. Make the TUI usable in ordinary terminals without requiring a browser or Electron.
 - [ ] 2. Build the terminal shell
   - [x] 2-1. Show workspace, model/profile, active task/run id, queue state, and trace refs in a header/status band.
-  - [x] 2-2. Provide an objective composer with command help for `/append`, `/continue`, `/pause`, `/cancel`, `/status`, `/skills`, `/plan`, `/reset`, `/help`, and `/exit`.
+  - [x] 2-2. Provide an objective composer with command help for `/append`, `/pause`, `/resume`, `/stop`, `/status`, `/skills`, `/plan`, `/reset`, `/help`, and `/exit`.
     - [x] The idle composer now renders as a compact boxed `Message` area with a dim helper strip under it, while keeping the actual `super-tui>` prompt available for prompt-toolkit completions.
-    - [x] Prompt-toolkit sessions now open a dropdown immediately when the operator types `/` or a bare `$`; readline fallback still provides Tab completion.
+    - [x] Prompt-toolkit sessions now open a dropdown immediately when the operator types `/`, a bare `$`, or `@` for workspace paths; readline fallback still provides Tab completion.
+    - [x] Enter now accepts the highlighted/first prompt-toolkit suggestion before submission, so partial commands such as `/ta` complete to `/tasks` instead of being sent literally.
+    - [x] Submitted composer input is persisted to `.dan-super/tui/outbox.jsonl` before routing, and prompt-toolkit draft text is mirrored to `.dan-super/tui/draft.json` while typing.
+    - [x] `$skill-name <objective>` turns bypass the exact local simple-write helper and stay on the skill-aware executor path, so selected skills can interpret generic objectives.
+    - [x] Skill completions now match substrings such as `$dev` -> `$scaffold-dev`, and prompt-toolkit Up/Down recalls submitted message history from `.dan-super/tui/prompt-history.txt`.
+    - [x] `/plan <objective>` now opens a no-execution planning dialogue with project-specific questions, recommended choices, and a custom answer option before any background work is admitted.
+    - [x] Natural-language turns can now model-route to `plan_mode`, which uses the same no-execution planning dialogue without requiring the explicit `/plan` prefix.
+    - [x] Plan prompts now persist pending question state in `.dan-super/tui/plan-state.json`, so replies such as `1A, 2D...` are handled as plan answers instead of new routed tasks; `/new <objective>` clears that state and starts separate work.
+    - [x] Plan replies can now model-authorize immediate execution with a concrete executor objective instead of requiring a second confirmation, while record-only plan replies still leave files untouched.
+    - [x] The composer toolbar is now compact key-chip text, with `Enter`, `Esc`, `/`, `$`, `@`, and Up/Down affordances instead of one long help sentence.
+    - [x] `/stop` and Esc now request a stop through the async control path when active work is visible; Ctrl-C does the same before falling back to exiting the shell.
+    - [x] Natural-language write turns stay as ordinary prose even when async work is visible; only explicit `/append` / `/stop` / `/new` slash commands encode control-plane intent.
+    - [x] One-shot slash commands such as `/help`, `/tasks`, `/status`, `/inside`, `/append`, `/stop`, `/reset`, and `/skills` use the local TUI command renderer instead of the free-text model router.
+    - [x] The exact local simple-write helper now behaves only as a fixed-operation capability probe; unparsed natural-language write turns fall back to the normal executor instead of producing a canned copy/move/touch clarification.
+    - [x] Async admission acknowledgements now include contingent task context from the board/admission payload, including task id, work objective, latest reason/summary, and scoped paths when available.
+    - [x] In real interactive terminals, ordinary turns now dispatch in a lightweight background UI thread so the composer prompt returns immediately during front-door model routing/admission waits.
+    - [x] Async admission acknowledgements now render as short explanatory prose instead of spreadsheet-like `Task` / `Work` / `Context` rows.
+    - [x] `/inside [task]` now inspects a visible task's internal activity without dumping those details into normal answers; `/trace` remains a hidden compatibility alias.
+    - [x] Prompt-toolkit stdout now preserves Rich/VT100 rendering while the composer is active, and captured working clocks no longer leak raw clear-line or reset escape codes.
+    - [x] Ordinary prose write turns now default to separate routed async work instead of surfacing the core `append / queue / start` ambiguity prompt; explicit slash commands still steer active tasks.
+    - [x] Non-ANSI working clocks now end before prompt redraw, preventing `Thinking 3ssuper-tui>` style prompt collisions.
+    - [x] `/status <id>`, `/tasks <id>`, `/inside <id>`, and related board commands now resolve the same short bracket ids printed in task overview rows.
+    - [x] The visible command surface now hides duplicate aliases (`/last`, `/trace`, `/cancel`, `/continue`, `/queues`) from help/autocomplete while keeping them accepted for compatibility.
+    - [x] Background-dispatched route/model clocks now use line-safe output so `Thinking 1s` does not collide with the active `super-tui>` prompt.
+    - [x] Broad review/audit requests no longer default to plan-mode questions; model-selected `plan_mode` gets a stricter recheck unless the user explicitly asked to plan/refine before execution.
   - [x] 2-3. Render a live event timeline with color-coded phases for planning, model, tool, write, validation, repair, and completion.
     - [x] The single `Recent Events` panel now shows a conversational timeline with model, tool, file, validation, blocker, final result, and trace updates rather than fixed `Current / Context / Progress / Results` sections.
     - [x] Rich TUI rows now semantically highlight step labels, file/trace paths, tool names, model names, `$skill-name` mentions, and success/failure/waiting terms without changing event emission.
     - [x] `--raw-events` keeps raw event names/tool metadata available for debug replay.
   - [ ] 2-4. Render changed files, artifacts, validation gaps, queued messages, and blockers in stable panels.
     - [x] Local events now render changed files, artifacts, validation state, queue state, and blockers.
+    - [x] Ordinary async admissions render as compact answer-style acknowledgements, while `/tasks` and `/status` keep the structured board/dashboard view.
+    - [x] Outcome blocks use workspace-relative paths, group user-facing figure/table/data/report artifacts, and hide internal `.dan-super` metadata packets by default.
+    - [x] Completed successful live outcomes now hide resolved historical validation blockers, and validation short-circuit events render as explicit skipped-check progress instead of silent stalls.
+    - [x] `/tasks` and `/status` now render a human task overview with Active / Queued / Recent sections, each showing what the task is, the latest meaningful executor movement, changed user-facing files, next action, and explicit command hints instead of raw board/admission dumps.
+    - [x] `/help` now reads as a short affordance guide, and the hidden `/queues` compatibility alias summarizes user-relevant queue pressure instead of dumping inbox counters by default.
+    - [x] Local background Agent runs now emit a compact `DAN · Answer:` completion notice and transcript entry when the background run reaches a terminal state.
     - [ ] Active-run human queued-message rendering remains blocked on [57-10](57-10-active-run-operator-steering.md).
 - [ ] 3. Reuse shared Agent contracts
   - [ ] 3-1. When a V2 backend/server run is available, send commands through `AgentRunCommand` and render normalized `AgentRunEvent` rows.
@@ -29,6 +59,7 @@
   - [x] 3-4. Keep TUI state recoverable from V2 store records or `.dan-super/runs/**/events.jsonl`.
 - [x] 4. Add terminal UX details
   - [x] 4-1. Use restrained colors: green for completed, amber for waiting/degraded, red for failed, cyan/blue for active work, muted gray for debug refs.
+    - [x] Default terminal sections now share one `DAN · <Section>:` vocabulary across message, conversation, answers, narrator progress, tasks/status, command output, outcomes, and static event-log replay.
   - [x] 4-2. Keep a compact mode for narrow terminals and logs.
   - [x] 4-3. Make open-log/open-artifact refs copyable as text.
   - [x] 4-4. Avoid hiding critical failures behind animations or transient status lines.
@@ -37,6 +68,9 @@
   - [x] 5-2. Snapshot-test Rich render output for representative progress states when Rich is installed.
   - [x] 5-3. Test plain fallback output when Rich is unavailable.
   - [x] 5-4. Test `dan super-tui --status` or equivalent non-interactive status output.
+  - [x] 5-5. Cover live validation fail-fast behavior, resolved-blocker hiding, and registered source-shape guard regressions from the `ra-neo` terminal loop.
+  - [x] 5-6. Cover model-authored communication-policy routing, normalization, budget enforcement, progress verbosity, async metadata, and no-regex free-text policy words.
+  - [x] 5-7. Cover status-only async admission display and captured clock formatting so status commands do not show fake active work and non-TTY logs do not concatenate progress ticks.
 
 ## Decisions
 - The TUI and GUI do not conflict; they are sibling surfaces over shared contracts.
@@ -65,3 +99,35 @@
 - 2026-05-11: `57-14` and `57-15` landed in the TUI layer: progress now renders as a conversational timeline with raw debug replay, and interactive TUI sessions replay visible transcript history from `.dan-super/tui/transcript.jsonl` before the composer.
 - 2026-05-12: `io-similarity` trace review showed that free-text interactive TUI turns can over-promote tiny/read-only requests into live planner/build runs; the earlier todo-specific fast path was reverted in favor of designing a generic intent gate.
 - 2026-05-13: Removed active-cell cap from the normal CLI/TUI surface. `--cell-count` is the visible organism-size knob; scheduler wave sizing stays internal and compact summaries now show only logical cell count.
+- 2026-05-13: Polished the TUI/TUX display path: role-separated transcript replay, compact narrator blocks, `@` workspace path suggestions, answer-style async admission acknowledgements, `/tasks`/`/status` as explicit dashboard views, and workspace-relative artifact grouping.
+- 2026-05-13: Tightened the TUI task surface after live `/tasks` review: task boards now read as human overviews with `What`, `Latest`, `Changed`, `Next`, and `Commands` lines; event-like internals such as `model.requested` are converted to readable status text; prompt-toolkit Enter accepts the visible suggestion before submitting.
+- 2026-05-13: Unified the visible TUI style around `DAN · <Section>:` headers, kept narrator continuation lines attached instead of re-prefixing them, and added a durable TUI input outbox plus prompt-toolkit draft mirroring so submitted/draft composer state is not only terminal-buffer state.
+- 2026-05-13: Reduced management-surface friction: `/help` now presents normal chat plus the few useful commands first, `/status` stays on user-facing task state, and `/queues` hides raw internal inbox counters unless there is actual queue pressure to mention.
+- 2026-05-14: Fixed selected-skill routing so generic objectives like `$scaffold-dev please build tracking doc` do not get blocked by the TUI-only exact copy/move/touch helper.
+- 2026-05-14: Added substring skill matching, persistent Up/Down prompt history, and a local background-run finished notice so async tasks do not only report their start.
+- 2026-05-14: Added TUI plan mode for refinement-before-execution: `/plan <objective>` asks decision questions with choices and records the result without changing files or starting a worker.
+- 2026-05-14: Added automatic plan-mode routing for refinement requests; the model router can return `plan_mode`, and the TUI dispatches it to the no-execution plan dialogue.
+- 2026-05-14: Added pending plan-answer state so option replies after a plan prompt stay inside plan mode and do not get blocked by the front-door router; explicit `/new <objective>` clears that pending state.
+- 2026-05-15: Tightened the durable composer path: compact controls, immediate working clocks, Esc/Ctrl-C stop requests, explicit active-task control commands, LLM-owned plan-reply execution handoff, and one-shot slash-command rendering are now covered by focused TUI regressions.
+- 2026-05-15: Removed the normal-turn canned simple-write blocker; if the fixed exact-operation parser cannot parse a routed write request, the TUI falls through to the complex executor path.
+- 2026-05-15: Reworked async start/queue acknowledgements from a generic sentence into a contextual task projection sourced from admission/board metadata.
+- 2026-05-15: Removed the TUI-side natural-language-to-`/append` rewrite so ordinary prose can route through the model/executor even when a visible background task exists.
+- 2026-05-15: Added background TUI dispatch for real terminal sessions, keeping the composer available while a submitted turn is still in the model-router/admission phase.
+- 2026-05-15: Reworded async task start/queue/append acknowledgements into prose so the TUI reads more like a chat surface and less like a status table.
+- 2026-05-15: Added `/inside` / `/trace` for explicit internal task inspection: objective, state, recent internal activity, visible files, trace ref, and steering controls.
+- 2026-05-15: Fixed prompt-time ANSI leakage by using prompt-toolkit's raw stdout bridge for live TUI output and suppressing clock control sequences when stdout is captured or non-terminal.
+- 2026-05-15: TUI ordinary prose no longer exposes the async-core lane-selection question; normal write turns start as separate routed work by default, and non-ANSI clock output no longer collides with the next prompt.
+- 2026-05-16: Fixed focused task lookup so commands can use the bracketed short task refs shown in `/tasks` and `/status` output.
+- 2026-05-17: Added generic `--validation-command` shell gates to the shared Super DAN live runner and TUI projection; validation commands now surface as concise validation progress rows and fail final outcomes on nonzero exits or runtime/compiler error lines even when the checked process exits 0.
+- 2026-05-17: Hardened live interactive source implementation turns after the `ra-neo` loop: objectives with action, interaction, and implementation-context signals skip optional run-local planning unless explicitly requested, carry `interactive_source_implementation` metadata, and enter direct-write pressure earlier. The `ra-neo` demo was then driven only through Super TUI to passing Godot project/main/playability/run/instance validation.
+- 2026-05-18: Continued the `ra-neo` loop as a generic Super TUI quality case. DAN now blocks source-shrink and registered source-shape profile issues before writing; validation-repair prompts require validator-named source targets; validation commands stop after the first failed gate by default; final successful TUI outcomes hide stale resolved blockers. Independent `ra-neo` checks now pass source guard, startup probe, gameplay probe, playability scene, and main scene launch.
+- 2026-05-18: Remaining TUI UX gaps from the loop: narrow bugfix turns still spend too long in read/immune/validation queues before a simple edit, narrator summaries can describe stale blockers after the file has already changed, shell-copy restores are not counted as structured mutation evidence, and a concrete "continue repair" prompt can be routed to a trivial no-op answer unless phrased as an explicit edit.
+- 2026-05-18: Tactical `ra-neo` pass added command modes, formations, hold stance, mode UI, and cover zones through Super TUI, then exposed two generic DAN interaction issues: malformed function headers needed pre-write detection through the registered source-shape guard, and `workspace_check syntax=auto` needed to consult that same profile registry. Both DAN-side gaps now have focused regressions.
+- 2026-05-18: Reviewed the hardening for coupling. The resulting DAN behavior is a generic interactive-source write-pressure path plus a registered source-shape profile registry; no Godot command, `ra-neo` path, or game-specific repair command was added.
+- 2026-05-18: The terrain-command Super TUI run exposed another generic source-shape gap: a targeted edit inserted a statement after `return` instead of changing the intended initialization site. The registered source-shape guard now rejects same-block unreachable statements after `return`.
+- 2026-05-18: Completed the terrain-command `ra-neo` loop as a general Super TUI hardening case. DAN-side fixes now distinguish returned/total file-read lines, skip run-local planning for named source-file repairs across common extensions, recover more cleanly after source-structure edit rejections, and extend the registered GDScript profile to duplicate `class_name`, duplicate member variables, unexpected indentation, and Godot compile misses found during independent probes. The game edits were still applied only through Super TUI, and independent Godot compile/startup/gameplay/terrain/playability checks pass.
+- 2026-05-18: The same terrain-command run showed that explicit validation commands must run before model validation for true fail-fast behavior. Live validation now executes operator-supplied shell gates first and skips model validation when one fails.
+- 2026-05-18: Added a model-authored communication policy to the existing Super TUI intent route instead of adding regex routing. The policy carries `answer_budget`, `latency_preference`, `progress_detail`, and `interaction_style`; renderers enforce answer-line/token caps, quiet progress suppresses noncritical narrator sidecars, read-only loops adjust budget by latency, and async admission/background metadata carries the policy for downstream phases.
+- 2026-05-18: Fixed the follow-up UX-only issues from communication-policy review. Status-only `chat_or_status` admissions are filtered from active task rows, and captured/non-TTY clock updates now print clean separate lines instead of concatenating.
+- 2026-05-18: Simplified the visible command surface. Help, autocomplete, composer hints, and README now advertise only canonical commands while `/last`, `/trace`, `/cancel`, `/continue`, and `/queues` stay hidden compatibility aliases; one-shot local commands such as `/append`, `/stop`, `/reset`, and `/new` no longer fall through to the model router.
+- 2026-05-18: Fixed terminal-use regressions found after the command cleanup: background thinking clocks are line-safe under an active prompt, plan-mode is rechecked for review/audit requests, and `/tasks` running rows explain the current action instead of using the generic in-flight placeholder.
