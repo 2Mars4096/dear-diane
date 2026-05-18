@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -11,11 +12,17 @@ from starlette.websockets import WebSocketDisconnect
 from dan.server.chat_v2 import (
     AgentRunCommand,
     AgentRunEvent,
+    SurfaceTurn,
     SurfaceUpdateHandle,
     build_surface_turn_from_chat_request,
     build_v2_bridge_context,
     summarize_v2_bridge_context,
     triage_surface_turn,
+)
+from dan.server.chat_v2_async_core import (
+    admit_foreground_turn,
+    build_task_board_snapshot,
+    mark_background_run_started,
 )
 from dan.server.chat_v2_progress import AgentProgressStateMachine, TelegramProgressSink
 from dan.server.chat_v2_organism import map_organism_log_row_to_agent_event
@@ -517,6 +524,206 @@ def test_v2_store_inherits_active_task_workspace_for_followups(tmp_path) -> None
     assert queue_metadata["workspace_root"] == str(workspace.resolve())
     assert queue_metadata["operator_context"]["raw_text"] == "/append also update tests"
     assert queue_metadata["operator_context"]["validation_requirements"]
+
+
+def _async_core_turn(
+    text: str,
+    *,
+    workspace: Path,
+    turn_id: str,
+    thread_id: str = "thread-async",
+) -> SurfaceTurn:
+    return SurfaceTurn(
+        id=turn_id,
+        text=text,
+        workspace_root=str(workspace),
+        workspace_id=str(workspace),
+        surface_type="web",
+        surface_id="v2",
+        surface="web:v2",
+        session_id=thread_id,
+        thread_id=thread_id,
+        metadata={
+            "workspace_source": "explicit",
+            "surface_topic_key": f"private:web:user:{thread_id}",
+        },
+    )
+
+
+def test_v2_async_board_snapshot_survives_restart_and_parallel_admission(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    store = ChatV2Store(tmp_path / "chat_v2")
+
+    first = admit_foreground_turn(
+        store,
+        _async_core_turn("build script_a.py", workspace=workspace, turn_id="turn-a"),
+    )
+    assert first.decision.action == "start_parallel"
+    assert first.decision.run_id is not None
+    mark_background_run_started(store, first.decision.run_id, backend="deterministic")
+
+    reloaded = ChatV2Store(tmp_path / "chat_v2")
+    snapshot = build_task_board_snapshot(
+        reloaded,
+        workspace_root=str(workspace),
+        thread_id="thread-async",
+    )
+    assert [run.run_id for run in snapshot.active_runs] == [first.decision.run_id]
+    assert snapshot.active_runs[0].owned_paths == ["script_a.py"]
+    assert snapshot.active_runs[0].admission_action == "start_parallel"
+
+    second = admit_foreground_turn(
+        reloaded,
+        _async_core_turn("build script_b.py", workspace=workspace, turn_id="turn-b"),
+    )
+    assert second.decision.action == "start_parallel"
+    assert (
+        second.decision.reason
+        == "explicit target paths do not overlap active or queued runs"
+    )
+    mark_background_run_started(reloaded, second.decision.run_id, backend="deterministic")
+
+    updated = build_task_board_snapshot(
+        reloaded,
+        workspace_root=str(workspace),
+        thread_id="thread-async",
+    )
+    assert {run.run_id for run in updated.active_runs} == {
+        first.decision.run_id,
+        second.decision.run_id,
+    }
+
+
+def test_v2_async_admission_queues_overlapping_paths_with_dependency_reason(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    store = ChatV2Store(tmp_path / "chat_v2")
+    first = admit_foreground_turn(
+        store,
+        _async_core_turn("build script.py", workspace=workspace, turn_id="turn-a"),
+    )
+    mark_background_run_started(store, first.decision.run_id, backend="deterministic")
+
+    second = admit_foreground_turn(
+        store,
+        _async_core_turn("also update script.py", workspace=workspace, turn_id="turn-b"),
+    )
+
+    assert second.decision.action == "queue_after"
+    assert second.decision.relation == "conflicting"
+    assert second.decision.depends_on_task_ids == [first.decision.task_id]
+    assert "path conflict" in second.decision.reason
+    queued_run = store.get_run(second.decision.run_id)
+    assert queued_run is not None
+    assert queued_run.status == "waiting_dependency"
+    assert queued_run.metadata["depends_on_task_ids"] == [first.decision.task_id]
+    assert store.load_run_events(second.decision.run_id)[-1]["type"] == "waiting_dependency"
+
+    store.record_agent_event(
+        AgentRunEvent(
+            type="completed",
+            run_id=first.decision.run_id,
+            task_id=first.decision.task_id,
+            summary="script.py complete",
+        )
+    )
+    promoted = store.promote_waiting_dependency_runs(
+        dependency_task_id=first.decision.task_id
+    )
+    assert [run.run_id for run in promoted] == [second.decision.run_id]
+    assert store.get_run(second.decision.run_id).status == "queued"
+
+
+def test_v2_async_admission_asks_clarification_for_ambiguous_second_task(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    store = ChatV2Store(tmp_path / "chat_v2")
+    first = admit_foreground_turn(
+        store,
+        _async_core_turn("build script_a.py", workspace=workspace, turn_id="turn-a"),
+    )
+    mark_background_run_started(store, first.decision.run_id, backend="deterministic")
+
+    second = admit_foreground_turn(
+        store,
+        _async_core_turn("also improve that", workspace=workspace, turn_id="turn-b"),
+    )
+
+    assert second.decision.action == "ask_clarification"
+    assert second.decision.question
+    assert second.decision.run_id is None
+    assert len(store.list_run_records(workspace_root=str(workspace))) == 1
+
+
+def test_v2_async_admission_append_and_status_are_foreground_commands(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    store = ChatV2Store(tmp_path / "chat_v2")
+    first = admit_foreground_turn(
+        store,
+        _async_core_turn("build app.py", workspace=workspace, turn_id="turn-a"),
+    )
+    mark_background_run_started(store, first.decision.run_id, backend="deterministic")
+
+    before_events = store.load_run_events(first.decision.run_id)
+    status = admit_foreground_turn(
+        store,
+        _async_core_turn("/status", workspace=workspace, turn_id="turn-status"),
+    )
+    assert status.decision.action == "chat_or_status"
+    assert "Active:" in status.decision.status_text
+    assert store.load_run_events(first.decision.run_id) == before_events
+
+    appended = admit_foreground_turn(
+        store,
+        _async_core_turn(
+            "/append also update README.md",
+            workspace=workspace,
+            turn_id="turn-append",
+        ),
+    )
+    assert appended.decision.action == "append_to_active"
+    assert appended.decision.queue_item_id
+    snapshot = store.get_task_snapshot(first.decision.task_id)
+    assert snapshot.metadata["append_queue_length"] == 1
+    assert len(store.list_run_records(workspace_root=str(workspace))) == 1
+
+
+@pytest.mark.asyncio
+async def test_v2_async_admit_endpoint_returns_before_background_completion(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    store = ChatV2Store(tmp_path / "chat_v2")
+    monkeypatch.setattr(chat_v2_router, "get_chat_v2_store", lambda request=None: store)
+
+    response = await chat_v2_router.admit_agent_turn(
+        chat_v2_router.AgentRunAdmissionRequest(
+            chat_request=ChatMessageRequest(
+                workflow_id="_scratch",
+                message="build script_a.py",
+                mode="agent",
+                surface_type="web",
+                surface_id="v2",
+                thread_id="thread-async",
+                surface_context={"workspace_root": str(workspace)},
+            ),
+            background=True,
+            execute=chat_v2_router.AgentRunExecuteRequest(backend="deterministic"),
+        )
+    )
+
+    run_id = response["admission"]["run_id"]
+    assert response["status"] == "started"
+    assert response["run"]["status"] == "running"
+    assert [event["type"] for event in store.load_run_events(run_id)] == [
+        "accepted",
+        "background_run_started",
+    ]
+
+    for _ in range(20):
+        if store.get_run(run_id).status == "completed":
+            break
+        await asyncio.sleep(0.01)
+    assert store.get_run(run_id).status == "completed"
 
 
 @pytest.mark.asyncio

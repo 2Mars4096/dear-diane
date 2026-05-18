@@ -26,6 +26,7 @@ from dan.server.chat_v2 import (
 
 TaskStatus = Literal[
     "queued",
+    "waiting_dependency",
     "running",
     "needs_input",
     "paused",
@@ -285,6 +286,24 @@ class ChatV2Store:
         tasks.sort(key=lambda task: task.updated_at, reverse=True)
         return [task.snapshot() for task in tasks[: max(1, limit)]]
 
+    def list_task_records(
+        self,
+        *,
+        workspace_root: str = "",
+        thread_id: str = "",
+        limit: int = 100,
+    ) -> list[V2TaskRecord]:
+        """Return durable task records for board/admission projections."""
+
+        tasks = [
+            task
+            for task in self._iter_tasks()
+            if (not workspace_root or task.workspace_root == workspace_root)
+            and (not thread_id or task.thread_id == thread_id)
+        ]
+        tasks.sort(key=lambda task: task.updated_at, reverse=True)
+        return [task.model_copy(deep=True) for task in tasks[: max(1, limit)]]
+
     def get_run(self, run_id: str) -> AgentRunRecord | None:
         path = self._run_path(run_id)
         if not path.exists():
@@ -293,6 +312,171 @@ class ChatV2Store:
             return AgentRunRecord.model_validate_json(path.read_text(encoding="utf-8"))
         except Exception:
             return None
+
+    def list_run_records(
+        self,
+        *,
+        workspace_root: str = "",
+        task_id: str = "",
+        thread_id: str = "",
+        limit: int = 100,
+    ) -> list[AgentRunRecord]:
+        """Return durable run records for board/admission projections."""
+
+        runs = [
+            run
+            for run in self._iter_runs()
+            if (not workspace_root or run.workspace_root == workspace_root)
+            and (not task_id or run.task_id == task_id)
+            and (not thread_id or run.thread_id == thread_id)
+        ]
+        runs.sort(key=lambda run: run.updated_at, reverse=True)
+        return [run.model_copy(deep=True) for run in runs[: max(1, limit)]]
+
+    def annotate_run_for_board(
+        self,
+        run_id: str,
+        *,
+        run_metadata: dict[str, Any] | None = None,
+        task_metadata: dict[str, Any] | None = None,
+        status: TaskStatus | None = None,
+        phase: str | None = None,
+        latest_progress: str | None = None,
+        event: AgentRunEvent | None = None,
+    ) -> AgentRunRecord | None:
+        """Update the public board projection fields for a persisted run."""
+
+        with self._lock:
+            run = self.get_run(run_id)
+            if run is None:
+                return None
+            task = self.get_task(run.task_id)
+            now = _now()
+            if run_metadata:
+                run.metadata.update(dict(run_metadata))
+            if status is not None:
+                run.status = status
+            if latest_progress:
+                run.latest_summary = latest_progress
+            if event is not None:
+                run.latest_event_type = event.type
+                run.latest_summary = event.summary
+            run.updated_at = now
+            self._save_run(run)
+
+            if task is not None:
+                if task_metadata:
+                    task.metadata.update(dict(task_metadata))
+                if status is not None:
+                    task.status = status
+                if phase is not None:
+                    task.phase = phase
+                if latest_progress:
+                    task.latest_progress = latest_progress
+                if event is not None and event.summary:
+                    task.latest_progress = event.summary
+                task.metadata["active_run_id"] = run.run_id
+                task.updated_at = now
+                self._save_task(task)
+
+            if event is not None:
+                self._append_run_event(run.run_id, event)
+            return run.model_copy(deep=True)
+
+    def promote_waiting_dependency_runs(
+        self,
+        *,
+        dependency_task_id: str = "",
+        limit: int = 8,
+    ) -> list[AgentRunRecord]:
+        """Release queued dependency runs whose prerequisites are terminal."""
+
+        promoted: list[AgentRunRecord] = []
+        with self._lock:
+            waiting = [
+                run
+                for run in self._iter_runs()
+                if run.status == "waiting_dependency"
+            ]
+            waiting.sort(key=lambda run: run.created_at)
+            for run in waiting:
+                deps = [
+                    str(item)
+                    for item in run.metadata.get("depends_on_task_ids", [])
+                    if str(item).strip()
+                ]
+                if dependency_task_id and dependency_task_id not in deps:
+                    continue
+                if not deps:
+                    continue
+                dep_tasks = [self.get_task(dep_id) for dep_id in deps]
+                if any(task is None for task in dep_tasks):
+                    continue
+                dep_statuses = {
+                    str(task.status)
+                    for task in dep_tasks
+                    if task is not None
+                }
+                if not dep_statuses.issubset({"completed", "failed", "blocked", "stopped"}):
+                    continue
+
+                task = self.get_task(run.task_id)
+                now = _now()
+                if dep_statuses == {"completed"}:
+                    summary = "Dependencies completed; Agent run queued for execution."
+                    run.status = "queued"
+                    run.latest_event_type = "queued"
+                    run.latest_summary = summary
+                    run.metadata["dependencies_satisfied_at"] = now
+                    if task is not None:
+                        task.status = "queued"
+                        task.phase = "dependency_satisfied"
+                        task.latest_progress = summary
+                        task.metadata["dependencies_satisfied_at"] = now
+                    event = AgentRunEvent(
+                        type="queued",
+                        run_id=run.run_id,
+                        task_id=run.task_id,
+                        summary=summary,
+                        source_event_type="chat_v2.async_admission.dependency_satisfied",
+                        payload={
+                            "depends_on_task_ids": deps,
+                            "dependency_statuses": sorted(dep_statuses),
+                        },
+                    )
+                    promoted.append(run.model_copy(deep=True))
+                else:
+                    summary = "Dependency run did not complete successfully; queued work is blocked."
+                    run.status = "blocked"
+                    run.latest_event_type = "blocked"
+                    run.latest_summary = summary
+                    run.metadata["dependency_blocked_at"] = now
+                    if task is not None:
+                        task.status = "blocked"
+                        task.phase = "dependency_blocked"
+                        task.latest_progress = summary
+                        task.blocker = summary
+                        task.metadata["dependency_blocked_at"] = now
+                    event = AgentRunEvent(
+                        type="blocked",
+                        run_id=run.run_id,
+                        task_id=run.task_id,
+                        summary=summary,
+                        source_event_type="chat_v2.async_admission.dependency_blocked",
+                        payload={
+                            "depends_on_task_ids": deps,
+                            "dependency_statuses": sorted(dep_statuses),
+                        },
+                    )
+                run.updated_at = now
+                self._save_run(run)
+                if task is not None:
+                    task.updated_at = now
+                    self._save_task(task)
+                self._append_run_event(run.run_id, event)
+                if len(promoted) >= max(1, limit):
+                    break
+        return promoted
 
     def update_run_metadata(
         self,
@@ -1600,7 +1784,14 @@ class ChatV2Store:
         )
 
     def _latest_active_task_for_topic(self, topic_key: str) -> V2TaskRecord | None:
-        active_status = {"queued", "running", "needs_input", "blocked", "paused"}
+        active_status = {
+            "queued",
+            "waiting_dependency",
+            "running",
+            "needs_input",
+            "blocked",
+            "paused",
+        }
         matches = [
             task
             for task in self._iter_tasks()
@@ -1615,7 +1806,14 @@ class ChatV2Store:
     ) -> V2TaskRecord | None:
         if not surface_topic_key:
             return None
-        active_status = {"queued", "running", "needs_input", "blocked", "paused"}
+        active_status = {
+            "queued",
+            "waiting_dependency",
+            "running",
+            "needs_input",
+            "blocked",
+            "paused",
+        }
         matches = [
             task
             for task in self._iter_tasks()
@@ -1658,6 +1856,19 @@ class ChatV2Store:
             except Exception:
                 continue
         return tasks
+
+    def _iter_runs(self) -> list[AgentRunRecord]:
+        runs: list[AgentRunRecord] = []
+        for path in self._runs_dir.glob("*.json"):
+            if path.name.endswith(".events.jsonl"):
+                continue
+            try:
+                runs.append(
+                    AgentRunRecord.model_validate_json(path.read_text(encoding="utf-8"))
+                )
+            except Exception:
+                continue
+        return runs
 
     def _task_path(self, task_id: str) -> Path:
         return self._tasks_dir / f"{_safe_id(task_id)}.json"
@@ -1822,6 +2033,7 @@ def _status_for_event(event_type: str, *, fallback: TaskStatus) -> TaskStatus:
         return fallback
     if event_type in {
         "accepted",
+        "background_run_started",
         "planned",
         "worker_started",
         "model_text_delta",
@@ -1838,8 +2050,11 @@ def _status_for_event(event_type: str, *, fallback: TaskStatus) -> TaskStatus:
         if event_type == "status_reported":
             return fallback
         return "running"
+    if event_type == "waiting_dependency":
+        return "waiting_dependency"
     if event_type == "queue_item_added" and fallback in {
         "running",
+        "waiting_dependency",
         "needs_input",
         "blocked",
         "paused",
@@ -1986,6 +2201,16 @@ def _structured_operator_context(
     ):
         context["validation_requirements"].append(clean)
     return context
+
+
+def structured_operator_context(
+    text: str,
+    *,
+    attachments: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Public wrapper for compact operator-context extraction."""
+
+    return _structured_operator_context(text, attachments=attachments)
 
 
 def _operator_context_paths(text: str) -> list[str]:

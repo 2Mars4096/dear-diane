@@ -12,8 +12,16 @@ from pydantic import BaseModel, Field
 from dan.server.chat_v2 import (
     AgentRunCommand,
     AgentRunEvent,
+    SurfaceTurn,
+    build_surface_turn_from_chat_request,
     legacy_request_with_v2_context,
     summarize_v2_bridge_context,
+)
+from dan.server.chat_v2_async_core import (
+    ForegroundAdmissionResult,
+    admit_foreground_turn,
+    build_task_board_snapshot,
+    mark_background_run_started,
 )
 from dan.server.chat_v2_backend import run_agent_backend
 from dan.server.chat_v2_store import ChatV2Store
@@ -35,6 +43,16 @@ class AgentRunExecuteRequest(BaseModel):
     approval_policy: dict[str, Any] = Field(default_factory=dict)
     tool_policy: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentRunAdmissionRequest(BaseModel):
+    turn: SurfaceTurn | None = None
+    chat_request: ChatMessageRequest | None = None
+    background: bool = True
+    execute: AgentRunExecuteRequest = Field(
+        default_factory=lambda: AgentRunExecuteRequest(background=True)
+    )
+    max_parallel_runs: int = 4
 
 
 @router.post("/api/v2/chat/message")
@@ -105,14 +123,19 @@ async def create_agent_run(
     bridged_req = legacy_request_with_v2_context(req)
     bridge_context = bridged_req.surface_context.get("v2_control_plane")
     store = _require_chat_v2_store(request)
-    acceptance = store.accept_bridge_context(bridge_context)
+    turn = build_surface_turn_from_chat_request(bridged_req)
+    admitted = admit_foreground_turn(store, turn)
+    acceptance = admitted.acceptance
     summary = summarize_v2_bridge_context(bridge_context)
     summary.update(
         {
-            "task_id": acceptance.task_id,
-            "run_id": acceptance.run_id,
-            "queue_item_id": acceptance.queue_item_id,
-            "queue_position": acceptance.queue_position,
+            "task_id": admitted.decision.task_id,
+            "run_id": admitted.decision.run_id,
+            "queue_item_id": admitted.decision.queue_item_id,
+            "queue_position": admitted.decision.queue_position,
+            "admission_action": admitted.decision.action,
+            "admission_relation": admitted.decision.relation,
+            "admission_reason": admitted.decision.reason,
         }
     )
     task_run_ref = _task_run_ref_from_acceptance(acceptance)
@@ -120,14 +143,74 @@ async def create_agent_run(
         "status": "accepted",
         "v2_control_plane": summary,
         "task_run_ref": task_run_ref,
+        "admission": admitted.decision.model_dump(mode="json"),
+        "board": admitted.board.model_dump(mode="json"),
         "task": (
             acceptance.snapshot.model_dump(mode="json")
-            if acceptance.snapshot is not None
+            if acceptance is not None and acceptance.snapshot is not None
             else None
         ),
         "event": (
             acceptance.event.model_dump(mode="json")
-            if acceptance.event is not None
+            if acceptance is not None and acceptance.event is not None
+            else None
+        ),
+    }
+
+
+@router.post("/api/v2/agent-runs/admit")
+async def admit_agent_turn(
+    admission: AgentRunAdmissionRequest,
+    request: Request = None,
+) -> dict[str, Any]:
+    """Foreground-admit a V2 Agent turn and optionally start it in background."""
+
+    store = _require_chat_v2_store(request)
+    if admission.turn is not None:
+        turn = admission.turn
+    elif admission.chat_request is not None:
+        turn = build_surface_turn_from_chat_request(admission.chat_request)
+    else:
+        raise HTTPException(status_code=422, detail="turn or chat_request is required")
+
+    admitted = admit_foreground_turn(
+        store,
+        turn,
+        max_parallel_runs=admission.max_parallel_runs,
+    )
+    execute = admission.execute
+    if (
+        admission.background
+        and admitted.decision.action == "start_parallel"
+        and admitted.decision.run_id
+    ):
+        asyncio.create_task(
+            _execute_agent_run_background(
+                store,
+                admitted.decision.run_id,
+                backend_name=execute.backend,
+                overrides=_execute_overrides(execute),
+                auto_execute_continuations=execute.auto_execute_continuations,
+                remaining_continuations=execute.max_promoted_continuations,
+            )
+        )
+        mark_background_run_started(
+            store,
+            admitted.decision.run_id,
+            backend=execute.backend or "",
+            reason=admitted.decision.reason,
+        )
+        admitted = _refresh_admission_result(store, admitted, turn)
+
+    return {
+        "status": _admission_response_status(admitted),
+        "admission": admitted.decision.model_dump(mode="json"),
+        "board": admitted.board.model_dump(mode="json"),
+        "task": _task_payload_for_admission(store, admitted),
+        "run": _run_payload_for_admission(store, admitted),
+        "event": (
+            admitted.event.model_dump(mode="json")
+            if admitted.event is not None
             else None
         ),
     }
@@ -186,13 +269,7 @@ async def execute_agent_run(
     if run is None:
         raise HTTPException(status_code=404, detail="Agent run not found")
     execute = execute or AgentRunExecuteRequest()
-    overrides = {
-        "profile_policy": execute.profile_policy,
-        "mutation_policy": execute.mutation_policy,
-        "approval_policy": execute.approval_policy,
-        "tool_policy": execute.tool_policy,
-        "metadata": execute.metadata,
-    }
+    overrides = _execute_overrides(execute)
     if execute.background:
         asyncio.create_task(
             _execute_agent_run_background(
@@ -204,15 +281,18 @@ async def execute_agent_run(
                 remaining_continuations=execute.max_promoted_continuations,
             )
         )
+        mark_background_run_started(
+            store,
+            run_id,
+            backend=execute.backend or "",
+            reason="execute endpoint background request",
+        )
         store.update_run_metadata(
             run_id,
             {
-                "execution_mode": "background",
-                "requested_backend": execute.backend or "",
                 "auto_execute_continuations": bool(execute.auto_execute_continuations),
                 "max_promoted_continuations": int(execute.max_promoted_continuations),
             },
-            status="running",
         )
         refreshed = store.get_run(run_id)
         return {
@@ -368,6 +448,7 @@ async def _execute_agent_run_background(
     overrides: dict[str, Any],
     auto_execute_continuations: bool = True,
     remaining_continuations: int = 8,
+    auto_execute_ready_dependencies: bool = True,
 ) -> None:
     try:
         await run_agent_backend(
@@ -376,35 +457,60 @@ async def _execute_agent_run_background(
             backend_name=backend_name,
             overrides=overrides,
         )
-        if not auto_execute_continuations or remaining_continuations <= 0:
-            return
         run = store.get_run(run_id)
-        next_run_id = ""
-        if run is not None:
-            next_run_id = str(run.metadata.get("continued_run_id") or "")
-        if not next_run_id:
+        if not auto_execute_continuations or remaining_continuations <= 0:
+            next_run_id = ""
+        else:
+            next_run_id = (
+                str(run.metadata.get("continued_run_id") or "")
+                if run is not None
+                else ""
+            )
+        if next_run_id:
+            next_run = store.get_run(next_run_id)
+            if next_run is not None and next_run.status == "queued":
+                store.update_run_metadata(
+                    next_run_id,
+                    {
+                        "execution_mode": "background",
+                        "requested_backend": backend_name or "",
+                        "auto_execute_continuations": True,
+                        "promoted_from_run_id": run_id,
+                    },
+                    status="running",
+                )
+                await _execute_agent_run_background(
+                    store,
+                    next_run_id,
+                    backend_name=backend_name,
+                    overrides=overrides,
+                    auto_execute_continuations=True,
+                    remaining_continuations=remaining_continuations - 1,
+                    auto_execute_ready_dependencies=auto_execute_ready_dependencies,
+                )
+        if not auto_execute_ready_dependencies or run is None:
             return
-        next_run = store.get_run(next_run_id)
-        if next_run is None or next_run.status != "queued":
-            return
-        store.update_run_metadata(
-            next_run_id,
-            {
-                "execution_mode": "background",
-                "requested_backend": backend_name or "",
-                "auto_execute_continuations": True,
-                "promoted_from_run_id": run_id,
-            },
-            status="running",
-        )
-        await _execute_agent_run_background(
-            store,
-            next_run_id,
-            backend_name=backend_name,
-            overrides=overrides,
-            auto_execute_continuations=True,
-            remaining_continuations=remaining_continuations - 1,
-        )
+        for ready in store.promote_waiting_dependency_runs(
+            dependency_task_id=run.task_id,
+            limit=max(1, remaining_continuations),
+        ):
+            mark_background_run_started(
+                store,
+                ready.run_id,
+                backend=backend_name or "",
+                reason="dependency completed",
+            )
+            asyncio.create_task(
+                _execute_agent_run_background(
+                    store,
+                    ready.run_id,
+                    backend_name=backend_name,
+                    overrides=overrides,
+                    auto_execute_continuations=auto_execute_continuations,
+                    remaining_continuations=remaining_continuations,
+                    auto_execute_ready_dependencies=True,
+                )
+            )
     except Exception:
         logger.exception("Background Chat V2 Agent run failed for %s", run_id)
 
@@ -421,6 +527,70 @@ def _task_run_ref_from_acceptance(acceptance: Any) -> dict[str, Any] | None:
         "workspace_root": metadata.get("workspace_root", ""),
         "workspace_id": metadata.get("workspace_id", ""),
     }
+
+
+def _execute_overrides(execute: AgentRunExecuteRequest) -> dict[str, Any]:
+    return {
+        "profile_policy": execute.profile_policy,
+        "mutation_policy": execute.mutation_policy,
+        "approval_policy": execute.approval_policy,
+        "tool_policy": execute.tool_policy,
+        "metadata": execute.metadata,
+    }
+
+
+def _refresh_admission_result(
+    store: ChatV2Store,
+    admitted: ForegroundAdmissionResult,
+    turn: SurfaceTurn,
+) -> ForegroundAdmissionResult:
+    board = build_task_board_snapshot(
+        store,
+        workspace_root=turn.workspace_root,
+        thread_id=turn.thread_id,
+    )
+    run = store.get_run(str(admitted.decision.run_id or ""))
+    event = admitted.event
+    if run is not None and run.latest_event_type == "background_run_started":
+        events = store.load_run_events(run.run_id)
+        if events:
+            try:
+                event = AgentRunEvent.model_validate(events[-1])
+            except Exception:
+                event = admitted.event
+    return admitted.model_copy(update={"board": board, "event": event})
+
+
+def _task_payload_for_admission(
+    store: ChatV2Store,
+    admitted: ForegroundAdmissionResult,
+) -> dict[str, Any] | None:
+    task_id = str(admitted.decision.task_id or admitted.decision.target_task_id or "")
+    snapshot = store.get_task_snapshot(task_id) if task_id else None
+    return snapshot.model_dump(mode="json") if snapshot is not None else None
+
+
+def _run_payload_for_admission(
+    store: ChatV2Store,
+    admitted: ForegroundAdmissionResult,
+) -> dict[str, Any] | None:
+    run_id = str(admitted.decision.run_id or admitted.decision.target_run_id or "")
+    run = store.get_run(run_id) if run_id else None
+    return run.model_dump(mode="json") if run is not None else None
+
+
+def _admission_response_status(admitted: ForegroundAdmissionResult) -> str:
+    if admitted.decision.action == "start_parallel":
+        return "started" if admitted.decision.run_id else "accepted"
+    if admitted.decision.action == "queue_after":
+        return "queued"
+    if admitted.decision.action == "append_to_active":
+        return "appended"
+    if admitted.decision.action == "ask_clarification":
+        return "needs_input"
+    if admitted.decision.action == "reject_or_defer":
+        return "blocked"
+    return "reported"
 
 
 _TERMINAL_RUN_STATUSES = {"completed", "failed", "blocked", "paused", "stopped"}

@@ -56,6 +56,8 @@ AgentRunCommandType = Literal[
 AgentRunEventType = Literal[
     "accepted",
     "queued",
+    "waiting_dependency",
+    "background_run_started",
     "queue_item_added",
     "queue_item_injected",
     "status_reported",
