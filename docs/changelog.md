@@ -1,6 +1,8 @@
 # Changelog
 
 ## 2026-05-18
+- [fix] Closed the remaining Super TUI prompt-collision path. Background narrator-answer waits now use the same line-safe clock rendering as background router waits, so `Preparing answer 4s` cannot render on the same line as `super-tui>`.
+- [test] Added a focused regression for background narrator wait clocks under ANSI-capable stdout. Focused Super TUI suite passes with `171 passed`.
 - [fix] Fixed two live Super TUI interaction regressions found during terminal use. Background-dispatched thinking clocks now use line-safe output so `Thinking 1s` cannot collide with the `super-tui>` prompt, and model-routed `plan_mode` decisions get a stricter recheck so broad review/audit requests inspect the current workspace instead of opening planning questions by default.
 - [fix] Made `/tasks` running rows more explanatory. Active tasks now describe the current action or model-decision phase instead of the vague "executor work currently in flight" placeholder.
 - [test] Added Super TUI regressions for background clock newline rendering, plan-mode recheck on review requests, and non-placeholder task explanations. Focused Super TUI suite passes with `170 passed`; the broader Super TUI/Super DAN/file-tool bundle passes with `325 passed`.

@@ -7590,14 +7590,22 @@ def _wait_for_tui_narrator_model(args: argparse.Namespace, state: SuperTuiState,
         return
     last_footer = ""
     clock_line_active = False
+    force_newline_clock = bool(getattr(args, "_tui_background_dispatch", False))
     status_note_printed = False
     while thread.is_alive():
         footer = state.elapsed_footer()
         if footer and footer != last_footer:
-            clock_line_active = _write_tui_clock_line(footer, label="Preparing answer") or clock_line_active
+            clock_line_active = (
+                _write_tui_clock_line(
+                    footer,
+                    label="Preparing answer",
+                    force_newline=force_newline_clock,
+                )
+                or clock_line_active
+            )
             last_footer = footer
         if not status_note_printed and state.started_at_monotonic and time.monotonic() - state.started_at_monotonic >= 8.0:
-            _clear_tui_clock_line(clock_line_active)
+            _clear_tui_clock_line(clock_line_active, force_newline=force_newline_clock)
             clock_line_active = False
             _print_tui_stream_line(
                 "Preparing an answer from the latest visible run state.",
@@ -7606,7 +7614,7 @@ def _wait_for_tui_narrator_model(args: argparse.Namespace, state: SuperTuiState,
             status_note_printed = True
         time.sleep(0.25)
     if clock_line_active:
-        _clear_tui_clock_line(clock_line_active)
+        _clear_tui_clock_line(clock_line_active, force_newline=force_newline_clock)
 
 
 def _run_tui_narrator(

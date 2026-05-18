@@ -2037,6 +2037,29 @@ def test_super_tui_background_clock_uses_line_safe_output(capsys, monkeypatch) -
     assert "[2K" not in stdout
 
 
+def test_super_tui_background_narrator_wait_clock_uses_line_safe_output(capsys, monkeypatch) -> None:
+    args = Namespace(
+        json=False,
+        quiet_progress=False,
+        plain=True,
+        _tui_background_dispatch=True,
+    )
+    state = super_tui.SuperTuiState(status="running", phase="model")
+    state.started_at_monotonic = 10.0
+    monkeypatch.setattr(super_tui.time, "monotonic", lambda: 12.0)
+    monkeypatch.setattr(super_tui, "_tui_stdout_supports_control_sequences", lambda: True)
+
+    thread = threading.Thread(target=lambda: threading.Event().wait(0.3))
+    thread.start()
+    super_tui._wait_for_tui_narrator_model(args, state, thread)
+    thread.join()
+
+    stdout = capsys.readouterr().out
+    assert "Preparing answer 2s\n" in stdout
+    assert "\x1b" not in stdout
+    assert "[2K" not in stdout
+
+
 def test_super_tui_clock_labels_separate_routing_and_narrator_waits() -> None:
     assert super_tui._format_tui_clock_text("Working: 8s", label="Thinking") == "Thinking 8s"
     assert (
