@@ -18,7 +18,42 @@ from typing import Any, Callable, Mapping, Sequence
 NARRATOR_READ_ONLY = "narrator read-only"
 EXECUTOR_READ_ONLY = "executor read-only"
 EXECUTOR_WRITE = "executor write"
+PLAN_MODE = "plan mode"
 CLARIFICATION = "clarification"
+
+ANSWER_BUDGET_BRIEF = "brief"
+ANSWER_BUDGET_NORMAL = "normal"
+ANSWER_BUDGET_DETAILED = "detailed"
+ANSWER_BUDGETS = frozenset(
+    {
+        ANSWER_BUDGET_BRIEF,
+        ANSWER_BUDGET_NORMAL,
+        ANSWER_BUDGET_DETAILED,
+    }
+)
+
+LATENCY_FAST = "fast"
+LATENCY_BALANCED = "balanced"
+LATENCY_DEEP = "deep"
+LATENCY_PREFERENCES = frozenset({LATENCY_FAST, LATENCY_BALANCED, LATENCY_DEEP})
+
+PROGRESS_QUIET = "quiet"
+PROGRESS_COMPACT = "compact"
+PROGRESS_VERBOSE = "verbose"
+PROGRESS_DETAILS = frozenset({PROGRESS_QUIET, PROGRESS_COMPACT, PROGRESS_VERBOSE})
+
+INTERACTION_ANSWER_ONLY = "answer_only"
+INTERACTION_ACT_THEN_REPORT = "act_then_report"
+INTERACTION_REVIEW = "review"
+INTERACTION_AUTONOMOUS_PROGRESS = "autonomous_progress"
+INTERACTION_STYLES = frozenset(
+    {
+        INTERACTION_ANSWER_ONLY,
+        INTERACTION_ACT_THEN_REPORT,
+        INTERACTION_REVIEW,
+        INTERACTION_AUTONOMOUS_PROGRESS,
+    }
+)
 
 def tokenize_intent_text(text: str) -> tuple[str, ...]:
     """Return lowercase word tokens for non-routing local text utilities."""
@@ -207,6 +242,18 @@ class AgentTurnIntentDecision:
     rationale: str
     executor_effort: str = ""
     clarification: str = ""
+    communication_policy: Any = None
+
+    def __post_init__(self) -> None:
+        if self.communication_policy is None:
+            object.__setattr__(
+                self,
+                "communication_policy",
+                normalize_agent_communication_policy(
+                    lane=self.lane,
+                    executor_effort=self.executor_effort,
+                ),
+            )
 
     @property
     def needs_clarification(self) -> bool:
@@ -304,6 +351,187 @@ def _normalize_model_route_lane(value: Any) -> str:
     return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
 
 
+def _normalize_policy_token(value: Any) -> str:
+    return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+@dataclass(frozen=True)
+class AgentCommunicationPolicy:
+    """Model-authored response-shaping policy for agent-facing surfaces."""
+
+    answer_budget: str = ANSWER_BUDGET_NORMAL
+    latency_preference: str = LATENCY_BALANCED
+    progress_detail: str = PROGRESS_COMPACT
+    interaction_style: str = INTERACTION_ACT_THEN_REPORT
+
+    @property
+    def needs_progress_detail(self) -> bool:
+        return self.progress_detail == PROGRESS_VERBOSE
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "answer_budget": self.answer_budget,
+            "latency_preference": self.latency_preference,
+            "progress_detail": self.progress_detail,
+            "interaction_style": self.interaction_style,
+            "needs_progress_detail": self.needs_progress_detail,
+        }
+
+
+def _normalize_answer_budget(value: Any, *, default: str = ANSWER_BUDGET_NORMAL) -> str:
+    token = _normalize_policy_token(value)
+    aliases = {
+        "short": ANSWER_BUDGET_BRIEF,
+        "small": ANSWER_BUDGET_BRIEF,
+        "tiny": ANSWER_BUDGET_BRIEF,
+        "quick": ANSWER_BUDGET_BRIEF,
+        "concise": ANSWER_BUDGET_NORMAL,
+        "standard": ANSWER_BUDGET_NORMAL,
+        "regular": ANSWER_BUDGET_NORMAL,
+        "full": ANSWER_BUDGET_DETAILED,
+        "long": ANSWER_BUDGET_DETAILED,
+        "deep": ANSWER_BUDGET_DETAILED,
+        "findings": ANSWER_BUDGET_DETAILED,
+        "autonomous_progress": ANSWER_BUDGET_BRIEF,
+    }
+    token = aliases.get(token, token)
+    return token if token in ANSWER_BUDGETS else default
+
+
+def _normalize_latency_preference(value: Any, *, default: str = LATENCY_BALANCED) -> str:
+    token = _normalize_policy_token(value)
+    aliases = {
+        "low_latency": LATENCY_FAST,
+        "quick": LATENCY_FAST,
+        "brief": LATENCY_FAST,
+        "normal": LATENCY_BALANCED,
+        "standard": LATENCY_BALANCED,
+        "thorough": LATENCY_DEEP,
+        "deeper": LATENCY_DEEP,
+        "slow": LATENCY_DEEP,
+    }
+    token = aliases.get(token, token)
+    return token if token in LATENCY_PREFERENCES else default
+
+
+def _normalize_progress_detail(
+    value: Any,
+    *,
+    needs_progress_detail: Any = None,
+    default: str = PROGRESS_COMPACT,
+) -> str:
+    token = _normalize_policy_token(value)
+    aliases = {
+        "none": PROGRESS_QUIET,
+        "false": PROGRESS_QUIET,
+        "off": PROGRESS_QUIET,
+        "minimal": PROGRESS_QUIET,
+        "low": PROGRESS_QUIET,
+        "normal": PROGRESS_COMPACT,
+        "standard": PROGRESS_COMPACT,
+        "brief": PROGRESS_COMPACT,
+        "autonomous_progress": PROGRESS_COMPACT,
+        "high": PROGRESS_VERBOSE,
+        "full": PROGRESS_VERBOSE,
+        "true": PROGRESS_VERBOSE,
+        "detailed": PROGRESS_VERBOSE,
+    }
+    token = aliases.get(token, token)
+    if token in PROGRESS_DETAILS:
+        return token
+    if isinstance(needs_progress_detail, bool):
+        return PROGRESS_VERBOSE if needs_progress_detail else PROGRESS_QUIET
+    return default
+
+
+def _normalize_interaction_style(value: Any, *, default: str = INTERACTION_ACT_THEN_REPORT) -> str:
+    token = _normalize_policy_token(value)
+    aliases = {
+        "answer": INTERACTION_ANSWER_ONLY,
+        "answer_only": INTERACTION_ANSWER_ONLY,
+        "chat": INTERACTION_ANSWER_ONLY,
+        "status": INTERACTION_ANSWER_ONLY,
+        "report": INTERACTION_ACT_THEN_REPORT,
+        "execute": INTERACTION_ACT_THEN_REPORT,
+        "act": INTERACTION_ACT_THEN_REPORT,
+        "act_then_report": INTERACTION_ACT_THEN_REPORT,
+        "findings": INTERACTION_REVIEW,
+        "audit": INTERACTION_REVIEW,
+        "review": INTERACTION_REVIEW,
+        "autonomous": INTERACTION_AUTONOMOUS_PROGRESS,
+        "autonomous_loop": INTERACTION_AUTONOMOUS_PROGRESS,
+        "autonomous_progress": INTERACTION_AUTONOMOUS_PROGRESS,
+        "loop": INTERACTION_AUTONOMOUS_PROGRESS,
+    }
+    token = aliases.get(token, token)
+    return token if token in INTERACTION_STYLES else default
+
+
+def normalize_agent_communication_policy(
+    payload: Mapping[str, Any] | AgentCommunicationPolicy | None = None,
+    *,
+    lane: str = "",
+    executor_effort: str = "",
+) -> AgentCommunicationPolicy:
+    """Normalize model-authored communication-policy fields.
+
+    Defaults are derived only from the structured route lane/effort, not from
+    natural-language keyword matching.
+    """
+
+    policy_payload: Mapping[str, Any] = {}
+    if isinstance(payload, AgentCommunicationPolicy):
+        return payload
+    if isinstance(payload, Mapping):
+        nested = payload.get("communication_policy") or payload.get("response_policy")
+        if isinstance(nested, Mapping):
+            policy_payload = nested
+        else:
+            policy_payload = payload
+    lane_text = _lane_from_model_route_text(lane)
+    effort = _normalize_policy_token(executor_effort)
+    default_budget = ANSWER_BUDGET_NORMAL
+    default_latency = LATENCY_BALANCED
+    default_progress = PROGRESS_COMPACT
+    default_style = INTERACTION_ACT_THEN_REPORT
+    if lane_text in {NARRATOR_READ_ONLY, EXECUTOR_READ_ONLY}:
+        default_style = INTERACTION_ANSWER_ONLY
+        default_latency = LATENCY_FAST if effort == "simple" else LATENCY_BALANCED
+    if lane_text == PLAN_MODE:
+        default_style = INTERACTION_REVIEW
+        default_budget = ANSWER_BUDGET_DETAILED
+        default_progress = PROGRESS_VERBOSE
+        default_latency = LATENCY_DEEP
+    if effort == "simple" and lane_text != PLAN_MODE:
+        default_budget = ANSWER_BUDGET_BRIEF
+        default_latency = LATENCY_FAST
+        default_progress = PROGRESS_QUIET
+
+    raw_budget = policy_payload.get("answer_budget") if isinstance(policy_payload, Mapping) else None
+    raw_latency = policy_payload.get("latency_preference") if isinstance(policy_payload, Mapping) else None
+    raw_progress = policy_payload.get("progress_detail") if isinstance(policy_payload, Mapping) else None
+    raw_needs_progress = (
+        policy_payload.get("needs_progress_detail") if isinstance(policy_payload, Mapping) else None
+    )
+    raw_style = policy_payload.get("interaction_style") if isinstance(policy_payload, Mapping) else None
+    budget = _normalize_answer_budget(raw_budget, default=default_budget)
+    latency = _normalize_latency_preference(raw_latency, default=default_latency)
+    progress = _normalize_progress_detail(
+        raw_progress,
+        needs_progress_detail=raw_needs_progress,
+        default=default_progress,
+    )
+    style = _normalize_interaction_style(raw_style, default=default_style)
+    if _normalize_policy_token(raw_budget) == INTERACTION_AUTONOMOUS_PROGRESS and not raw_style:
+        style = INTERACTION_AUTONOMOUS_PROGRESS
+    return AgentCommunicationPolicy(
+        answer_budget=budget,
+        latency_preference=latency,
+        progress_detail=progress,
+        interaction_style=style,
+    )
+
+
 def _lane_from_model_route_text(value: Any) -> str:
     lane_text = _normalize_model_route_lane(value)
     if lane_text in {"narrator", "narrator_read_only", "progress", "status"}:
@@ -312,6 +540,8 @@ def _lane_from_model_route_text(value: Any) -> str:
         return EXECUTOR_READ_ONLY
     if lane_text in {"executor_write", "write", "workspace_write"}:
         return EXECUTOR_WRITE
+    if lane_text in {"plan", "plan_mode", "planning", "planning_mode"}:
+        return PLAN_MODE
     if lane_text == CLARIFICATION:
         return CLARIFICATION
     return ""
@@ -336,11 +566,17 @@ def _decision_from_model_route_payload(payload: Mapping[str, Any]) -> AgentTurnI
     rationale = _clip(payload.get("rationale") or payload.get("reason") or "model-assisted route", limit=220)
     confidence = _coerce_confidence(payload.get("confidence"))
     clarification = _clip(payload.get("clarification") or "", limit=1200)
+    communication_policy = normalize_agent_communication_policy(
+        payload,
+        lane=lane,
+        executor_effort=effort,
+    )
     if lane == NARRATOR_READ_ONLY:
         return AgentTurnIntentDecision(
             lane=NARRATOR_READ_ONLY,
             confidence=confidence or 0.7,
             rationale=rationale,
+            communication_policy=communication_policy,
         )
     if lane == EXECUTOR_READ_ONLY:
         return AgentTurnIntentDecision(
@@ -348,6 +584,7 @@ def _decision_from_model_route_payload(payload: Mapping[str, Any]) -> AgentTurnI
             confidence=confidence or 0.7,
             rationale=rationale,
             executor_effort=effort,
+            communication_policy=communication_policy,
         )
     if lane == EXECUTOR_WRITE:
         return AgentTurnIntentDecision(
@@ -355,6 +592,15 @@ def _decision_from_model_route_payload(payload: Mapping[str, Any]) -> AgentTurnI
             confidence=confidence or 0.7,
             rationale=rationale,
             executor_effort=effort,
+            communication_policy=communication_policy,
+        )
+    if lane == PLAN_MODE:
+        return AgentTurnIntentDecision(
+            lane=PLAN_MODE,
+            confidence=confidence or 0.7,
+            rationale=rationale,
+            executor_effort="",
+            communication_policy=communication_policy,
         )
     return AgentTurnIntentDecision(
         lane=CLARIFICATION,
@@ -362,6 +608,7 @@ def _decision_from_model_route_payload(payload: Mapping[str, Any]) -> AgentTurnI
         rationale=rationale or "model route requested clarification",
         clarification=clarification
         or "Should this be progress/status, read-only workspace inspection, or workspace-changing work?",
+        communication_policy=communication_policy,
     )
 
 
@@ -394,16 +641,26 @@ def _agent_turn_router_messages(
             "role": "system",
             "content": (
                 "Route the user's Super DAN turn by meaning and recent context, not by keywords. "
-                "Return exactly one JSON object with keys lane, complexity, confidence, rationale, clarification. "
+                "Return exactly one JSON object with keys lane, complexity, confidence, rationale, clarification, communication_policy. "
                 "lane is narrator_read_only for current/recent run status only, executor_read_only for workspace inspection with no file changes, "
-                "executor_write for edits/execution/generated artifacts, or clarification when choosing would be unsafe. "
+                "executor_write for edits/execution/generated artifacts, plan_mode for refinement/planning before execution, "
+                "or clarification when choosing would be unsafe. "
                 "For ordinary workspace-changing work, the user's request is authorization to select executor_write; "
                 "do not ask for a second confirmation merely because files may change, commands may run, or an analysis will create artifacts. "
+                "If the user is asking to refine, compare, or decide on a plan before implementation, use plan_mode instead of starting executor_write. "
+                "Do not use plan_mode just because a request is broad or asks for a review; project review, audit, inspection, or code-quality analysis is executor_read_only unless the user explicitly asks to plan/refine/compare before execution. "
+                "Executor_write is for requests that are ready to execute or create artifacts now. "
                 "Use clarification sparingly. Follow-up questions about progress, outcome, what remains, or the next step should usually be narrator_read_only "
                 "when the recent transcript gives enough session context. "
                 "Use clarification only when the goal, target, or capability boundary is genuinely missing or unsafe to choose. "
                 "complexity is simple only for a bounded single-source read or exact single-file operation; otherwise complex. "
-                "Leave clarification empty unless lane is clarification."
+                "Leave clarification empty unless lane is clarification. "
+                "communication_policy.answer_budget is brief, normal, or detailed. "
+                "communication_policy.latency_preference is fast, balanced, or deep. "
+                "communication_policy.progress_detail is quiet, compact, or verbose. "
+                "communication_policy.interaction_style is answer_only, act_then_report, review, or autonomous_progress. "
+                "Use brief/fast/quiet for tiny or single-step answers, detailed/deep/verbose/review for substantial reviews or design analysis, "
+                "and autonomous_progress when the user wants a longer repair/improvement loop but compact progress."
             ),
         },
         {
@@ -436,13 +693,20 @@ def _agent_turn_router_repair_messages(
             "content": (
                 "Repair a Super DAN routing response. Decide by meaning and recent context, not by keyword matching. "
                 "Return only one JSON object with this exact shape: "
-                '{"lane":"narrator_read_only|executor_read_only|executor_write|clarification",'
-                '"complexity":"simple|complex","confidence":0.0,"rationale":"short reason","clarification":""}. '
+                '{"lane":"narrator_read_only|executor_read_only|executor_write|plan_mode|clarification",'
+                '"complexity":"simple|complex","confidence":0.0,"rationale":"short reason","clarification":"",'
+                '"communication_policy":{"answer_budget":"brief|normal|detailed",'
+                '"latency_preference":"fast|balanced|deep","progress_detail":"quiet|compact|verbose",'
+                '"interaction_style":"answer_only|act_then_report|review|autonomous_progress"}}. '
                 "Use narrator_read_only only for current/recent run status. Use executor_read_only for inspection or answers that should not change files. "
                 "Use executor_write when the request needs edits, generated artifacts, command execution, data processing, or other workspace-changing work. "
+                "Use plan_mode when the user is asking to refine, compare, or decide on a plan before implementation. "
+                "Do not use plan_mode just because a request is broad or asks for a review; project review, audit, inspection, or code-quality analysis is executor_read_only unless the user explicitly asks to plan/refine/compare before execution. "
                 "For ordinary workspace-changing work, the user's request is authorization to select executor_write; "
                 "do not ask for a second confirmation merely because files may change, commands may run, or an analysis will create artifacts. "
-                "Use clarification only when the goal, target, or capability boundary is genuinely missing or unsafe to choose."
+                "Executor_write is for requests that are ready to execute or create artifacts now. "
+                "Use clarification only when the goal, target, or capability boundary is genuinely missing or unsafe to choose. "
+                "The communication_policy is response shaping, not routing; set it from the requested depth, latency, progress visibility, and answer style."
             ),
         },
         {
@@ -480,7 +744,7 @@ async def route_agent_turn_intent_with_model(
         ),
         model=model,
         temperature=0.0,
-        max_tokens=300,
+        max_tokens=450,
     )
     raw_text = getattr(response, "text", "")
     payload = _first_json_object(raw_text)
@@ -497,7 +761,7 @@ async def route_agent_turn_intent_with_model(
             ),
             model=model,
             temperature=0.0,
-            max_tokens=300,
+            max_tokens=450,
         )
         repair_payload = _first_json_object(getattr(repair_response, "text", ""))
         repair_issue = _model_route_payload_issue(repair_payload)
@@ -525,7 +789,29 @@ async def route_agent_turn_intent_with_model(
             ),
             model=model,
             temperature=0.0,
-            max_tokens=300,
+            max_tokens=450,
+        )
+        review_payload = _first_json_object(getattr(review_response, "text", ""))
+        review_issue = _model_route_payload_issue(review_payload)
+        if not review_issue and review_payload is not None:
+            payload = review_payload
+    if _lane_from_model_route_text(payload.get("lane") or payload.get("route")) == PLAN_MODE:
+        review_response = await provider.complete(
+            messages=_agent_turn_router_repair_messages(
+                text=text,
+                bad_response=json.dumps(dict(payload), ensure_ascii=False, sort_keys=True),
+                issue=(
+                    "the route selected plan_mode; verify that the user explicitly asked for planning, "
+                    "refinement, comparison, or decision-making before execution, and not merely for "
+                    "review, audit, inspection, or code-quality analysis of the current workspace"
+                ),
+                transcript_tail=transcript_tail,
+                selected_skills=selected_skills,
+                surface=surface,
+            ),
+            model=model,
+            temperature=0.0,
+            max_tokens=450,
         )
         review_payload = _first_json_object(getattr(review_response, "text", ""))
         review_issue = _model_route_payload_issue(review_payload)

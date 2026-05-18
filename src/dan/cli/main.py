@@ -33,23 +33,26 @@ _SUBCOMMANDS = {
 }
 
 
-def main() -> None:
+def main() -> int:
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         _print_help()
-        sys.exit(0 if len(sys.argv) >= 2 else 1)
+        return 0 if len(sys.argv) >= 2 else 1
 
     subcmd = sys.argv[1]
     if subcmd not in _SUBCOMMANDS:
         print(f"Unknown subcommand: {subcmd}")
         _print_help()
-        sys.exit(1)
+        return 1
 
     module_path, func_name = _SUBCOMMANDS[subcmd]
     sys.argv = [f"dan {subcmd}", *sys.argv[2:]]
 
     import importlib
     mod = importlib.import_module(module_path)
-    getattr(mod, func_name)()
+    result = getattr(mod, func_name)()
+    if isinstance(result, int):
+        return result
+    return 0
 
 
 def _print_help() -> None:
@@ -80,4 +83,4 @@ def _print_help() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
