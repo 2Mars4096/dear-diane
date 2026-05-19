@@ -1,6 +1,8 @@
 # Changelog
 
 ## 2026-05-19
+- [test] Verified the Super TUI framed chatbox path with focused unit coverage (`183 passed`), `compileall`, `git diff --check`, and a live TTY smoke showing the full `DAN · Chat` frame plus `DAN · Chat -> Thinking:` acknowledgement.
+- [fix] Completed the Super TUI prompt-toolkit chatbox frame and made the submitted-turn acknowledgement read as a chain. The composer now uses prompt-toolkit's real frame so the `DAN · Chat` box has a bottom edge, while accepted turns render as compact `DAN · Chat -> Thinking:` / `DAN · Chat -> Queue:` blocks that do not repeat the user's request.
 - [fix] Removed the permanent Super TUI prompt-toolkit bottom menu and added an immediate chatbox-worker thinking acknowledgement. Prompt-toolkit keeps `/`, `$`, `@`, Ctrl-V screenshot paste, Enter completion acceptance, and Up/Down history through keybindings, but no longer renders a bottom control strip that can collide with the `DAN · Chat` composer; accepted background turns now print `Thinking 0s` before the prompt returns.
 - [fix] Closed the Super TUI chatbox overlap found in live TTY review. The prompt-toolkit composer no longer reserves idle completion-menu rows inside the bordered input area, so the `DAN · Chat` top border and prompt line stay compact instead of stretching over empty space.
 - [fix] Made the Super TUI prompt-toolkit composer visually match the intended chatbox behavior. Prompt-toolkit sessions now use a bordered `DAN · Chat` prompt and suppress the large startup `Message` panel that previously made the prompt look like a plain shell line below a help card.

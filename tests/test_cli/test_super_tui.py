@@ -666,11 +666,15 @@ def test_super_tui_chatbox_scheduler_queues_second_turn(tmp_path, capsys, monkey
 
     assert scheduler.submit(first) is True
     first_stdout = capsys.readouterr().out
-    assert "Thinking 0s: first turn" in first_stdout
-    assert "The composer stays open" in first_stdout
+    assert "Chat -> Thinking" in first_stdout
+    assert "Thinking 0s" in first_stdout
+    assert "Thinking 0s: first turn" not in first_stdout
+    assert "Composer stays open" in first_stdout
     assert scheduler.submit(second) is False
     assert calls == ["first turn"]
-    assert "Queued after the current turn: second turn" in capsys.readouterr().out
+    queued_stdout = capsys.readouterr().out
+    assert "Chat -> Queue" in queued_stdout
+    assert "Queued behind the active turn." in queued_stdout
 
     release_first.set()
     for _ in range(40):
@@ -3204,13 +3208,14 @@ def test_super_tui_prompt_toolkit_keybindings_open_completion_menu() -> None:
     assert ("enter",) in keys or any(str(key).lower().endswith("controlm") for row in keys for key in row)
 
 
-def test_super_tui_chatbox_prompt_is_bordered() -> None:
+def test_super_tui_chatbox_prompt_has_title_and_prompt_rows() -> None:
     text = "".join(fragment for _style, fragment in super_tui._tui_chatbox_prompt("super-tui> "))
 
     assert "DAN · Chat" in text
     assert "super-tui> " in text
-    assert text.startswith("╭─")
-    assert "\n│ " in text
+    assert text.startswith("DAN · Chat\n")
+    assert "╭" not in text
+    assert "╰" not in text
 
 
 def test_super_tui_ctrl_v_clipboard_image_capture_from_env(tmp_path, monkeypatch) -> None:
@@ -3306,10 +3311,12 @@ def test_super_tui_prompt_stdout_bridge_preserves_ansi(monkeypatch, tmp_path) ->
         pytest.skip("prompt_toolkit not installed")
 
     prompt_messages = []
+    prompt_kwargs = []
 
     class FakeSession:
-        def prompt(self, *_args, **_kwargs) -> str:
+        def prompt(self, *_args, **kwargs) -> str:
             prompt_messages.append(_args[0] if _args else None)
+            prompt_kwargs.append(kwargs)
             return "typed text"
 
     raw_values: list[bool] = []
@@ -3335,6 +3342,9 @@ def test_super_tui_prompt_stdout_bridge_preserves_ansi(monkeypatch, tmp_path) ->
     assert raw_values == [True]
     assert prompt_messages
     assert "DAN · Chat" in "".join(fragment for _style, fragment in prompt_messages[0])
+    assert prompt_kwargs
+    assert prompt_kwargs[0].get("show_frame") is True
+    assert "bottom_toolbar" not in prompt_kwargs[0]
 
 
 def test_super_tui_run_command_parser_is_honest_for_direct_local_tui() -> None:

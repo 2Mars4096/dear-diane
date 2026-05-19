@@ -3136,6 +3136,7 @@ def _build_prompt_toolkit_style() -> Any:
             "completion-menu.meta.completion.current": "bg:#00d1d1 #001014",
             "scrollbar.background": "bg:#252a33",
             "scrollbar.button": "bg:#00d1d1",
+            "frame.border": "#22d3ee",
             "chatbox.border": "#22d3ee",
             "chatbox.title": "#22d3ee bold",
             "chatbox.prompt": "#cbd5e1 bold",
@@ -3144,21 +3145,9 @@ def _build_prompt_toolkit_style() -> Any:
     )
 
 
-def _tui_chatbox_width() -> int:
-    return max(48, min(120, shutil.get_terminal_size((88, 24)).columns))
-
-
-def _tui_chatbox_border(title: str = "DAN · Chat") -> str:
-    label = f" {title} "
-    width = _tui_chatbox_width()
-    fill = "─" * max(1, width - len(label) - 3)
-    return f"╭─{label}{fill}╮"
-
-
 def _tui_chatbox_prompt(prompt: str = "super-tui> ") -> list[tuple[str, str]]:
     return [
-        ("class:chatbox.border", _tui_chatbox_border() + "\n"),
-        ("class:chatbox.border", "│ "),
+        ("class:chatbox.title", "DAN · Chat\n"),
         ("class:chatbox.prompt", prompt),
     ]
 
@@ -3278,9 +3267,15 @@ def _read_interactive_line(
             try:
                 from prompt_toolkit.patch_stdout import patch_stdout
             except Exception:
-                return session.prompt(_tui_chatbox_prompt(prompt))
+                return session.prompt(
+                    _tui_chatbox_prompt(prompt),
+                    show_frame=True,
+                )
             with patch_stdout(raw=True):
-                return session.prompt(_tui_chatbox_prompt(prompt))
+                return session.prompt(
+                    _tui_chatbox_prompt(prompt),
+                    show_frame=True,
+                )
         except Exception:
             if not _PROMPT_TOOLKIT_FALLBACK_WARNED:
                 print(
@@ -8942,10 +8937,10 @@ class TuiChatboxTurnScheduler:
                 self._start_locked(item)
                 return True
         _print_tui_stream_block(
-            "Queued",
+            "Chat -> Queue",
             [
-                f"Queued after the current turn: {_clip(item.objective, limit=180)}",
-                f"Position: {queue_position}. The composer stays open.",
+                "Queued behind the active turn.",
+                f"Position: {queue_position}. Composer stays open.",
             ],
             plain=self._plain,
         )
@@ -8953,10 +8948,10 @@ class TuiChatboxTurnScheduler:
 
     def _start_locked(self, item: TuiChatboxQueuedTurn) -> None:
         _print_tui_stream_block(
-            "Thinking",
+            "Chat -> Thinking",
             [
-                f"Thinking 0s: {_clip(item.objective, limit=180)}",
-                "The composer stays open while this turn is routed.",
+                "Thinking 0s",
+                "Composer stays open while this turn is routed.",
             ],
             plain=self._plain,
         )
@@ -8980,19 +8975,11 @@ class TuiChatboxTurnScheduler:
 
     def _watch_thread(self, thread: threading.Thread) -> None:
         thread.join()
-        next_item: TuiChatboxQueuedTurn | None = None
         with self._lock:
             if self._active_thread is thread:
                 self._active_thread = None
             if self._queue:
-                next_item = self._queue.popleft()
-                self._start_locked(next_item)
-        if next_item is not None:
-            _print_tui_stream_block(
-                "Queued",
-                [f"Starting queued turn: {_clip(next_item.objective, limit=180)}"],
-                plain=self._plain,
-            )
+                self._start_locked(self._queue.popleft())
 
 
 def _interactive_loop(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
