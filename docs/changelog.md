@@ -1,6 +1,8 @@
 # Changelog
 
 ## 2026-05-19
+- [fix] Made Super TUI chatbox thinking a shared replaceable lane across scheduler heartbeats, renderer notes, stream progress, and final-answer cleanup. Later narrator/progress updates now redraw the current `DAN · Chat -> Thinking:` block instead of adding boxes, and the generic heartbeat says the turn is still working rather than still routing.
+- [test] Added a regression for renderer progress replacing the existing chat-thinking lane while advancing elapsed time; focused Super TUI tests pass with `195 passed`, and live TTY smokes confirmed `Thinking 1s...` / `Thinking 3s...` scheduler redraws plus direct renderer redraws from `Thinking 0s...` to `Thinking 5s...` to `Thinking 10s...`.
 - [test] Added coverage for Super TUI prompt-toolkit output construction disabling CPR probes, then reran focused Super TUI tests (`194 passed`) and a live TTY smoke with no prompt-toolkit CPR warning.
 - [fix] Suppressed prompt-toolkit cursor-position-report warnings inside the Super TUI chatbox path by disabling CPR probing on the session output. This keeps terminal capability warnings out of the visible chat transcript while preserving the framed composer.
 - [test] Re-verified the Super TUI thinking redraw with `compileall`, focused Super TUI tests (`193 passed`), `git diff --check`, and a live TTY run showing ANSI clear/redraw before boxed `Thinking 1s...` / `Thinking 3s...` updates with a visible `Narrator:` detail line.

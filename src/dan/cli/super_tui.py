@@ -1626,6 +1626,42 @@ def _clear_tui_previous_output_lines(line_count: int) -> bool:
     return True
 
 
+_TUI_CHATBOX_THINKING_LOCK = threading.Lock()
+_TUI_CHATBOX_THINKING_LINE_COUNT = 0
+
+
+def _forget_tui_chatbox_thinking_block() -> None:
+    global _TUI_CHATBOX_THINKING_LINE_COUNT
+    with _TUI_CHATBOX_THINKING_LOCK:
+        _TUI_CHATBOX_THINKING_LINE_COUNT = 0
+
+
+def _clear_tui_chatbox_thinking_block() -> None:
+    global _TUI_CHATBOX_THINKING_LINE_COUNT
+    with _TUI_CHATBOX_THINKING_LOCK:
+        if _TUI_CHATBOX_THINKING_LINE_COUNT:
+            _clear_tui_previous_output_lines(_TUI_CHATBOX_THINKING_LINE_COUNT)
+        _TUI_CHATBOX_THINKING_LINE_COUNT = 0
+
+
+def _print_tui_chatbox_thinking_block(
+    lines: Sequence[str],
+    *,
+    plain: bool = False,
+    replace_existing: bool = True,
+) -> None:
+    global _TUI_CHATBOX_THINKING_LINE_COUNT
+    with _TUI_CHATBOX_THINKING_LOCK:
+        if replace_existing and _TUI_CHATBOX_THINKING_LINE_COUNT:
+            _clear_tui_previous_output_lines(_TUI_CHATBOX_THINKING_LINE_COUNT)
+        _print_tui_stream_block("Chat -> Thinking", lines, plain=plain)
+        _TUI_CHATBOX_THINKING_LINE_COUNT = _tui_stream_block_line_count(
+            "Chat -> Thinking",
+            lines,
+            plain=plain,
+        )
+
+
 def _print_tui_stream_block(title: str, lines: Sequence[str], *, plain: bool = False) -> None:
     title_text = str(title or "").strip() or "Answer"
     visible_lines = _wrap_tui_stream_lines([str(line or "").rstrip() for line in lines if str(line or "").strip()])
@@ -2867,8 +2903,7 @@ def _emit_tui_stream_line(args: argparse.Namespace, line: Any) -> None:
         flags=re.IGNORECASE,
     ):
         started_at = float(getattr(args, "_tui_turn_started_at", 0.0) or 0.0) or None
-        _print_tui_stream_block(
-            "Chat -> Thinking",
+        _print_tui_chatbox_thinking_block(
             [_tui_chatbox_thinking_text(started_at), text],
             plain=bool(getattr(args, "plain", False)),
         )
@@ -2884,6 +2919,8 @@ def _emit_tui_stream_answer(args: argparse.Namespace, state: "SuperTuiState") ->
     if block_text == str(getattr(args, "_tui_last_stream_answer_block", "") or ""):
         return
     setattr(args, "_tui_last_stream_answer_block", block_text)
+    if bool(getattr(args, "_tui_background_dispatch", False)):
+        _clear_tui_chatbox_thinking_block()
     _print_tui_stream_block("Answer", lines, plain=bool(getattr(args, "plain", False)))
 
 
@@ -5473,8 +5510,7 @@ class SuperTuiProgressRenderer:
 
     def _print_progress_block(self, title: str, lines: Sequence[str]) -> None:
         if self._chatbox_progress:
-            _print_tui_stream_block(
-                "Chat -> Thinking",
+            _print_tui_chatbox_thinking_block(
                 self._chatbox_progress_lines(*[str(line or "") for line in lines]),
                 plain=self._plain,
             )
@@ -5483,8 +5519,7 @@ class SuperTuiProgressRenderer:
 
     def _print_progress_line(self, text: str) -> None:
         if self._chatbox_progress:
-            _print_tui_stream_block(
-                "Chat -> Thinking",
+            _print_tui_chatbox_thinking_block(
                 self._chatbox_progress_lines(text),
                 plain=self._plain,
             )
@@ -5737,6 +5772,8 @@ class SuperTuiProgressRenderer:
             return
         answer = self.state.final_answer_lines()
         self._clear_clock_line()
+        if answer:
+            _clear_tui_chatbox_thinking_block()
         if answer:
             _print_tui_stream_block("Answer", answer, plain=self._plain)
         outcome = self.state.final_outcome_lines(
@@ -7212,6 +7249,7 @@ def _notify_tui_local_async_background_finished(
         run = store.get_run(run_id)
         events = store.load_run_events(run_id)
         lines = _tui_background_completion_lines(run, events)
+        _clear_tui_chatbox_thinking_block()
         _print_tui_stream_block(
             "Answer",
             lines,
@@ -9236,7 +9274,6 @@ class TuiChatboxTurnScheduler:
         self._active_thread: threading.Thread | None = None
         self._thinking_refresh_initial_seconds = 1.0
         self._thinking_refresh_max_seconds = 5.0
-        self._active_thinking_block_lines = 0
 
     def has_pending_work(self) -> bool:
         with self._lock:
@@ -9265,7 +9302,7 @@ class TuiChatboxTurnScheduler:
         setattr(item.turn_args, "_tui_turn_started_at", started_at)
         self._print_thinking_block(
             started_at,
-            "Narrator: Routing this turn. Composer stays open.",
+            "Narrator: Starting work on this turn. Composer stays open.",
         )
         thread = _start_tui_background_dispatch(
             item.turn_args,
@@ -9288,15 +9325,12 @@ class TuiChatboxTurnScheduler:
     def _print_thinking_block(self, started_at: float, detail: str, *, replace_existing: bool = False) -> None:
         lines = [
             _tui_chatbox_thinking_text(started_at),
-            str(detail or "").strip() or "Narrator: Routing this turn. Composer stays open.",
+            str(detail or "").strip() or "Narrator: Working on this turn. Composer stays open.",
         ]
-        if replace_existing and self._active_thinking_block_lines:
-            _clear_tui_previous_output_lines(self._active_thinking_block_lines)
-        _print_tui_stream_block("Chat -> Thinking", lines, plain=self._plain)
-        self._active_thinking_block_lines = _tui_stream_block_line_count(
-            "Chat -> Thinking",
+        _print_tui_chatbox_thinking_block(
             lines,
             plain=self._plain,
+            replace_existing=replace_existing,
         )
 
     def _watch_thread(self, thread: threading.Thread, started_at: float) -> None:
@@ -9314,7 +9348,7 @@ class TuiChatboxTurnScheduler:
                 continue
             self._print_thinking_block(
                 started_at,
-                "Narrator: Still routing this turn. Composer stays open.",
+                "Narrator: Still working on this turn. Composer stays open.",
                 replace_existing=True,
             )
             next_delay = min(max_delay, max(next_delay + 1.0, next_delay * 1.7))
@@ -9322,7 +9356,7 @@ class TuiChatboxTurnScheduler:
         with self._lock:
             if self._active_thread is thread:
                 self._active_thread = None
-                self._active_thinking_block_lines = 0
+                _forget_tui_chatbox_thinking_block()
             if self._queue:
                 self._start_locked(self._queue.popleft())
 

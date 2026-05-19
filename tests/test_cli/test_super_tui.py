@@ -758,7 +758,7 @@ def test_super_tui_chatbox_scheduler_refreshes_thinking_in_box(tmp_path, capsys,
     assert "DAN · Chat -> Thinking:" in stdout
     assert "Thinking 1s..." in stdout
     assert "Narrator:" in stdout
-    assert "Still routing this turn." in stdout
+    assert "Still working on this turn." in stdout
 
 
 def test_super_tui_chatbox_thinking_refresh_replaces_previous_box(tmp_path, capsys, monkeypatch) -> None:
@@ -769,11 +769,11 @@ def test_super_tui_chatbox_thinking_refresh_replaces_previous_box(tmp_path, caps
         workspace_root=tmp_path,
         plain=False,
     )
-    scheduler._active_thinking_block_lines = 4
+    super_tui._TUI_CHATBOX_THINKING_LINE_COUNT = 4
 
     scheduler._print_thinking_block(
         100.0,
-        "Narrator: Still routing this turn. Composer stays open.",
+        "Narrator: Still working on this turn. Composer stays open.",
         replace_existing=True,
     )
 
@@ -781,7 +781,31 @@ def test_super_tui_chatbox_thinking_refresh_replaces_previous_box(tmp_path, caps
     assert "\x1b[4F\x1b[J" in stdout
     assert "Chat -> Thinking" in stdout
     assert "Narrator:" in stdout
-    assert "Still routing this turn." in stdout
+    assert "Still working on this turn." in stdout
+    super_tui._forget_tui_chatbox_thinking_block()
+
+
+def test_super_tui_background_progress_replaces_chatbox_thinking_lane(capsys, monkeypatch) -> None:
+    current = {"value": 101.0}
+    monkeypatch.setattr(super_tui.time, "monotonic", lambda: current["value"])
+    monkeypatch.setattr(super_tui, "_tui_stdout_supports_control_sequences", lambda: True)
+    super_tui._forget_tui_chatbox_thinking_block()
+    renderer = super_tui.SuperTuiProgressRenderer(
+        enabled=True,
+        plain=True,
+        chatbox_progress=True,
+    )
+    renderer.state.started_at_monotonic = 100.0
+
+    renderer.note("Checking the relevant workspace context.")
+    current["value"] = 106.0
+    renderer.note("Using a terminal command because it advances this request.")
+
+    stdout = capsys.readouterr().out
+    assert "\x1b[3F\x1b[J" in stdout
+    assert "Thinking 6s..." in stdout
+    assert "Using a terminal command because it advances this request." in stdout
+    super_tui._forget_tui_chatbox_thinking_block()
 
 
 def test_super_tui_background_progress_notes_use_chatbox_thinking_lane(capsys) -> None:
