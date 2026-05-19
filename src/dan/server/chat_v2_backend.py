@@ -782,6 +782,11 @@ def _build_super_dan_args(
     setattr(args, "_code_like_live", True)
     setattr(args, "_stdin_is_tty", False)
     setattr(args, "_surface_attachments", list(request.attachments or []))
+    execution_policy = request.metadata.get("execution_policy")
+    if not isinstance(execution_policy, dict):
+        execution_policy = request.surface_context.get("execution_policy")
+    if isinstance(execution_policy, dict):
+        setattr(args, "_tui_execution_policy", dict(execution_policy))
     setattr(
         args,
         "_surface_image_attachments",

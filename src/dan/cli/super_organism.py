@@ -89,6 +89,81 @@ _GENERIC_ALIAS_TEXT_EXTENSIONS = frozenset(
     }
 )
 
+
+def _live_execution_policy_payload(args: argparse.Namespace) -> dict[str, Any]:
+    raw = getattr(args, "_tui_execution_policy", None)
+    if isinstance(raw, Mapping):
+        return dict(raw)
+    return {}
+
+
+def _live_execution_policy_int(
+    args: argparse.Namespace,
+    key: str,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    payload = _live_execution_policy_payload(args)
+    try:
+        value = int(payload.get(key))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _live_max_auto_fix_rounds(args: argparse.Namespace, *, default: int = 1) -> int:
+    payload = _live_execution_policy_payload(args)
+    if payload and payload.get("allow_repair_cycles") is False:
+        return 0
+    return _live_execution_policy_int(
+        args,
+        "max_auto_fix_rounds",
+        default=default,
+        minimum=0,
+        maximum=8,
+    )
+
+
+def _live_max_validation_cycles(args: argparse.Namespace, *, default: int = 2) -> int:
+    return _live_execution_policy_int(
+        args,
+        "max_validation_cycles",
+        default=default,
+        minimum=1,
+        maximum=12,
+    )
+
+
+def _live_repair_loop_limit(args: argparse.Namespace, *, default: int = 1) -> int:
+    validation_room = max(0, _live_max_validation_cycles(args, default=default + 1) - 1)
+    return min(_live_max_auto_fix_rounds(args, default=default), validation_room)
+
+
+def _live_max_work_seconds(args: argparse.Namespace) -> float | None:
+    payload = _live_execution_policy_payload(args)
+    if not payload:
+        return None
+    raw = payload.get("max_work_seconds")
+    if raw is None or raw == "":
+        return None
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if seconds <= 0:
+        return None
+    return max(0.01, min(3600.0, seconds))
+
+
+def _live_max_builder_retry_attempts(args: argparse.Namespace) -> int:
+    payload = _live_execution_policy_payload(args)
+    if not payload:
+        return _SUPER_DAN_GENERIC_BUILDER_RETRY_ATTEMPTS
+    return _live_max_auto_fix_rounds(args, default=_SUPER_DAN_GENERIC_BUILDER_RETRY_ATTEMPTS)
+
+
 _SUPER_DAN_CAPABILITY_POINTS: tuple[str, ...] = (
     "You are one execution cell inside Super DAN, a private multi-agent organism; do not assume the model already knows this project.",
     "The organism can inspect workspace files, search when available, edit or write artifacts, validate results, repair failed candidates, and pass compact evidence between organs.",
@@ -3142,6 +3217,16 @@ def _request_from_live_brief(
     explicit_brief = _brief_with_explicit_super_dan_skills(brief, args=args)
     explicit_brief = _brief_with_surface_conversation(explicit_brief, args=args)
     explicit_brief = _brief_with_surface_attachments(explicit_brief, args=args)
+    if args is not None:
+        execution_policy = _live_execution_policy_payload(args)
+        max_work_seconds = _live_max_work_seconds(args)
+        if execution_policy or max_work_seconds is not None:
+            metadata_update = dict(explicit_brief.metadata)
+            if execution_policy:
+                metadata_update["execution_policy"] = execution_policy
+            if max_work_seconds is not None:
+                metadata_update["completion_timeout_seconds"] = max_work_seconds
+            explicit_brief = explicit_brief.model_copy(update={"metadata": metadata_update})
     return request_from_brief(_apply_auto_super_dan_skills(explicit_brief))
 
 
@@ -5655,8 +5740,13 @@ async def _run_live_website_build(
     validation_event_count_total = int(validation.get("event_count") or 0)
     validation_token_usage = _merge_token_usage(validation.get("token_usage"))
     builder_retry_attempts = 0
-    if result.status == "completed" and not changed_required_paths:
-        builder_retry_attempts = 1
+    builder_retry_limit = _live_max_builder_retry_attempts(args)
+    while (
+        result.status == "completed"
+        and not changed_required_paths
+        and builder_retry_attempts < builder_retry_limit
+    ):
+        builder_retry_attempts += 1
         recovery_reason = _validation_repair_brief(validation, static_validation_failures)
         _log_live_event(
             event_logger,
@@ -5836,13 +5926,15 @@ async def _run_live_website_build(
             validation.get("token_usage"),
         )
     repair_attempts = 0
-    if (
+    repair_limit = _live_repair_loop_limit(args, default=1)
+    while (
         result.status == "completed"
         and not missing_paths
         and bool(changed_required_paths)
         and not bool(validation.get("passed"))
+        and repair_attempts < repair_limit
     ):
-        repair_attempts = 1
+        repair_attempts += 1
         repair_reason = _validation_repair_brief(validation, static_validation_failures)
         _log_live_event(
             event_logger,
@@ -7233,9 +7325,10 @@ async def _run_live_generic_execution(
             for tool_id in ("file_write", "file_edit", "file_read")
             if tool_id in set(recovery_tool_ids)
         ]
+        builder_retry_limit = _live_max_builder_retry_attempts(args)
         while (
             not mutated_paths
-            and builder_retry_attempts < _SUPER_DAN_GENERIC_BUILDER_RETRY_ATTEMPTS
+            and builder_retry_attempts < builder_retry_limit
         ):
             builder_retry_attempts += 1
             recovery_reason = (
@@ -7466,8 +7559,14 @@ async def _run_live_generic_execution(
         await run_generic_builder_retry()
 
     repair_attempts = 0
-    if result.status == "completed" and mutated_paths and not bool(validation.get("passed")):
-        repair_attempts = 1
+    repair_limit = _live_repair_loop_limit(args, default=1)
+    while (
+        result.status == "completed"
+        and mutated_paths
+        and not bool(validation.get("passed"))
+        and repair_attempts < repair_limit
+    ):
+        repair_attempts += 1
         repair_reason = _generic_validation_repair_brief(validation, plan_context=plan_context)
         repair_validation = _generic_repair_validation_payload(
             validation,

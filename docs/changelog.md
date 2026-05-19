@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-05-19
+- [fix] Split the Super TUI chatbox status lane into model-routing and real-work states. Scheduler heartbeats now render `DAN · Chat -> Routing:` and only refresh elapsed time, while renderer/stream progress renders `DAN · Chat -> Working:` and preserves true progress detail without scheduler-authored fake `Narrator:` lines.
+- [fix] Added a model-authored Super TUI execution policy for autonomy mode, stop condition, work-time budget, auto-fix rounds, validation-cycle caps, and repair permission. The policy now propagates through TUI decisions, async surface turns, async admission payloads, backend Super DAN args, transcripts, Super DAN live request timeout metadata, and generic/website repair loops.
+- [test] Re-verified Super TUI and Super Organism behavior with focused suites plus a direct status-lane smoke: routing starts as `Routing 0s...`, work progress switches to `Working 5s...`, and a later scheduler tick preserves `Working 10s...` plus the validation detail.
 - [fix] Made Super TUI chatbox thinking a shared replaceable lane across scheduler heartbeats, renderer notes, stream progress, and final-answer cleanup. Later narrator/progress updates now redraw the current `DAN · Chat -> Thinking:` block instead of adding boxes, and the generic heartbeat says the turn is still working rather than still routing.
 - [test] Added a regression for renderer progress replacing the existing chat-thinking lane while advancing elapsed time; focused Super TUI tests pass with `195 passed`, and live TTY smokes confirmed `Thinking 1s...` / `Thinking 3s...` scheduler redraws plus direct renderer redraws from `Thinking 0s...` to `Thinking 5s...` to `Thinking 10s...`.
 - [test] Added coverage for Super TUI prompt-toolkit output construction disabling CPR probes, then reran focused Super TUI tests (`194 passed`) and a live TTY smoke with no prompt-toolkit CPR warning.

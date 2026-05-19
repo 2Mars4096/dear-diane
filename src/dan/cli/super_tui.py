@@ -32,6 +32,7 @@ from typing import Any, Mapping, Sequence
 
 from dan.agent_runtime.progress_narrator import (
     AgentCommunicationPolicy,
+    AgentExecutionPolicy,
     ANSWER_BUDGET_BRIEF,
     ANSWER_BUDGET_DETAILED,
     ANSWER_BUDGET_NORMAL,
@@ -53,6 +54,7 @@ from dan.agent_runtime.progress_narrator import (
     deterministic_narrator_response,
     generate_narrator_response,
     normalize_agent_communication_policy,
+    normalize_agent_execution_policy,
     route_agent_turn_intent_with_model,
     start_narrator_job,
     tokenize_intent_text,
@@ -148,6 +150,14 @@ def _tui_policy_payload(policy: AgentCommunicationPolicy | Mapping[str, Any] | N
     if isinstance(policy, MappingABC):
         return normalize_agent_communication_policy(policy).to_payload()
     return AgentCommunicationPolicy().to_payload()
+
+
+def _tui_execution_policy_payload(policy: AgentExecutionPolicy | Mapping[str, Any] | None) -> dict[str, Any]:
+    if isinstance(policy, AgentExecutionPolicy):
+        return policy.to_payload()
+    if isinstance(policy, MappingABC):
+        return normalize_agent_execution_policy(policy).to_payload()
+    return AgentExecutionPolicy().to_payload()
 
 
 def _tui_answer_line_limit(policy: AgentCommunicationPolicy | Mapping[str, Any] | None) -> int:
@@ -1506,9 +1516,64 @@ def _tui_vertical_ornament(height: int) -> str:
     return "\n".join(["╭", *(["│"] * max(0, count - 2)), "╰"])
 
 
-def _tui_chatbox_thinking_text(started_at: float | None = None) -> str:
+_TUI_CHATBOX_STATUS_LABELS = ("Routing", "Thinking", "Working")
+
+
+def _normalize_tui_chatbox_status_label(value: Any, *, default: str = "Thinking") -> str:
+    token = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "route": "Routing",
+        "routing": "Routing",
+        "dispatch": "Routing",
+        "dispatching": "Routing",
+        "think": "Thinking",
+        "thinking": "Thinking",
+        "model": "Thinking",
+        "reasoning": "Thinking",
+        "work": "Working",
+        "working": "Working",
+        "execute": "Working",
+        "executing": "Working",
+        "running": "Working",
+        "building": "Working",
+        "repairing": "Working",
+        "validating": "Working",
+    }
+    label = aliases.get(token)
+    if label:
+        return label
+    return default if default in _TUI_CHATBOX_STATUS_LABELS else "Thinking"
+
+
+def _tui_chatbox_status_text(
+    started_at: float | None = None,
+    *,
+    status_label: str = "Thinking",
+) -> str:
     started = float(started_at or time.monotonic())
-    return f"Thinking {_format_elapsed_duration(max(0.0, time.monotonic() - started))}..."
+    label = _normalize_tui_chatbox_status_label(status_label)
+    return f"{label} {_format_elapsed_duration(max(0.0, time.monotonic() - started))}..."
+
+
+def _tui_chatbox_thinking_text(started_at: float | None = None) -> str:
+    return _tui_chatbox_status_text(started_at, status_label="Thinking")
+
+
+def _tui_chatbox_status_label_from_lines(lines: Sequence[str], *, default: str = "Thinking") -> str:
+    first = str(next(iter(lines), "") or "").strip()
+    for label in _TUI_CHATBOX_STATUS_LABELS:
+        if re.match(rf"^{re.escape(label)}\s+\d", first):
+            return label
+    if default in _TUI_CHATBOX_STATUS_LABELS:
+        return default
+    return ""
+
+
+def _tui_chatbox_detail_lines(lines: Sequence[str]) -> tuple[str, ...]:
+    clean_lines = [str(line or "").strip() for line in lines if str(line or "").strip()]
+    if clean_lines and _tui_chatbox_status_label_from_lines(clean_lines, default="") in _TUI_CHATBOX_STATUS_LABELS:
+        return tuple(clean_lines[1:])
+    return tuple(clean_lines)
 
 
 def _format_tui_stream_line(text: str) -> str:
@@ -1628,20 +1693,26 @@ def _clear_tui_previous_output_lines(line_count: int) -> bool:
 
 _TUI_CHATBOX_THINKING_LOCK = threading.Lock()
 _TUI_CHATBOX_THINKING_LINE_COUNT = 0
+_TUI_CHATBOX_THINKING_STATUS_LABEL = "Routing"
+_TUI_CHATBOX_THINKING_DETAIL_LINES: tuple[str, ...] = ()
 
 
 def _forget_tui_chatbox_thinking_block() -> None:
-    global _TUI_CHATBOX_THINKING_LINE_COUNT
+    global _TUI_CHATBOX_THINKING_LINE_COUNT, _TUI_CHATBOX_THINKING_STATUS_LABEL, _TUI_CHATBOX_THINKING_DETAIL_LINES
     with _TUI_CHATBOX_THINKING_LOCK:
         _TUI_CHATBOX_THINKING_LINE_COUNT = 0
+        _TUI_CHATBOX_THINKING_STATUS_LABEL = "Routing"
+        _TUI_CHATBOX_THINKING_DETAIL_LINES = ()
 
 
 def _clear_tui_chatbox_thinking_block() -> None:
-    global _TUI_CHATBOX_THINKING_LINE_COUNT
+    global _TUI_CHATBOX_THINKING_LINE_COUNT, _TUI_CHATBOX_THINKING_STATUS_LABEL, _TUI_CHATBOX_THINKING_DETAIL_LINES
     with _TUI_CHATBOX_THINKING_LOCK:
         if _TUI_CHATBOX_THINKING_LINE_COUNT:
             _clear_tui_previous_output_lines(_TUI_CHATBOX_THINKING_LINE_COUNT)
         _TUI_CHATBOX_THINKING_LINE_COUNT = 0
+        _TUI_CHATBOX_THINKING_STATUS_LABEL = "Routing"
+        _TUI_CHATBOX_THINKING_DETAIL_LINES = ()
 
 
 def _print_tui_chatbox_thinking_block(
@@ -1649,17 +1720,46 @@ def _print_tui_chatbox_thinking_block(
     *,
     plain: bool = False,
     replace_existing: bool = True,
+    status_label: str | None = None,
 ) -> None:
-    global _TUI_CHATBOX_THINKING_LINE_COUNT
+    global _TUI_CHATBOX_THINKING_LINE_COUNT, _TUI_CHATBOX_THINKING_STATUS_LABEL, _TUI_CHATBOX_THINKING_DETAIL_LINES
+    clean_lines = [str(line or "").strip() for line in lines if str(line or "").strip()]
+    label = (
+        _normalize_tui_chatbox_status_label(status_label)
+        if status_label
+        else _tui_chatbox_status_label_from_lines(clean_lines)
+    )
+    title = f"Chat -> {label}"
     with _TUI_CHATBOX_THINKING_LOCK:
         if replace_existing and _TUI_CHATBOX_THINKING_LINE_COUNT:
             _clear_tui_previous_output_lines(_TUI_CHATBOX_THINKING_LINE_COUNT)
-        _print_tui_stream_block("Chat -> Thinking", lines, plain=plain)
+        _print_tui_stream_block(title, clean_lines, plain=plain)
         _TUI_CHATBOX_THINKING_LINE_COUNT = _tui_stream_block_line_count(
-            "Chat -> Thinking",
-            lines,
+            title,
+            clean_lines,
             plain=plain,
         )
+        _TUI_CHATBOX_THINKING_STATUS_LABEL = label
+        _TUI_CHATBOX_THINKING_DETAIL_LINES = _tui_chatbox_detail_lines(clean_lines)
+
+
+def _refresh_tui_chatbox_status_block(
+    started_at: float,
+    *,
+    status_label: str = "Routing",
+    plain: bool = False,
+    replace_existing: bool = True,
+) -> None:
+    with _TUI_CHATBOX_THINKING_LOCK:
+        active_label = _TUI_CHATBOX_THINKING_STATUS_LABEL if _TUI_CHATBOX_THINKING_LINE_COUNT else ""
+        detail_lines = tuple(_TUI_CHATBOX_THINKING_DETAIL_LINES)
+    label = active_label or _normalize_tui_chatbox_status_label(status_label, default="Routing")
+    _print_tui_chatbox_thinking_block(
+        [_tui_chatbox_status_text(started_at, status_label=label), *detail_lines],
+        plain=plain,
+        replace_existing=replace_existing,
+        status_label=label,
+    )
 
 
 def _print_tui_stream_block(title: str, lines: Sequence[str], *, plain: bool = False) -> None:
@@ -1946,6 +2046,7 @@ class TuiIntentDecision:
     rationale: str
     clarification: str = ""
     communication_policy: AgentCommunicationPolicy = field(default_factory=AgentCommunicationPolicy)
+    execution_policy: AgentExecutionPolicy = field(default_factory=AgentExecutionPolicy)
 
     @property
     def lane(self) -> str:
@@ -2101,6 +2202,11 @@ def _tui_decision_from_core_decision(decision: Any) -> TuiIntentDecision:
         lane=lane,
         executor_effort=effort,
     )
+    execution_policy = normalize_agent_execution_policy(
+        getattr(decision, "execution_policy", None),
+        lane=lane,
+        communication_policy=communication_policy,
+    )
     if lane == NARRATOR_READ_ONLY:
         return TuiIntentDecision(
             permission="read-only",
@@ -2108,6 +2214,7 @@ def _tui_decision_from_core_decision(decision: Any) -> TuiIntentDecision:
             confidence=confidence,
             rationale=rationale,
             communication_policy=communication_policy,
+            execution_policy=execution_policy,
         )
     if lane == "executor read-only":
         return TuiIntentDecision(
@@ -2116,6 +2223,7 @@ def _tui_decision_from_core_decision(decision: Any) -> TuiIntentDecision:
             confidence=confidence,
             rationale=rationale,
             communication_policy=communication_policy,
+            execution_policy=execution_policy,
         )
     if lane == "executor write":
         return TuiIntentDecision(
@@ -2124,6 +2232,7 @@ def _tui_decision_from_core_decision(decision: Any) -> TuiIntentDecision:
             confidence=confidence,
             rationale=rationale,
             communication_policy=communication_policy,
+            execution_policy=execution_policy,
         )
     if lane == PLAN_MODE:
         return TuiIntentDecision(
@@ -2132,6 +2241,7 @@ def _tui_decision_from_core_decision(decision: Any) -> TuiIntentDecision:
             confidence=confidence,
             rationale=rationale,
             communication_policy=communication_policy,
+            execution_policy=execution_policy,
         )
     return TuiIntentDecision(
         permission="",
@@ -2141,6 +2251,7 @@ def _tui_decision_from_core_decision(decision: Any) -> TuiIntentDecision:
         clarification=str(getattr(decision, "clarification", "") or "").strip()
         or "Should this be progress/status, read-only inspection, or workspace-changing work?",
         communication_policy=communication_policy,
+        execution_policy=execution_policy,
     )
 
 
@@ -2904,8 +3015,9 @@ def _emit_tui_stream_line(args: argparse.Namespace, line: Any) -> None:
     ):
         started_at = float(getattr(args, "_tui_turn_started_at", 0.0) or 0.0) or None
         _print_tui_chatbox_thinking_block(
-            [_tui_chatbox_thinking_text(started_at), text],
+            [_tui_chatbox_status_text(started_at, status_label="Working"), text],
             plain=bool(getattr(args, "plain", False)),
+            status_label="Working",
         )
         return
     _print_tui_stream_line(text, plain=bool(getattr(args, "plain", False)))
@@ -4174,6 +4286,7 @@ class SuperTuiState:
     communication_policy: AgentCommunicationPolicy = field(
         default_factory=lambda: AgentCommunicationPolicy(answer_budget=ANSWER_BUDGET_DETAILED)
     )
+    execution_policy: AgentExecutionPolicy = field(default_factory=AgentExecutionPolicy)
     debug_events: bool = False
     changed_files: list[str] = field(default_factory=list)
     artifacts: list[str] = field(default_factory=list)
@@ -4648,6 +4761,7 @@ class SuperTuiState:
         self.mode_line = decision.mode_line
         self.mode_rationale = decision.rationale
         self.communication_policy = decision.communication_policy
+        self.execution_policy = decision.execution_policy
 
     def elapsed_footer(self) -> str:
         if not self.started_at_monotonic:
@@ -5501,10 +5615,10 @@ class SuperTuiProgressRenderer:
 
     def _chatbox_progress_lines(self, *lines: str) -> list[str]:
         clean_lines = [str(line or "").strip() for line in lines if str(line or "").strip()]
-        elapsed = _tui_chatbox_thinking_text(self.state.started_at_monotonic or None)
+        elapsed = _tui_chatbox_status_text(self.state.started_at_monotonic or None, status_label="Working")
         if not clean_lines:
             return [elapsed]
-        if clean_lines[0].startswith("Thinking "):
+        if _tui_chatbox_status_label_from_lines(clean_lines, default=""):
             return clean_lines
         return [elapsed, *clean_lines]
 
@@ -5513,6 +5627,7 @@ class SuperTuiProgressRenderer:
             _print_tui_chatbox_thinking_block(
                 self._chatbox_progress_lines(*[str(line or "") for line in lines]),
                 plain=self._plain,
+                status_label="Working",
             )
             return
         _print_tui_stream_block(title, lines, plain=self._plain)
@@ -5522,6 +5637,7 @@ class SuperTuiProgressRenderer:
             _print_tui_chatbox_thinking_block(
                 self._chatbox_progress_lines(text),
                 plain=self._plain,
+                status_label="Working",
             )
             return
         _print_tui_stream_line(text, plain=self._plain)
@@ -5900,6 +6016,14 @@ def _run_tui_turn(
         chatbox_progress=bool(getattr(args, "_tui_background_dispatch", False)),
     )
     renderer.state.set_intent_decision(getattr(args, "_tui_intent_decision", None))
+    if getattr(args, "_tui_intent_decision", None) is not None and not getattr(args, "_tui_execution_policy", None):
+        setattr(
+            args,
+            "_tui_execution_policy",
+            renderer.state.execution_policy.to_payload()
+            if hasattr(renderer.state, "execution_policy")
+            else _tui_execution_policy_payload(None),
+        )
     renderer.configure_model_sidecar(args)
     for token in getattr(args, "_tui_selected_skill_mentions", []) or []:
         _append_unique(renderer.state.recent, f"skill selected: ${token}", limit=8)
@@ -5952,6 +6076,7 @@ def _run_tui_turn(
                 "lane": getattr(getattr(args, "_tui_intent_decision", None), "lane", ""),
                 "intent_rationale": getattr(getattr(args, "_tui_intent_decision", None), "rationale", ""),
                 "communication_policy": renderer.state.communication_policy.to_payload(),
+                "execution_policy": renderer.state.execution_policy.to_payload(),
             },
         )
     return exit_code
@@ -6867,6 +6992,13 @@ def _run_tui_plan_reply(
                 rationale="plan reply authorized execution",
             ),
         )
+        setattr(
+            run_args,
+            "_tui_execution_policy",
+            _tui_execution_policy_payload(
+                getattr(getattr(run_args, "_tui_intent_decision", None), "execution_policy", None)
+            ),
+        )
         return _run_tui_turn(run_args, parser, force_live=True)
     _print_tui_stream_block(
         "Outcome",
@@ -6963,6 +7095,7 @@ def _tui_async_execution_overrides(args: argparse.Namespace) -> dict[str, Any]:
     tool_policy: dict[str, Any] = {}
     if int(getattr(args, "max_tool_calls", 0) or 0) > 0:
         tool_policy["max_tool_calls"] = int(getattr(args, "max_tool_calls"))
+    execution_policy = _tui_execution_policy_payload(getattr(args, "_tui_execution_policy", None))
     return {
         "profile_policy": profile_policy,
         "mutation_policy": {},
@@ -6974,6 +7107,7 @@ def _tui_async_execution_overrides(args: argparse.Namespace) -> dict[str, Any]:
             "tui_notify_completion": True,
             "tui_plain": bool(getattr(args, "plain", False)),
             "communication_policy": _tui_policy_payload(getattr(args, "_tui_communication_policy", None)),
+            "execution_policy": execution_policy,
         },
     }
 
@@ -6989,6 +7123,7 @@ def _build_tui_async_surface_turn(
 
     selected_skills = list(getattr(args, "_tui_selected_skill_mentions", []) or [])
     communication_policy = _tui_policy_payload(getattr(args, "_tui_communication_policy", None))
+    execution_policy = _tui_execution_policy_payload(getattr(args, "_tui_execution_policy", None))
     message = f"/new {text}".strip() if forced_new and not str(text).lstrip().startswith("/") else str(text)
     attachment_payloads = _tui_image_attachment_payloads_from_text(message, workspace_root)
     history_payload = _tui_transcript_history_payload(workspace_root, current_text=message)
@@ -7037,6 +7172,7 @@ def _build_tui_async_surface_turn(
             "selected_skills": selected_skills,
             "forced_new": bool(forced_new),
             "communication_policy": communication_policy,
+            "execution_policy": execution_policy,
             "attachments": attachment_payloads,
             "image_attachments": attachment_payloads,
             "surface_context": {
@@ -7046,6 +7182,7 @@ def _build_tui_async_surface_turn(
                 "selected_skills": selected_skills,
                 "forced_new": bool(forced_new),
                 "communication_policy": communication_policy,
+                "execution_policy": execution_policy,
                 "appended_attachments": attachment_payloads,
             },
             "history": history_payload,
@@ -7412,6 +7549,7 @@ def _submit_tui_local_async_admission(
                     "max_promoted_continuations": 8,
                     "local_tui_background": True,
                     "communication_policy": _tui_policy_payload(getattr(args, "_tui_communication_policy", None)),
+                    "execution_policy": _tui_execution_policy_payload(getattr(args, "_tui_execution_policy", None)),
                 },
             )
             _start_tui_local_async_background_run(
@@ -7452,6 +7590,7 @@ def _tui_async_admission_payload(
 ) -> dict[str, Any]:
     selected_skills = list(getattr(args, "_tui_selected_skill_mentions", []) or [])
     communication_policy = _tui_policy_payload(getattr(args, "_tui_communication_policy", None))
+    execution_policy = _tui_execution_policy_payload(getattr(args, "_tui_execution_policy", None))
     message = f"/new {text}".strip() if forced_new and not str(text).lstrip().startswith("/") else str(text)
     profile_policy: dict[str, Any] = {}
     if str(getattr(args, "model", "") or "").strip():
@@ -7484,6 +7623,7 @@ def _tui_async_admission_payload(
                 "selected_skills": selected_skills,
                 "forced_new": bool(forced_new),
                 "communication_policy": communication_policy,
+                "execution_policy": execution_policy,
                 "appended_attachments": attachment_payloads,
             },
         },
@@ -7499,6 +7639,7 @@ def _tui_async_admission_payload(
                 "surface": "super-tui",
                 "selected_skills": selected_skills,
                 "communication_policy": communication_policy,
+                "execution_policy": execution_policy,
                 "attachments": attachment_payloads,
                 "image_attachments": attachment_payloads,
             },
@@ -7959,6 +8100,7 @@ def _append_tui_async_admission_transcript(
     text: str,
     forced_new: bool = False,
     communication_policy: AgentCommunicationPolicy | Mapping[str, Any] | None = None,
+    execution_policy: AgentExecutionPolicy | Mapping[str, Any] | None = None,
 ) -> None:
     metadata: dict[str, Any] = {
         "async_agent": True,
@@ -7967,6 +8109,8 @@ def _append_tui_async_admission_transcript(
     }
     if communication_policy is not None:
         metadata["communication_policy"] = _tui_policy_payload(communication_policy)
+    if execution_policy is not None:
+        metadata["execution_policy"] = _tui_execution_policy_payload(execution_policy)
     if result.events:
         metadata["tui_board_events"] = [dict(event) for event in result.events]
         metadata["tui_board_event"] = dict(result.events[-1])
@@ -9001,6 +9145,7 @@ def _dispatch_tui_turn(
     setattr(args, "_tui_routed_with_model", routed_with_model)
     setattr(args, "_tui_intent_decision", decision)
     setattr(args, "_tui_communication_policy", decision.communication_policy.to_payload())
+    setattr(args, "_tui_execution_policy", decision.execution_policy.to_payload())
     if decision.needs_clarification:
         return _render_tui_clarification(args, decision)
     if decision.lane == PLAN_MODE and not bool(getattr(args, "plan_only", False)):
@@ -9020,9 +9165,11 @@ def _dispatch_tui_turn(
                 confidence=decision.confidence,
                 rationale=decision.rationale or "selected skill requires the skill-aware executor path",
                 communication_policy=decision.communication_policy,
+                execution_policy=decision.execution_policy,
             )
             setattr(args, "_tui_intent_decision", decision)
             setattr(args, "_tui_communication_policy", decision.communication_policy.to_payload())
+            setattr(args, "_tui_execution_policy", decision.execution_policy.to_payload())
         else:
             return _run_tui_simple_write(args, decision, parser)
     if (
@@ -9051,6 +9198,7 @@ def _dispatch_tui_turn(
                     text=effective_text,
                     forced_new=forced_new,
                     communication_policy=decision.communication_policy,
+                    execution_policy=decision.execution_policy,
                 )
             else:
                 _append_tui_transcript_entry(
@@ -9300,10 +9448,7 @@ class TuiChatboxTurnScheduler:
     def _start_locked(self, item: TuiChatboxQueuedTurn) -> None:
         started_at = time.monotonic()
         setattr(item.turn_args, "_tui_turn_started_at", started_at)
-        self._print_thinking_block(
-            started_at,
-            "Narrator: Starting work on this turn. Composer stays open.",
-        )
+        self._print_thinking_block(started_at)
         thread = _start_tui_background_dispatch(
             item.turn_args,
             self._parser,
@@ -9322,13 +9467,17 @@ class TuiChatboxTurnScheduler:
         )
         watcher.start()
 
-    def _print_thinking_block(self, started_at: float, detail: str, *, replace_existing: bool = False) -> None:
-        lines = [
-            _tui_chatbox_thinking_text(started_at),
-            str(detail or "").strip() or "Narrator: Working on this turn. Composer stays open.",
-        ]
-        _print_tui_chatbox_thinking_block(
-            lines,
+    def _print_thinking_block(
+        self,
+        started_at: float,
+        detail: str = "",
+        *,
+        replace_existing: bool = False,
+    ) -> None:
+        del detail
+        _refresh_tui_chatbox_status_block(
+            started_at,
+            status_label="Routing",
             plain=self._plain,
             replace_existing=replace_existing,
         )
@@ -9348,7 +9497,6 @@ class TuiChatboxTurnScheduler:
                 continue
             self._print_thinking_block(
                 started_at,
-                "Narrator: Still working on this turn. Composer stays open.",
                 replace_existing=True,
             )
             next_delay = min(max_delay, max(next_delay + 1.0, next_delay * 1.7))

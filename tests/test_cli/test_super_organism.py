@@ -3238,6 +3238,36 @@ def test_super_dan_live_brief_carries_surface_conversation_context(tmp_path) -> 
     assert request.metadata["surface_context"] == surface_context
 
 
+def test_super_dan_live_brief_applies_tui_execution_policy(tmp_path) -> None:
+    brief = super_cli.role_brief(
+        role=super_cli.RoleSpec(role_label="workspace_worker", responsibility="Execute the task."),
+        task="Repair until validation passes.",
+        input_payload={"workspace_root": str(tmp_path), "objective": "Repair until validation passes."},
+        metadata={"surface": "super_organism", "mode": "live"},
+    )
+    args = argparse.Namespace(
+        _tui_execution_policy={
+            "autonomy_mode": "continuous",
+            "stop_condition": "validation_passes",
+            "max_work_seconds": 1200,
+            "max_auto_fix_rounds": 4,
+            "max_validation_cycles": 3,
+            "allow_repair_cycles": True,
+        }
+    )
+
+    request = super_cli._request_from_live_brief(brief, args=args)
+
+    assert request.metadata["execution_policy"]["autonomy_mode"] == "continuous"
+    assert request.metadata["completion_timeout_seconds"] == 1200
+    assert super_cli._live_repair_loop_limit(args) == 2
+    assert super_cli._live_max_builder_retry_attempts(args) == 4
+
+    args._tui_execution_policy = {"allow_repair_cycles": False, "max_auto_fix_rounds": 4}
+    assert super_cli._live_repair_loop_limit(args) == 0
+    assert super_cli._live_max_builder_retry_attempts(args) == 0
+
+
 def test_live_generic_task_guides_indirect_artifact_scope_without_canned_targets(tmp_path) -> None:
     report = super_cli.run_super_organism_demo("clean up the extra artifacts from the previous turn")
 

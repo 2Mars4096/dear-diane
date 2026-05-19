@@ -55,6 +55,22 @@ INTERACTION_STYLES = frozenset(
     }
 )
 
+EXECUTION_GUIDED = "guided"
+EXECUTION_CONTINUOUS = "continuous"
+EXECUTION_MANUAL = "manual"
+EXECUTION_AUTONOMY_MODES = frozenset({EXECUTION_GUIDED, EXECUTION_CONTINUOUS, EXECUTION_MANUAL})
+
+STOP_OBJECTIVE_SATISFIED = "objective_satisfied"
+STOP_VALIDATION_PASSES = "validation_passes"
+STOP_PRECISE_BLOCKER = "precise_blocker"
+EXECUTION_STOP_CONDITIONS = frozenset(
+    {
+        STOP_OBJECTIVE_SATISFIED,
+        STOP_VALIDATION_PASSES,
+        STOP_PRECISE_BLOCKER,
+    }
+)
+
 def tokenize_intent_text(text: str) -> tuple[str, ...]:
     """Return lowercase word tokens for non-routing local text utilities."""
 
@@ -243,6 +259,7 @@ class AgentTurnIntentDecision:
     executor_effort: str = ""
     clarification: str = ""
     communication_policy: Any = None
+    execution_policy: Any = None
 
     def __post_init__(self) -> None:
         if self.communication_policy is None:
@@ -252,6 +269,15 @@ class AgentTurnIntentDecision:
                 normalize_agent_communication_policy(
                     lane=self.lane,
                     executor_effort=self.executor_effort,
+                ),
+            )
+        if self.execution_policy is None:
+            object.__setattr__(
+                self,
+                "execution_policy",
+                normalize_agent_execution_policy(
+                    lane=self.lane,
+                    communication_policy=self.communication_policy,
                 ),
             )
 
@@ -375,6 +401,29 @@ class AgentCommunicationPolicy:
             "progress_detail": self.progress_detail,
             "interaction_style": self.interaction_style,
             "needs_progress_detail": self.needs_progress_detail,
+        }
+
+
+@dataclass(frozen=True)
+class AgentExecutionPolicy:
+    """Model-authored autonomy and live-loop budget policy for agent-facing surfaces."""
+
+    autonomy_mode: str = EXECUTION_GUIDED
+    stop_condition: str = STOP_OBJECTIVE_SATISFIED
+    max_work_seconds: int | None = None
+    max_auto_fix_rounds: int = 1
+    max_validation_cycles: int = 2
+    allow_repair_cycles: bool = True
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "autonomy_mode": self.autonomy_mode,
+            "mode": self.autonomy_mode,
+            "stop_condition": self.stop_condition,
+            "max_work_seconds": self.max_work_seconds,
+            "max_auto_fix_rounds": self.max_auto_fix_rounds,
+            "max_validation_cycles": self.max_validation_cycles,
+            "allow_repair_cycles": self.allow_repair_cycles,
         }
 
 
@@ -532,6 +581,155 @@ def normalize_agent_communication_policy(
     )
 
 
+def _normalize_execution_autonomy_mode(value: Any, *, default: str = EXECUTION_GUIDED) -> str:
+    token = _normalize_policy_token(value)
+    aliases = {
+        "auto": EXECUTION_CONTINUOUS,
+        "autonomous": EXECUTION_CONTINUOUS,
+        "autonomous_loop": EXECUTION_CONTINUOUS,
+        "loop": EXECUTION_CONTINUOUS,
+        "loop_until_condition": EXECUTION_CONTINUOUS,
+        "until_done": EXECUTION_CONTINUOUS,
+        "until_fixed": EXECUTION_CONTINUOUS,
+        "background": EXECUTION_CONTINUOUS,
+        "interactive": EXECUTION_GUIDED,
+        "normal": EXECUTION_GUIDED,
+        "default": EXECUTION_GUIDED,
+        "ask": EXECUTION_MANUAL,
+        "confirm": EXECUTION_MANUAL,
+    }
+    token = aliases.get(token, token)
+    return token if token in EXECUTION_AUTONOMY_MODES else default
+
+
+def _normalize_execution_stop_condition(
+    value: Any,
+    *,
+    default: str = STOP_OBJECTIVE_SATISFIED,
+) -> str:
+    token = _normalize_policy_token(value)
+    aliases = {
+        "done": STOP_OBJECTIVE_SATISFIED,
+        "objective": STOP_OBJECTIVE_SATISFIED,
+        "objective_done": STOP_OBJECTIVE_SATISFIED,
+        "complete": STOP_OBJECTIVE_SATISFIED,
+        "completed": STOP_OBJECTIVE_SATISFIED,
+        "validation": STOP_VALIDATION_PASSES,
+        "validation_pass": STOP_VALIDATION_PASSES,
+        "validation_passed": STOP_VALIDATION_PASSES,
+        "validation_passing": STOP_VALIDATION_PASSES,
+        "compile_passes": STOP_VALIDATION_PASSES,
+        "tests_pass": STOP_VALIDATION_PASSES,
+        "blocker": STOP_PRECISE_BLOCKER,
+        "blocked": STOP_PRECISE_BLOCKER,
+        "precise_blocker": STOP_PRECISE_BLOCKER,
+    }
+    token = aliases.get(token, token)
+    return token if token in EXECUTION_STOP_CONDITIONS else default
+
+
+def _bounded_execution_int(
+    value: Any,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, number))
+
+
+def _normalize_execution_seconds(value: Any, *, default: int | None) -> int | None:
+    if value is None or value == "":
+        return default
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return default
+    if seconds <= 0:
+        return None
+    return max(30, min(3600, seconds))
+
+
+def _first_mapping_value(payload: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in payload:
+            return payload.get(key)
+    return None
+
+
+def normalize_agent_execution_policy(
+    payload: Mapping[str, Any] | AgentExecutionPolicy | None = None,
+    *,
+    lane: str = "",
+    communication_policy: AgentCommunicationPolicy | Mapping[str, Any] | None = None,
+) -> AgentExecutionPolicy:
+    """Normalize model-authored execution autonomy without free-text routing rules."""
+
+    if isinstance(payload, AgentExecutionPolicy):
+        return payload
+    policy_payload: Mapping[str, Any] = {}
+    if isinstance(payload, Mapping):
+        nested = payload.get("execution_policy") or payload.get("autonomy_policy") or payload.get("loop_policy")
+        if isinstance(nested, Mapping):
+            policy_payload = nested
+        else:
+            policy_payload = payload
+    comm = normalize_agent_communication_policy(communication_policy) if communication_policy is not None else None
+    lane_text = _lane_from_model_route_text(lane)
+    default_mode = EXECUTION_GUIDED
+    if comm is not None and comm.interaction_style == INTERACTION_AUTONOMOUS_PROGRESS:
+        default_mode = EXECUTION_CONTINUOUS
+    if lane_text != EXECUTOR_WRITE:
+        default_mode = EXECUTION_MANUAL if lane_text == PLAN_MODE else EXECUTION_GUIDED
+
+    raw_mode = _first_mapping_value(policy_payload, "autonomy_mode", "mode", "execution_mode")
+    mode = _normalize_execution_autonomy_mode(raw_mode, default=default_mode)
+    default_stop = STOP_VALIDATION_PASSES if mode == EXECUTION_CONTINUOUS else STOP_OBJECTIVE_SATISFIED
+    stop = _normalize_execution_stop_condition(
+        _first_mapping_value(policy_payload, "stop_condition", "until"),
+        default=default_stop,
+    )
+    default_seconds = 900 if mode == EXECUTION_CONTINUOUS else None
+    max_work_seconds = _normalize_execution_seconds(
+        _first_mapping_value(policy_payload, "max_work_seconds", "max_seconds", "time_budget_seconds"),
+        default=default_seconds,
+    )
+    default_fix_rounds = 4 if mode == EXECUTION_CONTINUOUS else 1
+    default_validation_cycles = 5 if mode == EXECUTION_CONTINUOUS else 2
+    max_auto_fix_rounds = _bounded_execution_int(
+        _first_mapping_value(policy_payload, "max_auto_fix_rounds", "max_repair_rounds", "max_cycles"),
+        default=default_fix_rounds,
+        minimum=0,
+        maximum=8,
+    )
+    max_validation_cycles = _bounded_execution_int(
+        _first_mapping_value(policy_payload, "max_validation_cycles", "validation_cycles", "max_checks"),
+        default=default_validation_cycles,
+        minimum=1,
+        maximum=12,
+    )
+    raw_allow_repair = policy_payload.get("allow_repair_cycles")
+    allow_repair_cycles = True
+    if isinstance(raw_allow_repair, bool):
+        allow_repair_cycles = raw_allow_repair
+    elif _normalize_policy_token(raw_allow_repair) in {"false", "no", "off", "0"}:
+        allow_repair_cycles = False
+    if not allow_repair_cycles:
+        max_auto_fix_rounds = 0
+    return AgentExecutionPolicy(
+        autonomy_mode=mode,
+        stop_condition=stop,
+        max_work_seconds=max_work_seconds,
+        max_auto_fix_rounds=max_auto_fix_rounds,
+        max_validation_cycles=max_validation_cycles,
+        allow_repair_cycles=allow_repair_cycles,
+    )
+
+
 def _lane_from_model_route_text(value: Any) -> str:
     lane_text = _normalize_model_route_lane(value)
     if lane_text in {"narrator", "narrator_read_only", "progress", "status"}:
@@ -571,12 +769,18 @@ def _decision_from_model_route_payload(payload: Mapping[str, Any]) -> AgentTurnI
         lane=lane,
         executor_effort=effort,
     )
+    execution_policy = normalize_agent_execution_policy(
+        payload,
+        lane=lane,
+        communication_policy=communication_policy,
+    )
     if lane == NARRATOR_READ_ONLY:
         return AgentTurnIntentDecision(
             lane=NARRATOR_READ_ONLY,
             confidence=confidence or 0.7,
             rationale=rationale,
             communication_policy=communication_policy,
+            execution_policy=execution_policy,
         )
     if lane == EXECUTOR_READ_ONLY:
         return AgentTurnIntentDecision(
@@ -585,6 +789,7 @@ def _decision_from_model_route_payload(payload: Mapping[str, Any]) -> AgentTurnI
             rationale=rationale,
             executor_effort=effort,
             communication_policy=communication_policy,
+            execution_policy=execution_policy,
         )
     if lane == EXECUTOR_WRITE:
         return AgentTurnIntentDecision(
@@ -593,6 +798,7 @@ def _decision_from_model_route_payload(payload: Mapping[str, Any]) -> AgentTurnI
             rationale=rationale,
             executor_effort=effort,
             communication_policy=communication_policy,
+            execution_policy=execution_policy,
         )
     if lane == PLAN_MODE:
         return AgentTurnIntentDecision(
@@ -601,6 +807,7 @@ def _decision_from_model_route_payload(payload: Mapping[str, Any]) -> AgentTurnI
             rationale=rationale,
             executor_effort="",
             communication_policy=communication_policy,
+            execution_policy=execution_policy,
         )
     return AgentTurnIntentDecision(
         lane=CLARIFICATION,
@@ -609,6 +816,7 @@ def _decision_from_model_route_payload(payload: Mapping[str, Any]) -> AgentTurnI
         clarification=clarification
         or "Should this be progress/status, read-only workspace inspection, or workspace-changing work?",
         communication_policy=communication_policy,
+        execution_policy=execution_policy,
     )
 
 
@@ -641,7 +849,7 @@ def _agent_turn_router_messages(
             "role": "system",
             "content": (
                 "Route the user's Super DAN turn by meaning and recent context, not by keywords. "
-                "Return exactly one JSON object with keys lane, complexity, confidence, rationale, clarification, communication_policy. "
+                "Return exactly one JSON object with keys lane, complexity, confidence, rationale, clarification, communication_policy, execution_policy. "
                 "lane is narrator_read_only for current/recent run status only, executor_read_only for workspace inspection with no file changes, "
                 "executor_write for edits/execution/generated artifacts, plan_mode for refinement/planning before execution, "
                 "or clarification when choosing would be unsafe. "
@@ -660,7 +868,10 @@ def _agent_turn_router_messages(
                 "communication_policy.progress_detail is quiet, compact, or verbose. "
                 "communication_policy.interaction_style is answer_only, act_then_report, review, or autonomous_progress. "
                 "Use brief/fast/quiet for tiny or single-step answers, detailed/deep/verbose/review for substantial reviews or design analysis, "
-                "and autonomous_progress when the user wants a longer repair/improvement loop but compact progress."
+                "and autonomous_progress when the user wants a longer repair/improvement loop but compact progress. "
+                "execution_policy.autonomy_mode is manual, guided, or continuous; use continuous for requests to keep repairing/improving until a condition is met. "
+                "execution_policy.stop_condition is objective_satisfied, validation_passes, or precise_blocker. "
+                "execution_policy.max_work_seconds, execution_policy.max_auto_fix_rounds, and execution_policy.max_validation_cycles are numeric caps; raise them only when the user asks for a longer autonomous loop."
             ),
         },
         {
@@ -697,7 +908,9 @@ def _agent_turn_router_repair_messages(
                 '"complexity":"simple|complex","confidence":0.0,"rationale":"short reason","clarification":"",'
                 '"communication_policy":{"answer_budget":"brief|normal|detailed",'
                 '"latency_preference":"fast|balanced|deep","progress_detail":"quiet|compact|verbose",'
-                '"interaction_style":"answer_only|act_then_report|review|autonomous_progress"}}. '
+                '"interaction_style":"answer_only|act_then_report|review|autonomous_progress"},'
+                '"execution_policy":{"autonomy_mode":"manual|guided|continuous","stop_condition":"objective_satisfied|validation_passes|precise_blocker",'
+                '"max_work_seconds":900,"max_auto_fix_rounds":1,"max_validation_cycles":2,"allow_repair_cycles":true}}. '
                 "Use narrator_read_only only for current/recent run status. Use executor_read_only for inspection or answers that should not change files. "
                 "Use executor_write when the request needs edits, generated artifacts, command execution, data processing, or other workspace-changing work. "
                 "Use plan_mode when the user is asking to refine, compare, or decide on a plan before implementation. "
@@ -706,7 +919,8 @@ def _agent_turn_router_repair_messages(
                 "do not ask for a second confirmation merely because files may change, commands may run, or an analysis will create artifacts. "
                 "Executor_write is for requests that are ready to execute or create artifacts now. "
                 "Use clarification only when the goal, target, or capability boundary is genuinely missing or unsafe to choose. "
-                "The communication_policy is response shaping, not routing; set it from the requested depth, latency, progress visibility, and answer style."
+                "The communication_policy is response shaping, not routing; set it from the requested depth, latency, progress visibility, and answer style. "
+                "The execution_policy is autonomy and budget shaping, not task-specific logic."
             ),
         },
         {

@@ -666,10 +666,9 @@ def test_super_tui_chatbox_scheduler_queues_second_turn(tmp_path, capsys, monkey
 
     assert scheduler.submit(first) is True
     first_stdout = capsys.readouterr().out
-    assert "Chat -> Thinking" in first_stdout
-    assert "Thinking 0s..." in first_stdout
+    assert "Chat -> Routing" in first_stdout
+    assert "Routing 0s..." in first_stdout
     assert "Thinking 0s: first turn" not in first_stdout
-    assert "Composer stays open" in first_stdout
     assert scheduler.submit(second) is False
     assert calls == ["first turn"]
     queued_stdout = capsys.readouterr().out
@@ -727,7 +726,7 @@ def test_super_tui_chatbox_scheduler_does_not_emit_loose_clock(tmp_path, monkeyp
     release_first.set()
 
 
-def test_super_tui_chatbox_scheduler_refreshes_thinking_in_box(tmp_path, capsys, monkeypatch) -> None:
+def test_super_tui_chatbox_scheduler_refreshes_routing_in_box(tmp_path, capsys, monkeypatch) -> None:
     parser = super_tui.build_parser()
     current = {"value": 100.0}
     monkeypatch.setattr(super_tui.time, "monotonic", lambda: current["value"])
@@ -755,13 +754,13 @@ def test_super_tui_chatbox_scheduler_refreshes_thinking_in_box(tmp_path, capsys,
     scheduler._watch_thread(fake_thread, 100.0)
 
     stdout = capsys.readouterr().out
-    assert "DAN · Chat -> Thinking:" in stdout
-    assert "Thinking 1s..." in stdout
-    assert "Narrator:" in stdout
-    assert "Still working on this turn." in stdout
+    assert "DAN · Chat -> Routing:" in stdout
+    assert "Routing 1s..." in stdout
+    assert "Narrator:" not in stdout
+    assert "Still working on this turn." not in stdout
 
 
-def test_super_tui_chatbox_thinking_refresh_replaces_previous_box(tmp_path, capsys, monkeypatch) -> None:
+def test_super_tui_chatbox_status_refresh_replaces_previous_box(tmp_path, capsys, monkeypatch) -> None:
     parser = super_tui.build_parser()
     monkeypatch.setattr(super_tui, "_tui_stdout_supports_control_sequences", lambda: True)
     scheduler = super_tui.TuiChatboxTurnScheduler(
@@ -773,15 +772,15 @@ def test_super_tui_chatbox_thinking_refresh_replaces_previous_box(tmp_path, caps
 
     scheduler._print_thinking_block(
         100.0,
-        "Narrator: Still working on this turn. Composer stays open.",
         replace_existing=True,
     )
 
     stdout = capsys.readouterr().out
     assert "\x1b[4F\x1b[J" in stdout
-    assert "Chat -> Thinking" in stdout
-    assert "Narrator:" in stdout
-    assert "Still working on this turn." in stdout
+    assert "Chat -> Routing" in stdout
+    assert "Routing" in stdout
+    assert "Narrator:" not in stdout
+    assert "Still working on this turn." not in stdout
     super_tui._forget_tui_chatbox_thinking_block()
 
 
@@ -803,8 +802,38 @@ def test_super_tui_background_progress_replaces_chatbox_thinking_lane(capsys, mo
 
     stdout = capsys.readouterr().out
     assert "\x1b[3F\x1b[J" in stdout
-    assert "Thinking 6s..." in stdout
+    assert "Working 6s..." in stdout
     assert "Using a terminal command because it advances this request." in stdout
+    super_tui._forget_tui_chatbox_thinking_block()
+
+
+def test_super_tui_scheduler_refresh_preserves_working_detail(capsys, monkeypatch) -> None:
+    current = {"value": 100.0}
+    monkeypatch.setattr(super_tui.time, "monotonic", lambda: current["value"])
+    monkeypatch.setattr(super_tui, "_tui_stdout_supports_control_sequences", lambda: True)
+    super_tui._forget_tui_chatbox_thinking_block()
+
+    super_tui._print_tui_chatbox_thinking_block(
+        [
+            super_tui._tui_chatbox_status_text(100.0, status_label="Working"),
+            "Running validation command.",
+        ],
+        plain=True,
+        status_label="Working",
+    )
+    current["value"] = 110.0
+    super_tui._refresh_tui_chatbox_status_block(
+        100.0,
+        status_label="Routing",
+        plain=True,
+        replace_existing=True,
+    )
+
+    stdout = capsys.readouterr().out
+    assert "DAN · Chat -> Working:" in stdout
+    assert "Working 10s..." in stdout
+    assert "Running validation command." in stdout
+    assert "Chat -> Routing" not in stdout
     super_tui._forget_tui_chatbox_thinking_block()
 
 
@@ -818,8 +847,8 @@ def test_super_tui_background_progress_notes_use_chatbox_thinking_lane(capsys) -
     renderer.note("Checking the relevant workspace context.")
 
     stdout = capsys.readouterr().out
-    assert "DAN · Chat -> Thinking:" in stdout
-    assert "Thinking 0s..." in stdout
+    assert "DAN · Chat -> Working:" in stdout
+    assert "Working 0s..." in stdout
     assert "Checking the relevant workspace context." in stdout
     assert "DAN · Checking the relevant workspace context." not in stdout
 
@@ -837,8 +866,8 @@ def test_super_tui_background_progress_uses_elapsed_chatbox_time(capsys, monkeyp
     renderer.note("Checking the relevant workspace context.")
 
     stdout = capsys.readouterr().out
-    assert "DAN · Chat -> Thinking:" in stdout
-    assert "Thinking 5s..." in stdout
+    assert "DAN · Chat -> Working:" in stdout
+    assert "Working 5s..." in stdout
     assert "Thinking 0s..." not in stdout
 
 
@@ -857,8 +886,8 @@ def test_super_tui_background_stream_progress_uses_chatbox_lane(capsys, monkeypa
     super_tui._emit_tui_stream_line(args, "Source inspected: report.md")
 
     stdout = capsys.readouterr().out
-    assert "DAN · Chat -> Thinking:" in stdout
-    assert "Thinking 5s..." in stdout
+    assert "DAN · Chat -> Working:" in stdout
+    assert "Working 5s..." in stdout
     assert "Source inspected: report.md" in stdout
     assert "DAN · Source inspected" not in stdout
 
@@ -4255,12 +4284,14 @@ def test_super_tui_core_model_router_parses_structured_lane() -> None:
     assert decision.confidence == 0.91
 
 
-def test_super_tui_core_model_router_parses_communication_policy() -> None:
+def test_super_tui_core_model_router_parses_communication_and_execution_policy() -> None:
     class FakeProvider:
         async def complete(self, **kwargs):
             prompt = kwargs["messages"][0]["content"]
             assert "communication_policy.answer_budget" in prompt
             assert "communication_policy.progress_detail" in prompt
+            assert "execution_policy.autonomy_mode" in prompt
+            assert "execution_policy.max_auto_fix_rounds" in prompt
             return CompletionResult(
                 text=json.dumps(
                     {
@@ -4274,6 +4305,14 @@ def test_super_tui_core_model_router_parses_communication_policy() -> None:
                             "latency_preference": "deep",
                             "progress_detail": "verbose",
                             "interaction_style": "review",
+                        },
+                        "execution_policy": {
+                            "autonomy_mode": "continuous",
+                            "stop_condition": "validation_passes",
+                            "max_work_seconds": 1200,
+                            "max_auto_fix_rounds": 5,
+                            "max_validation_cycles": 6,
+                            "allow_repair_cycles": True,
                         },
                     }
                 )
@@ -4293,6 +4332,11 @@ def test_super_tui_core_model_router_parses_communication_policy() -> None:
     assert decision.communication_policy.progress_detail == "verbose"
     assert decision.communication_policy.interaction_style == "review"
     assert decision.communication_policy.needs_progress_detail is True
+    assert decision.execution_policy.autonomy_mode == "continuous"
+    assert decision.execution_policy.stop_condition == "validation_passes"
+    assert decision.execution_policy.max_work_seconds == 1200
+    assert decision.execution_policy.max_auto_fix_rounds == 5
+    assert decision.execution_policy.max_validation_cycles == 6
 
 
 def test_super_tui_core_model_router_defaults_policy_from_structured_lane() -> None:
@@ -4459,12 +4503,13 @@ def test_super_tui_communication_policy_autonomous_progress_alias() -> None:
     assert policy.interaction_style == "autonomous_progress"
 
 
-def test_super_tui_tui_decision_preserves_core_communication_policy() -> None:
+def test_super_tui_tui_decision_preserves_core_policies() -> None:
     core_decision = super_tui.classify_agent_turn_intent("/progress")
     tui_decision = super_tui._tui_decision_from_core_decision(core_decision)
 
     assert tui_decision.communication_policy.answer_budget == "normal"
     assert tui_decision.communication_policy.interaction_style == "answer_only"
+    assert tui_decision.execution_policy.autonomy_mode == "guided"
 
 
 def test_super_tui_core_model_router_can_select_plan_mode() -> None:
@@ -4920,6 +4965,10 @@ def test_super_tui_async_surface_turn_carries_communication_policy(tmp_path) -> 
         "latency_preference": "fast",
         "progress_detail": "quiet",
         "interaction_style": "answer_only",
+    }, _tui_execution_policy={
+        "autonomy_mode": "continuous",
+        "stop_condition": "validation_passes",
+        "max_auto_fix_rounds": 4,
     })
 
     turn = super_tui._build_tui_async_surface_turn(
@@ -4932,6 +4981,8 @@ def test_super_tui_async_surface_turn_carries_communication_policy(tmp_path) -> 
     assert policy["answer_budget"] == "brief"
     assert policy["latency_preference"] == "fast"
     assert turn.metadata["surface_context"]["communication_policy"] == policy
+    assert turn.metadata["execution_policy"]["autonomy_mode"] == "continuous"
+    assert turn.metadata["surface_context"]["execution_policy"]["max_auto_fix_rounds"] == 4
 
 
 def test_super_tui_async_admission_payload_carries_communication_policy(tmp_path) -> None:
@@ -4942,6 +4993,11 @@ def test_super_tui_async_admission_payload_carries_communication_policy(tmp_path
             "latency_preference": "deep",
             "progress_detail": "verbose",
             "interaction_style": "review",
+        },
+        _tui_execution_policy={
+            "autonomy_mode": "continuous",
+            "stop_condition": "validation_passes",
+            "max_auto_fix_rounds": 5,
         },
         model="",
         base_url="",
@@ -4960,6 +5016,8 @@ def test_super_tui_async_admission_payload_carries_communication_policy(tmp_path
     policy = payload["execute"]["metadata"]["communication_policy"]
     assert policy["answer_budget"] == "detailed"
     assert payload["chat_request"]["surface_context"]["communication_policy"] == policy
+    assert payload["execute"]["metadata"]["execution_policy"]["max_auto_fix_rounds"] == 5
+    assert payload["chat_request"]["surface_context"]["execution_policy"]["autonomy_mode"] == "continuous"
 
 
 def test_super_tui_execution_overrides_carry_communication_policy() -> None:
@@ -4970,6 +5028,11 @@ def test_super_tui_execution_overrides_carry_communication_policy() -> None:
             "latency_preference": "balanced",
             "progress_detail": "compact",
             "interaction_style": "act_then_report",
+        },
+        _tui_execution_policy={
+            "autonomy_mode": "guided",
+            "stop_condition": "objective_satisfied",
+            "max_auto_fix_rounds": 2,
         },
         model="",
         base_url="",
@@ -4982,6 +5045,7 @@ def test_super_tui_execution_overrides_carry_communication_policy() -> None:
 
     assert overrides["metadata"]["communication_policy"]["answer_budget"] == "normal"
     assert overrides["metadata"]["communication_policy"]["interaction_style"] == "act_then_report"
+    assert overrides["metadata"]["execution_policy"]["max_auto_fix_rounds"] == 2
 
 
 def test_super_tui_async_admission_transcript_records_communication_policy(tmp_path) -> None:
@@ -5034,6 +5098,28 @@ def test_super_tui_non_mapping_communication_policy_defaults_safely() -> None:
         "interaction_style": "act_then_report",
         "needs_progress_detail": False,
     }
+
+
+def test_super_tui_execution_policy_normalizes_caps_without_free_text_routing() -> None:
+    policy = super_tui.normalize_agent_execution_policy(
+        {
+            "execution_policy": {
+                "autonomy_mode": "loop_until_condition",
+                "stop_condition": "tests_pass",
+                "max_work_seconds": 99999,
+                "max_auto_fix_rounds": 99,
+                "max_validation_cycles": 99,
+            }
+        },
+        lane="executor_write",
+    )
+
+    assert policy.autonomy_mode == "continuous"
+    assert policy.stop_condition == "validation_passes"
+    assert policy.max_work_seconds == 3600
+    assert policy.max_auto_fix_rounds == 8
+    assert policy.max_validation_cycles == 12
+    assert super_tui.classify_agent_turn_intent("keep repairing until tests pass").needs_clarification is True
 
 
 def test_super_tui_response_policy_helpers_normalize_mapping_payload() -> None:
