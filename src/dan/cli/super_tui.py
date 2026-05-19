@@ -1682,12 +1682,13 @@ def _tui_stream_block_line_count(title: str, lines: Sequence[str], *, plain: boo
     return 2 + len(visible_lines)
 
 
-def _clear_tui_previous_output_lines(line_count: int) -> bool:
+def _clear_tui_previous_output_lines(line_count: int, *, flush: bool = True) -> bool:
     count = max(0, int(line_count or 0))
     if not count or not _tui_stdout_supports_control_sequences():
         return False
     sys.stdout.write(f"\x1b[{count}F\x1b[J")
-    sys.stdout.flush()
+    if flush:
+        sys.stdout.flush()
     return True
 
 
@@ -1695,24 +1696,47 @@ _TUI_CHATBOX_THINKING_LOCK = threading.Lock()
 _TUI_CHATBOX_THINKING_LINE_COUNT = 0
 _TUI_CHATBOX_THINKING_STATUS_LABEL = "Routing"
 _TUI_CHATBOX_THINKING_DETAIL_LINES: tuple[str, ...] = ()
+_TUI_CHATBOX_PREFIX_BLOCKS: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
-def _forget_tui_chatbox_thinking_block() -> None:
-    global _TUI_CHATBOX_THINKING_LINE_COUNT, _TUI_CHATBOX_THINKING_STATUS_LABEL, _TUI_CHATBOX_THINKING_DETAIL_LINES
+def _normalize_tui_chatbox_prefix_blocks(
+    blocks: Sequence[tuple[str, Sequence[str]]],
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    normalized: list[tuple[str, tuple[str, ...]]] = []
+    for title, lines in blocks:
+        clean_title = str(title or "").strip()
+        clean_lines = tuple(str(line or "").strip() for line in lines if str(line or "").strip())
+        if clean_title and clean_lines:
+            normalized.append((clean_title, clean_lines))
+    return tuple(normalized)
+
+
+def _set_tui_chatbox_prefix_blocks(blocks: Sequence[tuple[str, Sequence[str]]]) -> None:
+    global _TUI_CHATBOX_PREFIX_BLOCKS
+    with _TUI_CHATBOX_THINKING_LOCK:
+        _TUI_CHATBOX_PREFIX_BLOCKS = _normalize_tui_chatbox_prefix_blocks(blocks)
+
+
+def _forget_tui_chatbox_thinking_block(*, clear_prefix: bool = True) -> None:
+    global _TUI_CHATBOX_THINKING_LINE_COUNT, _TUI_CHATBOX_THINKING_STATUS_LABEL, _TUI_CHATBOX_THINKING_DETAIL_LINES, _TUI_CHATBOX_PREFIX_BLOCKS
     with _TUI_CHATBOX_THINKING_LOCK:
         _TUI_CHATBOX_THINKING_LINE_COUNT = 0
         _TUI_CHATBOX_THINKING_STATUS_LABEL = "Routing"
         _TUI_CHATBOX_THINKING_DETAIL_LINES = ()
+        if clear_prefix:
+            _TUI_CHATBOX_PREFIX_BLOCKS = ()
 
 
-def _clear_tui_chatbox_thinking_block() -> None:
-    global _TUI_CHATBOX_THINKING_LINE_COUNT, _TUI_CHATBOX_THINKING_STATUS_LABEL, _TUI_CHATBOX_THINKING_DETAIL_LINES
+def _clear_tui_chatbox_thinking_block(*, clear_prefix: bool = True) -> None:
+    global _TUI_CHATBOX_THINKING_LINE_COUNT, _TUI_CHATBOX_THINKING_STATUS_LABEL, _TUI_CHATBOX_THINKING_DETAIL_LINES, _TUI_CHATBOX_PREFIX_BLOCKS
     with _TUI_CHATBOX_THINKING_LOCK:
         if _TUI_CHATBOX_THINKING_LINE_COUNT:
             _clear_tui_previous_output_lines(_TUI_CHATBOX_THINKING_LINE_COUNT)
         _TUI_CHATBOX_THINKING_LINE_COUNT = 0
         _TUI_CHATBOX_THINKING_STATUS_LABEL = "Routing"
         _TUI_CHATBOX_THINKING_DETAIL_LINES = ()
+        if clear_prefix:
+            _TUI_CHATBOX_PREFIX_BLOCKS = ()
 
 
 def _print_tui_chatbox_thinking_block(
@@ -1732,9 +1756,17 @@ def _print_tui_chatbox_thinking_block(
     title = f"Chat -> {label}"
     with _TUI_CHATBOX_THINKING_LOCK:
         if replace_existing and _TUI_CHATBOX_THINKING_LINE_COUNT:
-            _clear_tui_previous_output_lines(_TUI_CHATBOX_THINKING_LINE_COUNT)
+            # Keep erase + replacement panel in one terminal burst so the
+            # status lane does not visibly blank between refresh frames.
+            _clear_tui_previous_output_lines(_TUI_CHATBOX_THINKING_LINE_COUNT, flush=False)
+        prefix_blocks = tuple(_TUI_CHATBOX_PREFIX_BLOCKS)
+        for prefix_title, prefix_lines in prefix_blocks:
+            _print_tui_stream_block(prefix_title, prefix_lines, plain=plain)
         _print_tui_stream_block(title, clean_lines, plain=plain)
-        _TUI_CHATBOX_THINKING_LINE_COUNT = _tui_stream_block_line_count(
+        _TUI_CHATBOX_THINKING_LINE_COUNT = sum(
+            _tui_stream_block_line_count(prefix_title, prefix_lines, plain=plain)
+            for prefix_title, prefix_lines in prefix_blocks
+        ) + _tui_stream_block_line_count(
             title,
             clean_lines,
             plain=plain,
@@ -9420,6 +9452,7 @@ class TuiChatboxTurnScheduler:
         self._lock = threading.Lock()
         self._queue: deque[TuiChatboxQueuedTurn] = deque()
         self._active_thread: threading.Thread | None = None
+        self._active_started_at: float | None = None
         self._thinking_refresh_initial_seconds = 1.0
         self._thinking_refresh_max_seconds = 5.0
 
@@ -9431,23 +9464,17 @@ class TuiChatboxTurnScheduler:
         with self._lock:
             if self._active_thread is not None and self._active_thread.is_alive():
                 self._queue.append(item)
-                queue_position = len(self._queue)
+                active_started_at = self._active_started_at
             else:
                 self._start_locked(item)
                 return True
-        _print_tui_stream_block(
-            "Chat -> Queue",
-            [
-                "Queued behind the active turn.",
-                f"Position: {queue_position}. Composer stays open.",
-            ],
-            plain=self._plain,
-        )
+        self._refresh_queue_prefix(active_started_at)
         return False
 
     def _start_locked(self, item: TuiChatboxQueuedTurn) -> None:
         started_at = time.monotonic()
         setattr(item.turn_args, "_tui_turn_started_at", started_at)
+        self._active_started_at = started_at
         self._print_thinking_block(started_at)
         thread = _start_tui_background_dispatch(
             item.turn_args,
@@ -9466,6 +9493,38 @@ class TuiChatboxTurnScheduler:
             daemon=True,
         )
         watcher.start()
+
+    def _queue_prefix_blocks_locked(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        if not self._queue:
+            return ()
+        queue_position = 1
+        total = len(self._queue)
+        position_text = (
+            f"Position: {queue_position}. Composer stays open."
+            if total == 1
+            else f"Position: {queue_position} of {total}. Composer stays open."
+        )
+        return (
+            (
+                "Chat -> Queue",
+                (
+                    "Queued behind the active turn.",
+                    position_text,
+                ),
+            ),
+        )
+
+    def _refresh_queue_prefix(self, started_at: float | None) -> None:
+        with self._lock:
+            blocks = self._queue_prefix_blocks_locked()
+        _set_tui_chatbox_prefix_blocks(blocks)
+        if started_at is not None:
+            _refresh_tui_chatbox_status_block(
+                started_at,
+                status_label="Routing",
+                plain=self._plain,
+                replace_existing=True,
+            )
 
     def _print_thinking_block(
         self,
@@ -9504,9 +9563,14 @@ class TuiChatboxTurnScheduler:
         with self._lock:
             if self._active_thread is thread:
                 self._active_thread = None
-                _forget_tui_chatbox_thinking_block()
-            if self._queue:
-                self._start_locked(self._queue.popleft())
+                self._active_started_at = None
+                next_item = self._queue.popleft() if self._queue else None
+                _set_tui_chatbox_prefix_blocks(self._queue_prefix_blocks_locked())
+                _clear_tui_chatbox_thinking_block(clear_prefix=False)
+                if next_item is not None:
+                    self._start_locked(next_item)
+                else:
+                    _forget_tui_chatbox_thinking_block()
 
 
 def _interactive_loop(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:

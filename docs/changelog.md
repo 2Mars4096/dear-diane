@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-05-20
+- [fix] Smoothed Super TUI chatbox status redraws without changing the current framed look. Replacing the active `DAN · Chat -> Working/Routing` lane now defers the terminal clear flush until the replacement panel is printed, avoiding a visible blank-frame flash.
+- [fix] Kept queued chatbox messages from being erased by active work refreshes. Queue notices are now prefix blocks inside the same replaceable status group, so they stay visible while queued and drop out when the queued turn is promoted.
+- [test] Added focused Super TUI regressions for deferred clear flushing, replacement redraw sequencing, and queue-prefix preservation across active status refreshes.
+
 ## 2026-05-19
 - [fix] Split the Super TUI chatbox status lane into model-routing and real-work states. Scheduler heartbeats now render `DAN · Chat -> Routing:` and only refresh elapsed time, while renderer/stream progress renders `DAN · Chat -> Working:` and preserves true progress detail without scheduler-authored fake `Narrator:` lines.
 - [fix] Added a model-authored Super TUI execution policy for autonomy mode, stop condition, work-time budget, auto-fix rounds, validation-cycle caps, and repair permission. The policy now propagates through TUI decisions, async surface turns, async admission payloads, backend Super DAN args, transcripts, Super DAN live request timeout metadata, and generic/website repair loops.

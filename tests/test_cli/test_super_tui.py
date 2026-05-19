@@ -784,6 +784,105 @@ def test_super_tui_chatbox_status_refresh_replaces_previous_box(tmp_path, capsys
     super_tui._forget_tui_chatbox_thinking_block()
 
 
+def test_super_tui_clear_previous_output_can_defer_flush(monkeypatch) -> None:
+    events: list[tuple[str, str]] = []
+
+    class FakeStdout:
+        def write(self, text: str) -> int:
+            events.append(("write", text))
+            return len(text)
+
+        def flush(self) -> None:
+            events.append(("flush", ""))
+
+    monkeypatch.setattr(super_tui, "_tui_stdout_supports_control_sequences", lambda: True)
+    monkeypatch.setattr(super_tui.sys, "stdout", FakeStdout())
+
+    assert super_tui._clear_tui_previous_output_lines(3, flush=False)
+    assert events == [("write", "\x1b[3F\x1b[J")]
+
+
+def test_super_tui_chatbox_replacement_defers_clear_flush(monkeypatch) -> None:
+    events: list[tuple[str, object]] = []
+
+    def fake_clear(line_count: int, *, flush: bool = True) -> bool:
+        events.append(("clear", (line_count, flush)))
+        return True
+
+    def fake_print(title: str, lines: list[str], *, plain: bool = False) -> None:
+        events.append(("print", (title, tuple(lines), plain)))
+
+    super_tui._forget_tui_chatbox_thinking_block()
+    super_tui._TUI_CHATBOX_THINKING_LINE_COUNT = 4
+    monkeypatch.setattr(super_tui, "_clear_tui_previous_output_lines", fake_clear)
+    monkeypatch.setattr(super_tui, "_print_tui_stream_block", fake_print)
+    monkeypatch.setattr(super_tui, "_tui_stream_block_line_count", lambda *args, **kwargs: 4)
+
+    try:
+        super_tui._print_tui_chatbox_thinking_block(
+            ["Working 5s...", "Running validation command."],
+            plain=False,
+            replace_existing=True,
+            status_label="Working",
+        )
+    finally:
+        super_tui._forget_tui_chatbox_thinking_block()
+
+    assert events == [
+        ("clear", (4, False)),
+        ("print", ("Chat -> Working", ("Working 5s...", "Running validation command."), False)),
+    ]
+
+
+def test_super_tui_queue_prefix_stays_with_replaceable_status_lane(capsys, monkeypatch) -> None:
+    monkeypatch.setattr(super_tui, "_tui_stdout_supports_control_sequences", lambda: True)
+    super_tui._forget_tui_chatbox_thinking_block()
+
+    try:
+        super_tui._print_tui_chatbox_thinking_block(
+            ["Working 0s...", "Running validation command."],
+            plain=True,
+            status_label="Working",
+        )
+        capsys.readouterr()
+        super_tui._set_tui_chatbox_prefix_blocks(
+            [
+                (
+                    "Chat -> Queue",
+                    [
+                        "Queued behind the active turn.",
+                        "Position: 1. Composer stays open.",
+                    ],
+                )
+            ]
+        )
+        super_tui._refresh_tui_chatbox_status_block(
+            100.0,
+            status_label="Working",
+            plain=True,
+            replace_existing=True,
+        )
+
+        first_refresh = capsys.readouterr().out
+        assert "\x1b[3F\x1b[J" in first_refresh
+        assert "DAN · Chat -> Queue:" in first_refresh
+        assert "DAN · Chat -> Working:" in first_refresh
+
+        super_tui._refresh_tui_chatbox_status_block(
+            100.0,
+            status_label="Working",
+            plain=True,
+            replace_existing=True,
+        )
+
+        second_refresh = capsys.readouterr().out
+        assert "\x1b[6F\x1b[J" in second_refresh
+        assert "DAN · Chat -> Queue:" in second_refresh
+        assert "DAN · Chat -> Working:" in second_refresh
+    finally:
+        super_tui._forget_tui_chatbox_thinking_block()
+
+
 def test_super_tui_background_progress_replaces_chatbox_thinking_lane(capsys, monkeypatch) -> None:
     current = {"value": 101.0}
     monkeypatch.setattr(super_tui.time, "monotonic", lambda: current["value"])

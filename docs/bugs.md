@@ -1,5 +1,8 @@
 # Known Issues & Failed Approaches
 
+- ~~**P3: Super TUI chatbox status refresh could flash blank or erase queued-message boxes.**~~ **FIXED 2026-05-20.** Screenshot review showed active `DAN · Chat -> Working:` refreshes occasionally disappearing and then returning, and queued messages being overwritten by later active work ticks. The clear/redraw helper now defers the erase flush until the replacement panel is printed, and queue notices live as prefix blocks inside the same replaceable status group as the active ticker.
+- **Failed approach recorded:** printing a durable queue panel below a separately replaceable active status panel breaks the replace invariant: the active panel is no longer the last terminal block. Queue notices and active status need to be redrawn as one group while queued work is waiting.
+
 - ~~**P3: Super TUI later chatbox progress could still stack `Chat -> Thinking` boxes and keep saying "Still routing".**~~ **FIXED 2026-05-19.** Screenshot review showed scheduler heartbeats, renderer notes, and narrator/progress updates printing separate thinking boxes at 11s, 16s, 26s, and later, while the latest ticker no longer behaved like one live status row. Chatbox thinking output now uses one shared replaceable lane across the scheduler and renderer paths; a later follow-up split that lane into `Routing` vs `Working` and removed scheduler-authored heartbeat prose entirely.
 - **Failed approach recorded:** fixing only the scheduler redraw path leaves other progress producers free to append new boxes. The chat-thinking lane needs one shared terminal-state owner, not per-producer line counts.
 
