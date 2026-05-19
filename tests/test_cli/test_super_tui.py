@@ -684,6 +684,83 @@ def test_super_tui_chatbox_scheduler_queues_second_turn(tmp_path, capsys, monkey
     assert calls == ["first turn", "second turn"]
 
 
+def test_super_tui_chatbox_scheduler_does_not_emit_loose_clock(tmp_path, monkeypatch) -> None:
+    parser = super_tui.build_parser()
+    release_first = threading.Event()
+
+    def fake_start(
+        turn_args,
+        run_parser,
+        *,
+        workspace_root,
+        message_id,
+        objective,
+        forced_new,
+        plan_only,
+    ):
+        del turn_args, run_parser, workspace_root, message_id, objective, forced_new, plan_only
+
+        thread = threading.Thread(target=lambda: release_first.wait(timeout=2), daemon=True)
+        thread.start()
+        return thread
+
+    def fail_clock(*_args, **_kwargs):
+        raise AssertionError("chatbox scheduler should not print a loose Thinking clock")
+
+    monkeypatch.setattr(super_tui, "_start_tui_background_dispatch", fake_start)
+    monkeypatch.setattr(super_tui, "_write_tui_clock_line", fail_clock)
+    scheduler = super_tui.TuiChatboxTurnScheduler(
+        parser=parser,
+        workspace_root=tmp_path,
+        plain=False,
+    )
+
+    assert scheduler.submit(
+        super_tui.TuiChatboxQueuedTurn(
+            turn_args=Namespace(workspace=str(tmp_path)),
+            message_id="msg-1",
+            objective="first turn",
+            forced_new=False,
+            plan_only=False,
+        )
+    )
+    release_first.set()
+
+
+def test_super_tui_background_progress_notes_use_chatbox_thinking_lane(capsys) -> None:
+    renderer = super_tui.SuperTuiProgressRenderer(
+        enabled=True,
+        plain=True,
+        chatbox_progress=True,
+    )
+
+    renderer.note("Checking the relevant workspace context.")
+
+    stdout = capsys.readouterr().out
+    assert "DAN · Chat -> Thinking:" in stdout
+    assert "Thinking 0s..." in stdout
+    assert "Checking the relevant workspace context." in stdout
+    assert "DAN · Checking the relevant workspace context." not in stdout
+
+
+def test_super_tui_background_progress_uses_elapsed_chatbox_time(capsys, monkeypatch) -> None:
+    current = {"value": 105.0}
+    monkeypatch.setattr(super_tui.time, "monotonic", lambda: current["value"])
+    renderer = super_tui.SuperTuiProgressRenderer(
+        enabled=True,
+        plain=True,
+        chatbox_progress=True,
+    )
+    renderer.state.started_at_monotonic = 100.0
+
+    renderer.note("Checking the relevant workspace context.")
+
+    stdout = capsys.readouterr().out
+    assert "DAN · Chat -> Thinking:" in stdout
+    assert "Thinking 5s..." in stdout
+    assert "Thinking 0s..." not in stdout
+
+
 def test_super_tui_background_dispatch_gate_requires_tty(tmp_path, monkeypatch) -> None:
     parser = super_tui.build_parser()
     args = parser.parse_args(["--workspace", str(tmp_path), "--plain"])

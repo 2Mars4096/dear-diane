@@ -1,6 +1,8 @@
 # Changelog
 
 ## 2026-05-19
+- [test] Verified the Super TUI single-lane thinking pass with `compileall`, focused Super TUI tests (`189 passed`), `git diff --check`, and a live TTY smoke showing the rounded `DAN · Chat` composer plus boxed `DAN · Chat -> Thinking:` acknowledgement. The live smoke reached the expected provider/network route blocker after the UI path rendered.
+- [fix] Routed Super TUI background chatbox progress through the boxed `DAN · Chat -> Thinking:` lane and removed the separate loose prompt-adjacent thinking clock, so later renderer/narrator progress no longer mixes `DAN · ...` loose rows with the chatbox frame.
 - [test] Verified the rounded Super TUI vertical-ornament pass with `compileall`, focused Super TUI tests (`186 passed`), `git diff --check`, and live TTY smoke showing the top-border chat title, elapsed thinking clock, and vertical side-rail panel ornaments.
 - [fix] Moved the Super TUI Rich-panel ornament into a vertical side rail inside panel bodies, while keeping section titles in the top border and plain output unchanged.
 - [fix] Refined the Super TUI chatbox presentation after live screenshot review. Prompt-toolkit frames now use rounded corner characters, put `DAN · Chat` in the top border, keep prompt text inset with a small inner margin, and restore elapsed thinking status with an in-place clock while the worker runs.

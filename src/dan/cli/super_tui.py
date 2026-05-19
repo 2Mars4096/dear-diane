@@ -5213,6 +5213,7 @@ class SuperTuiProgressRenderer:
         debug_events: bool = False,
         line_clock: bool = False,
         suppress_clock: bool = False,
+        chatbox_progress: bool = False,
     ) -> None:
         self.enabled = bool(enabled)
         self.state = SuperTuiState(objective=objective, workspace=workspace, debug_events=debug_events)
@@ -5239,6 +5240,7 @@ class SuperTuiProgressRenderer:
         self._clock_line_active = False
         self._line_clock = bool(line_clock)
         self._suppress_clock = bool(suppress_clock)
+        self._chatbox_progress = bool(chatbox_progress)
 
     def configure_model_sidecar(self, args: argparse.Namespace) -> None:
         self._sidecar_args = args
@@ -5319,6 +5321,35 @@ class SuperTuiProgressRenderer:
         sys.stdout.flush()
         self._clock_line_active = True
 
+    def _chatbox_progress_lines(self, *lines: str) -> list[str]:
+        clean_lines = [str(line or "").strip() for line in lines if str(line or "").strip()]
+        elapsed = _tui_chatbox_thinking_text(self.state.started_at_monotonic or None)
+        if not clean_lines:
+            return [elapsed]
+        if clean_lines[0].startswith("Thinking "):
+            return clean_lines
+        return [elapsed, *clean_lines]
+
+    def _print_progress_block(self, title: str, lines: Sequence[str]) -> None:
+        if self._chatbox_progress:
+            _print_tui_stream_block(
+                "Chat -> Thinking",
+                self._chatbox_progress_lines(*[str(line or "") for line in lines]),
+                plain=self._plain,
+            )
+            return
+        _print_tui_stream_block(title, lines, plain=self._plain)
+
+    def _print_progress_line(self, text: str) -> None:
+        if self._chatbox_progress:
+            _print_tui_stream_block(
+                "Chat -> Thinking",
+                self._chatbox_progress_lines(text),
+                plain=self._plain,
+            )
+            return
+        _print_tui_stream_line(text, plain=self._plain)
+
     def _clear_clock_line(self) -> None:
         if not self._clock_line_active:
             return
@@ -5360,12 +5391,12 @@ class SuperTuiProgressRenderer:
                 self._last_narrator_line = narrator_line
                 self._last_line = narrator_line
                 self._clear_clock_line()
-                _print_tui_stream_line(narrator_line, plain=self._plain)
+                self._print_progress_line(narrator_line)
             return
         if self.state.debug_events and line and line != self._last_line:
             self._last_line = line
             self._clear_clock_line()
-            _print_tui_stream_line(line, plain=self._plain)
+            self._print_progress_line(line)
 
     def _model_sidecar_enabled(self) -> bool:
         args = self._sidecar_args
@@ -5534,7 +5565,7 @@ class SuperTuiProgressRenderer:
             self._live.refresh()
             return
         self._clear_clock_line()
-        _print_tui_stream_block("Narrator", fresh_lines, plain=self._plain)
+        self._print_progress_block("Narrator", fresh_lines)
 
     def note(self, line: str) -> None:
         text = str(line or "").strip()
@@ -5548,7 +5579,7 @@ class SuperTuiProgressRenderer:
         if text != self._last_line:
             self._last_line = text
             self._clear_clock_line()
-            _print_tui_stream_line(text, plain=self._plain)
+            self._print_progress_line(text)
 
     def print_live_report(self, report: Any, live_result: dict[str, Any], *, verbose: bool = False) -> None:
         del report, verbose
@@ -5688,6 +5719,7 @@ def _run_tui_turn(
         debug_events=bool(getattr(args, "raw_events", False)),
         line_clock=bool(getattr(args, "_tui_background_dispatch", False)),
         suppress_clock=bool(getattr(args, "_tui_background_dispatch", False)),
+        chatbox_progress=bool(getattr(args, "_tui_background_dispatch", False)),
     )
     renderer.state.set_intent_decision(getattr(args, "_tui_intent_decision", None))
     renderer.configure_model_sidecar(args)
@@ -9101,22 +9133,14 @@ class TuiChatboxTurnScheduler:
         self._active_thread = thread
         watcher = threading.Thread(
             target=self._watch_thread,
-            args=(thread, started_at),
+            args=(thread,),
             name="super-tui-chatbox-queue",
             daemon=True,
         )
         watcher.start()
 
-    def _watch_thread(self, thread: threading.Thread, started_at: float) -> None:
-        clock_active = False
-        last_footer = ""
-        while thread.is_alive():
-            footer = f"Working: {_format_elapsed_duration(max(0.0, time.monotonic() - started_at))}"
-            if footer != last_footer and _tui_stdout_supports_control_sequences() and not self._plain:
-                clock_active = _write_tui_clock_line(footer, label="Thinking") or clock_active
-                last_footer = footer
-            thread.join(timeout=1.0)
-        _clear_tui_clock_line(clock_active)
+    def _watch_thread(self, thread: threading.Thread) -> None:
+        thread.join()
         with self._lock:
             if self._active_thread is thread:
                 self._active_thread = None
