@@ -3204,12 +3204,22 @@ def test_super_tui_prompt_toolkit_keybindings_open_completion_menu() -> None:
 def test_super_tui_prompt_toolbar_is_compact() -> None:
     text = "".join(fragment for _style, fragment in super_tui._tui_prompt_bottom_toolbar())
 
+    assert text.startswith("╰─ ")
     assert "Enter send" in text
     assert "Esc stop" in text
     assert "$ skills" in text
     assert "@ files" in text
     assert "Ctrl-V screenshot" in text
     assert "/append inserts" not in text
+
+
+def test_super_tui_chatbox_prompt_is_bordered() -> None:
+    text = "".join(fragment for _style, fragment in super_tui._tui_chatbox_prompt("super-tui> "))
+
+    assert "DAN · Chat" in text
+    assert "super-tui> " in text
+    assert text.startswith("╭─")
+    assert "\n│ " in text
 
 
 def test_super_tui_ctrl_v_clipboard_image_capture_from_env(tmp_path, monkeypatch) -> None:
@@ -3303,8 +3313,11 @@ def test_super_tui_prompt_stdout_bridge_preserves_ansi(monkeypatch, tmp_path) ->
     except ImportError:
         pytest.skip("prompt_toolkit not installed")
 
+    prompt_messages = []
+
     class FakeSession:
         def prompt(self, *_args, **_kwargs) -> str:
+            prompt_messages.append(_args[0] if _args else None)
             return "typed text"
 
     raw_values: list[bool] = []
@@ -3328,6 +3341,8 @@ def test_super_tui_prompt_stdout_bridge_preserves_ansi(monkeypatch, tmp_path) ->
 
     assert result == "typed text"
     assert raw_values == [True]
+    assert prompt_messages
+    assert "DAN · Chat" in "".join(fragment for _style, fragment in prompt_messages[0])
 
 
 def test_super_tui_run_command_parser_is_honest_for_direct_local_tui() -> None:
@@ -5648,6 +5663,30 @@ def test_super_tui_interactive_prompt_starts_without_idle_panel(capsys, monkeypa
     assert "Message" in stdout
     assert "Type in the composer below. Submitted text is saved before routing." in stdout
     assert stdout.index("Message") < stdout.index("super-tui>")
+
+
+def test_super_tui_interactive_prompt_toolkit_uses_chatbox_not_startup_panel(capsys, monkeypatch) -> None:
+    parser = super_tui.build_parser()
+    args = parser.parse_args(["--workspace", "/tmp/ws", "--plain"])
+    super_tui._prepare_args(args, [])
+
+    def fake_prompt(prompt, *, commands, skills, paths=(), workspace_root=None):
+        del commands, skills, paths, workspace_root
+        print(prompt, end="")
+        raise EOFError
+
+    monkeypatch.setattr(super_tui, "_load_tui_skill_suggestions", lambda workspace: [])
+    monkeypatch.setattr(super_tui, "_load_tui_path_suggestions", lambda workspace: [])
+    monkeypatch.setattr(super_tui, "_prompt_toolkit_chatbox_available", lambda: True)
+    monkeypatch.setattr(super_tui, "_read_interactive_line", fake_prompt)
+
+    exit_code = super_tui._interactive_loop(args, parser)
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Message" not in stdout
+    assert "Type in the composer below" not in stdout
+    assert "super-tui>" in stdout
 
 
 def test_super_organism_parser_identity_is_unchanged() -> None:

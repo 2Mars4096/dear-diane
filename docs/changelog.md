@@ -1,6 +1,8 @@
 # Changelog
 
 ## 2026-05-19
+- [fix] Made the Super TUI prompt-toolkit composer visually match the intended chatbox behavior. Prompt-toolkit sessions now use a bottom bordered `DAN · Chat` prompt with command/skill/file/screenshot controls in the bottom toolbar, and they suppress the large startup `Message` panel that previously made the prompt look like a plain shell line below a help card.
+- [test] Added Super TUI regressions for the bordered chatbox prompt, bottom toolbar shape, prompt stdout bridge using the chatbox prompt, and prompt-toolkit interactive startup omitting the old message panel. Focused Super TUI suite passes with `184 passed`.
 - [fix] Tightened Super TUI default live presentation after screenshot review. Plain live turns no longer print automatic `Session` or `Board` panels, default snapshots/recent-event views stop embedding board internals, async admission acknowledgements stay answer-shaped, and narrator/model-sidecar progress text is semantically de-duplicated before rendering while `/tasks`, `/status`, and explicit board formatters keep the detailed board view.
 - [test] Added Super TUI regressions for command-only board rendering, no automatic board/session output from the plain renderer, and semantic narrator repeat suppression. Focused Super TUI suite passes with `182 passed`.
 - [fix] Reworked Super TUI ordinary-turn concurrency into a general chatbox loop. Real interactive submissions now run through a single-lane UI worker so the `super-tui>` composer returns immediately, additional turns queue visibly, `/exit` confirms active/queued work, and true V2 async Agent admission remains reserved for explicit async/server sessions or existing visible Agent work.

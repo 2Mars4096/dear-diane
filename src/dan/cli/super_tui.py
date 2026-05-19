@@ -3141,26 +3141,63 @@ def _build_prompt_toolkit_style() -> Any:
             "toolbar.text": "#94a3b8",
             "toolbar.dim": "#475569",
             "toolbar.stop": "#22d3ee bold",
+            "chatbox.border": "#22d3ee",
+            "chatbox.title": "#22d3ee bold",
+            "chatbox.prompt": "#cbd5e1 bold",
+            "chatbox.placeholder": "#64748b",
         }
     )
 
 
-def _tui_prompt_bottom_toolbar() -> list[tuple[str, str]]:
+def _tui_chatbox_width() -> int:
+    return max(48, min(120, shutil.get_terminal_size((88, 24)).columns))
+
+
+def _tui_chatbox_border(title: str = "DAN · Chat") -> str:
+    label = f" {title} "
+    width = _tui_chatbox_width()
+    fill = "─" * max(1, width - len(label) - 3)
+    return f"╭─{label}{fill}╮"
+
+
+def _tui_chatbox_prompt(prompt: str = "super-tui> ") -> list[tuple[str, str]]:
     return [
+        ("class:chatbox.border", _tui_chatbox_border() + "\n"),
+        ("class:chatbox.border", "│ "),
+        ("class:chatbox.prompt", prompt),
+    ]
+
+
+def _tui_prompt_bottom_toolbar() -> list[tuple[str, str]]:
+    controls = [
         ("class:toolbar.key", "Enter send"),
-        ("class:toolbar.dim", "  |  "),
+        ("class:toolbar.dim", " | "),
         ("class:toolbar.stop", "Esc stop"),
-        ("class:toolbar.dim", "  |  "),
+        ("class:toolbar.dim", " | "),
         ("class:toolbar.key", "/ commands"),
-        ("class:toolbar.dim", "  |  "),
+        ("class:toolbar.dim", " | "),
         ("class:toolbar.key", "$ skills"),
-        ("class:toolbar.dim", "  |  "),
+        ("class:toolbar.dim", " | "),
         ("class:toolbar.key", "@ files"),
-        ("class:toolbar.dim", "  |  "),
+        ("class:toolbar.dim", " | "),
         ("class:toolbar.key", "Ctrl-V screenshot"),
-        ("class:toolbar.dim", "  |  "),
+        ("class:toolbar.dim", " | "),
         ("class:toolbar.key", "Up/Down history"),
     ]
+    control_text = "".join(fragment for _style, fragment in controls)
+    width = _tui_chatbox_width()
+    fill = "─" * max(1, width - len(control_text) - 6)
+    return [("class:chatbox.border", "╰─ "), *controls, ("class:chatbox.border", f" {fill}╯")]
+
+
+def _prompt_toolkit_chatbox_available() -> bool:
+    if not sys.stdin.isatty():
+        return False
+    try:
+        import prompt_toolkit  # noqa: F401
+    except Exception:
+        return False
+    return True
 
 
 def _build_prompt_toolkit_session(
@@ -3268,12 +3305,12 @@ def _read_interactive_line(
                 from prompt_toolkit.patch_stdout import patch_stdout
             except Exception:
                 return session.prompt(
-                    prompt,
+                    _tui_chatbox_prompt(prompt),
                     bottom_toolbar=_tui_prompt_bottom_toolbar(),
                 )
             with patch_stdout(raw=True):
                 return session.prompt(
-                    prompt,
+                    _tui_chatbox_prompt(prompt),
                     bottom_toolbar=_tui_prompt_bottom_toolbar(),
                 )
         except Exception:
@@ -8996,12 +9033,13 @@ def _interactive_loop(args: argparse.Namespace, parser: argparse.ArgumentParser)
         workspace_root,
         plain=bool(getattr(args, "plain", False)),
     )
-    _render_composer_hint(
-        workspace_root,
-        plain=bool(getattr(args, "plain", False)),
-        skill_count=len(skills),
-        path_count=len(path_suggestions),
-    )
+    if not _prompt_toolkit_chatbox_available():
+        _render_composer_hint(
+            workspace_root,
+            plain=bool(getattr(args, "plain", False)),
+            skill_count=len(skills),
+            path_count=len(path_suggestions),
+        )
     exit_armed_for_running_turn = False
     while True:
         try:

@@ -1,5 +1,8 @@
 # Known Issues & Failed Approaches
 
+- ~~**P3: Super TUI "chatbox" still looked like a plain prompt under a help panel.**~~ **FIXED 2026-05-19.** Screenshot review showed the input as `super-tui>` below a large `DAN · Message` instruction panel even though background dispatch was chatbox-like. Prompt-toolkit sessions now render a bottom bordered `DAN · Chat` input prompt and move the controls into the bottom toolbar; the large `Message` panel is kept only for readline/non-TTY fallback.
+- **Failed approach recorded:** making the dispatcher asynchronous is not enough for perceived chatbox UX. The input affordance itself needs to be the stable bottom composer, while startup guidance should not visually compete with it in capable terminals.
+
 - ~~**P3: Super TUI still auto-rendered board/session panels and repeated adjacent narrator lines.**~~ **FIXED 2026-05-19.** Screenshot review showed ordinary turns printing `DAN · Board` automatically, a plain `DAN · Session` objective/mode preamble, and repeated narrator/progress statements while the fixed composer sat below the scrollback. Default live rendering now treats board rows as command-only source data, suppresses the plain session preamble, removes board snapshots from default recent/plain views, and applies generic semantic de-duplication before printing narrator/model-sidecar progress.
 - **Failed approach recorded:** making the board more compact still leaves the ordinary chat surface feeling like a dashboard. The durable board should stay available through `/tasks`, `/status`, `/inside`, and debug/raw views, while the passive stream shows only answer/progress text that changed materially.
 
