@@ -3212,6 +3212,65 @@ def test_super_dan_live_brief_includes_workspace_agents_md(tmp_path) -> None:
     assert request.metadata["workspace_instructions"]["relative_path"] == "AGENTS.md"
 
 
+def test_super_dan_live_brief_carries_surface_conversation_context(tmp_path) -> None:
+    history = [
+        {"role": "user", "content": "combine those reports"},
+        {"role": "assistant", "content": "Created the combined report."},
+    ]
+    surface_context = {
+        "workspace_root": str(tmp_path),
+        "workspace_source": "super_tui",
+        "conversation": {"recent_turns": history},
+    }
+    brief = super_cli.role_brief(
+        role=super_cli.RoleSpec(role_label="workspace_worker", responsibility="Execute the task."),
+        task="Review the report.",
+        input_payload={"workspace_root": str(tmp_path), "objective": "Review the report."},
+        metadata={"surface": "super_organism", "mode": "live"},
+    )
+    args = argparse.Namespace(_surface_history=history, _surface_context=surface_context)
+
+    request = super_cli._request_from_live_brief(brief, args=args)
+
+    assert request.input_payload["surface_history"] == history
+    assert request.input_payload["surface_context"] == surface_context
+    assert request.metadata["surface_history"] == history
+    assert request.metadata["surface_context"] == surface_context
+
+
+def test_live_generic_task_guides_indirect_artifact_scope_without_canned_targets(tmp_path) -> None:
+    report = super_cli.run_super_organism_demo("clean up the extra artifacts from the previous turn")
+
+    task = super_cli._live_generic_task(report, workspace_root=tmp_path)
+
+    assert "recent surface conversation" in task
+    assert "user-facing workspace files" in task
+    assert "runtime/history/state directories" in task
+    assert "unless the operator explicitly names them" in task
+
+
+def test_mutation_paths_from_tools_includes_shell_workspace_change_diff(tmp_path) -> None:
+    mutated = super_cli._mutation_paths_from_tools(
+        [
+            {
+                "tool_id": "shell_command",
+                "ok": True,
+                "arguments": {"command": "mv a b"},
+                "result": {
+                    "exit_code": 0,
+                    "workspace_changes": {
+                        "changed_paths": ["combined.md", ".dan-super/state.json"],
+                    },
+                },
+            }
+        ],
+        workspace_root=tmp_path,
+        exclude_roots=[tmp_path / ".dan-super"],
+    )
+
+    assert mutated == [str((tmp_path / "combined.md").resolve(strict=False))]
+
+
 def test_super_organism_main_parses_skill_mentions_before_runner(tmp_path, monkeypatch) -> None:
     catalog = [
         {

@@ -12,6 +12,7 @@ from dan.providers import (
     StreamChunk,
     resolve_provider_timeout,
 )
+from dan.providers.multimodal import anthropic_blocks_from_openai_content
 
 
 class AnthropicProvider:
@@ -286,7 +287,7 @@ class AnthropicProvider:
 
             converted.append({
                 "role": "user",
-                "content": msg.get("content", ""),
+                "content": anthropic_blocks_from_openai_content(msg.get("content", "")),
             })
 
         flush_tool_results()

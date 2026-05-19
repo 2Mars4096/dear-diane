@@ -13,9 +13,10 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from dan.providers import CompletionResult, LLMProvider, apply_cache_hints
+from dan.providers.multimodal import content_with_image_attachments, image_attachments_from_metadata
 from dan.tools import get_all_tools
 from dan.tools._git_helpers import _find_repo, _git_binary
 from dan.worker.context_capsules import (
@@ -70,7 +71,31 @@ _CODING_AGGREGATION_TOOL_PREFERRED_ORDER = (
 _CODING_AGGREGATION_TOOL_EXCLUSIONS = frozenset(
     {"list_directory", "shell_command", "web_search", "git_status", "git_log"}
 )
-_INTERNAL_WORKSPACE_DIR_NAMES = frozenset({".dan-code", ".git", ".pytest_cache", "__pycache__"})
+_INTERNAL_WORKSPACE_DIR_NAMES = frozenset(
+    {
+        ".agent-subsessions",
+        ".dan-code",
+        ".dan-research",
+        ".dan-super",
+        ".git",
+        ".pytest_cache",
+        "__pycache__",
+    }
+)
+_SHELL_WORKSPACE_CHANGE_SKIP_DIR_NAMES = _INTERNAL_WORKSPACE_DIR_NAMES | frozenset(
+    {
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        ".venv",
+        "build",
+        "dist",
+        "memory",
+        "node_modules",
+        "venv",
+    }
+)
+_SHELL_WORKSPACE_CHANGE_MAX_FILES = 12_000
 _GREENFIELD_OPERATOR_ARTIFACTS = frozenset({"prompt.md", "acceptance.md", "report.json"})
 ToolRuntimeEventCallback = Callable[[dict[str, Any]], None]
 ToolApprovalCallback = Callable[[str, dict[str, Any], dict[str, Any]], bool]
@@ -94,8 +119,8 @@ _TOOL_PROMPT_TEXT_LIMIT = 24_000
 _EXCLUSIVE_OWNER_FILE_READ_PROMPT_TEXT_LIMIT = 96_000
 _OLDER_FILE_READ_PROMPT_TEXT_LIMIT = 4_000
 _RECENT_FULL_FILE_READ_PROMPT_RESULTS = 4
-_PROMPT_CONTEXT_SUPER_DAN_TARGET_CHARS = 480_000
-_PROMPT_CONTEXT_SUPER_DAN_EMERGENCY_CHARS = 640_000
+_PROMPT_CONTEXT_SUPER_DAN_TARGET_CHARS = 120_000
+_PROMPT_CONTEXT_SUPER_DAN_EMERGENCY_CHARS = 180_000
 _PROMPT_CONTEXT_RECENT_FULL_ROUNDS = 2
 _PROMPT_CONTEXT_EMERGENCY_RECENT_FULL_ROUNDS = 1
 _PROMPT_CONTEXT_OLDER_TOOL_TEXT_LIMIT = 2_000
@@ -105,6 +130,11 @@ _PROMPT_CONTEXT_EMERGENCY_TOOL_CALL_ARGUMENT_TEXT_LIMIT = 500
 _PROMPT_CONTEXT_ASSISTANT_TEXT_LIMIT = 2_000
 _PROMPT_CONTEXT_EMERGENCY_ASSISTANT_TEXT_LIMIT = 800
 _PROMPT_CONTEXT_EMERGENCY_FILE_READ_TEXT_LIMIT = 1_000
+_PROMPT_CONTEXT_HARD_SYSTEM_TEXT_LIMIT = 24_000
+_PROMPT_CONTEXT_HARD_USER_TEXT_LIMIT = 36_000
+_PROMPT_CONTEXT_HARD_ASSISTANT_TEXT_LIMIT = 2_000
+_PROMPT_CONTEXT_HARD_TOOL_TEXT_LIMIT = 1_000
+_PROMPT_CONTEXT_HARD_MIN_MESSAGE_TEXT_LIMIT = 800
 _PREWRITE_SUCCESSFUL_READ_NUDGE_THRESHOLD = 3
 _AGGREGATION_PREWRITE_SUCCESSFUL_READ_NUDGE_THRESHOLD = 2
 _PREWRITE_SHELL_ANALYSIS_NUDGE_THRESHOLD = 4
@@ -545,7 +575,14 @@ def _compact_tool_call_arguments_for_prompt(
             ),
         }
     else:
-        if function_name == "file_write" and isinstance(parsed, dict):
+        if isinstance(parsed, dict) and parsed.get("prompt_replay_compacted") is True:
+            compacted_payload, changed = _compact_prompt_value(
+                parsed,
+                text_limit=text_limit,
+            )
+            if not changed:
+                return False, 0
+        elif function_name == "file_write" and isinstance(parsed, dict):
             compacted_payload = _compact_file_write_arguments_for_prompt(
                 parsed,
                 original_chars=original_chars,
@@ -599,6 +636,220 @@ def _compact_assistant_message_content_for_prompt(
         return False, 0
     message["content"] = compacted
     return True, max(len(content) - len(compacted), 0)
+
+
+def _compact_arbitrary_prompt_text(
+    content: str,
+    *,
+    limit: int,
+    reason: str,
+) -> tuple[str, int]:
+    if len(content) <= limit:
+        return content, 0
+    marker = (
+        f"\n...[prompt replay compacted: {{omitted}} chars omitted; {reason}; "
+        "use targeted tools or event logs for exact omitted details]...\n"
+    )
+    marker_overhead = len(marker.format(omitted=len(content)))
+    available = max(int(limit) - marker_overhead, 0)
+    if available <= 0:
+        omitted = len(content)
+        return marker.format(omitted=omitted)[: max(int(limit), 0)], omitted
+    head_chars = max(int(available * 0.6), 1)
+    tail_chars = max(available - head_chars, 0)
+    omitted = max(len(content) - head_chars - tail_chars, 0)
+    compacted = (
+        content[:head_chars]
+        + marker.format(omitted=omitted)
+        + (content[-tail_chars:] if tail_chars else "")
+    )
+    if len(compacted) > limit and tail_chars:
+        overflow = len(compacted) - limit
+        head_chars = max(head_chars - overflow, 1)
+        omitted = max(len(content) - head_chars - tail_chars, 0)
+        compacted = (
+            content[:head_chars]
+            + marker.format(omitted=omitted)
+            + content[-tail_chars:]
+        )
+    return compacted, omitted
+
+
+def _compact_message_content_hard_for_prompt(
+    message: dict[str, Any],
+    *,
+    text_limit: int,
+    reason: str,
+) -> tuple[bool, int]:
+    content = message.get("content")
+    original_chars = len(_message_content_text(content))
+    if original_chars <= text_limit:
+        return False, 0
+    role = str(message.get("role") or "").strip()
+    if role == "tool" and isinstance(content, str):
+        try:
+            payload = json.loads(content)
+        except Exception:
+            payload = None
+        if isinstance(payload, (dict, list)):
+            compacted_payload, changed = _compact_prompt_value(
+                payload,
+                text_limit=text_limit,
+            )
+            if not changed:
+                return False, 0
+            if isinstance(compacted_payload, dict):
+                compacted_payload["prompt_context_hard_compacted"] = True
+                compacted_payload["prompt_context_hard_note"] = (
+                    "Tool content was compacted only for provider replay after the active prompt budget was exceeded."
+                )
+            message["content"] = json.dumps(
+                compacted_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+            return True, max(original_chars - len(str(message["content"])), 0)
+    if isinstance(content, str):
+        compacted, omitted = _compact_arbitrary_prompt_text(
+            content,
+            limit=text_limit,
+            reason=reason,
+        )
+        if omitted <= 0:
+            return False, 0
+        message["content"] = compacted
+        return True, max(original_chars - len(compacted), 0)
+
+    compacted_content, changed = _compact_prompt_value(
+        content,
+        text_limit=max(_PROMPT_CONTEXT_HARD_MIN_MESSAGE_TEXT_LIMIT, int(text_limit // 4)),
+    )
+    compacted_chars = len(_message_content_text(compacted_content))
+    if changed and compacted_chars <= text_limit:
+        message["content"] = compacted_content
+        return True, max(original_chars - compacted_chars, 0)
+
+    serialized = _message_content_text(content)
+    retained_excerpt, omitted = _compact_arbitrary_prompt_text(
+        serialized,
+        limit=max(_PROMPT_CONTEXT_HARD_MIN_MESSAGE_TEXT_LIMIT, int(text_limit * 0.75)),
+        reason=reason,
+    )
+    message["content"] = {
+        "prompt_replay_compacted": True,
+        "original_chars": original_chars,
+        "retained_excerpt": retained_excerpt,
+        "summary": (
+            "Large structured message content was compacted only for provider replay. "
+            "The full source remains available through runtime logs or targeted tools."
+        ),
+    }
+    return True, max(original_chars - len(_message_content_text(message.get("content"))), omitted)
+
+
+def _hard_prompt_text_limit_for_role(role: str) -> int:
+    if role == "system":
+        return _PROMPT_CONTEXT_HARD_SYSTEM_TEXT_LIMIT
+    if role == "user":
+        return _PROMPT_CONTEXT_HARD_USER_TEXT_LIMIT
+    if role == "tool":
+        return _PROMPT_CONTEXT_HARD_TOOL_TEXT_LIMIT
+    return _PROMPT_CONTEXT_HARD_ASSISTANT_TEXT_LIMIT
+
+
+def _hard_compact_messages_for_provider_prompt(
+    messages: list[dict[str, Any]],
+    *,
+    budget_chars: int | None,
+    emergency_budget_chars: int | None,
+    tool_schema_chars: int,
+    emergency: bool,
+    protected_indices: set[int] | None = None,
+) -> dict[str, Any]:
+    active_budget = (
+        emergency_budget_chars
+        if emergency and emergency_budget_chars is not None
+        else budget_chars
+    )
+    if active_budget is None:
+        active_budget = emergency_budget_chars
+    if active_budget is None or not _over_prompt_context_budget(
+        messages,
+        budget_chars=active_budget,
+        tool_schema_chars=tool_schema_chars,
+    ):
+        return {
+            "prompt_context_hard_compaction": False,
+            "prompt_context_hard_budget_chars": active_budget,
+            "prompt_context_hard_compacted_messages": 0,
+            "prompt_context_hard_omitted_message_chars": 0,
+            "prompt_context_hard_compacted_tool_call_args": 0,
+            "prompt_context_hard_omitted_tool_call_arg_chars": 0,
+        }
+
+    message_count = 0
+    omitted_message_chars = 0
+    tool_call_count = 0
+    tool_call_omitted_chars = 0
+    reason = "prompt context exceeded the active provider replay budget"
+    protected = set(protected_indices or set())
+
+    for index, message in enumerate(messages):
+        role = str(message.get("role") or "").strip()
+        limit = _hard_prompt_text_limit_for_role(role)
+        compacted, omitted = _compact_message_content_hard_for_prompt(
+            message,
+            text_limit=limit,
+            reason=reason,
+        )
+        if compacted:
+            message_count += 1
+            omitted_message_chars += omitted
+        if index in protected:
+            continue
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        for raw_call in tool_calls:
+            if not isinstance(raw_call, dict):
+                continue
+            compacted_args, omitted_args = _compact_tool_call_arguments_for_prompt(
+                raw_call,
+                text_limit=_PROMPT_CONTEXT_EMERGENCY_TOOL_CALL_ARGUMENT_TEXT_LIMIT,
+            )
+            if compacted_args:
+                tool_call_count += 1
+                tool_call_omitted_chars += omitted_args
+
+    if _over_prompt_context_budget(
+        messages,
+        budget_chars=active_budget,
+        tool_schema_chars=tool_schema_chars,
+    ):
+        available = max(int(active_budget) - max(0, int(tool_schema_chars)), 0)
+        per_message_limit = max(
+            _PROMPT_CONTEXT_HARD_MIN_MESSAGE_TEXT_LIMIT,
+            int(available / max(len(messages), 1)),
+        )
+        for message in messages:
+            compacted, omitted = _compact_message_content_hard_for_prompt(
+                message,
+                text_limit=per_message_limit,
+                reason=reason,
+            )
+            if compacted:
+                message_count += 1
+                omitted_message_chars += omitted
+
+    return {
+        "prompt_context_hard_compaction": True,
+        "prompt_context_hard_budget_chars": active_budget,
+        "prompt_context_hard_compacted_messages": message_count,
+        "prompt_context_hard_omitted_message_chars": omitted_message_chars,
+        "prompt_context_hard_compacted_tool_call_args": tool_call_count,
+        "prompt_context_hard_omitted_tool_call_arg_chars": tool_call_omitted_chars,
+    }
 
 
 def _compact_messages_for_provider_prompt(
@@ -766,9 +1017,17 @@ def _compact_messages_for_provider_prompt(
             assistant_message_count += 1
             assistant_message_omitted_chars += omitted
 
+    hard_compaction_stats = _hard_compact_messages_for_provider_prompt(
+        copied,
+        budget_chars=budget_chars,
+        emergency_budget_chars=emergency_budget_chars,
+        tool_schema_chars=tool_schema_chars,
+        emergency=emergency,
+        protected_indices=protected_indices,
+    )
     compacted_chars = _message_prompt_char_count(copied)
     final_total_chars = compacted_chars + max(0, int(tool_schema_chars))
-    return copied, {
+    stats = {
         "prompt_message_count": len(copied),
         "prompt_input_chars": compacted_chars,
         "prompt_context_original_chars": original_chars,
@@ -790,6 +1049,8 @@ def _compact_messages_for_provider_prompt(
         "prompt_context_compacted_assistant_messages": assistant_message_count,
         "prompt_context_omitted_assistant_message_chars": assistant_message_omitted_chars,
     }
+    stats.update(hard_compaction_stats)
+    return copied, stats
 
 
 def _line_numbered_prompt_content(content: str, *, start_line: int = 1) -> str:
@@ -816,6 +1077,13 @@ def _file_read_payload_with_line_numbers(tool_payload: dict[str, Any]) -> dict[s
     result["content"] = _line_numbered_prompt_content(content, start_line=start_line)
     result["content_format"] = "line_numbered"
     return prompt_payload
+
+
+def _completion_request_user_content(request: CompletionRequest) -> str | list[dict[str, Any]]:
+    attachments = image_attachments_from_metadata(request.metadata)
+    if not attachments:
+        return request.user_prompt
+    return content_with_image_attachments(request.user_prompt, attachments)
 
 
 def _tool_schema_name(tool: dict[str, Any]) -> str:
@@ -2021,10 +2289,98 @@ def _looks_like_temporary_workspace_helper_path(relative_path: str) -> bool:
     return stem.startswith(helper_prefixes)
 
 
+def _workspace_file_snapshot(
+    workspace_root: Path,
+    *,
+    max_files: int = _SHELL_WORKSPACE_CHANGE_MAX_FILES,
+) -> dict[str, Any]:
+    root = Path(workspace_root).expanduser().resolve()
+    files: dict[str, tuple[int, int]] = {}
+    truncated = False
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [
+                dirname
+                for dirname in sorted(dirnames)
+                if dirname not in _SHELL_WORKSPACE_CHANGE_SKIP_DIR_NAMES
+            ]
+            base = Path(dirpath)
+            for filename in sorted(filenames):
+                if len(files) >= max_files:
+                    truncated = True
+                    return {"files": files, "truncated": truncated}
+                path = base / filename
+                try:
+                    stat = path.stat()
+                    relative = str(path.relative_to(root))
+                except (OSError, ValueError):
+                    continue
+                files[relative] = (int(stat.st_size), int(stat.st_mtime_ns))
+    except OSError:
+        truncated = True
+    return {"files": files, "truncated": truncated}
+
+
+def _workspace_snapshot_diff(
+    before: Mapping[str, Any] | None,
+    after: Mapping[str, Any] | None,
+    *,
+    max_paths: int = 300,
+) -> dict[str, Any]:
+    before_files = before.get("files") if isinstance(before, Mapping) else None
+    after_files = after.get("files") if isinstance(after, Mapping) else None
+    if not isinstance(before_files, dict) or not isinstance(after_files, dict):
+        return {}
+    before_keys = set(before_files)
+    after_keys = set(after_files)
+    created_all = sorted(after_keys - before_keys)
+    deleted_all = sorted(before_keys - after_keys)
+    modified_all = sorted(
+        path for path in before_keys & after_keys if before_files.get(path) != after_files.get(path)
+    )
+    changed_all = created_all + modified_all + deleted_all
+    return {
+        "created": created_all[:max_paths],
+        "modified": modified_all[:max_paths],
+        "deleted": deleted_all[:max_paths],
+        "changed_paths": changed_all[:max_paths],
+        "change_count": len(changed_all),
+        "truncated": bool(before.get("truncated") if isinstance(before, Mapping) else False)
+        or bool(after.get("truncated") if isinstance(after, Mapping) else False)
+        or len(changed_all) > max_paths,
+    }
+
+
+def _shell_workspace_change_paths(tool: Mapping[str, Any]) -> list[str]:
+    result = tool.get("result") if isinstance(tool.get("result"), Mapping) else {}
+    changes = result.get("workspace_changes") if isinstance(result, Mapping) else {}
+    if not isinstance(changes, Mapping):
+        return []
+    raw_paths = changes.get("changed_paths")
+    if not isinstance(raw_paths, Sequence) or isinstance(raw_paths, (str, bytes)):
+        return []
+    paths: list[str] = []
+    seen: set[str] = set()
+    for raw_path in raw_paths:
+        text = str(raw_path or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        paths.append(text)
+    return paths
+
+
 def _tool_materialized_mutation(tool: dict[str, Any]) -> bool:
     if not tool.get("ok"):
         return False
     tool_id = str(tool.get("tool_id") or "").strip()
+    if tool_id == "shell_command":
+        result = tool.get("result") if isinstance(tool.get("result"), dict) else {}
+        try:
+            exit_code = int(result.get("exit_code", 0))
+        except (TypeError, ValueError):
+            exit_code = 0
+        return exit_code == 0 and bool(_shell_workspace_change_paths(tool))
     if tool_id not in {"file_write", "file_edit"}:
         return False
     if tool_id == "file_edit":
@@ -2043,6 +2399,21 @@ def _successful_workspace_mutation_paths(
     seen: set[str] = set()
     for tool in executed_tools:
         if not _tool_materialized_mutation(tool):
+            continue
+        if str(tool.get("tool_id") or "").strip() == "shell_command":
+            for raw_path in _shell_workspace_change_paths(tool):
+                relative = _relative_workspace_path(
+                    raw_path,
+                    workspace_root=workspace_root,
+                )
+                if not relative:
+                    relative = str(raw_path).strip().lstrip("/\\")
+                if not relative or relative in seen:
+                    continue
+                if _looks_like_temporary_workspace_helper_path(relative):
+                    continue
+                seen.add(relative)
+                paths.append(relative)
             continue
         relative = _relative_workspace_path(
             _tool_argument_path(tool),
@@ -3346,7 +3717,7 @@ def _provider_timeout_recovery_messages(
     if tool_policy:
         messages.append({"role": "system", "content": tool_policy})
     if request.user_prompt:
-        messages.append({"role": "user", "content": request.user_prompt})
+        messages.append({"role": "user", "content": _completion_request_user_content(request)})
 
     timeout_text = ""
     if timeout_seconds is not None:
@@ -3962,6 +4333,11 @@ class LocalOrganismToolRuntime:
                 raise PermissionError(f"tool_call_denied:{tool_id}")
         prior_workspace = os.environ.get("DAN_WORKSPACE_ROOT")
         os.environ["DAN_WORKSPACE_ROOT"] = str(self._workspace_root)
+        workspace_before = (
+            _workspace_file_snapshot(self._workspace_root)
+            if tool_id == "shell_command"
+            else None
+        )
         try:
             result = await function(**kwargs)
         except Exception as exc:
@@ -3979,6 +4355,13 @@ class LocalOrganismToolRuntime:
                 os.environ.pop("DAN_WORKSPACE_ROOT", None)
             else:
                 os.environ["DAN_WORKSPACE_ROOT"] = prior_workspace
+        if tool_id == "shell_command" and isinstance(result, dict):
+            workspace_after = _workspace_file_snapshot(self._workspace_root)
+            result = dict(result)
+            result["workspace_changes"] = _workspace_snapshot_diff(
+                workspace_before,
+                workspace_after,
+            )
         self._emit_event(
             "tool.completed",
             tool_id=tool_id,
@@ -4285,7 +4668,7 @@ class ToolLoopCompletionProvider:
         )
         if tool_policy:
             messages.append({"role": "system", "content": tool_policy})
-        messages.append({"role": "user", "content": request.user_prompt})
+        messages.append({"role": "user", "content": _completion_request_user_content(request)})
 
         executed_tools: list[dict[str, Any]] = []
         rounds = 0

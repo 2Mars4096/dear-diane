@@ -49,7 +49,7 @@ The V2 ingress contracts live in `src/dan/server/chat_v2.py`:
 - `AttachmentRef`: structured file/image/figure/PDF/audio/video/data reference.
 - `AgentRunCommand`, `AgentRunEvent`, `TaskSnapshot`: typed hooks between top-level triage and bounded Agent/organism execution.
 
-For messaging surfaces, keep `history` limited to recent `user` / `assistant` turns and put native reply metadata in `surface_context` instead of pasting quotes into `message`. Telegram V2 recognizes `surface_context.telegram.reply_to_message_id`, `reply_to_text`, sender ids, and `surface_context.conversation` fields such as `conversation_key`, `lane_key`, and `reply_lane_key`. The server stores bounded history plus reply context in `SurfaceTurn.metadata` and Agent start-command payloads so backend Agents can resolve short follow-ups without treating old messages as new tasks.
+For messaging surfaces, keep `history` limited to recent `user` / `assistant` turns and put native reply metadata in `surface_context` instead of pasting quotes into `message`. Telegram V2 recognizes `surface_context.telegram.reply_to_message_id`, `reply_to_text`, sender ids, and `surface_context.conversation` fields such as `conversation_key`, `lane_key`, and `reply_lane_key`. Super TUI uses the same contract by carrying bounded visible transcript turns under `surface_context.conversation.recent_turns` for local/server async admission and Super DAN live briefs. The server stores bounded history plus reply context in `SurfaceTurn.metadata` and Agent start-command payloads so backend Agents can resolve short follow-ups without treating old messages as new tasks.
 
 Every V2 surface session is bound to a workspace. Callers can pass `surface_context["workspace_root"]`, `surface_context["workspace_path"]`, `surface_context["workspace"]="~/project"`, or `surface_context["workspace"]={"id": "...", "root": "..."}`. If omitted, V2 looks for explicit path wording in the user turn, such as `I have this path /repo/app, please fix...`, `repo: ~/project`, or `in /workspace/project`; matching path mentions become `workspace_source="message_path"`. If no explicit or message path is found, V2 binds the session to `~` expanded on the server. The resolved `workspace_root` and `workspace_id` are carried in `SurfaceTurn`, task snapshots, Agent run records, start-command payloads, and compact `v2_control_plane` responses. Once an active task is created from a path-bearing turn, later explicit follow-ups in the same surface topic can inherit that task workspace even if the follow-up omits the path.
 
@@ -1179,6 +1179,12 @@ DAN supports multiple LLM providers simultaneously via `ProviderRegistry`.
 | **Anthropic** | `anthropic` (optional) | `DAN_ANTHROPIC_API_KEY` | `claude-*` |
 | **Google** | `google-generativeai` (optional) | `DAN_GOOGLE_API_KEY` | `gemini-*` |
 
+### Multimodal Image Attachments
+
+Provider calls accept OpenAI-compatible user content blocks for images, for example `{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}`. The shared provider adapter normalizes the short alias `{"type": "image_url", "url": ...}`, passes canonical blocks through OpenAI-compatible endpoints, translates them to Anthropic base64 image sources, and translates them to Gemini inline data parts.
+
+Worker calls can also pass local images through `CompletionRequest.metadata["image_attachments"]` as a list of dicts with `kind="image"` and `local_path` or `path`. The local runtime converts those attachments into the same image content blocks before the provider call. Super TUI uses this path for Ctrl-V screenshot paste and `@path.png` image mentions.
+
 ### Configuration
 
 ```bash
@@ -1410,6 +1416,8 @@ DAN ships batteries-included tools, auto-registered during server startup. Each 
 `file_read` parameters: `path` (required), optional `start_line`, `end_line`, and `encoding`. For ranged reads, `line_count` is kept as the returned line count for compatibility; callers should prefer `returned_line_count`, `total_line_count`, `line_start`, and `line_end` when summarizing context so a line window is not mistaken for the full file.
 
 `file_edit` parameters: `path` plus either a line-based edit (`start_line`, optional `end_line`, `content`, `mode`) or `edits=[...]` for multiple non-overlapping edits in the same file. Each batch item must include `start_line` or a unique exact-text compatibility pair (`old_string` plus `new_string`) copied from a recent `file_read`; unanchored batch items such as `{"content": "..."}` are rejected and should be repaired by reading the target lines first. Provider-facing local tool schemas may be compacted to avoid strict backend schema-size limits, but the runtime still validates the full `file_edit` contract before applying any disk mutation.
+
+`shell_command` returns `exit_code`, `stdout`, and `stderr`. In the local organism runtime it also includes `workspace_changes` from a bounded before/after workspace snapshot for successful shell calls, with `created`, `modified`, `deleted`, `changed_paths`, `change_count`, and `truncated`. Runtime/history/cache directories are excluded from that snapshot. Callers should use `workspace_changes.changed_paths` as material mutation evidence instead of trying to infer effects from command text.
 
 `web_fetch` accepts `url` plus optional `browser_fallback`. When enabled, the tool retries through DAN's persistent Playwright browser if the plain HTTP fetch fails or only returns a short JavaScript/cookie/challenge shell. Returned metadata now includes `fetch_via` (`"http"` or `"browser"`), `browser_fallback_used`, and `content_requires_browser`. The conversation-layer `web_search` / `web_fetch` capability handlers expose the same `browser_fallback` flag and `SearchResultSet.browser_fallback_count` so callers can tell when grounding depended on browser-rendered content.
 

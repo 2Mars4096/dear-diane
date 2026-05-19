@@ -13,6 +13,7 @@ from dan.providers import (
     StreamChunk,
     resolve_provider_timeout,
 )
+from dan.providers.multimodal import gemini_parts_from_openai_content
 
 
 class GoogleProvider:
@@ -117,13 +118,7 @@ class GoogleProvider:
 
             flush_tool_parts()
             gemini_role = "model" if role == "assistant" else "user"
-            parts: list[dict[str, Any]] = []
-            if isinstance(content, str) and content:
-                parts.append({"text": content})
-            elif isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        parts.append({"text": str(part.get("text") or "")})
+            parts = gemini_parts_from_openai_content(content)
 
             if role == "assistant":
                 for tc in msg.get("tool_calls") or []:
@@ -167,6 +162,19 @@ class GoogleProvider:
 
     def _build_text_part(self, text: str) -> Any:
         return self._protos.Part({"text": text}, ignore_unknown_fields=True)
+
+    def _build_inline_data_part(self, inline_data: dict[str, Any]) -> Any | None:
+        payload = inline_data.get("inline_data") if isinstance(inline_data, dict) else None
+        if not isinstance(payload, dict):
+            return None
+        mime_type = str(payload.get("mime_type") or "").strip()
+        data = str(payload.get("data") or "").strip()
+        if not mime_type or not data:
+            return None
+        return self._protos.Part(
+            {"inline_data": {"mime_type": mime_type, "data": data}},
+            ignore_unknown_fields=True,
+        )
 
     def _build_function_call_part(self, tool_call: dict[str, Any]) -> Any | None:
         if not isinstance(tool_call, dict):
@@ -251,12 +259,13 @@ class GoogleProvider:
             gemini_role = "model" if role == "assistant" else "user"
             parts: list[Any] = []
 
-            if isinstance(content, str) and content:
-                parts.append(self._build_text_part(content))
-            elif isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        parts.append(self._build_text_part(str(part.get("text") or "")))
+            for part in gemini_parts_from_openai_content(content):
+                if "text" in part:
+                    parts.append(self._build_text_part(str(part.get("text") or "")))
+                    continue
+                inline_part = self._build_inline_data_part(part)
+                if inline_part is not None:
+                    parts.append(inline_part)
 
             if role == "assistant":
                 for tc in msg.get("tool_calls") or []:

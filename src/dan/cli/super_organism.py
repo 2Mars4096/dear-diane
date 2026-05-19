@@ -12,6 +12,8 @@ import os
 import re
 import shutil
 import sys
+from collections.abc import Mapping as MappingABC
+from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -3036,12 +3038,110 @@ def _brief_with_explicit_super_dan_skills(
     )
 
 
+def _surface_attachments_from_args(args: argparse.Namespace | None) -> list[dict[str, Any]]:
+    if args is None:
+        return []
+    raw = getattr(args, "_surface_attachments", None)
+    if not isinstance(raw, SequenceABC) or isinstance(raw, (str, bytes)):
+        return []
+    return [dict(item) for item in raw if isinstance(item, MappingABC)]
+
+
+def _surface_image_attachments_from_args(args: argparse.Namespace | None) -> list[dict[str, Any]]:
+    if args is None:
+        return []
+    raw = getattr(args, "_surface_image_attachments", None)
+    if not isinstance(raw, SequenceABC) or isinstance(raw, (str, bytes)):
+        raw = getattr(args, "_surface_attachments", None)
+    if not isinstance(raw, SequenceABC) or isinstance(raw, (str, bytes)):
+        return []
+    images: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, MappingABC):
+            continue
+        kind = str(item.get("kind") or "").strip().lower()
+        if kind and kind not in {"image", "figure"}:
+            continue
+        images.append(dict(item))
+    return images
+
+
+def _surface_history_from_args(args: argparse.Namespace | None) -> list[dict[str, str]]:
+    if args is None:
+        return []
+    raw = getattr(args, "_surface_history", None)
+    if not isinstance(raw, SequenceABC) or isinstance(raw, (str, bytes)):
+        return []
+    history: list[dict[str, str]] = []
+    for item in raw[-12:]:
+        if not isinstance(item, MappingABC):
+            continue
+        role = str(item.get("role") or "").strip()
+        content = " ".join(str(item.get("content") or "").split())
+        if role in {"user", "assistant"} and content:
+            history.append({"role": role, "content": content[:1200]})
+    return history
+
+
+def _surface_context_from_args(args: argparse.Namespace | None) -> dict[str, Any]:
+    if args is None:
+        return {}
+    raw = getattr(args, "_surface_context", None)
+    return dict(raw) if isinstance(raw, MappingABC) else {}
+
+
+def _brief_with_surface_conversation(
+    brief: WorkerBrief,
+    *,
+    args: argparse.Namespace | None = None,
+) -> WorkerBrief:
+    history = _surface_history_from_args(args)
+    context = _surface_context_from_args(args)
+    if not history and not context:
+        return brief
+    payload_update = {
+        **dict(brief.input_payload),
+        "surface_history": history,
+        "surface_context": context,
+    }
+    metadata_update = {
+        **dict(brief.metadata),
+        "surface_history": history,
+        "surface_context": context,
+    }
+    return brief.model_copy(update={"input_payload": payload_update, "metadata": metadata_update})
+
+
+def _brief_with_surface_attachments(
+    brief: WorkerBrief,
+    *,
+    args: argparse.Namespace | None = None,
+) -> WorkerBrief:
+    attachments = _surface_attachments_from_args(args)
+    image_attachments = _surface_image_attachments_from_args(args)
+    if not attachments and not image_attachments:
+        return brief
+    payload_update = {
+        **dict(brief.input_payload),
+        "surface_attachments": attachments,
+        "image_attachments": image_attachments,
+    }
+    metadata_update = {
+        **dict(brief.metadata),
+        "surface_attachments": attachments,
+        "image_attachments": image_attachments,
+    }
+    return brief.model_copy(update={"input_payload": payload_update, "metadata": metadata_update})
+
+
 def _request_from_live_brief(
     brief: WorkerBrief,
     *,
     args: argparse.Namespace | None = None,
 ) -> ExecutionRequest:
     explicit_brief = _brief_with_explicit_super_dan_skills(brief, args=args)
+    explicit_brief = _brief_with_surface_conversation(explicit_brief, args=args)
+    explicit_brief = _brief_with_surface_attachments(explicit_brief, args=args)
     return request_from_brief(_apply_auto_super_dan_skills(explicit_brief))
 
 
@@ -3423,6 +3523,11 @@ def _live_generic_task(
         if prompt_only_creation_target
         else "Inspect the existing project or workspace as needed. "
     )
+    workspace_scope_note = (
+        "When the request refers to existing artifacts indirectly, infer the target set from explicit paths, recent surface conversation, "
+        "and user-facing workspace files before widening the search. Treat runtime/history/state directories such as `.dan-*`, "
+        "`.agent-subsessions`, memory stores, plan traces, and test logs as non-deliverable context unless the operator explicitly names them. "
+    )
     coordination_sentence = (
         "Use the constrained creation packet as the execution context. "
         if prompt_only_creation_target
@@ -3448,6 +3553,7 @@ def _live_generic_task(
         f"{plan_note}"
         f"{interactive_source_note}"
         f"{workspace_context_sentence}"
+        f"{workspace_scope_note}"
         "If the objective asks for current external facts, use web_search "
         "instead of guessing. If it asks to save, export, return, or eventually produce a file, create or update the appropriate "
         "workspace artifact; markdown/report requests should be materialized as a markdown file with source notes or links when "
@@ -7648,12 +7754,37 @@ def _mutation_paths_from_tools(
     seen: set[str] = set()
     excluded = [root.resolve(strict=False) for root in exclude_roots]
     for tool in executed_tools:
-        if not tool.get("ok") or str(tool.get("tool_id") or "") not in {"file_write", "file_edit"}:
+        tool_id = str(tool.get("tool_id") or "")
+        if not tool.get("ok") or tool_id not in {"file_write", "file_edit", "shell_command"}:
             continue
         arguments = tool.get("arguments") if isinstance(tool.get("arguments"), dict) else {}
         result = tool.get("result") if isinstance(tool.get("result"), dict) else {}
+        if tool_id == "shell_command":
+            try:
+                exit_code = int(result.get("exit_code", 0))
+            except (TypeError, ValueError):
+                exit_code = 0
+            changes = result.get("workspace_changes") if exit_code == 0 else {}
+            raw_paths = changes.get("changed_paths") if isinstance(changes, dict) else []
+            if not isinstance(raw_paths, SequenceABC) or isinstance(raw_paths, (str, bytes)):
+                continue
+            for raw_path in raw_paths:
+                text = str(raw_path or "").strip()
+                if not text:
+                    continue
+                candidate = Path(text).expanduser()
+                path = candidate if candidate.is_absolute() else workspace_root / candidate
+                resolved = path.resolve(strict=False)
+                if any(_path_is_under(resolved, root) for root in excluded):
+                    continue
+                rendered = str(resolved)
+                if rendered in seen:
+                    continue
+                seen.add(rendered)
+                paths.append(rendered)
+            continue
         if (
-            str(tool.get("tool_id") or "") == "file_edit"
+            tool_id == "file_edit"
             and (result.get("changed") is False or result.get("no_op") is True)
         ):
             continue

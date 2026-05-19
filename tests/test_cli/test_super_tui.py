@@ -563,6 +563,67 @@ def test_super_tui_background_dispatch_marks_outbox(tmp_path, monkeypatch) -> No
     assert rows[-1]["metadata"]["background_dispatch"] is True
 
 
+def test_super_tui_chatbox_scheduler_queues_second_turn(tmp_path, capsys, monkeypatch) -> None:
+    parser = super_tui.build_parser()
+    calls: list[str] = []
+    release_first = threading.Event()
+
+    def fake_start(
+        turn_args,
+        run_parser,
+        *,
+        workspace_root,
+        message_id,
+        objective,
+        forced_new,
+        plan_only,
+    ):
+        del turn_args, run_parser, workspace_root, message_id, forced_new, plan_only
+        calls.append(objective)
+
+        def run() -> None:
+            if objective == "first turn":
+                release_first.wait(timeout=2)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        return thread
+
+    monkeypatch.setattr(super_tui, "_start_tui_background_dispatch", fake_start)
+    scheduler = super_tui.TuiChatboxTurnScheduler(
+        parser=parser,
+        workspace_root=tmp_path,
+        plain=True,
+    )
+
+    first = super_tui.TuiChatboxQueuedTurn(
+        turn_args=Namespace(workspace=str(tmp_path)),
+        message_id="msg-1",
+        objective="first turn",
+        forced_new=False,
+        plan_only=False,
+    )
+    second = super_tui.TuiChatboxQueuedTurn(
+        turn_args=Namespace(workspace=str(tmp_path)),
+        message_id="msg-2",
+        objective="second turn",
+        forced_new=False,
+        plan_only=False,
+    )
+
+    assert scheduler.submit(first) is True
+    assert scheduler.submit(second) is False
+    assert calls == ["first turn"]
+    assert "Queued after the current turn: second turn" in capsys.readouterr().out
+
+    release_first.set()
+    for _ in range(40):
+        if calls == ["first turn", "second turn"]:
+            break
+        threading.Event().wait(0.05)
+    assert calls == ["first turn", "second turn"]
+
+
 def test_super_tui_background_dispatch_gate_requires_tty(tmp_path, monkeypatch) -> None:
     parser = super_tui.build_parser()
     args = parser.parse_args(["--workspace", str(tmp_path), "--plain"])
@@ -578,13 +639,63 @@ def test_super_tui_background_dispatch_gate_requires_tty(tmp_path, monkeypatch) 
     monkeypatch.setattr(super_tui.sys, "stdin", FakeStdin(True))
     assert super_tui._should_dispatch_tui_turn_in_background(args, async_agent_enabled=True)
 
-    args.plan_only = True
-    assert not super_tui._should_dispatch_tui_turn_in_background(args, async_agent_enabled=True)
+    explicit_args = parser.parse_args(["--workspace", str(tmp_path), "--plain", "--async-agent"])
+    super_tui._prepare_args(explicit_args, ["--async-agent"])
+    monkeypatch.setattr(super_tui.sys, "stdin", FakeStdin(True))
+    assert super_tui._should_dispatch_tui_turn_in_background(explicit_args, async_agent_enabled=True)
 
-    args.plan_only = False
+    active_workspace = tmp_path / "active"
+    active_workspace.mkdir()
+    super_tui._append_tui_transcript_entry(
+        active_workspace,
+        role="assistant_progress",
+        text="Background run started.",
+        metadata={
+            "tui_board_event": {
+                "event": "tui.board.admission",
+                "task_id": "task-A",
+                "run_id": "run-A",
+                "objective": "existing work",
+                "status": "running",
+                "phase": "background_running",
+                "decision": "start_parallel",
+            }
+        },
+    )
+    active_args = parser.parse_args(["--workspace", str(active_workspace), "--plain"])
+    super_tui._prepare_args(active_args, [])
+    monkeypatch.setattr(super_tui.sys, "stdin", FakeStdin(True))
+    assert super_tui._should_dispatch_tui_turn_in_background(active_args, async_agent_enabled=True)
+
+    explicit_args.plan_only = True
+    assert not super_tui._should_dispatch_tui_turn_in_background(explicit_args, async_agent_enabled=True)
+
+    explicit_args.plan_only = False
+    monkeypatch.setattr(super_tui.sys, "stdin", FakeStdin(True))
+    setattr(explicit_args, "_stdin_is_tty", True)
+    assert super_tui._should_dispatch_tui_turn_in_background(explicit_args, async_agent_enabled=False)
+
     monkeypatch.setattr(super_tui.sys, "stdin", FakeStdin(False))
-    assert not super_tui._should_dispatch_tui_turn_in_background(args, async_agent_enabled=True)
-    assert not super_tui._should_dispatch_tui_turn_in_background(args, async_agent_enabled=False)
+    setattr(explicit_args, "_stdin_is_tty", False)
+    assert not super_tui._should_dispatch_tui_turn_in_background(explicit_args, async_agent_enabled=True)
+    assert not super_tui._should_dispatch_tui_turn_in_background(explicit_args, async_agent_enabled=False)
+
+
+def test_super_tui_transcript_history_payload_excludes_current_turn(tmp_path) -> None:
+    super_tui._append_tui_transcript_entry(tmp_path, role="user", text="combine the two reports")
+    super_tui._append_tui_transcript_entry(
+        tmp_path,
+        role="assistant_final",
+        text="Created opec-uae-combined-report-2025.md.",
+    )
+    super_tui._append_tui_transcript_entry(tmp_path, role="user", text="review it now")
+
+    history = super_tui._tui_transcript_history_payload(tmp_path, current_text="review it now")
+
+    assert history == [
+        {"role": "user", "content": "combine the two reports"},
+        {"role": "assistant", "content": "Created opec-uae-combined-report-2025.md."},
+    ]
 
 
 def test_super_tui_queue_summary_hides_internal_counters_when_idle() -> None:
@@ -790,6 +901,12 @@ def test_super_tui_append_does_not_target_completed_board_row() -> None:
 
 def test_super_tui_async_admission_payload_targets_v2_background(tmp_path) -> None:
     workspace = tmp_path / "workspace"
+    super_tui._append_tui_transcript_entry(workspace, role="user", text="what changed?")
+    super_tui._append_tui_transcript_entry(
+        workspace,
+        role="assistant_final",
+        text="The report was merged into one file.",
+    )
     parser = super_tui.build_parser()
     args = parser.parse_args(
         [
@@ -818,6 +935,14 @@ def test_super_tui_async_admission_payload_targets_v2_background(tmp_path) -> No
     assert payload["chat_request"]["mode"] == "agent"
     assert payload["chat_request"]["surface"] == "cli:super-tui"
     assert payload["chat_request"]["surface_context"]["workspace_root"] == str(workspace)
+    assert payload["chat_request"]["history"] == [
+        {"role": "user", "content": "what changed?"},
+        {"role": "assistant", "content": "The report was merged into one file."},
+    ]
+    assert (
+        payload["chat_request"]["surface_context"]["conversation"]["recent_turns"]
+        == payload["chat_request"]["history"]
+    )
     assert payload["execute"]["backend"] == "deterministic"
     assert payload["execute"]["background"] is True
     assert payload["execute"]["profile_policy"]["model"] == "fake-model"
@@ -1108,7 +1233,7 @@ def test_super_tui_stop_shortcut_targets_visible_active_task(
     assert "DAN · Command:" in capsys.readouterr().out
 
 
-def test_super_tui_default_async_turn_uses_local_store_without_server(
+def test_super_tui_explicit_async_turn_uses_local_store_without_server(
     tmp_path,
     capsys,
     monkeypatch,
@@ -1123,11 +1248,12 @@ def test_super_tui_default_async_turn_uses_local_store_without_server(
             "--workspace",
             str(workspace),
             "--plain",
+            "--async-agent",
             "--async-agent-backend",
             "deterministic",
         ]
     )
-    super_tui._prepare_args(args, [])
+    super_tui._prepare_args(args, ["--async-agent"])
     _patch_tui_route(monkeypatch, permission="write", complexity="complex", routed_with_model=True)
     inputs = iter(["build script_a.py", "/exit"])
     started_runs: list[str] = []
@@ -1140,7 +1266,7 @@ def test_super_tui_default_async_turn_uses_local_store_without_server(
         started_runs.append(run_id)
 
     def fail_post(*args, **kwargs):
-        raise AssertionError("default TUI async admission should not require HTTP")
+        raise AssertionError("explicit local TUI async admission should not require HTTP")
 
     def fail_dispatch(*args, **kwargs):
         raise AssertionError("local async admission should not fall back to blocking dispatch")
@@ -1184,6 +1310,30 @@ def test_super_tui_background_completion_lines_are_human() -> None:
     )
     assert "Trace: .dan-super/runs/turn-01/events.jsonl" in lines
     assert lines[-1] == "Use `/tasks` for the latest board."
+
+
+def test_super_tui_background_completion_formats_structured_summary() -> None:
+    run = Namespace(
+        run_id="run-123456",
+        task_id="task-abc",
+        status="completed",
+        latest_summary=(
+            "{'candidate_id':'super-dan-live-general-001',"
+            "'change_summary':'Created opec-report-2025.md with current evidence.',"
+            "'files_created':['opec-report-2025.md'],"
+            "'risks':['Some claims need verification.']}"
+        ),
+        metadata={},
+    )
+
+    lines = super_tui._tui_background_completion_lines(run, [])
+
+    assert lines[0] == (
+        "Background run `task-abc` finished. Created `opec-report-2025.md`: "
+        "Created opec-report-2025.md with current evidence."
+    )
+    assert lines[1] == "Note: Some claims need verification."
+    assert "candidate_id" not in "\n".join(lines)
 
 
 def test_super_tui_plan_mode_renders_questions_without_dispatch(tmp_path, capsys, monkeypatch) -> None:
@@ -2017,7 +2167,22 @@ def test_super_tui_working_clock_refreshes_during_blocking_model_wait(capsys, mo
     assert "[0m" not in stdout
 
 
-def test_super_tui_background_clock_uses_line_safe_output(capsys, monkeypatch) -> None:
+def test_super_tui_clock_detects_prompt_toolkit_wrapped_stdout(monkeypatch) -> None:
+    class FakeStream:
+        def __init__(self, tty: bool) -> None:
+            self.tty = tty
+
+        def isatty(self) -> bool:
+            return self.tty
+
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setattr(super_tui.sys, "stdout", FakeStream(False))
+    monkeypatch.setattr(super_tui.sys, "stdin", FakeStream(True))
+
+    assert super_tui._tui_stdout_supports_control_sequences()
+
+
+def test_super_tui_background_clock_is_suppressed_above_live_prompt(capsys, monkeypatch) -> None:
     args = Namespace(json=False, quiet_progress=False, _tui_background_dispatch=True)
     current = {"value": 10.0}
     monkeypatch.setattr(super_tui.time, "monotonic", lambda: current["value"])
@@ -2032,12 +2197,12 @@ def test_super_tui_background_clock_uses_line_safe_output(capsys, monkeypatch) -
 
     stdout = capsys.readouterr().out
     assert result == "done"
-    assert "Thinking 2s\n" in stdout
+    assert stdout == ""
     assert "\x1b" not in stdout
     assert "[2K" not in stdout
 
 
-def test_super_tui_background_narrator_wait_clock_uses_line_safe_output(capsys, monkeypatch) -> None:
+def test_super_tui_background_narrator_wait_clock_is_suppressed(capsys, monkeypatch) -> None:
     args = Namespace(
         json=False,
         quiet_progress=False,
@@ -2055,7 +2220,7 @@ def test_super_tui_background_narrator_wait_clock_uses_line_safe_output(capsys, 
     thread.join()
 
     stdout = capsys.readouterr().out
-    assert "Preparing answer 2s\n" in stdout
+    assert stdout == ""
     assert "\x1b" not in stdout
     assert "[2K" not in stdout
 
@@ -2121,7 +2286,8 @@ def test_super_tui_narrative_timeline_coalesces_noisy_tools() -> None:
     assert "shell_command" not in joined
     assert "You asked: copy source files" not in joined
     assert "Narrator:" in joined
-    assert "Relevant context is available for copy source files" in joined
+    assert "Relevant context is available for copy source files" not in joined
+    assert "Checking the relevant workspace context." not in joined
     assert "The terminal command finished; using that result for copy source files." in joined
     assert "Activity:" not in joined
 
@@ -2164,7 +2330,7 @@ def test_super_tui_narrator_reports_follow_executor_events() -> None:
 
     joined = "\n".join(state.narrator_lines)
     assert "Got it. Starting with the relevant context." not in joined
-    assert "Changed docs/todo.md for update the todo list." in joined
+    assert "Changed docs/todo.md for this request." in joined
     assert "Still working after 10s." in joined
     assert "Validation passed" in joined
     assert "Run finished successfully" in joined
@@ -2821,7 +2987,7 @@ def test_super_tui_help_lists_first_slice_commands_without_claiming_steering(cap
     assert "/help" in stdout
     assert "suggestions" in stdout
     assert "prompt_toolkit" in stdout
-    assert "local V2" in stdout
+    assert "chat box" in stdout
     assert "async admission" in stdout
 
 
@@ -2951,6 +3117,7 @@ def test_super_tui_prompt_toolkit_keybindings_open_completion_menu() -> None:
     assert ("@",) in keys
     assert ("up",) in keys
     assert ("down",) in keys
+    assert ("c-v",) in keys
     assert ("escape",) in keys
     assert ("enter",) in keys or any(str(key).lower().endswith("controlm") for row in keys for key in row)
 
@@ -2962,7 +3129,71 @@ def test_super_tui_prompt_toolbar_is_compact() -> None:
     assert "Esc stop" in text
     assert "$ skills" in text
     assert "@ files" in text
+    assert "Ctrl-V screenshot" in text
     assert "/append inserts" not in text
+
+
+def test_super_tui_ctrl_v_clipboard_image_capture_from_env(tmp_path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "shot.png"
+    source.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    monkeypatch.setenv("DAN_SUPER_TUI_CLIPBOARD_IMAGE_PATH", str(source))
+
+    result = super_tui._capture_tui_clipboard_image(workspace)
+
+    assert result.ok
+    assert result.backend == "DAN_SUPER_TUI_CLIPBOARD_IMAGE_PATH"
+    assert result.display_path.startswith(".dan-super/tui/attachments/")
+    captured = Path(result.path)
+    assert captured.exists()
+    assert captured.read_bytes() == source.read_bytes()
+
+
+def test_super_tui_image_mentions_become_attachment_payloads(tmp_path) -> None:
+    image = tmp_path / ".dan-super" / "tui" / "attachments" / "shot.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+
+    payloads = super_tui._tui_image_attachment_payloads_from_text(
+        "please review @.dan-super/tui/attachments/shot.png",
+        tmp_path,
+    )
+
+    assert len(payloads) == 1
+    assert payloads[0]["kind"] == "image"
+    assert payloads[0]["local_path"] == str(image.resolve())
+    assert payloads[0]["mime_type"] == "image/png"
+    assert payloads[0]["metadata"]["relative_path"] == ".dan-super/tui/attachments/shot.png"
+
+
+def test_super_tui_async_surface_turn_carries_image_attachments(tmp_path) -> None:
+    image = tmp_path / ".dan-super" / "tui" / "attachments" / "shot.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    super_tui._append_tui_transcript_entry(tmp_path, role="user", text="summarize the screenshot context")
+    super_tui._append_tui_transcript_entry(
+        tmp_path,
+        role="assistant_final",
+        text="The previous screenshot showed a prompt collision.",
+    )
+    args = Namespace(_tui_selected_skill_mentions=[], _tui_communication_policy=None)
+
+    turn = super_tui._build_tui_async_surface_turn(
+        args,
+        workspace_root=tmp_path,
+        text="review @.dan-super/tui/attachments/shot.png",
+    )
+
+    assert len(turn.attachments) == 1
+    assert turn.attachments[0].kind == "image"
+    assert turn.attachments[0].local_path == str(image.resolve())
+    assert turn.metadata["surface_context"]["appended_attachments"][0]["kind"] == "image"
+    assert turn.metadata["history"] == [
+        {"role": "user", "content": "summarize the screenshot context"},
+        {"role": "assistant", "content": "The previous screenshot showed a prompt collision."},
+    ]
+    assert turn.metadata["surface_context"]["conversation"]["recent_turns"] == turn.metadata["history"]
 
 
 def test_super_tui_prompt_toolkit_session_builds_with_installed_version(tmp_path) -> None:
@@ -4798,6 +5029,41 @@ def test_super_tui_complex_read_only_summarizes_file_without_writes(
     assert "Tasks: 1 open, 1 completed." in stdout
     assert "Open task" in stdout
     assert not list(workspace.glob(".dan-super/runs/**/plans"))
+
+
+def test_super_tui_read_only_model_failure_falls_back_to_workspace_summary(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "opec-report-2025.md").write_text(
+        "# OPEC Report 2025\n\n## Findings\nVerified production summary.\n",
+        encoding="utf-8",
+    )
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("read-only fallback must not start Super DAN runner")
+
+    _patch_tui_route(monkeypatch, permission="read-only", complexity="complex", routed_with_model=True)
+    monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
+    monkeypatch.setattr(super_tui, "_run_tui_read_only_model_answer", lambda *args, **kwargs: False)
+
+    exit_code = super_tui.main(
+        [
+            "help me review the report?",
+            "--workspace",
+            str(workspace),
+            "--plain",
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Source: opec-report-2025.md" in stdout
+    assert "Headings: # OPEC Report 2025; ## Findings" in stdout
+    assert "I could not get a usable model-written answer" not in stdout
 
 
 def test_super_tui_complex_read_only_searches_workspace_without_writes(

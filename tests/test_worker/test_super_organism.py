@@ -45,6 +45,25 @@ def test_ranged_file_read_prompt_line_numbers_keep_source_offsets():
     assert "     1|" not in numbered["result"]["content"]
 
 
+def test_completion_request_user_content_includes_image_attachments(tmp_path):
+    image = tmp_path / "shot.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    request = CompletionRequest(
+        model="test",
+        system_prompt="system",
+        user_prompt="Review the screenshot.",
+        metadata={"image_attachments": [{"kind": "image", "local_path": str(image)}]},
+    )
+
+    content = local_runtime_module._completion_request_user_content(request)
+
+    assert isinstance(content, list)
+    assert content[0]["type"] == "text"
+    assert "Review the screenshot." in content[0]["text"]
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
 def _first_event(events: list[dict[str, object]], event_name: str) -> dict[str, object]:
     return next(event for event in events if event.get("event") == event_name)
 

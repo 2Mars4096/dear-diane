@@ -14,6 +14,9 @@ from dan.engine.state import ExecutionState, NodeStatus
 from dan.executors.llm import LLMExecutor
 from dan.models.nodes import LLMOperator, RetryPolicy
 from dan.providers import CompletionResult, StreamChunk
+from dan.providers.anthropic_provider import AnthropicProvider
+from dan.providers.google_provider import GoogleProvider
+from dan.providers.multimodal import content_with_image_attachments, normalize_openai_messages_for_multimodal
 from dan.providers.registry import ProviderRegistry
 
 
@@ -67,6 +70,71 @@ def _make_llm_node(model: str = "gpt-4o", **kwargs) -> LLMOperator:
         model=model, prompt_template=prompt_template,
         **kwargs,
     )
+
+
+def test_multimodal_helper_builds_openai_image_blocks(tmp_path):
+    image = tmp_path / "shot.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+
+    content = content_with_image_attachments(
+        "What is wrong with this UI?",
+        [{"kind": "image", "local_path": str(image)}],
+    )
+
+    assert isinstance(content, list)
+    assert content[0]["type"] == "text"
+    assert "Attached images:" in content[0]["text"]
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_openai_message_normalizer_accepts_short_image_url_alias():
+    messages = normalize_openai_messages_for_multimodal(
+        [{"role": "user", "content": [{"type": "image_url", "url": "data:image/png;base64,abc"}]}]
+    )
+
+    assert messages[0]["content"][0] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,abc"},
+    }
+
+
+def test_anthropic_adapter_translates_openai_image_block():
+    _system, messages = AnthropicProvider._convert_messages(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "review this"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                ],
+            }
+        ]
+    )
+
+    assert messages[0]["content"][1] == {
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/png", "data": "abc"},
+    }
+
+
+def test_google_adapter_translates_openai_image_block():
+    _system, history = GoogleProvider._to_gemini_messages(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "review this"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                ],
+            }
+        ]
+    )
+
+    assert history[0]["parts"] == [
+        {"text": "review this"},
+        {"inline_data": {"mime_type": "image/png", "data": "abc"}},
+    ]
 
 
 @pytest.mark.asyncio

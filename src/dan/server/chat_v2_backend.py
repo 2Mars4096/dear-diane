@@ -781,6 +781,17 @@ def _build_super_dan_args(
     setattr(args, "_implicit_live", False)
     setattr(args, "_code_like_live", True)
     setattr(args, "_stdin_is_tty", False)
+    setattr(args, "_surface_attachments", list(request.attachments or []))
+    setattr(
+        args,
+        "_surface_image_attachments",
+        [
+            dict(item)
+            for item in list(request.attachments or [])
+            if isinstance(item, dict)
+            and str(item.get("kind") or "").strip().lower() in {"image", "figure", ""}
+        ],
+    )
     return args
 
 
@@ -859,11 +870,29 @@ def _objective_with_surface_context(request: AgentBackendRunRequest) -> str:
         context_lines.append(f"Replied-to message: {reply_text}")
 
     history = _history_without_current_objective(request.history, objective)
+    if not history:
+        conversation = request.surface_context.get("conversation") if isinstance(request.surface_context, dict) else {}
+        recent_turns = conversation.get("recent_turns") if isinstance(conversation, dict) else []
+        history = _normalize_history(recent_turns)
     if history:
-        context_lines.append("Recent Telegram chat:")
+        context_lines.append("Recent surface conversation:")
         for turn in history[-10:]:
             role = "User" if turn["role"] == "user" else "Assistant"
             context_lines.append(f"- {role}: {turn['content']}")
+
+    if request.attachments:
+        context_lines.append("Surface attachments:")
+        for item in request.attachments[:8]:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("kind") or "attachment").strip() or "attachment"
+            path = str(item.get("local_path") or item.get("path") or "").strip()
+            name = str(item.get("display_name") or item.get("name") or Path(path).name).strip()
+            mime_type = str(item.get("mime_type") or "").strip()
+            detail = path or name
+            if detail:
+                suffix = f" ({mime_type})" if mime_type else ""
+                context_lines.append(f"- {kind}: {detail}{suffix}")
 
     if not context_lines:
         return objective

@@ -25,6 +25,7 @@ from dan.providers import (
     StreamChunk,
     resolve_provider_timeout,
 )
+from dan.providers.multimodal import normalize_openai_messages_for_multimodal
 
 
 @dataclass(frozen=True)
@@ -666,6 +667,7 @@ class OpenAIProvider:
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> CompletionResult:
+        messages = normalize_openai_messages_for_multimodal(messages)
         effective_temperature = self._normalize_temperature(model, temperature)
         call_kwargs: dict[str, Any] = {
             "model": model,
@@ -731,6 +733,7 @@ class OpenAIProvider:
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[StreamChunk]:
+        messages = normalize_openai_messages_for_multimodal(messages)
         # Some OpenAI-compatible routes emit empty text deltas for models that
         # otherwise return valid completion text. Fall back to a regular
         # completion call and surface the full text as a synthetic stream.

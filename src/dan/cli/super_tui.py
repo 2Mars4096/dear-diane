@@ -7,6 +7,7 @@ It reuses the Super DAN runner and event log, but owns terminal rendering.
 from __future__ import annotations
 
 import argparse
+import ast
 import asyncio
 import copy
 import hashlib
@@ -15,10 +16,12 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import textwrap
 import threading
 import time
+from collections import deque
 from collections.abc import Mapping as MappingABC
 from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass, field
@@ -56,6 +59,12 @@ from dan.agent_runtime.progress_narrator import (
 from dan.cli import _try_import_rich, load_env, normalize_workspace_root
 from dan.cli.super_hooks import format_super_queue_status
 from dan.cli import super_organism as super_cli
+from dan.providers.multimodal import (
+    SUPPORTED_IMAGE_EXTENSIONS,
+    image_attachment_payloads,
+    image_mime_type,
+    is_supported_image_path,
+)
 from dan.skills import invocation as skill_invocation
 from dan.worker.core.interfaces import CompletionRequest
 from dan.worker.organisms.local_runtime import (
@@ -568,6 +577,323 @@ def _tui_plan_state_path(workspace_root: Path) -> Path:
     return workspace_root / ".dan-super" / "tui" / "plan-state.json"
 
 
+def _tui_attachment_dir(workspace_root: Path) -> Path:
+    return workspace_root / ".dan-super" / "tui" / "attachments"
+
+
+def _tui_workspace_display_path(path: Path, workspace_root: Path) -> str:
+    try:
+        return path.relative_to(workspace_root).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _tui_clipboard_capture_path(workspace_root: Path, *, suffix: str = ".png") -> Path:
+    clean_suffix = suffix.lower() if suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS else ".png"
+    return _tui_attachment_dir(workspace_root) / f"clipboard-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{time.time_ns()}{clean_suffix}"
+
+
+def _store_tui_clipboard_image_bytes(
+    workspace_root: Path,
+    data: bytes,
+    *,
+    backend: str,
+    suffix: str = ".png",
+) -> TuiClipboardImageCapture:
+    if not data:
+        return TuiClipboardImageCapture(ok=False, message=f"{backend} returned no image bytes.", backend=backend)
+    path = _tui_clipboard_capture_path(workspace_root, suffix=suffix)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    except OSError as exc:
+        return TuiClipboardImageCapture(ok=False, message=f"Could not save clipboard image: {exc}", backend=backend)
+    return TuiClipboardImageCapture(
+        ok=True,
+        path=str(path),
+        display_path=_tui_workspace_display_path(path, workspace_root),
+        message=f"Attached screenshot {path.name}.",
+        backend=backend,
+    )
+
+
+def _copy_tui_clipboard_image_file(
+    workspace_root: Path,
+    source: Path,
+    *,
+    backend: str,
+) -> TuiClipboardImageCapture:
+    try:
+        resolved = source.expanduser().resolve()
+        if not resolved.is_file():
+            return TuiClipboardImageCapture(ok=False, message=f"Clipboard image path is not a file: {source}", backend=backend)
+        if not is_supported_image_path(resolved):
+            return TuiClipboardImageCapture(ok=False, message=f"Clipboard image type is not supported: {resolved.suffix}", backend=backend)
+        data = resolved.read_bytes()
+    except OSError as exc:
+        return TuiClipboardImageCapture(ok=False, message=f"Could not read clipboard image path: {exc}", backend=backend)
+    return _store_tui_clipboard_image_bytes(workspace_root, data, backend=backend, suffix=resolved.suffix)
+
+
+def _capture_tui_clipboard_image_from_env(workspace_root: Path) -> TuiClipboardImageCapture:
+    for name in ("DAN_SUPER_TUI_CLIPBOARD_IMAGE_PATH", "DAN_TUI_CLIPBOARD_IMAGE_PATH"):
+        value = str(os.environ.get(name) or "").strip()
+        if value:
+            return _copy_tui_clipboard_image_file(workspace_root, Path(value), backend=name)
+    return TuiClipboardImageCapture(ok=False, message="No clipboard image path env var set.", backend="env")
+
+
+def _capture_tui_clipboard_image_with_pngpaste(workspace_root: Path) -> TuiClipboardImageCapture:
+    binary = shutil.which("pngpaste")
+    if not binary:
+        return TuiClipboardImageCapture(ok=False, message="pngpaste is not installed.", backend="pngpaste")
+    path = _tui_clipboard_capture_path(workspace_root, suffix=".png")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        completed = subprocess.run(
+            [binary, str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return TuiClipboardImageCapture(ok=False, message=f"pngpaste failed: {exc}", backend="pngpaste")
+    if completed.returncode == 0 and path.exists() and path.stat().st_size > 0:
+        return TuiClipboardImageCapture(
+            ok=True,
+            path=str(path),
+            display_path=_tui_workspace_display_path(path, workspace_root),
+            message=f"Attached screenshot {path.name}.",
+            backend="pngpaste",
+        )
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    detail = (completed.stderr or completed.stdout or b"").decode("utf-8", errors="replace").strip()
+    return TuiClipboardImageCapture(
+        ok=False,
+        message=_clip(detail or "Clipboard does not contain a PNG image.", limit=180),
+        backend="pngpaste",
+    )
+
+
+def _capture_tui_clipboard_image_with_stream_command(
+    workspace_root: Path,
+    command: Sequence[str],
+    *,
+    backend: str,
+) -> TuiClipboardImageCapture:
+    if not command or not shutil.which(command[0]):
+        return TuiClipboardImageCapture(ok=False, message=f"{backend} is not installed.", backend=backend)
+    try:
+        completed = subprocess.run(
+            list(command),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return TuiClipboardImageCapture(ok=False, message=f"{backend} failed: {exc}", backend=backend)
+    if completed.returncode == 0 and completed.stdout:
+        return _store_tui_clipboard_image_bytes(workspace_root, completed.stdout, backend=backend, suffix=".png")
+    detail = (completed.stderr or b"").decode("utf-8", errors="replace").strip()
+    return TuiClipboardImageCapture(
+        ok=False,
+        message=_clip(detail or "Clipboard does not contain a PNG image.", limit=180),
+        backend=backend,
+    )
+
+
+def _capture_tui_clipboard_image_with_osascript(workspace_root: Path) -> TuiClipboardImageCapture:
+    binary = shutil.which("osascript")
+    if sys.platform != "darwin" or not binary:
+        return TuiClipboardImageCapture(ok=False, message="osascript is not available.", backend="osascript")
+    path = _tui_clipboard_capture_path(workspace_root, suffix=".png")
+    script = r"""
+ObjC.import('AppKit');
+const env = $.NSProcessInfo.processInfo.environment;
+const rawPath = env.objectForKey('DAN_TUI_CLIPBOARD_OUT');
+if (!rawPath) { $.exit(3); }
+const pb = $.NSPasteboard.generalPasteboard;
+let data = pb.dataForType($.NSPasteboardTypePNG);
+if (!data) {
+  const image = $.NSImage.alloc.initWithPasteboard(pb);
+  if (!image) { $.exit(2); }
+  const tiff = image.TIFFRepresentation;
+  if (!tiff) { $.exit(2); }
+  const rep = $.NSBitmapImageRep.imageRepWithData(tiff);
+  if (!rep) { $.exit(2); }
+  data = rep.representationUsingTypeProperties($.NSPNGFileType, $());
+}
+if (!data) { $.exit(2); }
+if (!data.writeToFileAtomically(rawPath, true)) { $.exit(4); }
+"""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        env = {**os.environ, "DAN_TUI_CLIPBOARD_OUT": str(path)}
+        completed = subprocess.run(
+            [binary, "-l", "JavaScript", "-e", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=3,
+            check=False,
+            env=env,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return TuiClipboardImageCapture(ok=False, message=f"osascript failed: {exc}", backend="osascript")
+    if completed.returncode == 0 and path.exists() and path.stat().st_size > 0:
+        return TuiClipboardImageCapture(
+            ok=True,
+            path=str(path),
+            display_path=_tui_workspace_display_path(path, workspace_root),
+            message=f"Attached screenshot {path.name}.",
+            backend="osascript",
+        )
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    detail = (completed.stderr or completed.stdout or b"").decode("utf-8", errors="replace").strip()
+    return TuiClipboardImageCapture(
+        ok=False,
+        message=_clip(detail or "Clipboard does not contain an image.", limit=180),
+        backend="osascript",
+    )
+
+
+def _capture_tui_clipboard_image_with_appkit(workspace_root: Path) -> TuiClipboardImageCapture:
+    try:
+        from AppKit import (  # type: ignore
+            NSBitmapImageRep,
+            NSImage,
+            NSPasteboard,
+            NSPasteboardTypePNG,
+            NSPasteboardTypeTIFF,
+            NSPNGFileType,
+        )
+    except Exception as exc:
+        return TuiClipboardImageCapture(ok=False, message=f"AppKit unavailable: {exc}", backend="appkit")
+    try:
+        pasteboard = NSPasteboard.generalPasteboard()
+        png_data = pasteboard.dataForType_(NSPasteboardTypePNG)
+        if png_data is not None:
+            return _store_tui_clipboard_image_bytes(workspace_root, bytes(png_data), backend="appkit", suffix=".png")
+        tiff_data = pasteboard.dataForType_(NSPasteboardTypeTIFF)
+        if tiff_data is not None:
+            bitmap = NSBitmapImageRep.imageRepWithData_(tiff_data)
+            if bitmap is None:
+                image = NSImage.alloc().initWithData_(tiff_data)
+                reps = list(image.representations() or []) if image is not None else []
+                bitmap = reps[0] if reps else None
+            if bitmap is not None:
+                png = bitmap.representationUsingType_properties_(NSPNGFileType, {})
+                if png is not None:
+                    return _store_tui_clipboard_image_bytes(workspace_root, bytes(png), backend="appkit", suffix=".png")
+    except Exception as exc:
+        return TuiClipboardImageCapture(ok=False, message=f"AppKit clipboard read failed: {exc}", backend="appkit")
+    return TuiClipboardImageCapture(ok=False, message="Clipboard does not contain an image.", backend="appkit")
+
+
+def _capture_tui_clipboard_image(workspace_root: Path) -> TuiClipboardImageCapture:
+    root = normalize_workspace_root(str(workspace_root))
+    attempts: list[TuiClipboardImageCapture] = []
+    readers = [
+        lambda: _capture_tui_clipboard_image_from_env(root),
+        lambda: _capture_tui_clipboard_image_with_pngpaste(root),
+        lambda: _capture_tui_clipboard_image_with_osascript(root),
+        lambda: _capture_tui_clipboard_image_with_appkit(root),
+        lambda: _capture_tui_clipboard_image_with_stream_command(
+            root,
+            ["wl-paste", "--no-newline", "--type", "image/png"],
+            backend="wl-paste",
+        ),
+        lambda: _capture_tui_clipboard_image_with_stream_command(
+            root,
+            ["xclip", "-selection", "clipboard", "-t", "image/png", "-o"],
+            backend="xclip",
+        ),
+    ]
+    for reader in readers:
+        result = reader()
+        attempts.append(result)
+        if result.ok:
+            return result
+    detail = "; ".join(
+        f"{item.backend}: {item.message}"
+        for item in attempts
+        if item.backend and item.message
+    )
+    return TuiClipboardImageCapture(
+        ok=False,
+        message=_clip(detail or "No supported clipboard image backend found.", limit=260),
+        backend="clipboard",
+    )
+
+
+def _iter_tui_image_mention_candidates(text: str) -> list[str]:
+    try:
+        tokens = shlex.split(str(text or ""))
+    except ValueError:
+        tokens = str(text or "").split()
+    values: list[str] = []
+    for token in tokens:
+        clean = token.strip().strip(".,;:()[]{}\"'")
+        if clean.startswith("@"):
+            clean = clean[1:]
+        if not clean:
+            continue
+        if is_supported_image_path(clean):
+            values.append(clean)
+    return values
+
+
+def _tui_image_attachment_payloads_from_text(text: str, workspace_root: Path) -> list[dict[str, Any]]:
+    root = normalize_workspace_root(str(workspace_root))
+    raw: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in _iter_tui_image_mention_candidates(text):
+        path = Path(candidate).expanduser()
+        if not path.is_absolute():
+            path = root / candidate
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if not _is_relative_to_path(resolved, root):
+            continue
+        if str(resolved) in seen or not resolved.is_file():
+            continue
+        seen.add(str(resolved))
+        raw.append(
+            {
+                "kind": "image",
+                "source_surface": "cli:super-tui",
+                "local_path": str(resolved),
+                "path": str(resolved),
+                "display_name": resolved.name,
+                "mime_type": image_mime_type(resolved),
+                "caption": "Super TUI image attachment",
+                "metadata": {
+                    "source": "tui_image_mention",
+                    "relative_path": _tui_workspace_display_path(resolved, root),
+                },
+            }
+        )
+    return image_attachment_payloads(raw)
+
+
+def _set_tui_surface_attachments_from_text(args: argparse.Namespace, workspace_root: Path, text: str) -> list[dict[str, Any]]:
+    attachments = _tui_image_attachment_payloads_from_text(text, workspace_root)
+    setattr(args, "_tui_surface_attachments", attachments)
+    setattr(args, "_tui_surface_image_attachments", attachments)
+    setattr(args, "_surface_attachments", attachments)
+    setattr(args, "_surface_image_attachments", attachments)
+    return attachments
+
+
 def _new_tui_message_id(text: str) -> str:
     payload = f"{time.time_ns()}:{text}".encode("utf-8", errors="ignore")
     return hashlib.sha1(payload).hexdigest()[:16]
@@ -871,12 +1197,71 @@ def _format_transcript_line(entry: TuiTranscriptEntry) -> str:
     return "\n".join(_format_transcript_entry_lines(entry))
 
 
+def _tui_transcript_history_payload(
+    workspace_root: Path,
+    *,
+    current_text: str = "",
+    limit: int = 8,
+) -> list[dict[str, str]]:
+    entries = _read_tui_transcript(workspace_root, limit=max(limit + 6, 16))
+    history: list[dict[str, str]] = []
+    current = " ".join(str(current_text or "").split())
+    for entry in entries:
+        role = "user" if entry.role == "user" else "assistant" if entry.role.startswith("assistant_") else ""
+        if not role:
+            continue
+        text = " ".join(_transcript_display_text(entry).split())
+        if not text:
+            continue
+        history.append({"role": role, "content": _clip(text, limit=900)})
+    if history and history[-1]["role"] == "user" and current:
+        latest = " ".join(history[-1]["content"].split())
+        if latest == current:
+            history = history[:-1]
+    return history[-max(1, int(limit)) :]
+
+
+def _set_tui_surface_context_from_transcript(
+    args: argparse.Namespace,
+    workspace_root: Path,
+    *,
+    current_text: str,
+) -> list[dict[str, str]]:
+    history = _tui_transcript_history_payload(workspace_root, current_text=current_text)
+    surface_context = {
+        "workspace_root": str(workspace_root),
+        "workspace_source": "super_tui",
+        "conversation": {"recent_turns": history},
+    }
+    setattr(args, "_surface_history", history)
+    setattr(args, "_surface_context", surface_context)
+    setattr(args, "_tui_surface_history", history)
+    return history
+
+
 def _stream_line_without_prefix(line: str) -> str:
     text = str(line or "").strip()
     match = _TUI_STREAM_PREFIX_RE.match(text)
     if match:
         return text[match.end() :].strip()
     return text
+
+
+def _sanitize_tui_progress_line(line: str, *, objective: str = "") -> str:
+    text = str(line or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered.startswith("relevant context is available for "):
+        return ""
+    if lowered.startswith("checking the relevant workspace context for "):
+        return "Checking the relevant workspace context."
+    if lowered.startswith("thinking through the next step for "):
+        return "Thinking through the next step."
+    clean_objective = " ".join(str(objective or "").split())
+    if len(clean_objective) >= 18:
+        text = re.sub(re.escape(clean_objective), "this request", text, flags=re.IGNORECASE)
+    return text.strip()
 
 
 def _tui_line_base_style(line: str) -> str:
@@ -1217,8 +1602,19 @@ def _style_tui_clock_text(text: str) -> str:
 
 
 def _tui_stdout_supports_control_sequences() -> bool:
+    term = str(os.environ.get("TERM") or "").strip().lower()
+    if term == "dumb":
+        return False
     try:
-        return bool(sys.stdout.isatty())
+        if bool(sys.stdout.isatty()):
+            return True
+    except Exception:
+        pass
+    # prompt_toolkit can wrap stdout in a proxy that does not report isatty()
+    # even though the interactive terminal can still handle carriage-return
+    # line refreshes. In that case stdin remains the better terminal signal.
+    try:
+        return bool(sys.stdin.isatty())
     except Exception:
         return False
 
@@ -1257,6 +1653,8 @@ def _run_with_tui_working_clock(
     """Run a blocking callback while refreshing one visible Working line."""
 
     if bool(getattr(args, "json", False)) or bool(getattr(args, "quiet_progress", False)):
+        return callback()
+    if bool(getattr(args, "_tui_background_dispatch", False)):
         return callback()
 
     result: dict[str, Any] = {}
@@ -1332,6 +1730,15 @@ class TuiPlanReplyDecision:
 class TuiPathSuggestion:
     value: str
     meta: str = ""
+
+
+@dataclass(frozen=True)
+class TuiClipboardImageCapture:
+    ok: bool
+    path: str = ""
+    display_path: str = ""
+    message: str = ""
+    backend: str = ""
 
 
 @dataclass(frozen=True)
@@ -1488,12 +1895,16 @@ _CODE_REVIEW_FILE_SUFFIXES = {
     ".jl",
 }
 _READ_ONLY_SKIP_PARTS = {
+    ".agent-subsessions",
+    ".dan-code",
+    ".dan-research",
     ".git",
     ".dan-super",
     ".pytest_cache",
     ".ruff_cache",
     "__pycache__",
     "node_modules",
+    "memory",
     ".venv",
     "venv",
     "dist",
@@ -2326,6 +2737,7 @@ def _run_tui_read_only_model_answer(
                         "worker_id": "super-dan.tui.read-only",
                         "tui_lane": decision.lane,
                         "communication_policy": decision.communication_policy.to_payload(),
+                        "image_attachments": _tui_image_attachment_payloads_from_text(objective, workspace_root),
                     },
                 )
             )
@@ -2582,6 +2994,7 @@ def _build_prompt_toolkit_key_bindings(
     commands: Sequence[tuple[str, str]] = _TUI_COMMANDS,
     skills: Sequence[TuiSkillSuggestion] = (),
     paths: Sequence[TuiPathSuggestion | str] = (),
+    workspace_root: Path | None = None,
 ) -> Any:
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.filters import has_completions
@@ -2605,6 +3018,27 @@ def _build_prompt_toolkit_key_bindings(
         buffer.cursor_position = len(buffer.text)
         buffer.validate_and_handle()
 
+    def _attach_clipboard_screenshot(event: Any) -> None:
+        if workspace_root is None:
+            return
+        result = _capture_tui_clipboard_image(workspace_root)
+        if not result.ok or not result.display_path:
+            try:
+                event.app.output.bell()
+            except Exception:
+                pass
+            return
+        buffer = event.current_buffer
+        before = str(buffer.document.text_before_cursor or "")
+        after = str(buffer.document.text_after_cursor or "")
+        prefix = "" if not before or before.endswith((" ", "\n", "\t")) else " "
+        suffix = "" if not after or after.startswith((" ", "\n", "\t")) else " "
+        buffer.insert_text(f"{prefix}@{result.display_path}{suffix}")
+        try:
+            buffer.start_completion(select_first=False)
+        except Exception:
+            pass
+
     @bindings.add("/")
     def _slash(event: Any) -> None:
         event.current_buffer.insert_text("/")
@@ -2619,6 +3053,10 @@ def _build_prompt_toolkit_key_bindings(
     def _at(event: Any) -> None:
         event.current_buffer.insert_text("@")
         event.current_buffer.start_completion(select_first=True)
+
+    @bindings.add("c-v")
+    def _ctrl_v(event: Any) -> None:
+        _attach_clipboard_screenshot(event)
 
     @bindings.add("enter")
     def _enter(event: Any) -> None:
@@ -2671,6 +3109,8 @@ def _tui_prompt_bottom_toolbar() -> list[tuple[str, str]]:
         ("class:toolbar.dim", "  |  "),
         ("class:toolbar.key", "@ files"),
         ("class:toolbar.dim", "  |  "),
+        ("class:toolbar.key", "Ctrl-V screenshot"),
+        ("class:toolbar.dim", "  |  "),
         ("class:toolbar.key", "Up/Down history"),
     ]
 
@@ -2680,6 +3120,7 @@ def _build_prompt_toolkit_session(
     commands: Sequence[tuple[str, str]],
     skills: Sequence[TuiSkillSuggestion],
     paths: Sequence[TuiPathSuggestion | str] = (),
+    workspace_root: Path | None = None,
     draft_path: Path | None = None,
     history_path: Path | None = None,
 ) -> Any:
@@ -2699,7 +3140,12 @@ def _build_prompt_toolkit_session(
         completer=_build_prompt_toolkit_completer(commands=commands, skills=skills, paths=paths),
         complete_while_typing=True,
         complete_style=CompleteStyle.COLUMN,
-        key_bindings=_build_prompt_toolkit_key_bindings(commands=commands, skills=skills, paths=paths),
+        key_bindings=_build_prompt_toolkit_key_bindings(
+            commands=commands,
+            skills=skills,
+            paths=paths,
+            workspace_root=workspace_root,
+        ),
         reserve_space_for_menu=8,
         style=_build_prompt_toolkit_style(),
         history=history,
@@ -2766,6 +3212,7 @@ def _read_interactive_line(
                 commands=commands,
                 skills=skills,
                 paths=paths,
+                workspace_root=workspace_root,
                 draft_path=_tui_draft_path(workspace_root) if workspace_root is not None else None,
                 history_path=_tui_prompt_history_path(workspace_root) if workspace_root is not None else None,
             )
@@ -3815,7 +4262,7 @@ class SuperTuiState:
     def _record_narrator_report(self, report: NarratorReport, *, limit: int = 10) -> None:
         if self.communication_policy.progress_detail == PROGRESS_QUIET and report.kind not in {"blocker", "final"}:
             return
-        text = str(report.text or "").strip()
+        text = _sanitize_tui_progress_line(report.text, objective=self.objective)
         if not text:
             return
         if report.kind == "opening":
@@ -4626,6 +5073,7 @@ class SuperTuiProgressRenderer:
         force_rich: bool = False,
         debug_events: bool = False,
         line_clock: bool = False,
+        suppress_clock: bool = False,
     ) -> None:
         self.enabled = bool(enabled)
         self.state = SuperTuiState(objective=objective, workspace=workspace, debug_events=debug_events)
@@ -4652,6 +5100,7 @@ class SuperTuiProgressRenderer:
         self._clock_interval_seconds = 1.0
         self._clock_line_active = False
         self._line_clock = bool(line_clock)
+        self._suppress_clock = bool(suppress_clock)
 
     def configure_model_sidecar(self, args: argparse.Namespace) -> None:
         self._sidecar_args = args
@@ -4695,7 +5144,7 @@ class SuperTuiProgressRenderer:
             self._live = None
 
     def _start_clock(self) -> None:
-        if not self.enabled:
+        if not self.enabled or self._suppress_clock:
             return
         self._clock_stop.clear()
         self._clock_thread = threading.Thread(target=self._clock_loop, daemon=True)
@@ -4918,7 +5367,14 @@ class SuperTuiProgressRenderer:
         if not text:
             return
         line_limit = 6 if self.state.communication_policy.progress_detail == PROGRESS_VERBOSE else 4
-        lines = _split_answer_lines(text, limit=line_limit)
+        lines = [
+            clean
+            for clean in (
+                _sanitize_tui_progress_line(line, objective=self.state.objective)
+                for line in _split_answer_lines(text, limit=line_limit)
+            )
+            if clean
+        ]
         if not lines:
             return
         with self._sidecar_lock:
@@ -5014,9 +5470,9 @@ def build_parser() -> argparse.ArgumentParser:
         "Explicit slash commands route locally; natural-language input is model-routed as narrator read-only, executor read-only, executor write, or clarification. "
         "Progress/status questions use the snapshot-only narrator lane; workspace inspection stays read-only; "
         "write requests use direct simple writes or the normal Super DAN execution path. "
-        "Interactive TUI turns use local V2 async admission by default, so the prompt stays live "
-        "while admitted Agent runs continue in the background. Pass --server only when you want "
-        "the same contract through shared server-backed async runs."
+        "The interactive shell keeps the composer live while a submitted turn is running, similar to "
+        "a chat box. Additional ordinary turns queue behind the current one; explicit --async-agent "
+        "or --server sessions use V2 async admission for true background Agent runs."
     )
     parser.add_argument(
         "--plain",
@@ -5049,8 +5505,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=str(os.environ.get("DAN_SUPER_TUI_ASYNC", "")).strip().lower() in {"1", "true", "yes", "on"},
         help=(
-            "Use V2 async admission in interactive mode. This is already the default for "
-            "dan super-tui; --server switches the transport to HTTP."
+            "Use V2 async admission in interactive mode even when no active work is visible. "
+            "--server switches the transport to HTTP."
         ),
     )
     parser.add_argument(
@@ -5110,6 +5566,7 @@ def _run_tui_turn(
         plain=bool(getattr(args, "plain", False)),
         debug_events=bool(getattr(args, "raw_events", False)),
         line_clock=bool(getattr(args, "_tui_background_dispatch", False)),
+        suppress_clock=bool(getattr(args, "_tui_background_dispatch", False)),
     )
     renderer.state.set_intent_decision(getattr(args, "_tui_intent_decision", None))
     renderer.configure_model_sidecar(args)
@@ -5614,7 +6071,8 @@ def _tui_help_lines() -> list[str]:
         "- /skills [filter] - browse skill mentions",
         "- /reset [state|all] - clear Super DAN state",
         "While background work runs, keep typing to steer it; use /new when you mean a separate task.",
-        "Autocomplete: / for commands, $ for skills, @ for files. Enter accepts the visible suggestion.",
+        "Autocomplete: / for commands, $ for skills, @ for files. Ctrl-V attaches a clipboard screenshot when the terminal exposes the key.",
+        "Enter accepts the visible suggestion before sending.",
         "Debug detail: use --raw-events when you need raw event names and tool metadata.",
     ]
 
@@ -6196,11 +6654,31 @@ def _build_tui_async_surface_turn(
     text: str,
     forced_new: bool = False,
 ):
-    from dan.server.chat_v2 import SurfaceTurn
+    from dan.server.chat_v2 import AttachmentRef, SurfaceTurn
 
     selected_skills = list(getattr(args, "_tui_selected_skill_mentions", []) or [])
     communication_policy = _tui_policy_payload(getattr(args, "_tui_communication_policy", None))
     message = f"/new {text}".strip() if forced_new and not str(text).lstrip().startswith("/") else str(text)
+    attachment_payloads = _tui_image_attachment_payloads_from_text(message, workspace_root)
+    history_payload = _tui_transcript_history_payload(workspace_root, current_text=message)
+    attachment_refs = [
+        AttachmentRef(
+            id=str(item.get("id") or ""),
+            kind="image",
+            source_surface="cli:super-tui",
+            mime_type=str(item.get("mime_type") or "") or None,
+            local_path=str(item.get("local_path") or "") or None,
+            display_name=str(item.get("display_name") or "") or None,
+            caption=str(item.get("caption") or ""),
+            size_bytes=item.get("size_bytes") if isinstance(item.get("size_bytes"), int) else None,
+            checksum=str(item.get("checksum") or "") or None,
+            metadata={
+                **(item.get("metadata") if isinstance(item.get("metadata"), dict) else {}),
+                "path": str(item.get("local_path") or item.get("path") or ""),
+            },
+        )
+        for item in attachment_payloads
+    ]
     thread_id = _tui_async_thread_id(workspace_root)
     turn_seed = f"{workspace_root}|{thread_id}|{time.time_ns()}|{message}"
     turn_id = "tui-turn-" + hashlib.sha1(turn_seed.encode("utf-8")).hexdigest()[:16]
@@ -6215,6 +6693,7 @@ def _build_tui_async_surface_turn(
         session_id=thread_id,
         thread_id=thread_id,
         privacy_scope="private",
+        attachments=attachment_refs,
         capabilities=[
             "foreground_admission",
             "background_agent_runs",
@@ -6227,13 +6706,18 @@ def _build_tui_async_surface_turn(
             "selected_skills": selected_skills,
             "forced_new": bool(forced_new),
             "communication_policy": communication_policy,
+            "attachments": attachment_payloads,
+            "image_attachments": attachment_payloads,
             "surface_context": {
                 "workspace_root": str(workspace_root),
                 "workspace_source": "super_tui",
+                "conversation": {"recent_turns": history_payload},
                 "selected_skills": selected_skills,
                 "forced_new": bool(forced_new),
                 "communication_policy": communication_policy,
+                "appended_attachments": attachment_payloads,
             },
+            "history": history_payload,
         },
     )
 
@@ -6335,6 +6819,7 @@ def _tui_background_completion_lines(run: Any | None, events: Sequence[Any]) -> 
                 latest = str(getattr(event, "summary", "") or "").strip()
             if latest:
                 break
+    latest_lines = _human_tui_background_summary_lines(latest)
     prefix = "Background run"
     if visible_id:
         prefix = f"Background run `{visible_id}`"
@@ -6344,9 +6829,10 @@ def _tui_background_completion_lines(run: Any | None, events: Sequence[Any]) -> 
         first = f"{prefix} needs attention."
     else:
         first = f"{prefix} is {status}."
-    if latest and latest not in first:
-        first = f"{first} {_clip(latest, limit=420)}"
+    if latest_lines and latest_lines[0] not in first:
+        first = f"{first} {latest_lines[0]}"
     lines = [first]
+    lines.extend(latest_lines[1:3])
     trace_ref = ""
     metadata = getattr(run, "metadata", {}) or {}
     if isinstance(metadata, MappingABC):
@@ -6361,6 +6847,61 @@ def _tui_background_completion_lines(run: Any | None, events: Sequence[Any]) -> 
     if trace_ref:
         lines.append(f"Trace: {trace_ref}")
     lines.append("Use `/tasks` for the latest board.")
+    return lines
+
+
+def _parse_tui_background_summary_payload(text: str) -> Mapping[str, Any] | None:
+    value = str(text or "").strip()
+    if not value or not value.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        try:
+            parsed = ast.literal_eval(value)
+        except Exception:
+            return None
+    return parsed if isinstance(parsed, MappingABC) else None
+
+
+def _human_tui_background_summary_lines(text: str) -> list[str]:
+    value = str(text or "").strip()
+    if not value:
+        return []
+    payload = _parse_tui_background_summary_payload(value)
+    if payload is None:
+        return [_clip(value, limit=420)]
+    lines: list[str] = []
+    change_summary = str(payload.get("change_summary") or payload.get("summary") or "").strip()
+    files_created = payload.get("files_created")
+    created: list[str] = []
+    if isinstance(files_created, SequenceABC) and not isinstance(files_created, (str, bytes)):
+        created = [str(item).strip() for item in files_created if str(item).strip()]
+    files_modified = payload.get("files_modified")
+    modified: list[str] = []
+    if isinstance(files_modified, SequenceABC) and not isinstance(files_modified, (str, bytes)):
+        modified = [str(item).strip() for item in files_modified if str(item).strip()]
+    if created:
+        files = ", ".join(f"`{_clip(path, limit=80)}`" for path in created[:4])
+        if change_summary:
+            lines.append(f"Created {files}: {_clip(change_summary, limit=260)}")
+        else:
+            lines.append(f"Created {files}.")
+    elif modified:
+        files = ", ".join(f"`{_clip(path, limit=80)}`" for path in modified[:4])
+        if change_summary:
+            lines.append(f"Updated {files}: {_clip(change_summary, limit=260)}")
+        else:
+            lines.append(f"Updated {files}.")
+    elif change_summary:
+        lines.append(_clip(change_summary, limit=320))
+    risks = payload.get("risks")
+    if isinstance(risks, SequenceABC) and not isinstance(risks, (str, bytes)):
+        risk_lines = [str(item).strip() for item in risks if str(item).strip()]
+        if risk_lines:
+            lines.append("Note: " + _clip(risk_lines[0], limit=240))
+    if not lines:
+        lines.append(_clip(json.dumps(dict(payload), sort_keys=True), limit=420))
     return lines
 
 
@@ -6591,6 +7132,8 @@ def _tui_async_admission_payload(
     if int(getattr(args, "max_tool_calls", 0) or 0) > 0:
         tool_policy["max_tool_calls"] = int(getattr(args, "max_tool_calls"))
     thread_id = _tui_async_thread_id(workspace_root)
+    attachment_payloads = _tui_image_attachment_payloads_from_text(message, workspace_root)
+    history_payload = _tui_transcript_history_payload(workspace_root, current_text=message)
     return {
         "chat_request": {
             "workflow_id": "_scratch",
@@ -6601,12 +7144,15 @@ def _tui_async_admission_payload(
             "surface": "cli:super-tui",
             "session_id": thread_id,
             "thread_id": thread_id,
+            "history": history_payload,
             "surface_context": {
                 "workspace_root": str(workspace_root),
                 "workspace_source": "super_tui",
+                "conversation": {"recent_turns": history_payload},
                 "selected_skills": selected_skills,
                 "forced_new": bool(forced_new),
                 "communication_policy": communication_policy,
+                "appended_attachments": attachment_payloads,
             },
         },
         "background": bool(background),
@@ -6621,6 +7167,8 @@ def _tui_async_admission_payload(
                 "surface": "super-tui",
                 "selected_skills": selected_skills,
                 "communication_policy": communication_policy,
+                "attachments": attachment_payloads,
+                "image_attachments": attachment_payloads,
             },
         },
         "max_parallel_runs": max(1, int(getattr(args, "async_agent_max_parallel", 4) or 4)),
@@ -6945,6 +7493,49 @@ def _tui_forces_new_async_work_for_prose(args: argparse.Namespace, text: str) ->
     if not stripped or stripped.startswith("/"):
         return False
     return True
+
+
+def _tui_has_visible_active_or_queued_work(workspace_root: Path) -> bool:
+    try:
+        state = _load_tui_board_source_state(workspace_root)
+        active, queued, _recent = state.board_rows_by_bucket()
+    except Exception:
+        return False
+    return bool(active or queued)
+
+
+def _tui_async_background_requested(args: argparse.Namespace) -> bool:
+    return bool(
+        getattr(args, "_async_agent_explicit", False)
+        or getattr(args, "_server_explicit", False)
+        or _tui_async_use_server(args)
+    )
+
+
+def _tui_should_use_async_background_for_turn(
+    args: argparse.Namespace,
+    *,
+    async_agent_enabled: bool,
+    workspace_root: Path,
+) -> bool:
+    del async_agent_enabled, workspace_root
+    if bool(getattr(args, "plan_only", False)):
+        return False
+    try:
+        stdin_is_tty = bool(getattr(args, "_stdin_is_tty", False)) or bool(sys.stdin.isatty())
+    except Exception:
+        stdin_is_tty = bool(getattr(args, "_stdin_is_tty", False))
+    if not stdin_is_tty:
+        return False
+    return True
+
+
+def _tui_should_use_async_background_for_write(args: argparse.Namespace, workspace_root: Path) -> bool:
+    if not _tui_async_agent_enabled(args):
+        return False
+    if _tui_async_background_requested(args):
+        return True
+    return _tui_has_visible_active_or_queued_work(workspace_root)
 
 
 def _request_tui_stop_from_shortcut(
@@ -7588,6 +8179,9 @@ def _run_tui_narrator_model_answer(
 def _wait_for_tui_narrator_model(args: argparse.Namespace, state: SuperTuiState, thread: threading.Thread) -> None:
     if not thread.is_alive():
         return
+    if bool(getattr(args, "_tui_background_dispatch", False)):
+        thread.join()
+        return
     last_footer = ""
     clock_line_active = False
     force_newline_clock = bool(getattr(args, "_tui_background_dispatch", False))
@@ -7724,14 +8318,13 @@ def _run_tui_read_only(
         model_answered = _run_tui_read_only_model_answer(args, decision, state)
     if not model_answered:
         if use_model_loop:
-            state._record_answer("I could not get a usable model-written answer from the read-only review. No files were changed.")
-        else:
-            activity, answer = _build_read_only_answer(workspace_root, objective, decision)
-            for line in activity:
-                state._record_progress(line)
-                _emit_tui_stream_line(args, line)
-            for line in answer:
-                state._record_answer(line)
+            state._record_progress("Model read-only answer was unavailable; using bounded workspace inspection.")
+        activity, answer = _build_read_only_answer(workspace_root, objective, decision)
+        for line in activity:
+            state._record_progress(line)
+            _emit_tui_stream_line(args, line)
+        for line in answer:
+            state._record_answer(line)
     state.status = "completed"
     state.phase = "done"
     state.current_step = "Read-only answer ready"
@@ -7940,6 +8533,8 @@ def _dispatch_tui_turn(
     turn_started_at = float(getattr(args, "_tui_turn_started_at", 0.0) or time.monotonic())
     setattr(args, "_tui_turn_started_at", turn_started_at)
     workspace_root = normalize_workspace_root(str(args.workspace))
+    _set_tui_surface_attachments_from_text(args, workspace_root, target_text)
+    _set_tui_surface_context_from_transcript(args, workspace_root, current_text=target_text)
     if lowered_target in {"/exit", "/quit", "exit", "quit"}:
         return 0
     if lowered_target == "/plan" or lowered_target.startswith("/plan "):
@@ -8103,6 +8698,7 @@ def _dispatch_tui_turn(
         and not bool(getattr(args, "plan_only", False))
         and bool(getattr(args, "_tui_async_interactive", False))
         and _tui_async_agent_enabled(args)
+        and _tui_should_use_async_background_for_write(args, workspace_root)
     ):
         raw_text = str(getattr(args, "target", "") or "")
         effective_text = _tui_effective_async_text_for_write_turn(args, workspace_root, raw_text)
@@ -8156,6 +8752,7 @@ def _render_composer_hint(workspace_root: Path, *, plain: bool, skill_count: int
                 body.append(f"Skill suggestions: {skill_count} loaded\n", style="green" if skill_count else "dim")
                 body.append(f"Path suggestions: {path_count} loaded\n", style="green" if path_count else "dim")
                 body.append("Outbox: durable\n", style="green")
+                body.append("Screenshot paste: Ctrl-V attaches clipboard image when available\n", style="dim")
                 body.append("History: Up/Down recalls submitted messages", style="dim")
                 console = Console()
                 console.print(Panel(body, title=_tui_section_title("Message"), border_style="cyan", padding=(1, 2)))
@@ -8172,6 +8769,7 @@ def _render_composer_hint(workspace_root: Path, *, plain: bool, skill_count: int
     print(f"  Skill suggestions: {skill_count} loaded", flush=True)
     print(f"  Path suggestions: {path_count} loaded", flush=True)
     print("  Outbox: durable", flush=True)
+    print("  Screenshot paste: Ctrl-V attaches clipboard image when available", flush=True)
     print("  History: Up/Down recalls submitted messages", flush=True)
 
 
@@ -8257,7 +8855,12 @@ def _render_event_log(args: argparse.Namespace) -> int:
 
 
 def _should_dispatch_tui_turn_in_background(args: argparse.Namespace, *, async_agent_enabled: bool) -> bool:
-    return bool(async_agent_enabled and sys.stdin.isatty() and not bool(getattr(args, "plan_only", False)))
+    workspace_root = normalize_workspace_root(str(getattr(args, "workspace", "") or "."))
+    return _tui_should_use_async_background_for_turn(
+        args,
+        async_agent_enabled=async_agent_enabled,
+        workspace_root=workspace_root,
+    )
 
 
 def _start_tui_background_dispatch(
@@ -8305,11 +8908,100 @@ def _start_tui_background_dispatch(
     return thread
 
 
+@dataclass(frozen=True)
+class TuiChatboxQueuedTurn:
+    turn_args: argparse.Namespace
+    message_id: str
+    objective: str
+    forced_new: bool
+    plan_only: bool
+
+
+class TuiChatboxTurnScheduler:
+    """Single-lane UI worker that keeps the prompt usable while turns run."""
+
+    def __init__(
+        self,
+        *,
+        parser: argparse.ArgumentParser,
+        workspace_root: Path,
+        plain: bool = False,
+    ) -> None:
+        self._parser = parser
+        self._workspace_root = workspace_root
+        self._plain = bool(plain)
+        self._lock = threading.Lock()
+        self._queue: deque[TuiChatboxQueuedTurn] = deque()
+        self._active_thread: threading.Thread | None = None
+
+    def has_pending_work(self) -> bool:
+        with self._lock:
+            return bool((self._active_thread is not None and self._active_thread.is_alive()) or self._queue)
+
+    def submit(self, item: TuiChatboxQueuedTurn) -> bool:
+        with self._lock:
+            if self._active_thread is not None and self._active_thread.is_alive():
+                self._queue.append(item)
+                queue_position = len(self._queue)
+            else:
+                self._start_locked(item)
+                return True
+        _print_tui_stream_block(
+            "Queued",
+            [
+                f"Queued after the current turn: {_clip(item.objective, limit=180)}",
+                f"Position: {queue_position}. The composer stays open.",
+            ],
+            plain=self._plain,
+        )
+        return False
+
+    def _start_locked(self, item: TuiChatboxQueuedTurn) -> None:
+        thread = _start_tui_background_dispatch(
+            item.turn_args,
+            self._parser,
+            workspace_root=self._workspace_root,
+            message_id=item.message_id,
+            objective=item.objective,
+            forced_new=item.forced_new,
+            plan_only=item.plan_only,
+        )
+        self._active_thread = thread
+        watcher = threading.Thread(
+            target=self._watch_thread,
+            args=(thread,),
+            name="super-tui-chatbox-queue",
+            daemon=True,
+        )
+        watcher.start()
+
+    def _watch_thread(self, thread: threading.Thread) -> None:
+        thread.join()
+        next_item: TuiChatboxQueuedTurn | None = None
+        with self._lock:
+            if self._active_thread is thread:
+                self._active_thread = None
+            if self._queue:
+                next_item = self._queue.popleft()
+                self._start_locked(next_item)
+        if next_item is not None:
+            _print_tui_stream_block(
+                "Queued",
+                [f"Starting queued turn: {_clip(next_item.objective, limit=180)}"],
+                plain=self._plain,
+            )
+
+
 def _interactive_loop(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     workspace_root = normalize_workspace_root(str(args.workspace))
     commands = _TUI_COMMANDS
     skills = _load_tui_skill_suggestions(workspace_root)
     path_suggestions = _load_tui_path_suggestions(workspace_root)
+    chatbox_scheduler = TuiChatboxTurnScheduler(
+        parser=parser,
+        workspace_root=workspace_root,
+        plain=bool(getattr(args, "plain", False)),
+    )
     _render_transcript_history(
         workspace_root,
         plain=bool(getattr(args, "plain", False)),
@@ -8320,6 +9012,7 @@ def _interactive_loop(args: argparse.Namespace, parser: argparse.ArgumentParser)
         skill_count=len(skills),
         path_count=len(path_suggestions),
     )
+    exit_armed_for_running_turn = False
     while True:
         try:
             try:
@@ -8353,7 +9046,16 @@ def _interactive_loop(args: argparse.Namespace, parser: argparse.ArgumentParser)
         lowered = objective.lower()
         async_agent_enabled = _tui_async_agent_enabled(args)
         if lowered in {"/exit", "/quit", "exit", "quit"}:
+            if chatbox_scheduler.has_pending_work() and not exit_armed_for_running_turn:
+                _render_tui_text_command(
+                    args,
+                    "System",
+                    "A turn is still running or queued. Type /exit again to quit anyway, or use /stop to request an interrupt.",
+                )
+                exit_armed_for_running_turn = True
+                continue
             return 0
+        exit_armed_for_running_turn = False
         message_id = _new_tui_message_id(objective)
         _clear_tui_draft(workspace_root)
         _append_tui_outbox_event(
@@ -8571,6 +9273,8 @@ def _interactive_loop(args: argparse.Namespace, parser: argparse.ArgumentParser)
             continue
         if not str(turn_args.target or "").strip():
             continue
+        attachments = _set_tui_surface_attachments_from_text(turn_args, workspace_root, str(turn_args.target or ""))
+        _set_tui_surface_context_from_transcript(turn_args, workspace_root, current_text=str(turn_args.target or ""))
         turn_args.plan_only = plan_only
         turn_args.json = False
         turn_args.output = None
@@ -8585,17 +9289,18 @@ def _interactive_loop(args: argparse.Namespace, parser: argparse.ArgumentParser)
                 "plan_only": plan_only,
                 "forced_new": forced_new,
                 "selected_skills": list(getattr(turn_args, "_tui_selected_skill_mentions", []) or []),
+                "attachments": attachments,
             },
         )
         if _should_dispatch_tui_turn_in_background(turn_args, async_agent_enabled=async_agent_enabled):
-            _start_tui_background_dispatch(
-                turn_args,
-                parser,
-                workspace_root=workspace_root,
-                message_id=message_id,
-                objective=objective,
-                forced_new=forced_new,
-                plan_only=plan_only,
+            chatbox_scheduler.submit(
+                TuiChatboxQueuedTurn(
+                    turn_args=turn_args,
+                    message_id=message_id,
+                    objective=objective,
+                    forced_new=forced_new,
+                    plan_only=plan_only,
+                )
             )
             continue
         try:
@@ -8640,6 +9345,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(parsed.message)
     if not parsed.should_run:
         return 0
+    _set_tui_surface_attachments_from_text(
+        args,
+        normalize_workspace_root(str(args.workspace)),
+        str(getattr(args, "target", "") or ""),
+    )
+    _set_tui_surface_context_from_transcript(
+        args,
+        normalize_workspace_root(str(args.workspace)),
+        current_text=str(getattr(args, "target", "") or ""),
+    )
     return _dispatch_tui_turn(args, parser)
 
 
