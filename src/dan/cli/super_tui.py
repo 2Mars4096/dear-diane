@@ -2378,6 +2378,43 @@ def _summarize_source(path: Path, text: str, workspace_root: Path) -> list[str]:
         return result
     if open_count or done_count:
         result.append(f"Tasks: {open_count} open, {done_count} completed.")
+    metadata_lines: list[str] = []
+    for line in lines[:40]:
+        text_line = line.strip()
+        match = re.match(r"\*\*([^*:]{2,40}):\*\*\s*(.+)", text_line)
+        if not match:
+            continue
+        label = " ".join(match.group(1).split())
+        value = " ".join(match.group(2).split())
+        if label and value:
+            metadata_lines.append(f"{label}: {_clip(value, limit=180)}")
+        if len(metadata_lines) >= 4:
+            break
+    if headings:
+        result.append("Title: " + _clip(headings[0].lstrip("#").strip(), limit=120))
+    if metadata_lines:
+        result.extend(metadata_lines[:4])
+    prose_lines: list[str] = []
+    for line in lines:
+        stripped = " ".join(line.strip().strip("> ").split())
+        if not stripped:
+            continue
+        if stripped.startswith(("#", "|", "![", "<")):
+            continue
+        if re.fullmatch(r"[-:*_`#\s]+", stripped):
+            continue
+        if re.match(r"\*\*[^*:]{2,40}:\*\*", stripped):
+            continue
+        if re.search(r"- \[[ xX]\]", stripped):
+            continue
+        if len(re.findall(r"[A-Za-z][A-Za-z]{2,}", stripped)) < 4:
+            continue
+        prose_lines.append(_clip(stripped, limit=190))
+        if len(prose_lines) >= 4:
+            break
+    if prose_lines and not open_count:
+        result.append("Takeaways:")
+        result.extend(f"- {line}" for line in prose_lines[:4])
     if headings:
         result.append("Headings: " + "; ".join(_clip(item, limit=60) for item in headings[:6]))
     if open_tasks:
@@ -2403,18 +2440,53 @@ def _excerpt_source(path: Path, text: str, workspace_root: Path, *, max_lines: i
     return result
 
 
+def _tui_read_only_context_text(args: argparse.Namespace, objective: str) -> str:
+    parts = [" ".join(str(objective or "").split())]
+    history = getattr(args, "_tui_surface_history", []) or []
+    if isinstance(history, SequenceABC) and not isinstance(history, (str, bytes)):
+        for item in history[-6:]:
+            if not isinstance(item, MappingABC):
+                continue
+            if str(item.get("role") or "").strip() != "user":
+                continue
+            text = " ".join(str(item.get("content") or "").split())
+            if text and text not in parts:
+                parts.append(text)
+    return "\n".join(part for part in parts if part).strip()
+
+
 def _build_read_only_answer(
     workspace_root: Path,
     objective: str,
     decision: TuiIntentDecision,
+    *,
+    context_text: str = "",
 ) -> tuple[list[str], list[str]]:
-    sources = _resolve_read_only_sources(workspace_root, objective)
+    search_context = context_text or objective
+    sources = _resolve_read_only_sources(workspace_root, search_context)
     activity: list[str] = []
     answer: list[str] = []
-    token_set = set(tokenize_intent_text(objective))
+    token_set = set(tokenize_intent_text(search_context))
     if token_set & {"find", "grep", "search"}:
-        return _search_sources(workspace_root, objective)
-    wants_summary = bool(token_set & {"analyse", "analyze", "explain", "review", "summarise", "summarize", "summary"})
+        return _search_sources(workspace_root, search_context)
+    wants_summary = bool(
+        token_set
+        & {
+            "analyse",
+            "analyze",
+            "assess",
+            "evaluate",
+            "explain",
+            "insight",
+            "insights",
+            "review",
+            "summarise",
+            "summarize",
+            "summary",
+            "takeaway",
+            "takeaways",
+        }
+    )
 
     if sources:
         for source in sources:
@@ -2579,10 +2651,27 @@ def _tui_read_only_system_prompt(tool_ids: Sequence[str]) -> str:
     )
 
 
-def _tui_read_only_user_prompt(workspace_root: Path, objective: str) -> str:
+def _format_tui_surface_history_for_prompt(args: argparse.Namespace, *, limit: int = 6) -> str:
+    history = getattr(args, "_tui_surface_history", []) or []
+    if not isinstance(history, SequenceABC) or isinstance(history, (str, bytes)):
+        return "(none)"
+    lines: list[str] = []
+    for item in history[-limit:]:
+        if not isinstance(item, MappingABC):
+            continue
+        role = str(item.get("role") or "").strip() or "turn"
+        content = " ".join(str(item.get("content") or "").split())
+        if content:
+            lines.append(f"{role}: {_clip(content, limit=500)}")
+    return "\n".join(lines) or "(none)"
+
+
+def _tui_read_only_user_prompt(workspace_root: Path, objective: str, args: argparse.Namespace | None = None) -> str:
+    recent_context = _format_tui_surface_history_for_prompt(args, limit=6) if args is not None else "(none)"
     return (
         f"Workspace root: {workspace_root}\n"
         f"User request: {objective}\n\n"
+        f"Recent visible conversation context:\n{recent_context}\n\n"
         "Inspect only what is necessary. If the request is too broad, summarize the most relevant sources and name any limits."
     )
 
@@ -2703,6 +2792,7 @@ def _tui_read_only_followup_messages(
     workspace_root: Path,
     objective: str,
     evidence: str,
+    recent_context: str = "(none)",
 ) -> list[dict[str, str]]:
     return [
         {
@@ -2719,6 +2809,7 @@ def _tui_read_only_followup_messages(
             "content": (
                 f"Workspace root: {workspace_root}\n"
                 f"User request: {objective}\n\n"
+                f"Recent visible conversation context:\n{recent_context}\n\n"
                 "Tool evidence already gathered:\n"
                 f"{evidence or '(no tool evidence was captured)'}\n\n"
                 "Now provide the user-facing answer in 3-8 concise lines."
@@ -2746,6 +2837,18 @@ def _emit_tui_stream_line(args: argparse.Namespace, line: Any) -> None:
     if text == str(getattr(args, "_tui_last_stream_line", "") or ""):
         return
     setattr(args, "_tui_last_stream_line", text)
+    if bool(getattr(args, "_tui_background_dispatch", False)) and not re.match(
+        r"^(?:Elapsed|Working)\s*:",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        started_at = float(getattr(args, "_tui_turn_started_at", 0.0) or 0.0) or None
+        _print_tui_stream_block(
+            "Chat -> Thinking",
+            [_tui_chatbox_thinking_text(started_at), text],
+            plain=bool(getattr(args, "plain", False)),
+        )
+        return
     _print_tui_stream_line(text, plain=bool(getattr(args, "plain", False)))
 
 
@@ -2804,7 +2907,7 @@ def _run_tui_read_only_model_answer(
                 CompletionRequest(
                     model=model,
                     system_prompt=_tui_read_only_system_prompt(tool_ids),
-                    user_prompt=_tui_read_only_user_prompt(workspace_root, objective),
+                    user_prompt=_tui_read_only_user_prompt(workspace_root, objective, args),
                     temperature=0.2,
                     max_tokens=_tui_answer_max_tokens(decision.communication_policy),
                     tools=_tui_tool_schemas(tool_ids),
@@ -2827,6 +2930,7 @@ def _run_tui_read_only_model_answer(
                             workspace_root=workspace_root,
                             objective=objective,
                             evidence=evidence,
+                            recent_context=_format_tui_surface_history_for_prompt(args),
                         ),
                         model=model,
                         temperature=0.2,
@@ -8457,7 +8561,7 @@ def _run_tui_read_only(
         phase=decision.lane,
         debug_events=bool(getattr(args, "raw_events", False)),
     )
-    state.started_at_monotonic = time.monotonic()
+    state.started_at_monotonic = float(getattr(args, "_tui_turn_started_at", 0.0) or time.monotonic())
     state.set_intent_decision(decision)
     state.current_step = "Read-only request"
     state._record_progress("Read-only route selected.")
@@ -8467,7 +8571,12 @@ def _run_tui_read_only(
     if not model_answered:
         if use_model_loop:
             state._record_progress("Model read-only answer was unavailable; using bounded workspace inspection.")
-        activity, answer = _build_read_only_answer(workspace_root, objective, decision)
+        activity, answer = _build_read_only_answer(
+            workspace_root,
+            objective,
+            decision,
+            context_text=_tui_read_only_context_text(args, objective),
+        )
         for line in activity:
             state._record_progress(line)
             _emit_tui_stream_line(args, line)

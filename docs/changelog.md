@@ -1,6 +1,8 @@
 # Changelog
 
 ## 2026-05-19
+- [test] Added regressions for background read-only stream progress staying inside the boxed `Chat -> Thinking` lane and for follow-up report review requests inheriting prior "takeaways" context. Focused Super TUI tests pass with `191 passed`.
+- [fix] Closed the remaining Super TUI read-only UX leak from screenshot review. Background read-only source-inspection progress now renders under `DAN · Chat -> Thinking:` instead of a loose `DAN · Source inspected` line, and fallback read-only report answers use recent visible user context plus lightweight document synthesis so "the open report" review follow-ups return takeaways rather than a raw file preview.
 - [test] Verified the Super TUI single-lane thinking pass with `compileall`, focused Super TUI tests (`189 passed`), `git diff --check`, and a live TTY smoke showing the rounded `DAN · Chat` composer plus boxed `DAN · Chat -> Thinking:` acknowledgement. The live smoke reached the expected provider/network route blocker after the UI path rendered.
 - [fix] Routed Super TUI background chatbox progress through the boxed `DAN · Chat -> Thinking:` lane and removed the separate loose prompt-adjacent thinking clock, so later renderer/narrator progress no longer mixes `DAN · ...` loose rows with the chatbox frame.
 - [test] Verified the rounded Super TUI vertical-ornament pass with `compileall`, focused Super TUI tests (`186 passed`), `git diff --check`, and live TTY smoke showing the top-border chat title, elapsed thinking clock, and vertical side-rail panel ornaments.

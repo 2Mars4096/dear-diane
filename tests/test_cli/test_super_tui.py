@@ -761,6 +761,27 @@ def test_super_tui_background_progress_uses_elapsed_chatbox_time(capsys, monkeyp
     assert "Thinking 0s..." not in stdout
 
 
+def test_super_tui_background_stream_progress_uses_chatbox_lane(capsys, monkeypatch) -> None:
+    current = {"value": 105.0}
+    monkeypatch.setattr(super_tui.time, "monotonic", lambda: current["value"])
+    args = Namespace(
+        plain=False,
+        json=False,
+        quiet_progress=False,
+        raw_events=False,
+        _tui_background_dispatch=True,
+        _tui_turn_started_at=100.0,
+    )
+
+    super_tui._emit_tui_stream_line(args, "Source inspected: report.md")
+
+    stdout = capsys.readouterr().out
+    assert "DAN · Chat -> Thinking:" in stdout
+    assert "Thinking 5s..." in stdout
+    assert "Source inspected: report.md" in stdout
+    assert "DAN · Source inspected" not in stdout
+
+
 def test_super_tui_background_dispatch_gate_requires_tty(tmp_path, monkeypatch) -> None:
     parser = super_tui.build_parser()
     args = parser.parse_args(["--workspace", str(tmp_path), "--plain"])
@@ -5272,6 +5293,65 @@ def test_super_tui_read_only_model_failure_falls_back_to_workspace_summary(
     assert "Source: opec-report-2025.md" in stdout
     assert "Headings: # OPEC Report 2025; ## Findings" in stdout
     assert "I could not get a usable model-written answer" not in stdout
+
+
+def test_super_tui_read_only_followup_uses_prior_takeaway_context(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "opec-uae-combined-report-2026.md").write_text(
+        "\n".join(
+            [
+                "# OPEC & UAE Membership Report - 2026 Combined Status",
+                "",
+                "**Report date:** 2026-08-11",
+                "**Scope:** OPEC+ production policy, UAE membership status, and market outlook.",
+                "**Sources:** OPEC press releases, Reuters, and market data.",
+                "",
+                "> Consolidation Note: This report supersedes prior OPEC/UAE briefing files.",
+                "",
+                "The central point is that UAE remains inside OPEC while tensions around quota targets persist.",
+                "Near-term market impact depends on whether OPEC+ keeps discipline around planned production changes.",
+                "",
+                "## Membership Status",
+                "The UAE is still a member.",
+                "## Market Outlook",
+                "Supply discipline remains the main uncertainty.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    super_tui._append_tui_transcript_entry(
+        workspace,
+        role="user",
+        text="can you review that report for me for some takeaways",
+    )
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("read-only follow-up must not start Super DAN runner")
+
+    _patch_tui_route(monkeypatch, permission="read-only", complexity="simple")
+    monkeypatch.setattr(super_tui, "_run_tui_turn", fail_run)
+
+    exit_code = super_tui.main(
+        [
+            "I mean the open report",
+            "--workspace",
+            str(workspace),
+            "--plain",
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Source: opec-uae-combined-report-2026.md" in stdout
+    assert "Scope: OPEC+ production policy" in stdout
+    assert "Takeaways:" in stdout
+    assert "UAE remains inside OPEC" in stdout
+    assert "No matching workspace file" not in stdout
 
 
 def test_super_tui_complex_read_only_searches_workspace_without_writes(
