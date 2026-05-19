@@ -3136,11 +3136,6 @@ def _build_prompt_toolkit_style() -> Any:
             "completion-menu.meta.completion.current": "bg:#00d1d1 #001014",
             "scrollbar.background": "bg:#252a33",
             "scrollbar.button": "bg:#00d1d1",
-            "bottom-toolbar": "#64748b",
-            "toolbar.key": "#22d3ee bold",
-            "toolbar.text": "#94a3b8",
-            "toolbar.dim": "#475569",
-            "toolbar.stop": "#22d3ee bold",
             "chatbox.border": "#22d3ee",
             "chatbox.title": "#22d3ee bold",
             "chatbox.prompt": "#cbd5e1 bold",
@@ -3166,28 +3161,6 @@ def _tui_chatbox_prompt(prompt: str = "super-tui> ") -> list[tuple[str, str]]:
         ("class:chatbox.border", "│ "),
         ("class:chatbox.prompt", prompt),
     ]
-
-
-def _tui_prompt_bottom_toolbar() -> list[tuple[str, str]]:
-    controls = [
-        ("class:toolbar.key", "Enter send"),
-        ("class:toolbar.dim", " | "),
-        ("class:toolbar.stop", "Esc stop"),
-        ("class:toolbar.dim", " | "),
-        ("class:toolbar.key", "/ commands"),
-        ("class:toolbar.dim", " | "),
-        ("class:toolbar.key", "$ skills"),
-        ("class:toolbar.dim", " | "),
-        ("class:toolbar.key", "@ files"),
-        ("class:toolbar.dim", " | "),
-        ("class:toolbar.key", "Ctrl-V screenshot"),
-        ("class:toolbar.dim", " | "),
-        ("class:toolbar.key", "Up/Down history"),
-    ]
-    control_text = "".join(fragment for _style, fragment in controls)
-    width = _tui_chatbox_width()
-    fill = "─" * max(1, width - len(control_text) - 6)
-    return [("class:chatbox.border", "╰─ "), *controls, ("class:chatbox.border", f" {fill}╯")]
 
 
 def _prompt_toolkit_chatbox_available() -> bool:
@@ -3305,15 +3278,9 @@ def _read_interactive_line(
             try:
                 from prompt_toolkit.patch_stdout import patch_stdout
             except Exception:
-                return session.prompt(
-                    _tui_chatbox_prompt(prompt),
-                    bottom_toolbar=_tui_prompt_bottom_toolbar(),
-                )
+                return session.prompt(_tui_chatbox_prompt(prompt))
             with patch_stdout(raw=True):
-                return session.prompt(
-                    _tui_chatbox_prompt(prompt),
-                    bottom_toolbar=_tui_prompt_bottom_toolbar(),
-                )
+                return session.prompt(_tui_chatbox_prompt(prompt))
         except Exception:
             if not _PROMPT_TOOLKIT_FALLBACK_WARNED:
                 print(
@@ -8985,6 +8952,14 @@ class TuiChatboxTurnScheduler:
         return False
 
     def _start_locked(self, item: TuiChatboxQueuedTurn) -> None:
+        _print_tui_stream_block(
+            "Thinking",
+            [
+                f"Thinking 0s: {_clip(item.objective, limit=180)}",
+                "The composer stays open while this turn is routed.",
+            ],
+            plain=self._plain,
+        )
         thread = _start_tui_background_dispatch(
             item.turn_args,
             self._parser,

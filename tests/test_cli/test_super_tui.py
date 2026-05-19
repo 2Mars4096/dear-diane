@@ -665,6 +665,9 @@ def test_super_tui_chatbox_scheduler_queues_second_turn(tmp_path, capsys, monkey
     )
 
     assert scheduler.submit(first) is True
+    first_stdout = capsys.readouterr().out
+    assert "Thinking 0s: first turn" in first_stdout
+    assert "The composer stays open" in first_stdout
     assert scheduler.submit(second) is False
     assert calls == ["first turn"]
     assert "Queued after the current turn: second turn" in capsys.readouterr().out
@@ -3199,18 +3202,6 @@ def test_super_tui_prompt_toolkit_keybindings_open_completion_menu() -> None:
     assert ("c-v",) in keys
     assert ("escape",) in keys
     assert ("enter",) in keys or any(str(key).lower().endswith("controlm") for row in keys for key in row)
-
-
-def test_super_tui_prompt_toolbar_is_compact() -> None:
-    text = "".join(fragment for _style, fragment in super_tui._tui_prompt_bottom_toolbar())
-
-    assert text.startswith("╰─ ")
-    assert "Enter send" in text
-    assert "Esc stop" in text
-    assert "$ skills" in text
-    assert "@ files" in text
-    assert "Ctrl-V screenshot" in text
-    assert "/append inserts" not in text
 
 
 def test_super_tui_chatbox_prompt_is_bordered() -> None:
