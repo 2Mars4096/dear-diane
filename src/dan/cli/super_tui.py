@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import ast
 import asyncio
+import contextlib
 import copy
 import hashlib
 import json
@@ -1494,6 +1495,22 @@ def _tui_section_title(title: str) -> str:
     return f"{_TUI_BRAND} {_TUI_SEPARATOR} {clean}:"
 
 
+def _tui_panel_title(title: str) -> str:
+    return _tui_section_title(title)
+
+
+def _tui_vertical_ornament(height: int) -> str:
+    count = max(1, int(height or 0))
+    if count == 1:
+        return "◆"
+    return "\n".join(["╭", *(["│"] * max(0, count - 2)), "╰"])
+
+
+def _tui_chatbox_thinking_text(started_at: float | None = None) -> str:
+    started = float(started_at or time.monotonic())
+    return f"Thinking {_format_elapsed_duration(max(0.0, time.monotonic() - started))}..."
+
+
 def _format_tui_stream_line(text: str) -> str:
     clean = str(text or "").strip()
     if not clean:
@@ -1609,14 +1626,24 @@ def _print_tui_stream_block(title: str, lines: Sequence[str], *, plain: bool = F
             print(f"  {line}", flush=True)
         return
     try:
+        from rich import box
         from rich.panel import Panel
+        from rich.table import Table
+        from rich.text import Text
 
         body = _rich_semantic_text("\n".join(visible_lines), base_style="white")
+        ornament = Text(_tui_vertical_ornament(len(visible_lines)), style=_tui_section_border_style(title_text))
+        content = Table.grid(expand=True)
+        content.add_column(width=2, no_wrap=True)
+        content.add_column(ratio=1)
+        content.add_row(ornament, body)
         console = Console(highlight=False)
         console.print(
             Panel(
-                body,
-                title=_tui_section_title(title_text),
+                content,
+                title=_tui_panel_title(title_text),
+                title_align="center",
+                box=box.ROUNDED,
                 border_style=_tui_section_border_style(title_text),
                 padding=(0, 1),
             )
@@ -3137,6 +3164,7 @@ def _build_prompt_toolkit_style() -> Any:
             "scrollbar.background": "bg:#252a33",
             "scrollbar.button": "bg:#00d1d1",
             "frame.border": "#22d3ee",
+            "frame.label": "#22d3ee bold",
             "chatbox.border": "#22d3ee",
             "chatbox.title": "#22d3ee bold",
             "chatbox.prompt": "#cbd5e1 bold",
@@ -3147,9 +3175,106 @@ def _build_prompt_toolkit_style() -> Any:
 
 def _tui_chatbox_prompt(prompt: str = "super-tui> ") -> list[tuple[str, str]]:
     return [
-        ("class:chatbox.title", "DAN · Chat\n"),
-        ("class:chatbox.prompt", prompt),
+        ("class:chatbox.prompt", f" {prompt}"),
     ]
+
+
+@contextlib.contextmanager
+def _tui_prompt_rounded_frame_border(title: str = "Chat") -> Any:
+    try:
+        from prompt_toolkit.layout.containers import DynamicContainer, HSplit, VSplit, Window
+        from prompt_toolkit.widgets import base as widgets_base
+        prompt_module = __import__("prompt_toolkit.shortcuts.prompt", fromlist=["Frame"])
+    except Exception:
+        yield
+        return
+
+    border = widgets_base.Border
+    original_frame = getattr(prompt_module, "Frame", None)
+    original = {
+        "TOP_LEFT": border.TOP_LEFT,
+        "TOP_RIGHT": border.TOP_RIGHT,
+        "BOTTOM_LEFT": border.BOTTOM_LEFT,
+        "BOTTOM_RIGHT": border.BOTTOM_RIGHT,
+    }
+
+    class DanPromptFrame:
+        def __init__(self, body: Any, *args: Any, **kwargs: Any) -> None:
+            del args
+            self.body = body
+            self._dan_tui_frame_title = _tui_panel_title(title)
+            style = "class:frame " + str(kwargs.get("style") or "")
+            width = kwargs.get("width")
+            height = kwargs.get("height")
+            key_bindings = kwargs.get("key_bindings")
+            modal = bool(kwargs.get("modal", False))
+
+            def fill(**fill_kwargs: Any) -> Any:
+                return Window(style="class:frame.border", **fill_kwargs)
+
+            top_row = VSplit(
+                [
+                    fill(width=1, height=1, char="╭"),
+                    fill(char="─"),
+                    Window(
+                        content=widgets_base.FormattedTextControl(
+                            lambda: [("class:frame.label", f" {self._dan_tui_frame_title} ")]
+                        ),
+                        style="class:frame.label",
+                        dont_extend_width=True,
+                        height=1,
+                    ),
+                    fill(char="─"),
+                    fill(width=1, height=1, char="╮"),
+                ],
+                height=1,
+            )
+            body_row = VSplit(
+                [
+                    fill(width=1, char="│"),
+                    DynamicContainer(lambda: self.body),
+                    fill(width=1, char="│"),
+                ],
+                padding=0,
+            )
+            bottom_row = VSplit(
+                [
+                    fill(width=1, height=1, char="╰"),
+                    fill(char="─"),
+                    fill(width=1, height=1, char="╯"),
+                ],
+                height=1,
+            )
+            self.container = HSplit(
+                [top_row, body_row, bottom_row],
+                width=width,
+                height=height,
+                style=style,
+                key_bindings=key_bindings,
+                modal=modal,
+            )
+
+        def __pt_container__(self) -> Any:
+            return self.container
+
+    def titled_frame(body: Any, *args: Any, **kwargs: Any) -> Any:
+        if original_frame is None:
+            return body
+        return DanPromptFrame(body, *args, **kwargs)
+
+    border.TOP_LEFT = "╭"
+    border.TOP_RIGHT = "╮"
+    border.BOTTOM_LEFT = "╰"
+    border.BOTTOM_RIGHT = "╯"
+    if original_frame is not None:
+        prompt_module.Frame = titled_frame
+    try:
+        yield
+    finally:
+        for name, value in original.items():
+            setattr(border, name, value)
+        if original_frame is not None:
+            prompt_module.Frame = original_frame
 
 
 def _prompt_toolkit_chatbox_available() -> bool:
@@ -3256,26 +3381,27 @@ def _read_interactive_line(
     global _PROMPT_TOOLKIT_FALLBACK_WARNED
     if sys.stdin.isatty():
         try:
-            session = _build_prompt_toolkit_session(
-                commands=commands,
-                skills=skills,
-                paths=paths,
-                workspace_root=workspace_root,
-                draft_path=_tui_draft_path(workspace_root) if workspace_root is not None else None,
-                history_path=_tui_prompt_history_path(workspace_root) if workspace_root is not None else None,
-            )
-            try:
-                from prompt_toolkit.patch_stdout import patch_stdout
-            except Exception:
-                return session.prompt(
-                    _tui_chatbox_prompt(prompt),
-                    show_frame=True,
+            with _tui_prompt_rounded_frame_border():
+                session = _build_prompt_toolkit_session(
+                    commands=commands,
+                    skills=skills,
+                    paths=paths,
+                    workspace_root=workspace_root,
+                    draft_path=_tui_draft_path(workspace_root) if workspace_root is not None else None,
+                    history_path=_tui_prompt_history_path(workspace_root) if workspace_root is not None else None,
                 )
-            with patch_stdout(raw=True):
-                return session.prompt(
-                    _tui_chatbox_prompt(prompt),
-                    show_frame=True,
-                )
+                try:
+                    from prompt_toolkit.patch_stdout import patch_stdout
+                except Exception:
+                    return session.prompt(
+                        _tui_chatbox_prompt(prompt),
+                        show_frame=True,
+                    )
+                with patch_stdout(raw=True):
+                    return session.prompt(
+                        _tui_chatbox_prompt(prompt),
+                        show_frame=True,
+                    )
         except Exception:
             if not _PROMPT_TOOLKIT_FALLBACK_WARNED:
                 print(
@@ -5069,7 +5195,7 @@ class SuperTuiState:
         )
         return Group(
             Panel(header, border_style="cyan"),
-            Panel(recent, title=_tui_section_title(panel_title), border_style=_tui_section_border_style(panel_title)),
+            Panel(recent, title=_tui_panel_title(panel_title), border_style=_tui_section_border_style(panel_title)),
         )
 
 
@@ -8745,7 +8871,14 @@ def _render_composer_hint(workspace_root: Path, *, plain: bool, skill_count: int
                 body.append("Screenshot paste: Ctrl-V attaches clipboard image when available\n", style="dim")
                 body.append("History: Up/Down recalls submitted messages", style="dim")
                 console = Console()
-                console.print(Panel(body, title=_tui_section_title("Message"), border_style="cyan", padding=(1, 2)))
+                console.print(
+                    Panel(
+                        body,
+                        title=_tui_panel_title("Message"),
+                        border_style="cyan",
+                        padding=(1, 2),
+                    )
+                )
                 return
             except Exception:
                 pass
@@ -8799,7 +8932,7 @@ def _render_transcript_history(
                         _rich_semantic_text(body, base_style="grey70"),
                     )
                 console = Console()
-                console.print(Panel(table, title=_tui_section_title("Conversation"), border_style="blue"))
+                console.print(Panel(table, title=_tui_panel_title("Conversation"), border_style="blue"))
                 return
             except Exception:
                 pass
@@ -8947,10 +9080,11 @@ class TuiChatboxTurnScheduler:
         return False
 
     def _start_locked(self, item: TuiChatboxQueuedTurn) -> None:
+        started_at = time.monotonic()
         _print_tui_stream_block(
             "Chat -> Thinking",
             [
-                "Thinking 0s",
+                _tui_chatbox_thinking_text(started_at),
                 "Composer stays open while this turn is routed.",
             ],
             plain=self._plain,
@@ -8967,14 +9101,22 @@ class TuiChatboxTurnScheduler:
         self._active_thread = thread
         watcher = threading.Thread(
             target=self._watch_thread,
-            args=(thread,),
+            args=(thread, started_at),
             name="super-tui-chatbox-queue",
             daemon=True,
         )
         watcher.start()
 
-    def _watch_thread(self, thread: threading.Thread) -> None:
-        thread.join()
+    def _watch_thread(self, thread: threading.Thread, started_at: float) -> None:
+        clock_active = False
+        last_footer = ""
+        while thread.is_alive():
+            footer = f"Working: {_format_elapsed_duration(max(0.0, time.monotonic() - started_at))}"
+            if footer != last_footer and _tui_stdout_supports_control_sequences() and not self._plain:
+                clock_active = _write_tui_clock_line(footer, label="Thinking") or clock_active
+                last_footer = footer
+            thread.join(timeout=1.0)
+        _clear_tui_clock_line(clock_active)
         with self._lock:
             if self._active_thread is thread:
                 self._active_thread = None

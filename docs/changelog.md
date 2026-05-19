@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-05-19
+- [test] Verified the rounded Super TUI vertical-ornament pass with `compileall`, focused Super TUI tests (`186 passed`), `git diff --check`, and live TTY smoke showing the top-border chat title, elapsed thinking clock, and vertical side-rail panel ornaments.
+- [fix] Moved the Super TUI Rich-panel ornament into a vertical side rail inside panel bodies, while keeping section titles in the top border and plain output unchanged.
+- [fix] Refined the Super TUI chatbox presentation after live screenshot review. Prompt-toolkit frames now use rounded corner characters, put `DAN · Chat` in the top border, keep prompt text inset with a small inner margin, and restore elapsed thinking status with an in-place clock while the worker runs.
 - [test] Verified the Super TUI framed chatbox path with focused unit coverage (`183 passed`), `compileall`, `git diff --check`, and a live TTY smoke showing the full `DAN · Chat` frame plus `DAN · Chat -> Thinking:` acknowledgement.
 - [fix] Completed the Super TUI prompt-toolkit chatbox frame and made the submitted-turn acknowledgement read as a chain. The composer now uses prompt-toolkit's real frame so the `DAN · Chat` box has a bottom edge, while accepted turns render as compact `DAN · Chat -> Thinking:` / `DAN · Chat -> Queue:` blocks that do not repeat the user's request.
 - [fix] Removed the permanent Super TUI prompt-toolkit bottom menu and added an immediate chatbox-worker thinking acknowledgement. Prompt-toolkit keeps `/`, `$`, `@`, Ctrl-V screenshot paste, Enter completion acceptance, and Up/Down history through keybindings, but no longer renders a bottom control strip that can collide with the `DAN · Chat` composer; accepted background turns now print `Thinking 0s` before the prompt returns.

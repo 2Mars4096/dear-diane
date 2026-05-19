@@ -667,7 +667,7 @@ def test_super_tui_chatbox_scheduler_queues_second_turn(tmp_path, capsys, monkey
     assert scheduler.submit(first) is True
     first_stdout = capsys.readouterr().out
     assert "Chat -> Thinking" in first_stdout
-    assert "Thinking 0s" in first_stdout
+    assert "Thinking 0s..." in first_stdout
     assert "Thinking 0s: first turn" not in first_stdout
     assert "Composer stays open" in first_stdout
     assert scheduler.submit(second) is False
@@ -3208,14 +3208,49 @@ def test_super_tui_prompt_toolkit_keybindings_open_completion_menu() -> None:
     assert ("enter",) in keys or any(str(key).lower().endswith("controlm") for row in keys for key in row)
 
 
-def test_super_tui_chatbox_prompt_has_title_and_prompt_rows() -> None:
+def test_super_tui_chatbox_prompt_has_inner_margin_only() -> None:
     text = "".join(fragment for _style, fragment in super_tui._tui_chatbox_prompt("super-tui> "))
 
-    assert "DAN · Chat" in text
     assert "super-tui> " in text
-    assert text.startswith("DAN · Chat\n")
+    assert text == " super-tui> "
+    assert "DAN · Chat" not in text
     assert "╭" not in text
     assert "╰" not in text
+
+
+def test_super_tui_panel_title_stays_in_border() -> None:
+    title = super_tui._tui_panel_title("Answer")
+
+    assert title == "DAN · Answer:"
+
+
+def test_super_tui_vertical_ornament_matches_content_height() -> None:
+    assert super_tui._tui_vertical_ornament(1) == "◆"
+    assert super_tui._tui_vertical_ornament(2) == "╭\n╰"
+    assert super_tui._tui_vertical_ornament(3) == "╭\n│\n╰"
+
+
+def test_super_tui_prompt_rounded_frame_border_restores_prompt_toolkit_border() -> None:
+    try:
+        import importlib
+
+        from prompt_toolkit.layout.containers import Window
+        from prompt_toolkit.widgets import base as widgets_base
+    except ImportError:
+        pytest.skip("prompt_toolkit not installed")
+
+    prompt_module = importlib.import_module("prompt_toolkit.shortcuts.prompt")
+    border = widgets_base.Border
+    original = (border.TOP_LEFT, border.TOP_RIGHT, border.BOTTOM_LEFT, border.BOTTOM_RIGHT)
+    original_frame = prompt_module.Frame
+    with super_tui._tui_prompt_rounded_frame_border():
+        assert (border.TOP_LEFT, border.TOP_RIGHT, border.BOTTOM_LEFT, border.BOTTOM_RIGHT) == ("╭", "╮", "╰", "╯")
+        assert prompt_module.Frame is not original_frame
+        frame = prompt_module.Frame(Window())
+        assert getattr(frame, "_dan_tui_frame_title") == "DAN · Chat:"
+        assert "|" not in getattr(frame, "_dan_tui_frame_title")
+    assert (border.TOP_LEFT, border.TOP_RIGHT, border.BOTTOM_LEFT, border.BOTTOM_RIGHT) == original
+    assert prompt_module.Frame is original_frame
 
 
 def test_super_tui_ctrl_v_clipboard_image_capture_from_env(tmp_path, monkeypatch) -> None:
@@ -3341,7 +3376,7 @@ def test_super_tui_prompt_stdout_bridge_preserves_ansi(monkeypatch, tmp_path) ->
     assert result == "typed text"
     assert raw_values == [True]
     assert prompt_messages
-    assert "DAN · Chat" in "".join(fragment for _style, fragment in prompt_messages[0])
+    assert " super-tui> " == "".join(fragment for _style, fragment in prompt_messages[0])
     assert prompt_kwargs
     assert prompt_kwargs[0].get("show_frame") is True
     assert "bottom_toolbar" not in prompt_kwargs[0]
