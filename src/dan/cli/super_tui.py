@@ -3231,10 +3231,11 @@ def _build_prompt_toolkit_session(
             paths=paths,
             workspace_root=workspace_root,
         ),
-        reserve_space_for_menu=8,
+        reserve_space_for_menu=0,
         style=_build_prompt_toolkit_style(),
         history=history,
     )
+    setattr(session, "_dan_reserve_space_for_menu", 0)
     if draft_path is not None:
         try:
             session.default_buffer.on_text_changed += (

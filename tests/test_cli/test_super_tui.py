@@ -3305,6 +3305,7 @@ def test_super_tui_prompt_toolkit_session_builds_with_installed_version(tmp_path
 
     assert isinstance(session, PromptSession)
     assert session.history is not None
+    assert getattr(session, "_dan_reserve_space_for_menu") == 0
 
 
 def test_super_tui_prompt_stdout_bridge_preserves_ansi(monkeypatch, tmp_path) -> None:
