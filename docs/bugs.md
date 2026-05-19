@@ -1,5 +1,8 @@
 # Known Issues & Failed Approaches
 
+- ~~**P3: Super TUI boxed thinking refreshes could stack repeated boxes and lose narrator attribution.**~~ **FIXED 2026-05-19.** Live screenshot review showed each elapsed heartbeat printing a new `DAN · Chat -> Thinking:` box, and the follow-up question noted that narrator detail was missing. ANSI-capable terminals now clear and redraw the previous bounded thinking block before printing the next elapsed update, while the detail line stays explicitly prefixed as `Narrator:`.
+- **Failed approach recorded:** updating elapsed time by emitting another complete progress panel is visually correct only in captured logs, not in an interactive chatbox. Long-running prompt progress needs a single replaceable lane when control sequences are available, with plain/captured output still allowed to remain line-oriented.
+
 - ~~**P3: Super TUI chatbox thinking acknowledgement could stay at `Thinking 0s...` for long waits.**~~ **FIXED 2026-05-19.** Live TTY review showed the boxed acknowledgement returning the composer correctly, but no later elapsed update appeared until the answer. `TuiChatboxTurnScheduler` now prints bounded refresh blocks in the same `DAN · Chat -> Thinking:` lane, starting after one second and backing off, while keeping the old loose prompt-adjacent clock disabled. Provider/clarification blockers now also report elapsed time from the original submitted turn.
 - **Failed approach recorded:** removing the loose clock solved prompt collision but made long waits look frozen. The refresh belongs in the same boxed chat-thinking lane, not in a second progress surface.
 

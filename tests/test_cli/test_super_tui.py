@@ -757,6 +757,30 @@ def test_super_tui_chatbox_scheduler_refreshes_thinking_in_box(tmp_path, capsys,
     stdout = capsys.readouterr().out
     assert "DAN · Chat -> Thinking:" in stdout
     assert "Thinking 1s..." in stdout
+    assert "Narrator:" in stdout
+    assert "Still routing this turn." in stdout
+
+
+def test_super_tui_chatbox_thinking_refresh_replaces_previous_box(tmp_path, capsys, monkeypatch) -> None:
+    parser = super_tui.build_parser()
+    monkeypatch.setattr(super_tui, "_tui_stdout_supports_control_sequences", lambda: True)
+    scheduler = super_tui.TuiChatboxTurnScheduler(
+        parser=parser,
+        workspace_root=tmp_path,
+        plain=False,
+    )
+    scheduler._active_thinking_block_lines = 4
+
+    scheduler._print_thinking_block(
+        100.0,
+        "Narrator: Still routing this turn. Composer stays open.",
+        replace_existing=True,
+    )
+
+    stdout = capsys.readouterr().out
+    assert "\x1b[4F\x1b[J" in stdout
+    assert "Chat -> Thinking" in stdout
+    assert "Narrator:" in stdout
     assert "Still routing this turn." in stdout
 
 

@@ -1,6 +1,8 @@
 # Changelog
 
 ## 2026-05-19
+- [test] Re-verified the Super TUI thinking redraw with `compileall`, focused Super TUI tests (`193 passed`), `git diff --check`, and a live TTY run showing ANSI clear/redraw before boxed `Thinking 1s...` / `Thinking 3s...` updates with a visible `Narrator:` detail line.
+- [fix] Replaced stacked Super TUI chatbox thinking heartbeats with clear-and-redraw refreshes for ANSI-capable terminals. Active turns now keep one bounded `DAN · Chat -> Thinking:` lane alive, advance elapsed time in that lane, and retain narrator wording instead of printing repeated progress boxes.
 - [test] Verified the Super TUI chatbox elapsed refresh with `compileall`, focused Super TUI tests (`192 passed`), and a live TTY run showing boxed `Thinking 1s...` and `Thinking 3s...` updates before the expected provider/network blocker.
 - [fix] Added bounded boxed heartbeat refreshes for active Super TUI chatbox turns. The composer still stays open and no loose prompt-adjacent clock is used, but long route/model waits now update elapsed time inside `DAN · Chat -> Thinking:` instead of staying at `Thinking 0s...`; clarification/provider-blocker elapsed time now uses the original submit time.
 - [test] Added regressions for background read-only stream progress staying inside the boxed `Chat -> Thinking` lane and for follow-up report review requests inheriting prior "takeaways" context. Focused Super TUI tests pass with `191 passed`.

@@ -1602,6 +1602,30 @@ def _tui_stream_block_uses_panel(title: str) -> bool:
     return str(title or "").strip().lower() not in {"narrator", "progress", "activity"}
 
 
+def _tui_stream_block_line_count(title: str, lines: Sequence[str], *, plain: bool = False) -> int:
+    title_text = str(title or "").strip() or "Answer"
+    visible_lines = _wrap_tui_stream_lines([str(line or "").rstrip() for line in lines if str(line or "").strip()])
+    if not visible_lines:
+        return 0
+    if not _tui_stream_block_uses_panel(title_text):
+        return len(visible_lines)
+    if plain:
+        return 1 + len(visible_lines)
+    Console, _ = _try_import_rich()
+    if Console is None:
+        return 1 + len(visible_lines)
+    return 2 + len(visible_lines)
+
+
+def _clear_tui_previous_output_lines(line_count: int) -> bool:
+    count = max(0, int(line_count or 0))
+    if not count or not _tui_stdout_supports_control_sequences():
+        return False
+    sys.stdout.write(f"\x1b[{count}F\x1b[J")
+    sys.stdout.flush()
+    return True
+
+
 def _print_tui_stream_block(title: str, lines: Sequence[str], *, plain: bool = False) -> None:
     title_text = str(title or "").strip() or "Answer"
     visible_lines = _wrap_tui_stream_lines([str(line or "").rstrip() for line in lines if str(line or "").strip()])
@@ -9199,6 +9223,7 @@ class TuiChatboxTurnScheduler:
         self._active_thread: threading.Thread | None = None
         self._thinking_refresh_initial_seconds = 1.0
         self._thinking_refresh_max_seconds = 5.0
+        self._active_thinking_block_lines = 0
 
     def has_pending_work(self) -> bool:
         with self._lock:
@@ -9225,13 +9250,9 @@ class TuiChatboxTurnScheduler:
     def _start_locked(self, item: TuiChatboxQueuedTurn) -> None:
         started_at = time.monotonic()
         setattr(item.turn_args, "_tui_turn_started_at", started_at)
-        _print_tui_stream_block(
-            "Chat -> Thinking",
-            [
-                _tui_chatbox_thinking_text(started_at),
-                "Composer stays open while this turn is routed.",
-            ],
-            plain=self._plain,
+        self._print_thinking_block(
+            started_at,
+            "Narrator: Routing this turn. Composer stays open.",
         )
         thread = _start_tui_background_dispatch(
             item.turn_args,
@@ -9251,6 +9272,20 @@ class TuiChatboxTurnScheduler:
         )
         watcher.start()
 
+    def _print_thinking_block(self, started_at: float, detail: str, *, replace_existing: bool = False) -> None:
+        lines = [
+            _tui_chatbox_thinking_text(started_at),
+            str(detail or "").strip() or "Narrator: Routing this turn. Composer stays open.",
+        ]
+        if replace_existing and self._active_thinking_block_lines:
+            _clear_tui_previous_output_lines(self._active_thinking_block_lines)
+        _print_tui_stream_block("Chat -> Thinking", lines, plain=self._plain)
+        self._active_thinking_block_lines = _tui_stream_block_line_count(
+            "Chat -> Thinking",
+            lines,
+            plain=self._plain,
+        )
+
     def _watch_thread(self, thread: threading.Thread, started_at: float) -> None:
         next_delay = max(0.1, float(self._thinking_refresh_initial_seconds))
         max_delay = max(next_delay, float(self._thinking_refresh_max_seconds))
@@ -9264,19 +9299,17 @@ class TuiChatboxTurnScheduler:
             now = time.monotonic()
             if now < next_refresh_at:
                 continue
-            _print_tui_stream_block(
-                "Chat -> Thinking",
-                [
-                    _tui_chatbox_thinking_text(started_at),
-                    "Still routing this turn. Composer stays open.",
-                ],
-                plain=self._plain,
+            self._print_thinking_block(
+                started_at,
+                "Narrator: Still routing this turn. Composer stays open.",
+                replace_existing=True,
             )
             next_delay = min(max_delay, max(next_delay + 1.0, next_delay * 1.7))
             next_refresh_at = now + next_delay
         with self._lock:
             if self._active_thread is thread:
                 self._active_thread = None
+                self._active_thinking_block_lines = 0
             if self._queue:
                 self._start_locked(self._queue.popleft())
 
