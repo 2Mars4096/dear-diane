@@ -1,6 +1,8 @@
 # Changelog
 
 ## 2026-05-19
+- [test] Verified the Super TUI chatbox elapsed refresh with `compileall`, focused Super TUI tests (`192 passed`), and a live TTY run showing boxed `Thinking 1s...` and `Thinking 3s...` updates before the expected provider/network blocker.
+- [fix] Added bounded boxed heartbeat refreshes for active Super TUI chatbox turns. The composer still stays open and no loose prompt-adjacent clock is used, but long route/model waits now update elapsed time inside `DAN · Chat -> Thinking:` instead of staying at `Thinking 0s...`; clarification/provider-blocker elapsed time now uses the original submit time.
 - [test] Added regressions for background read-only stream progress staying inside the boxed `Chat -> Thinking` lane and for follow-up report review requests inheriting prior "takeaways" context. Focused Super TUI tests pass with `191 passed`.
 - [fix] Closed the remaining Super TUI read-only UX leak from screenshot review. Background read-only source-inspection progress now renders under `DAN · Chat -> Thinking:` instead of a loose `DAN · Source inspected` line, and fallback read-only report answers use recent visible user context plus lightweight document synthesis so "the open report" review follow-ups return takeaways rather than a raw file preview.
 - [test] Verified the Super TUI single-lane thinking pass with `compileall`, focused Super TUI tests (`189 passed`), `git diff --check`, and a live TTY smoke showing the rounded `DAN · Chat` composer plus boxed `DAN · Chat -> Thinking:` acknowledgement. The live smoke reached the expected provider/network route blocker after the UI path rendered.

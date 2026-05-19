@@ -8754,8 +8754,8 @@ def _render_tui_clarification(args: argparse.Namespace, decision: TuiIntentDecis
         phase="clarification",
         debug_events=bool(getattr(args, "raw_events", False)),
     )
-    state.started_at_monotonic = time.monotonic()
-    state.ended_at_monotonic = state.started_at_monotonic
+    state.started_at_monotonic = float(getattr(args, "_tui_turn_started_at", 0.0) or time.monotonic())
+    state.ended_at_monotonic = time.monotonic()
     state.set_intent_decision(decision)
     state.current_step = "Clarification needed"
     state._record_answer(decision.clarification or "Please clarify the intended action.")
@@ -9197,6 +9197,8 @@ class TuiChatboxTurnScheduler:
         self._lock = threading.Lock()
         self._queue: deque[TuiChatboxQueuedTurn] = deque()
         self._active_thread: threading.Thread | None = None
+        self._thinking_refresh_initial_seconds = 1.0
+        self._thinking_refresh_max_seconds = 5.0
 
     def has_pending_work(self) -> bool:
         with self._lock:
@@ -9222,6 +9224,7 @@ class TuiChatboxTurnScheduler:
 
     def _start_locked(self, item: TuiChatboxQueuedTurn) -> None:
         started_at = time.monotonic()
+        setattr(item.turn_args, "_tui_turn_started_at", started_at)
         _print_tui_stream_block(
             "Chat -> Thinking",
             [
@@ -9242,14 +9245,35 @@ class TuiChatboxTurnScheduler:
         self._active_thread = thread
         watcher = threading.Thread(
             target=self._watch_thread,
-            args=(thread,),
+            args=(thread, started_at),
             name="super-tui-chatbox-queue",
             daemon=True,
         )
         watcher.start()
 
-    def _watch_thread(self, thread: threading.Thread) -> None:
-        thread.join()
+    def _watch_thread(self, thread: threading.Thread, started_at: float) -> None:
+        next_delay = max(0.1, float(self._thinking_refresh_initial_seconds))
+        max_delay = max(next_delay, float(self._thinking_refresh_max_seconds))
+        next_refresh_at = float(started_at) + next_delay
+        while thread.is_alive():
+            now = time.monotonic()
+            timeout = max(0.05, min(0.25, next_refresh_at - now))
+            thread.join(timeout=timeout)
+            if not thread.is_alive():
+                break
+            now = time.monotonic()
+            if now < next_refresh_at:
+                continue
+            _print_tui_stream_block(
+                "Chat -> Thinking",
+                [
+                    _tui_chatbox_thinking_text(started_at),
+                    "Still routing this turn. Composer stays open.",
+                ],
+                plain=self._plain,
+            )
+            next_delay = min(max_delay, max(next_delay + 1.0, next_delay * 1.7))
+            next_refresh_at = now + next_delay
         with self._lock:
             if self._active_thread is thread:
                 self._active_thread = None

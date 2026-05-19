@@ -727,6 +727,39 @@ def test_super_tui_chatbox_scheduler_does_not_emit_loose_clock(tmp_path, monkeyp
     release_first.set()
 
 
+def test_super_tui_chatbox_scheduler_refreshes_thinking_in_box(tmp_path, capsys, monkeypatch) -> None:
+    parser = super_tui.build_parser()
+    current = {"value": 100.0}
+    monkeypatch.setattr(super_tui.time, "monotonic", lambda: current["value"])
+
+    class FakeThread:
+        def __init__(self) -> None:
+            self.joins = 0
+
+        def is_alive(self) -> bool:
+            return self.joins < 2
+
+        def join(self, timeout=None) -> None:
+            del timeout
+            self.joins += 1
+            current["value"] = 101.2 if self.joins == 1 else 103.0
+
+    fake_thread = FakeThread()
+    scheduler = super_tui.TuiChatboxTurnScheduler(
+        parser=parser,
+        workspace_root=tmp_path,
+        plain=True,
+    )
+    scheduler._active_thread = fake_thread  # exercise the watcher loop without a real sleeping thread
+
+    scheduler._watch_thread(fake_thread, 100.0)
+
+    stdout = capsys.readouterr().out
+    assert "DAN · Chat -> Thinking:" in stdout
+    assert "Thinking 1s..." in stdout
+    assert "Still routing this turn." in stdout
+
+
 def test_super_tui_background_progress_notes_use_chatbox_thinking_lane(capsys) -> None:
     renderer = super_tui.SuperTuiProgressRenderer(
         enabled=True,
