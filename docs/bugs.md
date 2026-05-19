@@ -1,5 +1,8 @@
 # Known Issues & Failed Approaches
 
+- ~~**P3: Super TUI still auto-rendered board/session panels and repeated adjacent narrator lines.**~~ **FIXED 2026-05-19.** Screenshot review showed ordinary turns printing `DAN · Board` automatically, a plain `DAN · Session` objective/mode preamble, and repeated narrator/progress statements while the fixed composer sat below the scrollback. Default live rendering now treats board rows as command-only source data, suppresses the plain session preamble, removes board snapshots from default recent/plain views, and applies generic semantic de-duplication before printing narrator/model-sidecar progress.
+- **Failed approach recorded:** making the board more compact still leaves the ordinary chat surface feeling like a dashboard. The durable board should stay available through `/tasks`, `/status`, `/inside`, and debug/raw views, while the passive stream shows only answer/progress text that changed materially.
+
 - ~~**P2: Super DAN live could exceed provider context limits after simple follow-up file operations.**~~ **FIXED 2026-05-19.** A cleanup turn over recent artifacts triggered a builder retry with a multi-megabyte protected prompt packet, bypassed normal old-tool replay compaction, and failed with a provider context-length error. Super DAN live now uses a 120k/180k prompt replay envelope and hard-compacts oversized protected user/system/structured prompt packets when replay still exceeds the active budget.
 - **Failed approach recorded:** only compacting old tool messages is insufficient when the huge content is in protected prompt/evidence packets. Provider-facing replay needs a final hard budget pass that preserves head/tail context and points back to tools/logs for exact omitted details.
 

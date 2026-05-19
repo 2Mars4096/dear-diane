@@ -210,6 +210,54 @@ def _append_unique(values: list[str], value: Any, *, limit: int = 10) -> None:
     del values[:-limit]
 
 
+def _tui_progress_tokens(value: Any) -> list[str]:
+    normalized = "".join(ch.lower() if ch.isalnum() else " " for ch in str(value or ""))
+    return [word for word in normalized.split() if len(word) > 2]
+
+
+def _tui_progress_line_redundant(candidate: Any, existing: Any) -> bool:
+    left = " ".join(str(candidate or "").split())
+    right = " ".join(str(existing or "").split())
+    if not left or not right:
+        return False
+    if left.casefold() == right.casefold():
+        return True
+    if min(len(left), len(right)) >= 32:
+        left_fold = left.casefold()
+        right_fold = right.casefold()
+        if left_fold in right_fold or right_fold in left_fold:
+            return True
+    left_tokens = set(_tui_progress_tokens(left))
+    right_tokens = set(_tui_progress_tokens(right))
+    overlap_base = min(len(left_tokens), len(right_tokens))
+    if overlap_base < 6:
+        return False
+    return (len(left_tokens & right_tokens) / overlap_base) >= 0.82
+
+
+def _tui_progress_recent_lines(values: Sequence[Any], *, limit: int = 8) -> list[str]:
+    lines: list[str] = []
+    for value in values[-limit:]:
+        for line in str(value or "").splitlines():
+            clean = line.strip()
+            if clean:
+                lines.append(clean)
+    return lines[-limit:]
+
+
+def _tui_progress_text_redundant(candidate: Any, existing_values: Sequence[Any]) -> bool:
+    candidate_lines = [line.strip() for line in str(candidate or "").splitlines() if line.strip()]
+    if not candidate_lines:
+        return True
+    existing_lines = _tui_progress_recent_lines(existing_values)
+    if not existing_lines:
+        return False
+    return all(
+        any(_tui_progress_line_redundant(candidate_line, existing_line) for existing_line in existing_lines)
+        for candidate_line in candidate_lines
+    )
+
+
 def _tui_list_item(value: Any, *, indent: str = "") -> str:
     text = str(value or "").rstrip()
     if text.startswith("- "):
@@ -3317,18 +3365,6 @@ _TUI_BOARD_QUEUED_STATUSES = {
     "queued-behind",
     "waiting",
 }
-_TUI_BOARD_VISIBLE_EVENTS = {
-    "tui.board.intervention",
-    "run.log.started",
-    "live.generic_execution.started",
-    "live.generic_build.started",
-    "live.planning.started",
-    "live.validation.started",
-    "live.validation.completed",
-    "super.hook.packet_enqueued",
-}
-
-
 def _normalize_tui_board_status(value: Any, *, fallback: str = "running") -> str:
     text = str(value or "").strip().lower().replace("_", "-")
     if not text:
@@ -3813,17 +3849,6 @@ def _format_tui_board_status(
     return "\n".join(lines)
 
 
-def _tui_board_update_event_is_visible(event: Mapping[str, Any]) -> bool:
-    name = str(event.get("event") or "").strip()
-    if name in _TUI_BOARD_ADMISSION_EVENTS or name in _TUI_BOARD_VISIBLE_EVENTS:
-        return True
-    if name in {"tool.completed", "tool.failed", "tool.denied"}:
-        return str(event.get("tool_id") or "") in {"file_write", "file_edit", "shell_command"}
-    if name in {"run.log.completed", "run.log.failed"}:
-        return False
-    return False
-
-
 @dataclass
 class SuperTuiState:
     """Small projection of Super DAN events for terminal rendering."""
@@ -4287,6 +4312,8 @@ class SuperTuiState:
                 ]
         key = f"{report.kind}:{text}"
         if key == self._last_narrator_report_key:
+            return
+        if report.kind != "final" and _tui_progress_text_redundant(text, self.narrator_lines):
             return
         self._last_narrator_report_key = key
         _append_unique(self.narrator_lines, text, limit=limit)
@@ -4878,13 +4905,6 @@ class SuperTuiState:
             lines.append(f"Validation: {self.validation}{score}")
         if self.queue_status:
             lines.append(f"Queue: {self.queue_status}")
-        board_lines = _format_tui_board_lines(
-            self,
-            include_recent=True,
-            include_progress=not bool(self.narrator_lines),
-        )
-        if board_lines:
-            lines.extend(board_lines)
         if self.changed_files:
             lines.append("Changed:")
             lines.extend(_grouped_artifact_lines(self.changed_files[-8:], label="Changed", workspace=self.workspace, limit=8))
@@ -4977,13 +4997,6 @@ class SuperTuiState:
             lines.append(f"Context: model={self.model}")
         if self.queue_status and not self.narrator_lines:
             lines.append(f"Queue: {self.queue_status}")
-        board_lines = _format_tui_board_lines(
-            self,
-            include_recent=True,
-            include_progress=not bool(self.narrator_lines),
-        )
-        if board_lines and not narrator_mode:
-            lines.extend(board_lines)
         if narrator_mode and self.answer_lines:
             lines.append("Answer:")
             for item in self.answer_lines[:_ANSWER_LINE_COUNT_LIMIT]:
@@ -5085,7 +5098,6 @@ class SuperTuiProgressRenderer:
         self._rich_enabled = False
         self._last_line = ""
         self._last_narrator_line = ""
-        self._last_board_signature = ""
         self._sidecar_args: argparse.Namespace | None = None
         self._sidecar_thread: threading.Thread | None = None
         self._sidecar_lock = threading.Lock()
@@ -5127,12 +5139,6 @@ class SuperTuiProgressRenderer:
                 get_renderable=self.state.rich_renderable,
             )
             self._live.start()
-        else:
-            print(_tui_section_title("Session"), flush=True)
-            if self.state.objective:
-                print(f"objective: {_clip(self.state.objective, limit=140)}", flush=True)
-            if self.state.mode_line:
-                print(f"mode: {_clip(self.state.mode_line, limit=180)}", flush=True)
         self._start_clock()
         return self
 
@@ -5215,19 +5221,16 @@ class SuperTuiProgressRenderer:
         if self._rich_enabled and self._live is not None:
             self._live.refresh()
             return
-        force_board = event_name in _TUI_BOARD_ADMISSION_EVENTS
-        if (
-            not self.state.debug_events
-            and (force_board or not self.state.narrator_lines)
-            and self._maybe_print_board_update(event)
-        ):
-            return
         if not self.state.debug_events and self.state.narrator_lines:
             narrator_line = self.state.narrator_lines[-1]
             latest_report = self.state.narrator_reports[-1] if self.state.narrator_reports else {}
             if isinstance(latest_report, dict) and latest_report.get("kind") == "final":
                 return
-            if narrator_line and narrator_line != self._last_narrator_line:
+            if (
+                narrator_line
+                and narrator_line != self._last_narrator_line
+                and not _tui_progress_line_redundant(narrator_line, self._last_narrator_line)
+            ):
                 self._last_narrator_line = narrator_line
                 self._last_line = narrator_line
                 self._clear_clock_line()
@@ -5237,24 +5240,6 @@ class SuperTuiProgressRenderer:
             self._last_line = line
             self._clear_clock_line()
             _print_tui_stream_line(line, plain=self._plain)
-
-    def _maybe_print_board_update(self, event: Mapping[str, Any]) -> bool:
-        if not _tui_board_update_event_is_visible(event):
-            return False
-        lines = _format_tui_board_lines(
-            self.state,
-            include_heading=False,
-            include_recent=False,
-        )
-        if not lines:
-            return False
-        signature = self.state.board_signature()
-        if signature == self._last_board_signature:
-            return False
-        self._last_board_signature = signature
-        self._clear_clock_line()
-        _print_tui_stream_block("Board", lines, plain=self._plain)
-        return True
 
     def _model_sidecar_enabled(self) -> bool:
         args = self._sidecar_args
@@ -5380,6 +5365,14 @@ class SuperTuiProgressRenderer:
         with self._sidecar_lock:
             if self.state.is_terminal():
                 return
+            recent_lines = _tui_progress_recent_lines(self.state.narrator_lines)
+            fresh_lines: list[str] = []
+            for line in lines:
+                if any(_tui_progress_line_redundant(line, prior) for prior in [*recent_lines, *fresh_lines]):
+                    continue
+                fresh_lines.append(line)
+            if not fresh_lines:
+                return
             current_snapshot = self.state._narrator_snapshot()
             if (
                 request.snapshot.snapshot_id
@@ -5389,7 +5382,7 @@ class SuperTuiProgressRenderer:
                 self.state.narrator_reports.append(
                     {
                         "kind": "model",
-                        "text": "\n".join(lines),
+                        "text": "\n".join(fresh_lines),
                         "stale": True,
                         "source_snapshot_id": request.snapshot.snapshot_id,
                         "current_snapshot_id": current_snapshot.snapshot_id,
@@ -5398,7 +5391,9 @@ class SuperTuiProgressRenderer:
                 if len(self.state.narrator_reports) > 10:
                     del self.state.narrator_reports[: len(self.state.narrator_reports) - 10]
                 return
-            block_text = "\n".join(lines)
+            block_text = "\n".join(fresh_lines)
+            if _tui_progress_text_redundant(block_text, self.state.narrator_lines):
+                return
             _append_unique(self.state.narrator_lines, block_text, limit=10)
             self.state.narrator_reports.append(
                 {
@@ -5413,7 +5408,7 @@ class SuperTuiProgressRenderer:
             self._live.refresh()
             return
         self._clear_clock_line()
-        _print_tui_stream_block("Narrator", lines, plain=self._plain)
+        _print_tui_stream_block("Narrator", fresh_lines, plain=self._plain)
 
     def note(self, line: str) -> None:
         text = str(line or "").strip()
@@ -7281,12 +7276,7 @@ def _format_tui_async_admission_message(
         summary = "Async admission returned."
     if reason and reason not in summary:
         summary = f"{summary} {reason}"
-    state = SuperTuiState(workspace=str(workspace_root))
-    for event in events:
-        state.observe(event)
-    board_lines = _format_tui_board_lines(state, include_recent=True, include_progress=True)
-    if board_lines:
-        return summary + "\n" + "\n".join(board_lines)
+    _ = (events, workspace_root)
     return summary
 
 

@@ -352,6 +352,59 @@ def test_super_tui_board_sections_are_stable_and_include_progress() -> None:
     assert "Focus task-A: checking input tables" in text
 
 
+def test_super_tui_default_snapshots_do_not_auto_dump_board() -> None:
+    state = super_tui.SuperTuiState(workspace="/tmp/ws")
+    state.observe(
+        {
+            "event": "tui.board.admission",
+            "task_id": "task-A",
+            "run_id": "run-A",
+            "objective": "merge source data",
+            "decision": "accepted; running",
+            "phase": "building",
+            "action": "checking input tables",
+        }
+    )
+
+    snapshot = state.plain_snapshot()
+    recent = "\n".join(state.recent_event_lines())
+    explicit_board = "\n".join(super_tui._format_tui_board_lines(state))
+
+    assert "Board:" not in snapshot
+    assert "Intervene:" not in snapshot
+    assert "Board:" not in recent
+    assert "Intervene:" not in recent
+    assert "Board:" in explicit_board
+    assert "task-A" in explicit_board
+
+
+def test_super_tui_plain_renderer_does_not_auto_print_board(capsys) -> None:
+    renderer = super_tui.SuperTuiProgressRenderer(
+        enabled=True,
+        plain=True,
+        suppress_clock=True,
+    )
+
+    with renderer:
+        renderer(
+            {
+                "event": "tui.board.admission",
+                "task_id": "task-A",
+                "run_id": "run-A",
+                "objective": "merge source data",
+                "decision": "accepted; running",
+                "phase": "building",
+                "action": "checking input tables",
+            }
+        )
+
+    stdout = capsys.readouterr().out
+    assert "DAN · Session:" not in stdout
+    assert "DAN · Board:" not in stdout
+    assert "Board:" not in stdout
+    assert "task-A" in "\n".join(super_tui._format_tui_board_lines(renderer.state))
+
+
 def test_super_tui_task_overview_hides_raw_board_and_json_details() -> None:
     state = super_tui.SuperTuiState(workspace="/tmp/ws")
     state.observe(
@@ -873,8 +926,9 @@ def test_super_tui_repeated_model_waits_do_not_create_default_visible_board_rows
     state.observe({"event": "super.heartbeat", "phase": "model", "detail": "round=2 model=fake tools=4"})
 
     assert len(state.board_order) == initial_count
-    assert super_tui._tui_board_update_event_is_visible({"event": "model.requested"}) is False
-    assert super_tui._tui_board_update_event_is_visible({"event": "super.heartbeat"}) is False
+    recent = "\n".join(state.recent_event_lines())
+    assert "Board:" not in recent
+    assert "round=2" not in recent
 
 
 def test_super_tui_append_does_not_target_completed_board_row() -> None:
@@ -2341,6 +2395,31 @@ def test_super_tui_narrator_reports_follow_executor_events() -> None:
     assert visible.count("Run finished successfully") == 1
 
 
+def test_super_tui_narrator_reports_dedupe_semantic_repeats() -> None:
+    state = super_tui.SuperTuiState(mode_line="complex write - test")
+
+    state._record_narrator_report(
+        super_tui.NarratorReport(
+            kind="progress",
+            text=(
+                "The executor ran two short terminal commands back-to-back, "
+                "likely checking what report files exist."
+            ),
+        )
+    )
+    state._record_narrator_report(
+        super_tui.NarratorReport(
+            kind="checkpoint",
+            text=(
+                "The executor ran two short terminal commands back to back and "
+                "is likely checking what report files exist."
+            ),
+        )
+    )
+
+    assert len(state.narrator_lines) == 1
+
+
 def test_super_tui_plain_renderer_suppresses_fallback_lines_after_narrator(capsys) -> None:
     renderer = super_tui.SuperTuiProgressRenderer(enabled=True, plain=True)
 
@@ -3805,8 +3884,8 @@ def test_super_tui_main_wraps_super_runner_with_plain_renderer(tmp_path, capsys,
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
-    assert "DAN · Session:" in stdout
-    assert "objective: build a dashboard" in stdout
+    assert "DAN · Session:" not in stdout
+    assert "objective: build a dashboard" not in stdout
     assert "Got it. Starting with the relevant context." not in stdout
     assert "dan: You asked:" not in stdout
     assert "DAN · Answer:" in stdout
