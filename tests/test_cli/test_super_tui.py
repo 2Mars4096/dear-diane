@@ -3494,6 +3494,24 @@ def test_super_tui_prompt_toolkit_session_builds_with_installed_version(tmp_path
     assert getattr(session, "_dan_reserve_space_for_menu") == 0
 
 
+def test_super_tui_prompt_toolkit_output_disables_cpr_warning(monkeypatch) -> None:
+    try:
+        import prompt_toolkit.output.defaults as output_defaults
+    except ImportError:
+        pytest.skip("prompt_toolkit not installed")
+
+    class FakeOutput:
+        enable_cpr = True
+
+    fake_output = FakeOutput()
+    monkeypatch.setattr(output_defaults, "create_output", lambda: fake_output)
+
+    output = super_tui._build_prompt_toolkit_output()
+
+    assert output is fake_output
+    assert fake_output.enable_cpr is False
+
+
 def test_super_tui_prompt_stdout_bridge_preserves_ansi(monkeypatch, tmp_path) -> None:
     try:
         import prompt_toolkit.patch_stdout as patch_stdout_module

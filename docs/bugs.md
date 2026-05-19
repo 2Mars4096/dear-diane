@@ -1,5 +1,8 @@
 # Known Issues & Failed Approaches
 
+- ~~**P3: Super TUI could print prompt-toolkit CPR warnings into the chatbox transcript in terminals without cursor-position replies.**~~ **FIXED 2026-05-19.** Live pseudo-TTY review printed `WARNING: your terminal doesn't support cursor position requests (CPR).` between chatbox redraws. Prompt-toolkit chatbox sessions now construct an output object with CPR probing disabled, so unsupported-terminal capability warnings do not enter the user-visible transcript.
+- **Failed approach recorded:** leaving prompt-toolkit defaults unchanged assumes every TTY path can answer CPR probes. The Super TUI chatbox should prefer stable framed input and clean transcript output over terminal capability probing.
+
 - ~~**P3: Super TUI boxed thinking refreshes could stack repeated boxes and lose narrator attribution.**~~ **FIXED 2026-05-19.** Live screenshot review showed each elapsed heartbeat printing a new `DAN · Chat -> Thinking:` box, and the follow-up question noted that narrator detail was missing. ANSI-capable terminals now clear and redraw the previous bounded thinking block before printing the next elapsed update, while the detail line stays explicitly prefixed as `Narrator:`.
 - **Failed approach recorded:** updating elapsed time by emitting another complete progress panel is visually correct only in captured logs, not in an interactive chatbox. Long-running prompt progress needs a single replaceable lane when control sequences are available, with plain/captured output still allowed to remain line-oriented.
 

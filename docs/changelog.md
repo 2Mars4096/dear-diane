@@ -1,6 +1,8 @@
 # Changelog
 
 ## 2026-05-19
+- [test] Added coverage for Super TUI prompt-toolkit output construction disabling CPR probes, then reran focused Super TUI tests (`194 passed`) and a live TTY smoke with no prompt-toolkit CPR warning.
+- [fix] Suppressed prompt-toolkit cursor-position-report warnings inside the Super TUI chatbox path by disabling CPR probing on the session output. This keeps terminal capability warnings out of the visible chat transcript while preserving the framed composer.
 - [test] Re-verified the Super TUI thinking redraw with `compileall`, focused Super TUI tests (`193 passed`), `git diff --check`, and a live TTY run showing ANSI clear/redraw before boxed `Thinking 1s...` / `Thinking 3s...` updates with a visible `Narrator:` detail line.
 - [fix] Replaced stacked Super TUI chatbox thinking heartbeats with clear-and-redraw refreshes for ANSI-capable terminals. Active turns now keep one bounded `DAN · Chat -> Thinking:` lane alive, advance elapsed time in that lane, and retain narrator wording instead of printing repeated progress boxes.
 - [test] Verified the Super TUI chatbox elapsed refresh with `compileall`, focused Super TUI tests (`192 passed`), and a live TTY run showing boxed `Thinking 1s...` and `Thinking 3s...` updates before the expected provider/network blocker.

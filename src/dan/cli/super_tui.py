@@ -3449,6 +3449,7 @@ def _build_prompt_toolkit_session(
         reserve_space_for_menu=0,
         style=_build_prompt_toolkit_style(),
         history=history,
+        output=_build_prompt_toolkit_output(),
     )
     setattr(session, "_dan_reserve_space_for_menu", 0)
     if draft_path is not None:
@@ -3459,6 +3460,18 @@ def _build_prompt_toolkit_session(
         except Exception:
             pass
     return session
+
+
+def _build_prompt_toolkit_output() -> Any:
+    from prompt_toolkit.output import defaults as output_defaults
+
+    output = output_defaults.create_output()
+    if hasattr(output, "enable_cpr"):
+        try:
+            output.enable_cpr = False
+        except Exception:
+            pass
+    return output
 
 
 def _readline_input(
