@@ -1234,10 +1234,11 @@ def _transcript_entry_body_lines(entry: TuiTranscriptEntry) -> list[str]:
     raw_lines = [line.rstrip() for line in raw_text.splitlines() if line.strip()]
     if not raw_lines and raw_text:
         raw_lines = [raw_text]
+    clipped_line = any(len(line) > per_line_limit for line in raw_lines[:line_limit])
     lines = [_clip(line, limit=per_line_limit) for line in raw_lines[:line_limit]]
     if len(raw_lines) > line_limit:
         lines.append(f"... {len(raw_lines) - line_limit} more line(s) in transcript")
-    elif raw_text and len(raw_text) > sum(len(line) for line in raw_lines[:line_limit]) + 12:
+    elif clipped_line or (raw_text and len(raw_text) > sum(len(line) for line in raw_lines[:line_limit]) + 12):
         lines.append("... more in transcript")
     return lines
 
@@ -1639,7 +1640,9 @@ def _print_tui_stream_continuation(text: str, *, plain: bool = False) -> None:
 
 def _wrap_tui_stream_lines(lines: Sequence[str], *, width: int | None = None) -> list[str]:
     columns = int(width or shutil.get_terminal_size((120, 24)).columns or 120)
-    wrap_width = max(48, columns - 8)
+    # Account for the outer panel, padding, and vertical ornament so Rich does
+    # not need to wrap again after we have counted visible rows.
+    wrap_width = max(48, columns - 16)
     wrapped: list[str] = []
     for raw_line in lines:
         line = str(raw_line or "").rstrip()

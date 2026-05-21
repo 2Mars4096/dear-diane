@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-05-21
+- [fix] Made Super TUI answer panels wrap more conservatively inside the bordered/ornamented Rich layout so long narrator/final answers do not lose the last wrapped fragment when the composer redraws.
+- [fix] Marked clipped long assistant transcript previews with an explicit `... more in transcript` line instead of silently shortening replayed answers.
+- [test] Added focused Super TUI regressions for conservative answer wrapping and clipped transcript-preview disclosure.
+
 ## 2026-05-20
 - [fix] Smoothed Super TUI chatbox status redraws without changing the current framed look. Replacing the active `DAN · Chat -> Working/Routing` lane now defers the terminal clear flush until the replacement panel is printed, avoiding a visible blank-frame flash.
 - [fix] Kept queued chatbox messages from being erased by active work refreshes. Queue notices are now prefix blocks inside the same replaceable status group, so they stay visible while queued and drop out when the queued turn is promoted.

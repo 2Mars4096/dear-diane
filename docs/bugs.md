@@ -1,5 +1,8 @@
 # Known Issues & Failed Approaches
 
+- ~~**P3: Super TUI long answers could appear incomplete in framed output or transcript replay.**~~ **FIXED 2026-05-21.** Screenshot review showed a narrator answer whose final words were present in `.dan-super/tui/transcript.jsonl` but not reliably visible in the framed terminal output. Stream text now pre-wraps with extra margin for panel border/padding/ornament overhead, reducing second-stage Rich wrapping under the live composer, and transcript previews explicitly mark clipped long answer lines.
+- **Failed approach recorded:** relying on Rich to perform a second wrap after the TUI has counted rows makes live prompt redraws fragile. The TUI should pre-wrap to the actual interior width of its framed layout and disclose replay truncation.
+
 - ~~**P3: Super TUI chatbox status refresh could flash blank or erase queued-message boxes.**~~ **FIXED 2026-05-20.** Screenshot review showed active `DAN · Chat -> Working:` refreshes occasionally disappearing and then returning, and queued messages being overwritten by later active work ticks. The clear/redraw helper now defers the erase flush until the replacement panel is printed, and queue notices live as prefix blocks inside the same replaceable status group as the active ticker.
 - **Failed approach recorded:** printing a durable queue panel below a separately replaceable active status panel breaks the replace invariant: the active panel is no longer the last terminal block. Queue notices and active status need to be redrawn as one group while queued work is waiting.
 

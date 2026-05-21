@@ -2385,7 +2385,20 @@ def test_super_tui_stream_block_wraps_long_answer_lines() -> None:
     wrapped = super_tui._wrap_tui_stream_lines([line], width=72)
 
     assert len(wrapped) > 1
+    assert all(len(part) <= 56 for part in wrapped)
     assert " ".join(part.strip() for part in wrapped) == line.strip()
+
+
+def test_super_tui_transcript_preview_marks_clipped_long_answers() -> None:
+    entry = super_tui.TuiTranscriptEntry(
+        role="assistant_narrator",
+        text="This long narrator answer should be marked as clipped in transcript replay. " * 10,
+        metadata={},
+    )
+
+    lines = super_tui._transcript_entry_body_lines(entry)
+
+    assert lines[-1] == "... more in transcript"
 
 
 def test_super_tui_stream_answer_plain_renders_single_block(capsys) -> None:
