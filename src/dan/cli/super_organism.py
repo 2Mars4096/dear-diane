@@ -189,6 +189,22 @@ _SUPER_DAN_TOOL_DESCRIPTIONS: dict[str, str] = {
     "git_diff": "inspect concrete before/after workspace changes",
     "git_log": "inspect recent repository history when relevant",
     "web_search": "retrieve current external facts when the objective depends on freshness",
+    "browser_tabs": "inspect current persistent browser tabs before taking browser actions",
+    "browser_inspect": "inspect current browser URL/title/tabs, optional HTML, and structured interactive element metadata",
+    "browser_open": "navigate a persistent browser session to a URL when browser state/auth matters",
+    "browser_wait": "wait for browser page load, network idle, or a specific selector",
+    "browser_extract": "read visible browser page text or a selected DOM element",
+    "browser_screenshot": "capture the current browser page as local visual evidence",
+    "browser_click": "click a browser DOM element by CSS selector after grounding the page state",
+    "browser_fill": "replace text in a browser input or contenteditable element",
+    "browser_type": "append typed text into a browser element",
+    "browser_select": "select an option in a browser dropdown by CSS selector and value",
+    "browser_download": "download authenticated browser artifacts through the current browser session",
+    "desktop_observe": "capture local desktop screenshot/OCR/window evidence when desktop UI work is explicitly needed",
+    "desktop_focus": "activate a desktop app/window before a desktop UI action",
+    "desktop_click": "click grounded desktop coordinates after observing the target UI",
+    "desktop_type": "type text into the focused desktop app when browser/workspace tools cannot reach the UI",
+    "desktop_hotkey": "press a keyboard shortcut in the focused desktop app",
 }
 
 _SUPER_DAN_STAGE_QUESTIONS: dict[str, tuple[str, ...]] = {
@@ -1195,6 +1211,8 @@ def _super_should_run_planner(
         return False
     if _super_is_interactive_source_implementation_objective(text):
         return False
+    if _super_is_targeted_source_repair_objective(text):
+        return False
     if _super_explicitly_requests_run_local_planning(text):
         return True
     broad_terms = (
@@ -1379,6 +1397,74 @@ def _super_is_interactive_source_implementation_objective(text: str) -> bool:
         re.search(rf"\b{re.escape(term)}\b", normalized) for term in implementation_context_terms
     ) or _super_mentions_source_file_path(normalized)
     return has_action and has_interaction and has_implementation_context
+
+
+def _super_is_targeted_source_repair_objective(text: str) -> bool:
+    normalized = " ".join(str(text or "").lower().split())
+    if not normalized:
+        return False
+    action_terms = (
+        "address",
+        "debug",
+        "fix",
+        "patch",
+        "repair",
+        "resolve",
+        "unblock",
+    )
+    failure_terms = (
+        "bug",
+        "compile",
+        "compiler",
+        "crash",
+        "error",
+        "exception",
+        "fail",
+        "failing",
+        "failure",
+        "lint",
+        "regression",
+        "runtime",
+        "test",
+        "tests",
+        "traceback",
+        "typecheck",
+        "validation",
+    )
+    scope_terms = (
+        "current",
+        "exact",
+        "focused",
+        "function",
+        "line",
+        "method",
+        "minimal",
+        "narrow",
+        "one",
+        "small",
+        "source",
+        "targeted",
+    )
+    has_action = any(re.search(rf"\b{re.escape(term)}\b", normalized) for term in action_terms)
+    has_failure = any(re.search(rf"\b{re.escape(term)}\b", normalized) for term in failure_terms)
+    has_scope = any(re.search(rf"\b{re.escape(term)}\b", normalized) for term in scope_terms)
+    mentions_source = _super_mentions_source_file_path(normalized)
+    if not (has_action and has_failure and (has_scope or mentions_source or len(normalized.split()) <= 28)):
+        return False
+    broad_without_path = any(
+        term in normalized
+        for term in (
+            "architecture",
+            "codebase",
+            "end to end",
+            "migration",
+            "project",
+            "refactor",
+            "repo",
+            "system",
+        )
+    ) and not mentions_source
+    return not broad_without_path
 
 
 class SuperRunEventLogger:
@@ -2449,6 +2535,15 @@ def _super_live_choice(
     context: dict[str, Any] = {
         "command": "super-organism",
     }
+    surface_context = _surface_context_from_args(args)
+    if surface_context:
+        context["surface_context"] = surface_context
+    surface_policy = getattr(args, "_tui_surface_policy", None) if args is not None else None
+    if isinstance(surface_policy, MappingABC):
+        context["surface_policy"] = dict(surface_policy)
+    capability_packs = getattr(args, "_capability_packs", None) if args is not None else None
+    if capability_packs:
+        context["capability_packs"] = capability_packs
     code_like_live = args is not None and bool(getattr(args, "_code_like_live", False))
     workspace_root = normalize_workspace_root(str(args.workspace)) if args is not None else Path(".")
     operator_policy = _operator_intent_policy_from_objective(
@@ -2554,6 +2649,12 @@ def _live_choice_read_only_tool_ids(choice: OrchestratorChoice) -> list[str]:
         "workspace_check",
         "web_search",
         "current_datetime",
+        "browser_tabs",
+        "browser_inspect",
+        "browser_wait",
+        "browser_extract",
+        "browser_screenshot",
+        "desktop_observe",
         "git_status",
         "git_diff",
         "git_log",
@@ -3165,6 +3266,26 @@ def _surface_context_from_args(args: argparse.Namespace | None) -> dict[str, Any
     return dict(raw) if isinstance(raw, MappingABC) else {}
 
 
+_SURFACE_ALREADY_KNOWN_INSTRUCTION = (
+    "Here is what we already know from the recent surface conversation. Treat clearly stated prior assistant "
+    "findings as starting facts, not hypotheses to rediscover, unless current file fingerprints or validation "
+    "output contradict them. Start by acting on these facts; do not repeat broad discovery before the first "
+    "material workspace edit."
+)
+
+
+def _surface_already_known_context(history: Sequence[Mapping[str, str]]) -> str:
+    for item in reversed(history):
+        if not isinstance(item, MappingABC):
+            continue
+        if str(item.get("role") or "").strip() != "assistant":
+            continue
+        content = " ".join(str(item.get("content") or "").split())
+        if content:
+            return content[:1800]
+    return ""
+
+
 def _brief_with_surface_conversation(
     brief: WorkerBrief,
     *,
@@ -3179,12 +3300,27 @@ def _brief_with_surface_conversation(
         "surface_history": history,
         "surface_context": context,
     }
+    already_known = _surface_already_known_context(history)
+    if already_known:
+        payload_update["surface_already_known"] = {
+            "instruction": _SURFACE_ALREADY_KNOWN_INSTRUCTION,
+            "content": already_known,
+        }
     metadata_update = {
         **dict(brief.metadata),
         "surface_history": history,
         "surface_context": context,
     }
-    return brief.model_copy(update={"input_payload": payload_update, "metadata": metadata_update})
+    contract_snippets = list(brief.contract_snippets)
+    if already_known and _SURFACE_ALREADY_KNOWN_INSTRUCTION not in contract_snippets:
+        contract_snippets.append(_SURFACE_ALREADY_KNOWN_INSTRUCTION)
+    return brief.model_copy(
+        update={
+            "input_payload": payload_update,
+            "metadata": metadata_update,
+            "contract_snippets": contract_snippets,
+        }
+    )
 
 
 def _brief_with_surface_attachments(
@@ -6954,11 +7090,18 @@ async def _run_live_generic_execution(
     interactive_source_implementation = _super_is_interactive_source_implementation_objective(
         str(report.target or "")
     )
+    targeted_source_repair = _super_is_targeted_source_repair_objective(str(report.target or ""))
     if interactive_source_implementation:
         generic_input_payload["execution_condition"] = "interactive_source_implementation"
         generic_input_payload["first_write_expectation"] = (
             "After minimal source/scene inspection, the live worker should make product source, scene/state, "
             "UI, asset, or validation/test edits rather than continuing reconnaissance."
+        )
+    elif targeted_source_repair:
+        generic_input_payload["execution_condition"] = "targeted_source_repair"
+        generic_input_payload["first_write_expectation"] = (
+            "After one focused inspection of the failing source/test/error context, the live worker should make "
+            "a material source or test edit, or report the exact blocker that prevents the edit."
         )
     worker_brief = role_brief(
             role=RoleSpec(
@@ -6988,6 +7131,14 @@ async def _run_live_generic_execution(
                     if interactive_source_implementation
                     else []
                 ),
+                *(
+                    [
+                        "For targeted source repair objectives, after at most one focused inspection of the relevant file, test, or error context, make a concrete file_edit/file_write mutation to the responsible source/test material or report a precise blocker.",
+                        "Do not create `.dan-super` plan files or run validation as a substitute for the required repair edit unless the precise blocker is that no responsible workspace file can be identified.",
+                    ]
+                    if targeted_source_repair
+                    else []
+                ),
                 "Default to the current workspace root; only use explicit external paths when the operator asks and runtime policy allows.",
                 "When the requested deliverable is a saved report, markdown file, data note, or other document artifact, write that artifact to the workspace.",
                 *(
@@ -7011,6 +7162,13 @@ async def _run_live_generic_execution(
                 "Prefer `file_edit` over whole-file `file_write` when the target file already exists.",
                 "After one failed or truncated large write, immediately switch to a smaller patch strategy.",
                 "Avoid rereading the same files unless the next edit truly needs exact grounding.",
+                *(
+                    [
+                        "For targeted repairs, prefer the smallest responsible path/function/edit range over broad repository discovery.",
+                    ]
+                    if targeted_source_repair
+                    else []
+                ),
             ],
             tool_policy={
                 "allowed_tool_ids": list(generic_tool_ids),
@@ -7055,6 +7213,7 @@ async def _run_live_generic_execution(
                 ),
                 "operator_prompt_only_creation": bool(prompt_only_creation_target),
                 "interactive_source_implementation": interactive_source_implementation,
+                "targeted_source_repair": targeted_source_repair,
             },
         )
     worker = _live_cell_from_brief(

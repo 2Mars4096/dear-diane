@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import io
 import json
+import os
 import sys
 import threading
 import tomllib
@@ -271,6 +272,25 @@ def test_super_tui_projection_tracks_hook_queue_state() -> None:
 
     assert line == "Follow-up queued for validation (depth 1)."
     assert "Queue: validation depth=1" in state.plain_snapshot()
+
+
+def test_super_tui_terminal_run_clears_internal_hook_queue_from_snapshot() -> None:
+    state = super_tui.SuperTuiState(status="running")
+    state.observe(
+        {
+            "event": "super.hook.packet_enqueued",
+            "inbox_id": "immune",
+            "source_event": "super.heartbeat",
+            "queue_depth": 1,
+        }
+    )
+    assert state.queue_status == "immune depth=1"
+
+    state.observe({"event": "run.log.completed", "status": "failed"})
+
+    assert state.queue_status == ""
+    assert state._narrator_snapshot().queued_work == ""
+    assert "Queue:" not in state.plain_snapshot()
 
 
 def test_super_tui_board_projection_renders_admission_lanes_without_raw_noise() -> None:
@@ -760,6 +780,34 @@ def test_super_tui_chatbox_scheduler_refreshes_routing_in_box(tmp_path, capsys, 
     assert "Still working on this turn." not in stdout
 
 
+def test_super_tui_chatbox_scheduler_does_not_add_fixed_routing_fallback(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    parser = super_tui.build_parser()
+    current = {"value": 100.0}
+    monkeypatch.setattr(super_tui.time, "monotonic", lambda: current["value"])
+    super_tui._forget_tui_chatbox_thinking_block()
+    scheduler = super_tui.TuiChatboxTurnScheduler(
+        parser=parser,
+        workspace_root=tmp_path,
+        plain=True,
+    )
+
+    scheduler._print_thinking_block(100.0)
+    first_stdout = capsys.readouterr().out
+    assert "Routing 0s..." in first_stdout
+    assert "waiting for the model response" not in first_stdout
+
+    current["value"] = 111.0
+    scheduler._print_thinking_block(100.0, replace_existing=True)
+    second_stdout = capsys.readouterr().out
+    assert "Routing 11s..." in second_stdout
+    assert "waiting for the model response" not in second_stdout
+    assert "Narrator:" not in second_stdout
+
+
 def test_super_tui_chatbox_status_refresh_replaces_previous_box(tmp_path, capsys, monkeypatch) -> None:
     parser = super_tui.build_parser()
     monkeypatch.setattr(super_tui, "_tui_stdout_supports_control_sequences", lambda: True)
@@ -800,6 +848,23 @@ def test_super_tui_clear_previous_output_can_defer_flush(monkeypatch) -> None:
 
     assert super_tui._clear_tui_previous_output_lines(3, flush=False)
     assert events == [("write", "\x1b[3F\x1b[J")]
+
+
+def test_super_tui_rich_panel_line_count_matches_rendered_output(capsys, monkeypatch) -> None:
+    pytest.importorskip("rich")
+    monkeypatch.setattr(super_tui.shutil, "get_terminal_size", lambda fallback=(120, 24): super_tui.os.terminal_size(fallback))
+    lines = [
+        "The last run failed validation with a score of 0.10, so the GameLoop.gd edits from turn 22 did not fully stick. The spatial-hash timer was added, but the flow-field timer logic is half-wired and the compile log still shows errors.",
+        "The practical next step is letting the queued validation run finish so the actual compile errors can drive another targeted edit cycle.",
+    ]
+
+    super_tui._print_tui_stream_block("Answer", lines, plain=False)
+
+    stdout = capsys.readouterr().out
+    non_empty = [line for line in stdout.splitlines() if line.strip()]
+    assert non_empty[-1].startswith("╰")
+    assert super_tui._tui_stream_block_line_count("Answer", lines, plain=False) == len(stdout.splitlines())
+    assert stdout.endswith("\n\n")
 
 
 def test_super_tui_chatbox_replacement_defers_clear_flush(monkeypatch) -> None:
@@ -906,6 +971,28 @@ def test_super_tui_background_progress_replaces_chatbox_thinking_lane(capsys, mo
     super_tui._forget_tui_chatbox_thinking_block()
 
 
+def test_super_tui_progress_note_does_not_echo_objective(capsys, monkeypatch) -> None:
+    current = {"value": 104.0}
+    objective = "can you continue to work until it really compiles"
+    monkeypatch.setattr(super_tui.time, "monotonic", lambda: current["value"])
+    monkeypatch.setattr(super_tui, "_tui_stdout_supports_control_sequences", lambda: True)
+    super_tui._forget_tui_chatbox_thinking_block()
+    renderer = super_tui.SuperTuiProgressRenderer(
+        enabled=True,
+        objective=objective,
+        plain=True,
+        chatbox_progress=True,
+    )
+    renderer.state.started_at_monotonic = 100.0
+
+    renderer.note(f"Using a terminal command because it is the direct way to advance {objective}.")
+
+    stdout = capsys.readouterr().out
+    assert objective not in stdout
+    assert "advance the current task" in stdout
+    super_tui._forget_tui_chatbox_thinking_block()
+
+
 def test_super_tui_scheduler_refresh_preserves_working_detail(capsys, monkeypatch) -> None:
     current = {"value": 100.0}
     monkeypatch.setattr(super_tui.time, "monotonic", lambda: current["value"])
@@ -968,6 +1055,42 @@ def test_super_tui_background_progress_uses_elapsed_chatbox_time(capsys, monkeyp
     assert "DAN · Chat -> Working:" in stdout
     assert "Working 5s..." in stdout
     assert "Thinking 0s..." not in stdout
+
+
+def test_super_tui_run_turn_progress_keeps_submit_timer(tmp_path, capsys, monkeypatch) -> None:
+    current = {"value": 130.0}
+    monkeypatch.setattr(super_tui.time, "monotonic", lambda: current["value"])
+    super_tui._forget_tui_chatbox_thinking_block()
+    parser = super_tui.build_parser()
+    args = parser.parse_args(["repair the project", "--workspace", str(tmp_path), "--live", "--plain"])
+    super_tui._prepare_args(args, ["--live"])
+    args._tui_background_dispatch = True
+    args._tui_turn_started_at = 100.0
+    observed_starts: list[float] = []
+
+    def fake_run(run_args, parser):
+        del parser
+        renderer = run_args._progress_renderer_factory(enabled=True, args=run_args)
+        observed_starts.append(renderer.state.started_at_monotonic)
+        renderer(
+            {
+                "event": "run.log.started",
+                "objective": run_args.target,
+                "task_id": "super-dan-live:11",
+                "workspace_root": str(tmp_path),
+            }
+        )
+        observed_starts.append(renderer.state.started_at_monotonic)
+        renderer.note("Running validation command.")
+        return 0
+
+    monkeypatch.setattr(super_tui.super_cli, "_run_super_turn", fake_run)
+
+    assert super_tui._run_tui_turn(args, parser, force_live=True) == 0
+    stdout = capsys.readouterr().out
+    assert observed_starts == [100.0, 100.0]
+    assert "Working 30s..." in stdout
+    super_tui._forget_tui_chatbox_thinking_block()
 
 
 def test_super_tui_background_stream_progress_uses_chatbox_lane(capsys, monkeypatch) -> None:
@@ -2178,6 +2301,71 @@ def test_super_tui_async_append_uses_server_control_path(
     assert "Board:" not in stdout
 
 
+def test_super_tui_async_continue_uses_append_path(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    parser = super_tui.build_parser()
+    args = parser.parse_args(
+        [
+            "--workspace",
+            str(workspace),
+            "--plain",
+            "--async-agent",
+            "--server",
+            "http://dan.test",
+        ]
+    )
+    super_tui._prepare_args(args, [])
+    _patch_tui_route(monkeypatch, permission="write", complexity="complex", routed_with_model=True)
+    inputs = iter(["/continue add validation", "/exit"])
+    captured_payloads: list[dict] = []
+
+    def fake_post(*, server_url, payload, timeout):
+        del server_url, timeout
+        captured_payloads.append(dict(payload))
+        return {
+            "status": "accepted",
+            "admission": {
+                "action": "append_to_active",
+                "task_id": "task-A",
+                "run_id": "run-A",
+                "queue_item_id": "queue-1",
+                "queue_position": 1,
+                "reason": "explicit append command targets the active run",
+            },
+            "board": {
+                "active_runs": [
+                    {
+                        "task_id": "task-A",
+                        "run_id": "run-A",
+                        "objective": "build script_a.py",
+                        "status": "running",
+                        "phase": "background_running",
+                        "latest_summary": "Append queued at checkpoint.",
+                        "admission_action": "append_to_active",
+                        "admission_reason": "explicit append command targets the active run",
+                    }
+                ],
+                "queued_runs": [],
+                "completed_runs": [],
+            },
+        }
+
+    monkeypatch.setattr(super_tui, "_read_interactive_line", lambda *args, **kwargs: next(inputs))
+    monkeypatch.setattr(super_tui, "_load_tui_skill_suggestions", lambda workspace: [])
+    monkeypatch.setattr(super_tui, "_post_tui_async_admission", fake_post)
+
+    exit_code = super_tui._interactive_loop(args, parser)
+
+    assert exit_code == 0
+    assert captured_payloads[0]["background"] is False
+    assert captured_payloads[0]["chat_request"]["message"] == "/append add validation"
+
+
 def test_super_tui_board_status_targets_one_task() -> None:
     state = super_tui.SuperTuiState()
     state.observe(
@@ -2392,7 +2580,7 @@ def test_super_tui_stream_block_wraps_long_answer_lines() -> None:
 def test_super_tui_transcript_preview_marks_clipped_long_answers() -> None:
     entry = super_tui.TuiTranscriptEntry(
         role="assistant_narrator",
-        text="This long narrator answer should be marked as clipped in transcript replay. " * 10,
+        text="This long narrator answer should be marked as clipped in transcript replay. " * 40,
         metadata={},
     )
 
@@ -2427,8 +2615,13 @@ def test_super_tui_transcript_summary_keeps_full_answer() -> None:
     assert "- Pipeline: docs/plan.md" in summary
 
 
-def test_super_tui_transcript_history_separates_roles_and_collapses_long_answers() -> None:
-    long_answer = "This answer should stay visible in the conversation transcript. " * 8
+def test_super_tui_transcript_history_keeps_useful_recent_answers_visible() -> None:
+    long_answer = (
+        "I can control a browser through the browser_control capability pack, which is available here but not currently active. "
+        "When activated, it gives me persistent browser tabs and lets me navigate URLs, inspect page titles, DOM and HTML, "
+        "read visible text, take screenshots, click and fill form elements, type, select dropdowns, wait for conditions, "
+        "and handle downloads. If you want to use it, I can open a browser session and start interacting with a specific site."
+    )
     entry = super_tui.TuiTranscriptEntry(
         role="assistant_final",
         text=long_answer,
@@ -2439,9 +2632,25 @@ def test_super_tui_transcript_history_separates_roles_and_collapses_long_answers
     formatted = super_tui._format_transcript_line(entry)
 
     assert formatted.startswith("DAN:")
-    assert "This answer should stay visible" in formatted
+    assert "I can control a browser" in formatted
+    assert "handle downloads" in formatted
+    assert "... more in transcript" not in formatted
+
+
+def test_super_tui_transcript_history_still_bounds_massive_answers() -> None:
+    long_answer = "This answer is intentionally enormous and should still be bounded. " * 90
+    entry = super_tui.TuiTranscriptEntry(
+        role="assistant_final",
+        text=long_answer,
+        created_at="",
+        metadata={},
+    )
+
+    formatted = super_tui._format_transcript_line(entry)
+
+    assert formatted.startswith("DAN:")
     assert len(formatted) < len(long_answer)
-    assert "..." in formatted
+    assert "... more in transcript" in formatted
 
 
 def test_super_tui_transcript_history_collapses_async_board_entries() -> None:
@@ -2669,7 +2878,7 @@ def test_super_tui_narrative_timeline_coalesces_noisy_tools() -> None:
     assert "Narrator:" in joined
     assert "Relevant context is available for copy source files" not in joined
     assert "Checking the relevant workspace context." not in joined
-    assert "The terminal command finished; using that result for copy source files." in joined
+    assert "The terminal command finished; using that result for the current task." in joined
     assert "Activity:" not in joined
 
 
@@ -2981,6 +3190,29 @@ def test_super_tui_renderer_quiet_narrator_heartbeat_is_throttled(monkeypatch, t
         renderer._sidecar_thread.join(timeout=2)
 
     assert calls == ["executor-heartbeat"]
+
+
+def test_super_tui_executor_sidecar_progress_waits_ten_seconds(monkeypatch, tmp_path) -> None:
+    parser = super_tui.build_parser()
+    args = parser.parse_args(["merge data", "--workspace", str(tmp_path), "--model", "fake-model", "--plain"])
+    super_tui._prepare_args(args, [])
+    args._tui_routed_with_model = True
+    current_time = {"value": 109.0}
+    monkeypatch.setattr(super_tui.time, "monotonic", lambda: current_time["value"])
+
+    renderer = super_tui.SuperTuiProgressRenderer(enabled=True, objective="merge data", workspace=str(tmp_path), plain=True)
+    renderer.configure_model_sidecar(args)
+    renderer.state.observe(
+        {
+            "event": "run.log.started",
+            "objective": "merge data",
+            "task_id": "super-dan-live:14b",
+            "workspace_root": str(tmp_path),
+        }
+    )
+    renderer._sidecar_last_started_at = 100.0
+
+    assert renderer._maybe_start_model_sidecar({"event": "tool.completed", "tool_id": "file_read"}) is False
 
 
 def test_super_tui_renderer_skips_duplicate_quiet_narrator_snapshot(monkeypatch, tmp_path) -> None:
@@ -3727,6 +3959,12 @@ def test_super_tui_run_command_parser_is_honest_for_direct_local_tui() -> None:
     assert append.payload == "use the blue theme"
     assert "async V2 active runs" in append.message
 
+    continue_command = super_tui._parse_tui_run_command("/continue finalize the test")
+    assert continue_command is not None
+    assert continue_command.command == "append"
+    assert continue_command.payload == "finalize the test"
+    assert "Continue is treated as an append" in continue_command.message
+
     cancel = super_tui._parse_tui_run_command("/cancel")
     assert cancel is not None
     assert cancel.command == "cancel"
@@ -4400,6 +4638,9 @@ def test_super_tui_core_model_router_parses_communication_and_execution_policy()
     class FakeProvider:
         async def complete(self, **kwargs):
             prompt = kwargs["messages"][0]["content"]
+            assert "controller_lane" in prompt
+            assert "permission_scope" in prompt
+            assert "phase_shape" in prompt
             assert "communication_policy.answer_budget" in prompt
             assert "communication_policy.progress_detail" in prompt
             assert "execution_policy.autonomy_mode" in prompt
@@ -4449,6 +4690,301 @@ def test_super_tui_core_model_router_parses_communication_and_execution_policy()
     assert decision.execution_policy.max_work_seconds == 1200
     assert decision.execution_policy.max_auto_fix_rounds == 5
     assert decision.execution_policy.max_validation_cycles == 6
+
+
+def test_super_tui_core_model_router_parses_canonical_surface_policy_without_legacy_lane() -> None:
+    class FakeProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, **kwargs):
+            self.calls += 1
+            prompt = kwargs["messages"][0]["content"]
+            if self.calls == 1:
+                assert "The canonical policy fields are orthogonal and complete" in prompt
+                assert "capability questions" in prompt
+                assert "do not claim those capabilities are unavailable" in prompt
+                assert "Do not choose workspace_write merely because browser navigation" in prompt
+            else:
+                assert "the route selected validation_gate" in kwargs["messages"][1]["content"]
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "controller_lane": "execute",
+                        "permission_scope": "transient_execute",
+                        "evidence_policy": {
+                            "freshness": "fresh",
+                            "scope": "targeted",
+                            "sources": ["validation"],
+                        },
+                        "phase_shape": "validation_gate",
+                        "autonomy": "guided",
+                        "latency_policy": {"class": "fast", "max_work_seconds": 30},
+                        "response_policy": {
+                            "answer_budget": "brief",
+                            "interaction_style": "answer_only",
+                        },
+                        "progress_policy": {"detail": "quiet", "heartbeat_seconds": 10},
+                        "admission_policy": {"task_relation": "auto"},
+                        "confidence": 0.94,
+                        "rationale": "A fresh compile check is a targeted transient validation.",
+                        "clarification": "",
+                    }
+                )
+            )
+
+    provider = FakeProvider()
+    decision = asyncio.run(
+        super_tui.route_agent_turn_intent_with_model(
+            provider,
+            "does it compile?",
+            model="fake-router",
+        )
+    )
+
+    assert provider.calls == 2
+    assert decision.lane == "executor write"
+    assert decision.surface_policy.controller_lane == "execute"
+    assert decision.surface_policy.permission_scope == "transient_execute"
+    assert decision.surface_policy.phase_shape == "validation_gate"
+    assert decision.surface_policy.evidence_policy.sources == ("validation",)
+    assert decision.surface_policy.latency_policy.latency_class == "fast"
+    assert decision.surface_policy.latency_policy.max_work_seconds == 30
+    assert decision.surface_policy.capability_packs == ()
+    assert decision.communication_policy.answer_budget == "brief"
+    assert decision.communication_policy.latency_preference == "fast"
+    assert decision.communication_policy.progress_detail == "quiet"
+    assert decision.execution_policy.stop_condition == "validation_passes"
+    assert decision.execution_policy.allow_repair_cycles is False
+
+
+def test_super_tui_core_model_router_uses_canonical_policy_over_legacy_lane() -> None:
+    class FakeProvider:
+        async def complete(self, **kwargs):
+            del kwargs
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "controller_lane": "execute",
+                        "permission_scope": "workspace_write",
+                        "phase_shape": "one_pass",
+                        "lane": "executor_read_only",
+                        "complexity": "complex",
+                        "confidence": 0.89,
+                        "rationale": "Canonical policy says this needs execution despite a stale projection.",
+                        "clarification": "",
+                    }
+                )
+            )
+
+    decision = asyncio.run(
+        super_tui.route_agent_turn_intent_with_model(
+            FakeProvider(),
+            "make the requested patch",
+            model="fake-router",
+        )
+    )
+
+    assert decision.lane == "executor write"
+    assert decision.surface_policy.controller_lane == "execute"
+    assert decision.surface_policy.permission_scope == "workspace_write"
+
+
+def test_super_tui_core_model_router_allows_browser_answer_without_workspace_write() -> None:
+    class FakeProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, **kwargs):
+            self.calls += 1
+            del kwargs
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "controller_lane": "inspect",
+                        "permission_scope": "transient_execute",
+                        "evidence_policy": {
+                            "freshness": "fresh",
+                            "scope": "targeted",
+                            "sources": ["external"],
+                        },
+                        "phase_shape": "probe",
+                        "autonomy": "guided",
+                        "latency_policy": {"class": "fast", "max_work_seconds": 45},
+                        "response_policy": {
+                            "answer_budget": "normal",
+                            "interaction_style": "answer_only",
+                        },
+                        "progress_policy": {"detail": "compact", "heartbeat_seconds": 10},
+                        "admission_policy": {"task_relation": "auto"},
+                        "capability_packs": ["browser_control"],
+                        "confidence": 0.91,
+                        "rationale": "Fresh Reuters headlines need transient browser navigation and external evidence, not a workspace artifact.",
+                        "clarification": "",
+                    }
+                )
+            )
+
+    provider = FakeProvider()
+    decision = asyncio.run(
+        super_tui.route_agent_turn_intent_with_model(
+            provider,
+            "go to Reuters and feed me the latest news",
+            model="fake-router",
+        )
+    )
+
+    assert provider.calls == 1
+    assert decision.lane == "executor read-only"
+    assert decision.surface_policy.controller_lane == "inspect"
+    assert decision.surface_policy.permission_scope == "transient_execute"
+    assert decision.surface_policy.evidence_policy.sources == ("external",)
+    assert decision.surface_policy.capability_packs == ("browser_control",)
+
+
+def test_super_tui_core_model_router_rechecks_validation_gate_for_proposal_request() -> None:
+    bad_payload = {
+        "controller_lane": "execute",
+        "permission_scope": "transient_execute",
+        "evidence_policy": {
+            "freshness": "fresh",
+            "scope": "targeted",
+            "sources": ["run_state", "validation", "workspace"],
+        },
+        "phase_shape": "validation_gate",
+        "autonomy": "guided",
+        "latency_policy": {"class": "normal", "max_work_seconds": 30},
+        "response_policy": {"answer_budget": "normal", "interaction_style": "act_then_report"},
+        "progress_policy": {"detail": "compact", "heartbeat_seconds": 10},
+        "admission_policy": {"task_relation": "append_active"},
+        "lane": "executor_write",
+        "complexity": "complex",
+        "confidence": 0.91,
+        "rationale": "The user reports lag and wants a proposal, but this bad route picks validation.",
+        "clarification": "",
+        "execution_policy": {
+            "autonomy_mode": "guided",
+            "stop_condition": "validation_passes",
+            "max_work_seconds": 300,
+            "max_auto_fix_rounds": 1,
+            "max_validation_cycles": 2,
+            "allow_repair_cycles": True,
+        },
+    }
+    repaired_payload = {
+        "controller_lane": "plan",
+        "permission_scope": "none",
+        "evidence_policy": {"freshness": "known_state", "scope": "targeted", "sources": ["conversation"]},
+        "phase_shape": "none",
+        "autonomy": "manual",
+        "latency_policy": {"class": "fast", "max_work_seconds": 30},
+        "response_policy": {"answer_budget": "normal", "interaction_style": "answer_only"},
+        "progress_policy": {"detail": "quiet", "heartbeat_seconds": 10},
+        "admission_policy": {"task_relation": "auto"},
+        "lane": "plan_mode",
+        "complexity": "simple",
+        "confidence": 0.9,
+        "rationale": "The user asks what to propose after lag, so answer with a plan instead of validation.",
+        "clarification": "",
+        "execution_policy": {
+            "autonomy_mode": "manual",
+            "stop_condition": "objective_satisfied",
+            "max_work_seconds": 30,
+            "max_auto_fix_rounds": 0,
+            "max_validation_cycles": 1,
+            "allow_repair_cycles": False,
+        },
+    }
+
+    class FakeProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return CompletionResult(text=json.dumps(bad_payload))
+            assert "the route selected validation_gate" in kwargs["messages"][1]["content"]
+            return CompletionResult(text=json.dumps(repaired_payload))
+
+    provider = FakeProvider()
+    decision = asyncio.run(
+        super_tui.route_agent_turn_intent_with_model(
+            provider,
+            "good good. but it still feels very laggy, what do you propose",
+            model="fake-router",
+        )
+    )
+
+    assert provider.calls == 2
+    assert decision.lane == "plan mode"
+    assert decision.surface_policy.phase_shape != "validation_gate"
+
+
+def test_super_tui_core_model_router_rechecks_read_only_action_policy() -> None:
+    bad_payload = {
+        "lane": "executor_read_only",
+        "complexity": "simple",
+        "confidence": 0.83,
+        "rationale": "The user asks for fresh validation truth about whether the project compiles.",
+        "clarification": "",
+        "communication_policy": {
+            "answer_budget": "brief",
+            "latency_preference": "fast",
+            "progress_detail": "compact",
+            "interaction_style": "act_then_report",
+        },
+    }
+    repaired_payload = {
+        "controller_lane": "execute",
+        "permission_scope": "transient_execute",
+        "evidence_policy": {"freshness": "fresh", "scope": "targeted", "sources": ["validation"]},
+        "phase_shape": "validation_gate",
+        "autonomy": "guided",
+        "latency_policy": {"class": "fast", "max_work_seconds": 30},
+        "response_policy": {"answer_budget": "brief", "interaction_style": "answer_only"},
+        "progress_policy": {"detail": "quiet", "heartbeat_seconds": 10},
+        "admission_policy": {"task_relation": "auto"},
+        "lane": "executor_write",
+        "complexity": "simple",
+        "confidence": 0.92,
+        "rationale": "Fresh compile truth requires a transient validation command.",
+        "clarification": "",
+        "execution_policy": {
+            "autonomy_mode": "guided",
+            "stop_condition": "validation_passes",
+            "max_work_seconds": 30,
+            "max_auto_fix_rounds": 0,
+            "max_validation_cycles": 1,
+            "allow_repair_cycles": False,
+        },
+    }
+
+    class FakeProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return CompletionResult(text=json.dumps(bad_payload))
+            assert "no-execution/read-only compatibility lane" in kwargs["messages"][1]["content"]
+            return CompletionResult(text=json.dumps(repaired_payload))
+
+    provider = FakeProvider()
+    decision = asyncio.run(
+        super_tui.route_agent_turn_intent_with_model(
+            provider,
+            "can you make sure it successfully compiles?",
+            model="fake-router",
+        )
+    )
+
+    assert provider.calls == 2
+    assert decision.lane == "executor write"
+    assert decision.surface_policy.controller_lane == "execute"
+    assert decision.surface_policy.permission_scope == "transient_execute"
+    assert decision.surface_policy.phase_shape == "validation_gate"
 
 
 def test_super_tui_core_model_router_defaults_policy_from_structured_lane() -> None:
@@ -4923,23 +5459,23 @@ def test_super_tui_explicit_live_route_failure_falls_to_executor(monkeypatch) ->
     assert "explicit --live requested" in decision.rationale
 
 
-def test_super_tui_brief_answer_budget_limits_visible_lines() -> None:
+def test_super_tui_brief_answer_budget_keeps_complete_visible_answer() -> None:
     state = super_tui.SuperTuiState(status="completed")
     state.communication_policy = super_tui.AgentCommunicationPolicy(answer_budget="brief")
     for index in range(8):
         state._record_answer(f"line {index}")
 
-    assert state.final_answer_lines() == ["line 0", "line 1", "line 2", "line 3", "line 4"]
+    assert state.final_answer_lines() == [f"line {index}" for index in range(8)]
 
 
-def test_super_tui_normal_answer_budget_limits_visible_lines() -> None:
+def test_super_tui_normal_answer_budget_keeps_complete_visible_answer() -> None:
     state = super_tui.SuperTuiState(status="completed")
     state.communication_policy = super_tui.AgentCommunicationPolicy(answer_budget="normal")
     for index in range(20):
         state._record_answer(f"line {index}")
 
-    assert len(state.final_answer_lines()) == 12
-    assert state.final_answer_lines()[-1] == "line 11"
+    assert len(state.final_answer_lines()) == 20
+    assert state.final_answer_lines()[-1] == "line 19"
 
 
 def test_super_tui_detailed_answer_budget_preserves_longer_findings() -> None:
@@ -4952,7 +5488,7 @@ def test_super_tui_detailed_answer_budget_preserves_longer_findings() -> None:
     assert state.final_answer_lines()[-1] == "finding 24"
 
 
-def test_super_tui_transcript_summary_obeys_answer_budget() -> None:
+def test_super_tui_transcript_summary_keeps_complete_visible_answer() -> None:
     state = super_tui.SuperTuiState(status="completed")
     state.communication_policy = super_tui.AgentCommunicationPolicy(answer_budget="brief")
     for index in range(7):
@@ -4962,7 +5498,8 @@ def test_super_tui_transcript_summary_obeys_answer_budget() -> None:
 
     assert "visible 0" in summary
     assert "visible 4" in summary
-    assert "visible 5" not in summary
+    assert "visible 5" in summary
+    assert "visible 6" in summary
 
 
 def test_super_tui_final_answer_prompt_includes_policy_and_budget(monkeypatch) -> None:
@@ -4986,7 +5523,7 @@ def test_super_tui_final_answer_prompt_includes_policy_and_budget(monkeypatch) -
     assert '"interaction_style": "review"' in messages[1]["content"]
 
 
-def test_super_tui_final_answer_model_enforces_brief_budget(monkeypatch) -> None:
+def test_super_tui_final_answer_model_keeps_complete_text_with_brief_budget(monkeypatch) -> None:
     class FakeProvider:
         def __init__(self) -> None:
             self.calls = []
@@ -5027,9 +5564,10 @@ def test_super_tui_final_answer_model_enforces_brief_budget(monkeypatch) -> None
 
     assert super_tui._run_tui_final_model_answer(args, state) is True
 
-    assert len(state.answer_lines) == 5
-    assert state.answer_lines[-1] == "The answer line 4 summarizes useful completed work."
+    assert len(state.answer_lines) == 9
+    assert state.answer_lines[-1] == "The answer line 8 summarizes useful completed work."
     assert provider.calls[0]["max_tokens"] == 360
+    assert "do not exceed 5 visible lines" in provider.calls[0]["messages"][0]["content"]
     assert "Communication policy" in provider.calls[0]["messages"][1]["content"]
 
 
@@ -5071,6 +5609,183 @@ def test_super_tui_read_only_limits_follow_latency_policy() -> None:
     assert super_tui._tui_read_only_model_limits(deep) == (6, 20)
 
 
+def test_super_tui_validation_command_discovery_caches_by_script_fingerprint(tmp_path) -> None:
+    script = tmp_path / "godot" / "compile_check.sh"
+    script.parent.mkdir()
+    script.write_text("echo ok\n", encoding="utf-8")
+
+    first = super_tui._discover_tui_validation_command(tmp_path)
+    second = super_tui._discover_tui_validation_command(tmp_path)
+
+    assert first is not None
+    assert first.cache_hit is False
+    assert first.label == "godot/compile_check.sh"
+    assert first.command == "cd godot && bash ./compile_check.sh"
+    assert second is not None
+    assert second.cache_hit is True
+    assert second.command == first.command
+
+
+def test_super_tui_validation_command_cache_invalidates_when_script_changes(tmp_path) -> None:
+    script = tmp_path / "compile_check.sh"
+    script.write_text("echo first\n", encoding="utf-8")
+    assert super_tui._discover_tui_validation_command(tmp_path) is not None
+
+    script.write_text("echo second\n", encoding="utf-8")
+    refreshed = super_tui._discover_tui_validation_command(tmp_path)
+
+    assert refreshed is not None
+    assert refreshed.cache_hit is False
+
+
+def test_super_tui_direct_validation_gate_runs_discovered_command(tmp_path, capsys) -> None:
+    script = tmp_path / "compile_check.sh"
+    script.write_text("echo compile ok\n", encoding="utf-8")
+    decision = super_tui.TuiIntentDecision(
+        permission="write",
+        complexity="complex",
+        confidence=0.95,
+        rationale="fresh validation requested",
+        communication_policy=super_tui.AgentCommunicationPolicy(
+            answer_budget="brief",
+            latency_preference="fast",
+            progress_detail="quiet",
+            interaction_style="answer_only",
+        ),
+        surface_policy=super_tui.normalize_agent_surface_policy(
+            {
+                "controller_lane": "execute",
+                "permission_scope": "transient_execute",
+                "phase_shape": "validation_gate",
+                "evidence_policy": {"freshness": "fresh", "scope": "targeted", "sources": ["validation"]},
+                "latency_policy": {"class": "fast", "max_work_seconds": 30},
+            }
+        ),
+    )
+    args = Namespace(
+        workspace=str(tmp_path),
+        target="does it compile now?",
+        plan_only=False,
+        raw_events=False,
+        plain=True,
+        json=False,
+        quiet_progress=True,
+        validation_command=[],
+        _tui_turn_started_at=None,
+        _tui_transcript_workspace="",
+    )
+
+    exit_code = super_tui._run_tui_direct_validation_gate_if_applicable(args, decision)
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Yes - fresh validation passed" in output
+    assert "compile_check.sh" in output
+    assert "Outcome" not in output
+
+
+def test_super_tui_direct_validation_gate_skips_non_validation_policy(tmp_path) -> None:
+    decision = super_tui.TuiIntentDecision(
+        permission="write",
+        complexity="complex",
+        confidence=0.8,
+        rationale="regular write",
+    )
+    args = Namespace(workspace=str(tmp_path), plan_only=False)
+
+    assert super_tui._run_tui_direct_validation_gate_if_applicable(args, decision) is None
+
+
+def test_super_tui_direct_validation_gate_skips_repair_loop_policy(tmp_path) -> None:
+    decision = super_tui.TuiIntentDecision(
+        permission="write",
+        complexity="complex",
+        confidence=0.9,
+        rationale="mixed performance repair route",
+        communication_policy=super_tui.AgentCommunicationPolicy(
+            answer_budget="normal",
+            latency_preference="balanced",
+            progress_detail="compact",
+            interaction_style="act_then_report",
+        ),
+        execution_policy=super_tui.AgentExecutionPolicy(
+            autonomy_mode="guided",
+            stop_condition="validation_passes",
+            max_work_seconds=300,
+            max_auto_fix_rounds=1,
+            max_validation_cycles=2,
+            allow_repair_cycles=True,
+        ),
+        surface_policy=super_tui.normalize_agent_surface_policy(
+            {
+                "controller_lane": "execute",
+                "permission_scope": "transient_execute",
+                "phase_shape": "validation_gate",
+                "evidence_policy": {
+                    "freshness": "fresh",
+                    "scope": "targeted",
+                    "sources": ["run_state", "validation", "workspace"],
+                },
+            }
+        ),
+    )
+    args = Namespace(workspace=str(tmp_path), plan_only=False)
+
+    assert super_tui._run_tui_direct_validation_gate_if_applicable(args, decision) is None
+
+
+def test_super_tui_dispatch_checks_validation_before_read_only(monkeypatch, tmp_path) -> None:
+    surface_policy = super_tui.normalize_agent_surface_policy(
+        {
+            "controller_lane": "execute",
+            "permission_scope": "transient_execute",
+            "evidence_policy": {"freshness": "fresh", "scope": "targeted", "sources": ["validation"]},
+            "phase_shape": "validation_gate",
+            "latency_policy": {"class": "fast", "max_work_seconds": 30},
+        }
+    )
+    execution_policy = super_tui.normalize_agent_execution_policy(
+        surface_policy.to_payload(),
+        lane="executor_write",
+    )
+    decision = super_tui.TuiIntentDecision(
+        permission="read-only",
+        complexity="simple",
+        confidence=0.87,
+        rationale="conflicting compatibility projection",
+        execution_policy=execution_policy,
+        surface_policy=surface_policy,
+    )
+    args = Namespace(
+        workspace=str(tmp_path),
+        target="can you make sure it successfully compiles?",
+        plain=True,
+        raw_events=False,
+        plan_only=False,
+        _tui_transcript_workspace=str(tmp_path),
+        _tui_selected_skill_mentions=[],
+        _model_explicit=False,
+    )
+    called: list[bool] = []
+
+    monkeypatch.setattr(super_tui, "_route_tui_intent_with_model", lambda args: (decision, True))
+    monkeypatch.setattr(
+        super_tui,
+        "_run_tui_direct_validation_gate_if_applicable",
+        lambda args, routed: called.append(True) or 0,
+    )
+    monkeypatch.setattr(
+        super_tui,
+        "_run_tui_read_only",
+        lambda *args, **kwargs: pytest.fail("read-only fallback should not preempt validation"),
+    )
+
+    exit_code = super_tui._dispatch_tui_turn(args, super_tui.build_parser())
+
+    assert exit_code == 0
+    assert called == [True]
+
+
 def test_super_tui_async_surface_turn_carries_communication_policy(tmp_path) -> None:
     args = Namespace(_tui_selected_skill_mentions=["skill-a"], _tui_communication_policy={
         "answer_budget": "brief",
@@ -5081,6 +5796,11 @@ def test_super_tui_async_surface_turn_carries_communication_policy(tmp_path) -> 
         "autonomy_mode": "continuous",
         "stop_condition": "validation_passes",
         "max_auto_fix_rounds": 4,
+    }, _tui_surface_policy={
+        "controller_lane": "execute",
+        "permission_scope": "workspace_write",
+        "phase_shape": "repair_loop",
+        "autonomy": "continuous",
     })
 
     turn = super_tui._build_tui_async_surface_turn(
@@ -5095,6 +5815,8 @@ def test_super_tui_async_surface_turn_carries_communication_policy(tmp_path) -> 
     assert turn.metadata["surface_context"]["communication_policy"] == policy
     assert turn.metadata["execution_policy"]["autonomy_mode"] == "continuous"
     assert turn.metadata["surface_context"]["execution_policy"]["max_auto_fix_rounds"] == 4
+    assert turn.metadata["surface_policy"]["controller_lane"] == "execute"
+    assert turn.metadata["surface_context"]["surface_policy"]["phase_shape"] == "repair_loop"
 
 
 def test_super_tui_async_admission_payload_carries_communication_policy(tmp_path) -> None:
@@ -5110,6 +5832,12 @@ def test_super_tui_async_admission_payload_carries_communication_policy(tmp_path
             "autonomy_mode": "continuous",
             "stop_condition": "validation_passes",
             "max_auto_fix_rounds": 5,
+        },
+        _tui_surface_policy={
+            "controller_lane": "execute",
+            "permission_scope": "workspace_write",
+            "phase_shape": "repair_loop",
+            "autonomy": "continuous",
         },
         model="",
         base_url="",
@@ -5130,6 +5858,8 @@ def test_super_tui_async_admission_payload_carries_communication_policy(tmp_path
     assert payload["chat_request"]["surface_context"]["communication_policy"] == policy
     assert payload["execute"]["metadata"]["execution_policy"]["max_auto_fix_rounds"] == 5
     assert payload["chat_request"]["surface_context"]["execution_policy"]["autonomy_mode"] == "continuous"
+    assert payload["execute"]["metadata"]["surface_policy"]["controller_lane"] == "execute"
+    assert payload["chat_request"]["surface_context"]["surface_policy"]["phase_shape"] == "repair_loop"
 
 
 def test_super_tui_execution_overrides_carry_communication_policy() -> None:
@@ -5146,6 +5876,11 @@ def test_super_tui_execution_overrides_carry_communication_policy() -> None:
             "stop_condition": "objective_satisfied",
             "max_auto_fix_rounds": 2,
         },
+        _tui_surface_policy={
+            "controller_lane": "inspect",
+            "permission_scope": "read_only",
+            "phase_shape": "one_pass",
+        },
         model="",
         base_url="",
         artifact_dir="",
@@ -5158,6 +5893,7 @@ def test_super_tui_execution_overrides_carry_communication_policy() -> None:
     assert overrides["metadata"]["communication_policy"]["answer_budget"] == "normal"
     assert overrides["metadata"]["communication_policy"]["interaction_style"] == "act_then_report"
     assert overrides["metadata"]["execution_policy"]["max_auto_fix_rounds"] == 2
+    assert overrides["metadata"]["surface_policy"]["controller_lane"] == "inspect"
 
 
 def test_super_tui_async_admission_transcript_records_communication_policy(tmp_path) -> None:
@@ -5175,17 +5911,24 @@ def test_super_tui_async_admission_transcript_records_communication_policy(tmp_p
         progress_detail="quiet",
         interaction_style="answer_only",
     )
+    surface_policy = super_tui.AgentSurfacePolicy(
+        controller_lane="narrate_run",
+        permission_scope="none",
+        phase_shape="snapshot",
+    )
 
     super_tui._append_tui_async_admission_transcript(
         tmp_path,
         result,
         text="show status",
         communication_policy=policy,
+        surface_policy=surface_policy,
     )
 
     entries = super_tui._read_tui_transcript(tmp_path, limit=5)
     assert entries[-1].metadata["communication_policy"]["answer_budget"] == "brief"
     assert entries[-1].metadata["communication_policy"]["progress_detail"] == "quiet"
+    assert entries[-1].metadata["surface_policy"]["controller_lane"] == "narrate_run"
 
 
 def test_super_tui_policy_words_do_not_create_deterministic_free_text_route() -> None:
@@ -5210,6 +5953,231 @@ def test_super_tui_non_mapping_communication_policy_defaults_safely() -> None:
         "interaction_style": "act_then_report",
         "needs_progress_detail": False,
     }
+
+
+def test_super_tui_surface_policy_normalizes_structured_capability_packs() -> None:
+    policy = super_tui.normalize_agent_surface_policy(
+        {
+            "surface_policy": {
+                "controller_lane": "execute",
+                "permission_scope": "workspace_write",
+                "capability_packs": ["browser", "desktop_control", "browser"],
+            }
+        }
+    )
+
+    assert policy.capability_packs == ("browser_control", "desktop_control")
+    assert policy.to_payload()["capability_packs"] == ["browser_control", "desktop_control"]
+
+
+def test_super_tui_read_only_tool_ids_expand_observation_tools_from_capability_packs(monkeypatch, tmp_path) -> None:
+    available = {
+        "list_directory": {},
+        "file_read": {},
+        "workspace_check": {},
+        "browser_tabs": {},
+        "browser_inspect": {},
+        "browser_wait": {},
+        "browser_extract": {},
+        "browser_screenshot": {},
+        "browser_click": {},
+        "desktop_observe": {},
+        "desktop_click": {},
+    }
+    monkeypatch.setattr(super_tui, "available_local_organism_tools", lambda: available)
+    policy = super_tui.AgentSurfacePolicy(capability_packs=("computer_control",))
+
+    tool_ids = super_tui._tui_read_only_tool_ids(tmp_path, policy)
+
+    assert "browser_inspect" in tool_ids
+    assert "browser_screenshot" in tool_ids
+    assert "desktop_observe" in tool_ids
+    assert "browser_click" not in tool_ids
+    assert "desktop_click" not in tool_ids
+
+
+def test_super_tui_read_only_tool_ids_expand_browser_actions_by_permission(monkeypatch, tmp_path) -> None:
+    available = {
+        "list_directory": {},
+        "file_read": {},
+        "workspace_check": {},
+        "browser_open": {},
+        "browser_click": {},
+        "browser_fill": {},
+        "browser_type": {},
+        "browser_select": {},
+        "browser_download": {},
+        "browser_inspect": {},
+    }
+    monkeypatch.setattr(super_tui, "available_local_organism_tools", lambda: available)
+    transient = super_tui.AgentSurfacePolicy(
+        permission_scope="transient_execute",
+        capability_packs=("browser_control",),
+    )
+    external_write = super_tui.AgentSurfacePolicy(
+        permission_scope="external_write",
+        capability_packs=("browser_control",),
+    )
+
+    transient_ids = super_tui._tui_read_only_tool_ids(tmp_path, transient)
+    external_write_ids = super_tui._tui_read_only_tool_ids(tmp_path, external_write)
+
+    assert "browser_open" in transient_ids
+    assert "browser_click" not in transient_ids
+    assert "browser_open" in external_write_ids
+    assert "browser_click" in external_write_ids
+    assert "browser_fill" in external_write_ids
+
+
+def test_super_tui_external_browser_probe_omits_workspace_tools(monkeypatch, tmp_path) -> None:
+    available = {
+        "list_directory": {},
+        "file_read": {},
+        "workspace_check": {},
+        "web_search": {},
+        "browser_tabs": {},
+        "browser_inspect": {},
+        "browser_open": {},
+        "browser_extract": {},
+        "browser_screenshot": {},
+    }
+    monkeypatch.setattr(super_tui, "available_local_organism_tools", lambda: available)
+    policy = super_tui.normalize_agent_surface_policy(
+        {
+            "controller_lane": "inspect",
+            "permission_scope": "transient_execute",
+            "phase_shape": "probe",
+            "capability_packs": ["browser_control"],
+            "evidence_policy": {
+                "sources": ["conversation", "external"],
+                "freshness": "fresh",
+                "scope": "targeted",
+            },
+        }
+    )
+
+    tool_ids = super_tui._tui_read_only_tool_ids(tmp_path, policy)
+
+    assert "browser_open" in tool_ids
+    assert "browser_extract" in tool_ids
+    assert "browser_inspect" in tool_ids
+    assert "file_read" not in tool_ids
+    assert "list_directory" not in tool_ids
+    assert "workspace_check" not in tool_ids
+    assert "web_search" not in tool_ids
+
+
+def test_super_tui_workspace_browser_probe_keeps_workspace_tools(monkeypatch, tmp_path) -> None:
+    available = {
+        "list_directory": {},
+        "file_read": {},
+        "workspace_check": {},
+        "browser_open": {},
+        "browser_extract": {},
+    }
+    monkeypatch.setattr(super_tui, "available_local_organism_tools", lambda: available)
+    policy = super_tui.normalize_agent_surface_policy(
+        {
+            "controller_lane": "inspect",
+            "permission_scope": "transient_execute",
+            "phase_shape": "probe",
+            "capability_packs": ["browser_control"],
+            "evidence_policy": {
+                "sources": ["workspace", "external"],
+                "freshness": "fresh",
+                "scope": "targeted",
+            },
+        }
+    )
+
+    tool_ids = super_tui._tui_read_only_tool_ids(tmp_path, policy)
+
+    assert "browser_open" in tool_ids
+    assert "file_read" in tool_ids
+    assert "list_directory" in tool_ids
+
+
+def test_super_tui_read_only_prompts_disclose_optional_computer_capabilities() -> None:
+    prompt = super_tui._tui_read_only_system_prompt(["list_directory"])
+
+    assert "browser_control" in prompt
+    assert "desktop_control" in prompt
+    assert "computer_control" in prompt
+    assert "DAN_COMPUTER_CONTROL=1" in prompt
+    assert "Do not deny browser or desktop capability" in prompt
+
+
+def test_super_tui_browser_prompt_requires_recovery_after_empty_dynamic_pages() -> None:
+    prompt = super_tui._tui_read_only_system_prompt(["browser_open", "browser_extract", "browser_wait", "browser_screenshot"])
+
+    assert "empty page text or empty element inspection is not a final result" in prompt
+    assert "recover with browser_wait" in prompt
+    assert "Do not answer by saying you will wait" in prompt
+    assert "CAPTCHA" in prompt
+    assert "report that observed blocker" in prompt
+    assert "non-headless session" in prompt
+
+
+def test_super_tui_browser_tool_evidence_mentions_gui_preview() -> None:
+    evidence = super_tui._read_only_tool_evidence_text(
+        [
+            {
+                "event": "tool.completed",
+                "tool_id": "browser_open",
+                "result": {
+                    "status": "ok",
+                    "url": "https://example.com",
+                    "title": "Example",
+                    "session": {
+                        "headless": False,
+                        "profile": "demo",
+                        "gui_preview_available": True,
+                        "preview": "local GUI browser window",
+                    },
+                },
+            }
+        ]
+    )
+
+    assert "local GUI browser window" in evidence
+    assert "profile=demo" in evidence
+    assert "https://example.com" in evidence
+
+
+def test_super_tui_playwright_session_info_exposes_non_headless_preview(monkeypatch) -> None:
+    import dan.tools.browser_control as browser_control
+
+    monkeypatch.setattr(browser_control, "is_playwright_available", lambda: True)
+    controller = browser_control.PlaywrightBrowserController(headless=False, profile="visible-demo")
+
+    info = controller.session_info()
+
+    assert info["headless"] is False
+    assert info["gui_preview_available"] is True
+    assert info["preview"] == "local GUI browser window"
+    assert info["profile"] == "visible-demo"
+
+
+def test_super_tui_playwright_launch_options_fallback_to_system_browser(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import dan.tools.browser_control as browser_control
+
+    system_browser = tmp_path / "Google Chrome"
+    system_browser.write_text("#!/bin/sh\n", encoding="utf-8")
+    managed_browser = tmp_path / "missing-playwright-chromium"
+
+    class FakeChromium:
+        executable_path = str(managed_browser)
+
+    monkeypatch.delenv("DAN_BROWSER_EXECUTABLE", raising=False)
+    monkeypatch.setattr(browser_control, "_system_browser_candidates", lambda: [str(system_browser)])
+
+    options = browser_control._browser_launch_options(FakeChromium(), headless=True)
+
+    assert options["headless"] is True
+    assert options["executable_path"] == str(system_browser)
 
 
 def test_super_tui_execution_policy_normalizes_caps_without_free_text_routing() -> None:
@@ -5766,6 +6734,469 @@ def test_super_tui_complex_read_only_live_uses_model_tool_loop(
     assert "Answer:" in stdout
     assert "Summary: Alpha finding from docs/info.md." in stdout
     assert not list(workspace.glob(".dan-super/runs/**/plans"))
+
+
+def test_super_tui_browser_probe_uses_browser_tool_loop_not_workspace_sources(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    from dan.worker.organisms import local_runtime
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "local-note.md").write_text("Local workspace text that must not be previewed.\n", encoding="utf-8")
+    tool_calls_seen: list[tuple[str, dict]] = []
+
+    async def fake_browser_open(*, url: str, **_kwargs: object) -> dict:
+        tool_calls_seen.append(("browser_open", {"url": url}))
+        return {"status": "ok", "url": url, "title": "Browser Demo"}
+
+    async def fake_browser_extract(**_kwargs: object) -> dict:
+        tool_calls_seen.append(("browser_extract", {}))
+        return {"length": 35, "text": "Browser demo page text after action."}
+
+    metadata = {
+        "browser_open": (
+            fake_browser_open,
+            {
+                "tool_id": "browser_open",
+                "description": "Open a URL in a persistent browser session.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"url": {"type": "string"}},
+                    "required": ["url"],
+                },
+            },
+        ),
+        "browser_extract": (
+            fake_browser_extract,
+            {
+                "tool_id": "browser_extract",
+                "description": "Extract visible page text.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        ),
+        "file_read": (
+            lambda **_kwargs: pytest.fail("browser probe must not read workspace files"),
+            {
+                "tool_id": "file_read",
+                "description": "Read a workspace file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        ),
+    }
+
+    class FakeProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.tool_names_by_call: list[list[str]] = []
+
+        async def complete(self, **kwargs):
+            self.calls += 1
+            self.tool_names_by_call.append(
+                [
+                    row.get("function", {}).get("name")
+                    for row in kwargs.get("tools", [])
+                    if isinstance(row, dict)
+                ]
+            )
+            if self.calls == 1:
+                return CompletionResult(
+                    text="",
+                    model=kwargs.get("model"),
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        {
+                            "id": "call-open",
+                            "type": "function",
+                            "function": {
+                                "name": "browser_open",
+                                "arguments": '{"url":"data:text/html,<title>Browser Demo</title><button>ok</button>"}',
+                            },
+                        }
+                    ],
+                    raw_assistant_message={
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call-open",
+                                "type": "function",
+                                "function": {
+                                    "name": "browser_open",
+                                    "arguments": '{"url":"data:text/html,<title>Browser Demo</title><button>ok</button>"}',
+                                },
+                            }
+                        ],
+                    },
+                )
+            if self.calls == 2:
+                return CompletionResult(
+                    text="",
+                    model=kwargs.get("model"),
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        {
+                            "id": "call-extract",
+                            "type": "function",
+                            "function": {"name": "browser_extract", "arguments": "{}"},
+                        }
+                    ],
+                    raw_assistant_message={
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call-extract",
+                                "type": "function",
+                                "function": {"name": "browser_extract", "arguments": "{}"},
+                            }
+                        ],
+                    },
+                )
+            return CompletionResult(
+                text="Browser demo ready: Browser demo page text after action.",
+                model=kwargs.get("model"),
+                finish_reason="stop",
+            )
+
+    provider = FakeProvider()
+    surface_policy = super_tui.normalize_agent_surface_policy(
+        {
+            "controller_lane": "inspect",
+            "permission_scope": "transient_execute",
+            "phase_shape": "probe",
+            "capability_packs": ["browser_control"],
+            "evidence_policy": {
+                "sources": ["conversation", "external"],
+                "freshness": "fresh",
+                "scope": "targeted",
+            },
+        }
+    )
+    decision = super_tui.TuiIntentDecision(
+        permission="read-only",
+        complexity="simple",
+        confidence=0.9,
+        rationale="browser probe",
+        surface_policy=surface_policy,
+    )
+
+    monkeypatch.setattr(super_tui, "_route_tui_intent_with_model", lambda args: (decision, True))
+    monkeypatch.setattr(
+        super_tui,
+        "available_local_organism_tools",
+        lambda: {tool_id: tool_metadata for tool_id, (_fn, tool_metadata) in metadata.items()},
+    )
+    monkeypatch.setattr(local_runtime, "get_all_tools", lambda: metadata)
+    monkeypatch.setattr(super_tui, "_build_tui_read_only_live_provider", lambda args, model: provider)
+    monkeypatch.setattr(super_tui, "_run_tui_turn", lambda *args, **kwargs: pytest.fail("must stay in read-only tool loop"))
+
+    exit_code = super_tui.main(
+        [
+            "ok, can you show me browser manipulation",
+            "--workspace",
+            str(workspace),
+            "--model",
+            "fake-model",
+            "--live",
+            "--plain",
+        ]
+    )
+
+    assert exit_code == 0
+    assert tool_calls_seen == [
+        ("browser_open", {"url": "data:text/html,<title>Browser Demo</title><button>ok</button>"}),
+        ("browser_extract", {}),
+    ]
+    assert "file_read" not in provider.tool_names_by_call[0]
+    stdout = capsys.readouterr().out
+    assert "Browser demo ready" in stdout
+    assert "Local workspace text" not in stdout
+    assert "Source: local-note.md" not in stdout
+
+
+def test_super_tui_browser_probe_recovers_empty_dynamic_page_before_answer(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    from dan.worker.organisms import local_runtime
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tool_calls_seen: list[str] = []
+
+    async def fake_browser_open(*, url: str, **_kwargs: object) -> dict:
+        tool_calls_seen.append("browser_open")
+        return {"status": "ok", "url": url, "title": "Reuters"}
+
+    async def fake_browser_extract(**_kwargs: object) -> dict:
+        tool_calls_seen.append("browser_extract")
+        return {"length": 0, "text": ""}
+
+    async def fake_browser_wait(**_kwargs: object) -> dict:
+        tool_calls_seen.append("browser_wait")
+        return {"status": "ok", "selector": None}
+
+    async def fake_browser_inspect(**_kwargs: object) -> dict:
+        tool_calls_seen.append("browser_inspect")
+        return {
+            "url": "https://www.reuters.com",
+            "title": "reuters.com",
+            "html": "<iframe src='captcha-delivery.com'></iframe><p>DataDome CAPTCHA</p>",
+            "html_length": 68,
+            "elements": [],
+            "element_count": 0,
+        }
+
+    async def fake_browser_screenshot(**_kwargs: object) -> dict:
+        tool_calls_seen.append("browser_screenshot")
+        return {"path": "/tmp/reuters-captcha.png"}
+
+    def metadata(tool_id: str, properties: dict | None = None) -> dict:
+        return {
+            "tool_id": tool_id,
+            "description": tool_id,
+            "parameters": {
+                "type": "object",
+                "properties": properties or {},
+                "required": [],
+            },
+        }
+
+    tools = {
+        "browser_open": (
+            fake_browser_open,
+            metadata("browser_open", {"url": {"type": "string"}}) | {"parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}},
+        ),
+        "browser_extract": (fake_browser_extract, metadata("browser_extract")),
+        "browser_wait": (fake_browser_wait, metadata("browser_wait")),
+        "browser_inspect": (fake_browser_inspect, metadata("browser_inspect")),
+        "browser_screenshot": (fake_browser_screenshot, metadata("browser_screenshot")),
+    }
+
+    class FakeProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return CompletionResult(
+                    text="",
+                    model=kwargs.get("model"),
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        {
+                            "id": "call-open",
+                            "type": "function",
+                            "function": {"name": "browser_open", "arguments": '{"url":"https://www.reuters.com"}'},
+                        }
+                    ],
+                    raw_assistant_message={
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call-open",
+                                "type": "function",
+                                "function": {"name": "browser_open", "arguments": '{"url":"https://www.reuters.com"}'},
+                            }
+                        ],
+                    },
+                )
+            if self.calls == 2:
+                return CompletionResult(
+                    text="",
+                    model=kwargs.get("model"),
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        {
+                            "id": "call-extract",
+                            "type": "function",
+                            "function": {"name": "browser_extract", "arguments": "{}"},
+                        }
+                    ],
+                    raw_assistant_message={
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call-extract",
+                                "type": "function",
+                                "function": {"name": "browser_extract", "arguments": "{}"},
+                            }
+                        ],
+                    },
+                )
+            if self.calls == 3:
+                return CompletionResult(
+                    text="I will wait and inspect next.",
+                    model=kwargs.get("model"),
+                    finish_reason="stop",
+                )
+            if self.calls >= 4:
+                user_prompts = [
+                    str(message.get("content") or "")
+                    for message in kwargs.get("messages", [])
+                    if str(message.get("role") or "").strip() == "user"
+                ]
+                assert any("DataDome CAPTCHA" in text for text in user_prompts)
+                return CompletionResult(
+                    text="Reuters is blocked by a DataDome CAPTCHA in the browser; no headlines were visible.",
+                    model=kwargs.get("model"),
+                    finish_reason="stop",
+                )
+            return CompletionResult(
+                text="I will inspect in a second.",
+                model=kwargs.get("model"),
+                finish_reason="stop",
+            )
+
+    surface_policy = super_tui.normalize_agent_surface_policy(
+        {
+            "controller_lane": "inspect",
+            "permission_scope": "transient_execute",
+            "phase_shape": "probe",
+            "capability_packs": ["browser_control"],
+            "evidence_policy": {"sources": ["external"], "freshness": "fresh", "scope": "targeted"},
+        }
+    )
+    decision = super_tui.TuiIntentDecision(
+        permission="read-only",
+        complexity="simple",
+        confidence=0.9,
+        rationale="browser probe",
+        surface_policy=surface_policy,
+    )
+
+    monkeypatch.setattr(super_tui, "_route_tui_intent_with_model", lambda args: (decision, True))
+    monkeypatch.setattr(super_tui, "available_local_organism_tools", lambda: {tool_id: data[1] for tool_id, data in tools.items()})
+    monkeypatch.setattr(local_runtime, "get_all_tools", lambda: tools)
+    monkeypatch.setattr(super_tui, "_build_tui_read_only_live_provider", lambda args, model: FakeProvider())
+    monkeypatch.setattr(super_tui, "_run_tui_turn", lambda *args, **kwargs: pytest.fail("must stay in read-only tool loop"))
+
+    exit_code = super_tui.main(
+        [
+            "fetch Reuters headlines",
+            "--workspace",
+            str(workspace),
+            "--model",
+            "fake-model",
+            "--live",
+            "--plain",
+        ]
+    )
+
+    assert exit_code == 0
+    assert tool_calls_seen == [
+        "browser_open",
+        "browser_extract",
+        "browser_wait",
+        "browser_inspect",
+        "browser_screenshot",
+    ]
+    stdout = capsys.readouterr().out
+    assert "DataDome CAPTCHA" in stdout
+    assert "I will wait and inspect next" not in stdout
+
+
+def test_super_tui_browser_probe_does_not_fallback_to_workspace_preview(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "local-note.md").write_text("Local workspace text that must not be previewed.\n", encoding="utf-8")
+    surface_policy = super_tui.normalize_agent_surface_policy(
+        {
+            "controller_lane": "inspect",
+            "permission_scope": "transient_execute",
+            "phase_shape": "probe",
+            "capability_packs": ["browser_control"],
+            "evidence_policy": {
+                "sources": ["conversation", "external"],
+                "freshness": "fresh",
+                "scope": "targeted",
+            },
+        }
+    )
+    decision = super_tui.TuiIntentDecision(
+        permission="read-only",
+        complexity="complex",
+        confidence=0.9,
+        rationale="browser probe",
+        surface_policy=surface_policy,
+    )
+
+    monkeypatch.setattr(super_tui, "_route_tui_intent_with_model", lambda args: (decision, True))
+    monkeypatch.setattr(super_tui, "_run_tui_read_only_model_answer", lambda *args, **kwargs: False)
+    monkeypatch.setattr(super_tui, "_run_tui_turn", lambda *args, **kwargs: pytest.fail("must stay in read-only lane"))
+
+    exit_code = super_tui.main(
+        [
+            "ok, can you show me browser manipulation",
+            "--workspace",
+            str(workspace),
+            "--model",
+            "fake-model",
+            "--live",
+            "--plain",
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "could not complete the browser/desktop tool probe" in stdout
+    assert "No workspace files" in stdout
+    assert "were inspected as a substitute" in stdout
+    assert "Local workspace text" not in stdout
+    assert "Source: local-note.md" not in stdout
+
+
+@pytest.mark.skipif(
+    os.environ.get("DAN_RUN_BROWSER_LIVE_TESTS") != "1",
+    reason="set DAN_RUN_BROWSER_LIVE_TESTS=1 to run local Playwright browser manipulation smoke",
+)
+@pytest.mark.asyncio
+async def test_super_tui_live_browser_manipulation_smoke() -> None:
+    from urllib.parse import quote
+
+    from dan.tools.browser_control import PlaywrightBrowserController
+
+    html = """
+    <html>
+      <head><title>DAN Browser Smoke</title></head>
+      <body>
+        <input id="name" oninput="document.querySelector('#status').textContent = 'typed ' + this.value" />
+        <button id="go" onclick="document.querySelector('#status').textContent += ' clicked'">Go</button>
+        <p id="status">ready</p>
+      </body>
+    </html>
+    """
+    controller = PlaywrightBrowserController(headless=True, profile=None)
+    try:
+        opened = await controller.open("data:text/html," + quote(html))
+        assert opened["status"] == "ok"
+        assert opened["title"] == "DAN Browser Smoke"
+
+        await controller.fill("#name", "Ada")
+        await controller.click("#go")
+        assert "typed Ada clicked" in await controller.extract_text()
+
+        inspected = await controller.inspect_dom(include_elements=True)
+        selectors = {row.get("selector") for row in inspected["elements"]}
+        assert "#name" in selectors
+        assert "#go" in selectors
+    finally:
+        await controller.close()
 
 
 def test_super_tui_complex_read_only_streams_answer_when_model_returns_empty_text(

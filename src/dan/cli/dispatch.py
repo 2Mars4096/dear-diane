@@ -35,7 +35,7 @@ _SUPER_DAN_WEBSITE_TOOL_IDS = (
     "file_write",
     "file_edit",
 )
-_SUPER_DAN_GENERIC_TOOL_IDS = (
+_SUPER_DAN_BASE_TOOL_IDS = (
     "list_directory",
     "file_read",
     "workspace_check",
@@ -47,6 +47,46 @@ _SUPER_DAN_GENERIC_TOOL_IDS = (
     "git_diff",
     "git_log",
 )
+_SUPER_DAN_BROWSER_TOOL_IDS = (
+    "browser_tabs",
+    "browser_inspect",
+    "browser_open",
+    "browser_wait",
+    "browser_extract",
+    "browser_screenshot",
+    "browser_click",
+    "browser_fill",
+    "browser_type",
+    "browser_select",
+    "browser_download",
+)
+_SUPER_DAN_DESKTOP_TOOL_IDS = (
+    "desktop_observe",
+    "desktop_focus",
+    "desktop_click",
+    "desktop_type",
+    "desktop_hotkey",
+)
+_SUPER_DAN_BASE_PREFERRED_TOOL_IDS = (
+    "list_directory",
+    "web_search",
+    "file_read",
+    "file_edit",
+    "file_write",
+    "git_diff",
+    "shell_command",
+)
+_SUPER_DAN_BROWSER_PREFERRED_TOOL_IDS = (
+    "browser_tabs",
+    "browser_inspect",
+    "browser_open",
+    "browser_extract",
+    "browser_screenshot",
+)
+_SUPER_DAN_DESKTOP_PREFERRED_TOOL_IDS = ("desktop_observe",)
+_CAPABILITY_PACK_BROWSER_CONTROL = "browser_control"
+_CAPABILITY_PACK_DESKTOP_CONTROL = "desktop_control"
+_CAPABILITY_PACK_COMPUTER_CONTROL = "computer_control"
 _SUPER_DAN_WEBSITE_FILES = ("index.html", "styles.css", "app.js", "README.md")
 _SUPER_DAN_WEBSITE_TEMPLATE_PHRASES = (
     "execution contract",
@@ -89,6 +129,116 @@ class OrchestratorChoice(BaseModel):
 
 def _normalize(text: Any) -> str:
     return " ".join(str(text or "").lower().split())
+
+
+def _dedupe(values: Sequence[str]) -> tuple[str, ...]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return tuple(result)
+
+
+def _capability_pack_token(value: Any) -> str:
+    token = "_".join(str(value or "").strip().lower().replace("-", "_").split())
+    aliases = {
+        "browser": _CAPABILITY_PACK_BROWSER_CONTROL,
+        "browser_control": _CAPABILITY_PACK_BROWSER_CONTROL,
+        "browser_navigation": _CAPABILITY_PACK_BROWSER_CONTROL,
+        "web_ui": _CAPABILITY_PACK_BROWSER_CONTROL,
+        "desktop": _CAPABILITY_PACK_DESKTOP_CONTROL,
+        "desktop_control": _CAPABILITY_PACK_DESKTOP_CONTROL,
+        "desktop_ui": _CAPABILITY_PACK_DESKTOP_CONTROL,
+        "computer": _CAPABILITY_PACK_COMPUTER_CONTROL,
+        "computer_control": _CAPABILITY_PACK_COMPUTER_CONTROL,
+        "computer_use": _CAPABILITY_PACK_COMPUTER_CONTROL,
+        "ui_control": _CAPABILITY_PACK_COMPUTER_CONTROL,
+        "browser_download": _CAPABILITY_PACK_BROWSER_CONTROL,
+        "desktop_messaging": _CAPABILITY_PACK_DESKTOP_CONTROL,
+        "cross_surface_operator": _CAPABILITY_PACK_COMPUTER_CONTROL,
+    }
+    return aliases.get(token, token)
+
+
+def _collect_capability_pack_values(value: Any) -> list[Any]:
+    if isinstance(value, Mapping):
+        return [key for key, enabled in value.items() if enabled]
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return list(value)
+    if value not in (None, ""):
+        return [value]
+    return []
+
+
+def _capability_packs_from_context(context: Mapping[str, Any] | None) -> tuple[str, ...]:
+    if not context:
+        return ()
+    raw_values: list[Any] = []
+    for key in (
+        "capability_packs",
+        "tool_packs",
+        "tool_families",
+        "operator_use_case_pack",
+    ):
+        raw_values.extend(_collect_capability_pack_values(context.get(key)))
+    for container_key in ("surface_policy", "surface_context"):
+        container = context.get(container_key)
+        if not isinstance(container, Mapping):
+            continue
+        for key in (
+            "capability_packs",
+            "tool_packs",
+            "tool_families",
+            "operator_use_case_pack",
+        ):
+            raw_values.extend(_collect_capability_pack_values(container.get(key)))
+        nested_policy = container.get("surface_policy") or container.get("agent_policy")
+        if isinstance(nested_policy, Mapping):
+            raw_values.extend(_collect_capability_pack_values(nested_policy.get("capability_packs")))
+            raw_values.extend(_collect_capability_pack_values(nested_policy.get("tool_packs")))
+            raw_values.extend(_collect_capability_pack_values(nested_policy.get("capabilities")))
+
+    packs = [_capability_pack_token(value) for value in raw_values]
+    expanded: list[str] = []
+    for pack in packs:
+        if pack == _CAPABILITY_PACK_COMPUTER_CONTROL:
+            expanded.extend(
+                [
+                    _CAPABILITY_PACK_BROWSER_CONTROL,
+                    _CAPABILITY_PACK_DESKTOP_CONTROL,
+                    _CAPABILITY_PACK_COMPUTER_CONTROL,
+                ]
+            )
+        elif pack in {
+            _CAPABILITY_PACK_BROWSER_CONTROL,
+            _CAPABILITY_PACK_DESKTOP_CONTROL,
+        }:
+            expanded.append(pack)
+    return _dedupe(expanded)
+
+
+def _super_dan_generic_tool_ids(context: Mapping[str, Any] | None) -> tuple[str, ...]:
+    packs = set(_capability_packs_from_context(context))
+    tool_ids = list(_SUPER_DAN_BASE_TOOL_IDS)
+    if _CAPABILITY_PACK_BROWSER_CONTROL in packs:
+        tool_ids.extend(_SUPER_DAN_BROWSER_TOOL_IDS)
+    if _CAPABILITY_PACK_DESKTOP_CONTROL in packs:
+        tool_ids.extend(_SUPER_DAN_DESKTOP_TOOL_IDS)
+    return _dedupe(tool_ids)
+
+
+def _super_dan_generic_preferred_tool_ids(context: Mapping[str, Any] | None) -> tuple[str, ...]:
+    packs = set(_capability_packs_from_context(context))
+    preferred = ["list_directory", "web_search"]
+    if _CAPABILITY_PACK_BROWSER_CONTROL in packs:
+        preferred.extend(_SUPER_DAN_BROWSER_PREFERRED_TOOL_IDS)
+    if _CAPABILITY_PACK_DESKTOP_CONTROL in packs:
+        preferred.extend(_SUPER_DAN_DESKTOP_PREFERRED_TOOL_IDS)
+    preferred.extend(tool_id for tool_id in _SUPER_DAN_BASE_PREFERRED_TOOL_IDS if tool_id not in preferred)
+    return _dedupe(preferred)
 
 
 def _command_from_context(context: Mapping[str, Any] | None) -> str:
@@ -379,16 +529,8 @@ def select_orchestrator(intent: str, context: Mapping[str, Any] | None = None) -
             tool_policy={
                 "mode": "workspace-mutation",
                 "profile": "generic",
-                "allowed_tool_ids": list(_SUPER_DAN_GENERIC_TOOL_IDS),
-                "preferred_tool_ids": [
-                    "list_directory",
-                    "web_search",
-                    "file_read",
-                    "file_edit",
-                    "file_write",
-                    "git_diff",
-                    "shell_command",
-                ],
+                "allowed_tool_ids": list(_super_dan_generic_tool_ids(context)),
+                "preferred_tool_ids": list(_super_dan_generic_preferred_tool_ids(context)),
             },
             acceptance_policy={"requires_live_artifact": True},
             intent_signal=intent_signal,

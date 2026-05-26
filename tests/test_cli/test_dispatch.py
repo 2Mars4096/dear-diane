@@ -61,6 +61,93 @@ def test_select_orchestrator_for_super_organism_uses_generic_lane() -> None:
     assert generic.intent_signal.artifact_target == "workspace"
 
 
+def test_select_orchestrator_for_super_organism_keeps_computer_tools_nested_by_default() -> None:
+    choice = select_orchestrator(
+        "verify this workflow",
+        {
+            "command": "super-organism",
+            "intent_signal": {
+                "operation": "mutate",
+                "artifact_target": "workspace",
+                "mutation_permission": True,
+            },
+        },
+    )
+
+    allowed = choice.tool_policy["allowed_tool_ids"]
+    assert len(allowed) == len(set(allowed))
+    assert "browser_inspect" not in allowed
+    assert "browser_click" not in allowed
+    assert "desktop_observe" not in allowed
+    assert "desktop_click" not in allowed
+
+
+def test_select_orchestrator_for_super_organism_expands_computer_tools_from_policy_pack() -> None:
+    choice = select_orchestrator(
+        "verify this workflow through the active UI",
+        {
+            "command": "super-organism",
+            "intent_signal": {
+                "operation": "mutate",
+                "artifact_target": "workspace",
+                "mutation_permission": True,
+            },
+            "surface_policy": {
+                "capability_packs": ["computer_control"],
+            },
+        },
+    )
+
+    allowed = choice.tool_policy["allowed_tool_ids"]
+    preferred = choice.tool_policy["preferred_tool_ids"]
+    assert len(allowed) == len(set(allowed))
+    assert {
+        "browser_tabs",
+        "browser_inspect",
+        "browser_open",
+        "browser_wait",
+        "browser_extract",
+        "browser_screenshot",
+        "browser_click",
+        "browser_fill",
+        "browser_type",
+        "browser_select",
+        "browser_download",
+        "desktop_observe",
+        "desktop_focus",
+        "desktop_click",
+        "desktop_type",
+        "desktop_hotkey",
+    }.issubset(set(allowed))
+    assert "browser_inspect" in preferred
+    assert "desktop_observe" in preferred
+    assert "clipboard" not in allowed
+
+
+def test_select_orchestrator_reads_capability_packs_from_surface_context_policy() -> None:
+    choice = select_orchestrator(
+        "use the browser UI",
+        {
+            "command": "super-organism",
+            "intent_signal": {
+                "operation": "mutate",
+                "artifact_target": "workspace",
+                "mutation_permission": True,
+            },
+            "surface_context": {
+                "surface_policy": {
+                    "capability_packs": ["browser_control"],
+                }
+            },
+        },
+    )
+
+    allowed = choice.tool_policy["allowed_tool_ids"]
+    assert "browser_inspect" in allowed
+    assert "browser_click" in allowed
+    assert "desktop_observe" not in allowed
+
+
 def test_resolve_intent_signal_is_explainable_before_lane_selection() -> None:
     signal = resolve_intent_signal(
         "can you think harder, the layout now is completely messy",

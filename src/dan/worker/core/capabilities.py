@@ -57,7 +57,9 @@ class CapabilityManifest(CapabilitySummary):
 _READ_ONLY_TOOL_IDS = {
     "audio_transcribe",
     "browser_extract",
+    "browser_inspect",
     "browser_screenshot",
+    "browser_tabs",
     "browser_wait",
     "clipboard",
     "csv_read",
@@ -98,6 +100,7 @@ _NETWORK_TOOL_IDS = {
     "browser_download",
     "browser_fill",
     "browser_open",
+    "browser_select",
     "browser_type",
     "http_request",
     "send_email",
@@ -109,11 +112,22 @@ _BROWSER_TOOL_IDS = {
     "browser_download",
     "browser_extract",
     "browser_fill",
+    "browser_inspect",
     "browser_open",
     "browser_screenshot",
+    "browser_select",
+    "browser_tabs",
     "browser_type",
     "browser_wait",
 }
+_DESKTOP_TOOL_IDS = {
+    "desktop_click",
+    "desktop_focus",
+    "desktop_hotkey",
+    "desktop_observe",
+    "desktop_type",
+}
+_DESKTOP_MUTATION_TOOL_IDS = _DESKTOP_TOOL_IDS - {"desktop_observe"}
 
 
 def capability_manifest_from_descriptor(tool_id: str, descriptor: dict[str, Any] | None = None) -> CapabilityManifest:
@@ -180,6 +194,8 @@ def _derive_permission_scope(tool_id: str, category: str) -> list[str]:
         scopes.append("network:write")
     if tool_id in _BROWSER_TOOL_IDS:
         scopes.append("browser:automate")
+    if tool_id in _DESKTOP_TOOL_IDS or category == "desktop":
+        scopes.append("desktop:observe" if tool_id == "desktop_observe" else "desktop:control")
     if tool_id.startswith("git_"):
         scopes.append("git")
     deduped: list[str] = []
@@ -201,6 +217,10 @@ def _derive_side_effects(tool_id: str, category: str) -> list[str]:
         side_effects.append("process")
     if tool_id in _BROWSER_TOOL_IDS:
         side_effects.append("browser")
+    if tool_id in _DESKTOP_MUTATION_TOOL_IDS or (category == "desktop" and tool_id != "desktop_observe"):
+        side_effects.append("desktop")
+    if tool_id == "desktop_observe":
+        side_effects.append("desktop_observation")
     if tool_id == "send_email":
         side_effects.append("external_delivery")
     if tool_id.startswith("git_"):
@@ -209,7 +229,7 @@ def _derive_side_effects(tool_id: str, category: str) -> list[str]:
 
 
 def _derive_cost_tier(tool_id: str, category: str) -> CapabilityCostTier:
-    if tool_id in _PROCESS_TOOL_IDS or tool_id in _BROWSER_TOOL_IDS or tool_id == "send_email":
+    if tool_id in _PROCESS_TOOL_IDS or tool_id in _BROWSER_TOOL_IDS or tool_id in _DESKTOP_TOOL_IDS or tool_id == "send_email":
         return CapabilityCostTier.HIGH
     if tool_id in _NETWORK_TOOL_IDS or category in {"web", "browser"}:
         return CapabilityCostTier.MEDIUM
@@ -219,7 +239,7 @@ def _derive_cost_tier(tool_id: str, category: str) -> CapabilityCostTier:
 def _derive_retry_safe(tool_id: str) -> bool | None:
     if tool_id in _READ_ONLY_TOOL_IDS:
         return True
-    if tool_id in _PROCESS_TOOL_IDS or tool_id in _FILESYSTEM_WRITE_TOOL_IDS or tool_id == "send_email":
+    if tool_id in _PROCESS_TOOL_IDS or tool_id in _FILESYSTEM_WRITE_TOOL_IDS or tool_id in _DESKTOP_MUTATION_TOOL_IDS or tool_id == "send_email":
         return False
     return None
 
@@ -227,7 +247,7 @@ def _derive_retry_safe(tool_id: str) -> bool | None:
 def _derive_idempotent(tool_id: str) -> bool | None:
     if tool_id in _READ_ONLY_TOOL_IDS:
         return True
-    if tool_id in {"file_edit", "file_write", "file_delete", "send_email", "git_commit"}:
+    if tool_id in {"file_edit", "file_write", "file_delete", "send_email", "git_commit"} or tool_id in _DESKTOP_MUTATION_TOOL_IDS:
         return False
     return None
 
@@ -244,4 +264,6 @@ def _derive_governance_notes(tool_id: str, category: str) -> list[str]:
         notes.append("mutates-workspace-state")
     if tool_id == "send_email":
         notes.append("irreversible-external-side-effect")
+    if tool_id in _DESKTOP_TOOL_IDS:
+        notes.append("requires-local-desktop-permission")
     return notes

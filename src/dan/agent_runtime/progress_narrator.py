@@ -43,12 +43,14 @@ PROGRESS_VERBOSE = "verbose"
 PROGRESS_DETAILS = frozenset({PROGRESS_QUIET, PROGRESS_COMPACT, PROGRESS_VERBOSE})
 
 INTERACTION_ANSWER_ONLY = "answer_only"
+INTERACTION_FINDINGS = "findings"
 INTERACTION_ACT_THEN_REPORT = "act_then_report"
 INTERACTION_REVIEW = "review"
 INTERACTION_AUTONOMOUS_PROGRESS = "autonomous_progress"
 INTERACTION_STYLES = frozenset(
     {
         INTERACTION_ANSWER_ONLY,
+        INTERACTION_FINDINGS,
         INTERACTION_ACT_THEN_REPORT,
         INTERACTION_REVIEW,
         INTERACTION_AUTONOMOUS_PROGRESS,
@@ -68,6 +70,114 @@ EXECUTION_STOP_CONDITIONS = frozenset(
         STOP_OBJECTIVE_SATISFIED,
         STOP_VALIDATION_PASSES,
         STOP_PRECISE_BLOCKER,
+    }
+)
+
+CONTROLLER_RESPOND = "respond"
+CONTROLLER_NARRATE_RUN = "narrate_run"
+CONTROLLER_INSPECT = "inspect"
+CONTROLLER_EXECUTE = "execute"
+CONTROLLER_PLAN = "plan"
+CONTROLLER_CLARIFY = "clarify"
+CONTROLLER_LANES = frozenset(
+    {
+        CONTROLLER_RESPOND,
+        CONTROLLER_NARRATE_RUN,
+        CONTROLLER_INSPECT,
+        CONTROLLER_EXECUTE,
+        CONTROLLER_PLAN,
+        CONTROLLER_CLARIFY,
+    }
+)
+
+PERMISSION_NONE = "none"
+PERMISSION_READ_ONLY = "read_only"
+PERMISSION_TRANSIENT_EXECUTE = "transient_execute"
+PERMISSION_WORKSPACE_WRITE = "workspace_write"
+PERMISSION_EXTERNAL_WRITE = "external_write"
+PERMISSION_SCOPES = frozenset(
+    {
+        PERMISSION_NONE,
+        PERMISSION_READ_ONLY,
+        PERMISSION_TRANSIENT_EXECUTE,
+        PERMISSION_WORKSPACE_WRITE,
+        PERMISSION_EXTERNAL_WRITE,
+    }
+)
+
+CAPABILITY_PACK_BROWSER_CONTROL = "browser_control"
+CAPABILITY_PACK_DESKTOP_CONTROL = "desktop_control"
+CAPABILITY_PACK_COMPUTER_CONTROL = "computer_control"
+CAPABILITY_PACKS = frozenset(
+    {
+        CAPABILITY_PACK_BROWSER_CONTROL,
+        CAPABILITY_PACK_DESKTOP_CONTROL,
+        CAPABILITY_PACK_COMPUTER_CONTROL,
+    }
+)
+
+EVIDENCE_KNOWN_STATE = "known_state"
+EVIDENCE_VALIDATED_CACHE = "validated_cache"
+EVIDENCE_FRESH = "fresh"
+EVIDENCE_FRESHNESS_VALUES = frozenset({EVIDENCE_KNOWN_STATE, EVIDENCE_VALIDATED_CACHE, EVIDENCE_FRESH})
+
+EVIDENCE_SCOPE_NONE = "none"
+EVIDENCE_SCOPE_TARGETED = "targeted"
+EVIDENCE_SCOPE_BROAD = "broad"
+EVIDENCE_SCOPE_VALUES = frozenset({EVIDENCE_SCOPE_NONE, EVIDENCE_SCOPE_TARGETED, EVIDENCE_SCOPE_BROAD})
+
+EVIDENCE_SOURCE_CONVERSATION = "conversation"
+EVIDENCE_SOURCE_RUN_STATE = "run_state"
+EVIDENCE_SOURCE_WORKSPACE = "workspace"
+EVIDENCE_SOURCE_VALIDATION = "validation"
+EVIDENCE_SOURCE_EXTERNAL = "external"
+EVIDENCE_SOURCES = frozenset(
+    {
+        EVIDENCE_SOURCE_CONVERSATION,
+        EVIDENCE_SOURCE_RUN_STATE,
+        EVIDENCE_SOURCE_WORKSPACE,
+        EVIDENCE_SOURCE_VALIDATION,
+        EVIDENCE_SOURCE_EXTERNAL,
+    }
+)
+
+PHASE_NONE = "none"
+PHASE_SNAPSHOT = "snapshot"
+PHASE_PROBE = "probe"
+PHASE_ONE_PASS = "one_pass"
+PHASE_VALIDATION_GATE = "validation_gate"
+PHASE_REPAIR_LOOP = "repair_loop"
+PHASE_MONITOR = "monitor"
+PHASE_SHAPES = frozenset(
+    {
+        PHASE_NONE,
+        PHASE_SNAPSHOT,
+        PHASE_PROBE,
+        PHASE_ONE_PASS,
+        PHASE_VALIDATION_GATE,
+        PHASE_REPAIR_LOOP,
+        PHASE_MONITOR,
+    }
+)
+
+LATENCY_INSTANT = "instant"
+LATENCY_NORMAL = "normal"
+LATENCY_BACKGROUND = "background"
+LATENCY_CLASSES = frozenset({LATENCY_INSTANT, LATENCY_FAST, LATENCY_NORMAL, LATENCY_DEEP, LATENCY_BACKGROUND})
+
+PROGRESS_NONE = "none"
+PROGRESS_DEBUG = "debug"
+
+ADMISSION_AUTO = "auto"
+ADMISSION_STATUS_ONLY = "status_only"
+ADMISSION_APPEND_ACTIVE = "append_active"
+ADMISSION_NEW_TASK = "new_task"
+ADMISSION_TASK_RELATIONS = frozenset(
+    {
+        ADMISSION_AUTO,
+        ADMISSION_STATUS_ONLY,
+        ADMISSION_APPEND_ACTIVE,
+        ADMISSION_NEW_TASK,
     }
 )
 
@@ -260,6 +370,7 @@ class AgentTurnIntentDecision:
     clarification: str = ""
     communication_policy: Any = None
     execution_policy: Any = None
+    surface_policy: Any = None
 
     def __post_init__(self) -> None:
         if self.communication_policy is None:
@@ -278,6 +389,17 @@ class AgentTurnIntentDecision:
                 normalize_agent_execution_policy(
                     lane=self.lane,
                     communication_policy=self.communication_policy,
+                ),
+            )
+        if self.surface_policy is None:
+            object.__setattr__(
+                self,
+                "surface_policy",
+                normalize_agent_surface_policy(
+                    lane=self.lane,
+                    executor_effort=self.executor_effort,
+                    communication_policy=self.communication_policy,
+                    execution_policy=self.execution_policy,
                 ),
             )
 
@@ -427,6 +549,109 @@ class AgentExecutionPolicy:
         }
 
 
+@dataclass(frozen=True)
+class AgentEvidencePolicy:
+    """Evidence requirements independent from lane, permissions, and answer shape."""
+
+    freshness: str = EVIDENCE_KNOWN_STATE
+    scope: str = EVIDENCE_SCOPE_NONE
+    sources: tuple[str, ...] = (EVIDENCE_SOURCE_CONVERSATION,)
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "freshness": self.freshness,
+            "scope": self.scope,
+            "sources": list(self.sources),
+        }
+
+
+@dataclass(frozen=True)
+class AgentLatencyPolicy:
+    """Time-budget requirements independent from final-answer length."""
+
+    latency_class: str = LATENCY_NORMAL
+    max_work_seconds: int | None = None
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "class": self.latency_class,
+            "max_work_seconds": self.max_work_seconds,
+        }
+
+
+@dataclass(frozen=True)
+class AgentResponsePolicy:
+    """Final-answer shape independent from progress visibility and work budget."""
+
+    answer_budget: str = ANSWER_BUDGET_NORMAL
+    interaction_style: str = INTERACTION_ACT_THEN_REPORT
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "answer_budget": self.answer_budget,
+            "interaction_style": self.interaction_style,
+        }
+
+
+@dataclass(frozen=True)
+class AgentProgressPolicy:
+    """Live progress visibility independent from final-answer length."""
+
+    detail: str = PROGRESS_COMPACT
+    heartbeat_seconds: int = 10
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "detail": self.detail,
+            "heartbeat_seconds": self.heartbeat_seconds,
+        }
+
+
+@dataclass(frozen=True)
+class AgentAdmissionPolicy:
+    """Relationship between this turn and active background work."""
+
+    task_relation: str = ADMISSION_AUTO
+
+    def to_payload(self) -> dict[str, Any]:
+        return {"task_relation": self.task_relation}
+
+
+@dataclass(frozen=True)
+class AgentSurfacePolicy:
+    """Canonical orthogonal policy for Super DAN-style agent surfaces.
+
+    Legacy lane, communication_policy, and execution_policy are still carried
+    as compatibility projections, but this object is the complete policy the
+    model router should author.
+    """
+
+    controller_lane: str = CONTROLLER_RESPOND
+    permission_scope: str = PERMISSION_NONE
+    evidence_policy: AgentEvidencePolicy = field(default_factory=AgentEvidencePolicy)
+    phase_shape: str = PHASE_NONE
+    autonomy: str = EXECUTION_GUIDED
+    latency_policy: AgentLatencyPolicy = field(default_factory=AgentLatencyPolicy)
+    response_policy: AgentResponsePolicy = field(default_factory=AgentResponsePolicy)
+    progress_policy: AgentProgressPolicy = field(default_factory=AgentProgressPolicy)
+    admission_policy: AgentAdmissionPolicy = field(default_factory=AgentAdmissionPolicy)
+    capability_packs: tuple[str, ...] = ()
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "controller_lane": self.controller_lane,
+            "permission_scope": self.permission_scope,
+            "evidence_policy": self.evidence_policy.to_payload(),
+            "phase_shape": self.phase_shape,
+            "autonomy": self.autonomy,
+            "latency_policy": self.latency_policy.to_payload(),
+            "response_policy": self.response_policy.to_payload(),
+            "progress_policy": self.progress_policy.to_payload(),
+            "admission_policy": self.admission_policy.to_payload(),
+            "capability_packs": list(self.capability_packs),
+        }
+
+
 def _normalize_answer_budget(value: Any, *, default: str = ANSWER_BUDGET_NORMAL) -> str:
     token = _normalize_policy_token(value)
     aliases = {
@@ -450,14 +675,17 @@ def _normalize_answer_budget(value: Any, *, default: str = ANSWER_BUDGET_NORMAL)
 def _normalize_latency_preference(value: Any, *, default: str = LATENCY_BALANCED) -> str:
     token = _normalize_policy_token(value)
     aliases = {
+        "instant": LATENCY_FAST,
         "low_latency": LATENCY_FAST,
         "quick": LATENCY_FAST,
         "brief": LATENCY_FAST,
         "normal": LATENCY_BALANCED,
         "standard": LATENCY_BALANCED,
+        "balanced": LATENCY_BALANCED,
         "thorough": LATENCY_DEEP,
         "deeper": LATENCY_DEEP,
         "slow": LATENCY_DEEP,
+        "background": LATENCY_DEEP,
     }
     token = aliases.get(token, token)
     return token if token in LATENCY_PREFERENCES else default
@@ -504,7 +732,7 @@ def _normalize_interaction_style(value: Any, *, default: str = INTERACTION_ACT_T
         "execute": INTERACTION_ACT_THEN_REPORT,
         "act": INTERACTION_ACT_THEN_REPORT,
         "act_then_report": INTERACTION_ACT_THEN_REPORT,
-        "findings": INTERACTION_REVIEW,
+        "findings": INTERACTION_FINDINGS,
         "audit": INTERACTION_REVIEW,
         "review": INTERACTION_REVIEW,
         "autonomous": INTERACTION_AUTONOMOUS_PROGRESS,
@@ -514,6 +742,349 @@ def _normalize_interaction_style(value: Any, *, default: str = INTERACTION_ACT_T
     }
     token = aliases.get(token, token)
     return token if token in INTERACTION_STYLES else default
+
+
+def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _surface_policy_payload(payload: Mapping[str, Any] | AgentSurfacePolicy | None) -> Mapping[str, Any]:
+    if isinstance(payload, AgentSurfacePolicy):
+        return payload.to_payload()
+    if not isinstance(payload, Mapping):
+        return {}
+    nested = payload.get("surface_policy") or payload.get("agent_policy") or payload.get("policy")
+    if isinstance(nested, Mapping):
+        return nested
+    return payload
+
+
+def _normalize_controller_lane(value: Any, *, default: str = CONTROLLER_RESPOND) -> str:
+    token = _normalize_policy_token(value)
+    aliases = {
+        "chat": CONTROLLER_RESPOND,
+        "answer": CONTROLLER_RESPOND,
+        "answer_only": CONTROLLER_RESPOND,
+        "narrator": CONTROLLER_NARRATE_RUN,
+        "narrator_read_only": CONTROLLER_NARRATE_RUN,
+        "progress": CONTROLLER_NARRATE_RUN,
+        "status": CONTROLLER_NARRATE_RUN,
+        "status_snapshot": CONTROLLER_NARRATE_RUN,
+        "run_status": CONTROLLER_NARRATE_RUN,
+        "read": CONTROLLER_INSPECT,
+        "read_only": CONTROLLER_INSPECT,
+        "readonly": CONTROLLER_INSPECT,
+        "executor_read_only": CONTROLLER_INSPECT,
+        "inspect_workspace": CONTROLLER_INSPECT,
+        "act": CONTROLLER_EXECUTE,
+        "run": CONTROLLER_EXECUTE,
+        "executor": CONTROLLER_EXECUTE,
+        "executor_write": CONTROLLER_EXECUTE,
+        "write": CONTROLLER_EXECUTE,
+        "workspace_write": CONTROLLER_EXECUTE,
+        "planning": CONTROLLER_PLAN,
+        "plan_mode": CONTROLLER_PLAN,
+        "clarification": CONTROLLER_CLARIFY,
+        "ask": CONTROLLER_CLARIFY,
+    }
+    token = aliases.get(token, token)
+    return token if token in CONTROLLER_LANES else default
+
+
+def _normalize_permission_scope(value: Any, *, default: str = PERMISSION_NONE) -> str:
+    token = _normalize_policy_token(value)
+    aliases = {
+        "no_tools": PERMISSION_NONE,
+        "none": PERMISSION_NONE,
+        "readonly": PERMISSION_READ_ONLY,
+        "read": PERMISSION_READ_ONLY,
+        "read_only": PERMISSION_READ_ONLY,
+        "shell_only": PERMISSION_TRANSIENT_EXECUTE,
+        "validation": PERMISSION_TRANSIENT_EXECUTE,
+        "transient": PERMISSION_TRANSIENT_EXECUTE,
+        "execute": PERMISSION_TRANSIENT_EXECUTE,
+        "run": PERMISSION_TRANSIENT_EXECUTE,
+        "write": PERMISSION_WORKSPACE_WRITE,
+        "workspace_mutation": PERMISSION_WORKSPACE_WRITE,
+        "mutation": PERMISSION_WORKSPACE_WRITE,
+        "workspace_write": PERMISSION_WORKSPACE_WRITE,
+        "external": PERMISSION_EXTERNAL_WRITE,
+        "external_mutation": PERMISSION_EXTERNAL_WRITE,
+    }
+    token = aliases.get(token, token)
+    return token if token in PERMISSION_SCOPES else default
+
+
+def _normalize_capability_packs(value: Any) -> tuple[str, ...]:
+    aliases = {
+        "browser": CAPABILITY_PACK_BROWSER_CONTROL,
+        "browser_control": CAPABILITY_PACK_BROWSER_CONTROL,
+        "browser_navigation": CAPABILITY_PACK_BROWSER_CONTROL,
+        "web_ui": CAPABILITY_PACK_BROWSER_CONTROL,
+        "desktop": CAPABILITY_PACK_DESKTOP_CONTROL,
+        "desktop_control": CAPABILITY_PACK_DESKTOP_CONTROL,
+        "desktop_ui": CAPABILITY_PACK_DESKTOP_CONTROL,
+        "computer": CAPABILITY_PACK_COMPUTER_CONTROL,
+        "computer_control": CAPABILITY_PACK_COMPUTER_CONTROL,
+        "computer_use": CAPABILITY_PACK_COMPUTER_CONTROL,
+        "ui_control": CAPABILITY_PACK_COMPUTER_CONTROL,
+    }
+    raw_items: list[Any] = []
+    if isinstance(value, Mapping):
+        for key, enabled in value.items():
+            if enabled:
+                raw_items.append(key)
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        raw_items.extend(value)
+    elif value not in (None, ""):
+        raw_items.append(value)
+
+    packs: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_items:
+        token = "_".join(str(raw or "").strip().lower().replace("-", "_").split())
+        normalized = aliases.get(token, token)
+        if normalized in CAPABILITY_PACKS and normalized not in seen:
+            seen.add(normalized)
+            packs.append(normalized)
+    return tuple(packs)
+
+
+def _normalize_evidence_freshness(value: Any, *, default: str = EVIDENCE_KNOWN_STATE) -> str:
+    token = _normalize_policy_token(value)
+    aliases = {
+        "known": EVIDENCE_KNOWN_STATE,
+        "cached": EVIDENCE_VALIDATED_CACHE,
+        "fingerprinted_cache": EVIDENCE_VALIDATED_CACHE,
+        "fresh_read": EVIDENCE_FRESH,
+        "fresh_validation": EVIDENCE_FRESH,
+    }
+    token = aliases.get(token, token)
+    return token if token in EVIDENCE_FRESHNESS_VALUES else default
+
+
+def _normalize_evidence_scope(value: Any, *, default: str = EVIDENCE_SCOPE_NONE) -> str:
+    token = _normalize_policy_token(value)
+    aliases = {
+        "single": EVIDENCE_SCOPE_TARGETED,
+        "narrow": EVIDENCE_SCOPE_TARGETED,
+        "focused": EVIDENCE_SCOPE_TARGETED,
+        "wide": EVIDENCE_SCOPE_BROAD,
+        "deep": EVIDENCE_SCOPE_BROAD,
+        "full": EVIDENCE_SCOPE_BROAD,
+    }
+    token = aliases.get(token, token)
+    return token if token in EVIDENCE_SCOPE_VALUES else default
+
+
+def _normalize_evidence_sources(value: Any, *, default: Sequence[str]) -> tuple[str, ...]:
+    raw_items: list[Any]
+    if isinstance(value, str):
+        raw_items = [item.strip() for item in value.replace(",", " ").split()]
+    elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        raw_items = list(value)
+    else:
+        raw_items = list(default)
+    aliases = {
+        "chat": EVIDENCE_SOURCE_CONVERSATION,
+        "conversation": EVIDENCE_SOURCE_CONVERSATION,
+        "transcript": EVIDENCE_SOURCE_CONVERSATION,
+        "state": EVIDENCE_SOURCE_RUN_STATE,
+        "run": EVIDENCE_SOURCE_RUN_STATE,
+        "run_state": EVIDENCE_SOURCE_RUN_STATE,
+        "files": EVIDENCE_SOURCE_WORKSPACE,
+        "file": EVIDENCE_SOURCE_WORKSPACE,
+        "workspace": EVIDENCE_SOURCE_WORKSPACE,
+        "checks": EVIDENCE_SOURCE_VALIDATION,
+        "validation": EVIDENCE_SOURCE_VALIDATION,
+        "web": EVIDENCE_SOURCE_EXTERNAL,
+        "network": EVIDENCE_SOURCE_EXTERNAL,
+        "external": EVIDENCE_SOURCE_EXTERNAL,
+    }
+    result: list[str] = []
+    for item in raw_items:
+        token = aliases.get(_normalize_policy_token(item), _normalize_policy_token(item))
+        if token in EVIDENCE_SOURCES and token not in result:
+            result.append(token)
+    if not result:
+        result = [item for item in default if item in EVIDENCE_SOURCES]
+    return tuple(result)
+
+
+def _normalize_phase_shape(value: Any, *, default: str = PHASE_NONE) -> str:
+    token = _normalize_policy_token(value)
+    aliases = {
+        "direct": PHASE_NONE,
+        "status": PHASE_SNAPSHOT,
+        "status_snapshot": PHASE_SNAPSHOT,
+        "cheap_probe": PHASE_PROBE,
+        "single_probe": PHASE_PROBE,
+        "single_pass": PHASE_ONE_PASS,
+        "validate_once": PHASE_VALIDATION_GATE,
+        "validation": PHASE_VALIDATION_GATE,
+        "loop": PHASE_REPAIR_LOOP,
+        "loop_until_condition": PHASE_REPAIR_LOOP,
+        "repair": PHASE_REPAIR_LOOP,
+        "watch": PHASE_MONITOR,
+        "observe": PHASE_MONITOR,
+    }
+    token = aliases.get(token, token)
+    return token if token in PHASE_SHAPES else default
+
+
+def _normalize_latency_class(value: Any, *, default: str = LATENCY_NORMAL) -> str:
+    token = _normalize_policy_token(value)
+    aliases = {
+        "immediate": LATENCY_INSTANT,
+        "quick": LATENCY_FAST,
+        "low_latency": LATENCY_FAST,
+        "balanced": LATENCY_NORMAL,
+        "standard": LATENCY_NORMAL,
+        "normal": LATENCY_NORMAL,
+        "thorough": LATENCY_DEEP,
+        "deeper": LATENCY_DEEP,
+        "async": LATENCY_BACKGROUND,
+        "long_running": LATENCY_BACKGROUND,
+    }
+    token = aliases.get(token, token)
+    return token if token in LATENCY_CLASSES else default
+
+
+def _legacy_latency_from_class(value: str) -> str:
+    if value in {LATENCY_INSTANT, LATENCY_FAST}:
+        return LATENCY_FAST
+    if value == LATENCY_DEEP or value == LATENCY_BACKGROUND:
+        return LATENCY_DEEP
+    return LATENCY_BALANCED
+
+
+def _normalize_surface_progress_detail(value: Any, *, default: str = PROGRESS_COMPACT) -> str:
+    token = _normalize_policy_token(value)
+    aliases = {
+        "off": PROGRESS_NONE,
+        "false": PROGRESS_NONE,
+        "minimal": PROGRESS_QUIET,
+        "low": PROGRESS_QUIET,
+        "normal": PROGRESS_COMPACT,
+        "standard": PROGRESS_COMPACT,
+        "high": PROGRESS_VERBOSE,
+        "full": PROGRESS_VERBOSE,
+        "trace": PROGRESS_DEBUG,
+    }
+    token = aliases.get(token, token)
+    if token in {PROGRESS_NONE, PROGRESS_QUIET, PROGRESS_COMPACT, PROGRESS_VERBOSE, PROGRESS_DEBUG}:
+        return token
+    return default
+
+
+def _legacy_progress_from_surface(value: str) -> str:
+    if value in {PROGRESS_NONE, PROGRESS_QUIET}:
+        return PROGRESS_QUIET
+    if value in {PROGRESS_VERBOSE, PROGRESS_DEBUG}:
+        return PROGRESS_VERBOSE
+    return PROGRESS_COMPACT
+
+
+def _normalize_heartbeat_seconds(value: Any, *, default: int = 10) -> int:
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(120, seconds))
+
+
+def _normalize_admission_relation(value: Any, *, default: str = ADMISSION_AUTO) -> str:
+    token = _normalize_policy_token(value)
+    aliases = {
+        "status": ADMISSION_STATUS_ONLY,
+        "status_only": ADMISSION_STATUS_ONLY,
+        "append": ADMISSION_APPEND_ACTIVE,
+        "append_to_active": ADMISSION_APPEND_ACTIVE,
+        "new": ADMISSION_NEW_TASK,
+        "separate": ADMISSION_NEW_TASK,
+        "new_task": ADMISSION_NEW_TASK,
+    }
+    token = aliases.get(token, token)
+    return token if token in ADMISSION_TASK_RELATIONS else default
+
+
+def _controller_from_legacy_lane(lane: Any) -> str:
+    lane_text = _lane_from_model_route_text(lane)
+    if lane_text == NARRATOR_READ_ONLY:
+        return CONTROLLER_NARRATE_RUN
+    if lane_text == EXECUTOR_READ_ONLY:
+        return CONTROLLER_INSPECT
+    if lane_text == EXECUTOR_WRITE:
+        return CONTROLLER_EXECUTE
+    if lane_text == PLAN_MODE:
+        return CONTROLLER_PLAN
+    if lane_text == CLARIFICATION:
+        return CONTROLLER_CLARIFY
+    return CONTROLLER_RESPOND
+
+
+def _legacy_lane_from_controller(controller_lane: Any) -> str:
+    controller = _normalize_controller_lane(controller_lane)
+    if controller in {CONTROLLER_RESPOND, CONTROLLER_NARRATE_RUN}:
+        return NARRATOR_READ_ONLY
+    if controller == CONTROLLER_INSPECT:
+        return EXECUTOR_READ_ONLY
+    if controller == CONTROLLER_EXECUTE:
+        return EXECUTOR_WRITE
+    if controller == CONTROLLER_PLAN:
+        return PLAN_MODE
+    if controller == CONTROLLER_CLARIFY:
+        return CLARIFICATION
+    return ""
+
+
+def _default_permission_for_controller(controller_lane: str) -> str:
+    if controller_lane == CONTROLLER_INSPECT:
+        return PERMISSION_READ_ONLY
+    if controller_lane == CONTROLLER_EXECUTE:
+        return PERMISSION_WORKSPACE_WRITE
+    return PERMISSION_NONE
+
+
+def _default_phase_for_controller(controller_lane: str, autonomy: str) -> str:
+    if controller_lane == CONTROLLER_NARRATE_RUN:
+        return PHASE_SNAPSHOT
+    if controller_lane == CONTROLLER_INSPECT:
+        return PHASE_ONE_PASS
+    if controller_lane == CONTROLLER_EXECUTE:
+        return PHASE_REPAIR_LOOP if autonomy == EXECUTION_CONTINUOUS else PHASE_ONE_PASS
+    if controller_lane == CONTROLLER_PLAN:
+        return PHASE_ONE_PASS
+    return PHASE_NONE
+
+
+def _default_evidence_for_controller(
+    controller_lane: str,
+    phase_shape: str,
+) -> tuple[str, str, tuple[str, ...]]:
+    if controller_lane == CONTROLLER_NARRATE_RUN:
+        return EVIDENCE_KNOWN_STATE, EVIDENCE_SCOPE_TARGETED, (
+            EVIDENCE_SOURCE_CONVERSATION,
+            EVIDENCE_SOURCE_RUN_STATE,
+        )
+    if controller_lane == CONTROLLER_INSPECT:
+        return EVIDENCE_FRESH, EVIDENCE_SCOPE_TARGETED, (EVIDENCE_SOURCE_WORKSPACE,)
+    if controller_lane == CONTROLLER_EXECUTE:
+        sources = [EVIDENCE_SOURCE_WORKSPACE]
+        if phase_shape in {PHASE_PROBE, PHASE_VALIDATION_GATE, PHASE_REPAIR_LOOP}:
+            sources.append(EVIDENCE_SOURCE_VALIDATION)
+        return EVIDENCE_FRESH, EVIDENCE_SCOPE_TARGETED, tuple(sources)
+    if controller_lane == CONTROLLER_PLAN:
+        return EVIDENCE_KNOWN_STATE, EVIDENCE_SCOPE_TARGETED, (EVIDENCE_SOURCE_CONVERSATION,)
+    return EVIDENCE_KNOWN_STATE, EVIDENCE_SCOPE_NONE, (EVIDENCE_SOURCE_CONVERSATION,)
+
+
+def _stop_condition_from_phase_shape(phase_shape: str, autonomy: str) -> str:
+    if phase_shape in {PHASE_VALIDATION_GATE, PHASE_REPAIR_LOOP}:
+        return STOP_VALIDATION_PASSES
+    if autonomy == EXECUTION_CONTINUOUS:
+        return STOP_VALIDATION_PASSES
+    return STOP_OBJECTIVE_SATISFIED
 
 
 def normalize_agent_communication_policy(
@@ -529,14 +1100,19 @@ def normalize_agent_communication_policy(
     """
 
     policy_payload: Mapping[str, Any] = {}
+    surface_payload: Mapping[str, Any] = {}
     if isinstance(payload, AgentCommunicationPolicy):
         return payload
     if isinstance(payload, Mapping):
+        surface_payload = _surface_policy_payload(payload)
         nested = payload.get("communication_policy") or payload.get("response_policy")
         if isinstance(nested, Mapping):
             policy_payload = nested
         else:
             policy_payload = payload
+    surface_response = _mapping_or_empty(surface_payload.get("response_policy"))
+    surface_latency = _mapping_or_empty(surface_payload.get("latency_policy"))
+    surface_progress = _mapping_or_empty(surface_payload.get("progress_policy"))
     lane_text = _lane_from_model_route_text(lane)
     effort = _normalize_policy_token(executor_effort)
     default_budget = ANSWER_BUDGET_NORMAL
@@ -556,17 +1132,21 @@ def normalize_agent_communication_policy(
         default_latency = LATENCY_FAST
         default_progress = PROGRESS_QUIET
 
-    raw_budget = policy_payload.get("answer_budget") if isinstance(policy_payload, Mapping) else None
-    raw_latency = policy_payload.get("latency_preference") if isinstance(policy_payload, Mapping) else None
-    raw_progress = policy_payload.get("progress_detail") if isinstance(policy_payload, Mapping) else None
+    raw_budget = _first_mapping_value(policy_payload, "answer_budget") or surface_response.get("answer_budget")
+    raw_latency = (
+        _first_mapping_value(policy_payload, "latency_preference")
+        or surface_latency.get("class")
+        or surface_latency.get("latency_class")
+    )
+    raw_progress = _first_mapping_value(policy_payload, "progress_detail") or surface_progress.get("detail")
     raw_needs_progress = (
         policy_payload.get("needs_progress_detail") if isinstance(policy_payload, Mapping) else None
     )
-    raw_style = policy_payload.get("interaction_style") if isinstance(policy_payload, Mapping) else None
+    raw_style = _first_mapping_value(policy_payload, "interaction_style") or surface_response.get("interaction_style")
     budget = _normalize_answer_budget(raw_budget, default=default_budget)
-    latency = _normalize_latency_preference(raw_latency, default=default_latency)
+    latency = _legacy_latency_from_class(_normalize_latency_class(raw_latency)) if raw_latency else default_latency
     progress = _normalize_progress_detail(
-        raw_progress,
+        _legacy_progress_from_surface(_normalize_surface_progress_detail(raw_progress)) if raw_progress else raw_progress,
         needs_progress_detail=raw_needs_progress,
         default=default_progress,
     )
@@ -654,6 +1234,18 @@ def _normalize_execution_seconds(value: Any, *, default: int | None) -> int | No
     return max(30, min(3600, seconds))
 
 
+def _normalize_latency_seconds(value: Any, *, default: int | None) -> int | None:
+    if value is None or value == "":
+        return default
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return default
+    if seconds <= 0:
+        return None
+    return max(1, min(3600, seconds))
+
+
 def _first_mapping_value(payload: Mapping[str, Any], *keys: str) -> Any:
     for key in keys:
         if key in payload:
@@ -672,12 +1264,17 @@ def normalize_agent_execution_policy(
     if isinstance(payload, AgentExecutionPolicy):
         return payload
     policy_payload: Mapping[str, Any] = {}
+    surface_payload: Mapping[str, Any] = {}
     if isinstance(payload, Mapping):
+        surface_payload = _surface_policy_payload(payload)
         nested = payload.get("execution_policy") or payload.get("autonomy_policy") or payload.get("loop_policy")
         if isinstance(nested, Mapping):
             policy_payload = nested
         else:
             policy_payload = payload
+    surface_latency = _mapping_or_empty(surface_payload.get("latency_policy"))
+    surface_phase = _normalize_phase_shape(surface_payload.get("phase_shape"), default="")
+    surface_autonomy = surface_payload.get("autonomy")
     comm = normalize_agent_communication_policy(communication_policy) if communication_policy is not None else None
     lane_text = _lane_from_model_route_text(lane)
     default_mode = EXECUTION_GUIDED
@@ -686,20 +1283,23 @@ def normalize_agent_execution_policy(
     if lane_text != EXECUTOR_WRITE:
         default_mode = EXECUTION_MANUAL if lane_text == PLAN_MODE else EXECUTION_GUIDED
 
-    raw_mode = _first_mapping_value(policy_payload, "autonomy_mode", "mode", "execution_mode")
+    raw_mode = _first_mapping_value(policy_payload, "autonomy_mode", "mode", "execution_mode") or surface_autonomy
     mode = _normalize_execution_autonomy_mode(raw_mode, default=default_mode)
-    default_stop = STOP_VALIDATION_PASSES if mode == EXECUTION_CONTINUOUS else STOP_OBJECTIVE_SATISFIED
+    default_stop = _stop_condition_from_phase_shape(surface_phase, mode) if surface_phase else (
+        STOP_VALIDATION_PASSES if mode == EXECUTION_CONTINUOUS else STOP_OBJECTIVE_SATISFIED
+    )
     stop = _normalize_execution_stop_condition(
         _first_mapping_value(policy_payload, "stop_condition", "until"),
         default=default_stop,
     )
     default_seconds = 900 if mode == EXECUTION_CONTINUOUS else None
     max_work_seconds = _normalize_execution_seconds(
-        _first_mapping_value(policy_payload, "max_work_seconds", "max_seconds", "time_budget_seconds"),
+        _first_mapping_value(policy_payload, "max_work_seconds", "max_seconds", "time_budget_seconds")
+        or surface_latency.get("max_work_seconds"),
         default=default_seconds,
     )
-    default_fix_rounds = 4 if mode == EXECUTION_CONTINUOUS else 1
-    default_validation_cycles = 5 if mode == EXECUTION_CONTINUOUS else 2
+    default_fix_rounds = 4 if mode == EXECUTION_CONTINUOUS or surface_phase == PHASE_REPAIR_LOOP else 1
+    default_validation_cycles = 5 if mode == EXECUTION_CONTINUOUS or surface_phase == PHASE_REPAIR_LOOP else 2
     max_auto_fix_rounds = _bounded_execution_int(
         _first_mapping_value(policy_payload, "max_auto_fix_rounds", "max_repair_rounds", "max_cycles"),
         default=default_fix_rounds,
@@ -718,6 +1318,10 @@ def normalize_agent_execution_policy(
         allow_repair_cycles = raw_allow_repair
     elif _normalize_policy_token(raw_allow_repair) in {"false", "no", "off", "0"}:
         allow_repair_cycles = False
+    elif surface_phase in {PHASE_VALIDATION_GATE, PHASE_PROBE, PHASE_ONE_PASS, PHASE_SNAPSHOT, PHASE_NONE}:
+        allow_repair_cycles = False
+    elif surface_phase == PHASE_REPAIR_LOOP:
+        allow_repair_cycles = True
     if not allow_repair_cycles:
         max_auto_fix_rounds = 0
     return AgentExecutionPolicy(
@@ -727,6 +1331,120 @@ def normalize_agent_execution_policy(
         max_auto_fix_rounds=max_auto_fix_rounds,
         max_validation_cycles=max_validation_cycles,
         allow_repair_cycles=allow_repair_cycles,
+    )
+
+
+def normalize_agent_surface_policy(
+    payload: Mapping[str, Any] | AgentSurfacePolicy | None = None,
+    *,
+    lane: str = "",
+    executor_effort: str = "",
+    communication_policy: AgentCommunicationPolicy | Mapping[str, Any] | None = None,
+    execution_policy: AgentExecutionPolicy | Mapping[str, Any] | None = None,
+) -> AgentSurfacePolicy:
+    """Normalize the canonical orthogonal surface policy.
+
+    This accepts both the new ``surface_policy`` shape and the legacy router
+    fields. No natural-language keyword matching happens here; defaults are
+    derived from already-structured lane/policy fields.
+    """
+
+    if isinstance(payload, AgentSurfacePolicy):
+        return payload
+    policy_payload = _surface_policy_payload(payload)
+    legacy_lane = _lane_from_model_route_text(lane)
+    if not legacy_lane and isinstance(payload, Mapping):
+        legacy_lane = _lane_from_model_route_text(payload.get("lane") or payload.get("route"))
+    raw_controller = (
+        policy_payload.get("controller_lane")
+        or policy_payload.get("controller")
+        or policy_payload.get("lane_owner")
+    )
+    default_controller = _controller_from_legacy_lane(legacy_lane)
+    controller = _normalize_controller_lane(raw_controller, default=default_controller)
+    legacy_lane = legacy_lane or _legacy_lane_from_controller(controller)
+
+    comm = normalize_agent_communication_policy(
+        communication_policy if communication_policy is not None else payload,
+        lane=legacy_lane,
+        executor_effort=executor_effort,
+    )
+    execution = normalize_agent_execution_policy(
+        execution_policy if execution_policy is not None else payload,
+        lane=legacy_lane,
+        communication_policy=comm,
+    )
+
+    raw_autonomy = policy_payload.get("autonomy")
+    autonomy = _normalize_execution_autonomy_mode(raw_autonomy, default=execution.autonomy_mode)
+    raw_phase = policy_payload.get("phase_shape")
+    phase_default = _default_phase_for_controller(controller, autonomy)
+    phase = _normalize_phase_shape(raw_phase, default=phase_default)
+    default_freshness, default_scope, default_sources = _default_evidence_for_controller(controller, phase)
+
+    evidence_payload = _mapping_or_empty(policy_payload.get("evidence_policy"))
+    evidence = AgentEvidencePolicy(
+        freshness=_normalize_evidence_freshness(evidence_payload.get("freshness"), default=default_freshness),
+        scope=_normalize_evidence_scope(evidence_payload.get("scope"), default=default_scope),
+        sources=_normalize_evidence_sources(evidence_payload.get("sources"), default=default_sources),
+    )
+
+    permission_default = _default_permission_for_controller(controller)
+    permission = _normalize_permission_scope(policy_payload.get("permission_scope"), default=permission_default)
+
+    latency_payload = _mapping_or_empty(policy_payload.get("latency_policy"))
+    latency_class = _normalize_latency_class(
+        latency_payload.get("class") or latency_payload.get("latency_class"),
+        default=_normalize_latency_class(comm.latency_preference),
+    )
+    latency = AgentLatencyPolicy(
+        latency_class=latency_class,
+        max_work_seconds=_normalize_latency_seconds(
+            latency_payload.get("max_work_seconds"),
+            default=execution.max_work_seconds,
+        ),
+    )
+
+    response_payload = _mapping_or_empty(policy_payload.get("response_policy"))
+    response = AgentResponsePolicy(
+        answer_budget=_normalize_answer_budget(response_payload.get("answer_budget"), default=comm.answer_budget),
+        interaction_style=_normalize_interaction_style(
+            response_payload.get("interaction_style"),
+            default=comm.interaction_style,
+        ),
+    )
+
+    progress_payload = _mapping_or_empty(policy_payload.get("progress_policy"))
+    progress = AgentProgressPolicy(
+        detail=_normalize_surface_progress_detail(progress_payload.get("detail"), default=comm.progress_detail),
+        heartbeat_seconds=_normalize_heartbeat_seconds(progress_payload.get("heartbeat_seconds"), default=10),
+    )
+
+    admission_payload = _mapping_or_empty(policy_payload.get("admission_policy"))
+    admission_default = ADMISSION_STATUS_ONLY if controller == CONTROLLER_NARRATE_RUN else ADMISSION_AUTO
+    admission = AgentAdmissionPolicy(
+        task_relation=_normalize_admission_relation(
+            admission_payload.get("task_relation") or policy_payload.get("task_relation"),
+            default=admission_default,
+        )
+    )
+    capability_packs = _normalize_capability_packs(
+        policy_payload.get("capability_packs")
+        or policy_payload.get("tool_packs")
+        or policy_payload.get("capabilities")
+    )
+
+    return AgentSurfacePolicy(
+        controller_lane=controller,
+        permission_scope=permission,
+        evidence_policy=evidence,
+        phase_shape=phase,
+        autonomy=autonomy,
+        latency_policy=latency,
+        response_policy=response,
+        progress_policy=progress,
+        admission_policy=admission,
+        capability_packs=capability_packs,
     )
 
 
@@ -749,18 +1467,96 @@ def _model_route_payload_issue(payload: Mapping[str, Any] | None) -> str:
     if payload is None:
         return "no JSON object was found"
     lane_value = payload.get("lane") or payload.get("route")
-    if not str(lane_value or "").strip():
-        return "the route object is missing lane"
-    if not _lane_from_model_route_text(lane_value):
+    surface_payload = _surface_policy_payload(payload)
+    controller_value = surface_payload.get("controller_lane") or surface_payload.get("controller")
+    if not str(lane_value or "").strip() and not str(controller_value or "").strip():
+        return "the route object is missing controller_lane"
+    if str(lane_value or "").strip() and not _lane_from_model_route_text(lane_value):
         return f"unsupported lane: {lane_value}"
+    if str(controller_value or "").strip() and _normalize_controller_lane(controller_value, default="") == "":
+        return f"unsupported controller_lane: {controller_value}"
     return ""
 
 
-def _decision_from_model_route_payload(payload: Mapping[str, Any]) -> AgentTurnIntentDecision:
+def _legacy_lane_from_route_payload(payload: Mapping[str, Any]) -> str:
     lane = _lane_from_model_route_text(payload.get("lane") or payload.get("route"))
+    if lane:
+        return lane
+    surface_payload = _surface_policy_payload(payload)
+    return _legacy_lane_from_controller(surface_payload.get("controller_lane") or surface_payload.get("controller"))
+
+
+def _route_payload_has_canonical_policy(payload: Mapping[str, Any] | None) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    surface_payload = _surface_policy_payload(payload)
+    return any(
+        key in surface_payload
+        for key in (
+            "controller_lane",
+            "controller",
+            "permission_scope",
+            "evidence_policy",
+            "phase_shape",
+            "autonomy",
+            "latency_policy",
+            "response_policy",
+            "progress_policy",
+            "admission_policy",
+        )
+    )
+
+
+def _route_payload_needs_no_execution_consistency_review(payload: Mapping[str, Any] | None) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    legacy_lane = _legacy_lane_from_route_payload(payload)
+    if legacy_lane not in {NARRATOR_READ_ONLY, EXECUTOR_READ_ONLY}:
+        return False
     effort = str(payload.get("complexity") or payload.get("executor_effort") or "complex").strip().lower()
     if effort not in {"simple", "complex"}:
         effort = "complex"
+    communication = normalize_agent_communication_policy(
+        payload,
+        lane=legacy_lane,
+        executor_effort=effort,
+    )
+    surface_policy = normalize_agent_surface_policy(
+        payload,
+        lane=legacy_lane,
+        executor_effort=effort,
+        communication_policy=communication,
+    )
+    if (
+        surface_policy.controller_lane == CONTROLLER_INSPECT
+        and surface_policy.permission_scope in {PERMISSION_TRANSIENT_EXECUTE, PERMISSION_EXTERNAL_WRITE}
+        and surface_policy.phase_shape in {PHASE_PROBE, PHASE_ONE_PASS}
+        and (
+            CAPABILITY_PACK_BROWSER_CONTROL in surface_policy.capability_packs
+            or CAPABILITY_PACK_DESKTOP_CONTROL in surface_policy.capability_packs
+            or CAPABILITY_PACK_COMPUTER_CONTROL in surface_policy.capability_packs
+        )
+    ):
+        return False
+    return (
+        communication.interaction_style in {INTERACTION_ACT_THEN_REPORT, INTERACTION_AUTONOMOUS_PROGRESS}
+        or surface_policy.phase_shape in {PHASE_PROBE, PHASE_VALIDATION_GATE, PHASE_REPAIR_LOOP}
+    )
+
+
+def _decision_from_model_route_payload(payload: Mapping[str, Any]) -> AgentTurnIntentDecision:
+    surface_policy = normalize_agent_surface_policy(payload)
+    legacy_lane = _legacy_lane_from_route_payload(payload)
+    if _route_payload_has_canonical_policy(payload):
+        lane = _legacy_lane_from_controller(surface_policy.controller_lane) or legacy_lane
+    else:
+        lane = legacy_lane or _legacy_lane_from_controller(surface_policy.controller_lane)
+    effort = str(payload.get("complexity") or payload.get("executor_effort") or "complex").strip().lower()
+    if effort not in {"simple", "complex"}:
+        if surface_policy.phase_shape in {PHASE_SNAPSHOT, PHASE_PROBE, PHASE_VALIDATION_GATE}:
+            effort = "simple"
+        else:
+            effort = "complex"
     rationale = _clip(payload.get("rationale") or payload.get("reason") or "model-assisted route", limit=220)
     confidence = _coerce_confidence(payload.get("confidence"))
     clarification = _clip(payload.get("clarification") or "", limit=1200)
@@ -774,6 +1570,13 @@ def _decision_from_model_route_payload(payload: Mapping[str, Any]) -> AgentTurnI
         lane=lane,
         communication_policy=communication_policy,
     )
+    surface_policy = normalize_agent_surface_policy(
+        payload,
+        lane=lane,
+        executor_effort=effort,
+        communication_policy=communication_policy,
+        execution_policy=execution_policy,
+    )
     if lane == NARRATOR_READ_ONLY:
         return AgentTurnIntentDecision(
             lane=NARRATOR_READ_ONLY,
@@ -781,6 +1584,7 @@ def _decision_from_model_route_payload(payload: Mapping[str, Any]) -> AgentTurnI
             rationale=rationale,
             communication_policy=communication_policy,
             execution_policy=execution_policy,
+            surface_policy=surface_policy,
         )
     if lane == EXECUTOR_READ_ONLY:
         return AgentTurnIntentDecision(
@@ -790,6 +1594,7 @@ def _decision_from_model_route_payload(payload: Mapping[str, Any]) -> AgentTurnI
             executor_effort=effort,
             communication_policy=communication_policy,
             execution_policy=execution_policy,
+            surface_policy=surface_policy,
         )
     if lane == EXECUTOR_WRITE:
         return AgentTurnIntentDecision(
@@ -799,6 +1604,7 @@ def _decision_from_model_route_payload(payload: Mapping[str, Any]) -> AgentTurnI
             executor_effort=effort,
             communication_policy=communication_policy,
             execution_policy=execution_policy,
+            surface_policy=surface_policy,
         )
     if lane == PLAN_MODE:
         return AgentTurnIntentDecision(
@@ -808,6 +1614,7 @@ def _decision_from_model_route_payload(payload: Mapping[str, Any]) -> AgentTurnI
             executor_effort="",
             communication_policy=communication_policy,
             execution_policy=execution_policy,
+            surface_policy=surface_policy,
         )
     return AgentTurnIntentDecision(
         lane=CLARIFICATION,
@@ -817,6 +1624,7 @@ def _decision_from_model_route_payload(payload: Mapping[str, Any]) -> AgentTurnI
         or "Should this be progress/status, read-only workspace inspection, or workspace-changing work?",
         communication_policy=communication_policy,
         execution_policy=execution_policy,
+        surface_policy=surface_policy,
     )
 
 
@@ -849,29 +1657,48 @@ def _agent_turn_router_messages(
             "role": "system",
             "content": (
                 "Route the user's Super DAN turn by meaning and recent context, not by keywords. "
-                "Return exactly one JSON object with keys lane, complexity, confidence, rationale, clarification, communication_policy, execution_policy. "
-                "lane is narrator_read_only for current/recent run status only, executor_read_only for workspace inspection with no file changes, "
-                "executor_write for edits/execution/generated artifacts, plan_mode for refinement/planning before execution, "
-                "or clarification when choosing would be unsafe. "
+                "Return exactly one JSON object with keys controller_lane, permission_scope, evidence_policy, phase_shape, autonomy, latency_policy, response_policy, progress_policy, admission_policy, capability_packs, confidence, rationale, clarification, lane, complexity, communication_policy, execution_policy. "
+                "The canonical policy fields are orthogonal and complete: controller_lane chooses the owner; permission_scope chooses allowed side effects; evidence_policy chooses freshness/scope/sources; phase_shape chooses workflow shape; autonomy chooses continuation authority; latency_policy chooses time budget; response_policy chooses final answer shape; progress_policy chooses live narration; admission_policy chooses relation to active work; capability_packs chooses optional UI-control tool families. "
+                "The compatibility lane and rationale must agree with the canonical policy; if they conflict, fix the policy and derive the lane from it. "
+                "controller_lane is respond, narrate_run, inspect, execute, plan, or clarify. "
+                "permission_scope is none, read_only, transient_execute, workspace_write, or external_write. "
+                "evidence_policy.freshness is known_state, validated_cache, or fresh; evidence_policy.scope is none, targeted, or broad; evidence_policy.sources is any of conversation, run_state, workspace, validation, external. "
+                "phase_shape is none, snapshot, probe, one_pass, validation_gate, repair_loop, or monitor. "
+                "autonomy is manual, guided, or continuous. "
+                "latency_policy.class is instant, fast, normal, deep, or background, with max_work_seconds as a numeric cap when useful. "
+                "response_policy.answer_budget is brief, normal, or detailed; response_policy.interaction_style is answer_only, findings, act_then_report, or review. "
+                "progress_policy.detail is none, quiet, compact, verbose, or debug; progress_policy.heartbeat_seconds is a numeric cadence. "
+                "admission_policy.task_relation is auto, status_only, append_active, or new_task. "
+                "capability_packs is an array containing any of browser_control, desktop_control, or computer_control; leave it empty by default. "
+                "Use browser_control only when the current turn needs browser UI state, DOM/HTML evidence, screenshots, direct element interaction, or downloads. "
+                "Use desktop_control only when the current turn needs local desktop screenshot, mouse, keyboard, app focus, or window interaction. "
+                "Use computer_control only when both browser and desktop control are needed or the user explicitly asks for general computer-use control. "
+                "For capability questions, if the user asks whether Super DAN has browser, desktop, or computer-control capabilities, answer from this capability-pack contract; do not claim those capabilities are unavailable merely because the current turn has not activated a pack. "
+                "Also include compatibility projections: lane is narrator_read_only for current/recent run status only, executor_read_only for workspace inspection with no file changes, "
+                "executor_write for edits/execution/generated artifacts/validation commands, plan_mode for refinement/planning before execution, "
+                "or clarification when choosing would be unsafe; complexity is simple or complex. "
                 "For ordinary workspace-changing work, the user's request is authorization to select executor_write; "
                 "do not ask for a second confirmation merely because files may change, commands may run, or an analysis will create artifacts. "
                 "If the user is asking to refine, compare, or decide on a plan before implementation, use plan_mode instead of starting executor_write. "
                 "Do not use plan_mode just because a request is broad or asks for a review; project review, audit, inspection, or code-quality analysis is executor_read_only unless the user explicitly asks to plan/refine/compare before execution. "
                 "Executor_write is for requests that are ready to execute or create artifacts now. "
+                "For browser/web/news/current external information requests where the user wants an answer and does not ask to create or edit a workspace file, use controller_lane=inspect, permission_scope=transient_execute, evidence_policy freshness=fresh/sources=[external], phase_shape=probe or one_pass, and capability_packs=[browser_control]. "
+                "Do not choose workspace_write merely because browser navigation, web fetching, or transient UI state is needed. "
                 "Use clarification sparingly. Follow-up questions about progress, outcome, what remains, or the next step should usually be narrator_read_only "
                 "when the recent transcript gives enough session context. "
+                "For a current truth question that requires fresh validation, such as whether the project builds, tests, compiles, runs, or passes a check right now, use controller_lane=execute, permission_scope=transient_execute, evidence_policy freshness=fresh/sources=[validation], phase_shape=validation_gate, brief answer, and fast latency. "
+                "Do not answer those fresh validation questions from a stale narrator snapshot unless the recent transcript already contains fresh validation evidence for the exact question. "
                 "Use clarification only when the goal, target, or capability boundary is genuinely missing or unsafe to choose. "
                 "complexity is simple only for a bounded single-source read or exact single-file operation; otherwise complex. "
                 "Leave clarification empty unless lane is clarification. "
                 "communication_policy.answer_budget is brief, normal, or detailed. "
                 "communication_policy.latency_preference is fast, balanced, or deep. "
                 "communication_policy.progress_detail is quiet, compact, or verbose. "
-                "communication_policy.interaction_style is answer_only, act_then_report, review, or autonomous_progress. "
-                "Use brief/fast/quiet for tiny or single-step answers, detailed/deep/verbose/review for substantial reviews or design analysis, "
-                "and autonomous_progress when the user wants a longer repair/improvement loop but compact progress. "
+                "communication_policy.interaction_style is answer_only, findings, act_then_report, review, or autonomous_progress; derive it from response_policy/progress_policy for compatibility. "
+                "Use instant or fast with brief/quiet for tiny status, snapshot, or single validation-probe answers; use deep or background for substantial reviews or autonomous loops. "
                 "execution_policy.autonomy_mode is manual, guided, or continuous; use continuous for requests to keep repairing/improving until a condition is met. "
                 "execution_policy.stop_condition is objective_satisfied, validation_passes, or precise_blocker. "
-                "execution_policy.max_work_seconds, execution_policy.max_auto_fix_rounds, and execution_policy.max_validation_cycles are numeric caps; raise them only when the user asks for a longer autonomous loop."
+                "execution_policy.max_work_seconds, execution_policy.max_auto_fix_rounds, and execution_policy.max_validation_cycles are numeric caps; derive them from phase_shape/autonomy/latency_policy and raise them only when the user asks for a longer autonomous loop."
             ),
         },
         {
@@ -904,23 +1731,39 @@ def _agent_turn_router_repair_messages(
             "content": (
                 "Repair a Super DAN routing response. Decide by meaning and recent context, not by keyword matching. "
                 "Return only one JSON object with this exact shape: "
-                '{"lane":"narrator_read_only|executor_read_only|executor_write|plan_mode|clarification",'
+                '{"controller_lane":"respond|narrate_run|inspect|execute|plan|clarify",'
+                '"permission_scope":"none|read_only|transient_execute|workspace_write|external_write",'
+                '"evidence_policy":{"freshness":"known_state|validated_cache|fresh","scope":"none|targeted|broad","sources":["conversation|run_state|workspace|validation|external"]},'
+                '"phase_shape":"none|snapshot|probe|one_pass|validation_gate|repair_loop|monitor",'
+                '"autonomy":"manual|guided|continuous",'
+                '"latency_policy":{"class":"instant|fast|normal|deep|background","max_work_seconds":30},'
+                '"response_policy":{"answer_budget":"brief|normal|detailed","interaction_style":"answer_only|findings|act_then_report|review"},'
+                '"progress_policy":{"detail":"none|quiet|compact|verbose|debug","heartbeat_seconds":10},'
+                '"admission_policy":{"task_relation":"auto|status_only|append_active|new_task"},'
+                '"capability_packs":["browser_control|desktop_control|computer_control"],'
+                '"lane":"narrator_read_only|executor_read_only|executor_write|plan_mode|clarification",'
                 '"complexity":"simple|complex","confidence":0.0,"rationale":"short reason","clarification":"",'
                 '"communication_policy":{"answer_budget":"brief|normal|detailed",'
                 '"latency_preference":"fast|balanced|deep","progress_detail":"quiet|compact|verbose",'
-                '"interaction_style":"answer_only|act_then_report|review|autonomous_progress"},'
+                '"interaction_style":"answer_only|findings|act_then_report|review|autonomous_progress"},'
                 '"execution_policy":{"autonomy_mode":"manual|guided|continuous","stop_condition":"objective_satisfied|validation_passes|precise_blocker",'
                 '"max_work_seconds":900,"max_auto_fix_rounds":1,"max_validation_cycles":2,"allow_repair_cycles":true}}. '
+                "The canonical policy axes must stay orthogonal: do not encode answer length into latency, do not encode permissions into lane, do not use progress detail to choose workflow shape, and do not use capability_packs unless optional browser/desktop UI-control tools are actually needed. "
+                "The compatibility lane and rationale must agree with the canonical policy; when they conflict, repair the canonical policy first and then derive the lane from it. "
                 "Use narrator_read_only only for current/recent run status. Use executor_read_only for inspection or answers that should not change files. "
                 "Use executor_write when the request needs edits, generated artifacts, command execution, data processing, or other workspace-changing work. "
+                "If the user needs fresh validation truth about whether the project builds, tests, compiles, runs, or passes now, repair to controller_lane=execute, permission_scope=transient_execute, phase_shape=validation_gate, and evidence sources including validation. "
                 "Use plan_mode when the user is asking to refine, compare, or decide on a plan before implementation. "
                 "Do not use plan_mode just because a request is broad or asks for a review; project review, audit, inspection, or code-quality analysis is executor_read_only unless the user explicitly asks to plan/refine/compare before execution. "
                 "For ordinary workspace-changing work, the user's request is authorization to select executor_write; "
                 "do not ask for a second confirmation merely because files may change, commands may run, or an analysis will create artifacts. "
                 "Executor_write is for requests that are ready to execute or create artifacts now. "
+                "For browser/web/news/current external information requests that should answer directly without creating files, repair to controller_lane=inspect, permission_scope=transient_execute, evidence sources including external, phase_shape=probe or one_pass, and capability_packs including browser_control. "
                 "Use clarification only when the goal, target, or capability boundary is genuinely missing or unsafe to choose. "
                 "The communication_policy is response shaping, not routing; set it from the requested depth, latency, progress visibility, and answer style. "
-                "The execution_policy is autonomy and budget shaping, not task-specific logic."
+                "The execution_policy is autonomy and budget shaping, not task-specific logic. "
+                "Set capability_packs to [] by default; use browser_control for browser DOM/screenshot/element work, desktop_control for local screenshot/mouse/keyboard/app-focus work, and computer_control only when both are needed. "
+                "For capability questions, explain the optional packs instead of denying browser or desktop control."
             ),
         },
         {
@@ -958,7 +1801,7 @@ async def route_agent_turn_intent_with_model(
         ),
         model=model,
         temperature=0.0,
-        max_tokens=450,
+        max_tokens=900,
     )
     raw_text = getattr(response, "text", "")
     payload = _first_json_object(raw_text)
@@ -975,7 +1818,7 @@ async def route_agent_turn_intent_with_model(
             ),
             model=model,
             temperature=0.0,
-            max_tokens=450,
+            max_tokens=900,
         )
         repair_payload = _first_json_object(getattr(repair_response, "text", ""))
         repair_issue = _model_route_payload_issue(repair_payload)
@@ -988,7 +1831,7 @@ async def route_agent_turn_intent_with_model(
                 rationale=f"model router did not return a usable structured route: {repair_issue or issue}",
                 clarification="I could not route that request safely. Please say whether this should read, write, or report progress.",
             )
-    if _lane_from_model_route_text(payload.get("lane") or payload.get("route")) == CLARIFICATION:
+    if _legacy_lane_from_route_payload(payload) == CLARIFICATION:
         review_response = await provider.complete(
             messages=_agent_turn_router_repair_messages(
                 text=text,
@@ -1003,13 +1846,13 @@ async def route_agent_turn_intent_with_model(
             ),
             model=model,
             temperature=0.0,
-            max_tokens=450,
+            max_tokens=900,
         )
         review_payload = _first_json_object(getattr(review_response, "text", ""))
         review_issue = _model_route_payload_issue(review_payload)
         if not review_issue and review_payload is not None:
             payload = review_payload
-    if _lane_from_model_route_text(payload.get("lane") or payload.get("route")) == PLAN_MODE:
+    if _legacy_lane_from_route_payload(payload) == PLAN_MODE:
         review_response = await provider.complete(
             messages=_agent_turn_router_repair_messages(
                 text=text,
@@ -1025,7 +1868,59 @@ async def route_agent_turn_intent_with_model(
             ),
             model=model,
             temperature=0.0,
-            max_tokens=450,
+            max_tokens=900,
+        )
+        review_payload = _first_json_object(getattr(review_response, "text", ""))
+        review_issue = _model_route_payload_issue(review_payload)
+        if not review_issue and review_payload is not None:
+            payload = review_payload
+    no_execution_consistency_reviewed = False
+    if _route_payload_needs_no_execution_consistency_review(payload):
+        review_response = await provider.complete(
+            messages=_agent_turn_router_repair_messages(
+                text=text,
+                bad_response=json.dumps(dict(payload), ensure_ascii=False, sort_keys=True),
+                issue=(
+                    "the route selected a no-execution/read-only compatibility lane while also asking for "
+                    "action/reporting or a probe-like workflow. Verify that no command execution, fresh "
+                    "validation, workspace mutation, repair loop, or current build/test/run/check truth is "
+                    "needed. If the user needs fresh validation truth, choose execute, transient_execute, "
+                    "validation_gate, and validation evidence. If the user wants advice, proposal, diagnosis, "
+                    "or a broader repair loop, choose inspect, plan, one_pass, or repair_loop as appropriate."
+                ),
+                transcript_tail=transcript_tail,
+                selected_skills=selected_skills,
+                surface=surface,
+            ),
+            model=model,
+            temperature=0.0,
+            max_tokens=900,
+        )
+        review_payload = _first_json_object(getattr(review_response, "text", ""))
+        review_issue = _model_route_payload_issue(review_payload)
+        if not review_issue and review_payload is not None:
+            payload = review_payload
+            no_execution_consistency_reviewed = True
+    surface_policy = normalize_agent_surface_policy(payload)
+    if surface_policy.phase_shape == PHASE_VALIDATION_GATE and not no_execution_consistency_reviewed:
+        review_response = await provider.complete(
+            messages=_agent_turn_router_repair_messages(
+                text=text,
+                bad_response=json.dumps(dict(payload), ensure_ascii=False, sort_keys=True),
+                issue=(
+                    "the route selected validation_gate; verify that the user is asking for a pure fresh "
+                    "validation truth answer, not advice, a proposal, performance diagnosis, gameplay "
+                    "assessment, planning, or a broader repair loop. If the request is about what to do "
+                    "next or how to fix a quality/performance problem, choose inspect, plan, one_pass, "
+                    "or repair_loop as appropriate instead of validation_gate"
+                ),
+                transcript_tail=transcript_tail,
+                selected_skills=selected_skills,
+                surface=surface,
+            ),
+            model=model,
+            temperature=0.0,
+            max_tokens=900,
         )
         review_payload = _first_json_object(getattr(review_response, "text", ""))
         review_issue = _model_route_payload_issue(review_payload)
@@ -1401,30 +2296,30 @@ def deterministic_narrator_report(
             remaining = next_step
     else:
         if event_name == "model.requested":
-            text = f"Thinking through the next step for {subject}."
+            text = "Thinking through the next step."
             remaining = "It should either call a tool, validate, or prepare a response."
         elif event_name == "tool.started":
             tool_id = str(event_payload.get("tool_id") or "").strip()
             if tool_id in {"file_read", "list_directory", "workspace_check"}:
-                text = f"Checking the relevant workspace context for {subject}."
+                text = "Checking the relevant workspace context."
             elif tool_id in {"file_write", "file_edit"}:
-                text = f"Preparing a workspace change for {subject}."
+                text = "Preparing a workspace change."
             elif tool_id == "shell_command":
-                text = f"Using a terminal command because it is the direct way to advance {subject}."
+                text = "Using a terminal command because it is the direct way to advance the current task."
             else:
-                text = f"Running a project tool for {subject}."
+                text = "Running a project tool."
             remaining = next_step
         elif event_name == "tool.completed":
             tool_id = str(event_payload.get("tool_id") or "").strip()
             if tool_id in {"file_read", "list_directory", "workspace_check"}:
-                text = f"Relevant context is available for {subject}; moving toward an answer."
+                text = "Relevant context is available; moving toward an answer."
             elif tool_id in {"file_write", "file_edit"}:
                 changed = ", ".join(_changed_summary(snapshot)) or "workspace files"
-                text = f"A workspace change landed for {subject}: {changed}."
+                text = f"A workspace change landed: {changed}."
             elif tool_id == "shell_command":
-                text = f"The terminal command finished; using that result for {subject}."
+                text = "The terminal command finished; using that result for the current task."
             else:
-                text = f"A project tool finished for {subject}."
+                text = "A project tool finished."
             remaining = next_step
         elif event_name == "super.heartbeat":
             return deterministic_narrator_report(

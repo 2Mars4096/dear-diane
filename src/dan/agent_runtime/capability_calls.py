@@ -226,7 +226,8 @@ async def execute_capability_call(
     dispatch: Callable[[str, Any], Awaitable[Any]],
     make_error_result: Callable[[Exception], Any],
     tool_result_cache: dict[str, Any],
-    file_read_cache: dict[str, list[tuple[int, float, Any]]],
+    file_read_cache: dict[str, list[tuple[int, float, Any, Any]]],
+    file_fingerprint_for: Callable[[str], Any | None] | None = None,
     max_retryable_retries: int,
     logger_override: logging.Logger | None = None,
 ) -> CapabilityExecutionOutcome:
@@ -235,15 +236,32 @@ async def execute_capability_call(
     cap_start = asyncio.get_running_loop().time()
     tool_is_cacheable = bool(pending.tool_is_cacheable)
     cache_key = pending.cache_key or capability_cache_key(pending.tool_name, pending.args)
-    cached_result = tool_result_cache.get(cache_key) if tool_is_cacheable else None
-    if cached_result is None and tool_is_cacheable and pending.tool_name == "file_read":
-        normalized_range = normalize_file_read_range(pending.args)
+    normalized_range = (
+        normalize_file_read_range(pending.args)
+        if pending.tool_name == "file_read"
+        else None
+    )
+    cached_result = None
+    if tool_is_cacheable and pending.tool_name == "file_read":
         if normalized_range is not None:
             path, start, end = normalized_range
-            for cached_start, cached_end, prior_result in file_read_cache.get(path, []):
-                if cached_start <= start and cached_end >= end:
-                    cached_result = prior_result
-                    break
+            current_fingerprint = None
+            if file_fingerprint_for is not None:
+                try:
+                    current_fingerprint = file_fingerprint_for(path)
+                except Exception:
+                    current_fingerprint = None
+            if current_fingerprint is not None:
+                for cached_start, cached_end, cached_fingerprint, prior_result in file_read_cache.get(path, []):
+                    if (
+                        cached_start <= start
+                        and cached_end >= end
+                        and cached_fingerprint == current_fingerprint
+                    ):
+                        cached_result = prior_result
+                        break
+    elif tool_is_cacheable:
+        cached_result = tool_result_cache.get(cache_key)
     if cached_result is not None:
         cap_result = copy_capability_result(cached_result)
         cap_status = "success" if cap_result.success else "error"
@@ -288,27 +306,33 @@ async def execute_capability_call(
     cap_status = "success" if cap_result.success else "error"
     cap_preview = cap_result.output_preview or cap_result.message[:500]
     if cap_result.success and tool_is_cacheable:
-        tool_result_cache[cache_key] = copy_capability_result(cap_result)
         if pending.tool_name == "file_read":
-            normalized_range = normalize_file_read_range(pending.args)
-            if normalized_range is not None:
+            if normalized_range is not None and file_fingerprint_for is not None:
                 path, _start, _end = normalized_range
                 cap_data = cap_result.data if isinstance(cap_result.data, dict) else {}
                 cached_start = cap_data.get("returned_start_line")
                 cached_end = cap_data.get("returned_end_line")
                 truncated = bool(cap_data.get("truncated"))
+                try:
+                    current_fingerprint = file_fingerprint_for(path)
+                except Exception:
+                    current_fingerprint = None
                 if (
                     isinstance(cached_start, int)
                     and isinstance(cached_end, int)
+                    and current_fingerprint is not None
                     and not truncated
                 ):
                     file_read_cache.setdefault(path, []).append(
                         (
                             cached_start,
                             cached_end,
+                            current_fingerprint,
                             copy_capability_result(cap_result),
                         )
                     )
+        else:
+            tool_result_cache[cache_key] = copy_capability_result(cap_result)
     elif cap_result.success and not tool_is_cacheable:
         tool_result_cache.clear()
         file_read_cache.clear()

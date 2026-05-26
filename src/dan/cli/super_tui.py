@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import copy
 import hashlib
+import io
 import json
 import os
 import re
@@ -33,15 +34,31 @@ from typing import Any, Mapping, Sequence
 from dan.agent_runtime.progress_narrator import (
     AgentCommunicationPolicy,
     AgentExecutionPolicy,
+    AgentSurfacePolicy,
     ANSWER_BUDGET_BRIEF,
     ANSWER_BUDGET_DETAILED,
     ANSWER_BUDGET_NORMAL,
+    CLARIFICATION,
+    CONTROLLER_EXECUTE,
+    CONTROLLER_INSPECT,
+    EVIDENCE_SOURCE_EXTERNAL,
+    EVIDENCE_SOURCE_VALIDATION,
+    EVIDENCE_SOURCE_WORKSPACE,
+    EXECUTOR_READ_ONLY,
+    EXECUTOR_WRITE,
     INTERACTION_ANSWER_ONLY,
     INTERACTION_AUTONOMOUS_PROGRESS,
+    INTERACTION_FINDINGS,
     INTERACTION_REVIEW,
     LATENCY_DEEP,
     LATENCY_FAST,
     NARRATOR_READ_ONLY,
+    PERMISSION_EXTERNAL_WRITE,
+    PERMISSION_TRANSIENT_EXECUTE,
+    PERMISSION_WORKSPACE_WRITE,
+    PHASE_ONE_PASS,
+    PHASE_PROBE,
+    PHASE_VALIDATION_GATE,
     PLAN_MODE,
     PROGRESS_QUIET,
     PROGRESS_VERBOSE,
@@ -55,9 +72,19 @@ from dan.agent_runtime.progress_narrator import (
     generate_narrator_response,
     normalize_agent_communication_policy,
     normalize_agent_execution_policy,
+    normalize_agent_surface_policy,
     route_agent_turn_intent_with_model,
     start_narrator_job,
     tokenize_intent_text,
+)
+from dan.agent_runtime.super_tui_contract import (
+    SUPER_TUI_AGENT_CAPABILITIES,
+    SUPER_TUI_DEFAULT_BACKEND,
+    SUPER_TUI_MAX_PROMOTED_CONTINUATIONS,
+    build_super_tui_execute_overrides,
+    build_super_tui_profile_policy,
+    build_super_tui_surface_context,
+    build_super_tui_tool_policy,
 )
 from dan.cli import _try_import_rich, load_env, normalize_workspace_root
 from dan.cli.super_hooks import format_super_queue_status
@@ -160,6 +187,14 @@ def _tui_execution_policy_payload(policy: AgentExecutionPolicy | Mapping[str, An
     return AgentExecutionPolicy().to_payload()
 
 
+def _tui_surface_policy_payload(policy: AgentSurfacePolicy | Mapping[str, Any] | None) -> dict[str, Any]:
+    if isinstance(policy, AgentSurfacePolicy):
+        return policy.to_payload()
+    if isinstance(policy, MappingABC):
+        return normalize_agent_surface_policy(policy).to_payload()
+    return normalize_agent_surface_policy(None).to_payload()
+
+
 def _tui_answer_line_limit(policy: AgentCommunicationPolicy | Mapping[str, Any] | None) -> int:
     payload = _tui_policy_payload(policy)
     budget = str(payload.get("answer_budget") or ANSWER_BUDGET_NORMAL)
@@ -204,6 +239,15 @@ _TUI_CODE_SUFFIXES = {
     ".jl",
     ".ipynb",
 }
+_TUI_VALIDATION_SCRIPT_NAMES = (
+    "compile_check.sh",
+    "validate.sh",
+    "check.sh",
+    "test.sh",
+    "run_tests.sh",
+)
+_TUI_VALIDATION_DISCOVERY_MAX_DEPTH = 3
+_TUI_VALIDATION_CACHE_VERSION = 1
 
 
 def _clip(value: Any, *, limit: int = 96) -> str:
@@ -1215,30 +1259,41 @@ def _transcript_display_text(entry: TuiTranscriptEntry) -> str:
 def _transcript_entry_body_lines(entry: TuiTranscriptEntry) -> list[str]:
     role = entry.role
     raw_text = _transcript_display_text(entry)
-    per_line_limit = {
-        "user": 220,
-        "assistant_final": 360,
-        "assistant_narrator": 320,
-        "assistant_progress": 260,
-        "system_notice": 260,
-        "debug_ref": 260,
-    }.get(role, 260)
+    char_limit = {
+        "user": 1000,
+        "assistant_final": 2400,
+        "assistant_narrator": 1400,
+        "assistant_progress": 900,
+        "system_notice": 900,
+        "debug_ref": 500,
+    }.get(role, 900)
     line_limit = {
-        "user": 3,
-        "assistant_final": 6,
-        "assistant_narrator": 4,
-        "assistant_progress": 4,
-        "system_notice": 3,
-        "debug_ref": 2,
-    }.get(role, 3)
+        "user": 5,
+        "assistant_final": 12,
+        "assistant_narrator": 8,
+        "assistant_progress": 6,
+        "system_notice": 5,
+        "debug_ref": 3,
+    }.get(role, 5)
     raw_lines = [line.rstrip() for line in raw_text.splitlines() if line.strip()]
     if not raw_lines and raw_text:
         raw_lines = [raw_text]
-    clipped_line = any(len(line) > per_line_limit for line in raw_lines[:line_limit])
-    lines = [_clip(line, limit=per_line_limit) for line in raw_lines[:line_limit]]
+    lines: list[str] = []
+    clipped = False
+    remaining = max(80, char_limit)
+    for line in raw_lines:
+        if len(lines) >= line_limit:
+            clipped = True
+            break
+        if len(line) + 1 > remaining:
+            lines.append(_clip(line, limit=max(80, remaining)))
+            clipped = True
+            break
+        lines.append(line)
+        remaining -= len(line) + 1
     if len(raw_lines) > line_limit:
         lines.append(f"... {len(raw_lines) - line_limit} more line(s) in transcript")
-    elif clipped_line or (raw_text and len(raw_text) > sum(len(line) for line in raw_lines[:line_limit]) + 12):
+    elif clipped or (raw_text and len(raw_text) > sum(len(line) for line in lines) + 12):
         lines.append("... more in transcript")
     return lines
 
@@ -1321,6 +1376,8 @@ def _sanitize_tui_progress_line(line: str, *, objective: str = "") -> str:
     clean_objective = " ".join(str(objective or "").split())
     if len(clean_objective) >= 18:
         text = re.sub(re.escape(clean_objective), "this request", text, flags=re.IGNORECASE)
+    if "advance this request" in text.lower() and clean_objective:
+        text = "Using a terminal command because it is the direct way to advance the current task."
     return text.strip()
 
 
@@ -1556,6 +1613,14 @@ def _tui_chatbox_status_text(
     return f"{label} {_format_elapsed_duration(max(0.0, time.monotonic() - started))}..."
 
 
+def _ensure_tui_turn_started_at(args: argparse.Namespace) -> float:
+    started_at = float(getattr(args, "_tui_turn_started_at", 0.0) or 0.0)
+    if started_at <= 0.0:
+        started_at = time.monotonic()
+        setattr(args, "_tui_turn_started_at", started_at)
+    return started_at
+
+
 def _tui_chatbox_thinking_text(started_at: float | None = None) -> str:
     return _tui_chatbox_status_text(started_at, status_label="Thinking")
 
@@ -1670,6 +1735,54 @@ def _tui_stream_block_uses_panel(title: str) -> bool:
     return str(title or "").strip().lower() not in {"narrator", "progress", "activity"}
 
 
+def _tui_stream_block_trailing_margin_lines(title: str, *, plain: bool = False) -> int:
+    if plain:
+        return 0
+    title_token = str(title or "").strip().lower()
+    return 1 if title_token in {"answer", "outcome"} else 0
+
+
+def _tui_rich_stream_panel_text(title_text: str, visible_lines: Sequence[str]) -> str:
+    Console, _ = _try_import_rich()
+    if Console is None:
+        return ""
+    try:
+        from rich import box
+        from rich.panel import Panel
+        from rich.table import Table
+        from rich.text import Text
+
+        display_lines = list(visible_lines)
+        if title_text.strip().lower() in {"answer", "outcome"}:
+            display_lines.append("")
+        body = _rich_semantic_text("\n".join(display_lines), base_style="white")
+        ornament = Text(_tui_vertical_ornament(len(display_lines)), style=_tui_section_border_style(title_text))
+        content = Table.grid(expand=True)
+        content.add_column(width=2, no_wrap=True)
+        content.add_column(ratio=1)
+        content.add_row(ornament, body)
+        buffer = io.StringIO()
+        console = Console(
+            file=buffer,
+            force_terminal=_tui_stdout_supports_control_sequences(),
+            highlight=False,
+            width=int(shutil.get_terminal_size((120, 24)).columns or 120),
+        )
+        console.print(
+            Panel(
+                content,
+                title=_tui_panel_title(title_text),
+                title_align="center",
+                box=box.ROUNDED,
+                border_style=_tui_section_border_style(title_text),
+                padding=(0, 1),
+            )
+        )
+        return buffer.getvalue()
+    except Exception:
+        return ""
+
+
 def _tui_stream_block_line_count(title: str, lines: Sequence[str], *, plain: bool = False) -> int:
     title_text = str(title or "").strip() or "Answer"
     visible_lines = _wrap_tui_stream_lines([str(line or "").rstrip() for line in lines if str(line or "").strip()])
@@ -1682,6 +1795,9 @@ def _tui_stream_block_line_count(title: str, lines: Sequence[str], *, plain: boo
     Console, _ = _try_import_rich()
     if Console is None:
         return 1 + len(visible_lines)
+    rendered = _tui_rich_stream_panel_text(title_text, visible_lines)
+    if rendered:
+        return len(rendered.splitlines()) + _tui_stream_block_trailing_margin_lines(title_text, plain=plain)
     return 2 + len(visible_lines)
 
 
@@ -1820,33 +1936,18 @@ def _print_tui_stream_block(title: str, lines: Sequence[str], *, plain: bool = F
         for line in visible_lines:
             print(f"  {line}", flush=True)
         return
-    try:
-        from rich import box
-        from rich.panel import Panel
-        from rich.table import Table
-        from rich.text import Text
-
-        body = _rich_semantic_text("\n".join(visible_lines), base_style="white")
-        ornament = Text(_tui_vertical_ornament(len(visible_lines)), style=_tui_section_border_style(title_text))
-        content = Table.grid(expand=True)
-        content.add_column(width=2, no_wrap=True)
-        content.add_column(ratio=1)
-        content.add_row(ornament, body)
-        console = Console(highlight=False)
-        console.print(
-            Panel(
-                content,
-                title=_tui_panel_title(title_text),
-                title_align="center",
-                box=box.ROUNDED,
-                border_style=_tui_section_border_style(title_text),
-                padding=(0, 1),
-            )
-        )
-    except Exception:
-        print(_tui_section_title(title_text), flush=True)
-        for line in visible_lines:
-            print(f"  {line}", flush=True)
+    rendered = _tui_rich_stream_panel_text(title_text, visible_lines)
+    if rendered:
+        sys.stdout.write(rendered)
+        if not rendered.endswith("\n"):
+            sys.stdout.write("\n")
+        for _ in range(_tui_stream_block_trailing_margin_lines(title_text, plain=plain)):
+            sys.stdout.write("\n")
+        sys.stdout.flush()
+        return
+    print(_tui_section_title(title_text), flush=True)
+    for line in visible_lines:
+        print(f"  {line}", flush=True)
 
 
 def _format_tui_clock_text(footer: str, *, label: str = "") -> str:
@@ -2082,12 +2183,37 @@ class TuiIntentDecision:
     clarification: str = ""
     communication_policy: AgentCommunicationPolicy = field(default_factory=AgentCommunicationPolicy)
     execution_policy: AgentExecutionPolicy = field(default_factory=AgentExecutionPolicy)
+    surface_policy: AgentSurfacePolicy = field(default_factory=AgentSurfacePolicy)
 
     @property
     def lane(self) -> str:
         if self.needs_clarification:
             return "clarification"
         return f"{self.complexity} {self.permission}"
+
+    def __post_init__(self) -> None:
+        if self.surface_policy == AgentSurfacePolicy():
+            lane = self.lane
+            if self.permission == "write":
+                lane = EXECUTOR_WRITE
+            elif self.permission == "read-only" and self.complexity == "narrator":
+                lane = NARRATOR_READ_ONLY
+            elif self.permission == "read-only":
+                lane = EXECUTOR_READ_ONLY
+            elif self.complexity == "plan":
+                lane = PLAN_MODE
+            elif self.needs_clarification:
+                lane = CLARIFICATION
+            object.__setattr__(
+                self,
+                "surface_policy",
+                normalize_agent_surface_policy(
+                    lane=lane,
+                    executor_effort=self.complexity,
+                    communication_policy=self.communication_policy,
+                    execution_policy=self.execution_policy,
+                ),
+            )
 
     @property
     def needs_clarification(self) -> bool:
@@ -2105,6 +2231,16 @@ class TuiSimpleWritePlan:
     operation: str
     source: str = ""
     destination: str = ""
+
+
+@dataclass(frozen=True)
+class TuiValidationCommandProbe:
+    command: str
+    label: str
+    script_relpath: str = ""
+    fingerprint: str = ""
+    cache_hit: bool = False
+    source: str = "workspace"
 
 
 _READ_ONLY_SOURCE_STOPWORDS = {
@@ -2188,6 +2324,28 @@ _TUI_READ_ONLY_MODEL_TOOL_IDS = (
     "git_status",
     "git_diff",
 )
+_TUI_BROWSER_READ_ONLY_TOOL_IDS = (
+    "browser_tabs",
+    "browser_inspect",
+    "browser_wait",
+    "browser_extract",
+    "browser_screenshot",
+)
+_TUI_BROWSER_TRANSIENT_TOOL_IDS = ("browser_open",)
+_TUI_BROWSER_EXTERNAL_WRITE_TOOL_IDS = (
+    "browser_click",
+    "browser_fill",
+    "browser_type",
+    "browser_select",
+    "browser_download",
+)
+_TUI_DESKTOP_READ_ONLY_TOOL_IDS = ("desktop_observe",)
+_TUI_DESKTOP_EXTERNAL_WRITE_TOOL_IDS = (
+    "desktop_focus",
+    "desktop_click",
+    "desktop_type",
+    "desktop_hotkey",
+)
 _TUI_PATH_SUGGESTION_SUFFIXES = (
     _READ_ONLY_FILE_SUFFIXES
     | _CODE_REVIEW_FILE_SUFFIXES
@@ -2196,6 +2354,261 @@ _TUI_PATH_SUGGESTION_SUFFIXES = (
     | _TUI_DATA_SUFFIXES
     | {".pdf", ".log", ".out", ".est", ".tex"}
 )
+
+
+def _tui_validation_cache_path(workspace_root: Path) -> Path:
+    return workspace_root / ".dan-super" / "cache" / "validation-command.json"
+
+
+def _tui_path_within_workspace(path: Path, workspace_root: Path) -> bool:
+    try:
+        path.resolve().relative_to(workspace_root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _tui_relative_posix(path: Path, workspace_root: Path) -> str:
+    try:
+        return path.relative_to(workspace_root).as_posix()
+    except ValueError:
+        return ""
+
+
+def _tui_file_fingerprint(path: Path) -> str:
+    try:
+        stat = path.stat()
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+    return f"{stat.st_size}:{stat.st_mtime_ns}:{digest}"
+
+
+def _tui_validation_command_for_script(script_path: Path, workspace_root: Path) -> str:
+    rel = _tui_relative_posix(script_path, workspace_root)
+    if not rel:
+        return ""
+    parent = script_path.parent
+    parent_rel = _tui_relative_posix(parent, workspace_root)
+    if parent_rel in {"", "."}:
+        return f"bash {shlex.quote('./' + script_path.name)}"
+    return f"cd {shlex.quote(parent_rel)} && bash {shlex.quote('./' + script_path.name)}"
+
+
+def _load_tui_validation_command_cache(workspace_root: Path) -> TuiValidationCommandProbe | None:
+    cache_path = _tui_validation_cache_path(workspace_root)
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, MappingABC):
+        return None
+    if int(payload.get("version") or 0) != _TUI_VALIDATION_CACHE_VERSION:
+        return None
+    relpath = str(payload.get("script_relpath") or "").strip()
+    fingerprint = str(payload.get("fingerprint") or "").strip()
+    command = str(payload.get("command") or "").strip()
+    if not relpath or not fingerprint or not command:
+        return None
+    script_path = workspace_root / relpath
+    if not _tui_path_within_workspace(script_path, workspace_root):
+        return None
+    if not script_path.is_file() or _tui_file_fingerprint(script_path) != fingerprint:
+        return None
+    return TuiValidationCommandProbe(
+        command=command,
+        label=relpath,
+        script_relpath=relpath,
+        fingerprint=fingerprint,
+        cache_hit=True,
+        source="cache",
+    )
+
+
+def _store_tui_validation_command_cache(workspace_root: Path, probe: TuiValidationCommandProbe) -> None:
+    if not probe.script_relpath or not probe.fingerprint or not probe.command:
+        return
+    cache_path = _tui_validation_cache_path(workspace_root)
+    payload = {
+        "version": _TUI_VALIDATION_CACHE_VERSION,
+        "script_relpath": probe.script_relpath,
+        "fingerprint": probe.fingerprint,
+        "command": probe.command,
+    }
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    except OSError:
+        return
+
+
+def _iter_tui_validation_script_candidates(workspace_root: Path) -> list[Path]:
+    if not workspace_root.exists():
+        return []
+    priority = {name: index for index, name in enumerate(_TUI_VALIDATION_SCRIPT_NAMES)}
+    candidates: list[Path] = []
+    for current, dirs, files in os.walk(workspace_root):
+        current_path = Path(current)
+        if not _tui_path_within_workspace(current_path, workspace_root):
+            dirs[:] = []
+            continue
+        try:
+            depth = len(current_path.relative_to(workspace_root).parts)
+        except ValueError:
+            dirs[:] = []
+            continue
+        dirs[:] = sorted(
+            dirname
+            for dirname in dirs
+            if dirname not in _READ_ONLY_SKIP_PARTS
+            and not dirname.startswith(".dan-")
+            and dirname not in {"node_modules", ".git", ".venv", "venv", "__pycache__"}
+        )
+        if depth >= _TUI_VALIDATION_DISCOVERY_MAX_DEPTH:
+            dirs[:] = []
+        for filename in files:
+            if filename in priority:
+                path = current_path / filename
+                if path.is_file() and _tui_path_within_workspace(path, workspace_root):
+                    candidates.append(path)
+    candidates.sort(
+        key=lambda path: (
+            priority.get(path.name, len(priority)),
+            len(path.relative_to(workspace_root).parts),
+            path.relative_to(workspace_root).as_posix(),
+        )
+    )
+    return candidates
+
+
+def _discover_tui_validation_command(workspace_root: Path) -> TuiValidationCommandProbe | None:
+    workspace = normalize_workspace_root(str(workspace_root))
+    cached = _load_tui_validation_command_cache(workspace)
+    if cached is not None:
+        return cached
+    for script_path in _iter_tui_validation_script_candidates(workspace):
+        command = _tui_validation_command_for_script(script_path, workspace)
+        relpath = _tui_relative_posix(script_path, workspace)
+        fingerprint = _tui_file_fingerprint(script_path)
+        if not command or not relpath or not fingerprint:
+            continue
+        probe = TuiValidationCommandProbe(
+            command=command,
+            label=relpath,
+            script_relpath=relpath,
+            fingerprint=fingerprint,
+            cache_hit=False,
+            source="workspace",
+        )
+        _store_tui_validation_command_cache(workspace, probe)
+        return probe
+    return None
+
+
+def _tui_validation_command_probes(
+    args: argparse.Namespace,
+    workspace_root: Path,
+) -> list[TuiValidationCommandProbe]:
+    raw_commands = getattr(args, "validation_command", None) or ()
+    if isinstance(raw_commands, str):
+        raw_commands = [raw_commands]
+    probes = [
+        TuiValidationCommandProbe(
+            command=str(command).strip(),
+            label="--validation-command",
+            source="argument",
+        )
+        for command in raw_commands
+        if str(command).strip()
+    ]
+    if probes:
+        return probes
+    discovered = _discover_tui_validation_command(workspace_root)
+    return [discovered] if discovered is not None else []
+
+
+def _tui_decision_is_direct_validation_gate(decision: TuiIntentDecision) -> bool:
+    policy = normalize_agent_surface_policy(decision.surface_policy)
+    execution_source: AgentExecutionPolicy | Mapping[str, Any] = decision.execution_policy
+    if decision.execution_policy == AgentExecutionPolicy():
+        execution_source = policy.to_payload()
+    execution = normalize_agent_execution_policy(
+        execution_source,
+        communication_policy=decision.communication_policy,
+    )
+    return (
+        policy.controller_lane == CONTROLLER_EXECUTE
+        and policy.permission_scope == PERMISSION_TRANSIENT_EXECUTE
+        and policy.phase_shape == PHASE_VALIDATION_GATE
+        and EVIDENCE_SOURCE_VALIDATION in policy.evidence_policy.sources
+        and not execution.allow_repair_cycles
+        and execution.max_auto_fix_rounds == 0
+    )
+
+
+def _tui_decision_is_transient_tool_answer(decision: TuiIntentDecision) -> bool:
+    policy = normalize_agent_surface_policy(decision.surface_policy)
+    packs = _tui_surface_policy_capability_packs(policy)
+    return (
+        policy.controller_lane in {CONTROLLER_INSPECT, CONTROLLER_EXECUTE}
+        and policy.permission_scope in {PERMISSION_TRANSIENT_EXECUTE, PERMISSION_EXTERNAL_WRITE}
+        and policy.phase_shape in {PHASE_PROBE, PHASE_ONE_PASS}
+        and policy.permission_scope != PERMISSION_WORKSPACE_WRITE
+        and bool(packs & {"browser_control", "desktop_control"})
+    )
+
+
+def _tui_decision_requires_transient_tool_evidence(decision: TuiIntentDecision) -> bool:
+    return _tui_decision_is_transient_tool_answer(decision) and _tui_surface_policy_wants_capability_only_tools(
+        decision.surface_policy
+    )
+
+
+def _tui_transient_tool_answer_decision(decision: TuiIntentDecision) -> TuiIntentDecision:
+    return TuiIntentDecision(
+        permission="read-only",
+        complexity=decision.complexity if decision.complexity in {"simple", "complex"} else "complex",
+        confidence=decision.confidence,
+        rationale=decision.rationale or "transient browser/desktop tool answer without workspace mutation",
+        communication_policy=decision.communication_policy,
+        execution_policy=decision.execution_policy,
+        surface_policy=decision.surface_policy,
+    )
+
+
+def _tui_direct_validation_timeout_seconds(decision: TuiIntentDecision) -> int:
+    policy = normalize_agent_surface_policy(decision.surface_policy)
+    seconds = policy.latency_policy.max_work_seconds or decision.execution_policy.max_work_seconds
+    if seconds is None:
+        seconds = 30 if decision.communication_policy.latency_preference == LATENCY_FAST else 60
+    try:
+        value = int(seconds)
+    except (TypeError, ValueError):
+        value = 60
+    return max(5, min(900, value))
+
+
+def _tui_validation_output_tail(stdout: str, stderr: str, *, limit: int = 3) -> list[str]:
+    combined = "\n".join(part for part in (stdout, stderr) if str(part or "").strip())
+    lines = [line.strip() for line in combined.splitlines() if line.strip()]
+    return [_clip(line, limit=220) for line in lines[-max(1, limit) :]]
+
+
+def _run_tui_validation_probe(
+    *,
+    workspace_root: Path,
+    probe: TuiValidationCommandProbe,
+    timeout_seconds: int,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        probe.command,
+        cwd=str(workspace_root),
+        shell=True,
+        text=True,
+        capture_output=True,
+        timeout=timeout_seconds,
+        check=False,
+    )
 
 
 def _classify_tui_intent(
@@ -2242,6 +2655,13 @@ def _tui_decision_from_core_decision(decision: Any) -> TuiIntentDecision:
         lane=lane,
         communication_policy=communication_policy,
     )
+    surface_policy = normalize_agent_surface_policy(
+        getattr(decision, "surface_policy", None),
+        lane=lane,
+        executor_effort=effort,
+        communication_policy=communication_policy,
+        execution_policy=execution_policy,
+    )
     if lane == NARRATOR_READ_ONLY:
         return TuiIntentDecision(
             permission="read-only",
@@ -2250,6 +2670,7 @@ def _tui_decision_from_core_decision(decision: Any) -> TuiIntentDecision:
             rationale=rationale,
             communication_policy=communication_policy,
             execution_policy=execution_policy,
+            surface_policy=surface_policy,
         )
     if lane == "executor read-only":
         return TuiIntentDecision(
@@ -2259,6 +2680,7 @@ def _tui_decision_from_core_decision(decision: Any) -> TuiIntentDecision:
             rationale=rationale,
             communication_policy=communication_policy,
             execution_policy=execution_policy,
+            surface_policy=surface_policy,
         )
     if lane == "executor write":
         return TuiIntentDecision(
@@ -2268,6 +2690,7 @@ def _tui_decision_from_core_decision(decision: Any) -> TuiIntentDecision:
             rationale=rationale,
             communication_policy=communication_policy,
             execution_policy=execution_policy,
+            surface_policy=surface_policy,
         )
     if lane == PLAN_MODE:
         return TuiIntentDecision(
@@ -2277,6 +2700,7 @@ def _tui_decision_from_core_decision(decision: Any) -> TuiIntentDecision:
             rationale=rationale,
             communication_policy=communication_policy,
             execution_policy=execution_policy,
+            surface_policy=surface_policy,
         )
     return TuiIntentDecision(
         permission="",
@@ -2287,6 +2711,7 @@ def _tui_decision_from_core_decision(decision: Any) -> TuiIntentDecision:
         or "Should this be progress/status, read-only inspection, or workspace-changing work?",
         communication_policy=communication_policy,
         execution_policy=execution_policy,
+        surface_policy=surface_policy,
     )
 
 
@@ -2794,16 +3219,79 @@ def _run_simple_write_plan(
     return activity, results, changed
 
 
-def _tui_read_only_tool_ids(workspace_root: Path) -> list[str]:
+def _tui_surface_capability_contract_text() -> str:
+    return (
+        "Super DAN TUI supports ordinary workspace file/git/shell work, plus optional UI-control capability packs. "
+        "browser_control provides persistent-browser tabs, URL/title/DOM/HTML/interactive-element inspection, page text, screenshots, selector clicks/fills/typing/selects, waits, and downloads. "
+        "desktop_control provides local desktop observe/focus/click/type/hotkey; desktop mutation is call-time gated by DAN_COMPUTER_CONTROL=1 and should be grounded by observe metadata or screenshots. "
+        "computer_control means both browser_control and desktop_control. "
+        "Do not deny browser or desktop capability; distinguish available optional capability from whether it is active or gated in this specific turn."
+    )
+
+
+def _tui_surface_policy_capability_packs(policy: AgentSurfacePolicy | Mapping[str, Any] | None) -> set[str]:
+    normalized = normalize_agent_surface_policy(policy)
+    packs = set(normalized.capability_packs)
+    if "computer_control" in packs:
+        packs.update({"browser_control", "desktop_control"})
+    return packs
+
+
+def _tui_surface_policy_allows_transient_ui(policy: AgentSurfacePolicy | Mapping[str, Any] | None) -> bool:
+    normalized = normalize_agent_surface_policy(policy)
+    return normalized.permission_scope in {PERMISSION_TRANSIENT_EXECUTE, PERMISSION_EXTERNAL_WRITE}
+
+
+def _tui_surface_policy_allows_external_ui_write(policy: AgentSurfacePolicy | Mapping[str, Any] | None) -> bool:
+    normalized = normalize_agent_surface_policy(policy)
+    return normalized.permission_scope == PERMISSION_EXTERNAL_WRITE
+
+
+def _tui_surface_policy_wants_capability_only_tools(
+    policy: AgentSurfacePolicy | Mapping[str, Any] | None,
+) -> bool:
+    normalized = normalize_agent_surface_policy(policy)
+    packs = _tui_surface_policy_capability_packs(normalized)
+    sources = set(normalized.evidence_policy.sources)
+    return (
+        bool(packs & {"browser_control", "desktop_control"})
+        and normalized.permission_scope in {PERMISSION_TRANSIENT_EXECUTE, PERMISSION_EXTERNAL_WRITE}
+        and normalized.phase_shape in {PHASE_PROBE, PHASE_ONE_PASS}
+        and EVIDENCE_SOURCE_WORKSPACE not in sources
+    )
+
+
+def _tui_read_only_tool_ids(
+    workspace_root: Path,
+    surface_policy: AgentSurfacePolicy | Mapping[str, Any] | None = None,
+) -> list[str]:
     available = available_local_organism_tools()
+    requested_packs = _tui_surface_policy_capability_packs(surface_policy)
+    candidate_ids = [] if _tui_surface_policy_wants_capability_only_tools(surface_policy) else list(_TUI_READ_ONLY_MODEL_TOOL_IDS)
+    if "browser_control" in requested_packs:
+        candidate_ids.extend(_TUI_BROWSER_READ_ONLY_TOOL_IDS)
+        if _tui_surface_policy_allows_transient_ui(surface_policy):
+            candidate_ids.extend(_TUI_BROWSER_TRANSIENT_TOOL_IDS)
+        if _tui_surface_policy_allows_external_ui_write(surface_policy):
+            candidate_ids.extend(_TUI_BROWSER_EXTERNAL_WRITE_TOOL_IDS)
+    if "desktop_control" in requested_packs:
+        candidate_ids.extend(_TUI_DESKTOP_READ_ONLY_TOOL_IDS)
+        if _tui_surface_policy_allows_external_ui_write(surface_policy):
+            candidate_ids.extend(_TUI_DESKTOP_EXTERNAL_WRITE_TOOL_IDS)
     tool_ids = [
         tool_id
-        for tool_id in _TUI_READ_ONLY_MODEL_TOOL_IDS
+        for tool_id in candidate_ids
         if tool_id in available
     ]
     if not _workspace_is_git_repo(workspace_root):
         tool_ids = [tool_id for tool_id in tool_ids if not tool_id.startswith("git_")]
-    return tool_ids
+    result: list[str] = []
+    seen: set[str] = set()
+    for tool_id in tool_ids:
+        if tool_id not in seen:
+            seen.add(tool_id)
+            result.append(tool_id)
+    return result
 
 
 def _workspace_is_git_repo(workspace_root: Path) -> bool:
@@ -2844,10 +3332,30 @@ def _build_tui_read_only_live_provider(args: argparse.Namespace, model: str) -> 
 
 
 def _tui_read_only_system_prompt(tool_ids: Sequence[str]) -> str:
+    transient_note = ""
+    if any(
+        tool_id in set(tool_ids)
+        for tool_id in (
+            *_TUI_BROWSER_TRANSIENT_TOOL_IDS,
+            *_TUI_BROWSER_EXTERNAL_WRITE_TOOL_IDS,
+            *_TUI_DESKTOP_EXTERNAL_WRITE_TOOL_IDS,
+        )
+    ):
+        transient_note = (
+            "This lane is workspace-read-only: it may use the listed transient browser/desktop tools when the "
+            "surface policy allows them, but it must not create or edit workspace files unless the user explicitly asks for an artifact. "
+        )
     return (
         "You are the read-only answer lane for Super DAN TUI. "
-        "Answer the user's question using only the provided workspace and read-only tools. "
+        "Answer the user's question using only the provided workspace, current conversation, and allowed tools. "
         "Do not mutate files, durable state, queues, git state, dependencies, networked services, or .dan-super. "
+        f"Capability contract: {_tui_surface_capability_contract_text()} "
+        f"{transient_note}"
+        "If the surface policy asks for browser/desktop capability evidence and does not list workspace as an evidence source, use those UI tools or report their failure; do not inspect workspace files as a substitute. "
+        "For browser page-reading tasks, empty page text or empty element inspection is not a final result: while tool budget remains, recover with browser_wait, browser_inspect with HTML/elements, browser_tabs, or browser_screenshot before answering. "
+        "Do not answer by saying you will wait, inspect, or screenshot next; perform the allowed browser tool call first. "
+        "If browser evidence shows a CAPTCHA, login wall, bot-protection page, permission denial, or other access blocker, stop cleanly and report that observed blocker instead of promising another attempt. "
+        "When browser evidence reports a non-headless session, mention that the controlled page is visible in the local GUI browser window. "
         "Allowed tools: "
         + ", ".join(tool_ids)
         + ". Use concise tool calls only when they materially improve the answer. "
@@ -2874,9 +3382,12 @@ def _format_tui_surface_history_for_prompt(args: argparse.Namespace, *, limit: i
 
 def _tui_read_only_user_prompt(workspace_root: Path, objective: str, args: argparse.Namespace | None = None) -> str:
     recent_context = _format_tui_surface_history_for_prompt(args, limit=6) if args is not None else "(none)"
+    surface_policy = _tui_surface_policy_payload(getattr(args, "_tui_surface_policy", None)) if args is not None else {}
     return (
         f"Workspace root: {workspace_root}\n"
         f"User request: {objective}\n\n"
+        f"Surface policy: {json.dumps(surface_policy, sort_keys=True)}\n"
+        f"Capability contract: {_tui_surface_capability_contract_text()}\n\n"
         f"Recent visible conversation context:\n{recent_context}\n\n"
         "Inspect only what is necessary. If the request is too broad, summarize the most relevant sources and name any limits."
     )
@@ -2952,6 +3463,25 @@ def _answer_lines_have_useful_prose(lines: Sequence[str]) -> bool:
     return False
 
 
+def _browser_session_summary(result: Mapping[str, Any]) -> str:
+    session = result.get("session") if isinstance(result.get("session"), MappingABC) else {}
+    if not session:
+        return ""
+    preview = str(session.get("preview") or "").strip()
+    profile = str(session.get("profile") or "").strip()
+    gui = bool(session.get("gui_preview_available", False))
+    parts = []
+    if preview:
+        parts.append(preview)
+    elif gui:
+        parts.append("local GUI browser window")
+    else:
+        parts.append("headless browser session")
+    if profile:
+        parts.append(f"profile={profile}")
+    return ", ".join(parts)
+
+
 def _read_only_tool_evidence_text(events: Sequence[Mapping[str, Any]], *, limit: int = 6000) -> str:
     chunks: list[str] = []
     for event in events:
@@ -2989,8 +3519,117 @@ def _read_only_tool_evidence_text(events: Sequence[Mapping[str, Any]], *, limit:
             chunks.append(f"workspace_check: {_clip(json.dumps(result, sort_keys=True, default=str), limit=1600)}")
         elif tool_id in {"git_status", "git_diff"}:
             chunks.append(f"{tool_id}: {_clip(json.dumps(result, sort_keys=True, default=str), limit=1600)}")
+        elif tool_id.startswith("browser_"):
+            session_summary = _browser_session_summary(result)
+            session_suffix = f" ({session_summary})" if session_summary else ""
+            if tool_id == "browser_extract":
+                text = str(result.get("text") or "").strip()
+                chunks.append(
+                    f"browser_extract{session_suffix}: "
+                    + _clip(text or json.dumps(result, sort_keys=True, default=str), limit=2400)
+                )
+            elif tool_id == "browser_open":
+                chunks.append(
+                    f"browser_open{session_suffix}: "
+                    + _clip(
+                        json.dumps(
+                            {
+                                "status": result.get("status"),
+                                "title": result.get("title"),
+                                "url": result.get("url"),
+                            },
+                            sort_keys=True,
+                            default=str,
+                        ),
+                        limit=1200,
+                    )
+                )
+            elif tool_id == "browser_inspect":
+                chunks.append(
+                    f"browser_inspect{session_suffix}: "
+                    + _clip(json.dumps(result, sort_keys=True, default=str), limit=2400)
+                )
+            else:
+                chunks.append(
+                    f"{tool_id}{session_suffix}: "
+                    + _clip(json.dumps(result, sort_keys=True, default=str), limit=1200)
+                )
+        elif tool_id.startswith("desktop_"):
+            chunks.append(f"{tool_id}: {_clip(json.dumps(result, sort_keys=True, default=str), limit=1600)}")
     text = "\n\n".join(chunk for chunk in chunks if chunk.strip())
     return _clip(text, limit=limit)
+
+
+def _tui_browser_probe_needs_dynamic_recovery(events: Sequence[Mapping[str, Any]]) -> bool:
+    saw_empty_page = False
+    saw_recovery = False
+    for event in events:
+        if str(event.get("event") or "") != "tool.completed":
+            continue
+        tool_id = str(event.get("tool_id") or "").strip()
+        result = event.get("result") if isinstance(event.get("result"), MappingABC) else {}
+        if tool_id == "browser_extract":
+            text = str(result.get("text") or "").strip()
+            try:
+                length = int(result.get("length") or len(text))
+            except (TypeError, ValueError):
+                length = len(text)
+            if not text and length <= 0:
+                saw_empty_page = True
+        elif tool_id == "browser_inspect":
+            try:
+                element_count = int(result.get("element_count") or 0)
+            except (TypeError, ValueError):
+                element_count = 0
+            try:
+                html_length = int(result.get("html_length") or 0)
+            except (TypeError, ValueError):
+                html_length = 0
+            if element_count <= 0 and html_length <= 0:
+                saw_empty_page = True
+            saw_recovery = True
+        elif tool_id in {"browser_wait", "browser_screenshot"}:
+            saw_recovery = True
+    return saw_empty_page and not saw_recovery
+
+
+async def _run_tui_browser_dynamic_recovery(
+    *,
+    runtime: LocalOrganismToolRuntime,
+    tool_ids: Sequence[str],
+    tool_events: Sequence[Mapping[str, Any]],
+) -> bool:
+    if not _tui_browser_probe_needs_dynamic_recovery(tool_events):
+        return False
+    available = set(tool_ids)
+    attempted = False
+    recovery_plan: tuple[tuple[str, dict[str, Any]], ...] = (
+        ("browser_wait", {"timeout": 5.0}),
+        (
+            "browser_inspect",
+            {
+                "include_html": True,
+                "include_elements": True,
+                "max_html_length": 12000,
+                "element_limit": 80,
+            },
+        ),
+        ("browser_screenshot", {}),
+    )
+    for tool_id, arguments in recovery_plan:
+        if tool_id not in available:
+            continue
+        attempted = True
+        try:
+            await runtime.call(
+                tool_id,
+                dict(arguments),
+                worker_id="super-dan.tui.read-only",
+                tool_call_id=f"browser-recovery:{tool_id}",
+            )
+        except Exception:
+            continue
+    return attempted
 
 
 def _tui_read_only_followup_messages(
@@ -3007,6 +3646,8 @@ def _tui_read_only_followup_messages(
                 "You are the read-only answer lane for Super DAN TUI. "
                 "Write the final answer from the provided tool evidence only. "
                 "Do not claim to read more files or call tools. Do not paste raw source code, imports, docstrings, markdown tables, or long excerpts. "
+                f"Capability contract: {_tui_surface_capability_contract_text()} "
+                "For browser evidence, if the page is blocked by CAPTCHA, bot protection, login walls, permissions, or an empty rendered page, report that blocker clearly instead of promising another attempt. "
                 "For project/code review, give concise findings with cited paths and concrete next steps."
             ),
         },
@@ -3048,7 +3689,7 @@ def _emit_tui_stream_line(args: argparse.Namespace, line: Any) -> None:
         text,
         flags=re.IGNORECASE,
     ):
-        started_at = float(getattr(args, "_tui_turn_started_at", 0.0) or 0.0) or None
+        started_at = _ensure_tui_turn_started_at(args)
         _print_tui_chatbox_thinking_block(
             [_tui_chatbox_status_text(started_at, status_label="Working"), text],
             plain=bool(getattr(args, "plain", False)),
@@ -3078,7 +3719,7 @@ def _run_tui_read_only_model_answer(
 ) -> bool:
     workspace_root = normalize_workspace_root(str(args.workspace))
     objective = str(getattr(args, "target", "") or "").strip()
-    tool_ids = _tui_read_only_tool_ids(workspace_root)
+    tool_ids = _tui_read_only_tool_ids(workspace_root, decision.surface_policy)
     if not tool_ids:
         state._record_progress("Read-only model loop skipped: no read-only tools available.")
         return False
@@ -3102,12 +3743,16 @@ def _run_tui_read_only_model_answer(
             workspace_root=workspace_root,
             event_callback=record_event,
         )
+        max_rounds, max_tool_calls = _tui_read_only_model_limits(decision.communication_policy)
+        if _tui_decision_requires_transient_tool_evidence(decision):
+            max_rounds = max(max_rounds, 4)
+            max_tool_calls = max(max_tool_calls, 10)
         completion_provider = ToolLoopCompletionProvider(
             provider=provider,
             tool_runtime=runtime,
             default_model=model,
-            max_rounds=_tui_read_only_model_limits(decision.communication_policy)[0],
-            max_tool_calls=_tui_read_only_model_limits(decision.communication_policy)[1],
+            max_rounds=max_rounds,
+            max_tool_calls=max_tool_calls,
             event_callback=record_event,
         )
         try:
@@ -3123,6 +3768,7 @@ def _run_tui_read_only_model_answer(
                         "worker_id": "super-dan.tui.read-only",
                         "tui_lane": decision.lane,
                         "communication_policy": decision.communication_policy.to_payload(),
+                        "surface_policy": decision.surface_policy.to_payload(),
                         "image_attachments": _tui_image_attachment_payloads_from_text(objective, workspace_root),
                     },
                 )
@@ -3130,7 +3776,14 @@ def _run_tui_read_only_model_answer(
             text = response.text
             answer_lines = _split_answer_lines(text)
             used_followup = False
-            if not _answer_lines_have_useful_prose(answer_lines):
+            recovered_empty_browser_page = False
+            if _tui_decision_requires_transient_tool_evidence(decision):
+                recovered_empty_browser_page = await _run_tui_browser_dynamic_recovery(
+                    runtime=runtime,
+                    tool_ids=tool_ids,
+                    tool_events=tool_events,
+                )
+            if recovered_empty_browser_page or not _answer_lines_have_useful_prose(answer_lines):
                 evidence = _read_only_tool_evidence_text(tool_events)
                 if evidence:
                     followup = await provider.complete(
@@ -3158,7 +3811,7 @@ def _run_tui_read_only_model_answer(
         state._record_result(f"Read-only model loop failed: {_clip(exc, limit=180)}")
         return False
 
-    answer_lines = _split_answer_lines(text, limit=_tui_answer_line_limit(decision.communication_policy))
+    answer_lines = _split_answer_lines(text, limit=_ANSWER_LINE_COUNT_LIMIT)
     for line in answer_lines:
         state._record_answer(line)
     state._record_progress(
@@ -3276,7 +3929,12 @@ def _parse_tui_run_command(text: str) -> TuiRunCommand | None:
     for command in ("/append", "/continue", "/pause", "/resume", "/cancel", "/stop", "/focus"):
         if lowered == command or lowered.startswith(command + " "):
             payload = stripped[len(command) :].strip()
-            normalized_command = "cancel" if command == "/stop" else command[1:]
+            if command == "/stop":
+                normalized_command = "cancel"
+            elif command == "/continue":
+                normalized_command = "append"
+            else:
+                normalized_command = command[1:]
             if command == "/append":
                 message = (
                     "Append is only available for async V2 active runs. "
@@ -3284,8 +3942,8 @@ def _parse_tui_run_command(text: str) -> TuiRunCommand | None:
                 )
             elif command == "/continue":
                 message = (
-                    "Continue-after-current is only available for async V2 active runs. "
-                    "This direct blocking TUI path cannot queue continuation work yet."
+                    "Continue is treated as an append to active async work, but the direct blocking TUI path "
+                    "cannot accept active-run steering yet."
                 )
             elif command == "/pause":
                 message = (
@@ -3309,6 +3967,25 @@ def _parse_tui_run_command(text: str) -> TuiRunCommand | None:
                 )
             return TuiRunCommand(command=normalized_command, payload=payload, message=message)
     return None
+
+
+def _rewrite_tui_continue_followup_as_append(text: str) -> str:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return text
+    first, *parts = stripped.split(maxsplit=1)
+    if first.lower() != "continue" or not parts:
+        return text
+    return "/append " + parts[0].strip()
+
+
+def _tui_run_command_submission_text(command: TuiRunCommand, objective: str) -> str:
+    stripped = str(objective or "").strip()
+    lowered = stripped.lower()
+    if command.command == "append" and lowered.startswith("/continue"):
+        payload = command.payload.strip()
+        return f"/append {payload}" if payload else "/append"
+    return objective
 
 
 def _build_prompt_toolkit_completer(
@@ -4322,6 +4999,7 @@ class SuperTuiState:
         default_factory=lambda: AgentCommunicationPolicy(answer_budget=ANSWER_BUDGET_DETAILED)
     )
     execution_policy: AgentExecutionPolicy = field(default_factory=AgentExecutionPolicy)
+    surface_policy: AgentSurfacePolicy = field(default_factory=AgentSurfacePolicy)
     debug_events: bool = False
     changed_files: list[str] = field(default_factory=list)
     artifacts: list[str] = field(default_factory=list)
@@ -4703,8 +5381,9 @@ class SuperTuiState:
         for item in self.activity_lines[-10:] or self.timeline[-10:]:
             if item not in activity_lines:
                 activity_lines.append(item)
-        queued_work = self.queue_status
-        queued_lanes = [
+        terminal = self.status in {"completed", "failed", "blocked", "stopped"}
+        queued_work = "" if terminal else self.queue_status
+        queued_lanes = [] if terminal else [
             line
             for line in board_activity
             if "queued" in line.lower() or "pending" in line.lower() or "waiting" in line.lower()
@@ -4797,6 +5476,7 @@ class SuperTuiState:
         self.mode_rationale = decision.rationale
         self.communication_policy = decision.communication_policy
         self.execution_policy = decision.execution_policy
+        self.surface_policy = decision.surface_policy
 
     def elapsed_footer(self) -> str:
         if not self.started_at_monotonic:
@@ -5065,6 +5745,7 @@ class SuperTuiState:
         elif name in {"run.log.completed", "run.log.failed"}:
             self.status = str(event.get("status") or ("failed" if name.endswith("failed") else "completed"))
             self.phase = "done" if self.status == "completed" else "failed"
+            self.queue_status = ""
             self.event_log_path = str(event.get("event_log_path") or self.event_log_path)
             if self.started_at_monotonic and not self.ended_at_monotonic:
                 self.ended_at_monotonic = time.monotonic()
@@ -5221,7 +5902,7 @@ class SuperTuiState:
         return self.status in {"completed", "failed", "blocked", "stopped"}
 
     def final_answer_lines(self, *, limit: int = _ANSWER_LINE_COUNT_LIMIT) -> list[str]:
-        limit = min(int(limit), _tui_answer_line_limit(self.communication_policy))
+        limit = min(max(1, int(limit)), _ANSWER_LINE_COUNT_LIMIT)
         if self.is_narrator_mode():
             lines = [
                 cleaned
@@ -5804,7 +6485,11 @@ class SuperTuiProgressRenderer:
                 return False
             if not force and snapshot.snapshot_id and snapshot.snapshot_id == self._sidecar_last_snapshot_id:
                 return False
-            if not force and trigger not in {"opening", "blocker", "heartbeat"} and now - self._sidecar_last_started_at < 8.0:
+            if (
+                not force
+                and trigger not in {"opening", "blocker", "heartbeat"}
+                and now - self._sidecar_last_started_at < self._quiet_narrator_interval_seconds
+            ):
                 return False
             self._sidecar_last_started_at = now
             self._sidecar_last_snapshot_id = snapshot.snapshot_id
@@ -5895,7 +6580,7 @@ class SuperTuiProgressRenderer:
         self._print_progress_block("Narrator", fresh_lines)
 
     def note(self, line: str) -> None:
-        text = str(line or "").strip()
+        text = _sanitize_tui_progress_line(str(line or "").strip(), objective=self.state.objective)
         if not self.enabled or not text:
             return
         _append_unique(self.state.recent, text, limit=8)
@@ -5949,7 +6634,7 @@ def build_parser() -> argparse.ArgumentParser:
         "/skills, /reset [all|state], /append, /pause, /resume, /stop, /focus, /help, /exit. "
         "Typing / opens command suggestions, $ opens skill suggestions, and @ opens workspace path suggestions when prompt_toolkit is available. "
         "Explicit slash commands route locally; natural-language input is model-routed as narrator read-only, executor read-only, executor write, or clarification. "
-        "Progress/status questions use the snapshot-only narrator lane; workspace inspection stays read-only; "
+        "Progress/status questions about visible runs use the snapshot-only narrator lane; fresh build/test/check questions use a transient validation gate; workspace inspection stays read-only; "
         "write requests use direct simple writes or the normal Super DAN execution path. "
         "The interactive shell keeps the composer live while a submitted turn is running, similar to "
         "a chat box. Additional ordinary turns queue behind the current one; explicit --async-agent "
@@ -6050,6 +6735,7 @@ def _run_tui_turn(
         suppress_clock=bool(getattr(args, "_tui_background_dispatch", False)),
         chatbox_progress=bool(getattr(args, "_tui_background_dispatch", False)),
     )
+    renderer.state.started_at_monotonic = _ensure_tui_turn_started_at(args)
     renderer.state.set_intent_decision(getattr(args, "_tui_intent_decision", None))
     if getattr(args, "_tui_intent_decision", None) is not None and not getattr(args, "_tui_execution_policy", None):
         setattr(
@@ -6058,6 +6744,14 @@ def _run_tui_turn(
             renderer.state.execution_policy.to_payload()
             if hasattr(renderer.state, "execution_policy")
             else _tui_execution_policy_payload(None),
+        )
+    if getattr(args, "_tui_intent_decision", None) is not None and not getattr(args, "_tui_surface_policy", None):
+        setattr(
+            args,
+            "_tui_surface_policy",
+            renderer.state.surface_policy.to_payload()
+            if hasattr(renderer.state, "surface_policy")
+            else _tui_surface_policy_payload(None),
         )
     renderer.configure_model_sidecar(args)
     for token in getattr(args, "_tui_selected_skill_mentions", []) or []:
@@ -6112,6 +6806,7 @@ def _run_tui_turn(
                 "intent_rationale": getattr(getattr(args, "_tui_intent_decision", None), "rationale", ""),
                 "communication_policy": renderer.state.communication_policy.to_payload(),
                 "execution_policy": renderer.state.execution_policy.to_payload(),
+                "surface_policy": renderer.state.surface_policy.to_payload(),
             },
         )
     return exit_code
@@ -6263,6 +6958,18 @@ def _render_static_state(state: SuperTuiState, *, plain: bool, raw_events: bool 
             except Exception:
                 pass
     print(state.plain_snapshot())
+
+
+def _render_direct_validation_state(state: SuperTuiState, *, plain: bool, raw_events: bool = False) -> None:
+    if state.status == "completed" and state.validation == "passed" and not raw_events:
+        answer = state.final_answer_lines()
+        if answer:
+            _print_tui_stream_block("Answer", answer, plain=plain)
+        footer = state.elapsed_footer()
+        if footer:
+            _print_tui_stream_line(footer, plain=plain)
+        return
+    _render_static_state(state, plain=plain, raw_events=raw_events)
 
 
 def _latest_final_narrator_summary(state: SuperTuiState) -> str:
@@ -7034,6 +7741,13 @@ def _run_tui_plan_reply(
                 getattr(getattr(run_args, "_tui_intent_decision", None), "execution_policy", None)
             ),
         )
+        setattr(
+            run_args,
+            "_tui_surface_policy",
+            _tui_surface_policy_payload(
+                getattr(getattr(run_args, "_tui_intent_decision", None), "surface_policy", None)
+            ),
+        )
         return _run_tui_turn(run_args, parser, force_live=True)
     _print_tui_stream_block(
         "Outcome",
@@ -7120,31 +7834,34 @@ def _open_tui_local_async_store(workspace_root: Path):
 
 
 def _tui_async_execution_overrides(args: argparse.Namespace) -> dict[str, Any]:
-    profile_policy: dict[str, Any] = {}
-    if str(getattr(args, "model", "") or "").strip():
-        profile_policy["model"] = str(getattr(args, "model"))
-    if str(getattr(args, "base_url", "") or "").strip():
-        profile_policy["base_url"] = str(getattr(args, "base_url"))
-    if str(getattr(args, "artifact_dir", "") or "").strip():
-        profile_policy["artifact_dir"] = str(getattr(args, "artifact_dir"))
-    tool_policy: dict[str, Any] = {}
-    if int(getattr(args, "max_tool_calls", 0) or 0) > 0:
-        tool_policy["max_tool_calls"] = int(getattr(args, "max_tool_calls"))
+    profile_policy = build_super_tui_profile_policy(
+        model=str(getattr(args, "model", "") or ""),
+        base_url=str(getattr(args, "base_url", "") or ""),
+        artifact_dir=str(getattr(args, "artifact_dir", "") or ""),
+    )
+    tool_policy = build_super_tui_tool_policy(
+        max_tool_calls=getattr(args, "max_tool_calls", 0)
+    )
+    communication_policy = _tui_policy_payload(getattr(args, "_tui_communication_policy", None))
     execution_policy = _tui_execution_policy_payload(getattr(args, "_tui_execution_policy", None))
-    return {
-        "profile_policy": profile_policy,
-        "mutation_policy": {},
-        "approval_policy": {},
-        "tool_policy": tool_policy,
-        "metadata": {
-            "surface": "super-tui",
-            "selected_skills": list(getattr(args, "_tui_selected_skill_mentions", []) or []),
-            "tui_notify_completion": True,
-            "tui_plain": bool(getattr(args, "plain", False)),
-            "communication_policy": _tui_policy_payload(getattr(args, "_tui_communication_policy", None)),
-            "execution_policy": execution_policy,
-        },
-    }
+    surface_policy = _tui_surface_policy_payload(getattr(args, "_tui_surface_policy", None))
+    attachments = [
+        dict(item)
+        for item in list(getattr(args, "_tui_surface_image_attachments", []) or [])
+        if isinstance(item, MappingABC)
+    ]
+    return build_super_tui_execute_overrides(
+        profile_policy=profile_policy,
+        tool_policy=tool_policy,
+        surface="super-tui",
+        selected_skills=list(getattr(args, "_tui_selected_skill_mentions", []) or []),
+        communication_policy=communication_policy,
+        execution_policy=execution_policy,
+        surface_policy=surface_policy,
+        attachments=attachments,
+        notify_completion=True,
+        plain=bool(getattr(args, "plain", False)),
+    )
 
 
 def _build_tui_async_surface_turn(
@@ -7159,9 +7876,23 @@ def _build_tui_async_surface_turn(
     selected_skills = list(getattr(args, "_tui_selected_skill_mentions", []) or [])
     communication_policy = _tui_policy_payload(getattr(args, "_tui_communication_policy", None))
     execution_policy = _tui_execution_policy_payload(getattr(args, "_tui_execution_policy", None))
+    surface_policy = _tui_surface_policy_payload(getattr(args, "_tui_surface_policy", None))
     message = f"/new {text}".strip() if forced_new and not str(text).lstrip().startswith("/") else str(text)
     attachment_payloads = _tui_image_attachment_payloads_from_text(message, workspace_root)
+    setattr(args, "_tui_surface_attachments", attachment_payloads)
+    setattr(args, "_tui_surface_image_attachments", attachment_payloads)
     history_payload = _tui_transcript_history_payload(workspace_root, current_text=message)
+    surface_context = build_super_tui_surface_context(
+        workspace_root=str(workspace_root),
+        workspace_source="super_tui",
+        conversation_recent_turns=history_payload,
+        selected_skills=selected_skills,
+        forced_new=forced_new,
+        communication_policy=communication_policy,
+        execution_policy=execution_policy,
+        surface_policy=surface_policy,
+        attachments=attachment_payloads,
+    )
     attachment_refs = [
         AttachmentRef(
             id=str(item.get("id") or ""),
@@ -7195,12 +7926,7 @@ def _build_tui_async_surface_turn(
         thread_id=thread_id,
         privacy_scope="private",
         attachments=attachment_refs,
-        capabilities=[
-            "foreground_admission",
-            "background_agent_runs",
-            "task_board",
-            "checkpoint_commands",
-        ],
+        capabilities=list(SUPER_TUI_AGENT_CAPABILITIES),
         metadata={
             "workspace_source": "super_tui",
             "surface_topic_key": f"private:cli:user:{thread_id}",
@@ -7208,18 +7934,10 @@ def _build_tui_async_surface_turn(
             "forced_new": bool(forced_new),
             "communication_policy": communication_policy,
             "execution_policy": execution_policy,
+            "surface_policy": surface_policy,
             "attachments": attachment_payloads,
             "image_attachments": attachment_payloads,
-            "surface_context": {
-                "workspace_root": str(workspace_root),
-                "workspace_source": "super_tui",
-                "conversation": {"recent_turns": history_payload},
-                "selected_skills": selected_skills,
-                "forced_new": bool(forced_new),
-                "communication_policy": communication_policy,
-                "execution_policy": execution_policy,
-                "appended_attachments": attachment_payloads,
-            },
+            "surface_context": surface_context,
             "history": history_payload,
         },
     )
@@ -7255,6 +7973,7 @@ def _tui_local_async_admission_response(
         workspace_root=turn.workspace_root,
         thread_id=turn.thread_id,
         max_parallel_runs=max_parallel_runs,
+        surface_topic_key=str(getattr(turn, "metadata", {}).get("surface_topic_key") or ""),
     )
     task_id = str(admitted.decision.task_id or admitted.decision.target_task_id or "")
     run_id = str(admitted.decision.run_id or admitted.decision.target_run_id or "")
@@ -7564,7 +8283,7 @@ def _submit_tui_local_async_admission(
             turn,
             max_parallel_runs=max_parallel_runs,
         )
-        backend_name = str(getattr(args, "async_agent_backend", "") or "super_dan")
+        backend_name = str(getattr(args, "async_agent_backend", "") or SUPER_TUI_DEFAULT_BACKEND)
         if (
             background
             and admitted.decision.action == "start_parallel"
@@ -7581,10 +8300,11 @@ def _submit_tui_local_async_admission(
                 admitted.decision.run_id,
                 {
                     "auto_execute_continuations": True,
-                    "max_promoted_continuations": 8,
+                    "max_promoted_continuations": SUPER_TUI_MAX_PROMOTED_CONTINUATIONS,
                     "local_tui_background": True,
                     "communication_policy": _tui_policy_payload(getattr(args, "_tui_communication_policy", None)),
                     "execution_policy": _tui_execution_policy_payload(getattr(args, "_tui_execution_policy", None)),
+                    "surface_policy": _tui_surface_policy_payload(getattr(args, "_tui_surface_policy", None)),
                 },
             )
             _start_tui_local_async_background_run(
@@ -7592,7 +8312,7 @@ def _submit_tui_local_async_admission(
                 run_id=admitted.decision.run_id,
                 backend_name=backend_name,
                 overrides=overrides,
-                remaining_continuations=8,
+                remaining_continuations=SUPER_TUI_MAX_PROMOTED_CONTINUATIONS,
             )
         response = _tui_local_async_admission_response(
             store,
@@ -7626,20 +8346,42 @@ def _tui_async_admission_payload(
     selected_skills = list(getattr(args, "_tui_selected_skill_mentions", []) or [])
     communication_policy = _tui_policy_payload(getattr(args, "_tui_communication_policy", None))
     execution_policy = _tui_execution_policy_payload(getattr(args, "_tui_execution_policy", None))
+    surface_policy = _tui_surface_policy_payload(getattr(args, "_tui_surface_policy", None))
     message = f"/new {text}".strip() if forced_new and not str(text).lstrip().startswith("/") else str(text)
-    profile_policy: dict[str, Any] = {}
-    if str(getattr(args, "model", "") or "").strip():
-        profile_policy["model"] = str(getattr(args, "model"))
-    if str(getattr(args, "base_url", "") or "").strip():
-        profile_policy["base_url"] = str(getattr(args, "base_url"))
-    if str(getattr(args, "artifact_dir", "") or "").strip():
-        profile_policy["artifact_dir"] = str(getattr(args, "artifact_dir"))
-    tool_policy: dict[str, Any] = {}
-    if int(getattr(args, "max_tool_calls", 0) or 0) > 0:
-        tool_policy["max_tool_calls"] = int(getattr(args, "max_tool_calls"))
+    profile_policy = build_super_tui_profile_policy(
+        model=str(getattr(args, "model", "") or ""),
+        base_url=str(getattr(args, "base_url", "") or ""),
+        artifact_dir=str(getattr(args, "artifact_dir", "") or ""),
+    )
+    tool_policy = build_super_tui_tool_policy(
+        max_tool_calls=getattr(args, "max_tool_calls", 0)
+    )
     thread_id = _tui_async_thread_id(workspace_root)
     attachment_payloads = _tui_image_attachment_payloads_from_text(message, workspace_root)
     history_payload = _tui_transcript_history_payload(workspace_root, current_text=message)
+    surface_context = build_super_tui_surface_context(
+        workspace_root=str(workspace_root),
+        workspace_source="super_tui",
+        conversation_recent_turns=history_payload,
+        selected_skills=selected_skills,
+        forced_new=forced_new,
+        communication_policy=communication_policy,
+        execution_policy=execution_policy,
+        surface_policy=surface_policy,
+        attachments=attachment_payloads,
+    )
+    execute_overrides = build_super_tui_execute_overrides(
+        profile_policy=profile_policy,
+        tool_policy=tool_policy,
+        surface="super-tui",
+        selected_skills=selected_skills,
+        communication_policy=communication_policy,
+        execution_policy=execution_policy,
+        surface_policy=surface_policy,
+        attachments=attachment_payloads,
+        notify_completion=True,
+        plain=bool(getattr(args, "plain", False)),
+    )
     return {
         "chat_request": {
             "workflow_id": "_scratch",
@@ -7651,33 +8393,15 @@ def _tui_async_admission_payload(
             "session_id": thread_id,
             "thread_id": thread_id,
             "history": history_payload,
-            "surface_context": {
-                "workspace_root": str(workspace_root),
-                "workspace_source": "super_tui",
-                "conversation": {"recent_turns": history_payload},
-                "selected_skills": selected_skills,
-                "forced_new": bool(forced_new),
-                "communication_policy": communication_policy,
-                "execution_policy": execution_policy,
-                "appended_attachments": attachment_payloads,
-            },
+            "surface_context": surface_context,
         },
         "background": bool(background),
         "execute": {
-            "backend": str(getattr(args, "async_agent_backend", "") or "super_dan"),
+            "backend": str(getattr(args, "async_agent_backend", "") or SUPER_TUI_DEFAULT_BACKEND),
             "background": bool(background),
             "auto_execute_continuations": True,
-            "max_promoted_continuations": 8,
-            "profile_policy": profile_policy,
-            "tool_policy": tool_policy,
-            "metadata": {
-                "surface": "super-tui",
-                "selected_skills": selected_skills,
-                "communication_policy": communication_policy,
-                "execution_policy": execution_policy,
-                "attachments": attachment_payloads,
-                "image_attachments": attachment_payloads,
-            },
+            "max_promoted_continuations": SUPER_TUI_MAX_PROMOTED_CONTINUATIONS,
+            **execute_overrides,
         },
         "max_parallel_runs": max(1, int(getattr(args, "async_agent_max_parallel", 4) or 4)),
     }
@@ -8136,6 +8860,7 @@ def _append_tui_async_admission_transcript(
     forced_new: bool = False,
     communication_policy: AgentCommunicationPolicy | Mapping[str, Any] | None = None,
     execution_policy: AgentExecutionPolicy | Mapping[str, Any] | None = None,
+    surface_policy: AgentSurfacePolicy | Mapping[str, Any] | None = None,
 ) -> None:
     metadata: dict[str, Any] = {
         "async_agent": True,
@@ -8146,6 +8871,8 @@ def _append_tui_async_admission_transcript(
         metadata["communication_policy"] = _tui_policy_payload(communication_policy)
     if execution_policy is not None:
         metadata["execution_policy"] = _tui_execution_policy_payload(execution_policy)
+    if surface_policy is not None:
+        metadata["surface_policy"] = _tui_surface_policy_payload(surface_policy)
     if result.events:
         metadata["tui_board_events"] = [dict(event) for event in result.events]
         metadata["tui_board_event"] = dict(result.events[-1])
@@ -8423,6 +9150,7 @@ def _tui_narrator_model_messages(
                 "You are the narrator voice for Super DAN TUI. Use only the sanitized run snapshot below. "
                 "Do not call tools, do not claim to inspect files now, do not steer the executor, and do not invent hidden state. "
                 "Write like a Codex-style assistant: direct, natural, and grounded. Do not echo the user's question. "
+                f"Capability contract for capability questions: {_tui_surface_capability_contract_text()} "
                 "Do not output a mechanical field list with labels like Status, Next, Validation, or Blockers unless the user explicitly asks for a raw status report. "
                 "Explain what the executor appears to be doing or has finished, why it matters for the request, what remains, and the most useful next step. "
                 "The user's goal is getting work done; internal validation scores are supporting evidence, not the main answer. "
@@ -8586,6 +9314,7 @@ def _tui_final_answer_messages(state: SuperTuiState) -> list[dict[str, str]]:
     recent = "\n".join(f"- {line}" for line in state.narrator_lines[-6:]) or "- none"
     validation = state.validation or "unknown"
     policy = state.communication_policy.to_payload()
+    surface_policy = state.surface_policy.to_payload()
     answer_limit = _tui_answer_line_limit(state.communication_policy)
     style_note = "Use one short paragraph plus bullets only if they improve readability."
     if state.communication_policy.answer_budget == ANSWER_BUDGET_BRIEF:
@@ -8594,6 +9323,8 @@ def _tui_final_answer_messages(state: SuperTuiState) -> list[dict[str, str]]:
         style_note = "Use findings, evidence, and next steps when useful; stay grounded in the summary."
     if state.communication_policy.interaction_style == INTERACTION_REVIEW:
         style_note += " For review-style answers, lead with concrete findings or risks before summary."
+    elif state.communication_policy.interaction_style == INTERACTION_FINDINGS:
+        style_note += " Lead with findings and evidence, without turning the answer into an implementation diary."
     elif state.communication_policy.interaction_style == INTERACTION_ANSWER_ONLY:
         style_note += " Answer directly without an implementation diary."
     elif state.communication_policy.interaction_style == INTERACTION_AUTONOMOUS_PROGRESS:
@@ -8605,10 +9336,11 @@ def _tui_final_answer_messages(state: SuperTuiState) -> list[dict[str, str]]:
                 "You are the final answer writer for Super DAN TUI. "
                 "Use only the sanitized run summary below. Do not call tools, do not claim to inspect files now, and do not invent work. "
                 "Write naturally to the user. Avoid formulaic wording like 'Completed <original request>'. "
+                f"Capability contract for capability questions: {_tui_surface_capability_contract_text()} "
                 "Lead with the concrete outcome and the useful next step. Mention changed paths when they matter. "
                 "Do not lead with validation status or validation scores. Mention scores only if the user asks for diagnostics; otherwise translate validation into plain language or omit it. "
                 "If the work is incomplete, say what concrete artifact or action is missing before any internal checker details. "
-                f"Respect the communication policy mechanically; do not exceed {answer_limit} visible lines. "
+                f"Respect response_policy and communication_policy mechanically; do not exceed {answer_limit} visible lines. "
                 f"{style_note}"
             ),
         },
@@ -8616,6 +9348,7 @@ def _tui_final_answer_messages(state: SuperTuiState) -> list[dict[str, str]]:
             "role": "user",
             "content": (
                 f"User request: {state.objective or '(unknown)'}\n"
+                f"Surface policy: {json.dumps(surface_policy, sort_keys=True)}\n"
                 f"Communication policy: {json.dumps(policy, sort_keys=True)}\n"
                 f"Status: {state.status or 'unknown'}\n"
                 f"Validation: {validation}\n"
@@ -8655,7 +9388,7 @@ def _run_tui_final_model_answer(args: argparse.Namespace, state: SuperTuiState) 
         text = _run_with_tui_working_clock(args, lambda: asyncio.run(_run()), label="Preparing answer")
     except Exception:
         return False
-    lines = _split_answer_lines(text, limit=_tui_answer_line_limit(state.communication_policy))
+    lines = _split_answer_lines(text, limit=_ANSWER_LINE_COUNT_LIMIT)
     if not _answer_lines_have_useful_prose(lines):
         return False
     state.answer_lines.clear()
@@ -8733,7 +9466,7 @@ def _run_tui_narrator(
         phase=NARRATOR_READ_ONLY,
         debug_events=bool(getattr(args, "raw_events", False)),
     )
-    state.started_at_monotonic = float(getattr(args, "_tui_turn_started_at", 0.0) or time.monotonic())
+    state.started_at_monotonic = _ensure_tui_turn_started_at(args)
     state.set_intent_decision(decision)
     state.current_step = "Progress summary requested"
     state._record_progress("Progress summary requested from the current run snapshot.")
@@ -8815,27 +9548,35 @@ def _run_tui_read_only(
         phase=decision.lane,
         debug_events=bool(getattr(args, "raw_events", False)),
     )
-    state.started_at_monotonic = float(getattr(args, "_tui_turn_started_at", 0.0) or time.monotonic())
+    state.started_at_monotonic = _ensure_tui_turn_started_at(args)
     state.set_intent_decision(decision)
     state.current_step = "Read-only request"
     state._record_progress("Read-only route selected.")
     model_answered = False
-    if decision.complexity == "complex" and use_model_loop:
+    transient_tool_probe = use_model_loop and _tui_decision_requires_transient_tool_evidence(decision)
+    if use_model_loop and (decision.complexity == "complex" or transient_tool_probe):
         model_answered = _run_tui_read_only_model_answer(args, decision, state)
     if not model_answered:
-        if use_model_loop:
-            state._record_progress("Model read-only answer was unavailable; using bounded workspace inspection.")
-        activity, answer = _build_read_only_answer(
-            workspace_root,
-            objective,
-            decision,
-            context_text=_tui_read_only_context_text(args, objective),
-        )
-        for line in activity:
-            state._record_progress(line)
-            _emit_tui_stream_line(args, line)
-        for line in answer:
-            state._record_answer(line)
+        if transient_tool_probe:
+            state._record_result("Transient browser/desktop tool answer was unavailable; workspace files were not inspected.")
+            state._record_answer(
+                "I could not complete the browser/desktop tool probe from the allowed transient tools. "
+                "No workspace files were inspected as a substitute."
+            )
+        else:
+            if use_model_loop:
+                state._record_progress("Model read-only answer was unavailable; using bounded workspace inspection.")
+            activity, answer = _build_read_only_answer(
+                workspace_root,
+                objective,
+                decision,
+                context_text=_tui_read_only_context_text(args, objective),
+            )
+            for line in activity:
+                state._record_progress(line)
+                _emit_tui_stream_line(args, line)
+            for line in answer:
+                state._record_answer(line)
     state.status = "completed"
     state.phase = "done"
     state.current_step = "Read-only answer ready"
@@ -8863,9 +9604,129 @@ def _run_tui_read_only(
                 "lane": decision.lane,
                 "intent_rationale": decision.rationale,
                 "communication_policy": decision.communication_policy.to_payload(),
+                "execution_policy": decision.execution_policy.to_payload(),
+                "surface_policy": decision.surface_policy.to_payload(),
             },
         )
     return 0
+
+
+def _run_tui_direct_validation_gate_if_applicable(
+    args: argparse.Namespace,
+    decision: TuiIntentDecision,
+) -> int | None:
+    if bool(getattr(args, "plan_only", False)) or not _tui_decision_is_direct_validation_gate(decision):
+        return None
+    workspace_root = normalize_workspace_root(str(args.workspace))
+    objective = str(getattr(args, "target", "") or "").strip()
+    state = SuperTuiState(
+        objective=objective,
+        workspace=str(workspace_root),
+        status="running",
+        phase="validation",
+        debug_events=bool(getattr(args, "raw_events", False)),
+    )
+    state.started_at_monotonic = _ensure_tui_turn_started_at(args)
+    state.set_intent_decision(decision)
+    timeout_seconds = _tui_direct_validation_timeout_seconds(decision)
+    probes = _tui_validation_command_probes(args, workspace_root)
+    if not probes:
+        state.status = "blocked"
+        state.phase = "blocked"
+        state.current_step = "No reusable validation command found"
+        state.ended_at_monotonic = time.monotonic()
+        state._record_answer(
+            "I do not see a reusable validation command in this workspace, so I cannot give a fresh validation answer."
+        )
+        state._record_answer(
+            "Add or pass a validation command such as a project-local check script, then ask again."
+        )
+        _render_static_state(
+            state,
+            plain=bool(getattr(args, "plain", False)),
+            raw_events=bool(getattr(args, "raw_events", False)),
+        )
+        return 1
+
+    failed_probe: TuiValidationCommandProbe | None = None
+    failed_result: subprocess.CompletedProcess[str] | None = None
+    timed_out_probe: TuiValidationCommandProbe | None = None
+    completed: list[tuple[TuiValidationCommandProbe, subprocess.CompletedProcess[str]]] = []
+
+    for probe in probes:
+        state.current_step = f"Running validation command: {probe.label}"
+        try:
+            result = _run_with_tui_working_clock(
+                args,
+                lambda probe=probe: _run_tui_validation_probe(
+                    workspace_root=workspace_root,
+                    probe=probe,
+                    timeout_seconds=timeout_seconds,
+                ),
+                label="Working",
+                started_at=state.started_at_monotonic,
+            )
+        except subprocess.TimeoutExpired:
+            timed_out_probe = probe
+            break
+        completed.append((probe, result))
+        if result.returncode != 0:
+            failed_probe = probe
+            failed_result = result
+            break
+
+    state.ended_at_monotonic = time.monotonic()
+    if timed_out_probe is not None:
+        state.status = "failed"
+        state.phase = "failed"
+        state.validation = "failed"
+        state.current_step = "Validation timed out"
+        state._record_answer(
+            f"No - fresh validation did not finish within {timeout_seconds}s: `{timed_out_probe.label}`."
+        )
+        _append_unique(state.blockers, f"Validation timed out after {timeout_seconds}s: {timed_out_probe.label}")
+    elif failed_probe is not None and failed_result is not None:
+        state.status = "failed"
+        state.phase = "failed"
+        state.validation = "failed"
+        state.current_step = f"Validation failed: {failed_probe.label}"
+        state._record_answer(
+            f"No - fresh validation failed (exit {failed_result.returncode}): `{failed_probe.label}`."
+        )
+        for line in _tui_validation_output_tail(failed_result.stdout, failed_result.stderr):
+            state._record_answer(f"Last output: {line}")
+        _append_unique(state.blockers, f"Validation failed: {failed_probe.label}")
+    else:
+        state.status = "completed"
+        state.phase = "done"
+        state.validation = "passed"
+        labels = ", ".join(f"`{probe.label}`" for probe, _result in completed) or "`validation command`"
+        cache_note = " cached discovery" if any(probe.cache_hit for probe, _result in completed) else ""
+        state.current_step = "Validation passed"
+        state._record_answer(f"Yes - fresh validation passed via {labels}.{cache_note}")
+
+    _render_direct_validation_state(
+        state,
+        plain=bool(getattr(args, "plain", False)),
+        raw_events=bool(getattr(args, "raw_events", False)),
+    )
+    transcript_workspace = str(getattr(args, "_tui_transcript_workspace", "") or "").strip()
+    if transcript_workspace:
+        _append_tui_transcript_entry(
+            Path(transcript_workspace),
+            role="assistant_final",
+            text=state.transcript_summary(exit_code=0 if state.status == "completed" else 1),
+            metadata={
+                "status": state.status,
+                "lane": decision.lane,
+                "intent_rationale": decision.rationale,
+                "communication_policy": decision.communication_policy.to_payload(),
+                "execution_policy": decision.execution_policy.to_payload(),
+                "surface_policy": decision.surface_policy.to_payload(),
+                "validation_gate": True,
+            },
+        )
+    return 0 if state.status == "completed" else 1
 
 
 def _run_tui_simple_write(
@@ -8899,7 +9760,7 @@ def _run_tui_simple_write(
                 phase="complex write",
                 debug_events=bool(getattr(args, "raw_events", False)),
             )
-            state.started_at_monotonic = time.monotonic()
+            state.started_at_monotonic = _ensure_tui_turn_started_at(args)
             state.set_intent_decision(
                 TuiIntentDecision(
                     permission="write",
@@ -8928,7 +9789,7 @@ def _run_tui_simple_write(
         phase=decision.lane,
         debug_events=bool(getattr(args, "raw_events", False)),
     )
-    state.started_at_monotonic = time.monotonic()
+    state.started_at_monotonic = _ensure_tui_turn_started_at(args)
     state.set_intent_decision(decision)
     state.current_step = "Simple write request"
     state._record_progress("Simple write route selected.")
@@ -9008,7 +9869,7 @@ def _render_tui_clarification(args: argparse.Namespace, decision: TuiIntentDecis
         phase="clarification",
         debug_events=bool(getattr(args, "raw_events", False)),
     )
-    state.started_at_monotonic = float(getattr(args, "_tui_turn_started_at", 0.0) or time.monotonic())
+    state.started_at_monotonic = _ensure_tui_turn_started_at(args)
     state.ended_at_monotonic = time.monotonic()
     state.set_intent_decision(decision)
     state.current_step = "Clarification needed"
@@ -9041,8 +9902,7 @@ def _dispatch_tui_turn(
 ) -> int:
     target_text = str(getattr(args, "target", "") or "").strip()
     lowered_target = target_text.lower()
-    turn_started_at = float(getattr(args, "_tui_turn_started_at", 0.0) or time.monotonic())
-    setattr(args, "_tui_turn_started_at", turn_started_at)
+    _ensure_tui_turn_started_at(args)
     workspace_root = normalize_workspace_root(str(args.workspace))
     _set_tui_surface_attachments_from_text(args, workspace_root, target_text)
     _set_tui_surface_context_from_transcript(args, workspace_root, current_text=target_text)
@@ -9113,13 +9973,24 @@ def _dispatch_tui_turn(
         if not target_text:
             _render_tui_text_command(args, "Help", "Usage: /new <objective>")
             return 0
+    elif (
+        _tui_async_agent_enabled(args)
+        and not lowered_target.startswith("/")
+        and _tui_has_visible_active_or_queued_work(workspace_root)
+    ):
+        rewritten = _rewrite_tui_continue_followup_as_append(target_text)
+        if rewritten != target_text:
+            target_text = rewritten
+            lowered_target = rewritten.lower()
+            setattr(args, "target", target_text)
     command = _parse_tui_run_command(target_text)
     if command is not None:
+        admission_text = _tui_run_command_submission_text(command, target_text)
         if _tui_async_agent_enabled(args) and command.command in {"append", "pause", "resume", "cancel"}:
             result = _submit_tui_async_admission(
                 args,
                 workspace_root=workspace_root,
-                text=target_text,
+                text=admission_text,
                 background=False,
             )
             _print_tui_stream_block(
@@ -9181,10 +10052,21 @@ def _dispatch_tui_turn(
     setattr(args, "_tui_intent_decision", decision)
     setattr(args, "_tui_communication_policy", decision.communication_policy.to_payload())
     setattr(args, "_tui_execution_policy", decision.execution_policy.to_payload())
+    setattr(args, "_tui_surface_policy", decision.surface_policy.to_payload())
     if decision.needs_clarification:
         return _render_tui_clarification(args, decision)
     if decision.lane == PLAN_MODE and not bool(getattr(args, "plan_only", False)):
         return _run_tui_plan_mode(args, target_text)
+    direct_validation_exit = _run_tui_direct_validation_gate_if_applicable(args, decision)
+    if direct_validation_exit is not None:
+        return direct_validation_exit
+    if _tui_decision_is_transient_tool_answer(decision) and not bool(getattr(args, "plan_only", False)):
+        decision = _tui_transient_tool_answer_decision(decision)
+        setattr(args, "_tui_intent_decision", decision)
+        setattr(args, "_tui_communication_policy", decision.communication_policy.to_payload())
+        setattr(args, "_tui_execution_policy", decision.execution_policy.to_payload())
+        setattr(args, "_tui_surface_policy", decision.surface_policy.to_payload())
+        return _run_tui_read_only(args, decision, use_model_loop=True)
     if decision.complexity == "narrator" and not bool(getattr(args, "plan_only", False)):
         use_model_loop = bool(routed_with_model or getattr(args, "_model_explicit", False))
         return _run_tui_narrator(args, decision, use_model_loop=use_model_loop)
@@ -9205,6 +10087,7 @@ def _dispatch_tui_turn(
             setattr(args, "_tui_intent_decision", decision)
             setattr(args, "_tui_communication_policy", decision.communication_policy.to_payload())
             setattr(args, "_tui_execution_policy", decision.execution_policy.to_payload())
+            setattr(args, "_tui_surface_policy", decision.surface_policy.to_payload())
         else:
             return _run_tui_simple_write(args, decision, parser)
     if (
@@ -9234,6 +10117,7 @@ def _dispatch_tui_turn(
                     forced_new=forced_new,
                     communication_policy=decision.communication_policy,
                     execution_policy=decision.execution_policy,
+                    surface_policy=decision.surface_policy,
                 )
             else:
                 _append_tui_transcript_entry(
@@ -9536,7 +10420,14 @@ class TuiChatboxTurnScheduler:
         *,
         replace_existing: bool = False,
     ) -> None:
-        del detail
+        if str(detail or "").strip():
+            _print_tui_chatbox_thinking_block(
+                [_tui_chatbox_status_text(started_at, status_label="Routing"), str(detail).strip()],
+                plain=self._plain,
+                replace_existing=replace_existing,
+                status_label="Routing",
+            )
+            return
         _refresh_tui_chatbox_status_block(
             started_at,
             status_label="Routing",
@@ -9753,8 +10644,18 @@ def _interactive_loop(args: argparse.Namespace, parser: argparse.ArgumentParser)
             lowered = objective.lower()
             forced_new = True
             _clear_tui_pending_plan_state(workspace_root)
+        elif (
+            _tui_async_agent_enabled(args)
+            and not lowered.startswith("/")
+            and _tui_has_visible_active_or_queued_work(workspace_root)
+        ):
+            rewritten = _rewrite_tui_continue_followup_as_append(objective)
+            if rewritten != objective:
+                objective = rewritten
+                lowered = objective.lower()
         command = _parse_tui_run_command(objective)
         if command is not None:
+            admission_text = _tui_run_command_submission_text(command, objective)
             if async_agent_enabled and command.command in {"append", "pause", "resume", "cancel"}:
                 _append_tui_transcript_entry(
                     workspace_root,
@@ -9765,7 +10666,7 @@ def _interactive_loop(args: argparse.Namespace, parser: argparse.ArgumentParser)
                 result = _submit_tui_async_admission(
                     args,
                     workspace_root=workspace_root,
-                    text=objective,
+                    text=admission_text,
                     background=False,
                 )
                 if result.ok:

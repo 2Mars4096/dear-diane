@@ -46,14 +46,38 @@ DEFAULT_LIVE_ORGANISM_TOOL_IDS = [
 ]
 # ``shell_command`` is intentionally treated as mutation-capable here because the
 # current standalone shell tool accepts arbitrary commands rather than a
-# constrained read-only subset.
-_READ_ONLY_TOOL_EXCLUSIONS = frozenset({"file_edit", "file_write", "shell_command"})
+# constrained read-only subset. Browser/desktop actions that navigate, click, type,
+# download, or focus are likewise excluded from read-only stages; observation and
+# extraction tools remain available.
+_READ_ONLY_TOOL_EXCLUSIONS = frozenset(
+    {
+        "file_edit",
+        "file_write",
+        "shell_command",
+        "browser_open",
+        "browser_click",
+        "browser_fill",
+        "browser_type",
+        "browser_select",
+        "browser_download",
+        "desktop_focus",
+        "desktop_click",
+        "desktop_type",
+        "desktop_hotkey",
+    }
+)
 _DISCOVERY_ONLY_TOOL_IDS = frozenset(
     {
         "list_directory",
         "file_read",
         "workspace_check",
         "web_search",
+        "browser_tabs",
+        "browser_inspect",
+        "browser_wait",
+        "browser_extract",
+        "browser_screenshot",
+        "desktop_observe",
         "git_status",
         "git_diff",
         "git_log",
@@ -1246,6 +1270,9 @@ def _tool_use_policy(tool_ids: Sequence[str]) -> str:
         lines.append(
             "- Prefer explicit line windows with `start_line`/`end_line` for code inspection. Do not rely on shell `grep`/`sed`/`awk`, regex searches, or other fixed-pattern matching to locate edit sites when `file_read` is available."
         )
+        lines.append(
+            "- Reuse unchanged `file_read` context already present in this tool loop; only refresh a file when it may have changed or exact line grounding is needed for the next edit."
+        )
     if "workspace_check" in available:
         lines.append(
             "- Use `workspace_check` before `shell_command` for deterministic file existence, literal/regex counts, HTML tag balance, and Python/JSON syntax checks."
@@ -2349,6 +2376,66 @@ def _workspace_snapshot_diff(
         or bool(after.get("truncated") if isinstance(after, Mapping) else False)
         or len(changed_all) > max_paths,
     }
+
+
+def _tool_path_for_cache(path: Any, *, workspace_root: Path) -> Path | None:
+    text = str(path or "").strip()
+    if not text:
+        return None
+    root = Path(workspace_root).expanduser().resolve()
+    if text == "/workspace":
+        candidate = root
+    elif text.startswith("/workspace/"):
+        candidate = root / text[len("/workspace/") :]
+    else:
+        raw = Path(text).expanduser()
+        candidate = raw if raw.is_absolute() else root / raw
+    try:
+        return candidate.resolve()
+    except OSError:
+        return None
+
+
+def _tool_file_fingerprint(path: Any, *, workspace_root: Path) -> tuple[str, int, int, int, int] | None:
+    candidate = _tool_path_for_cache(path, workspace_root=workspace_root)
+    if candidate is None:
+        return None
+    try:
+        stat = candidate.stat()
+    except OSError:
+        return None
+    if not candidate.is_file():
+        return None
+    return (
+        str(candidate),
+        int(getattr(stat, "st_ino", 0)),
+        int(stat.st_size),
+        int(stat.st_mtime_ns),
+        int(getattr(stat, "st_ctime_ns", 0)),
+    )
+
+
+def _file_read_cache_key(
+    arguments: Mapping[str, Any],
+    *,
+    workspace_root: Path,
+) -> tuple[Any, ...] | None:
+    path_text = str(
+        arguments.get("path")
+        or arguments.get("file_path")
+        or arguments.get("filepath")
+        or ""
+    ).strip()
+    candidate = _tool_path_for_cache(path_text, workspace_root=workspace_root)
+    if candidate is None:
+        return None
+    return (
+        str(candidate),
+        arguments.get("start_line"),
+        arguments.get("end_line"),
+        str(arguments.get("grep") or ""),
+        str(arguments.get("encoding") or "utf-8"),
+    )
 
 
 def _shell_workspace_change_paths(tool: Mapping[str, Any]) -> list[str]:
@@ -4671,6 +4758,7 @@ class ToolLoopCompletionProvider:
         messages.append({"role": "user", "content": _completion_request_user_content(request)})
 
         executed_tools: list[dict[str, Any]] = []
+        file_read_result_cache: dict[tuple[Any, ...], tuple[tuple[str, int, int, int, int], Any]] = {}
         rounds = 0
         total_tool_calls = 0
         usage_totals: dict[str, int] = {}
@@ -5699,25 +5787,79 @@ class ToolLoopCompletionProvider:
                         )
                     )
                 else:
-                    try:
-                        result = await self._tool_runtime.call(
-                            tool_id,
-                            arguments,
-                            worker_id=worker_id,
-                            tool_call_id=tool_call_id,
-                            parent_model_call_id=model_call_id,
-                            event_context=event_context,
+                    file_read_cache_key = (
+                        _file_read_cache_key(arguments, workspace_root=self._tool_runtime.workspace_root)
+                        if tool_id == "file_read"
+                        else None
+                    )
+                    file_read_fingerprint_before = (
+                        _tool_file_fingerprint(
+                            arguments.get("path")
+                            or arguments.get("file_path")
+                            or arguments.get("filepath"),
+                            workspace_root=self._tool_runtime.workspace_root,
                         )
-                    except Exception as exc:
-                        tool_payload = {
-                            "ok": False,
-                            "error": f"{type(exc).__name__}: {exc}",
-                        }
-                    else:
+                        if file_read_cache_key is not None
+                        else None
+                    )
+                    cached_file_read = (
+                        file_read_result_cache.get(file_read_cache_key)
+                        if file_read_cache_key is not None and file_read_fingerprint_before is not None
+                        else None
+                    )
+                    if (
+                        cached_file_read is not None
+                        and cached_file_read[0] == file_read_fingerprint_before
+                    ):
+                        result = copy.deepcopy(cached_file_read[1])
                         tool_payload = {
                             "ok": True,
                             "result": result,
+                            "cache_hit": True,
                         }
+                        self._emit_event(
+                            "tool.cache_hit",
+                            tool_id=tool_id,
+                            arguments=dict(arguments),
+                            path=str(file_read_cache_key[0]),
+                            **event_context,
+                        )
+                    else:
+                        try:
+                            result = await self._tool_runtime.call(
+                                tool_id,
+                                arguments,
+                                worker_id=worker_id,
+                                tool_call_id=tool_call_id,
+                                parent_model_call_id=model_call_id,
+                                event_context=event_context,
+                            )
+                        except Exception as exc:
+                            tool_payload = {
+                                "ok": False,
+                                "error": f"{type(exc).__name__}: {exc}",
+                            }
+                        else:
+                            tool_payload = {
+                                "ok": True,
+                                "result": result,
+                            }
+                            if (
+                                tool_id == "file_read"
+                                and file_read_cache_key is not None
+                                and file_read_fingerprint_before is not None
+                            ):
+                                file_read_fingerprint_after = _tool_file_fingerprint(
+                                    arguments.get("path")
+                                    or arguments.get("file_path")
+                                    or arguments.get("filepath"),
+                                    workspace_root=self._tool_runtime.workspace_root,
+                                )
+                                if file_read_fingerprint_after == file_read_fingerprint_before:
+                                    file_read_result_cache[file_read_cache_key] = (
+                                        file_read_fingerprint_after,
+                                        copy.deepcopy(result),
+                                    )
 
                 current_tool = _record_tool_result(
                     tool_id=tool_id,

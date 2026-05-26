@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 
 import pytest
 
+from dan.agent_runtime.capability_calls import (
+    PendingCapabilityCall,
+    annotate_capability_call_plan,
+    capability_cache_key,
+    execute_capability_call,
+)
 import dan.worker.organisms.local_runtime as local_runtime_module
 from dan.providers import CompletionResult
 from dan.worker.core.contracts import OutputContract
@@ -22,6 +29,16 @@ from dan.worker.organisms.super_organism import (
     resolve_super_organism_scenario,
     run_super_organism_demo,
 )
+
+
+@dataclass
+class _FakeCapabilityResult:
+    success: bool = True
+    message: str = "ok"
+    output_preview: str = ""
+    data: object = None
+    retryable: bool = False
+    error_type: str = ""
 
 
 def test_ranged_file_read_prompt_line_numbers_keep_source_offsets():
@@ -143,6 +160,42 @@ class _ContextLengthAfterOldWriteProvider:
         )
 
 
+class _RepeatedFileReadProvider:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def complete(self, messages, model, temperature=0.7, max_tokens=None, **kwargs):
+        self.calls.append({"messages": messages, "model": model, "tools": kwargs.get("tools")})
+        call_index = len(self.calls)
+        if call_index <= 2:
+            tool_call = {
+                "id": f"call-read-{call_index}",
+                "type": "function",
+                "function": {
+                    "name": "file_read",
+                    "arguments": json.dumps({"path": "notes/context.txt"}),
+                },
+            }
+            return CompletionResult(
+                text="",
+                model=model,
+                tool_calls=[tool_call],
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [tool_call],
+                },
+            )
+        return CompletionResult(
+            text=json.dumps({"candidate_id": "cached-read"}),
+            model=model,
+            raw_assistant_message={
+                "role": "assistant",
+                "content": json.dumps({"candidate_id": "cached-read"}),
+            },
+        )
+
+
 def test_default_distribution_builds_20_logical_cells() -> None:
     distribution = resolve_super_organism_distribution(DEFAULT_SUPER_ORGANISM_CELL_COUNT)
 
@@ -162,6 +215,117 @@ def test_default_distribution_builds_20_logical_cells() -> None:
     assert cells[0].cell_id == "brain-001"
     assert cells[-1].cell_id == "synthesis-002"
     assert cells[0].organ == SuperOrgan.BRAIN
+
+
+@pytest.mark.asyncio
+async def test_tool_loop_reuses_unchanged_file_read_without_repeating_tool_events(tmp_path) -> None:
+    events: list[dict[str, object]] = []
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "notes" / "context.txt").write_text("stable context\n", encoding="utf-8")
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["file_read"],
+        workspace_root=tmp_path,
+        event_callback=events.append,
+    )
+    provider = ToolLoopCompletionProvider(
+        provider=_RepeatedFileReadProvider(),
+        tool_runtime=runtime,
+        default_model="gpt-test",
+        max_rounds=4,
+        max_tool_calls=4,
+        event_callback=events.append,
+    )
+
+    response = await provider.complete(
+        CompletionRequest(
+            model="gpt-test",
+            system_prompt="Read the same file twice and return JSON.",
+            user_prompt="Read twice.",
+            metadata={"worker_id": "worker-cache"},
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "file_read",
+                        "description": "Read a file.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"],
+                        },
+                    },
+                }
+            ],
+        )
+    )
+
+    event_names = [str(event.get("event") or "") for event in events]
+    assert json.loads(response.text) == {"candidate_id": "cached-read"}
+    assert event_names.count("tool.completed") == 1
+    assert event_names.count("tool.cache_hit") == 1
+    assert response.raw["executed_tools"][1]["cache_hit"] is True
+
+
+@pytest.mark.asyncio
+async def test_capability_file_read_cache_requires_current_fingerprint() -> None:
+    pending = annotate_capability_call_plan(
+        [PendingCapabilityCall("file_read", {"path": "notes.md"}, '{"path": "notes.md"}', "event_1")],
+        is_cacheable=lambda name: True,
+        cache_key_for=capability_cache_key,
+    )[0]
+    cached = _FakeCapabilityResult(message="cached file")
+
+    async def _dispatch(_tool_name: str, _args: object) -> _FakeCapabilityResult:
+        raise AssertionError("dispatch should not run for a matching file fingerprint")
+
+    outcome = await execute_capability_call(
+        pending,
+        dispatch=_dispatch,
+        make_error_result=lambda exc: _FakeCapabilityResult(success=False, message=str(exc)),
+        tool_result_cache={pending.cache_key: _FakeCapabilityResult(message="untrusted exact cache")},
+        file_read_cache={"notes.md": [(1, float("inf"), ("fingerprint", 1), cached)]},
+        file_fingerprint_for=lambda _path: ("fingerprint", 1),
+        max_retryable_retries=1,
+    )
+
+    assert outcome.cache_hit is True
+    assert outcome.cap_result.message == "cached file"
+
+
+@pytest.mark.asyncio
+async def test_capability_file_read_cache_rereads_after_fingerprint_change() -> None:
+    pending = annotate_capability_call_plan(
+        [PendingCapabilityCall("file_read", {"path": "notes.md"}, '{"path": "notes.md"}', "event_1")],
+        is_cacheable=lambda name: True,
+        cache_key_for=capability_cache_key,
+    )[0]
+    calls = 0
+
+    async def _dispatch(_tool_name: str, _args: object) -> _FakeCapabilityResult:
+        nonlocal calls
+        calls += 1
+        return _FakeCapabilityResult(
+            message="fresh file",
+            data={"returned_start_line": 1, "returned_end_line": 4, "truncated": False},
+        )
+
+    file_read_cache: dict[str, list[tuple[int, float, object, _FakeCapabilityResult]]] = {
+        "notes.md": [(1, float("inf"), ("old", 1), _FakeCapabilityResult(message="stale"))]
+    }
+    outcome = await execute_capability_call(
+        pending,
+        dispatch=_dispatch,
+        make_error_result=lambda exc: _FakeCapabilityResult(success=False, message=str(exc)),
+        tool_result_cache={pending.cache_key: _FakeCapabilityResult(message="untrusted exact cache")},
+        file_read_cache=file_read_cache,
+        file_fingerprint_for=lambda _path: ("new", 2),
+        max_retryable_retries=1,
+    )
+
+    assert calls == 1
+    assert outcome.cache_hit is False
+    assert outcome.cap_result.message == "fresh file"
+    assert file_read_cache["notes.md"][-1][2] == ("new", 2)
 
 
 def test_file_edit_stale_old_string_nudge_prefers_line_range_not_rewrite() -> None:

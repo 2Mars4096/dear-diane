@@ -2968,6 +2968,27 @@ def test_live_context_routes_ambiguous_request_to_generic_workspace_lane(tmp_pat
     assert choice.intent_signal.artifact_target == "workspace"
 
 
+def test_live_context_forwards_surface_capability_packs_to_dispatch(tmp_path) -> None:
+    args = build_parser().parse_args(
+        [
+            "operate the active browser and desktop",
+            "--live",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+    args._artifact_dir_explicit = False
+    args._code_like_live = True
+    args._tui_surface_policy = {"capability_packs": ["computer_control"]}
+    report = super_cli.run_super_organism_demo(args.target)
+
+    choice = super_cli._super_live_choice(report, args)
+
+    assert choice.orchestrator_id == "super-dan-live-general"
+    assert "browser_inspect" in choice.tool_policy["allowed_tool_ids"]
+    assert "desktop_observe" in choice.tool_policy["allowed_tool_ids"]
+
+
 def test_live_context_routes_creation_request_to_generic_workspace_lane_without_text_cues(tmp_path) -> None:
     animation_root = tmp_path / "animation"
     args = build_parser().parse_args(
@@ -3231,9 +3252,13 @@ def test_super_dan_live_brief_carries_surface_conversation_context(tmp_path) -> 
     args = argparse.Namespace(_surface_history=history, _surface_context=surface_context)
 
     request = super_cli._request_from_live_brief(brief, args=args)
+    prompt = request.metadata["brief_rendered_user_prompt"]
 
     assert request.input_payload["surface_history"] == history
     assert request.input_payload["surface_context"] == surface_context
+    assert request.input_payload["surface_already_known"]["content"] == "Created the combined report."
+    assert "Here is what we already know from the recent surface conversation" in prompt
+    assert "Treat clearly stated prior assistant findings as starting facts" in prompt
     assert request.metadata["surface_history"] == history
     assert request.metadata["surface_context"] == surface_context
 
@@ -4832,6 +4857,62 @@ def test_source_file_repair_objective_skips_run_local_planner() -> None:
         )
         is False
     )
+
+
+def test_targeted_source_repair_objective_skips_run_local_planner() -> None:
+    objective = (
+        "Fix the current failing test: parser initialization raises ValueError. "
+        "Make a targeted code edit and rerun pytest."
+    )
+
+    assert super_cli._super_is_targeted_source_repair_objective(objective)
+    assert (
+        super_cli._super_should_run_planner(
+            objective,
+            operator_intent_policy=super_cli.OperatorIntentPolicy(),
+            prompt_only_creation_target=None,
+            tool_ids=["file_read", "file_write", "file_edit"],
+        )
+        is False
+    )
+
+
+def test_main_live_targeted_repair_prompt_requires_material_edit_or_blocker(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    fake_provider = _FakeLiveCodingProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            (
+                "Fix the current failing test: parser initialization raises ValueError. "
+                "Make a targeted code edit and rerun pytest."
+            ),
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "[planning] started" not in stdout
+    assert fake_provider.calls == 3
+    assert fake_provider.rendered_messages
+    first_prompt = fake_provider.rendered_messages[0]
+    assert "targeted_source_repair" in first_prompt
+    assert "make a concrete file_edit/file_write mutation" in first_prompt
+    assert "report a precise blocker" in first_prompt
+    assert "Do not create `.dan-super` plan files" in first_prompt
 
 
 def test_main_live_generic_dag_deferred_tasks_do_not_trigger_repair(
