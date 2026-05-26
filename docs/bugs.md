@@ -1,5 +1,11 @@
 # Known Issues & Failed Approaches
 
+- ~~**P1: Super DAN live shell commands can hang past the requested validation budget.**~~ **FIXED 2026-05-26.** The disposable `short-validation-truth` live eval supplied `working_directory: "."`; the runtime resolved that against the parent process cwd instead of the active workspace, starting repo-level `python -m pytest -q` instead of the tiny fixture. The sandbox timeout then killed only the shell wrapper, leaving the child pytest process alive and the tool call open. Relative shell working directories now resolve against the workspace root, and raw/sandboxed shell timeouts kill the subprocess session.
+- **Failed approach recorded:** relying on `--validation-timeout`, `--max-tool-rounds`, or local command speed is not sufficient if a shell wrapper can leave a child process alive. Timeout cleanup must kill the process tree, and workspace-relative cwd handling must happen before invoking shell tools.
+
+- ~~**P2: Super DAN capability scorer misread live event logs.**~~ **FIXED 2026-05-26.** The first scorer pass missed artifacts that live traces store in `tool.completed.result.path`, `changed_required_files`, and implementation capsules; it also over/under-counted tokens by mixing cumulative `usage_totals` with per-call usage and treated generic `tool.completed` rows as run completion. The scorer now parses live mutation fields, sums per-call model usage, recognizes pytest shell evidence, and requires a terminal `run.log.completed`/`run.log.failed` event.
+- **Failed approach recorded:** event-log scoring cannot assume one flat synthetic schema. Live traces include staged workers, reused model-call ids, cumulative usage totals, capsules, and incomplete heartbeat-only tails; the evaluator must treat those fields explicitly.
+
 - ~~**P3: `#workspace` Notes graph pages rendered like ordinary Markdown instead of the knowledge-base graph.**~~ **FIXED 2026-05-26.** The Notes preview now detects Hugo `layout: graph`, `graph.md`, and `/graph/` pages and renders an interactive pageID citation graph built from backend `layout` and `citations` metadata.
 - **Failed approach recorded:** graph pages should not be approximated with raw Markdown or a separate app mode. The Notes preview can stay inside the same workspace surface and render the graph from Hugo/pageID metadata.
 

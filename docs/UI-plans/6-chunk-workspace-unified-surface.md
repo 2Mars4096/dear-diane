@@ -75,6 +75,10 @@
   - [x] 6-41. Adapt the latest GUI workspace behavior to Flutter phone pages: workspace-root dropdowns, file browsing/preview, Super DAN Work sends, cached live Notes preview, Edit/Read scroll restoration, and query-gated `@pageID` suggestions
   - [x] 6-42. Render Hugo `layout: graph` knowledge-base pages as an interactive Notes knowledge graph from pageID citations
   - [x] 6-43. Move development-root typing and suggestions into the Work header and derive workspace names from the selected root folder
+  - [x] 6-44. Add fast Hugo note/folder creation from the Notes rail with preset frontmatter and title-field focus
+  - [x] 6-45. Add server-backed drag/drop move operations for Notes entries and Work files/folders
+  - [x] 6-46. Widen the Notes preview page so prose and metadata use the available horizontal space
+  - [x] 6-47. Rename generated Hugo note bundle folders from the note title on save
 
 ## Decisions
 - The workspace route is a surface, not another product mode.
@@ -109,6 +113,10 @@
 - Workspace switching is header-level, while the Sessions rail is session management. Work sessions and Notes content share one persisted left-rail width so resizing either rail keeps the two peer workspaces visually aligned.
 - Hugo `layout: graph` pages should render as a dedicated knowledge graph in the Notes preview instead of raw Markdown. The graph is built from pageID metadata plus `@pageID` citations exposed by `/api/workspace-notes`, matching the knowledge-base frontend's section/category filtering model without adding a heavy graph dependency.
 - Development-root switching should be reachable directly under the Work workspace name. The header root input accepts typed paths, shows recent/current/nearby dropdown suggestions, and uses the selected root folder name as the workspace label.
+- Notes creation should be Hugo-bundle-native. The Notes `+` menu creates either a blank-title note bundle or a folder-backed `index.md` page with date, lastmod, pageID, author, tags/categories, aliases, images, math, and toc frontmatter preset, then focuses the title field for immediate typing.
+- Drag/drop move is server-backed for both roots. Notes move Markdown files or Hugo bundle folders inside the notes root; Work moves files/folders inside the selected development root. The backend rejects root escape, overwrites, and self-nesting moves.
+- Notes preview should default wider than a narrow reading column. The preview keeps the same chrome but lets pages expand up to the available pane width for dense research notes.
+- Generated Hugo note bundle paths should become title-derived slugs, but only at save time and only while the bundle folder still has an auto-generated placeholder name. Existing custom folders are left stable to avoid surprising URL churn.
 - Session lifecycle controls stay inside the Sessions/Conversation surface. Stop sends the existing V2 Agent-run `stop` command and waits for backend safe-boundary handling; archive is a soft Chat V2 thread metadata flag that moves sessions into an `Archived` rail group without deleting history. Session cards support both explicit archive/restore buttons and horizontal swipe archive/restore gestures.
 - Flutter Phone VPN controls use explicit `Force start` / `Force off` wording because they operate on the app-managed Android `dan-phone` tunnel, while the browser/backend WireGuard endpoint remains read-only host status.
 - Flutter Settings treats routing and authorization as separate concerns. Phone VPN controls manage Android routing to the DAN host; the Access token field is saved separately and sent as `Authorization: Bearer ...` on API probes and Notes calls when populated.
@@ -118,6 +126,8 @@
 - Flutter Notes Read uses a backend cached `/api/workspace-notes/preview` contract. The editor keeps raw Hugo Markdown editable, while Read mode consumes frontmatter-stripped, Hugo-normalized preview Markdown and preserves its scroll position separately from Edit.
 
 ## Notes
+- 2026-05-26: Added quick Notes creation and drag/drop organization. Notes `+` now opens New note/New folder actions that create Hugo bundle `index.md` pages with rich frontmatter presets and focus the title field; Notes and Work trees can move entries by drag/drop through root-contained backend move endpoints. The Notes preview article width was expanded to make better use of large displays.
+- 2026-05-26: Added title-slug synchronization for newly generated Notes bundles. On save, server-backed `note-*` / `untitled-*` / generated folder bundles are moved to a folder slug derived from the frontmatter title, while existing named folders remain untouched.
 - 2026-05-26: Added browser Notes knowledge-graph rendering for Hugo `layout: graph` pages, renamed the content facet from Folders to Categories, and moved typed development-root switching with suggestions into the Work header. `npm run build`, `npm run bundle:check`, and `py_compile` pass for the touched browser/backend paths.
 - 2026-05-22: Adapted the latest GUI workspace changes into the Flutter phone app. Settings and Files now support workspace-root suggestions, Work Chat can actually submit Super DAN work, Files can browse/read the selected root, Notes Read uses the new cached live preview endpoint with Hugo shortcode/pageID formatting, Edit autosaves before switching to Read, and Edit/Read scroll offsets are restored independently. The old backend PID was terminated at the operator's request; after the operator-started backend appeared on port 8000, live probes passed for health, workspace-root suggestions, workspace files/read, workspace notes/list/preview, and Agent-run admission. The smoke Agent run was left unexecuted and then sent a stop request.
 - 2026-05-22: Generated an ignored DAN phone Android WireGuard peer config at `ops/wireguard/generated/dan-phone-android.conf`, baked it into `mobile/dist/dan-phone.apk`, and added `ops/wireguard/register-dan-phone-peer.sh` for the NY relay. Relay registration is still sudo-gated: `sudo -n` on `ny` requires a password, so the server peer must be registered with sudo before the new phone tunnel can handshake.
