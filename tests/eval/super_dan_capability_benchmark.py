@@ -340,6 +340,7 @@ def load_event_log_observation(
     first_time: float | None = None
     last_time: float | None = None
     max_elapsed = 0.0
+    run_terminal_event_seen = False
 
     def add_artifact(value: Any) -> None:
         text = str(value or "").strip()
@@ -372,10 +373,10 @@ def load_event_log_observation(
         row_status = str(event.get("status") or "").strip().lower()
         if event_name == "run.log.completed":
             status = row_status or "completed"
+            run_terminal_event_seen = True
         elif event_name == "run.log.failed":
             status = "failed"
-        elif row_status in {"completed", "failed", "error", "stopped", "cancelled"}:
-            status = row_status
+            run_terminal_event_seen = True
 
         if event.get("validation_passed") is not None:
             validation_passed = validation_passed or bool(event.get("validation_passed"))
@@ -391,6 +392,17 @@ def load_event_log_observation(
                 tests_passed += 1
             else:
                 tests_failed += 1
+        if event_name.endswith("tool.completed") or event_name == "tool.completed":
+            tool_id = str(event.get("tool_id") or "").strip()
+            result = event.get("result") if isinstance(event.get("result"), Mapping) else {}
+            arguments = event.get("arguments") if isinstance(event.get("arguments"), Mapping) else {}
+            command = str(arguments.get("command") or "").lower()
+            if tool_id == "shell_command" and _looks_like_test_command(command):
+                exit_code = _safe_int(result.get("exit_code"), default=1)
+                if exit_code == 0:
+                    tests_passed += 1
+                else:
+                    tests_failed += 1
         tests_passed += max(0, _safe_int(event.get("tests_passed"), default=0))
         tests_failed += max(0, _safe_int(event.get("tests_failed"), default=0))
 
@@ -443,6 +455,8 @@ def load_event_log_observation(
             aggregate_usage_candidates,
             key=lambda usage: int(usage.get("total_tokens", 0) or 0),
         )
+    if events and not run_terminal_event_seen:
+        status = "incomplete"
 
     return SuperDanCapabilityObservation(
         case_id=case_id or path.parent.name,
@@ -550,6 +564,13 @@ def _bounded_efficiency(*, budget: float, actual: float) -> float:
 
 def _is_completed_status(status: str) -> bool:
     return str(status or "").strip().lower() in {"completed", "complete", "passed", "success", "done"}
+
+
+def _looks_like_test_command(command: str) -> bool:
+    text = command.strip().lower()
+    if not text:
+        return False
+    return any(marker in text for marker in ("pytest", "unittest", "npm test", "cargo test", "go test"))
 
 
 def _group_rows(rows: Sequence[Mapping[str, Any]], key: str) -> dict[str, dict[str, Any]]:

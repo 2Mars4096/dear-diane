@@ -219,6 +219,33 @@ def test_super_dan_event_log_reader_handles_live_tool_artifacts_and_usage_totals
     assert observation.output_quality_score == 0.88
 
 
+def test_super_dan_event_log_reader_does_not_treat_tool_completion_as_run_completion(tmp_path) -> None:
+    event_log = tmp_path / "events.jsonl"
+    rows = [
+        {"event": "run.log.started", "timestamp": "2026-05-26T01:00:00+00:00"},
+        {
+            "event": "tool.completed",
+            "tool_id": "shell_command",
+            "timestamp": "2026-05-26T01:00:02+00:00",
+            "status": "completed",
+            "arguments": {"command": "python -m pytest -q"},
+            "result": {"exit_code": 0, "stdout": "1 passed\n"},
+        },
+        {
+            "event": "super.heartbeat",
+            "timestamp": "2026-05-26T01:01:10+00:00",
+            "elapsed_seconds": 70,
+        },
+    ]
+    event_log.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    observation = benchmark.load_event_log_observation(event_log, case_id="short-validation-truth")
+
+    assert observation.status == "incomplete"
+    assert observation.tests_passed == 1
+    assert observation.wall_time_seconds == 70
+
+
 def test_super_dan_capability_summary_groups_lengths_and_surfaces_outliers() -> None:
     cases = benchmark._benchmark_cases()
     observations = [
