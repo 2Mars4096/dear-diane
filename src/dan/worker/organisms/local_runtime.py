@@ -4284,6 +4284,18 @@ class LocalOrganismToolRuntime:
         kwargs["path"] = str(candidate.resolve())
         return kwargs
 
+    def _normalize_shell_working_directory(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        kwargs = dict(arguments or {})
+        raw_path = str(kwargs.get("working_directory") or "").strip()
+        if not raw_path:
+            kwargs["working_directory"] = str(self._workspace_root)
+            return kwargs
+        candidate = Path(raw_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = self._workspace_root / candidate
+        kwargs["working_directory"] = str(candidate.resolve())
+        return kwargs
+
     @staticmethod
     def _normalize_tool_arguments(
         tool_id: str,
@@ -4364,8 +4376,8 @@ class LocalOrganismToolRuntime:
                 "worker_id": str(worker_id or "").strip() or None,
             }
         )
-        if tool_id == "shell_command" and not str(kwargs.get("working_directory") or "").strip():
-            kwargs["working_directory"] = str(self._workspace_root)
+        if tool_id == "shell_command":
+            kwargs = self._normalize_shell_working_directory(kwargs)
         elif tool_id in {"git_status", "git_diff", "git_log"}:
             kwargs = self._normalize_git_tool_path(kwargs)
         self._emit_event(

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import fnmatch
 import json
 import logging
 import os
+import signal
 import tempfile
 import time
 from pathlib import Path
@@ -133,14 +135,14 @@ class SandboxRunner:
                 cwd=str(temp_dir),
                 env=env,
                 preexec_fn=preexec,
+                start_new_session=os.name != "nt",
             )
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(),
                 timeout=config.timeout_seconds,
             )
         except asyncio.TimeoutError:
-            proc.kill()  # type: ignore[union-attr]
-            await proc.wait()  # type: ignore[union-attr]
+            await _terminate_process_tree(proc)  # type: ignore[arg-type]
             duration_ms = (time.monotonic() - t0) * 1000
             return SandboxResult(
                 stdout="",
@@ -196,3 +198,22 @@ class SandboxRunner:
             return json.loads(result_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return None
+
+
+async def _terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
+    """Best-effort timeout cleanup for sandbox wrappers and their children."""
+    if proc.returncode is not None:
+        return
+    if os.name != "nt":
+        with suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+    else:
+        with suppress(ProcessLookupError):
+            proc.kill()
+    with suppress(Exception):
+        await asyncio.wait_for(proc.wait(), timeout=5)
+    if proc.returncode is None:
+        with suppress(ProcessLookupError):
+            proc.kill()
+        with suppress(Exception):
+            await proc.wait()

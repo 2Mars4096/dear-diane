@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import os
 import shlex
+import signal
 
 _TRUE_VALUES = {"true", "1", "yes", "on"}
 _FALSE_VALUES = {"false", "0", "no", "off"}
@@ -199,13 +201,13 @@ async def _run_raw(
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
             env=run_env,
+            start_new_session=os.name != "nt",
         )
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
             proc.communicate(), timeout=timeout
         )
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
+        await _terminate_process_tree(proc)
         return {
             "exit_code": -1,
             "stdout": "",
@@ -256,3 +258,22 @@ async def _run_sandboxed(
         "stdout": sandbox_result.stdout[:MAX_OUTPUT_SIZE],
         "stderr": sandbox_result.stderr[:MAX_OUTPUT_SIZE],
     }
+
+
+async def _terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
+    """Best-effort timeout cleanup for shell wrappers and their children."""
+    if proc.returncode is not None:
+        return
+    if os.name != "nt":
+        with suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+    else:
+        with suppress(ProcessLookupError):
+            proc.kill()
+    with suppress(Exception):
+        await asyncio.wait_for(proc.wait(), timeout=5)
+    if proc.returncode is None:
+        with suppress(ProcessLookupError):
+            proc.kill()
+        with suppress(Exception):
+            await proc.wait()

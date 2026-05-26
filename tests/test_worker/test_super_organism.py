@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import json
+import os
+import shlex
+import sys
 
 import pytest
 
@@ -39,6 +43,25 @@ class _FakeCapabilityResult:
     data: object = None
     retryable: bool = False
     error_type: str = ""
+
+
+def _pid_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+async def _wait_for_pid_exit(pid: int, *, timeout: float = 1.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        if not _pid_is_running(pid):
+            return
+        await asyncio.sleep(0.05)
+    assert not _pid_is_running(pid)
 
 
 def test_ranged_file_read_prompt_line_numbers_keep_source_offsets():
@@ -215,6 +238,85 @@ def test_default_distribution_builds_20_logical_cells() -> None:
     assert cells[0].cell_id == "brain-001"
     assert cells[-1].cell_id == "synthesis-002"
     assert cells[0].organ == SuperOrgan.BRAIN
+
+
+@pytest.mark.asyncio
+async def test_super_dan_runtime_resolves_relative_shell_cwd_against_workspace(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+    events: list[dict[str, object]] = []
+
+    async def _fake_shell_command(**kwargs):
+        captured["kwargs"] = dict(kwargs)
+        return {"exit_code": 0, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(
+        local_runtime_module,
+        "get_all_tools",
+        lambda: {
+            "shell_command": (
+                _fake_shell_command,
+                {
+                    "tool_id": "shell_command",
+                    "category": "system",
+                    "description": "fake shell",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["command"],
+                        "properties": {"command": {"type": "string"}},
+                    },
+                },
+            )
+        },
+    )
+    runtime = LocalOrganismToolRuntime(
+        tool_ids=["shell_command"],
+        workspace_root=tmp_path,
+        event_callback=events.append,
+    )
+
+    await runtime.call("shell_command", {"command": "pwd", "working_directory": "."})
+
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["working_directory"] == str(tmp_path.resolve())
+    started = next(event for event in events if event.get("event") == "tool.started")
+    assert isinstance(started.get("arguments"), dict)
+    assert started["arguments"]["working_directory"] == str(tmp_path.resolve())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sandbox_enabled", ["true", "0"])
+async def test_super_dan_shell_timeout_kills_child_processes(
+    tmp_path,
+    monkeypatch,
+    sandbox_enabled,
+) -> None:
+    monkeypatch.setenv("DAN_SANDBOX_SHELL", sandbox_enabled)
+    monkeypatch.delenv("DAN_SANDBOX_TIMEOUT", raising=False)
+    monkeypatch.delenv("DAN_SHELL_ALLOW", raising=False)
+    pid_file = tmp_path / "child.pid"
+    child_code = (
+        "import os, pathlib, time; "
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); "
+        "time.sleep(30)"
+    )
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(child_code)}"
+
+    from dan.tools.shell_command import shell_command
+
+    result = await shell_command(
+        command=command,
+        working_directory=str(tmp_path),
+        timeout=1,
+    )
+
+    assert result["exit_code"] == -1
+    assert "timed out" in result["stderr"].lower()
+    child_pid = int(pid_file.read_text(encoding="utf-8"))
+    await _wait_for_pid_exit(child_pid)
 
 
 @pytest.mark.asyncio
