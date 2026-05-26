@@ -364,6 +364,112 @@ export const listDocs = () =>
 export const listCodeRefs = (workflowId: string) =>
   request<{ refs: string[] }>(`/code-refs/${workflowId}`);
 
+export interface WorkspaceNoteSummary {
+  path: string;
+  relative_path: string;
+  title: string;
+  layout?: string;
+  section?: string;
+  tags?: string[];
+  categories?: string[];
+  citations?: string[];
+  page_id?: string;
+  date?: string;
+  lastmod?: string;
+  draft?: boolean;
+  size: number;
+  mtime: number;
+}
+
+export interface WorkspaceFileEntry {
+  path: string;
+  relative_path: string;
+  name: string;
+  parent: string;
+  is_directory: boolean;
+  size: number;
+  mtime: number;
+  depth: number;
+}
+
+export type WorkspaceRootSuggestionKind =
+  | "current"
+  | "match"
+  | "nearby"
+  | "workspace"
+  | "recent";
+
+export interface WorkspaceRootSuggestion {
+  path: string;
+  name: string;
+  label: string;
+  kind: WorkspaceRootSuggestionKind;
+}
+
+export interface WorkspaceWireGuardStatus {
+  service: "wireguard";
+  mode: string;
+  interface: string;
+  launchd_label: string;
+  config_path: string;
+  config_present: boolean;
+  active: boolean;
+  status: string;
+  wg_present: boolean;
+  wg_exit_code: number | null;
+  stdout: string;
+  stderr: string;
+  mutating_actions_enabled: boolean;
+  safe_actions: string[];
+  conflict_policy: string;
+}
+
+export const listWorkspaceNotes = () =>
+  request<{ root: string; notes: WorkspaceNoteSummary[] }>("/workspace-notes");
+
+export const readWorkspaceNote = (path: string, init?: RequestOptions) =>
+  request<{ note: WorkspaceNoteSummary; content: string }>(
+    `/workspace-notes/read?path=${encodeURIComponent(path)}`,
+    init,
+  );
+
+export const writeWorkspaceNote = (path: string, content: string) =>
+  request<{ status: string; note: WorkspaceNoteSummary | null }>(
+    "/workspace-notes/write",
+    {
+      method: "PUT",
+      body: JSON.stringify({ path, content }),
+    },
+  );
+
+export const listWorkspaceFileTree = (rootPath?: string) =>
+  request<{ root: string; entries: WorkspaceFileEntry[] }>(
+    rootPath ? `/workspace-files?root_path=${encodeURIComponent(rootPath)}` : "/workspace-files",
+  );
+
+export const listWorkspaceRootSuggestions = (query?: string) => {
+  const params = new URLSearchParams();
+  if (query?.trim()) params.set("query", query.trim());
+  const suffix = params.toString();
+  return request<{ root: string; suggestions: WorkspaceRootSuggestion[] }>(
+    `/workspace-roots${suffix ? `?${suffix}` : ""}`,
+  );
+};
+
+export const getWorkspaceWireGuardStatus = () =>
+  request<WorkspaceWireGuardStatus>("/workspace-wireguard");
+
+export const readWorkspaceFile = (path: string, rootPath?: string) => {
+  const params = new URLSearchParams({ path });
+  if (rootPath) params.set("root_path", rootPath);
+  return request<{
+    root: string;
+    file: WorkspaceFileEntry | null;
+    content: string;
+    truncated: boolean;
+  }>(`/workspace-files/read?${params.toString()}`);
+};
+
 export interface OrganismLogSummary {
   path: string;
   root_path: string;

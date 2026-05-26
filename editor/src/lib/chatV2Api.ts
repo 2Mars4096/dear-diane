@@ -69,6 +69,13 @@ export interface ChatV2AgentRunRecord {
   workspace_root: string;
   workspace_id: string;
   status: string;
+  command?: {
+    command?: string;
+    payload?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+  created_at?: string;
+  updated_at?: string;
   latest_event_type?: string;
   latest_summary?: string;
   metadata?: Record<string, unknown>;
@@ -90,6 +97,8 @@ export interface ChatV2ThreadSummary {
   created_at: string;
   updated_at: string;
   pinned?: boolean;
+  archived?: boolean;
+  archived_at?: string | null;
   mode?: string;
   parent_thread_id?: string | null;
   branch_point_message_id?: string | null;
@@ -157,6 +166,8 @@ export const CHAT_V2_ENDPOINTS = {
     `/api/chats/${workflowId}/${threadId}`,
   updateThread: (workflowId: string, threadId: string) =>
     `/api/chats/${workflowId}/${threadId}`,
+  archiveThread: (workflowId: string, threadId: string) =>
+    `/api/chats/${workflowId}/${threadId}/archive`,
   deleteThread: (workflowId: string, threadId: string) =>
     `/api/chats/${workflowId}/${threadId}`,
 } as const;
@@ -303,6 +314,20 @@ export async function deleteChatV2Thread(
   );
 }
 
+export async function archiveChatV2Thread(
+  workflowId: string,
+  threadId: string,
+  archived = true,
+): Promise<void> {
+  await readJson<{ status: string; archived: boolean }>(
+    await fetch(CHAT_V2_ENDPOINTS.archiveThread(workflowId, threadId), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ archived }),
+    }),
+  );
+}
+
 export async function postChatV2Message(body: {
   workflow_id: string;
   message: string;
@@ -386,6 +411,7 @@ export async function executeChatV2AgentRun(
   runId: string,
   body: {
     backend?: string | null;
+    surface_profile?: string | null;
     background?: boolean;
     profile_policy?: Record<string, unknown>;
     mutation_policy?: Record<string, unknown>;

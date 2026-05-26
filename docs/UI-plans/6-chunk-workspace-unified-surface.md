@@ -1,0 +1,163 @@
+# 6: Chunk Workspace Unified Surface
+
+**Status:** in-progress
+**Goal:** Replace mode-first frontend use with one lightweight workspace surface where notes, Markdown preview, Super DAN runs, and selected chunks share one context model.
+
+## Tasks
+- [x] 1. Add the first `#workspace` route
+  - [x] 1-1. Keep classic editor and `#v2` routes intact
+  - [x] 1-2. Lazy-load the workspace shell as its own frontend chunk
+  - [x] 1-3. Avoid Monaco/PDF/graph editor imports on the workspace route
+- [x] 2. Keep notes workspace always loaded and easy to switch to
+  - [x] 2-1. Show editor and rendered Markdown preview side-by-side inside the Notes workspace
+  - [x] 2-2. Make note switching immediate from the left rail
+  - [x] 2-3. Persist local notes and autosave disk-backed Markdown notes in Electron
+  - [x] 2-4. Watch active disk notes for external changes
+  - [x] 2-5. Auto-load Markdown notes from the dedicated notes root
+  - [x] 2-6. Split notes into a dedicated always-on notes workspace instead of treating the development root as notes
+  - [x] 2-7. Mirror Content-mode knowledge-base bootstrap so default notes come from the Hugo `my-knowledge-base/content` tree
+- [x] 3. Share Markdown rendering
+  - [x] 3-1. Add a shared `MarkdownRenderer` for notes, chunks, and DAN answers
+  - [x] 3-2. Support tables, code highlighting, KaTeX math, links, lists, blockquotes, and sanitization
+- [x] 4. Add chunk surface
+  - [x] 4-1. Keep note heading chunks out of the default Work chunk stream
+  - [x] 4-2. Render chat messages, narrator updates, and Agent events as chunks
+  - [x] 4-3. Keep selected chunk context visible without adding a separate app mode
+- [x] 5. Wire DAN actions through the Super DAN Agent-run contract
+  - [x] 5-1. Route all workspace composer prompts through Super DAN Agent runs, not `/api/v2/chat/message`
+  - [x] 5-2. Start Super DAN work through `/api/v2/agent-runs`
+  - [x] 5-3. Append to an active Super DAN run through `/api/v2/agent-runs/{run_id}/commands`
+  - [x] 5-4. Stream Super DAN events through `/api/v2/agent-runs/{run_id}/events`
+  - [x] 5-5. Pass active note and selected chunk metadata in `surface_context`
+  - [x] 5-6. Execute workspace turns through `backend=super_dan` and the shared `super_tui` surface profile
+  - [x] 5-7. Start Super DAN execution in background so the GUI composer stays responsive
+- [ ] 6. Tighten follow-up slices
+  - [x] 6-1. Add a VS Code-style development workspace file tree beside notes
+  - [x] 6-2. Add text preview for selected development files and pass that file context into Chat/Agent
+  - [x] 6-3. Make Notes and Work switchable peer workspaces, one visible at a time, with folders collapsed by default
+  - [x] 6-4. Add workspace slot buttons and browser-safe `Option+Shift+1..9` switching for development workspaces
+  - [x] 6-5. Align conversation chunks and the file/chunk preview sidecar as vertical Work columns
+  - [x] 6-6. Add automatic active-run steer/queue composer behavior backed by V2 Agent run commands
+  - [ ] 6-7. Promote generated UI chunks into sandboxed preview artifacts
+  - [ ] 6-8. Add virtualized chunk lists if large chat/run histories make it necessary
+  - [ ] 6-9. Migrate legacy chat/research Markdown rendering call sites onto the shared renderer
+  - [ ] 6-10. Add focused UI tests for note switching, autosave, file tree selection, shortcuts, queue controls, and route-level code splitting
+  - [x] 6-11. Add root-path autofill and dropdown suggestions for fast development workspace switching
+  - [x] 6-12. Replace horizontal workspace tabs with a collapsible workspace/session rail
+  - [x] 6-13. Separate session creation, workspace creation, and Work rail toggles
+  - [x] 6-14. Preserve chronological ordering in conversation chunks
+  - [x] 6-15. Persist Work rail layout and project-group unbound sessions
+  - [x] 6-16. Make session-card clicks visibly switch or fail in the chunk pane
+  - [x] 6-17. Align workspace Chat V2 surface metadata with backend validation
+  - [x] 6-18. Remove the workspace plain-chat path and expose a single Super DAN composer
+  - [x] 6-19. Rebuild visible session history from persisted Super DAN task/run events when thread messages are empty
+  - [x] 6-20. Render structured Super DAN terminal summaries as answer/outcome chunks instead of raw JSON/log rows
+  - [x] 6-21. Render chunk-card bodies through the shared Markdown renderer with muted semantic Answer/Outcome accents
+  - [x] 6-22. Let conversation chunk cards show the full body with wrapping instead of clipping previews
+  - [x] 6-23. Restrict the queue panel to active and queued user-facing messages, not raw Agent events
+  - [x] 6-24. Polish the workspace shell typography, rails, chunk cards, and composer spacing
+  - [x] 6-25. Add Notes panel toggles and recover stuck note-loading states
+  - [x] 6-26. Make Notes Hugo-aware with bundle hierarchy, frontmatter metadata, body-only preview, and read caches
+  - [x] 6-27. Mount the full Hugo content tree with section/category/tag filtering and page navigation
+  - [x] 6-28. Persist active pane, selected session/chunk/file, filters, and expanded/collapsed UI state across refresh
+  - [x] 6-29. Convert the workspace GUI into phone-friendly pages with read-only WireGuard service status
+  - [x] 6-30. Add a Flutter phone APK shell for the workspace pages and read-only WireGuard/API status
+  - [x] 6-31. Add isolated Android-native `dan-phone` WireGuard controls to the Flutter APK without reusing codexx settings
+  - [x] 6-32. Add conventional Notes save behavior, two-second autosave, and query-gated `@pageID` autocomplete
+  - [x] 6-33. Replace frontmatter category navigation with Tags/Categories navigation and clickable preview chips
+  - [x] 6-34. Add a header workspace switcher plus one shared resizable Work/Notes left-rail width
+  - [x] 6-35. Wire Flutter phone Notes to the live knowledge-base note list/read APIs
+  - [x] 6-36. Add Work-session lifecycle controls for safe stop requests plus soft archive/restore and swipe archiving
+  - [x] 6-37. Add explicit Flutter Settings `Force start` / `Force off` controls for the isolated `dan-phone` tunnel
+  - [x] 6-38. Bound Flutter WG/API status probes and persist phone API token/settings on Android
+  - [x] 6-39. Make missing DAN phone WireGuard config explicit and disable impossible Force start
+  - [x] 6-40. Generate a separate DAN phone WireGuard peer config and bake it into the APK
+  - [x] 6-41. Adapt the latest GUI workspace behavior to Flutter phone pages: workspace-root dropdowns, file browsing/preview, Super DAN Work sends, cached live Notes preview, Edit/Read scroll restoration, and query-gated `@pageID` suggestions
+  - [x] 6-42. Render Hugo `layout: graph` knowledge-base pages as an interactive Notes knowledge graph from pageID citations
+  - [x] 6-43. Move development-root typing and suggestions into the Work header and derive workspace names from the selected root folder
+
+## Decisions
+- The workspace route is a surface, not another product mode.
+- Notes stay loaded and switchable; Work owns files, chat, Agent execution, conversation chunks, and sidecar preview.
+- The first route uses local React primitives and lucide icons only; no shadcn or animation dependency.
+- One muted visual system is preferred over many colored states or repeated action buttons.
+- The fast path is route-level code splitting plus textarea-based note editing; Monaco remains in Development mode.
+- The GUI should reuse Super TUI Agent contracts through `surface_profile=super_tui`; React should not fork backend execution/mutation policy.
+- The `#workspace` composer is Super DAN-only. It does not call `/api/v2/chat/message`; it creates Agent runs, executes them with `backend=super_dan` plus `surface_profile=super_tui`, and uses Agent-run commands for active-run steer/queue behavior.
+- Super DAN chunks should follow the TUI presentation shape: request, working status, answer, and outcome/checks. Raw provider/tool/model JSON stays below the event ledger, not as primary conversation cards.
+- Primary chunk cards render the same Markdown as the preview pane, with restrained semantic color accents for Answer, Outcome, Running, and Error states.
+- Conversation chunk cards show their complete rendered body in the middle column; users should not need the sidecar just to read the answer.
+- The queue panel is not a log viewer. It shows active runs plus explicit queued steer/next messages only; completed tasks and low-level DAN/provider events stay out of that panel.
+- The visual direction is dense but polished: quiet slate surfaces, restrained semantic accents, larger touch targets, stronger card hierarchy, and no decorative noise.
+- Notes gets the same header-level panel controls as Work. Notes rail, editor, and preview are toggleable, while editor/preview defaults stay on and at least one reading/editing pane remains visible.
+- The Notes workspace treats the knowledge base as a Hugo content tree. Bundle `index.md` files appear as their parent page/folder, the editor keeps raw frontmatter, the preview renders the Hugo page body only, and title/date/pageID/tags/categories/abstract metadata render as page chrome.
+- Notes use mtime/size-aware caches on both the frontend and `/api/workspace-notes` backend. Local dirty/saving edits remain authoritative and are not overwritten by background list refreshes.
+- Notes workspace and development workspace are parallel roots. Notes default to `DAN_NOTES_WORKSPACE_ROOT` when set, otherwise the backend mirrors Content-mode bootstrap and prefers the full Hugo `my-knowledge-base/content` tree before falling back to `content/notes`; development files default to `DAN_WORKSPACE_ROOT` / server cwd.
+- The Notes rail is content-level, not notes-only: the compact facet control filters by section, category, or tag, the editor header shows the selected file title/path, and the preview header carries page metadata plus previous/parent/next page controls.
+- The workspace shell treats restore state as part of the surface contract. Refresh should keep the active Work/Notes pane, selected session/chunk/file, search/facet filters, expanded folders, collapsed session groups, and panel layout.
+- Conversation chunks represent chat history plus narrator/Agent events, not note headings.
+- Browser-hosted workspace shortcuts avoid Chrome-native `Cmd/Ctrl` combinations. The local route uses `Option+Shift` for workspace slots and Work panel toggles.
+- Session creation and workspace creation are separate controls: the Sessions header creates a session inside the active workspace, while the rail footer creates a new development workspace.
+- Phone-width `#workspace` keeps the same GUI model but shows one page at a time: Work Chat, Sessions, Files, Preview, plus Notes Pages/Edit/Read. Bottom navigation changes pages instead of squeezing desktop rails into a narrow viewport.
+- Browser/workspace WireGuard integration remains read-only. `/api/workspace-wireguard` reports status and detects the alias `nywg` shape, but exposes only the safe `status` action and does not start, stop, restart, install, or uninstall any existing host WireGuard service.
+- The APK path is Flutter, not Capacitor. `mobile/` is a native Flutter phone shell with Work/Notes page navigation and settings-held diagnostics; it reads the DAN backend through `DAN_API_BASE`, defaulting to the WireGuard-facing `http://10.77.77.2:8000` in the phone build and falling back to LAN/emulator candidates.
+- The Flutter phone Notes pages use the same `/api/workspace-notes` and `/api/workspace-notes/read` knowledge-base APIs as the browser workspace, rather than shipping placeholder note rows.
+- `dan-up` is phone-aware without breaking the desktop frontend: default `auto` binds to `0.0.0.0` when `DAN_PHONE_WIREGUARD_HOST` is present, so Vite can keep proxying to `127.0.0.1:8000` while the phone reaches `10.77.77.2:8000`; `--host phone` forces a phone-host-only bind.
+- Android Phone VPN controls are isolated from codexx settings: the app uses package `com.dan.dan_phone`, method channel `dan/wireguard`, tunnel name `dan-phone`, build key `DAN_PHONE_WIREGUARD_CONFIG_B64`, and opt-in-only `DAN_PHONE_WIREGUARD_AUTOSTART`. The APK can start/stop its own Android `VpnService` tunnel from Settings, while the backend status endpoint stays read-only for host services.
+- Notes conventional save uses `Cmd/Ctrl+S` plus a two-second idle autosave. PageID autocomplete only opens after the operator types at least one character after `@`, preventing a blank `@` from matching the full knowledge base.
+- The Notes taxonomy rail labels Hugo first-level content folders (`blogs`, `notes`, etc.) as Categories. Frontmatter `categories` remain metadata, while this rail represents the content-root organization in this knowledge base.
+- Workspace switching is header-level, while the Sessions rail is session management. Work sessions and Notes content share one persisted left-rail width so resizing either rail keeps the two peer workspaces visually aligned.
+- Hugo `layout: graph` pages should render as a dedicated knowledge graph in the Notes preview instead of raw Markdown. The graph is built from pageID metadata plus `@pageID` citations exposed by `/api/workspace-notes`, matching the knowledge-base frontend's section/category filtering model without adding a heavy graph dependency.
+- Development-root switching should be reachable directly under the Work workspace name. The header root input accepts typed paths, shows recent/current/nearby dropdown suggestions, and uses the selected root folder name as the workspace label.
+- Session lifecycle controls stay inside the Sessions/Conversation surface. Stop sends the existing V2 Agent-run `stop` command and waits for backend safe-boundary handling; archive is a soft Chat V2 thread metadata flag that moves sessions into an `Archived` rail group without deleting history. Session cards support both explicit archive/restore buttons and horizontal swipe archive/restore gestures.
+- Flutter Phone VPN controls use explicit `Force start` / `Force off` wording because they operate on the app-managed Android `dan-phone` tunnel, while the browser/backend WireGuard endpoint remains read-only host status.
+- Flutter Settings treats routing and authorization as separate concerns. Phone VPN controls manage Android routing to the DAN host; the Access token field is saved separately and sent as `Authorization: Bearer ...` on API probes and Notes calls when populated.
+- Force start is only enabled when a phone WireGuard peer config is saved. Without that config Android cannot show the VPN icon because no app-managed `VpnService` tunnel can be created.
+- DAN phone uses its own WireGuard peer identity at `10.77.77.6/32`; the Codexx phone peer at `10.77.77.5/32` must not be reused because two active clients with one peer key/address would conflict.
+- Flutter Work Chat follows the same GUI Agent-run contract: create/reuse a Chat V2 thread, create `/api/v2/agent-runs`, execute with `backend=super_dan` plus `surface_profile=super_tui`, and steer a live run through Agent-run commands.
+- Flutter Notes Read uses a backend cached `/api/workspace-notes/preview` contract. The editor keeps raw Hugo Markdown editable, while Read mode consumes frontmatter-stripped, Hugo-normalized preview Markdown and preserves its scroll position separately from Edit.
+
+## Notes
+- 2026-05-26: Added browser Notes knowledge-graph rendering for Hugo `layout: graph` pages, renamed the content facet from Folders to Categories, and moved typed development-root switching with suggestions into the Work header. `npm run build`, `npm run bundle:check`, and `py_compile` pass for the touched browser/backend paths.
+- 2026-05-22: Adapted the latest GUI workspace changes into the Flutter phone app. Settings and Files now support workspace-root suggestions, Work Chat can actually submit Super DAN work, Files can browse/read the selected root, Notes Read uses the new cached live preview endpoint with Hugo shortcode/pageID formatting, Edit autosaves before switching to Read, and Edit/Read scroll offsets are restored independently. The old backend PID was terminated at the operator's request; after the operator-started backend appeared on port 8000, live probes passed for health, workspace-root suggestions, workspace files/read, workspace notes/list/preview, and Agent-run admission. The smoke Agent run was left unexecuted and then sent a stop request.
+- 2026-05-22: Generated an ignored DAN phone Android WireGuard peer config at `ops/wireguard/generated/dan-phone-android.conf`, baked it into `mobile/dist/dan-phone.apk`, and added `ops/wireguard/register-dan-phone-peer.sh` for the NY relay. Relay registration is still sudo-gated: `sudo -n` on `ny` requires a password, so the server peer must be registered with sudo before the new phone tunnel can handshake.
+- 2026-05-22: Made the missing phone VPN setup visible. The app now says when no phone WireGuard config is saved, disables `Force start` until one is present, and provides a Paste config action in Settings and the Phone VPN dialog.
+- 2026-05-22: Fixed the phone app's stuck `WG: checking` path. Backend and Phone VPN calls now have hard timeouts, `WG` falls back to `no-api` or `api-offline` instead of spinning indefinitely, and Android persists API base, access token, and phone WireGuard config using the native bridge.
+- 2026-05-22: Added robust Flutter Phone VPN controls. Settings now exposes direct `Force start`, `Force off`, and `VPN status` buttons; the detailed Phone VPN dialog uses the same force labels. Force start first sends the isolated tunnel down, starts it again from the saved config, and retests backend reachability when the tunnel reports up.
+- 2026-05-22: Added Work-session lifecycle controls. The active conversation header can request a safe stop for the running Super DAN Agent run, running session cards expose the same stop affordance, and every session card can be archived/restored with either a button or swipe gesture through a soft server-side metadata flag that moves it into an Archived group instead of deleting the history.
+- 2026-05-22: Patched `dan-up` into the shared desktop/phone path. Auto mode now binds all IPv4 interfaces when the phone WireGuard address exists, keeping the browser proxy on loopback and the phone API on `10.77.77.2` usable from one backend; `--host phone` remains available for phone-host-only launches.
+- 2026-05-22: Updated the Flutter phone shell to make backend reachability explicit. The app now tries the WireGuard host first, falls back to LAN/emulator candidates, shows the current backend host/status detail, and exposes an in-app backend settings dialog for retesting a different DAN API base.
+- 2026-05-22: Added Android-native DAN Phone VPN support to the Flutter shell, following codexx's app-side `VpnService` shape but with separate DAN channel/tunnel/build keys. The rebuilt debug APK at `mobile/dist/dan-phone.apk` contains WireGuard native libraries and settings-only Phone VPN controls; no DAN phone peer config was found to bake into the APK, and no Android device/emulator was attached for a real install-and-handshake test.
+- 2026-05-22: Wired the Flutter phone Notes pages to the live knowledge-base APIs. The Pages tab now lists/searches backend Hugo content pages, selecting a page reads Markdown into Edit/Read, and `mobile/dist/dan-phone.apk` was rebuilt after the fix.
+- 2026-05-22: Added the next Notes/workspace polish pass. Notes now supports `Cmd/Ctrl+S`, two-second idle autosave, query-gated `@pageID` autocomplete, clickable tag/folder preview chips, and a Tags/Folders rail. Work now has a visible header workspace selector with add/open/close controls, and the Work session rail plus Notes content rail share one persisted resizable width.
+- 2026-05-22: Added `mobile/` as the Flutter Android shell for the phone workspace. The debug APK builds at `mobile/build/app/outputs/flutter-apk/app-debug.apk`, with Work Chat/Sessions/Files/Preview, Notes Pages/Edit/Read, API status, and read-only WireGuard status. Flutter analyze/widget tests pass; no Android device/emulator was attached for install-and-launch testing.
+- 2026-05-22: Added phone-friendly `#workspace` pages and bottom navigation. The desktop Work/Notes GUI remains rail-based, while phone widths switch among Chat/Sessions/Files/Preview and Notes Pages/Edit/Read without horizontal overflow. The header and Super DAN surface context now include read-only WireGuard status from `/api/workspace-wireguard`, following the codexx phone-app service shape but avoiding any mutating service action or alias `nywg` conflict.
+- 2026-05-22: Telegram now mirrors the GUI's Super DAN workspace/session behavior as a remote surface: inline `/workspace` folder menus persist selected roots, `/workspace <path>` starts browsing at manual roots such as `~` or `../`, folder buttons show `Down: ...` plus `Parent` navigation, `/session` task cards are grouped by workspace with human objective labels, and active-session follow-ups use Agent-run commands while `/new` starts separate work. The default `dan-up` path starts the backend-owned single Telegram adapter with those menus; `dan-up --telegram fleet` remains the explicit multi-bot mode.
+- 2026-05-21: Separated session and workspace creation in the Work rail. The Sessions header `+` now creates and selects a persisted chat session in the active workspace, the footer owns `New Workspace`, the Sessions rail has its own header toggle, the top Preview control is icon-only, and the Agent queue header toggle was removed.
+- 2026-05-21: Fixed conversation chunk ordering so the middle column reads chronologically, with the user turn above the pending assistant response while still rendering only the most recent chunks.
+- 2026-05-21: Grouped unbound historical sessions by workflow/project instead of one giant Other Sessions bucket, persisted Work rail visibility toggles across refresh, and made workspace sends persist the user turn immediately so interrupted streams do not leave unclickable zero-message sessions.
+- 2026-05-21: Hardened session-card opening. Clicking a session now immediately switches the Work pane into that thread, forces conversation chunks visible, shows a loading/empty/error state in the middle column, and only then replaces it with the loaded messages.
+- 2026-05-21: Fixed the workspace Chat V2 request contract so `surface`, `surface_type`, and `surface_id` use the same canonical `frontend:chunk-workspace` identity. Old saved surface-validation errors now render as a short readable message instead of raw backend JSON.
+- 2026-05-21: Removed the workspace plain-chat composer path. All new `#workspace` submissions now go through Super DAN Agent-run creation/execution or active-run commands, with `backend=super_dan` and `surface_profile=super_tui` carried explicitly.
+- 2026-05-21: Fixed empty-looking Agent sessions in `#workspace`. Session restore/open now loads the Super DAN task list, run command payload, and run event log, reconstructs visible conversation chunks when the chat-thread message array is empty, and saves that projection back to the thread.
+- 2026-05-22: Compact Super DAN event chunks to a TUI-like shape. The middle column now groups raw provider/tool events into one working card and renders structured terminal JSON summaries into readable `DAN · Answer` plus `DAN · Outcome` cards.
+- 2026-05-22: Made the middle chunk cards render through the shared Markdown renderer. Structured summaries now show real Summary/Files/Risks/Checks sections, older inline `**Files:** - ...` projections are normalized at display time, and Answer/Outcome cards use muted semantic accents.
+- 2026-05-22: Removed the middle chunk-card body height cap and added wrapping for paragraphs, list items, and inline code so full answers remain visible in the main conversation column.
+- 2026-05-22: Replaced the queue panel's raw task/event feed with a user-facing Message Queue backed by active tasks and explicit queue items. Completed runs and raw event summaries no longer appear there.
+- 2026-05-22: Polished the workspace shell with a taller header, refined Work/Notes switcher, softer rails, denser session/file controls, larger chunk cards, improved Markdown body spacing, and a more deliberate composer area.
+- 2026-05-22: Added Notes header buttons for the notes rail, editor, and preview, persisted those toggles with the rest of the layout, and fixed persisted `loading` notes so they retry reads and show explicit errors instead of blank panes.
+- 2026-05-22: Made Notes Hugo-aware. The rail now respects bundle hierarchy, `index.md` pages collapse into their parent folders, preview strips YAML frontmatter from the body while rendering useful metadata/tags/categories/pageID, citation tokens become local links, and frontend/server caches make note switching fast without overwriting local edits.
+- 2026-05-22: Promoted Notes from `content/notes` to the full Hugo `content` tree. The backend now returns section/tags/categories/pageID/date metadata for every Markdown page, the Notes rail adds a compact facet dropdown, the editor header shows title/path, and the preview header adds metadata plus previous/parent/next navigation.
+- 2026-05-22: Added workspace UI-state persistence for refresh. The route now restores Work vs Notes, selected chunk/file, note/session/file search text, note facets, expanded file/note folders, collapsed session groups, and prefers the active workspace's saved session when reopening.
+- 2026-05-21: Moved Work workspace/session management into a Codexx-style left rail with New Session, session search, collapsible workspace groups, closeable workspace groups, and a catch-all group for older unbound server sessions. The top preview toggle is now an explicit labeled right-panel action.
+- 2026-05-21: Added a compact development root editor with typed-path autofill, recent/pinned workspace roots, and server-backed nearby path suggestions through `/api/workspace-roots`.
+- 2026-05-21: Moved workspace shortcuts to browser-safe `Option+Shift` combinations and changed active-run handling so the composer automatically steers a running Agent by default, with a small `Next` toggle for queue-after-current.
+- 2026-05-21: Added workspace slot buttons, browser-safe workspace switching, Work/Notes shortcuts, panel toggles, vertically aligned conversation chunks plus preview sidecar, and compact Super DAN plus active-run steer/queue composer controls.
+- 2026-05-21: Reworked Notes/Work into a top-level switcher where one peer workspace is visible at a time. Work chunks now come from conversation history, narrator updates, and Agent events instead of active-note headings.
+- 2026-05-21: Mirrored v1 Content-mode knowledge-base bootstrap for workspace notes. The backend now resolves the default notes root to `/Volumes/data/Dropbox/Projects/my-knowledge-base/content/notes` on the local machine, skips Hugo `_index.md` section files, and derives note titles from frontmatter/headings before path fallbacks.
+- 2026-05-21: Reworked the surface into peer notes and development/chat panes. The file tree no longer auto-expands folders or auto-selects a hidden first file; users expand and select files explicitly.
+- 2026-05-21: Rethought the layout around two parallel roots: a VS Code-style development file explorer and a dedicated notes workspace with switcher, editor, and preview. Selected development file text is previewed and included in Super DAN surface context.
+- 2026-05-21: Added `/api/workspace-notes` list/read/write endpoints so the workspace route auto-loads Markdown notes from the dedicated notes root instead of the development workspace.
+- 2026-05-21: Added a shared `src/dan/agent_runtime/super_tui_contract.py` profile used by both `dan super-tui` async admission and the GUI execute path, so Super TUI Agent policy fixes are inherited by the GUI.
+- 2026-05-21: First slice landed as `editor/src/components/workspace/ChunkWorkspaceApp.tsx`, with `#workspace` / `#chunks` / `#work` routes and a shared `editor/src/components/shared/MarkdownRenderer.tsx`.
+- 2026-05-21: `npm run build`, `npm run bundle:check`, and `git diff --check` passed after the shortcut, sidecar, and composer queue pass. The new workspace route produced a separate `ChunkWorkspaceApp` chunk around 41 kB minified / 11.8 kB gzip in the verified build.
