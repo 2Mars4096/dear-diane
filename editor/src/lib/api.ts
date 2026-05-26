@@ -442,6 +442,15 @@ export const writeWorkspaceNote = (path: string, content: string) =>
     },
   );
 
+export const moveWorkspaceNotePath = (source: string, destination: string) =>
+  request<{ status: string; root: string; note: WorkspaceNoteSummary | null }>(
+    "/workspace-notes/move",
+    {
+      method: "POST",
+      body: JSON.stringify({ source, destination }),
+    },
+  );
+
 export const listWorkspaceFileTree = (rootPath?: string) =>
   request<{ root: string; entries: WorkspaceFileEntry[] }>(
     rootPath ? `/workspace-files?root_path=${encodeURIComponent(rootPath)}` : "/workspace-files",
@@ -469,6 +478,28 @@ export const readWorkspaceFile = (path: string, rootPath?: string) => {
     truncated: boolean;
   }>(`/workspace-files/read?${params.toString()}`);
 };
+
+export const createWorkspaceFolder = (path: string, rootPath?: string) =>
+  request<{ status: string; root: string; file: WorkspaceFileEntry | null }>(
+    "/workspace-files/mkdir",
+    {
+      method: "POST",
+      body: JSON.stringify({ path, root_path: rootPath }),
+    },
+  );
+
+export const moveWorkspacePath = (
+  source: string,
+  destination: string,
+  rootPath?: string,
+) =>
+  request<{ status: string; root: string; file: WorkspaceFileEntry | null }>(
+    "/workspace-files/move",
+    {
+      method: "POST",
+      body: JSON.stringify({ source, destination, root_path: rootPath }),
+    },
+  );
 
 export interface OrganismLogSummary {
   path: string;

@@ -860,6 +860,22 @@ def _resolve_workspace_note_path(raw_path: str) -> Path:
     return resolved
 
 
+def _resolve_workspace_note_entry_path(raw_path: str) -> Path:
+    root = _workspace_notes_root()
+    raw_path = str(raw_path or "").strip()
+    if not raw_path:
+        raise HTTPException(status_code=422, detail="path is required")
+    candidate = Path(raw_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve(strict=False)
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Note path must stay inside workspace root")
+    return resolved
+
+
 def _resolve_workspace_file_path(raw_path: str, *, root_path: str | None = None) -> tuple[Path, Path]:
     root = _workspace_files_root(root_path)
     raw_path = str(raw_path or "").strip()
@@ -874,6 +890,51 @@ def _resolve_workspace_file_path(raw_path: str, *, root_path: str | None = None)
     except ValueError:
         raise HTTPException(status_code=400, detail="File path must stay inside workspace root")
     return resolved, root
+
+
+def _resolve_workspace_file_entry_path(
+    raw_path: str,
+    *,
+    root_path: str | None = None,
+) -> tuple[Path, Path]:
+    root = _workspace_files_root(root_path)
+    raw_path = str(raw_path or "").strip()
+    if not raw_path:
+        raise HTTPException(status_code=422, detail="path is required")
+    candidate = Path(raw_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve(strict=False)
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="File path must stay inside workspace root")
+    return resolved, root
+
+
+def _move_workspace_entry(source: Path, destination: Path, root: Path, *, label: str) -> Path:
+    if source == root:
+        raise HTTPException(status_code=400, detail=f"Cannot move the {label} root")
+    if not source.exists():
+        raise HTTPException(status_code=404, detail=f"{label.title()} path not found")
+    if destination == root:
+        raise HTTPException(status_code=400, detail=f"Cannot replace the {label} root")
+    if destination.exists():
+        raise HTTPException(status_code=409, detail="Destination already exists")
+    if source.is_dir():
+        try:
+            destination.relative_to(source)
+            raise HTTPException(status_code=400, detail="Cannot move a folder inside itself")
+        except ValueError:
+            pass
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        moved = shutil.move(str(source), str(destination))
+    except HTTPException:
+        raise
+    except (OSError, shutil.Error) as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return Path(moved).resolve(strict=False)
 
 
 def _fallback_note_title(path: Path, root: Path) -> str:
@@ -893,6 +954,12 @@ def _trim_note_cache(cache: dict[str, dict[str, Any]]) -> None:
         return
     for key in list(cache.keys())[: max(1, len(cache) - _WORKSPACE_NOTE_CACHE_LIMIT)]:
         cache.pop(key, None)
+
+
+def _clear_workspace_note_caches() -> None:
+    _WORKSPACE_NOTE_SUMMARY_CACHE.clear()
+    _WORKSPACE_NOTE_READ_CACHE.clear()
+    _WORKSPACE_NOTE_PREVIEW_CACHE.clear()
 
 
 def _markdown_note_title_from_text(sample: str) -> str | None:
@@ -1360,6 +1427,46 @@ async def read_workspace_file(
     }
 
 
+@router.post("/api/workspace-files/mkdir")
+async def create_workspace_folder(body: dict[str, Any]) -> dict[str, Any]:
+    target, root = _resolve_workspace_file_entry_path(
+        str(body.get("path") or ""),
+        root_path=str(body.get("root_path") or "") or None,
+    )
+    if target == root:
+        raise HTTPException(status_code=400, detail="Cannot create the workspace root")
+    if target.exists() and not target.is_dir():
+        raise HTTPException(status_code=409, detail="A file already exists at that path")
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {
+        "status": "ok",
+        "root": str(root),
+        "file": _workspace_file_summary(target, root),
+    }
+
+
+@router.post("/api/workspace-files/move")
+async def move_workspace_file(body: dict[str, Any]) -> dict[str, Any]:
+    root_path = str(body.get("root_path") or "") or None
+    source, root = _resolve_workspace_file_entry_path(
+        str(body.get("source") or ""),
+        root_path=root_path,
+    )
+    destination, root = _resolve_workspace_file_entry_path(
+        str(body.get("destination") or ""),
+        root_path=str(root),
+    )
+    moved = _move_workspace_entry(source, destination, root, label="workspace")
+    return {
+        "status": "ok",
+        "root": str(root),
+        "file": _workspace_file_summary(moved, root),
+    }
+
+
 @router.get("/api/workspace-notes/read")
 async def read_workspace_note(path: str) -> dict[str, Any]:
     resolved = _resolve_workspace_note_path(path)
@@ -1409,6 +1516,30 @@ async def read_workspace_note(path: str) -> dict[str, Any]:
     _trim_note_cache(_WORKSPACE_NOTE_READ_CACHE)
     _trim_note_cache(_WORKSPACE_NOTE_SUMMARY_CACHE)
     return result
+
+
+@router.post("/api/workspace-notes/move")
+async def move_workspace_note(body: dict[str, Any]) -> dict[str, Any]:
+    root = _workspace_notes_root()
+    source = _resolve_workspace_note_entry_path(str(body.get("source") or ""))
+    destination = _resolve_workspace_note_entry_path(str(body.get("destination") or ""))
+    if source.is_file() and source.suffix.lower() not in {".md", ".mdx"}:
+        raise HTTPException(status_code=400, detail="Only Markdown notes can be moved")
+    moved = _move_workspace_entry(source, destination, root, label="notes")
+    _clear_workspace_note_caches()
+    summary_path = moved
+    if moved.is_dir():
+        for candidate_name in ("index.md", "index.mdx"):
+            candidate = moved / candidate_name
+            if candidate.exists():
+                summary_path = candidate
+                break
+    note = _workspace_note_summary(summary_path, root) if summary_path.exists() else None
+    return {
+        "status": "ok",
+        "root": str(root),
+        "note": note,
+    }
 
 
 @router.get("/api/workspace-notes/preview")
