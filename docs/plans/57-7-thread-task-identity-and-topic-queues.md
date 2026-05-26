@@ -24,6 +24,7 @@
   - [ ] 3-4. Unrelated tasks can run concurrently subject to provider and workspace caps
   - [x] 3-5. Status/cancel/approval/clarification turns bypass the work queue
   - [x] 3-6. Duplicate or near-duplicate turns coalesce within their explicit queue lane instead of launching redundant runs
+  - [x] 3-7. Use per-surface-topic lane keys so GUI, Telegram, TUI, and phone-like clients do not block each other when they share a broad thread id
 - [ ] 4. Expose task retrieval and queue status
   - [x] 4-1. `GET /api/v2/tasks/{task_id}` returns the current task snapshot
   - [x] 4-2. `GET /api/v2/threads/{thread_id}/tasks` lists active/recent task cards
@@ -37,6 +38,7 @@
   - [x] 5-5. Status/cancel/approval bypass queue blocking
   - [x] 5-6. Same-topic explicit follow-ups inherit a path-inferred active task workspace
   - [ ] 5-7. Group-topic routing does not leak across topics without explicit binding evidence
+  - [x] 5-8. Rapid fresh Telegram Agent starts use independent message-scoped lanes instead of the selected chat/session lane
 
 ## Decisions
 - Task is the durable unit of work for V2 Agent. Chat thread is the conversational container.
@@ -46,6 +48,8 @@
 
 ## Notes
 - 2026-04-30: The in-process Telegram adapter bridge now maintains the same bounded recent `user`/`assistant` history window as the standalone fleet and passes it, along with native reply metadata, into durable V2 Agent-run requests for backend context.
+- 2026-05-22: Chat V2 topic identity now prefers `conversation.lane_key` over native Telegram thread ids, so admission/board snapshots scope by the actual surface lane. Telegram `/new` and parallel private-DM Agent starts get message-scoped lanes; explicit selected-session follow-ups still steer the selected run.
+- 2026-05-22: `/reset` and `/clear` are recovery valves for Telegram lane state. They clear resume/history state and mark the selected active run stopped so the next Agent request can start from a clean lane without deleting durable task history.
 - 2026-04-30: Telegram fleet context now carries broad conversation keys, reply lane keys, and bounded history into the V2 payload. Agent start commands persist `history`, `reply_context`, and compact `surface_context`; queue items carry the same metadata for later checkpoint/continue handling.
 - 2026-04-30: Same-topic follow-ups can now attach to an active task's workspace when the original task inferred its workspace from a message path. Exact topic keys still include workspace identity, but the store has a surface-topic fallback for explicit append/continue turns that omit the path.
 - 2026-04-30: Workspace binding landed for V2 sessions. `SurfaceTurn` resolves `workspace_root` / `workspace_id` from explicit surface context or defaults to `~`, topic keys include workspace identity, and `ChatV2Store` persists workspace fields on task snapshots, Agent run records, queue items, and last surface-turn metadata.

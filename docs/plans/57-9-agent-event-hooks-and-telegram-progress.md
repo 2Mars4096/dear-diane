@@ -32,6 +32,7 @@
   - [x] 4-7. Refresh the same Telegram V2 progress bubble on quiet websocket periods from the last real Agent/Super DAN event state
   - [x] 4-8. Keep Telegram bot commands/help focused on V2 Agent, status, cancel, and help instead of dated legacy menu actions
   - [x] 4-9. Keep ordinary Telegram V2 text on V2 Chat while explicit `/agent` and task-like workspace turns use durable Agent runs
+  - [x] 4-10. Expose `/reset` / `/clear` as Telegram recovery commands that clear selected session context and force-stop the selected active run state
 - [ ] 5. Support reconnect and final delivery
   - [x] 5-1. Rebuild event stream from persisted Agent run state and raw trace refs
   - [ ] 5-2. Deliver final results even if the frontend disconnects during execution
@@ -54,6 +55,7 @@
 
 ## Notes
 - 2026-04-30: Telegram V2 is now the default/pure path. The standalone fleet and in-process adapter bridge both resolve Telegram to V2 unless `DAN_TELEGRAM_ALLOW_V1=1` is deliberately set. The Telegram command menu was narrowed to `/agent`, `/status`, `/cancel`, and `/help`.
+- 2026-05-22: Telegram `/reset` and `/clear` now clear the selected resume lane and request/confirm a stopped run state for the selected active Agent run, so a wedged Telegram context does not keep blocking new Agent starts.
 - 2026-04-30: Telegram V2 now keeps plain chat turns on V2 Chat and routes only explicit `/agent` / `/run` / `/build` / `agent:` turns plus obvious workspace/task text into durable Agent execution. The standalone fleet streams Agent run events over WebSocket, and the in-process bridge polls persisted Agent events into the same editable Telegram progress message when available. Both paths pass bounded recent history and reply context into backend requests. Quiet-period Agent progress edits include total elapsed time and, when available, the age of the last real backend event.
 - 2026-04-30: Added a Telegram/V2 live progress state machine in `chat_v2_progress.py` and wired the standalone Telegram fleet websocket loop to refresh the same progress bubble every `DAN_TELEGRAM_V2_PROGRESS_INTERVAL` seconds during quiet backend periods. The status text is derived from normalized Agent event/source event/tool metadata.
 - 2026-04-30: Added first-class V2 token accounting. `model.responded` rows with provider usage now map to `token_usage_recorded`, run/task snapshots persist aggregate `token_usage` plus per-round records, and Telegram progress/final output renders token counts when available.

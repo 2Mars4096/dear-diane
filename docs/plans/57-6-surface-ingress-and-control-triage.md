@@ -22,6 +22,7 @@
   - [ ] 3-3. Map photo/document/voice/media downloads into structured attachment refs, not only text markers
   - [x] 3-4. Preserve the existing Telegram fleet and single-adapter paths while routing V2 through one ingress contract
   - [x] 3-5. Carry bounded Telegram history, reply context, and lane/conversation ids into V2 Agent run payloads
+  - [x] 3-6. Carry message-scoped Telegram lane ids for fresh Agent starts so separate requests do not share one chat-wide admission lane
 - [ ] 4. Add privacy and policy gates at ingress
   - [ ] 4-1. Default private surfaces to continuity-safe behavior
   - [ ] 4-2. Require explicit opt-in before leaking prior private task context into group/shared chats
@@ -42,6 +43,8 @@
 
 ## Notes
 - 2026-04-30: Telegram now defaults to pure V2 in both standalone fleet and in-process adapter paths. Legacy/v1 overrides are ignored unless `DAN_TELEGRAM_ALLOW_V1=1` is explicitly set for debugging. The Telegram command menu/help text is reduced to V2-relevant commands only.
+- 2026-05-22: Telegram Agent intake now mirrors GUI session isolation more closely. Chat V2 admission honors `surface_context.conversation.lane_key`, fresh Telegram Agent starts can fork per-message lanes, `/new` bypasses selected-session context, and `/reset` / `/clear` force-clear Telegram resume state.
+- 2026-05-22: Focused bridge coverage now verifies that the backend-owned Telegram adapter sends per-message lane keys into Chat V2 and that reset forces a selected active run out of the lane before clearing history.
 - 2026-04-30: Telegram V2 surface context now includes reply text, sender ids, conversation key, lane key, reply lane, and history counts; `SurfaceTurn.metadata` and Agent run payloads persist bounded recent history plus reply context so Agent runs can resolve short phone follow-ups.
 - 2026-04-30: Workspace resolution now supports phone-friendly path inference. If a V2 turn says `path /repo/app`, `repo: ~/project`, or `in /workspace/project` and no explicit surface workspace was supplied, `SurfaceTurn.workspace_source` becomes `message_path` and the resolved path is carried into the Agent run.
 - 2026-04-30: Telegram V2 is wired for both standalone fleet and in-process adapter paths. Set `DAN_TELEGRAM_CONTROL_PLANE=v2` or `DAN_ADAPTERS_CONTROL_PLANE=v2`; normal turns use the V2 chat ingress, while `/agent ...`, `/run ...`, `/build ...`, or `agent: ...` creates and executes a durable V2 Agent run. `DAN_TELEGRAM_WORKSPACE_ROOT` / `DAN_TELEGRAM_WORKSPACE_ID` bind Telegram sessions to a workspace; omitted values still fall through to the V2 default `~`.
