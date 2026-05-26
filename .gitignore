@@ -52,6 +52,10 @@ htmlcov/
 .env.*
 !.env.example
 
+# WireGuard peer configs and keys generated for local/device installs
+ops/wireguard/generated/
+ops/wireguard/*.env
+
 # Logs
 *.log
 logs/
