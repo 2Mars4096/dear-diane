@@ -16,13 +16,23 @@ import json
 import logging
 import os
 import re
+import shlex
 import signal
 import sys
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator
+from urllib.parse import quote
 
+from dan.agent_runtime.super_tui_contract import (
+    SUPER_TUI_AGENT_CAPABILITIES,
+    SUPER_TUI_DEFAULT_BACKEND,
+    SUPER_TUI_SURFACE_PROFILE,
+    build_super_tui_agent_execute_payload,
+    build_super_tui_surface_context,
+)
 from dan.adapters.telegram_adapter import (
     MessageContext,
     TelegramAdapter,
@@ -49,6 +59,7 @@ _TELEGRAM_STREAM_MISSING_TERMINAL_FALLBACK = (
     "The response stream ended before a final answer was produced. "
     "Please ask me to continue from the latest progress."
 )
+_TELEGRAM_WORKSPACE_MENU_PAGE_SIZE = 8
 
 
 class FleetAlreadyRunningError(RuntimeError):
@@ -128,6 +139,9 @@ class BotFleet:
         self._last_outbound: dict[int, tuple[int, float]] = {}
         self._last_outbound_by_lane: dict[str, tuple[int, float]] = {}
         self._active_conversations: dict[str, int] = {}
+        self._workspace_menu_state: dict[str, dict[str, Any]] = {}
+        self._session_menu_state: dict[str, dict[str, Any]] = {}
+        self._telegram_surface_state = _load_telegram_surface_state()
 
     def _latest_outbound_id(self, chat_id: int, lane_key: str | None = None) -> int | None:
         """Most recent outbound message id we sent in the active lane/chat."""
@@ -168,9 +182,21 @@ class BotFleet:
             topic_maps[gid] = {int(k): v for k, v in gcfg.topic_map.items()}
         self._router = MessageRouter(multi_group_topic_maps=topic_maps)
 
+        seen_tokens: set[str] = set()
         for name, bot_cfg in self._config.bots.items():
+            token = str(bot_cfg.token or "").strip()
+            if not token:
+                logger.warning("Fleet: skipping %s because it has no Telegram token", name)
+                continue
+            if token in seen_tokens:
+                logger.warning(
+                    "Fleet: skipping %s because another configured bot already uses the same token",
+                    name,
+                )
+                continue
+            seen_tokens.add(token)
             adapter_config = TelegramAdapterConfig(
-                bot_token=bot_cfg.token,
+                bot_token=token,
                 progress_throttle=self._config.settings.progress_throttle,
                 max_inbound_media_mb=self._config.settings.max_inbound_media_mb,
             )
@@ -178,7 +204,7 @@ class BotFleet:
 
             bot = BotInstance(
                 name=name,
-                token=bot_cfg.token,
+                token=token,
                 projects=list(bot_cfg.projects),
                 personality=bot_cfg.personality,
                 is_default=bot_cfg.default,
@@ -189,6 +215,9 @@ class BotFleet:
 
             adapter.set_message_callback(
                 self._make_callback(bot), with_context=True,
+            )
+            adapter.set_callback_query_callback(
+                self._make_menu_callback(bot), with_context=True,
             )
             adapter.set_topic_created_callback(
                 lambda chat_id, thread_id, topic_name, bot_name=name: (
@@ -367,8 +396,44 @@ class BotFleet:
         lane_key: str | None = None,
         reply_lane_key: str | None = None,
         history: list[dict[str, str]] | None = None,
+        include_selected_session: bool = True,
     ) -> dict[str, Any]:
-        context = self._build_surface_context(bot)
+        history_payload = [
+            {"role": item["role"], "content": item["content"]}
+            for item in list(history or [])[-12:]
+            if item.get("role") in {"user", "assistant"} and item.get("content")
+        ]
+        workspace = self._workspace_context_for_turn(
+            bot,
+            conversation_key=conversation_key,
+            lane_key=lane_key,
+        )
+        context = build_super_tui_surface_context(
+            workspace_root=str(workspace.get("workspace_root") or "~"),
+            workspace_source=str(workspace.get("workspace_source") or "telegram"),
+            conversation_recent_turns=history_payload,
+            extra=self._build_surface_context(bot),
+        )
+        if workspace.get("workspace_id"):
+            context["workspace_id"] = workspace["workspace_id"]
+        context.update(
+            {
+                "ui_surface": "telegram",
+                "agent_profile": SUPER_TUI_SURFACE_PROFILE,
+                "agent_backend": SUPER_TUI_DEFAULT_BACKEND,
+                "gui_for": "dan super-tui",
+                "capabilities": _unique_strings(
+                    [
+                        *SUPER_TUI_AGENT_CAPABILITIES,
+                        "message_edit",
+                        "threaded_replies",
+                        "media_download",
+                        "workspace_menu",
+                        "session_menu",
+                    ]
+                ),
+            }
+        )
         context["telegram"] = {
             "chat_id": ctx.chat_id,
             "message_id": ctx.message_id,
@@ -382,12 +447,29 @@ class BotFleet:
             "sender_chat_username": ctx.sender_chat_username,
         }
         context["conversation"] = {
+            **dict(context.get("conversation") or {}),
             "conversation_key": conversation_key or "",
             "lane_key": lane_key or "",
             "reply_lane_key": reply_lane_key or "",
             "history_turn_count": len(history or []),
             "history_window": min(len(history or []), 40),
         }
+        selected_session = (
+            self._session_binding_for_turn(
+                conversation_key=conversation_key,
+                lane_key=lane_key,
+            )
+            if include_selected_session
+            else {}
+        )
+        if selected_session:
+            context["selected_session"] = dict(selected_session)
+            task_id = str(selected_session.get("task_id") or "").strip()
+            queue_action = str(selected_session.get("queue_action") or "").strip()
+            if task_id:
+                context["task_id"] = task_id
+            if queue_action:
+                context["queue_action"] = queue_action
         return context
 
     def _remember_outbound_message(
@@ -519,6 +601,13 @@ class BotFleet:
                     del history[idx]
                     break
             self._conversation_history[lane_key] = history
+
+    async def _clear_history_key(self, lane_key: str) -> None:
+        if not lane_key:
+            return
+        history_lock = self._history_locks.setdefault(lane_key, asyncio.Lock())
+        async with history_lock:
+            self._conversation_history.pop(lane_key, None)
 
     async def _record_user_turn(
         self,
@@ -697,6 +786,24 @@ class BotFleet:
 
         return _on_message
 
+    def _make_menu_callback(self, bot: BotInstance):
+        async def _on_callback(
+            ext_id: str, data: str, ctx: MessageContext,
+        ) -> None:
+            selected = self._bots.get(bot.name)
+            if selected is None:
+                return
+            if selected.allowed_users and not _user_allowed(
+                selected.allowed_users, ctx.from_user_id, ctx.from_user_username,
+            ):
+                return
+            if data.startswith("danws:"):
+                await self._handle_workspace_callback(selected, data, ctx)
+            elif data.startswith("dansn:"):
+                await self._handle_session_callback(selected, data, ctx)
+
+        return _on_callback
+
     def _routable_bots(self) -> list[RoutableBot]:
         return [
             RoutableBot(
@@ -707,6 +814,585 @@ class BotFleet:
             )
             for b in self._bots.values()
         ]
+
+    async def _handle_telegram_menu_command(
+        self,
+        bot: BotInstance,
+        ctx: MessageContext,
+        text: str,
+        *,
+        conversation_key: str,
+        lane_key: str,
+    ) -> bool:
+        command = _telegram_menu_command(text)
+        if not command:
+            return False
+        if command == "workspace":
+            workspace_arg = _telegram_command_argument(text)
+            await self._show_workspace_menu(
+                bot,
+                ctx,
+                conversation_key=conversation_key,
+                lane_key=lane_key,
+                path=workspace_arg or None,
+                reply_to=ctx.message_id,
+            )
+            return True
+        if command == "session":
+            await self._show_session_menu(
+                bot,
+                ctx,
+                conversation_key=conversation_key,
+                lane_key=lane_key,
+                reply_to=ctx.message_id,
+            )
+            return True
+        if command == "reset":
+            binding = self._session_binding_for_turn(
+                conversation_key=conversation_key,
+                lane_key=lane_key,
+            )
+            stopped = await self._force_reset_selected_session(binding)
+            sessions = self._telegram_surface_state.setdefault("active_sessions", {})
+            sessions.pop(conversation_key, None)
+            sessions.pop(lane_key, None)
+            _save_telegram_surface_state(self._telegram_surface_state)
+            await self._clear_history_key(conversation_key)
+            await self._clear_history_key(lane_key)
+            text = (
+                "Telegram state reset. Existing DAN Super task status was forced out of this lane; your next Agent request starts fresh."
+                if stopped
+                else "Telegram state reset. Your next Agent request starts fresh."
+            )
+            await self._send_reply(
+                bot,
+                ctx,
+                text,
+                lane_key=lane_key,
+                thread_id=ctx.thread_id,
+            )
+            return True
+        return False
+
+    def _workspace_context_for_turn(
+        self,
+        bot: BotInstance,
+        *,
+        conversation_key: str | None,
+        lane_key: str | None,
+    ) -> dict[str, Any]:
+        base = _telegram_workspace_context(bot.name)
+        active = self._active_workspace_for_keys(
+            bot.name,
+            conversation_key=conversation_key,
+            lane_key=lane_key,
+        )
+        if active:
+            return {
+                "workspace_root": active,
+                "workspace_id": _workspace_id_from_path(active),
+                "workspace_source": "telegram_menu",
+            }
+        if base:
+            base = dict(base)
+            base.setdefault("workspace_source", "telegram_env")
+            return base
+        return {
+            "workspace_root": "~",
+            "workspace_id": "~",
+            "workspace_source": "default_home",
+        }
+
+    def _session_binding_for_turn(
+        self,
+        *,
+        conversation_key: str | None,
+        lane_key: str | None,
+    ) -> dict[str, Any]:
+        sessions = self._telegram_surface_state.setdefault("active_sessions", {})
+        for key in (lane_key, conversation_key):
+            if key and isinstance(sessions.get(key), dict):
+                return dict(sessions[key])
+        return {}
+
+    def _active_workspace_for_keys(
+        self,
+        bot_name: str,
+        *,
+        conversation_key: str | None,
+        lane_key: str | None,
+    ) -> str:
+        active = self._telegram_surface_state.setdefault("active_workspaces", {})
+        for key in (lane_key, conversation_key, f"bot:{bot_name}"):
+            value = str(active.get(key or "") or "").strip()
+            if value:
+                return value
+        return ""
+
+    async def _send_telegram_menu(
+        self,
+        bot: BotInstance,
+        ctx: MessageContext,
+        text: str,
+        buttons: list[list[tuple[str, str]]],
+        *,
+        message_id: int | None = None,
+        reply_to: int | None = None,
+        lane_key: str | None = None,
+    ) -> int | None:
+        assert bot.adapter is not None
+        if hasattr(bot.adapter, "send_menu"):
+            sent_id = await bot.adapter.send_menu(
+                ctx.chat_id,
+                text,
+                buttons,
+                message_id=message_id,
+                reply_to=reply_to,
+                thread_id=ctx.thread_id,
+            )
+        else:
+            sent_id = await bot.adapter._send_text(
+                ctx.chat_id,
+                text,
+                reply_to=reply_to,
+                thread_id=ctx.thread_id,
+            )
+        self._remember_outbound_message(ctx.chat_id, sent_id, lane_key=lane_key)
+        return sent_id
+
+    async def _show_workspace_menu(
+        self,
+        bot: BotInstance,
+        ctx: MessageContext,
+        *,
+        conversation_key: str,
+        lane_key: str,
+        path: str | None = None,
+        page: int = 0,
+        message_id: int | None = None,
+        reply_to: int | None = None,
+        menu_id: str | None = None,
+        note: str = "",
+    ) -> None:
+        current = self._active_workspace_for_keys(
+            bot.name,
+            conversation_key=conversation_key,
+            lane_key=lane_key,
+        )
+        default_workspace = _telegram_workspace_context(bot.name).get("workspace_root") or Path.cwd()
+        browse_root = _normalize_workspace_menu_path(
+            path or current or default_workspace,
+            base=current or default_workspace,
+        )
+        entries = _workspace_child_dirs(browse_root)
+        max_page = max(0, (len(entries) - 1) // _TELEGRAM_WORKSPACE_MENU_PAGE_SIZE)
+        page = max(0, min(page, max_page))
+        visible = entries[
+            page * _TELEGRAM_WORKSPACE_MENU_PAGE_SIZE:
+            (page + 1) * _TELEGRAM_WORKSPACE_MENU_PAGE_SIZE
+        ]
+        menu_id = menu_id or uuid.uuid4().hex[:8]
+        recents = self._recent_workspaces(bot.name)
+        self._workspace_menu_state[menu_id] = {
+            "bot": bot.name,
+            "conversation_key": conversation_key,
+            "lane_key": lane_key,
+            "path": str(browse_root),
+            "page": page,
+            "entries": [str(item) for item in visible],
+            "recents": list(recents),
+        }
+
+        lines = ["DAN Super workspace"]
+        if current:
+            lines.append(f"Selected: {current}")
+        else:
+            lines.append("Selected: default workspace")
+        lines.append(f"Browsing: {browse_root}")
+        if note:
+            lines.append("")
+            lines.append(note)
+        lines.append("")
+        lines.append("Tap Down to enter a folder, Parent to go up, then Select this folder.")
+        if not visible:
+            lines.append("No child folders are visible here.")
+
+        buttons: list[list[tuple[str, str]]] = []
+        for idx, root in enumerate(recents[:4]):
+            buttons.append([(f"Saved: {_short_path_label(root)}", f"danws:{menu_id}:recent:{idx}")])
+        for idx, child in enumerate(visible):
+            buttons.append([(f"Down: {_short_path_label(str(child))}", f"danws:{menu_id}:open:{idx}")])
+        nav: list[tuple[str, str]] = []
+        if browse_root.parent != browse_root:
+            nav.append(("Parent", f"danws:{menu_id}:up:0"))
+        if page > 0:
+            nav.append(("Prev", f"danws:{menu_id}:page:{page - 1}"))
+        if page < max_page:
+            nav.append(("Next", f"danws:{menu_id}:page:{page + 1}"))
+        if nav:
+            buttons.append(nav)
+        buttons.append(
+            [
+                ("Select this folder", f"danws:{menu_id}:select:0"),
+                ("Refresh", f"danws:{menu_id}:refresh:0"),
+            ]
+        )
+        buttons.append([("Sessions", f"danws:{menu_id}:sessions:0")])
+        await self._send_telegram_menu(
+            bot,
+            ctx,
+            "\n".join(lines),
+            buttons,
+            message_id=message_id,
+            reply_to=reply_to,
+            lane_key=lane_key,
+        )
+
+    async def _handle_workspace_callback(
+        self,
+        bot: BotInstance,
+        data: str,
+        ctx: MessageContext,
+    ) -> None:
+        _prefix, menu_id, action, raw_value = _split_menu_callback(data)
+        state = self._workspace_menu_state.get(menu_id)
+        if not state:
+            await self._send_telegram_menu(
+                bot,
+                ctx,
+                "This workspace menu expired. Send /workspace to open a fresh one.",
+                [],
+                message_id=ctx.message_id,
+            )
+            return
+        conversation_key = str(state.get("conversation_key") or "")
+        lane_key = str(state.get("lane_key") or conversation_key)
+        current_path = str(state.get("path") or Path.cwd())
+        page = int(state.get("page") or 0)
+        if action == "open":
+            entries = list(state.get("entries") or [])
+            idx = _safe_int(raw_value)
+            if 0 <= idx < len(entries):
+                current_path = entries[idx]
+                page = 0
+        elif action == "recent":
+            recents = list(state.get("recents") or [])
+            idx = _safe_int(raw_value)
+            if 0 <= idx < len(recents):
+                current_path = str(recents[idx])
+                self._select_workspace(
+                    bot.name,
+                    conversation_key=conversation_key,
+                    lane_key=lane_key,
+                    root=current_path,
+                )
+                await self._show_workspace_menu(
+                    bot,
+                    ctx,
+                    conversation_key=conversation_key,
+                    lane_key=lane_key,
+                    path=current_path,
+                    message_id=ctx.message_id,
+                    menu_id=menu_id,
+                    note="Workspace selected.",
+                )
+                return
+        elif action == "up":
+            current_path = str(Path(current_path).expanduser().parent)
+            page = 0
+        elif action == "page":
+            page = _safe_int(raw_value)
+        elif action == "refresh":
+            pass
+        elif action == "sessions":
+            await self._show_session_menu(
+                bot,
+                ctx,
+                conversation_key=conversation_key,
+                lane_key=lane_key,
+                message_id=ctx.message_id,
+            )
+            return
+        elif action == "select":
+            self._select_workspace(
+                bot.name,
+                conversation_key=conversation_key,
+                lane_key=lane_key,
+                root=current_path,
+            )
+            await self._show_workspace_menu(
+                bot,
+                ctx,
+                conversation_key=conversation_key,
+                lane_key=lane_key,
+                path=current_path,
+                message_id=ctx.message_id,
+                menu_id=menu_id,
+                note="Workspace selected.",
+            )
+            return
+        await self._show_workspace_menu(
+            bot,
+            ctx,
+            conversation_key=conversation_key,
+            lane_key=lane_key,
+            path=current_path,
+            page=page,
+            message_id=ctx.message_id,
+            menu_id=menu_id,
+        )
+
+    def _select_workspace(
+        self,
+        bot_name: str,
+        *,
+        conversation_key: str,
+        lane_key: str,
+        root: str,
+    ) -> None:
+        root = str(_normalize_workspace_menu_path(root))
+        active = self._telegram_surface_state.setdefault("active_workspaces", {})
+        active[conversation_key] = root
+        active[lane_key] = root
+        active[f"bot:{bot_name}"] = root
+        recents = self._telegram_surface_state.setdefault("recent_workspaces", {})
+        bot_recents = [item for item in list(recents.get(bot_name, [])) if item != root]
+        recents[bot_name] = [root, *bot_recents][:12]
+        _save_telegram_surface_state(self._telegram_surface_state)
+
+    def _recent_workspaces(self, bot_name: str) -> list[str]:
+        recents = self._telegram_surface_state.setdefault("recent_workspaces", {})
+        values = recents.get(bot_name, [])
+        if not isinstance(values, list):
+            return []
+        return [str(item) for item in values if str(item).strip()]
+
+    async def _show_session_menu(
+        self,
+        bot: BotInstance,
+        ctx: MessageContext,
+        *,
+        conversation_key: str,
+        lane_key: str,
+        message_id: int | None = None,
+        reply_to: int | None = None,
+        menu_id: str | None = None,
+        note: str = "",
+    ) -> None:
+        tasks = await self._load_available_sessions(conversation_key)
+        menu_id = menu_id or uuid.uuid4().hex[:8]
+        self._session_menu_state[menu_id] = {
+            "bot": bot.name,
+            "conversation_key": conversation_key,
+            "lane_key": lane_key,
+            "tasks": tasks,
+        }
+        binding = self._session_binding_for_turn(
+            conversation_key=conversation_key,
+            lane_key=lane_key,
+        )
+        display_tasks = tasks[:12]
+        lines = ["DAN Super sessions"]
+        if binding.get("task_id"):
+            resumed = _session_task_title(
+                next((task for task in tasks if str(task.get("task_id") or "") == str(binding.get("task_id") or "")), {})
+            )
+            lines.append(f"Resumed: {resumed or 'selected session'}")
+        if note:
+            lines.append("")
+            lines.append(note)
+        if not tasks:
+            lines.append("")
+            lines.append("No Agent sessions are attached to this Telegram thread yet.")
+        else:
+            lines.append("")
+            lines.append("Select a session to resume it. Active sessions accept your next message as steering.")
+            display_idx = 1
+            for group in _session_workspace_groups(display_tasks):
+                lines.append(f"[{group['label']}]")
+                for task in group["tasks"]:
+                    status = _session_status_label(task)
+                    title = _session_task_title(task)
+                    latest = _compact_context_text(task.get("latest_progress"), limit=72)
+                    suffix = f" - {latest}" if latest and latest != title else ""
+                    lines.append(f"{display_idx}. {status} {title}{suffix}".rstrip())
+                    display_idx += 1
+            if len(tasks) > len(display_tasks):
+                lines.append(f"Showing latest {len(display_tasks)} of {len(tasks)} sessions.")
+
+        buttons: list[list[tuple[str, str]]] = []
+        for idx, task in enumerate(display_tasks):
+            status = str(task.get("status") or "").strip().lower()
+            title = _session_task_button_label(task)
+            if status in {"running", "queued", "waiting_dependency", "paused", "needs_input"}:
+                buttons.append(
+                    [
+                        (f"Steer: {title}", f"dansn:{menu_id}:use:{idx}"),
+                        ("Next", f"dansn:{menu_id}:continue:{idx}"),
+                        ("Status", f"dansn:{menu_id}:status:{idx}"),
+                    ]
+                )
+            else:
+                buttons.append(
+                    [
+                        (f"Resume: {title}", f"dansn:{menu_id}:use:{idx}"),
+                        ("Status", f"dansn:{menu_id}:status:{idx}"),
+                    ]
+                )
+        buttons.append(
+            [
+                ("Refresh", f"dansn:{menu_id}:refresh:0"),
+                ("Clear resume", f"dansn:{menu_id}:clear:0"),
+            ]
+        )
+        buttons.append([("Workspace", f"dansn:{menu_id}:workspace:0")])
+        await self._send_telegram_menu(
+            bot,
+            ctx,
+            "\n".join(lines),
+            buttons,
+            message_id=message_id,
+            reply_to=reply_to,
+            lane_key=lane_key,
+        )
+
+    async def _handle_session_callback(
+        self,
+        bot: BotInstance,
+        data: str,
+        ctx: MessageContext,
+    ) -> None:
+        _prefix, menu_id, action, raw_value = _split_menu_callback(data)
+        state = self._session_menu_state.get(menu_id)
+        if not state:
+            await self._send_telegram_menu(
+                bot,
+                ctx,
+                "This session menu expired. Send /session to open a fresh one.",
+                [],
+                message_id=ctx.message_id,
+            )
+            return
+        conversation_key = str(state.get("conversation_key") or "")
+        lane_key = str(state.get("lane_key") or conversation_key)
+        tasks = list(state.get("tasks") or [])
+        idx = _safe_int(raw_value)
+        if action == "refresh":
+            await self._show_session_menu(
+                bot,
+                ctx,
+                conversation_key=conversation_key,
+                lane_key=lane_key,
+                message_id=ctx.message_id,
+                menu_id=menu_id,
+            )
+            return
+        if action == "clear":
+            sessions = self._telegram_surface_state.setdefault("active_sessions", {})
+            sessions.pop(conversation_key, None)
+            sessions.pop(lane_key, None)
+            _save_telegram_surface_state(self._telegram_surface_state)
+            await self._show_session_menu(
+                bot,
+                ctx,
+                conversation_key=conversation_key,
+                lane_key=lane_key,
+                message_id=ctx.message_id,
+                menu_id=menu_id,
+                note="Session resume cleared.",
+            )
+            return
+        if action == "workspace":
+            await self._show_workspace_menu(
+                bot,
+                ctx,
+                conversation_key=conversation_key,
+                lane_key=lane_key,
+                message_id=ctx.message_id,
+            )
+            return
+        if not (0 <= idx < len(tasks)):
+            return
+        task = dict(tasks[idx])
+        if action == "status":
+            latest = _compact_context_text(task.get("latest_progress"), limit=1200)
+            metadata = dict(task.get("metadata") or {})
+            text = "\n".join(
+                line
+                for line in (
+                    f"Session: {_session_task_title(task)}",
+                    f"Status: {task.get('status', 'unknown')}",
+                    f"Phase: {task.get('phase', '')}",
+                    f"Workspace: {_session_workspace_label(metadata.get('workspace_root') or task.get('workspace_root') or '')}",
+                    f"Latest: {latest}" if latest else "",
+                    f"Task id: {task.get('task_id', '')}",
+                )
+                if line
+            )
+            await self._send_telegram_menu(
+                bot,
+                ctx,
+                text,
+                [[("Back to sessions", f"dansn:{menu_id}:refresh:0")]],
+                message_id=ctx.message_id,
+                lane_key=lane_key,
+            )
+            return
+        if action in {"use", "append", "continue"}:
+            queue_action = "append" if action != "continue" else "continue_after_current"
+            if action == "use" and str(task.get("status") or "") in {
+                "completed",
+                "failed",
+                "blocked",
+                "stopped",
+            }:
+                queue_action = ""
+            binding = {
+                "task_id": str(task.get("task_id") or ""),
+                "run_id": str(dict(task.get("metadata") or {}).get("active_run_id") or ""),
+                "status": str(task.get("status") or ""),
+                "queue_action": queue_action,
+            }
+            sessions = self._telegram_surface_state.setdefault("active_sessions", {})
+            sessions[conversation_key] = binding
+            sessions[lane_key] = binding
+            _save_telegram_surface_state(self._telegram_surface_state)
+            note = (
+                "Session resumed. Next message will append to the active run."
+                if queue_action == "append"
+                else "Session resumed. Next Agent-like message will continue from this task."
+            )
+            await self._show_session_menu(
+                bot,
+                ctx,
+                conversation_key=conversation_key,
+                lane_key=lane_key,
+                message_id=ctx.message_id,
+                menu_id=menu_id,
+                note=note,
+            )
+
+    async def _load_available_sessions(self, thread_id: str) -> list[dict[str, Any]]:
+        if self._http is None:
+            return []
+        try:
+            resp = await self._http.get(
+                "/api/v2/tasks?limit=60"
+            )
+            if resp.status_code != 200:
+                resp = await self._http.get(
+                    f"/api/v2/threads/{quote(thread_id, safe='')}/tasks?limit=20"
+                )
+                if resp.status_code != 200:
+                    return []
+            payload = resp.json()
+            tasks = payload.get("tasks") if isinstance(payload, dict) else []
+            if not isinstance(tasks, list):
+                return []
+            return [dict(item) for item in tasks if isinstance(item, dict)]
+        except Exception:
+            logger.debug("Failed to load Telegram Agent sessions", exc_info=True)
+            return []
 
     # -- server dispatch ----------------------------------------------------
 
@@ -785,6 +1471,7 @@ class BotFleet:
                     if _strip_media_marker(text)
                     else f"Please review this PDF: {att_path}"
                 )
+            raw_agent_command = _telegram_agent_command(msg_text)
             requested_mode, msg_text = _telegram_requested_mode(msg_text)
             control_plane = _telegram_control_plane_override(bot.name)
             effective_mode = _telegram_effective_requested_mode(
@@ -792,6 +1479,37 @@ class BotFleet:
                 requested_mode,
                 msg_text,
             )
+            if (
+                control_plane == "v2"
+                and raw_agent_command == "new"
+                and reply_lane_key is None
+                and ctx.message_id is not None
+            ):
+                lane_key = f"{conversation_key}:m{ctx.message_id}"
+                self._remember_message_lane(ctx.chat_id, ctx.message_id, lane_key)
+            if await self._handle_telegram_menu_command(
+                bot,
+                ctx,
+                msg_text,
+                conversation_key=conversation_key,
+                lane_key=lane_key,
+            ):
+                if settings.use_reactions:
+                    await bot.adapter.set_reaction(
+                        ctx.chat_id, ctx.message_id, "✅",
+                    )
+                return
+            selected_session = self._session_binding_for_turn(
+                conversation_key=conversation_key,
+                lane_key=lane_key,
+            )
+            if (
+                control_plane == "v2"
+                and selected_session
+                and effective_mode == "auto"
+                and not _telegram_v2_control_command(msg_text)
+            ):
+                effective_mode = "agent"
             if effective_mode == "agent" and not msg_text.strip():
                 await self._send_reply(
                     bot,
@@ -829,12 +1547,46 @@ class BotFleet:
                     lane_key=lane_key,
                     reply_lane_key=reply_lane_key,
                     history=history,
+                    include_selected_session=raw_agent_command != "new",
                 ),
             }
             if control_plane:
                 body["control_plane_mode"] = control_plane
             if att_path:
                 body["attachment_path"] = att_path
+
+            selected_session_command_allowed = raw_agent_command in {
+                "",
+                "append",
+                "inject",
+                "continue",
+                "continue-after-current",
+            }
+            if (
+                control_plane == "v2"
+                and selected_session
+                and str(selected_session.get("queue_action") or "").strip()
+                and str(selected_session.get("run_id") or "").strip()
+                and selected_session_command_allowed
+            ):
+                full_reply = await self._send_v2_agent_run_command(
+                    bot,
+                    ctx,
+                    body,
+                    selected_session,
+                    lane_key=lane_key,
+                )
+                if full_reply:
+                    await self._append_assistant_turn(
+                        lane_key,
+                        full_reply,
+                        conversation_key=conversation_key,
+                    )
+                if settings.use_reactions:
+                    await bot.adapter.set_reaction(
+                        ctx.chat_id, ctx.message_id, "✅",
+                    )
+                return
 
             if control_plane == "v2" and effective_mode == "agent":
                 full_reply = await self._run_v2_agent_turn(
@@ -1580,11 +2332,19 @@ class BotFleet:
         backend = (
             os.environ.get("DAN_TELEGRAM_V2_AGENT_BACKEND")
             or os.environ.get("DAN_CHAT_V2_AGENT_BACKEND")
-            or ""
+            or SUPER_TUI_DEFAULT_BACKEND
         ).strip()
-        execute_body: dict[str, Any] = {"background": True}
-        if backend:
-            execute_body["backend"] = backend
+        execute_body = build_super_tui_agent_execute_payload(
+            backend=backend,
+            background=True,
+            surface=f"telegram:{bot.name}",
+            metadata={
+                "surface": f"telegram:{bot.name}",
+                "requested_from": "telegram",
+                "telegram_bot": bot.name,
+                "gui_for": "dan super-tui",
+            },
+        )
         execute_resp = await self._http.post(
             f"/api/v2/agent-runs/{run_id}/execute",
             json=execute_body,
@@ -1599,6 +2359,110 @@ class BotFleet:
             run_id,
             lane_key=lane_key,
         )
+
+    async def _send_v2_agent_run_command(
+        self,
+        bot: BotInstance,
+        ctx: MessageContext,
+        body: dict[str, Any],
+        selected_session: dict[str, Any],
+        *,
+        lane_key: str | None = None,
+    ) -> str:
+        """Steer or queue work on an already selected Telegram Agent session."""
+
+        assert bot.adapter is not None
+        if self._http is None:
+            raise RuntimeError("Telegram fleet HTTP client is not available")
+
+        message_text = str(body.get("message") or "")
+        explicit_command = _telegram_agent_command(message_text)
+        command_name = str(selected_session.get("queue_action") or "").strip()
+        if explicit_command in {"append", "inject"}:
+            command_name = "append"
+        elif explicit_command in {"continue", "continue-after-current"}:
+            command_name = "continue_after_current"
+        if command_name == "append":
+            command_name = "append_followup"
+        if command_name not in {"append_followup", "continue_after_current"}:
+            return ""
+        run_id = str(selected_session.get("run_id") or "").strip()
+        task_id = str(selected_session.get("task_id") or "").strip()
+        if not run_id:
+            return ""
+        payload = {
+            "command": command_name,
+            "task_id": task_id or None,
+            "run_id": run_id,
+            "idempotency_key": uuid.uuid4().hex,
+            "payload": {
+                "text": _telegram_command_payload_text(message_text),
+                "surface_context": dict(body.get("surface_context") or {}),
+                "history": list(body.get("history") or []),
+            },
+        }
+        resp = await self._http.post(
+            f"/api/v2/agent-runs/{run_id}/commands",
+            json=payload,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"V2 Agent run command failed: HTTP {resp.status_code}",
+            )
+        data = resp.json()
+        event = data.get("event") if isinstance(data, dict) else {}
+        event = event if isinstance(event, dict) else {}
+        summary = str(event.get("summary") or "").strip()
+        if not summary:
+            summary = (
+                "Steering note queued for the active DAN Super run."
+                if command_name == "append_followup"
+                else "Queued after the current DAN Super run."
+            )
+        await self._send_reply(
+            bot,
+            ctx,
+            summary,
+            lane_key=lane_key,
+            thread_id=ctx.thread_id,
+        )
+        return summary
+
+    async def _force_reset_selected_session(self, selected_session: dict[str, Any]) -> bool:
+        """Force a selected Telegram Agent run out of the active lane."""
+
+        if self._http is None:
+            return False
+        run_id = str(selected_session.get("run_id") or "").strip()
+        if not run_id:
+            return False
+        task_id = str(selected_session.get("task_id") or "").strip() or None
+        try:
+            await self._http.post(
+                f"/api/v2/agent-runs/{run_id}/commands",
+                json={
+                    "command": "stop",
+                    "task_id": task_id,
+                    "run_id": run_id,
+                    "idempotency_key": f"telegram-reset-{uuid.uuid4().hex}",
+                    "payload": {"reason": "telegram_reset"},
+                },
+            )
+            resp = await self._http.post(
+                f"/api/v2/agent-runs/{run_id}/events",
+                json={
+                    "type": "stopped",
+                    "run_id": run_id,
+                    "task_id": task_id,
+                    "summary": "Telegram reset forced this run out of the active lane.",
+                    "source_event_type": "telegram.reset.forced",
+                    "payload": {"checkpoint": "telegram.reset"},
+                },
+            )
+            return int(getattr(resp, "status_code", 0) or 0) == 200
+        except Exception:
+            logger.debug("Failed to force-reset Telegram selected session", exc_info=True)
+            return False
 
     async def _stream_v2_agent_run_events(
         self,
@@ -1799,9 +2663,15 @@ class BotFleet:
 
     def _infer_project_commands(self, bot: BotInstance) -> list[tuple[str, str]]:
         return [
-            ("agent", "Run a V2 Agent task"),
-            ("status", "Check current task status"),
-            ("cancel", "Cancel current task"),
+            ("agent", "Run a DAN Super task"),
+            ("workspace", "Choose DAN Super workspace"),
+            ("session", "Resume DAN Super session"),
+            ("tasks", "Show DAN Super sessions"),
+            ("append", "Steer active DAN Super run"),
+            ("continue", "Queue after current run"),
+            ("new", "Start a separate DAN Super run"),
+            ("status", "Show DAN Super status"),
+            ("cancel", "Stop active DAN Super run"),
             ("help", "Show available commands"),
         ]
 
@@ -1899,11 +2769,42 @@ def _telegram_requested_mode(text: str) -> tuple[str, str]:
         return "auto", stripped
     first, _, rest = stripped.partition(" ")
     command = first.split("@", 1)[0].lower()
-    if command in {"/agent", "/run", "/build"}:
+    if command in {"/agent", "/run", "/build", "/new"}:
         return "agent", rest.strip()
+    if command in {"/append", "/inject", "/continue", "/continue-after-current"}:
+        return "agent", stripped
     if stripped.lower().startswith("agent:"):
         return "agent", stripped.split(":", 1)[1].strip()
     return "auto", stripped
+
+
+def _telegram_agent_command(text: str) -> str:
+    stripped = str(text or "").strip()
+    if not stripped.startswith("/"):
+        return ""
+    first = stripped.split(maxsplit=1)[0].split("@", 1)[0].lower()
+    command = first.lstrip("/")
+    if command in {
+        "agent",
+        "run",
+        "build",
+        "new",
+        "append",
+        "inject",
+        "continue",
+        "continue-after-current",
+    }:
+        return command
+    return ""
+
+
+def _telegram_command_payload_text(text: str) -> str:
+    stripped = str(text or "").strip()
+    command = _telegram_agent_command(stripped)
+    if command in {"append", "inject", "continue", "continue-after-current"}:
+        _first, _sep, rest = stripped.partition(" ")
+        return rest.strip()
+    return stripped
 
 
 def _telegram_effective_requested_mode(
@@ -1928,7 +2829,18 @@ def _telegram_v2_control_command(text: str) -> str:
         return ""
     first = stripped.split(maxsplit=1)[0].split("@", 1)[0].lower()
     command = first.lstrip("/")
-    if command in {"status", "cancel", "help", "start"}:
+    if command in {
+        "status",
+        "cancel",
+        "help",
+        "start",
+        "workspace",
+        "session",
+        "sessions",
+        "tasks",
+        "reset",
+        "clear",
+    }:
         return command
     return ""
 
@@ -2158,8 +3070,6 @@ def _conversation_lane_key(
     conversation_key = _conversation_thread_key(ctx, bot_name)
     if reply_lane_key:
         return reply_lane_key
-    if str(getattr(ctx, "chat_type", "") or "").lower() == "private":
-        return conversation_key
     if not fork_for_parallel or ctx.message_id is None:
         return conversation_key
     return f"{conversation_key}:m{ctx.message_id}"
@@ -2199,6 +3109,208 @@ def _is_bot_authored_message(
         if username and username.lstrip("@").lower() in bot_usernames:
             return True
     return False
+
+
+def _telegram_state_dir() -> Path:
+    configured = str(os.environ.get("DAN_TELEGRAM_STATE_DIR") or "").strip()
+    return Path(configured).expanduser() if configured else Path.home() / ".dan" / "telegram"
+
+
+def _telegram_surface_state_path() -> Path:
+    return _telegram_state_dir() / "surface-state.json"
+
+
+def _load_telegram_surface_state() -> dict[str, Any]:
+    path = _telegram_surface_state_path()
+    if not path.exists():
+        return {
+            "active_workspaces": {},
+            "recent_workspaces": {},
+            "active_sessions": {},
+        }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            payload.setdefault("active_workspaces", {})
+            payload.setdefault("recent_workspaces", {})
+            payload.setdefault("active_sessions", {})
+            return payload
+    except Exception:
+        logger.debug("Failed to load Telegram surface state", exc_info=True)
+    return {
+        "active_workspaces": {},
+        "recent_workspaces": {},
+        "active_sessions": {},
+    }
+
+
+def _save_telegram_surface_state(state: dict[str, Any]) -> None:
+    path = _telegram_surface_state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        logger.debug("Failed to save Telegram surface state", exc_info=True)
+
+
+def _telegram_menu_command(text: str) -> str:
+    stripped = str(text or "").strip()
+    if not stripped.startswith("/"):
+        return ""
+    command = stripped.split(maxsplit=1)[0].split("@", 1)[0].lower()
+    if command in {"/workspace", "/workspaces", "/ws"}:
+        return "workspace"
+    if command in {"/session", "/sessions", "/tasks", "/status"}:
+        return "session"
+    if command in {"/reset", "/clear"}:
+        return "reset"
+    return ""
+
+
+def _telegram_command_argument(text: str) -> str:
+    stripped = str(text or "").strip()
+    if not stripped.startswith("/"):
+        return ""
+    try:
+        parts = shlex.split(stripped)
+    except ValueError:
+        parts = stripped.split(maxsplit=1)
+    if len(parts) <= 1:
+        return ""
+    return " ".join(parts[1:]).strip()
+
+
+def _normalize_workspace_menu_path(value: Any, *, base: Any = None) -> Path:
+    raw = str(value or "").strip() or str(Path.cwd())
+    if raw.startswith("$HOME/") or raw == "$HOME":
+        raw = str(Path.home()) + raw[len("$HOME") :]
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        base_path = Path(str(base or Path.cwd())).expanduser()
+        path = base_path / path
+    try:
+        return path.resolve(strict=False)
+    except Exception:
+        return path
+
+
+def _workspace_child_dirs(path: Path) -> list[Path]:
+    try:
+        if not path.exists() or not path.is_dir():
+            return []
+        dirs = [
+            item
+            for item in path.iterdir()
+            if item.is_dir() and not item.name.startswith(".")
+        ]
+        dirs.sort(key=lambda item: item.name.lower())
+        return dirs[:100]
+    except Exception:
+        return []
+
+
+def _short_path_label(path: str, *, max_len: int = 32) -> str:
+    text = str(path or "").strip()
+    name = Path(text).name or text
+    label = name if len(name) <= max_len else name[: max_len - 3].rstrip() + "..."
+    if label:
+        return label
+    return text[-max_len:] if len(text) > max_len else text
+
+
+def _workspace_id_from_path(path: str) -> str:
+    text = str(path or "").strip()
+    if not text:
+        return ""
+    return Path(text).name or text
+
+
+def _session_workspace_groups(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: list[dict[str, Any]] = []
+    index: dict[str, dict[str, Any]] = {}
+    for task in tasks:
+        metadata = dict(task.get("metadata") or {})
+        root = str(task.get("workspace_root") or metadata.get("workspace_root") or "").strip()
+        workspace_id = str(task.get("workspace_id") or metadata.get("workspace_id") or "").strip()
+        key = root or workspace_id or "default"
+        group = index.get(key)
+        if group is None:
+            group = {
+                "key": key,
+                "label": _session_workspace_label(root or workspace_id or "default workspace"),
+                "tasks": [],
+            }
+            index[key] = group
+            groups.append(group)
+        group["tasks"].append(task)
+    return groups
+
+
+def _session_workspace_label(path: str) -> str:
+    text = str(path or "").strip()
+    if not text or text == "~":
+        return "~"
+    return _short_path_label(text, max_len=40)
+
+
+def _session_task_title(task: dict[str, Any]) -> str:
+    metadata = dict(task.get("metadata") or {})
+    for value in (
+        task.get("title"),
+        task.get("objective"),
+        metadata.get("command_text"),
+        metadata.get("objective"),
+        metadata.get("title"),
+        task.get("latest_progress"),
+    ):
+        title = _compact_context_text(value, limit=96)
+        if title:
+            return title
+    return "Untitled DAN Super session"
+
+
+def _session_task_button_label(task: dict[str, Any]) -> str:
+    return _compact_context_text(_session_task_title(task), limit=28)
+
+
+def _session_status_label(task: dict[str, Any]) -> str:
+    status = str(task.get("status") or "unknown").strip().lower()
+    if status == "running":
+        return "running"
+    if status in {"queued", "waiting_dependency"}:
+        return "queued"
+    if status in {"needs_input", "paused"}:
+        return status.replace("_", " ")
+    if status in {"completed", "failed", "blocked", "stopped"}:
+        return status
+    return status or "unknown"
+
+
+def _split_menu_callback(data: str) -> tuple[str, str, str, str]:
+    parts = str(data or "").split(":", 3)
+    while len(parts) < 4:
+        parts.append("")
+    return parts[0], parts[1], parts[2], parts[3]
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _unique_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return result
 
 
 def _format_for_telegram(text: str) -> str:

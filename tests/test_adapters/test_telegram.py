@@ -204,9 +204,16 @@ class TestCommandHandlers:
 
     def test_command_menu_is_v2_focused(self, tg_adapter: TelegramAdapter) -> None:
         assert tg_adapter._default_dm_commands() == [
-            ("agent", "Run a V2 Agent task"),
-            ("status", "Check current task status"),
-            ("cancel", "Cancel current task"),
+            ("agent", "Run a DAN Super task"),
+            ("workspace", "Choose DAN Super workspace"),
+            ("session", "Resume DAN Super session"),
+            ("tasks", "Show DAN Super sessions"),
+            ("append", "Steer active DAN Super run"),
+            ("continue", "Queue after current run"),
+            ("new", "Start a separate DAN Super run"),
+            ("reset", "Clear Telegram resume state"),
+            ("status", "Show DAN Super status"),
+            ("cancel", "Stop active DAN Super run"),
             ("help", "Show available commands"),
         ]
 
@@ -310,7 +317,11 @@ class TestTelegramStreamErrorFormatting:
 
 
 class TestTelegramFleetLaneBehavior:
-    def test_v2_agent_command_and_workspace_context(self, monkeypatch: pytest.MonkeyPatch):
+    def test_v2_agent_command_and_workspace_context(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+    ):
         from dan.adapters.telegram_config import TelegramFleetConfig
         from dan.adapters.telegram_fleet import (
             BotFleet,
@@ -323,6 +334,7 @@ class TestTelegramFleetLaneBehavior:
         monkeypatch.delenv("DAN_TELEGRAM_CONTROL_PLANE", raising=False)
         monkeypatch.delenv("DAN_ADAPTERS_CONTROL_PLANE", raising=False)
         monkeypatch.delenv("DAN_TELEGRAM_ALLOW_V1", raising=False)
+        monkeypatch.setenv("DAN_TELEGRAM_STATE_DIR", str(tmp_path / "telegram-state"))
         monkeypatch.setenv("DAN_TELEGRAM_WORKSPACE_ROOT", "~/dan-work")
         monkeypatch.setenv("DAN_TELEGRAM_WORKSPACE_ID", "dan-work")
 
@@ -384,6 +396,10 @@ class TestTelegramFleetLaneBehavior:
 
         assert context["workspace_root"] == "~/dan-work"
         assert context["workspace_id"] == "dan-work"
+        assert context["surface_profile"] == "super_tui"
+        assert context["agent_backend"] == "super_dan"
+        assert "workspace_menu" in context["capabilities"]
+        assert "session_menu" in context["capabilities"]
         assert context["telegram"] == {
             "chat_id": 111,
             "message_id": 42,
@@ -396,7 +412,20 @@ class TestTelegramFleetLaneBehavior:
             "sender_chat_id": None,
             "sender_chat_username": None,
         }
-        assert context["conversation"] == {
+        assert context["conversation"]["recent_turns"] == [
+            {"role": "user", "content": "Build a dashboard"},
+            {"role": "assistant", "content": "Accepted."},
+        ]
+        assert {
+            key: context["conversation"][key]
+            for key in (
+                "conversation_key",
+                "lane_key",
+                "reply_lane_key",
+                "history_turn_count",
+                "history_window",
+            )
+        } == {
             "conversation_key": "111:7:dan",
             "lane_key": "111:7:dan:m41",
             "reply_lane_key": "111:7:dan",
@@ -404,9 +433,15 @@ class TestTelegramFleetLaneBehavior:
             "history_window": 2,
         }
         assert fleet._infer_project_commands(BotInstance(name="dan", token="fake")) == [
-            ("agent", "Run a V2 Agent task"),
-            ("status", "Check current task status"),
-            ("cancel", "Cancel current task"),
+            ("agent", "Run a DAN Super task"),
+            ("workspace", "Choose DAN Super workspace"),
+            ("session", "Resume DAN Super session"),
+            ("tasks", "Show DAN Super sessions"),
+            ("append", "Steer active DAN Super run"),
+            ("continue", "Queue after current run"),
+            ("new", "Start a separate DAN Super run"),
+            ("status", "Show DAN Super status"),
+            ("cancel", "Stop active DAN Super run"),
             ("help", "Show available commands"),
         ]
 
@@ -414,6 +449,7 @@ class TestTelegramFleetLaneBehavior:
     async def test_v2_plain_telegram_turn_uses_chat_not_agent_run(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
     ) -> None:
         from dan.adapters.telegram_config import TelegramFleetConfig
         from dan.adapters.telegram_fleet import BotFleet, BotInstance
@@ -449,6 +485,7 @@ class TestTelegramFleetLaneBehavior:
 
         monkeypatch.delenv("DAN_TELEGRAM_ALLOW_V1", raising=False)
         monkeypatch.setenv("DAN_TELEGRAM_CONTROL_PLANE", "v2")
+        monkeypatch.setenv("DAN_TELEGRAM_STATE_DIR", str(tmp_path / "telegram-state"))
 
         fleet = BotFleet(TelegramFleetConfig(), server_url="http://server.test")
         http = _Http()
@@ -494,6 +531,7 @@ class TestTelegramFleetLaneBehavior:
     async def test_v2_task_like_telegram_turn_uses_agent_run(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
     ) -> None:
         from dan.adapters.telegram_config import TelegramFleetConfig
         from dan.adapters.telegram_fleet import BotFleet, BotInstance
@@ -531,6 +569,7 @@ class TestTelegramFleetLaneBehavior:
 
         monkeypatch.delenv("DAN_TELEGRAM_ALLOW_V1", raising=False)
         monkeypatch.setenv("DAN_TELEGRAM_CONTROL_PLANE", "v2")
+        monkeypatch.setenv("DAN_TELEGRAM_STATE_DIR", str(tmp_path / "telegram-state"))
 
         fleet = BotFleet(TelegramFleetConfig(), server_url="http://server.test")
         http = _Http()
@@ -562,11 +601,379 @@ class TestTelegramFleetLaneBehavior:
         paths = [path for path, _payload in http.posts]
         assert paths == ["/api/v2/agent-runs", "/api/v2/agent-runs/run-1/execute"]
         agent_payload = http.posts[0][1]
+        execute_payload = http.posts[1][1]
         assert agent_payload["mode"] == "agent"
         assert agent_payload["message"] == "patch this repo in /tmp/app"
+        assert agent_payload["surface_context"]["surface_profile"] == "super_tui"
+        assert agent_payload["surface_context"]["agent_backend"] == "super_dan"
+        assert execute_payload["backend"] == "super_dan"
+        assert execute_payload["surface_profile"] == "super_tui"
+        assert execute_payload["background"] is True
+        assert execute_payload["profile_policy"]["backend"] == "super_dan"
+        assert execute_payload["metadata"]["requested_from"] == "telegram"
         assert adapter.reactions[-1] == (111, 42, "✅")
 
-    def test_private_non_reply_stays_on_shared_lane_even_when_parallel(self):
+    @pytest.mark.asyncio
+    async def test_selected_active_session_uses_agent_run_command(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+    ) -> None:
+        from dan.adapters.telegram_config import TelegramFleetConfig
+        from dan.adapters.telegram_fleet import BotFleet, BotInstance
+
+        class _Response:
+            def __init__(self, payload: dict[str, Any], status_code: int = 200) -> None:
+                self._payload = payload
+                self.status_code = status_code
+
+            def json(self) -> dict[str, Any]:
+                return self._payload
+
+        class _Http:
+            def __init__(self) -> None:
+                self.posts: list[tuple[str, dict[str, Any]]] = []
+
+            async def get(self, path: str) -> _Response:
+                assert path.startswith("/api/graphs/")
+                return _Response({"graph": {"nodes": [], "edges": []}})
+
+            async def post(self, path: str, json: dict[str, Any]) -> _Response:
+                self.posts.append((path, json))
+                if path == "/api/v2/agent-runs/run-1/commands":
+                    return _Response(
+                        {
+                            "event": {
+                                "summary": "Steering note queued for the active run.",
+                            }
+                        }
+                    )
+                raise AssertionError(f"unexpected post path: {path}")
+
+        class _Adapter:
+            def __init__(self) -> None:
+                self.reactions: list[tuple[int, int, str]] = []
+                self.sent: list[dict[str, Any]] = []
+
+            async def set_reaction(self, chat_id: int, message_id: int, emoji: str) -> None:
+                self.reactions.append((chat_id, message_id, emoji))
+
+            async def _send_text(
+                self,
+                chat_id: int,
+                text: str,
+                reply_to: int | None = None,
+                thread_id: int | None = None,
+            ) -> int:
+                self.sent.append(
+                    {
+                        "chat_id": chat_id,
+                        "text": text,
+                        "reply_to": reply_to,
+                        "thread_id": thread_id,
+                    }
+                )
+                return 77
+
+        monkeypatch.delenv("DAN_TELEGRAM_ALLOW_V1", raising=False)
+        monkeypatch.setenv("DAN_TELEGRAM_CONTROL_PLANE", "v2")
+        monkeypatch.setenv("DAN_TELEGRAM_STATE_DIR", str(tmp_path / "telegram-state"))
+
+        fleet = BotFleet(TelegramFleetConfig(), server_url="http://server.test")
+        fleet._http = _Http()
+        fleet._telegram_surface_state["active_sessions"]["111:7:dan"] = {
+            "task_id": "task-1",
+            "run_id": "run-1",
+            "queue_action": "append",
+            "status": "running",
+        }
+        adapter = _Adapter()
+        bot = BotInstance(name="dan", token="fake", adapter=adapter)
+        ctx = MessageContext(
+            chat_id=111,
+            message_id=42,
+            thread_id=7,
+            chat_type="private",
+        )
+
+        await fleet._dispatch(
+            bot,
+            "telegram:111",
+            "also update the tests",
+            ctx,
+            conversation_key="111:7:dan",
+            lane_key="111:7:dan",
+        )
+
+        assert [path for path, _payload in fleet._http.posts] == [
+            "/api/v2/agent-runs/run-1/commands"
+        ]
+        command_payload = fleet._http.posts[0][1]
+        assert command_payload["command"] == "append_followup"
+        assert command_payload["task_id"] == "task-1"
+        assert command_payload["payload"]["text"] == "also update the tests"
+        assert command_payload["payload"]["surface_context"]["task_id"] == "task-1"
+        assert command_payload["payload"]["surface_context"]["queue_action"] == "append"
+        assert adapter.sent[-1]["text"] == "Steering note queued for the active run."
+        assert adapter.reactions[-1] == (111, 42, "✅")
+
+        await fleet._dispatch(
+            bot,
+            "telegram:111",
+            "/continue after this one",
+            MessageContext(
+                chat_id=111,
+                message_id=43,
+                thread_id=7,
+                chat_type="private",
+            ),
+            conversation_key="111:7:dan",
+            lane_key="111:7:dan",
+        )
+
+        command_payload = fleet._http.posts[-1][1]
+        assert command_payload["command"] == "continue_after_current"
+        assert command_payload["payload"]["text"] == "after this one"
+
+    @pytest.mark.asyncio
+    async def test_selected_session_new_command_starts_separate_run(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+    ) -> None:
+        from dan.adapters.telegram_config import TelegramFleetConfig
+        from dan.adapters.telegram_fleet import BotFleet, BotInstance
+
+        class _Response:
+            def __init__(self, payload: dict[str, Any], status_code: int = 200) -> None:
+                self._payload = payload
+                self.status_code = status_code
+
+            def json(self) -> dict[str, Any]:
+                return self._payload
+
+        class _Http:
+            def __init__(self) -> None:
+                self.posts: list[tuple[str, dict[str, Any]]] = []
+
+            async def get(self, path: str) -> _Response:
+                assert path.startswith("/api/graphs/")
+                return _Response({"graph": {"nodes": [], "edges": []}})
+
+            async def post(self, path: str, json: dict[str, Any]) -> _Response:
+                self.posts.append((path, json))
+                if path == "/api/v2/agent-runs":
+                    return _Response({"v2_control_plane": {"run_id": "run-2"}})
+                if path == "/api/v2/agent-runs/run-2/execute":
+                    return _Response({"status": "started"})
+                raise AssertionError(f"unexpected post path: {path}")
+
+        class _Adapter:
+            def __init__(self) -> None:
+                self.reactions: list[tuple[int, int, str]] = []
+
+            async def set_reaction(self, chat_id: int, message_id: int, emoji: str) -> None:
+                self.reactions.append((chat_id, message_id, emoji))
+
+        monkeypatch.delenv("DAN_TELEGRAM_ALLOW_V1", raising=False)
+        monkeypatch.setenv("DAN_TELEGRAM_CONTROL_PLANE", "v2")
+        monkeypatch.setenv("DAN_TELEGRAM_STATE_DIR", str(tmp_path / "telegram-state"))
+
+        fleet = BotFleet(TelegramFleetConfig(), server_url="http://server.test")
+        fleet._http = _Http()
+        fleet._telegram_surface_state["active_sessions"]["111:7:dan"] = {
+            "task_id": "task-1",
+            "run_id": "run-1",
+            "queue_action": "append",
+            "status": "running",
+        }
+
+        async def _fake_stream(*args: Any, **kwargs: Any) -> str:
+            return "Separate run started."
+
+        monkeypatch.setattr(fleet, "_stream_v2_agent_run_events", _fake_stream)
+
+        adapter = _Adapter()
+        bot = BotInstance(name="dan", token="fake", adapter=adapter)
+        await fleet._dispatch(
+            bot,
+            "telegram:111",
+            "/new start a separate run",
+            MessageContext(chat_id=111, message_id=42, thread_id=7, chat_type="private"),
+            conversation_key="111:7:dan",
+            lane_key="111:7:dan",
+        )
+
+        assert [path for path, _payload in fleet._http.posts] == [
+            "/api/v2/agent-runs",
+            "/api/v2/agent-runs/run-2/execute",
+        ]
+        create_payload = fleet._http.posts[0][1]
+        assert create_payload["message"] == "start a separate run"
+        assert create_payload["session_id"] == "111:7:dan:m42"
+        assert create_payload["surface_context"]["conversation"]["lane_key"] == "111:7:dan:m42"
+        assert "selected_session" not in create_payload["surface_context"]
+
+    def test_workspace_selection_persists_into_surface_context(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+    ) -> None:
+        from dan.adapters.telegram_config import TelegramFleetConfig
+        from dan.adapters.telegram_fleet import BotFleet, BotInstance
+
+        monkeypatch.setenv("DAN_TELEGRAM_STATE_DIR", str(tmp_path / "telegram-state"))
+        workspace = tmp_path / "project-a"
+        workspace.mkdir()
+
+        fleet = BotFleet(TelegramFleetConfig())
+        fleet._select_workspace(
+            "dan",
+            conversation_key="111:7:dan",
+            lane_key="111:7:dan",
+            root=str(workspace),
+        )
+        reloaded = BotFleet(TelegramFleetConfig())
+        context = reloaded._build_turn_surface_context(
+            BotInstance(name="dan", token="fake"),
+            MessageContext(chat_id=111, message_id=42, thread_id=7, chat_type="private"),
+            conversation_key="111:7:dan",
+            lane_key="111:7:dan",
+            history=[],
+        )
+
+        assert context["workspace_root"] == str(workspace.resolve())
+        assert context["workspace_id"] == "project-a"
+        assert context["workspace_source"] == "telegram_menu"
+        assert reloaded._recent_workspaces("dan")[0] == str(workspace.resolve())
+
+    @pytest.mark.asyncio
+    async def test_workspace_command_accepts_start_path(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+    ) -> None:
+        from dan.adapters.telegram_config import TelegramFleetConfig
+        from dan.adapters.telegram_fleet import BotFleet, BotInstance
+
+        monkeypatch.setenv("DAN_TELEGRAM_STATE_DIR", str(tmp_path / "telegram-state"))
+        workspace = tmp_path / "project"
+        child = workspace / "src"
+        child.mkdir(parents=True)
+
+        class _Adapter:
+            def __init__(self) -> None:
+                self.menus: list[dict[str, Any]] = []
+
+            async def send_menu(self, chat_id, text, buttons, **kwargs):
+                self.menus.append({"text": text, "buttons": buttons, **kwargs})
+                return 99
+
+        fleet = BotFleet(TelegramFleetConfig())
+        fleet._select_workspace(
+            "dan",
+            conversation_key="111:7:dan",
+            lane_key="111:7:dan",
+            root=str(child),
+        )
+        adapter = _Adapter()
+        bot = BotInstance(name="dan", token="fake", adapter=adapter)
+
+        assert await fleet._handle_telegram_menu_command(
+            bot,
+            MessageContext(chat_id=111, message_id=42, thread_id=7, chat_type="private"),
+            "/workspace ..",
+            conversation_key="111:7:dan",
+            lane_key="111:7:dan",
+        )
+
+        assert f"Browsing: {workspace.resolve()}" in adapter.menus[-1]["text"]
+        flat_buttons = [label for row in adapter.menus[-1]["buttons"] for label, _data in row]
+        assert "Down: src" in flat_buttons
+
+    @pytest.mark.asyncio
+    async def test_session_menu_groups_by_workspace_with_titles(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+    ) -> None:
+        from dan.adapters.telegram_config import TelegramFleetConfig
+        from dan.adapters.telegram_fleet import BotFleet, BotInstance
+
+        workspace_a = tmp_path / "alpha"
+        workspace_b = tmp_path / "beta"
+        workspace_a.mkdir()
+        workspace_b.mkdir()
+
+        class _Response:
+            status_code = 200
+
+            def json(self) -> dict[str, Any]:
+                return {
+                    "tasks": [
+                        {
+                            "task_id": "task-raw-alpha",
+                            "status": "running",
+                            "phase": "running",
+                            "latest_progress": "working",
+                            "title": "Fix alpha tests",
+                            "metadata": {
+                                "workspace_root": str(workspace_a),
+                                "workspace_id": "alpha",
+                                "active_run_id": "run-alpha",
+                            },
+                        },
+                        {
+                            "task_id": "task-raw-beta",
+                            "status": "completed",
+                            "phase": "done",
+                            "latest_progress": "done",
+                            "title": "Write beta docs",
+                            "metadata": {
+                                "workspace_root": str(workspace_b),
+                                "workspace_id": "beta",
+                                "active_run_id": "run-beta",
+                            },
+                        },
+                    ]
+                }
+
+        class _Http:
+            async def get(self, path: str) -> _Response:
+                assert path == "/api/v2/tasks?limit=60"
+                return _Response()
+
+        class _Adapter:
+            def __init__(self) -> None:
+                self.menus: list[dict[str, Any]] = []
+
+            async def send_menu(self, chat_id, text, buttons, **kwargs):
+                self.menus.append({"text": text, "buttons": buttons, **kwargs})
+                return 99
+
+        monkeypatch.setenv("DAN_TELEGRAM_STATE_DIR", str(tmp_path / "telegram-state"))
+        fleet = BotFleet(TelegramFleetConfig(), server_url="http://server.test")
+        fleet._http = _Http()
+        adapter = _Adapter()
+        bot = BotInstance(name="dan", token="fake", adapter=adapter)
+
+        await fleet._show_session_menu(
+            bot,
+            MessageContext(chat_id=111, message_id=42, thread_id=7, chat_type="private"),
+            conversation_key="111:7:dan",
+            lane_key="111:7:dan",
+        )
+
+        text = adapter.menus[-1]["text"]
+        assert "[alpha]" in text
+        assert "[beta]" in text
+        assert "Fix alpha tests" in text
+        assert "Write beta docs" in text
+        assert "task-raw-alpha" not in text
+        flat_buttons = [label for row in adapter.menus[-1]["buttons"] for label, _data in row]
+        assert any(label.startswith("Steer: Fix alpha tests") for label in flat_buttons)
+
+    def test_private_non_reply_forks_when_parallel(self):
         from dan.adapters.telegram_config import TelegramFleetConfig
         from dan.adapters.telegram_fleet import (
             BotFleet,
@@ -592,7 +999,7 @@ class TestTelegramFleetLaneBehavior:
             "dan",
             fork_for_parallel=fleet._conversation_has_active_dispatch(conversation_key),
         )
-        assert lane2 == conversation_key
+        assert lane2 == f"{conversation_key}:m11"
 
         fleet._mark_conversation_dispatch_finished(conversation_key)
         ctx3 = MessageContext(chat_id=111, message_id=12, chat_type="private")

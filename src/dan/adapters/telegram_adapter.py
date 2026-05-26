@@ -80,8 +80,10 @@ class TelegramAdapter:
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._last_progress: dict[str, float] = {}
         self._on_new_message: Callable[..., Any] | None = None
+        self._on_callback_query_event: Callable[..., Any] | None = None
         self._on_topic_created: Callable[[int, int, str], Any] | None = None
         self._callback_with_context: bool = False
+        self._callback_query_with_context: bool = False
         self._running = False
         self._connection_state: str = "disconnected"
         self._last_error: str | None = None
@@ -105,6 +107,12 @@ class TelegramAdapter:
     ) -> None:
         self._on_new_message = callback
         self._callback_with_context = with_context
+
+    def set_callback_query_callback(
+        self, callback: Callable[..., Any] | None, *, with_context: bool = False,
+    ) -> None:
+        self._on_callback_query_event = callback
+        self._callback_query_with_context = with_context
 
     def set_topic_created_callback(
         self, callback: Callable[[int, int, str], Any] | None,
@@ -654,6 +662,59 @@ class TelegramAdapter:
             logger.debug("Failed to send action keyboard: %s", exc)
             return None
 
+    async def send_menu(
+        self,
+        chat_id: int,
+        text: str,
+        buttons: list[list[tuple[str, str]]],
+        *,
+        message_id: int | None = None,
+        reply_to: int | None = None,
+        thread_id: int | None = None,
+    ) -> int | None:
+        """Send or edit a Telegram inline-keyboard menu."""
+        try:
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+            rows = [
+                [InlineKeyboardButton(label, callback_data=data) for label, data in row]
+                for row in buttons
+                if row
+            ]
+            markup = InlineKeyboardMarkup(rows) if rows else None
+            if message_id is not None:
+                await self._application.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=text,
+                    reply_markup=markup,
+                )
+                return message_id
+
+            kwargs: dict[str, Any] = {
+                "chat_id": chat_id,
+                "text": text,
+                "reply_markup": markup,
+            }
+            if reply_to:
+                kwargs["reply_to_message_id"] = reply_to
+            if thread_id is not None:
+                kwargs["message_thread_id"] = thread_id
+            msg = await self._send_message_with_reply_fallback(**kwargs)
+            return msg.message_id
+        except Exception as exc:
+            if message_id is not None:
+                logger.debug("Failed to edit Telegram menu (%s), sending a new one", exc)
+                return await self.send_menu(
+                    chat_id,
+                    text,
+                    buttons,
+                    reply_to=reply_to,
+                    thread_id=thread_id,
+                )
+            logger.debug("Failed to send Telegram menu: %s", exc)
+            return None
+
     async def remove_keyboard(self, chat_id: int, message_id: int) -> None:
         try:
             await self._application.bot.edit_message_reply_markup(
@@ -712,8 +773,13 @@ class TelegramAdapter:
         if not self._is_allowed(update.effective_chat.id):
             return
         chat_id = update.effective_chat.id
-        thread_id = getattr(update.message, "message_thread_id", None)
+        msg = update.message
+        thread_id = getattr(msg, "message_thread_id", None)
         sid = self._session_id_from_chat(chat_id, thread_id)
+        if self._on_new_message is not None and not (sid and sid in self._pending):
+            ctx = self._build_context(msg)
+            await self._fire_callback(self._session_key(chat_id, ctx.thread_id), msg.text or "/status", ctx)
+            return
         if sid and sid in self._pending:
             await update.message.reply_text(
                 "A task is running and waiting for your input.",
@@ -727,13 +793,17 @@ class TelegramAdapter:
         if not self._is_allowed(update.effective_chat.id):
             return
         chat_id = update.effective_chat.id
-        thread_id = getattr(update.message, "message_thread_id", None)
+        msg = update.message
+        thread_id = getattr(msg, "message_thread_id", None)
         sid = self._session_id_from_chat(chat_id, thread_id)
         if sid:
             fut = self._pending.pop(sid, None)
             if fut and not fut.done():
                 fut.cancel()
             await update.message.reply_text("Task cancelled.")
+        elif self._on_new_message is not None:
+            ctx = self._build_context(msg)
+            await self._fire_callback(self._session_key(chat_id, ctx.thread_id), msg.text or "/cancel", ctx)
         else:
             await update.message.reply_text("No active task to cancel.")
 
@@ -743,6 +813,9 @@ class TelegramAdapter:
         help_text = (
             "Telegram V2 commands:\n"
             "/agent <task> — Run a durable Agent task\n"
+            "/workspace — Choose the workspace for DAN Super\n"
+            "/session — Resume an Agent session in this thread\n"
+            "/reset or /clear — Force-clear Telegram resume/context state\n"
             "/status — Check current task status\n"
             "/cancel — Cancel current task\n"
             "/help — Show this help\n\n"
@@ -978,6 +1051,15 @@ class TelegramAdapter:
                         fut.set_result({"response": data})
                 else:
                     fut.set_result({"response": data})
+                return
+
+        if self._on_callback_query_event is not None:
+            ctx = self._build_callback_context(query)
+            await self._fire_callback_query(
+                self._session_key(chat_id, ctx.thread_id),
+                data,
+                ctx,
+            )
 
     async def _on_poll_answer(self, update: Any, context: Any) -> None:
         answer = update.poll_answer
@@ -1271,6 +1353,28 @@ class TelegramAdapter:
         else:
             await self._on_new_message(session_id, text)
 
+    async def _fire_callback_query(
+        self, session_id: str, data: str, ctx: MessageContext,
+    ) -> None:
+        if self._callback_query_with_context:
+            await self._on_callback_query_event(session_id, data, ctx)
+        else:
+            await self._on_callback_query_event(session_id, data)
+
+    def _build_callback_context(self, query: Any) -> MessageContext:
+        message = query.message
+        chat = getattr(message, "chat", None)
+        from_user = getattr(query, "from_user", None)
+        return MessageContext(
+            chat_id=getattr(message, "chat_id", None) or getattr(chat, "id", 0),
+            message_id=getattr(message, "message_id", 0),
+            thread_id=getattr(message, "message_thread_id", None),
+            from_user_id=getattr(from_user, "id", None),
+            from_user_is_bot=getattr(from_user, "is_bot", False),
+            from_user_username=getattr(from_user, "username", None),
+            chat_type=getattr(chat, "type", "private") if chat is not None else "private",
+        )
+
     async def _download_media(
         self, file_obj: Any, media_type: str,
     ) -> str | None:
@@ -1304,9 +1408,16 @@ class TelegramAdapter:
 
     def _default_dm_commands(self) -> list[tuple[str, str]]:
         return [
-            ("agent", "Run a V2 Agent task"),
-            ("status", "Check current task status"),
-            ("cancel", "Cancel current task"),
+            ("agent", "Run a DAN Super task"),
+            ("workspace", "Choose DAN Super workspace"),
+            ("session", "Resume DAN Super session"),
+            ("tasks", "Show DAN Super sessions"),
+            ("append", "Steer active DAN Super run"),
+            ("continue", "Queue after current run"),
+            ("new", "Start a separate DAN Super run"),
+            ("reset", "Clear Telegram resume state"),
+            ("status", "Show DAN Super status"),
+            ("cancel", "Stop active DAN Super run"),
             ("help", "Show available commands"),
         ]
 
