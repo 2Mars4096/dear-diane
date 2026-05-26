@@ -596,6 +596,21 @@ class ChatStore:
         self.set_thread_meta(workflow_id, thread_id, meta)
         return True
 
+    def set_archived(
+        self, workflow_id: str, thread_id: str, archived: bool
+    ) -> bool:
+        path = self._thread_path(workflow_id, thread_id)
+        if not path.exists() or self._load_snapshot_from_path(path) is None:
+            return False
+        meta = self.get_thread_meta(workflow_id, thread_id)
+        meta["archived"] = archived
+        if archived:
+            meta["archived_at"] = datetime.now(timezone.utc).isoformat()
+        else:
+            meta.pop("archived_at", None)
+        self.set_thread_meta(workflow_id, thread_id, meta)
+        return True
+
     # ------------------------------------------------------------------
     # Branch lineage
     # ------------------------------------------------------------------
@@ -661,6 +676,8 @@ class ChatStore:
                         "created_at": thread.created_at.isoformat(),
                         "updated_at": thread.updated_at.isoformat(),
                         "pinned": meta.get("pinned", False),
+                        "archived": meta.get("archived", False),
+                        "archived_at": meta.get("archived_at"),
                         "mode": self._normalize_mode(meta.get("mode")),
                         "parent_thread_id": meta.get("parent_thread_id"),
                         "branch_point_message_id": meta.get("branch_point_message_id"),

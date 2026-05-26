@@ -55,6 +55,13 @@ def require_active_app_state() -> AppState:
 
 def _skip_adapter_autostart_for_current_process(app: Any | None = None) -> bool:
     """Keep API/ASGI tests from inheriting desktop adapter autostart state."""
+    if os.environ.get("DAN_DISABLE_ADAPTER_AUTOSTART", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return True
     if os.environ.get("DAN_ENABLE_ADAPTER_AUTOSTART", "").strip().lower() in {
         "1",
         "true",
@@ -1464,8 +1471,13 @@ async def init_adapters(app: FastAPI) -> None:
             token = str(desktop_bot.get("token", "")).strip()
             auto_start = bool(desktop_bot.get("auto_start", False))
             should_start = auto_start or "telegram" in previously_running
-            if should_start and token:
+            disable_telegram_autostart = os.environ.get(
+                "DAN_DISABLE_TELEGRAM_ADAPTER_AUTOSTART", ""
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if should_start and token and not disable_telegram_autostart:
                 adapters_to_start.append(("telegram", {"bot_token": token}))
+            elif should_start and token and disable_telegram_autostart:
+                logger.info("Skipping Telegram adapter autostart for this server process")
     except Exception:
         logger.warning("Failed to read Telegram config for autostart", exc_info=True)
 

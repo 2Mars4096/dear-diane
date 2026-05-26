@@ -747,6 +747,14 @@ def _load_super_dan_cli():
     return super_cli
 
 
+def _request_policy_payload(request: AgentBackendRunRequest, key: str) -> dict[str, Any]:
+    for source in (request.metadata, request.surface_context):
+        value = source.get(key) if isinstance(source, dict) else None
+        if isinstance(value, dict):
+            return dict(value)
+    return {}
+
+
 def _build_super_dan_args(
     super_cli: Any,
     request: AgentBackendRunRequest,
@@ -782,11 +790,26 @@ def _build_super_dan_args(
     setattr(args, "_code_like_live", True)
     setattr(args, "_stdin_is_tty", False)
     setattr(args, "_surface_attachments", list(request.attachments or []))
-    execution_policy = request.metadata.get("execution_policy")
-    if not isinstance(execution_policy, dict):
-        execution_policy = request.surface_context.get("execution_policy")
-    if isinstance(execution_policy, dict):
-        setattr(args, "_tui_execution_policy", dict(execution_policy))
+    surface_context = dict(request.surface_context or {})
+    if surface_context:
+        setattr(args, "_surface_context", surface_context)
+    history = _normalize_history(request.history)
+    if not history:
+        conversation = surface_context.get("conversation") if isinstance(surface_context, dict) else {}
+        recent_turns = conversation.get("recent_turns") if isinstance(conversation, dict) else []
+        history = _normalize_history(recent_turns)
+    if history:
+        setattr(args, "_surface_history", history)
+        setattr(args, "_tui_surface_history", history)
+    communication_policy = _request_policy_payload(request, "communication_policy")
+    if communication_policy:
+        setattr(args, "_tui_communication_policy", communication_policy)
+    execution_policy = _request_policy_payload(request, "execution_policy")
+    if execution_policy:
+        setattr(args, "_tui_execution_policy", execution_policy)
+    surface_policy = _request_policy_payload(request, "surface_policy")
+    if surface_policy:
+        setattr(args, "_tui_surface_policy", surface_policy)
     setattr(
         args,
         "_surface_image_attachments",

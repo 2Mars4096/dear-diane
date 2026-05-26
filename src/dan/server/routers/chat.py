@@ -1572,6 +1572,20 @@ async def pin_chat_thread(
     return {"status": "updated", "pinned": pinned}
 
 
+@router.post("/api/chats/{workflow_id}/{thread_id}/archive")
+async def archive_chat_thread(
+    workflow_id: str,
+    thread_id: str,
+    request: Request,
+    body: dict[str, Any] | None = None,
+):
+    cs = get_chat_store(request)
+    archived = (body or {}).get("archived", True)
+    if not cs.set_archived(workflow_id, thread_id, bool(archived)):
+        raise HTTPException(status_code=404, detail="Thread not found")
+    return {"status": "updated", "archived": bool(archived)}
+
+
 @router.post("/api/chats/{workflow_id}/{thread_id}/checkpoint")
 async def save_chat_checkpoint(
     workflow_id: str,

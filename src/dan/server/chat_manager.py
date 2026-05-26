@@ -63,6 +63,7 @@ from dan.server.graph_mutator import (
 )
 from dan.server.graph_store import GraphStore
 from dan.server.mutation_metrics import mutation_metrics
+from dan.server.paths import resolve_workspace_root
 from dan.server.agent_runtime.workflow_outcomes import (
     build_codegen_saved_message,
     build_persisted_workflow_reply,
@@ -1636,7 +1637,29 @@ class ChatManager:
             audit_tool_records: list[dict[str, Any]] = []
             emitted_attachment_paths: set[str] = set()
             tool_result_cache: dict[str, CapabilityResult] = {}
-            file_read_cache: dict[str, list[tuple[int, float, CapabilityResult]]] = {}
+            file_read_cache: dict[str, list[tuple[int, float, object, CapabilityResult]]] = {}
+
+            def _file_read_fingerprint(path: str) -> tuple[str, int, int, int, int] | None:
+                text = str(path or "").strip()
+                if not text:
+                    return None
+                candidate = pathlib.Path(text).expanduser()
+                if not candidate.is_absolute():
+                    candidate = pathlib.Path(resolve_workspace_root()) / candidate
+                try:
+                    resolved = candidate.resolve()
+                    stat = resolved.stat()
+                except OSError:
+                    return None
+                if not resolved.is_file():
+                    return None
+                return (
+                    str(resolved),
+                    int(getattr(stat, "st_ino", 0)),
+                    int(stat.st_size),
+                    int(stat.st_mtime_ns),
+                    int(getattr(stat, "st_ctime_ns", 0)),
+                )
             completion_review_requested = False
             search_state = {
                 "turn_seen_urls": [],
@@ -2401,6 +2424,7 @@ class ChatManager:
                         ),
                         tool_result_cache=tool_result_cache,
                         file_read_cache=file_read_cache,
+                        file_fingerprint_for=_file_read_fingerprint,
                         max_retryable_retries=_RETRYABLE_CAPABILITY_MAX_RETRIES,
                         logger_override=logger,
                     ),

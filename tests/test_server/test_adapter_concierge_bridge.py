@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 
@@ -32,6 +34,7 @@ async def test_adapter_concierge_routes_legacy_mode_through_chat_router_stream(m
         sent.append((external_id, text))
 
     monkeypatch.setenv("DAN_CONTROL_PLANE", "v1")
+    monkeypatch.setenv("DAN_ADAPTERS_CONTROL_PLANE", "v1")
     monkeypatch.setattr(adapters_module, "_send_adapter_text", _fake_send)
     monkeypatch.setattr("dan.server.routers.chat.chat_message", _fake_chat_message)
     monkeypatch.setattr(
@@ -54,7 +57,7 @@ async def test_adapter_concierge_routes_legacy_mode_through_chat_router_stream(m
     assert captured["concierge"] is True
     assert req.workflow_id == "_scratch"
     assert req.surface == "wechat:wechat"
-    assert req.control_plane_mode is None
+    assert req.control_plane_mode == "v1"
     assert sent == [
         ("chat-123", "Queued (position 1) — I'll reply when ready."),
         ("chat-123", "Queued reply delivered."),
@@ -252,6 +255,10 @@ async def test_adapter_concierge_telegram_legacy_override_is_ignored_for_pure_v2
     assert req.mode == "agent"
     assert captured["execute_run_id"] == "run-1"
     assert captured["execute"].background is True
+    assert captured["execute"].backend == "super_dan"
+    assert captured["execute"].surface_profile == "super_tui"
+    assert captured["execute"].profile_policy["backend"] == "super_dan"
+    assert captured["execute"].metadata["requested_from"] == "telegram"
     assert adapter.calls[0]["message_id"] is None
     assert all(call["chat_id"] == 123 for call in adapter.calls)
     assert any(call["message_id"] == 55 for call in adapter.calls[1:])
@@ -342,6 +349,9 @@ async def test_adapter_concierge_telegram_agent_run_receives_recent_history(monk
         {"role": "user", "content": "follow up question"},
     ]
     assert second_req.surface_context["telegram"]["reply_to_text"] == "First answer."
+    assert second_req.surface_context["surface_profile"] == "super_tui"
+    assert second_req.surface_context["agent_backend"] == "super_dan"
+    assert second_req.surface_context["conversation"]["recent_turns"] == second_req.history
     assert (
         second_req.surface_context["conversation"]["history_turn_count"]
         == len(second_req.history)
@@ -433,3 +443,346 @@ async def test_adapter_concierge_telegram_plain_text_stays_v2_chat_with_history(
         ("123:7", "First chat answer."),
         ("123:7", "Follow-up chat answer."),
     ]
+
+
+@pytest.mark.asyncio
+async def test_adapter_concierge_telegram_workspace_menu_stays_local(monkeypatch, tmp_path):
+    from dan.adapters.telegram_adapter import MessageContext
+    from dan.server.routers import adapters as adapters_module
+
+    monkeypatch.setenv("DAN_TELEGRAM_STATE_DIR", str(tmp_path / "telegram-state"))
+    monkeypatch.setenv("DAN_TELEGRAM_CONTROL_PLANE", "v2")
+
+    class _Adapter:
+        def __init__(self) -> None:
+            self.menus: list[dict[str, object]] = []
+
+        async def send_menu(
+            self,
+            chat_id: int,
+            text: str,
+            buttons: list[list[tuple[str, str]]],
+            *,
+            message_id: int | None = None,
+            reply_to: int | None = None,
+            thread_id: int | None = None,
+        ) -> int:
+            self.menus.append(
+                {
+                    "chat_id": chat_id,
+                    "text": text,
+                    "buttons": buttons,
+                    "message_id": message_id,
+                    "reply_to": reply_to,
+                    "thread_id": thread_id,
+                }
+            )
+            return 99
+
+    async def _fake_chat_v2_message(*_args, **_kwargs):
+        raise AssertionError("/workspace should not enter Chat V2")
+
+    monkeypatch.setattr("dan.server.routers.chat_v2.chat_v2_message", _fake_chat_v2_message)
+
+    adapter = _Adapter()
+    await adapters_module._run_adapter_concierge(
+        "telegram-adapter",
+        adapter,
+        "telegram",
+        "123:7",
+        "/workspace",
+        ctx=MessageContext(chat_id=123, message_id=10, thread_id=7, chat_type="private"),
+    )
+
+    assert adapter.menus
+    assert "DAN Super workspace" in str(adapter.menus[-1]["text"])
+    assert adapter.menus[-1]["reply_to"] == 10
+    assert adapter.menus[-1]["thread_id"] == 7
+
+
+@pytest.mark.asyncio
+async def test_adapter_concierge_telegram_workspace_menu_accepts_start_path(monkeypatch, tmp_path):
+    from dan.adapters.telegram_adapter import MessageContext
+    from dan.server.routers import adapters as adapters_module
+
+    monkeypatch.setenv("DAN_TELEGRAM_STATE_DIR", str(tmp_path / "telegram-state"))
+    workspace = tmp_path / "project"
+    child = workspace / "src"
+    child.mkdir(parents=True)
+    adapters_module._select_adapter_telegram_workspace(
+        adapter_id="telegram-adapter",
+        external_id="123:7",
+        history_key=adapters_module._adapter_history_key("telegram-adapter", "telegram", "123:7"),
+        root=str(child),
+    )
+
+    class _Adapter:
+        def __init__(self) -> None:
+            self.menus: list[dict[str, object]] = []
+
+        async def send_menu(self, chat_id, text, buttons, **kwargs):
+            self.menus.append({"text": text, "buttons": buttons, **kwargs})
+            return 99
+
+    adapter = _Adapter()
+    await adapters_module._run_adapter_concierge(
+        "telegram-adapter",
+        adapter,
+        "telegram",
+        "123:7",
+        "/workspace ..",
+        ctx=MessageContext(chat_id=123, message_id=10, thread_id=7, chat_type="private"),
+    )
+
+    assert f"Browsing: {workspace.resolve()}" in str(adapter.menus[-1]["text"])
+    flat_buttons = [label for row in adapter.menus[-1]["buttons"] for label, _data in row]
+    assert "Down: src" in flat_buttons
+
+
+@pytest.mark.asyncio
+async def test_adapter_concierge_sessions_are_grouped_by_workspace(monkeypatch, tmp_path):
+    from dan.adapters.telegram_adapter import MessageContext
+    from dan.server.routers import adapters as adapters_module
+
+    workspace_a = tmp_path / "alpha"
+    workspace_b = tmp_path / "beta"
+    workspace_a.mkdir()
+    workspace_b.mkdir()
+
+    class _Task:
+        def __init__(self, task_id: str, status: str, workspace, title: str) -> None:
+            self.task_id = task_id
+            self.thread_id = "thread"
+            self.workspace_root = str(workspace)
+            self.workspace_id = workspace.name
+            self.status = status
+            self.phase = "running"
+            self.active_run_id = f"run-{task_id}"
+            self.latest_progress = "working"
+            self.metadata = {}
+
+        def snapshot(self):
+            return SimpleNamespace(
+                model_dump=lambda mode="json": {
+                    "task_id": self.task_id,
+                    "thread_id": self.thread_id,
+                    "status": self.status,
+                    "phase": self.phase,
+                    "latest_progress": self.latest_progress,
+                    "metadata": {
+                        "workspace_root": self.workspace_root,
+                        "workspace_id": self.workspace_id,
+                        "active_run_id": self.active_run_id,
+                    },
+                }
+            )
+
+    class _Store:
+        def __init__(self) -> None:
+            self.tasks = [
+                _Task("task-raw-alpha", "running", workspace_a, "Fix alpha tests"),
+                _Task("task-raw-beta", "completed", workspace_b, "Write beta docs"),
+            ]
+
+        def list_task_records(self, limit=60):
+            return self.tasks[:limit]
+
+        def get_run(self, run_id: str):
+            text = "Fix alpha tests" if "alpha" in run_id else "Write beta docs"
+            return SimpleNamespace(command=SimpleNamespace(payload={"text": text}))
+
+    class _Adapter:
+        def __init__(self) -> None:
+            self.menus: list[dict[str, object]] = []
+
+        async def send_menu(self, chat_id, text, buttons, **kwargs):
+            self.menus.append({"text": text, "buttons": buttons, **kwargs})
+            return 99
+
+    monkeypatch.setattr("dan.server.routers.dependencies.get_chat_v2_store", lambda *_args: _Store())
+    adapter = _Adapter()
+    await adapters_module._run_adapter_concierge(
+        "telegram-adapter",
+        adapter,
+        "telegram",
+        "123:7",
+        "/sessions",
+        ctx=MessageContext(chat_id=123, message_id=10, thread_id=7, chat_type="private"),
+    )
+
+    text = str(adapter.menus[-1]["text"])
+    assert "[alpha]" in text
+    assert "[beta]" in text
+    assert "Fix alpha tests" in text
+    assert "Write beta docs" in text
+    assert "task-raw-alpha" not in text
+    flat_buttons = [label for row in adapter.menus[-1]["buttons"] for label, _data in row]
+    assert any(label.startswith("Steer: Fix alpha tests") for label in flat_buttons)
+
+
+@pytest.mark.asyncio
+async def test_adapter_concierge_selected_session_uses_agent_run_command(monkeypatch, tmp_path):
+    from dan.adapters.telegram_adapter import MessageContext
+    from dan.server.routers import adapters as adapters_module
+
+    monkeypatch.setenv("DAN_TELEGRAM_STATE_DIR", str(tmp_path / "telegram-state"))
+    monkeypatch.setenv("DAN_TELEGRAM_CONTROL_PLANE", "v2")
+    history_key = adapters_module._adapter_history_key("telegram-adapter", "telegram", "123:7")
+    adapters_module._set_adapter_telegram_session_binding(
+        external_id="123:7",
+        history_key=history_key,
+        binding={
+            "task_id": "task-1",
+            "run_id": "run-1",
+            "status": "running",
+            "queue_action": "append",
+        },
+    )
+
+    class _Store:
+        def __init__(self) -> None:
+            self.commands = []
+
+        def get_run(self, run_id: str):
+            assert run_id == "run-1"
+            return SimpleNamespace(task_id="task-1")
+
+        def record_agent_command(self, command):
+            self.commands.append(command)
+            return SimpleNamespace(summary="Steering note queued.")
+
+    store = _Store()
+    sent: list[tuple[str, str]] = []
+
+    async def _fake_send(_adapter, external_id: str, text: str) -> None:
+        sent.append((external_id, text))
+
+    async def _fake_create_agent_run(*_args, **_kwargs):
+        raise AssertionError("selected active session should not create a new run")
+
+    monkeypatch.setattr("dan.server.routers.dependencies.get_chat_v2_store", lambda *_args: store)
+    monkeypatch.setattr("dan.server.routers.chat_v2.create_agent_run", _fake_create_agent_run)
+    monkeypatch.setattr(adapters_module, "_send_adapter_text", _fake_send)
+
+    await adapters_module._run_adapter_concierge(
+        "telegram-adapter",
+        object(),
+        "telegram",
+        "123:7",
+        "also update tests",
+        ctx=MessageContext(chat_id=123, message_id=10, thread_id=7, chat_type="private"),
+    )
+
+    assert len(store.commands) == 1
+    command = store.commands[0]
+    assert command.command == "append_followup"
+    assert command.task_id == "task-1"
+    assert command.run_id == "run-1"
+    assert command.payload["text"] == "also update tests"
+    assert command.payload["surface_context"]["task_id"] == "task-1"
+    assert sent == [("123:7", "Steering note queued.")]
+
+
+@pytest.mark.asyncio
+async def test_adapter_concierge_telegram_agent_uses_message_lane(monkeypatch, tmp_path):
+    from dan.adapters.telegram_adapter import MessageContext
+    from dan.server.chat_v2 import build_surface_turn_from_chat_request
+    from dan.server.routers import adapters as adapters_module
+
+    monkeypatch.setenv("DAN_TELEGRAM_STATE_DIR", str(tmp_path / "telegram-state"))
+    monkeypatch.setenv("DAN_TELEGRAM_CONTROL_PLANE", "v2")
+    captured: dict[str, object] = {}
+    sent: list[tuple[str, str]] = []
+
+    async def _fake_create_agent_run(req):
+        captured["req"] = req
+        return {"event": {"summary": "not created"}}
+
+    async def _fake_send(_adapter, external_id: str, text: str) -> None:
+        sent.append((external_id, text))
+
+    monkeypatch.setattr("dan.server.routers.chat_v2.create_agent_run", _fake_create_agent_run)
+    monkeypatch.setattr(adapters_module, "_send_adapter_text", _fake_send)
+
+    await adapters_module._run_adapter_concierge(
+        "telegram-adapter",
+        object(),
+        "telegram",
+        "123:7",
+        "/agent build alpha.py",
+        ctx=MessageContext(chat_id=123, message_id=10, thread_id=7, chat_type="private"),
+    )
+
+    req = captured["req"]
+    lane_key = req.surface_context["conversation"]["lane_key"]
+    assert lane_key == "telegram:telegram-adapter:123:7:m10"
+    turn = build_surface_turn_from_chat_request(req)
+    assert turn.metadata["surface_topic_key"].endswith(lane_key)
+    assert sent == [("123:7", "not created")]
+
+
+@pytest.mark.asyncio
+async def test_adapter_concierge_reset_forces_selected_run_stopped(monkeypatch, tmp_path):
+    from dan.adapters.telegram_adapter import MessageContext
+    from dan.server.routers import adapters as adapters_module
+
+    monkeypatch.setenv("DAN_TELEGRAM_STATE_DIR", str(tmp_path / "telegram-state"))
+    monkeypatch.setenv("DAN_TELEGRAM_CONTROL_PLANE", "v2")
+    history_key = adapters_module._adapter_history_key("telegram-adapter", "telegram", "123:7")
+    adapters_module._set_adapter_telegram_session_binding(
+        external_id="123:7",
+        history_key=history_key,
+        binding={
+            "task_id": "task-1",
+            "run_id": "run-1",
+            "status": "running",
+            "queue_action": "append",
+        },
+    )
+    adapters_module._adapter_conversation_history[history_key] = [
+        {"role": "user", "content": "old stuck context"}
+    ]
+
+    class _Store:
+        def __init__(self) -> None:
+            self.commands = []
+            self.confirmed = []
+
+        def get_run(self, run_id: str):
+            assert run_id == "run-1"
+            return SimpleNamespace(run_id="run-1", task_id="task-1", status="running")
+
+        def record_agent_command(self, command):
+            self.commands.append(command)
+            return SimpleNamespace(summary="Stop requested.")
+
+        def confirm_agent_run_stopped(self, run_id: str, **kwargs):
+            self.confirmed.append((run_id, kwargs))
+            return SimpleNamespace(summary="Forced stopped.")
+
+    store = _Store()
+    sent: list[tuple[str, str]] = []
+
+    async def _fake_send(_adapter, external_id: str, text: str) -> None:
+        sent.append((external_id, text))
+
+    monkeypatch.setattr("dan.server.routers.dependencies.get_chat_v2_store", lambda *_args: store)
+    monkeypatch.setattr(adapters_module, "_send_adapter_text", _fake_send)
+
+    await adapters_module._run_adapter_concierge(
+        "telegram-adapter",
+        object(),
+        "telegram",
+        "123:7",
+        "/reset",
+        ctx=MessageContext(chat_id=123, message_id=10, thread_id=7, chat_type="private"),
+    )
+
+    assert store.commands[0].command == "stop"
+    assert store.confirmed[0][0] == "run-1"
+    assert adapters_module._adapter_telegram_session_binding(
+        external_id="123:7",
+        history_key=history_key,
+    ) == {}
+    assert history_key not in adapters_module._adapter_conversation_history
+    assert "starts fresh" in sent[-1][1]

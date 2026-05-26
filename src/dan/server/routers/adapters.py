@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import tempfile
 import time
 import uuid
@@ -21,6 +22,13 @@ from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 import httpx
 from pydantic import BaseModel
 
+from dan.agent_runtime.super_tui_contract import (
+    SUPER_TUI_AGENT_CAPABILITIES,
+    SUPER_TUI_DEFAULT_BACKEND,
+    SUPER_TUI_SURFACE_PROFILE,
+    build_super_tui_agent_execute_payload,
+    build_super_tui_surface_context,
+)
 from dan.adapters.wechat_official_account_adapter import (
     build_encrypted_callback_reply,
     build_passive_text_reply,
@@ -70,6 +78,9 @@ _DEFAULT_WECHAT_OFFICIAL_ACCOUNT_DIR = Path.home() / ".dan" / "wechat-official-a
 _DEFAULT_WECHAT_OFFICIAL_ACCOUNT_CONFIG_PATH = (
     _DEFAULT_WECHAT_OFFICIAL_ACCOUNT_DIR / "config.json"
 )
+_TELEGRAM_WORKSPACE_MENU_PAGE_SIZE = 8
+_adapter_telegram_workspace_menus: dict[str, dict[str, Any]] = {}
+_adapter_telegram_session_menus: dict[str, dict[str, Any]] = {}
 
 
 # ------------------------------------------------------------------
@@ -137,11 +148,42 @@ def _adapter_requested_mode(text: str) -> tuple[str, str]:
         return "auto", stripped
     first, _, rest = stripped.partition(" ")
     command = first.split("@", 1)[0].lower()
-    if command in {"/agent", "/run", "/build"}:
+    if command in {"/agent", "/run", "/build", "/new"}:
         return "agent", rest.strip()
+    if command in {"/append", "/inject", "/continue", "/continue-after-current"}:
+        return "agent", stripped
     if stripped.lower().startswith("agent:"):
         return "agent", stripped.split(":", 1)[1].strip()
     return "auto", stripped
+
+
+def _adapter_agent_command(text: str) -> str:
+    stripped = str(text or "").strip()
+    if not stripped.startswith("/"):
+        return ""
+    first = stripped.split(maxsplit=1)[0].split("@", 1)[0].lower()
+    command = first.lstrip("/")
+    if command in {
+        "agent",
+        "run",
+        "build",
+        "new",
+        "append",
+        "inject",
+        "continue",
+        "continue-after-current",
+    }:
+        return command
+    return ""
+
+
+def _adapter_command_payload_text(text: str) -> str:
+    stripped = str(text or "").strip()
+    command = _adapter_agent_command(stripped)
+    if command in {"append", "inject", "continue", "continue-after-current"}:
+        _first, _sep, rest = stripped.partition(" ")
+        return rest.strip()
+    return stripped
 
 
 def _adapter_effective_requested_mode(
@@ -169,7 +211,18 @@ def _adapter_v2_control_command(text: str) -> str:
         return ""
     first = stripped.split(maxsplit=1)[0].split("@", 1)[0].lower()
     command = first.lstrip("/")
-    if command in {"status", "cancel", "help", "start"}:
+    if command in {
+        "status",
+        "cancel",
+        "help",
+        "start",
+        "workspace",
+        "session",
+        "sessions",
+        "tasks",
+        "reset",
+        "clear",
+    }:
         return command
     return ""
 
@@ -292,6 +345,14 @@ async def _remove_adapter_history_turn(
         _adapter_conversation_history[history_key] = history
 
 
+async def _clear_adapter_history(history_key: str) -> None:
+    if not history_key:
+        return
+    lock = _adapter_history_locks.setdefault(history_key, asyncio.Lock())
+    async with lock:
+        _adapter_conversation_history.pop(history_key, None)
+
+
 def _adapter_reply_context(ctx: Any | None) -> dict[str, str]:
     if ctx is None:
         return {}
@@ -326,9 +387,270 @@ def _adapter_workspace_context(surface: str, adapter_id: str) -> dict[str, Any]:
     context: dict[str, Any] = {}
     if root:
         context["workspace_root"] = root
+        context["workspace_source"] = f"{surface or 'adapter'}_env"
     if workspace_id:
         context["workspace_id"] = workspace_id
     return context
+
+
+def _telegram_state_dir() -> Path:
+    configured = str(os.environ.get("DAN_TELEGRAM_STATE_DIR") or "").strip()
+    return Path(configured).expanduser() if configured else Path.home() / ".dan" / "telegram"
+
+
+def _telegram_surface_state_path() -> Path:
+    return _telegram_state_dir() / "surface-state.json"
+
+
+def _load_telegram_surface_state() -> dict[str, Any]:
+    path = _telegram_surface_state_path()
+    if not path.exists():
+        return {
+            "active_workspaces": {},
+            "recent_workspaces": {},
+            "active_sessions": {},
+        }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            payload.setdefault("active_workspaces", {})
+            payload.setdefault("recent_workspaces", {})
+            payload.setdefault("active_sessions", {})
+            return payload
+    except Exception:
+        logger.debug("Failed to load Telegram surface state", exc_info=True)
+    return {
+        "active_workspaces": {},
+        "recent_workspaces": {},
+        "active_sessions": {},
+    }
+
+
+def _save_telegram_surface_state(state: dict[str, Any]) -> None:
+    path = _telegram_surface_state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        logger.debug("Failed to save Telegram surface state", exc_info=True)
+
+
+def _adapter_telegram_workspace_context(
+    *,
+    adapter_id: str,
+    external_id: str,
+    history_key: str,
+) -> dict[str, Any]:
+    state = _load_telegram_surface_state()
+    active = state.setdefault("active_workspaces", {})
+    for key in (history_key, external_id, f"adapter:{adapter_id}", "adapter:telegram"):
+        value = str(active.get(key) or "").strip()
+        if value:
+            return {
+                "workspace_root": value,
+                "workspace_id": _workspace_id_from_path(value),
+                "workspace_source": "telegram_menu",
+            }
+    base = _adapter_workspace_context("telegram", adapter_id)
+    if base:
+        base = dict(base)
+        base.setdefault("workspace_source", "telegram_env")
+        return base
+    return {
+        "workspace_root": "~",
+        "workspace_id": "~",
+        "workspace_source": "default_home",
+    }
+
+
+def _adapter_telegram_session_binding(
+    *,
+    external_id: str,
+    history_key: str,
+) -> dict[str, Any]:
+    state = _load_telegram_surface_state()
+    sessions = state.setdefault("active_sessions", {})
+    for key in (history_key, external_id):
+        if key and isinstance(sessions.get(key), dict):
+            return dict(sessions[key])
+    return {}
+
+
+def _select_adapter_telegram_workspace(
+    *,
+    adapter_id: str,
+    external_id: str,
+    history_key: str,
+    root: str,
+) -> None:
+    state = _load_telegram_surface_state()
+    selected = str(_normalize_workspace_menu_path(root))
+    active = state.setdefault("active_workspaces", {})
+    active[history_key] = selected
+    active[external_id] = selected
+    active[f"adapter:{adapter_id}"] = selected
+    active["adapter:telegram"] = selected
+    recents = state.setdefault("recent_workspaces", {})
+    values = [item for item in list(recents.get("adapter:telegram", [])) if item != selected]
+    recents["adapter:telegram"] = [selected, *values][:12]
+    _save_telegram_surface_state(state)
+
+
+def _recent_adapter_telegram_workspaces() -> list[str]:
+    state = _load_telegram_surface_state()
+    values = state.setdefault("recent_workspaces", {}).get("adapter:telegram", [])
+    if not isinstance(values, list):
+        return []
+    return [str(item) for item in values if str(item).strip()]
+
+
+def _set_adapter_telegram_session_binding(
+    *,
+    external_id: str,
+    history_key: str,
+    binding: dict[str, Any] | None,
+) -> None:
+    state = _load_telegram_surface_state()
+    sessions = state.setdefault("active_sessions", {})
+    if binding:
+        sessions[history_key] = dict(binding)
+        sessions[external_id] = dict(binding)
+    else:
+        sessions.pop(history_key, None)
+        sessions.pop(external_id, None)
+    _save_telegram_surface_state(state)
+
+
+def _force_reset_adapter_telegram_session(binding: dict[str, Any]) -> str:
+    run_id = str(binding.get("run_id") or "").strip()
+    if not run_id:
+        return ""
+    try:
+        from dan.server.chat_v2 import AgentRunCommand
+        from dan.server.routers.dependencies import get_chat_v2_store
+    except Exception:
+        return ""
+    try:
+        store = get_chat_v2_store()
+        run = store.get_run(run_id)
+        if run is None:
+            return ""
+        if run.status not in {"completed", "failed", "blocked", "stopped"}:
+            stop_event = store.record_agent_command(
+                AgentRunCommand(
+                    command="stop",
+                    task_id=str(binding.get("task_id") or run.task_id or ""),
+                    run_id=run_id,
+                    idempotency_key=f"telegram-reset-{uuid.uuid4().hex}",
+                    payload={"reason": "telegram_reset"},
+                )
+            )
+            confirmed = store.confirm_agent_run_stopped(
+                run_id,
+                checkpoint="telegram.reset",
+                reason="Telegram reset forced this run out of the active lane.",
+            )
+            return str(
+                (confirmed.summary if confirmed is not None else "")
+                or stop_event.summary
+                or "Telegram reset forced the active run to stopped."
+            )
+    except Exception:
+        logger.debug("Failed to force-reset Telegram session", exc_info=True)
+    return ""
+
+
+def _telegram_menu_command(text: str) -> str:
+    stripped = str(text or "").strip()
+    if not stripped.startswith("/"):
+        return ""
+    command = stripped.split(maxsplit=1)[0].split("@", 1)[0].lower()
+    if command in {"/workspace", "/workspaces", "/ws"}:
+        return "workspace"
+    if command in {"/session", "/sessions", "/tasks", "/status"}:
+        return "session"
+    if command in {"/reset", "/clear"}:
+        return "reset"
+    return ""
+
+
+def _telegram_command_argument(text: str) -> str:
+    stripped = str(text or "").strip()
+    if not stripped.startswith("/"):
+        return ""
+    try:
+        parts = shlex.split(stripped)
+    except ValueError:
+        parts = stripped.split(maxsplit=1)
+    if len(parts) <= 1:
+        return ""
+    return " ".join(parts[1:]).strip()
+
+
+def _adapter_telegram_message_lane_key(history_key: str, ctx: Any | None) -> str:
+    message_id = getattr(ctx, "message_id", None)
+    if message_id is None:
+        return history_key
+    return f"{history_key}:m{message_id}"
+
+
+def _normalize_workspace_menu_path(value: Any, *, base: Any = None) -> Path:
+    raw = str(value or "").strip() or str(Path.cwd())
+    if raw.startswith("$HOME/") or raw == "$HOME":
+        raw = str(Path.home()) + raw[len("$HOME") :]
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        base_path = Path(str(base or Path.cwd())).expanduser()
+        path = base_path / path
+    try:
+        return path.resolve(strict=False)
+    except Exception:
+        return path
+
+
+def _workspace_child_dirs(path: Path) -> list[Path]:
+    try:
+        if not path.exists() or not path.is_dir():
+            return []
+        dirs = [
+            item
+            for item in path.iterdir()
+            if item.is_dir() and not item.name.startswith(".")
+        ]
+        dirs.sort(key=lambda item: item.name.lower())
+        return dirs[:100]
+    except Exception:
+        return []
+
+
+def _short_path_label(path: str, *, max_len: int = 32) -> str:
+    text = str(path or "").strip()
+    name = Path(text).name or text
+    label = name if len(name) <= max_len else name[: max_len - 3].rstrip() + "..."
+    return label or (text[-max_len:] if len(text) > max_len else text)
+
+
+def _workspace_id_from_path(path: str) -> str:
+    text = str(path or "").strip()
+    if not text:
+        return ""
+    return Path(text).name or text
+
+
+def _split_menu_callback(data: str) -> tuple[str, str, str, str]:
+    parts = str(data or "").split(":", 3)
+    while len(parts) < 4:
+        parts.append("")
+    return parts[0], parts[1], parts[2], parts[3]
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 class AdapterStopRequest(BaseModel):
@@ -410,6 +732,35 @@ async def _send_adapter_text(adapter: Any, external_id: str, text: str) -> None:
             logger.debug("No session for external_id %s, trying direct send", external_id)
 
 
+async def _send_adapter_telegram_menu(
+    adapter: Any,
+    external_id: str,
+    text: str,
+    buttons: list[list[tuple[str, str]]],
+    *,
+    ctx: Any | None = None,
+    message_id: int | None = None,
+    reply_to: int | None = None,
+) -> int | None:
+    chat_id = getattr(ctx, "chat_id", None)
+    thread_id = getattr(ctx, "thread_id", None)
+    if chat_id is None:
+        chat_id, fallback_thread = _adapter_external_target(external_id)
+        if thread_id is None:
+            thread_id = fallback_thread
+    if hasattr(adapter, "send_menu") and isinstance(chat_id, int):
+        return await adapter.send_menu(
+            chat_id,
+            text,
+            buttons,
+            message_id=message_id,
+            reply_to=reply_to,
+            thread_id=thread_id,
+        )
+    await _send_adapter_text(adapter, external_id, text)
+    return None
+
+
 def _adapter_external_target(external_id: str) -> tuple[int | str, int | None]:
     try:
         thread_id: int | None = None
@@ -449,6 +800,668 @@ async def _send_adapter_progress_or_edit(
                 )
     await _send_adapter_text(adapter, external_id, text)
     return message_id
+
+
+async def _handle_adapter_telegram_menu_command(
+    *,
+    adapter_id: str,
+    adapter: Any,
+    external_id: str,
+    text: str,
+    ctx: Any | None,
+    history_key: str,
+) -> bool:
+    command = _telegram_menu_command(text)
+    if command == "workspace":
+        workspace_arg = _telegram_command_argument(text)
+        await _show_adapter_workspace_menu(
+            adapter_id=adapter_id,
+            adapter=adapter,
+            external_id=external_id,
+            ctx=ctx,
+            history_key=history_key,
+            path=workspace_arg or None,
+            reply_to=getattr(ctx, "message_id", None),
+        )
+        return True
+    if command == "session":
+        await _show_adapter_session_menu(
+            adapter=adapter,
+            external_id=external_id,
+            ctx=ctx,
+            history_key=history_key,
+            reply_to=getattr(ctx, "message_id", None),
+        )
+        return True
+    if command == "reset":
+        binding = _adapter_telegram_session_binding(
+            external_id=external_id,
+            history_key=history_key,
+        )
+        stop_summary = _force_reset_adapter_telegram_session(binding)
+        _set_adapter_telegram_session_binding(
+            external_id=external_id,
+            history_key=history_key,
+            binding=None,
+        )
+        await _clear_adapter_history(history_key)
+        summary = (
+            "Telegram state reset. Existing DAN Super task status was forced out of this lane; your next Agent request starts fresh."
+            if stop_summary
+            else "Telegram state reset. Your next Agent request starts fresh."
+        )
+        await _send_adapter_text(adapter, external_id, summary)
+        return True
+    return False
+
+
+async def _show_adapter_workspace_menu(
+    *,
+    adapter_id: str,
+    adapter: Any,
+    external_id: str,
+    ctx: Any | None,
+    history_key: str,
+    path: str | None = None,
+    page: int = 0,
+    message_id: int | None = None,
+    reply_to: int | None = None,
+    menu_id: str | None = None,
+    note: str = "",
+) -> None:
+    workspace = _adapter_telegram_workspace_context(
+        adapter_id=adapter_id,
+        external_id=external_id,
+        history_key=history_key,
+    )
+    current = (
+        str(workspace.get("workspace_root") or "")
+        if workspace.get("workspace_source") == "telegram_menu"
+        else ""
+    )
+    browse_root = _normalize_workspace_menu_path(
+        path
+        or current
+        or workspace.get("workspace_root")
+        or Path.cwd(),
+        base=current or workspace.get("workspace_root") or Path.cwd(),
+    )
+    entries = _workspace_child_dirs(browse_root)
+    max_page = max(0, (len(entries) - 1) // _TELEGRAM_WORKSPACE_MENU_PAGE_SIZE)
+    page = max(0, min(page, max_page))
+    visible = entries[
+        page * _TELEGRAM_WORKSPACE_MENU_PAGE_SIZE:
+        (page + 1) * _TELEGRAM_WORKSPACE_MENU_PAGE_SIZE
+    ]
+    menu_id = menu_id or uuid.uuid4().hex[:8]
+    recents = _recent_adapter_telegram_workspaces()
+    _adapter_telegram_workspace_menus[menu_id] = {
+        "adapter_id": adapter_id,
+        "external_id": external_id,
+        "history_key": history_key,
+        "path": str(browse_root),
+        "page": page,
+        "entries": [str(item) for item in visible],
+        "recents": list(recents),
+    }
+    lines = ["DAN Super workspace"]
+    lines.append(f"Selected: {current or 'default workspace'}")
+    lines.append(f"Browsing: {browse_root}")
+    if note:
+        lines.extend(["", note])
+    lines.extend(["", "Tap Down to enter a folder, Parent to go up, then Select this folder."])
+    if not visible:
+        lines.append("No child folders are visible here.")
+    buttons: list[list[tuple[str, str]]] = []
+    for idx, root in enumerate(recents[:4]):
+        buttons.append([(f"Saved: {_short_path_label(root)}", f"danws:{menu_id}:recent:{idx}")])
+    for idx, child in enumerate(visible):
+        buttons.append([(f"Down: {_short_path_label(str(child))}", f"danws:{menu_id}:open:{idx}")])
+    nav: list[tuple[str, str]] = []
+    if browse_root.parent != browse_root:
+        nav.append(("Parent", f"danws:{menu_id}:up:0"))
+    if page > 0:
+        nav.append(("Prev", f"danws:{menu_id}:page:{page - 1}"))
+    if page < max_page:
+        nav.append(("Next", f"danws:{menu_id}:page:{page + 1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append(
+        [
+            ("Select this folder", f"danws:{menu_id}:select:0"),
+            ("Refresh", f"danws:{menu_id}:refresh:0"),
+        ]
+    )
+    buttons.append([("Sessions", f"danws:{menu_id}:sessions:0")])
+    await _send_adapter_telegram_menu(
+        adapter,
+        external_id,
+        "\n".join(lines),
+        buttons,
+        ctx=ctx,
+        message_id=message_id,
+        reply_to=reply_to,
+    )
+
+
+async def _handle_adapter_workspace_callback(
+    *,
+    adapter_id: str,
+    adapter: Any,
+    external_id: str,
+    data: str,
+    ctx: Any | None,
+) -> None:
+    _prefix, menu_id, action, raw_value = _split_menu_callback(data)
+    state = _adapter_telegram_workspace_menus.get(menu_id)
+    if not state:
+        await _send_adapter_telegram_menu(
+            adapter,
+            external_id,
+            "This workspace menu expired. Send /workspace to open a fresh one.",
+            [],
+            ctx=ctx,
+            message_id=getattr(ctx, "message_id", None),
+        )
+        return
+    history_key = str(state.get("history_key") or "")
+    external_id = str(state.get("external_id") or external_id)
+    current_path = str(state.get("path") or Path.cwd())
+    page = int(state.get("page") or 0)
+    if action == "open":
+        entries = list(state.get("entries") or [])
+        idx = _safe_int(raw_value)
+        if 0 <= idx < len(entries):
+            current_path = entries[idx]
+            page = 0
+    elif action == "recent":
+        recents = list(state.get("recents") or [])
+        idx = _safe_int(raw_value)
+        if 0 <= idx < len(recents):
+            current_path = str(recents[idx])
+            _select_adapter_telegram_workspace(
+                adapter_id=adapter_id,
+                external_id=external_id,
+                history_key=history_key,
+                root=current_path,
+            )
+            await _show_adapter_workspace_menu(
+                adapter_id=adapter_id,
+                adapter=adapter,
+                external_id=external_id,
+                ctx=ctx,
+                history_key=history_key,
+                path=current_path,
+                message_id=getattr(ctx, "message_id", None),
+                menu_id=menu_id,
+                note="Workspace selected.",
+            )
+            return
+    elif action == "up":
+        current_path = str(Path(current_path).expanduser().parent)
+        page = 0
+    elif action == "page":
+        page = _safe_int(raw_value)
+    elif action == "refresh":
+        pass
+    elif action == "sessions":
+        await _show_adapter_session_menu(
+            adapter=adapter,
+            external_id=external_id,
+            ctx=ctx,
+            history_key=history_key,
+            message_id=getattr(ctx, "message_id", None),
+        )
+        return
+    elif action == "select":
+        _select_adapter_telegram_workspace(
+            adapter_id=adapter_id,
+            external_id=external_id,
+            history_key=history_key,
+            root=current_path,
+        )
+        await _show_adapter_workspace_menu(
+            adapter_id=adapter_id,
+            adapter=adapter,
+            external_id=external_id,
+            ctx=ctx,
+            history_key=history_key,
+            path=current_path,
+            message_id=getattr(ctx, "message_id", None),
+            menu_id=menu_id,
+            note="Workspace selected.",
+        )
+        return
+    await _show_adapter_workspace_menu(
+        adapter_id=adapter_id,
+        adapter=adapter,
+        external_id=external_id,
+        ctx=ctx,
+        history_key=history_key,
+        path=current_path,
+        page=page,
+        message_id=getattr(ctx, "message_id", None),
+        menu_id=menu_id,
+    )
+
+
+async def _show_adapter_session_menu(
+    *,
+    adapter: Any,
+    external_id: str,
+    ctx: Any | None,
+    history_key: str,
+    message_id: int | None = None,
+    reply_to: int | None = None,
+    menu_id: str | None = None,
+    note: str = "",
+) -> None:
+    tasks = _adapter_available_tasks(external_id)
+    menu_id = menu_id or uuid.uuid4().hex[:8]
+    _adapter_telegram_session_menus[menu_id] = {
+        "external_id": external_id,
+        "history_key": history_key,
+        "tasks": tasks,
+    }
+    binding = _adapter_telegram_session_binding(
+        external_id=external_id,
+        history_key=history_key,
+    )
+    display_tasks = tasks[:12]
+    lines = ["DAN Super sessions"]
+    if binding.get("task_id"):
+        resumed = _adapter_task_title(
+            next((task for task in tasks if str(task.get("task_id") or "") == str(binding.get("task_id") or "")), {})
+        )
+        lines.append(f"Resumed: {resumed or 'selected session'}")
+    if note:
+        lines.extend(["", note])
+    if not tasks:
+        lines.extend(["", "No DAN Super sessions are attached to this Telegram chat yet."])
+    else:
+        lines.extend([
+            "",
+            "Select a session to resume it. Active sessions accept your next message as steering.",
+        ])
+        display_idx = 1
+        for group in _adapter_session_workspace_groups(display_tasks):
+            lines.append(f"[{group['label']}]")
+            for task in group["tasks"]:
+                status = _adapter_session_status_label(task)
+                title = _adapter_task_title(task)
+                latest = _compact_adapter_context_text(task.get("latest_progress"), limit=72)
+                suffix = f" - {latest}" if latest and latest != title else ""
+                lines.append(f"{display_idx}. {status} {title}{suffix}".rstrip())
+                display_idx += 1
+        if len(tasks) > len(display_tasks):
+            lines.append(f"Showing latest {len(display_tasks)} of {len(tasks)} sessions.")
+    buttons: list[list[tuple[str, str]]] = []
+    for idx, task in enumerate(display_tasks):
+        status = str(task.get("status") or "").strip().lower()
+        title = _adapter_task_button_label(task)
+        if status in {"running", "queued", "waiting_dependency", "paused", "needs_input"}:
+            buttons.append(
+                [
+                    (f"Steer: {title}", f"dansn:{menu_id}:use:{idx}"),
+                    ("Next", f"dansn:{menu_id}:continue:{idx}"),
+                    ("Status", f"dansn:{menu_id}:status:{idx}"),
+                ]
+            )
+        else:
+            buttons.append(
+                [
+                    (f"Resume: {title}", f"dansn:{menu_id}:use:{idx}"),
+                    ("Status", f"dansn:{menu_id}:status:{idx}"),
+                ]
+            )
+    buttons.append(
+        [
+            ("Refresh", f"dansn:{menu_id}:refresh:0"),
+            ("Clear resume", f"dansn:{menu_id}:clear:0"),
+        ]
+    )
+    buttons.append([("Workspace", f"dansn:{menu_id}:workspace:0")])
+    await _send_adapter_telegram_menu(
+        adapter,
+        external_id,
+        "\n".join(lines),
+        buttons,
+        ctx=ctx,
+        message_id=message_id,
+        reply_to=reply_to,
+    )
+
+
+async def _handle_adapter_session_callback(
+    *,
+    adapter_id: str,
+    adapter: Any,
+    external_id: str,
+    data: str,
+    ctx: Any | None,
+) -> None:
+    _prefix, menu_id, action, raw_value = _split_menu_callback(data)
+    state = _adapter_telegram_session_menus.get(menu_id)
+    if not state:
+        await _send_adapter_telegram_menu(
+            adapter,
+            external_id,
+            "This session menu expired. Send /session to open a fresh one.",
+            [],
+            ctx=ctx,
+            message_id=getattr(ctx, "message_id", None),
+        )
+        return
+    external_id = str(state.get("external_id") or external_id)
+    history_key = str(state.get("history_key") or "")
+    tasks = list(state.get("tasks") or [])
+    idx = _safe_int(raw_value)
+    if action == "refresh":
+        await _show_adapter_session_menu(
+            adapter=adapter,
+            external_id=external_id,
+            ctx=ctx,
+            history_key=history_key,
+            message_id=getattr(ctx, "message_id", None),
+            menu_id=menu_id,
+        )
+        return
+    if action == "clear":
+        _set_adapter_telegram_session_binding(
+            external_id=external_id,
+            history_key=history_key,
+            binding=None,
+        )
+        await _show_adapter_session_menu(
+            adapter=adapter,
+            external_id=external_id,
+            ctx=ctx,
+            history_key=history_key,
+            message_id=getattr(ctx, "message_id", None),
+            menu_id=menu_id,
+            note="Session resume cleared.",
+        )
+        return
+    if action == "workspace":
+        await _show_adapter_workspace_menu(
+            adapter_id=adapter_id,
+            adapter=adapter,
+            external_id=external_id,
+            ctx=ctx,
+            history_key=history_key,
+            message_id=getattr(ctx, "message_id", None),
+        )
+        return
+    if not (0 <= idx < len(tasks)):
+        return
+    task = dict(tasks[idx])
+    if action == "status":
+        latest = _compact_adapter_context_text(task.get("latest_progress"), limit=1200)
+        metadata = dict(task.get("metadata") or {})
+        text = "\n".join(
+            line
+            for line in (
+                f"Session: {_adapter_task_title(task)}",
+                f"Status: {task.get('status', 'unknown')}",
+                f"Phase: {task.get('phase', '')}",
+                f"Workspace: {_adapter_workspace_label(metadata.get('workspace_root') or task.get('workspace_root') or '')}",
+                f"Latest: {latest}" if latest else "",
+                f"Task id: {task.get('task_id', '')}",
+            )
+            if line
+        )
+        await _send_adapter_telegram_menu(
+            adapter,
+            external_id,
+            text,
+            [[("Back to sessions", f"dansn:{menu_id}:refresh:0")]],
+            ctx=ctx,
+            message_id=getattr(ctx, "message_id", None),
+        )
+        return
+    if action in {"use", "append", "continue"}:
+        queue_action = "append" if action != "continue" else "continue_after_current"
+        if action == "use" and str(task.get("status") or "") in {
+            "completed",
+            "failed",
+            "blocked",
+            "stopped",
+        }:
+            queue_action = ""
+        binding = {
+            "task_id": str(task.get("task_id") or ""),
+            "run_id": str(dict(task.get("metadata") or {}).get("active_run_id") or ""),
+            "status": str(task.get("status") or ""),
+            "queue_action": queue_action,
+        }
+        _set_adapter_telegram_session_binding(
+            external_id=external_id,
+            history_key=history_key,
+            binding=binding,
+        )
+        note = (
+            "Session resumed. Next message will append to the active run."
+            if queue_action == "append"
+            else "Session resumed. Next Agent-like message will continue from this task."
+        )
+        await _show_adapter_session_menu(
+            adapter=adapter,
+            external_id=external_id,
+            ctx=ctx,
+            history_key=history_key,
+            message_id=getattr(ctx, "message_id", None),
+            menu_id=menu_id,
+            note=note,
+        )
+
+
+async def _handle_adapter_telegram_callback_query(
+    adapter_id: str,
+    adapter: Any,
+    external_id: str,
+    data: str,
+    ctx: Any | None = None,
+) -> None:
+    if data.startswith("danws:"):
+        await _handle_adapter_workspace_callback(
+            adapter_id=adapter_id,
+            adapter=adapter,
+            external_id=external_id,
+            data=data,
+            ctx=ctx,
+        )
+    elif data.startswith("dansn:"):
+        await _handle_adapter_session_callback(
+            adapter_id=adapter_id,
+            adapter=adapter,
+            external_id=external_id,
+            data=data,
+            ctx=ctx,
+        )
+
+
+def _adapter_available_tasks(thread_id: str) -> list[dict[str, Any]]:
+    try:
+        from dan.server.routers.dependencies import get_chat_v2_store
+
+        store = get_chat_v2_store()
+        if hasattr(store, "list_task_records"):
+            records = store.list_task_records(limit=60)
+            if records:
+                return [_adapter_task_session_payload(store, record) for record in records]
+        return [
+            _adapter_enrich_task_snapshot(store, snapshot.model_dump(mode="json"))
+            for snapshot in store.list_thread_tasks(thread_id, limit=20)
+        ]
+    except Exception:
+        logger.debug("Failed to load Telegram adapter DAN Super sessions", exc_info=True)
+        return []
+
+
+def _adapter_task_session_payload(store: Any, task: Any) -> dict[str, Any]:
+    if hasattr(task, "snapshot"):
+        payload = task.snapshot().model_dump(mode="json")
+    elif hasattr(task, "model_dump"):
+        payload = task.model_dump(mode="json")
+    else:
+        payload = dict(task or {})
+    metadata = payload.setdefault("metadata", {})
+    metadata.setdefault("workspace_root", getattr(task, "workspace_root", ""))
+    metadata.setdefault("workspace_id", getattr(task, "workspace_id", ""))
+    active_run_id = str(getattr(task, "active_run_id", None) or metadata.get("active_run_id") or "")
+    return _adapter_enrich_task_snapshot(store, payload, active_run_id=active_run_id)
+
+
+def _adapter_enrich_task_snapshot(
+    store: Any,
+    payload: dict[str, Any],
+    *,
+    active_run_id: str = "",
+) -> dict[str, Any]:
+    metadata = payload.setdefault("metadata", {})
+    run = None
+    run_id = active_run_id or str(metadata.get("active_run_id") or "")
+    if run_id and hasattr(store, "get_run"):
+        run = store.get_run(run_id)
+    if run is None and hasattr(store, "list_run_records"):
+        runs = store.list_run_records(task_id=str(payload.get("task_id") or ""), limit=1)
+        run = runs[0] if runs else None
+    command_text = _adapter_run_command_text(run)
+    if command_text:
+        metadata["command_text"] = command_text
+        payload["title"] = _compact_adapter_context_text(command_text, limit=96)
+    elif not payload.get("title"):
+        latest = _compact_adapter_context_text(payload.get("latest_progress"), limit=96)
+        payload["title"] = latest or "Untitled DAN Super session"
+    return payload
+
+
+def _adapter_run_command_text(run: Any | None) -> str:
+    if run is None:
+        return ""
+    command = getattr(run, "command", None)
+    payload = getattr(command, "payload", {}) if command is not None else {}
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("text", "objective", "message", "prompt"):
+        value = _compact_adapter_context_text(payload.get(key), limit=200)
+        if value:
+            return value
+    return ""
+
+
+def _adapter_session_workspace_groups(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: list[dict[str, Any]] = []
+    index: dict[str, dict[str, Any]] = {}
+    for task in tasks:
+        metadata = dict(task.get("metadata") or {})
+        root = str(task.get("workspace_root") or metadata.get("workspace_root") or "").strip()
+        workspace_id = str(task.get("workspace_id") or metadata.get("workspace_id") or "").strip()
+        key = root or workspace_id or "default"
+        group = index.get(key)
+        if group is None:
+            group = {
+                "key": key,
+                "label": _adapter_workspace_label(root or workspace_id or "default workspace"),
+                "tasks": [],
+            }
+            index[key] = group
+            groups.append(group)
+        group["tasks"].append(task)
+    return groups
+
+
+def _adapter_workspace_label(path: str) -> str:
+    text = str(path or "").strip()
+    if not text or text == "~":
+        return "~"
+    return _short_path_label(text, max_len=40)
+
+
+def _adapter_task_title(task: dict[str, Any]) -> str:
+    metadata = dict(task.get("metadata") or {})
+    for value in (
+        task.get("title"),
+        task.get("objective"),
+        metadata.get("command_text"),
+        metadata.get("objective"),
+        metadata.get("title"),
+        task.get("latest_progress"),
+    ):
+        title = _compact_adapter_context_text(value, limit=96)
+        if title:
+            return title
+    return "Untitled DAN Super session"
+
+
+def _adapter_task_button_label(task: dict[str, Any]) -> str:
+    return _compact_adapter_context_text(_adapter_task_title(task), limit=28)
+
+
+def _adapter_session_status_label(task: dict[str, Any]) -> str:
+    status = str(task.get("status") or "unknown").strip().lower()
+    if status == "running":
+        return "running"
+    if status in {"queued", "waiting_dependency"}:
+        return "queued"
+    if status in {"needs_input", "paused"}:
+        return status.replace("_", " ")
+    if status in {"completed", "failed", "blocked", "stopped"}:
+        return status
+    return status or "unknown"
+
+
+async def _send_adapter_v2_agent_run_command(
+    *,
+    adapter: Any,
+    external_id: str,
+    body: dict[str, Any],
+    selected_session: dict[str, Any],
+) -> str:
+    from dan.server.chat_v2 import AgentRunCommand
+    from dan.server.routers.dependencies import get_chat_v2_store
+
+    message_text = str(body.get("message") or "")
+    explicit_command = _adapter_agent_command(message_text)
+    command_name = str(selected_session.get("queue_action") or "").strip()
+    if explicit_command in {"append", "inject"}:
+        command_name = "append"
+    elif explicit_command in {"continue", "continue-after-current"}:
+        command_name = "continue_after_current"
+    if command_name == "append":
+        command_name = "append_followup"
+    if command_name not in {"append_followup", "continue_after_current"}:
+        return ""
+    run_id = str(selected_session.get("run_id") or "").strip()
+    task_id = str(selected_session.get("task_id") or "").strip()
+    if not run_id:
+        return ""
+    store = get_chat_v2_store()
+    run = store.get_run(run_id)
+    if run is None:
+        await _send_adapter_text(adapter, external_id, "That DAN Super run was not found. Use /session to refresh.")
+        return ""
+    command = AgentRunCommand(
+        command=command_name,
+        task_id=task_id or run.task_id,
+        run_id=run_id,
+        idempotency_key=uuid.uuid4().hex,
+        payload={
+            "text": _adapter_command_payload_text(message_text),
+            "surface_context": dict(body.get("surface_context") or {}),
+            "history": list(body.get("history") or []),
+        },
+    )
+    event = store.record_agent_command(command)
+    summary = str(event.summary or "").strip()
+    if not summary:
+        summary = (
+            "Steering note queued for the active DAN Super run."
+            if command_name == "append_followup"
+            else "Queued after the current DAN Super run."
+        )
+    await _send_adapter_text(adapter, external_id, summary)
+    return summary
 
 
 async def _stream_v2_agent_run_events_to_adapter(
@@ -1407,11 +2420,19 @@ def _build_adapter_chat_request_body(
     history: list[dict[str, str]] | None = None,
     ctx: Any | None = None,
     control_plane_mode: str | None = None,
+    conversation_key: str | None = None,
+    lane_key: str | None = None,
+    include_selected_session: bool = True,
 ) -> dict[str, Any]:
     surface_id = str(adapter_id or surface or "adapter").strip() or "adapter"
     surface_type = str(surface or "adapter").strip() or "adapter"
     session_id = str(external_id or surface_id).strip() or surface_id
-    history_key = _adapter_history_key(adapter_id, surface_type, session_id)
+    history_key = str(conversation_key or "").strip() or _adapter_history_key(
+        adapter_id,
+        surface_type,
+        session_id,
+    )
+    lane_key = str(lane_key or "").strip() or history_key
     payload = {
         "workflow_id": "_scratch",
         "message": message_text,
@@ -1432,6 +2453,40 @@ def _build_adapter_chat_request_body(
         },
     }
     if surface_type == "telegram":
+        workspace = _adapter_telegram_workspace_context(
+            adapter_id=adapter_id,
+            external_id=external_id,
+            history_key=history_key,
+        )
+        surface_context = build_super_tui_surface_context(
+            workspace_root=str(workspace.get("workspace_root") or "~"),
+            workspace_source=str(workspace.get("workspace_source") or "telegram"),
+            conversation_recent_turns=list(history or [])[-12:],
+            extra=payload["surface_context"],
+        )
+        if workspace.get("workspace_id"):
+            surface_context["workspace_id"] = workspace["workspace_id"]
+        surface_context.update(
+            {
+                "ui_surface": "telegram",
+                "agent_profile": SUPER_TUI_SURFACE_PROFILE,
+                "agent_backend": SUPER_TUI_DEFAULT_BACKEND,
+                "gui_for": "dan super-tui",
+                "capabilities": list(
+                    dict.fromkeys(
+                        [
+                            *SUPER_TUI_AGENT_CAPABILITIES,
+                            "message_edit",
+                            "threaded_replies",
+                            "media_download",
+                            "workspace_menu",
+                            "session_menu",
+                        ]
+                    )
+                ),
+            }
+        )
+        payload["surface_context"] = surface_context
         chat_id, thread_id = _adapter_external_target(external_id)
         native_chat_id = getattr(ctx, "chat_id", None)
         native_thread_id = getattr(ctx, "thread_id", None)
@@ -1450,12 +2505,29 @@ def _build_adapter_chat_request_body(
             "sender_chat_username": getattr(ctx, "sender_chat_username", None),
         }
         payload["surface_context"]["conversation"] = {
+            **dict(payload["surface_context"].get("conversation") or {}),
             "conversation_key": history_key,
-            "lane_key": history_key,
-            "reply_lane_key": history_key if _adapter_reply_context(ctx) else None,
+            "lane_key": lane_key,
+            "reply_lane_key": lane_key if _adapter_reply_context(ctx) else None,
             "history_turn_count": len(history or []),
             "history_window": min(len(history or []), 40),
         }
+        selected_session = (
+            _adapter_telegram_session_binding(
+                external_id=external_id,
+                history_key=history_key,
+            )
+            if include_selected_session
+            else {}
+        )
+        if selected_session:
+            payload["surface_context"]["selected_session"] = dict(selected_session)
+            task_id = str(selected_session.get("task_id") or "").strip()
+            queue_action = str(selected_session.get("queue_action") or "").strip()
+            if task_id:
+                payload["surface_context"]["task_id"] = task_id
+            if queue_action:
+                payload["surface_context"]["queue_action"] = queue_action
     if control_plane_mode is not None:
         payload["control_plane_mode"] = control_plane_mode
     return payload
@@ -1997,17 +3069,52 @@ async def _run_adapter_concierge(
     )
 
     control_plane_override = _adapter_control_plane_override(adapter_id, surface)
+    raw_agent_command = _adapter_agent_command(message_text)
     requested_mode, message_text = _adapter_requested_mode(message_text)
+    history_key = _adapter_history_key(adapter_id, surface, external_id)
+    if str(surface or "").strip().lower() == "telegram":
+        if await _handle_adapter_telegram_menu_command(
+            adapter_id=adapter_id,
+            adapter=adapter,
+            external_id=external_id,
+            text=message_text,
+            ctx=ctx,
+            history_key=history_key,
+        ):
+            return
     effective_mode = _adapter_effective_requested_mode(
         surface=surface,
         control_plane_mode=control_plane_override,
         requested_mode=requested_mode,
         text=message_text,
     )
+    selected_session = (
+        _adapter_telegram_session_binding(
+            external_id=external_id,
+            history_key=history_key,
+        )
+        if str(surface or "").strip().lower() == "telegram"
+        else {}
+    )
+    if (
+        str(surface or "").strip().lower() == "telegram"
+        and control_plane_override == "v2"
+        and selected_session
+        and effective_mode == "auto"
+        and not _adapter_v2_control_command(message_text)
+    ):
+        effective_mode = "agent"
     if effective_mode == "agent" and not message_text.strip():
         await _send_adapter_text(adapter, external_id, "Usage: /agent describe the task to run.")
         return
-    history_key = _adapter_history_key(adapter_id, surface, external_id)
+    telegram_lane_key = history_key
+    if (
+        str(surface or "").strip().lower() == "telegram"
+        and control_plane_override == "v2"
+        and effective_mode == "agent"
+        and (not selected_session or raw_agent_command == "new")
+    ):
+        telegram_lane_key = _adapter_telegram_message_lane_key(history_key, ctx)
     user_turn = {"role": "user", "content": message_text}
     history = await _append_adapter_history_turn(history_key, user_turn)
 
@@ -2072,10 +3179,40 @@ async def _run_adapter_concierge(
         history=history,
         ctx=ctx,
         control_plane_mode=control_plane_override,
+        conversation_key=history_key,
+        lane_key=telegram_lane_key,
+        include_selected_session=raw_agent_command != "new",
     )
     body["mode"] = effective_mode
     req = ChatMessageRequest.model_validate(body)
     try:
+        selected_session_command_allowed = raw_agent_command in {
+            "",
+            "append",
+            "inject",
+            "continue",
+            "continue-after-current",
+        }
+        if (
+            control_plane_override == "v2"
+            and str(surface or "").strip().lower() == "telegram"
+            and selected_session
+            and str(selected_session.get("queue_action") or "").strip()
+            and str(selected_session.get("run_id") or "").strip()
+            and selected_session_command_allowed
+        ):
+            summary = await _send_adapter_v2_agent_run_command(
+                adapter=adapter,
+                external_id=external_id,
+                body=body,
+                selected_session=selected_session,
+            )
+            if summary:
+                await _append_adapter_history_turn(
+                    history_key,
+                    {"role": "assistant", "content": summary},
+                )
+            return
         if control_plane_override == "v2" and effective_mode == "agent":
             from dan.server.routers.chat_v2 import (
                 AgentRunExecuteRequest,
@@ -2099,12 +3236,23 @@ async def _run_adapter_concierge(
             backend = (
                 os.environ.get("DAN_TELEGRAM_V2_AGENT_BACKEND")
                 or os.environ.get("DAN_CHAT_V2_AGENT_BACKEND")
-                or None
+                or SUPER_TUI_DEFAULT_BACKEND
             )
             if str(surface or "").strip().lower() == "telegram":
                 await execute_agent_run(
                     run_id,
-                    execute=AgentRunExecuteRequest(backend=backend, background=True),
+                    execute=AgentRunExecuteRequest.model_validate(
+                        build_super_tui_agent_execute_payload(
+                            backend=backend,
+                            background=True,
+                            surface="telegram:server-adapter",
+                            metadata={
+                                "surface": "telegram:server-adapter",
+                                "requested_from": "telegram",
+                                "gui_for": "dan super-tui",
+                            },
+                        )
+                    ),
                 )
                 summary = await _stream_v2_agent_run_events_to_adapter(
                     adapter,
@@ -2354,6 +3502,20 @@ async def start_adapter(req: AdapterStartRequest):
         adapter.set_message_callback(_on_msg, with_context=True)
     except TypeError:
         adapter.set_message_callback(_on_msg)
+    if adapter_type == "telegram" and hasattr(adapter, "set_callback_query_callback"):
+        async def _on_callback(ext_id: str, data: str, ctx: Any | None = None) -> None:
+            await _handle_adapter_telegram_callback_query(
+                adapter_id,
+                adapter,
+                ext_id,
+                data,
+                ctx=ctx,
+            )
+
+        try:
+            adapter.set_callback_query_callback(_on_callback, with_context=True)
+        except TypeError:
+            adapter.set_callback_query_callback(_on_callback)
     if hasattr(adapter, "set_event_callback"):
         adapter.set_event_callback(
             lambda event: _publish_adapter_event(adapter_id, dict(event)),

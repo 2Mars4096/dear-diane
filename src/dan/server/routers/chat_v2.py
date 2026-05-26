@@ -9,6 +9,12 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
+from dan.agent_runtime.super_tui_contract import (
+    SUPER_TUI_DEFAULT_BACKEND,
+    apply_super_tui_execute_profile,
+    is_super_tui_surface_profile,
+    normalize_super_tui_surface_profile,
+)
 from dan.server.chat_v2 import (
     AgentRunCommand,
     AgentRunEvent,
@@ -35,6 +41,7 @@ router = APIRouter(tags=["chat-v2"])
 
 class AgentRunExecuteRequest(BaseModel):
     backend: str | None = None
+    surface_profile: str | None = None
     background: bool = False
     auto_execute_continuations: bool = True
     max_promoted_continuations: int = 8
@@ -179,6 +186,7 @@ async def admit_agent_turn(
         max_parallel_runs=admission.max_parallel_runs,
     )
     execute = admission.execute
+    backend_name = _execute_backend_name(execute)
     if (
         admission.background
         and admitted.decision.action == "start_parallel"
@@ -188,7 +196,7 @@ async def admit_agent_turn(
             _execute_agent_run_background(
                 store,
                 admitted.decision.run_id,
-                backend_name=execute.backend,
+                backend_name=backend_name,
                 overrides=_execute_overrides(execute),
                 auto_execute_continuations=execute.auto_execute_continuations,
                 remaining_continuations=execute.max_promoted_continuations,
@@ -197,7 +205,7 @@ async def admit_agent_turn(
         mark_background_run_started(
             store,
             admitted.decision.run_id,
-            backend=execute.backend or "",
+            backend=backend_name or "",
             reason=admitted.decision.reason,
         )
         admitted = _refresh_admission_result(store, admitted, turn)
@@ -226,6 +234,27 @@ async def get_task(
     if snapshot is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return {"task": snapshot.model_dump(mode="json")}
+
+
+@router.get("/api/v2/tasks")
+async def list_tasks(
+    request: Request = None,
+    limit: int = 80,
+    workspace_root: str = "",
+    thread_id: str = "",
+) -> dict[str, Any]:
+    store = _require_chat_v2_store(request)
+    records = store.list_task_records(
+        workspace_root=workspace_root,
+        thread_id=thread_id,
+        limit=limit,
+    )
+    return {
+        "tasks": [
+            _task_record_session_payload(store, record)
+            for record in records
+        ],
+    }
 
 
 @router.get("/api/v2/threads/{thread_id}/tasks")
@@ -270,12 +299,13 @@ async def execute_agent_run(
         raise HTTPException(status_code=404, detail="Agent run not found")
     execute = execute or AgentRunExecuteRequest()
     overrides = _execute_overrides(execute)
+    backend_name = _execute_backend_name(execute)
     if execute.background:
         asyncio.create_task(
             _execute_agent_run_background(
                 store,
                 run_id,
-                backend_name=execute.backend,
+                backend_name=backend_name,
                 overrides=overrides,
                 auto_execute_continuations=execute.auto_execute_continuations,
                 remaining_continuations=execute.max_promoted_continuations,
@@ -284,7 +314,7 @@ async def execute_agent_run(
         mark_background_run_started(
             store,
             run_id,
-            backend=execute.backend or "",
+            backend=backend_name or "",
             reason="execute endpoint background request",
         )
         store.update_run_metadata(
@@ -303,7 +333,7 @@ async def execute_agent_run(
     result = await run_agent_backend(
         store,
         run_id,
-        backend_name=execute.backend,
+        backend_name=backend_name,
         overrides=overrides,
     )
     refreshed = store.get_run(run_id)
@@ -530,13 +560,33 @@ def _task_run_ref_from_acceptance(acceptance: Any) -> dict[str, Any] | None:
 
 
 def _execute_overrides(execute: AgentRunExecuteRequest) -> dict[str, Any]:
-    return {
+    payload = {
         "profile_policy": execute.profile_policy,
         "mutation_policy": execute.mutation_policy,
         "approval_policy": execute.approval_policy,
         "tool_policy": execute.tool_policy,
         "metadata": execute.metadata,
     }
+    if is_super_tui_surface_profile(_execute_surface_profile(execute)):
+        return apply_super_tui_execute_profile(payload)
+    return payload
+
+
+def _execute_surface_profile(execute: AgentRunExecuteRequest) -> str:
+    explicit = execute.surface_profile
+    if not explicit and isinstance(execute.metadata, dict):
+        explicit = execute.metadata.get("surface_profile") or execute.metadata.get("compatibility_profile")
+    if not explicit and isinstance(execute.profile_policy, dict):
+        explicit = execute.profile_policy.get("surface_profile")
+    return normalize_super_tui_surface_profile(explicit)
+
+
+def _execute_backend_name(execute: AgentRunExecuteRequest) -> str | None:
+    if execute.backend:
+        return execute.backend
+    if is_super_tui_surface_profile(_execute_surface_profile(execute)):
+        return SUPER_TUI_DEFAULT_BACKEND
+    return None
 
 
 def _refresh_admission_result(
@@ -548,6 +598,7 @@ def _refresh_admission_result(
         store,
         workspace_root=turn.workspace_root,
         thread_id=turn.thread_id,
+        surface_topic_key=str(turn.metadata.get("surface_topic_key") or ""),
     )
     run = store.get_run(str(admitted.decision.run_id or ""))
     event = admitted.event
@@ -577,6 +628,47 @@ def _run_payload_for_admission(
     run_id = str(admitted.decision.run_id or admitted.decision.target_run_id or "")
     run = store.get_run(run_id) if run_id else None
     return run.model_dump(mode="json") if run is not None else None
+
+
+def _task_record_session_payload(store: ChatV2Store, task: Any) -> dict[str, Any]:
+    payload = task.snapshot().model_dump(mode="json")
+    metadata = payload.setdefault("metadata", {})
+    metadata.setdefault("workspace_root", getattr(task, "workspace_root", ""))
+    metadata.setdefault("workspace_id", getattr(task, "workspace_id", ""))
+    active_run_id = str(getattr(task, "active_run_id", None) or metadata.get("active_run_id") or "")
+    run = store.get_run(active_run_id) if active_run_id else None
+    if run is None:
+        runs = store.list_run_records(task_id=str(getattr(task, "task_id", "")), limit=1)
+        run = runs[0] if runs else None
+    command_text = _agent_run_command_text(run)
+    if command_text:
+        metadata["command_text"] = command_text
+        payload["title"] = _compact_session_text(command_text, limit=96)
+    else:
+        latest = str(payload.get("latest_progress") or "").strip()
+        payload["title"] = _compact_session_text(latest, limit=96) if latest else "Untitled DAN Super session"
+    return payload
+
+
+def _agent_run_command_text(run: Any | None) -> str:
+    if run is None:
+        return ""
+    command = getattr(run, "command", None)
+    payload = getattr(command, "payload", {}) if command is not None else {}
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("text", "objective", "message", "prompt"):
+        text = str(payload.get(key) or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _compact_session_text(value: Any, *, limit: int = 96) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
 
 
 def _admission_response_status(admitted: ForegroundAdmissionResult) -> str:

@@ -308,11 +308,15 @@ def build_surface_turn_from_chat_request(req: Any) -> SurfaceTurn:
     )
     privacy_scope = _privacy_scope(surface_context, native)
     workspace_root, workspace_id, workspace_source = _workspace_binding(req, surface_context, native)
+    conversation = surface_context.get("conversation")
+    if not isinstance(conversation, dict):
+        conversation = {}
+    conversation_lane_key = _clean(conversation.get("lane_key"))
     surface_topic_key = _surface_topic_key_from_parts(
         privacy_scope=privacy_scope,
         surface=surface or surface_type,
         user=user_id or username or "user",
-        topic=native_thread_id or thread_id or session_id or "default",
+        topic=conversation_lane_key or native_thread_id or thread_id or session_id or "default",
     )
     attachments = build_attachment_refs_from_chat_request(req, surface=surface or surface_type)
     update_handle = SurfaceUpdateHandle(
@@ -1052,8 +1056,19 @@ def _agent_surface_context(surface_context: dict[str, Any]) -> dict[str, Any]:
         "workspace",
         "workspace_root",
         "workspace_id",
+        "workspace_source",
+        "surface_profile",
+        "agent_profile",
+        "agent_backend",
+        "gui_for",
+        "ui_surface",
         "privacy_scope",
         "capabilities",
+        "selected_skills",
+        "appended_attachments",
+        "communication_policy",
+        "execution_policy",
+        "surface_policy",
     ):
         value = surface_context.get(key)
         if value not in (None, "", [], {}):

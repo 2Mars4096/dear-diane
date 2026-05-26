@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import subprocess
 import time
 import uuid
 import logging
+import html
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -67,6 +70,10 @@ _ORGANISM_LOG_DISCOVERY_PATTERNS = (
 _MAX_ORGANISM_LOG_DISCOVER_LIMIT = 100
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[4]
+
+
 def _normalize_env_bool(key: str, default: bool) -> str:
     raw = str(os.environ.get(key, "")).strip().lower()
     if not raw:
@@ -91,6 +98,124 @@ def _read_runtime_config_values(chat_manager: Any | None = None) -> dict[str, st
         "DAN_FULL_TOOLS": _normalize_env_bool("DAN_FULL_TOOLS", True),
         "DAN_TELEMETRY": _normalize_env_bool("DAN_TELEMETRY", True),
         "DAN_LEARNING_MODE": _normalize_env_bool("DAN_LEARNING_MODE", False),
+    }
+
+
+def _host_has_interface_address(address: str) -> tuple[bool, str]:
+    """Return whether *address* is visible on a local network interface."""
+    target = address.strip()
+    if not target:
+        return False, ""
+    ifconfig_bin = shutil.which("ifconfig")
+    if not ifconfig_bin:
+        return False, ""
+    try:
+        completed = subprocess.run(
+            [ifconfig_bin],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return False, ""
+    current_interface = ""
+    for raw_line in completed.stdout.splitlines():
+        line = raw_line.strip()
+        if raw_line and not raw_line.startswith(("\t", " ")):
+            current_interface = raw_line.split(":", 1)[0].strip()
+        if line.startswith("inet ") and target in line.split():
+            return True, current_interface
+    return False, ""
+
+
+def _workspace_wireguard_status() -> dict[str, Any]:
+    """Read WireGuard state without mutating any host-level VPN service."""
+    real_home = Path.home()
+    alias_config = Path(
+        os.environ.get("DAN_ALIAS_NYWG_CONFIG", str(real_home / ".config/wireguard/nywg.conf"))
+    ).expanduser()
+    mode = os.environ.get("DAN_WIREGUARD_MANAGED_MODE", "auto").strip() or "auto"
+    if mode == "auto":
+        mode = "alias-nywg" if alias_config.is_file() else "dan-phone"
+
+    if mode == "alias-nywg":
+        interface = os.environ.get("DAN_ALIAS_NYWG_INTERFACE", "nywg")
+        label = os.environ.get("DAN_ALIAS_NYWG_LABEL", "com.alias.nywg")
+        config_path = alias_config
+        mutating_actions_enabled = False
+    else:
+        interface = os.environ.get("DAN_WIREGUARD_INTERFACE_NAME", "dan-phone")
+        label = os.environ.get("DAN_WIREGUARD_LAUNCHD_LABEL", "com.dan.phone-wireguard")
+        config_path = Path(
+            os.environ.get(
+                "DAN_WIREGUARD_CONFIG_PATH",
+                str(_repo_root() / "ops/wireguard/generated/dan-phone.conf"),
+            )
+        ).expanduser()
+        mutating_actions_enabled = False
+
+    wg_bin = os.environ.get("WG_BIN") or shutil.which("wg")
+    wg_stdout = ""
+    wg_stderr = ""
+    wg_exit_code: int | None = None
+    active = False
+    if wg_bin:
+        try:
+            completed = subprocess.run(
+                [wg_bin, "show", interface],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            wg_stdout = completed.stdout.strip()
+            wg_stderr = completed.stderr.strip()
+            wg_exit_code = int(completed.returncode)
+            active = wg_exit_code == 0 and bool(wg_stdout)
+        except Exception as exc:  # pragma: no cover - defensive host probe
+            wg_stderr = str(exc)
+            wg_exit_code = -1
+
+    host_tunnel_address = os.environ.get("DAN_PHONE_WIREGUARD_HOST", "10.77.77.2").strip()
+    host_tunnel_active, host_tunnel_interface = _host_has_interface_address(host_tunnel_address)
+    if not active and host_tunnel_active:
+        active = True
+        mode = "host-wireguard"
+        interface = host_tunnel_interface or interface
+        if wg_stderr:
+            wg_stderr = (
+                f"{wg_stderr}; host tunnel address {host_tunnel_address} is present "
+                f"on {interface}"
+            )
+
+    return {
+        "service": "wireguard",
+        "mode": mode,
+        "interface": interface,
+        "launchd_label": label,
+        "config_path": str(config_path),
+        "config_present": config_path.is_file(),
+        "active": active,
+        "status": "active" if active else ("configured" if config_path.is_file() else "not_configured"),
+        "host_tunnel_address": host_tunnel_address,
+        "host_tunnel_interface": host_tunnel_interface,
+        "host_tunnel_active": host_tunnel_active,
+        "wg_present": bool(wg_bin),
+        "wg_exit_code": wg_exit_code,
+        "stdout": wg_stdout,
+        "stderr": wg_stderr,
+        "mutating_actions_enabled": mutating_actions_enabled,
+        "safe_actions": ["status"],
+        "conflict_policy": (
+            "Read-only alias nywg status; this endpoint does not start, stop, "
+            "restart, install, or uninstall the existing WireGuard service."
+        )
+        if mode == "alias-nywg"
+        else (
+            "Read-only DAN WireGuard status; mutating service actions are not "
+            "enabled from this workspace surface."
+        ),
     }
 
 
@@ -304,6 +429,11 @@ async def get_runtime_config(request: Request) -> dict[str, Any]:
     }
 
 
+@router.get("/api/workspace-wireguard")
+async def get_workspace_wireguard_status() -> dict[str, Any]:
+    return _workspace_wireguard_status()
+
+
 @router.post("/api/config")
 async def set_runtime_config(request: Request, body: dict[str, Any]) -> dict[str, Any]:
     """Persist a runtime setting to both the live server env and project .env."""
@@ -501,6 +631,897 @@ async def list_docs(request: Request):
         raise HTTPException(status_code=503, detail="Server not fully initialised")
     docs = resolver.docs_resolver.list_docs()
     return {"docs": docs}
+
+
+_DEFAULT_NOTES_WORKSPACE_ROOT = "~/.codex/memories"
+_DEFAULT_CONTENT_PROJECT_NAME = "my-knowledge-base"
+_WORKSPACE_NOTE_DIR_NAMES = ("",)
+_WORKSPACE_NOTE_SKIP_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "venv",
+    "node_modules",
+    "dist",
+    "build",
+    "__pycache__",
+}
+_WORKSPACE_FILE_SKIP_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "venv",
+    "node_modules",
+    "dist",
+    "build",
+    "__pycache__",
+    ".dan-code",
+    ".dan-research",
+    ".dan-super",
+}
+_TEXT_FILE_SUFFIXES = {
+    ".cfg",
+    ".css",
+    ".csv",
+    ".env",
+    ".gitignore",
+    ".go",
+    ".html",
+    ".ini",
+    ".js",
+    ".json",
+    ".jsonl",
+    ".jsx",
+    ".log",
+    ".md",
+    ".mdx",
+    ".py",
+    ".r",
+    ".rb",
+    ".rs",
+    ".sh",
+    ".sql",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".txt",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+_WORKSPACE_NOTE_SUMMARY_CACHE: dict[str, dict[str, Any]] = {}
+_WORKSPACE_NOTE_READ_CACHE: dict[str, dict[str, Any]] = {}
+_WORKSPACE_NOTE_PREVIEW_CACHE: dict[str, dict[str, Any]] = {}
+_WORKSPACE_NOTE_CACHE_LIMIT = 512
+
+
+def _expand_workspace_home(raw: str) -> Path:
+    return Path(raw).expanduser()
+
+
+def _content_bootstrap_root_candidates() -> list[Path]:
+    """Mirror the desktop v1 content bootstrap root order for the notes workspace."""
+
+    configured = [
+        _expand_workspace_home(value)
+        for value in str(os.environ.get("DAN_DEFAULT_CONTENT_ROOTS") or "").split(os.pathsep)
+        if value.strip()
+    ]
+    home = Path.home()
+    local_named = [
+        Path("/Volumes/data/Dropbox/Projects") / _DEFAULT_CONTENT_PROJECT_NAME,
+        home / "Dropbox" / "Projects" / _DEFAULT_CONTENT_PROJECT_NAME,
+        home / "Projects" / _DEFAULT_CONTENT_PROJECT_NAME,
+    ]
+    heuristic: list[Path] = []
+    for base in (Path.cwd(), Path(resolve_workspace_root())):
+        try:
+            resolved = base.expanduser().resolve()
+        except OSError:
+            resolved = base.expanduser()
+        heuristic.extend(
+            [
+                resolved.parent / _DEFAULT_CONTENT_PROJECT_NAME,
+                resolved.parent.parent / _DEFAULT_CONTENT_PROJECT_NAME,
+            ],
+        )
+
+    seen: set[str] = set()
+    candidates: list[Path] = []
+    for candidate in [*configured, *local_named, *heuristic]:
+        normalized = str(candidate.expanduser())
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        candidates.append(candidate.expanduser())
+    return candidates
+
+
+def _notes_root_from_content_project(project_root: Path) -> Path:
+    content_root = project_root / "content"
+    if content_root.exists() and content_root.is_dir():
+        return content_root
+    content_notes = project_root / "content" / "notes"
+    if content_notes.exists() and content_notes.is_dir():
+        return content_notes
+    return project_root
+
+
+def _default_workspace_notes_root() -> Path:
+    for candidate in _content_bootstrap_root_candidates():
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if resolved.exists() and resolved.is_dir():
+            return _notes_root_from_content_project(resolved).resolve()
+    return Path(_DEFAULT_NOTES_WORKSPACE_ROOT).expanduser().resolve()
+
+
+def _workspace_notes_root() -> Path:
+    explicit = os.environ.get("DAN_NOTES_WORKSPACE_ROOT") or os.environ.get("DAN_NOTES_ROOT")
+    root = Path(explicit).expanduser().resolve() if explicit else _default_workspace_notes_root()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _workspace_files_root(root_path: str | None = None) -> Path:
+    raw = str(root_path or resolve_workspace_root()).strip()
+    root = Path(raw).expanduser().resolve()
+    if not root.exists() or not root.is_dir():
+        raise HTTPException(status_code=404, detail=f"Workspace root not found: {root}")
+    return root
+
+
+def _workspace_root_candidate(raw_path: str, *, default_root: Path) -> Path:
+    candidate = Path(raw_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = default_root / candidate
+    try:
+        return candidate.resolve(strict=False)
+    except OSError:
+        return candidate
+
+
+def _workspace_root_suggestion(
+    path: Path,
+    *,
+    kind: str,
+) -> dict[str, str] | None:
+    try:
+        resolved = path.expanduser().resolve()
+    except OSError:
+        return None
+    if not resolved.exists() or not resolved.is_dir():
+        return None
+    return {
+        "path": str(resolved),
+        "name": resolved.name or str(resolved),
+        "label": str(resolved),
+        "kind": kind,
+    }
+
+
+def _append_workspace_root_suggestion(
+    suggestions: list[dict[str, str]],
+    seen: set[str],
+    path: Path,
+    *,
+    kind: str,
+    limit: int,
+) -> None:
+    if len(suggestions) >= limit:
+        return
+    summary = _workspace_root_suggestion(path, kind=kind)
+    if summary is None or summary["path"] in seen:
+        return
+    seen.add(summary["path"])
+    suggestions.append(summary)
+
+
+def _matching_workspace_root_dirs(base: Path, fragment: str) -> list[Path]:
+    prefix = fragment.lower()
+    try:
+        children = [
+            child
+            for child in base.iterdir()
+            if child.is_dir()
+            and (not child.name.startswith(".") or prefix.startswith("."))
+            and child.name.lower().startswith(prefix)
+        ]
+    except OSError:
+        return []
+    return sorted(children, key=lambda child: child.name.lower())
+
+
+def _resolve_workspace_note_path(raw_path: str) -> Path:
+    root = _workspace_notes_root()
+    raw_path = str(raw_path or "").strip()
+    if not raw_path:
+        raise HTTPException(status_code=422, detail="path is required")
+    candidate = Path(raw_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Note path must stay inside workspace root")
+    if resolved.suffix.lower() not in {".md", ".mdx"}:
+        raise HTTPException(status_code=400, detail="Only Markdown notes are supported")
+    return resolved
+
+
+def _resolve_workspace_file_path(raw_path: str, *, root_path: str | None = None) -> tuple[Path, Path]:
+    root = _workspace_files_root(root_path)
+    raw_path = str(raw_path or "").strip()
+    if not raw_path:
+        raise HTTPException(status_code=422, detail="path is required")
+    candidate = Path(raw_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="File path must stay inside workspace root")
+    return resolved, root
+
+
+def _fallback_note_title(path: Path, root: Path) -> str:
+    if path.name.lower() == "index.md" and path.parent != root:
+        raw = path.parent.name
+    else:
+        raw = path.stem
+    return raw.replace("-", " ").replace("_", " ").strip() or path.name
+
+
+def _cache_signature(path: Path, stat: os.stat_result) -> str:
+    return f"{path}:{stat.st_mtime_ns}:{stat.st_size}"
+
+
+def _trim_note_cache(cache: dict[str, dict[str, Any]]) -> None:
+    if len(cache) <= _WORKSPACE_NOTE_CACHE_LIMIT:
+        return
+    for key in list(cache.keys())[: max(1, len(cache) - _WORKSPACE_NOTE_CACHE_LIMIT)]:
+        cache.pop(key, None)
+
+
+def _markdown_note_title_from_text(sample: str) -> str | None:
+    metadata = _markdown_note_metadata_from_text(sample)
+    if metadata["title"]:
+        return str(metadata["title"])
+    heading_match = re.search(r"^#\s+(.+?)\s*$", sample, re.MULTILINE)
+    if heading_match:
+        title = heading_match.group(1).strip()
+        if title:
+            return title
+    return None
+
+
+def _strip_yaml_comment(value: str) -> str:
+    quote = ""
+    for index, char in enumerate(value):
+        if char in ("'", '"') and (index == 0 or value[index - 1] != "\\"):
+            quote = "" if quote == char else quote or char
+        if char == "#" and not quote and (index == 0 or value[index - 1].isspace()):
+            return value[:index].strip()
+    return value.strip()
+
+
+def _yaml_scalar(value: str) -> str | bool:
+    cleaned = _strip_yaml_comment(value)
+    if not cleaned:
+        return ""
+    lowered = cleaned.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    return cleaned.strip().strip("\"'")
+
+
+def _yaml_list(value: str | bool | list[str]) -> list[str]:
+    if isinstance(value, list):
+        return [item for item in value if item]
+    if isinstance(value, bool):
+        return []
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return []
+    if cleaned.startswith("[") and cleaned.endswith("]"):
+        cleaned = cleaned[1:-1]
+    return [
+        str(_yaml_scalar(item)).strip()
+        for item in cleaned.split(",")
+        if str(_yaml_scalar(item)).strip()
+    ]
+
+
+def _parse_yaml_frontmatter(raw: str) -> dict[str, str | bool | list[str]]:
+    data: dict[str, str | bool | list[str]] = {}
+    active_list_key = ""
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        list_match = re.match(r"^\s*-\s+(.+?)\s*$", line)
+        if list_match and active_list_key:
+            current = data.get(active_list_key)
+            data[active_list_key] = [
+                *(current if isinstance(current, list) else []),
+                str(_yaml_scalar(list_match.group(1))),
+            ]
+            continue
+        match = re.match(r"^([A-Za-z0-9_-]+):\s*(.*?)\s*$", line)
+        if not match:
+            continue
+        key, value = match.group(1), match.group(2)
+        if value:
+            active_list_key = ""
+            scalar = _yaml_scalar(value)
+            data[key] = _yaml_list(str(scalar)) if str(value).strip().startswith("[") else scalar
+        else:
+            active_list_key = key
+            data[key] = []
+    return data
+
+
+def _metadata_string(data: dict[str, str | bool | list[str]], key: str) -> str:
+    value = data.get(key)
+    if isinstance(value, list):
+        return ", ".join(value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value or "").strip()
+
+
+def _metadata_bool(data: dict[str, str | bool | list[str]], key: str) -> bool:
+    value = data.get(key)
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() == "true"
+
+
+def _markdown_note_metadata_from_text(sample: str) -> dict[str, Any]:
+    frontmatter = re.match(r"^---\s*\n(?P<body>[\s\S]*?)\n---", sample)
+    data = _parse_yaml_frontmatter(frontmatter.group("body")) if frontmatter else {}
+    return {
+        "title": _metadata_string(data, "title"),
+        "layout": _metadata_string(data, "layout"),
+        "date": _metadata_string(data, "date"),
+        "lastmod": _metadata_string(data, "lastmod"),
+        "page_id": _metadata_string(data, "pageID"),
+        "draft": _metadata_bool(data, "draft"),
+        "tags": _yaml_list(data.get("tags", [])),
+        "categories": _yaml_list(data.get("categories", [])),
+    }
+
+
+def _markdown_note_citations_from_text(content: str) -> list[str]:
+    seen: set[str] = set()
+    citations: list[str] = []
+    for match in re.finditer(r"(^|[\s([{'\"])@([A-Za-z0-9][A-Za-z0-9_-]{2,})", content):
+        page_id = match.group(2)
+        if page_id not in seen:
+            seen.add(page_id)
+            citations.append(page_id)
+    return citations
+
+
+def _markdown_note_citations(path: Path) -> list[str]:
+    try:
+        content = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return []
+    return _markdown_note_citations_from_text(content)
+
+
+def _strip_markdown_frontmatter(content: str) -> str:
+    match = re.match(r"^---\s*\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n|$)", content)
+    return content[match.end():].lstrip() if match else content.lstrip()
+
+
+def _format_hugo_preview_body(body: str) -> str:
+    """Mirror the GUI's readable Hugo/Markdown preview normalization."""
+
+    def _summary_repl(match: re.Match[str]) -> str:
+        return f"> Summary transclusion: @{match.group(1)}"
+
+    def _shortcode_repl(match: re.Match[str]) -> str:
+        shortcode = match.group(1)
+        args = (match.group(2) or "").strip()
+        return f"`{shortcode}{f' {args}' if args else ''}`"
+
+    body = re.sub(r'\{\{<\s*summary\s+"([^"]+)"\s*>\}\}', _summary_repl, body)
+    body = re.sub(r"\{\{<\s*([^>\s]+)([\s\S]*?)>\}\}", _shortcode_repl, body)
+    return re.sub(
+        r"(^|[\s(])@([A-Za-z0-9][A-Za-z0-9_-]+)",
+        r"\1[@\2](#\2)",
+        body,
+        flags=re.MULTILINE,
+    )
+
+
+def _compile_markdown_preview_html(body: str) -> tuple[str, str]:
+    """Compile Markdown for phone previews while keeping a plain fallback."""
+
+    try:
+        import markdown as markdown_lib
+
+        return (
+            markdown_lib.markdown(
+                body,
+                extensions=["extra", "sane_lists", "toc"],
+                output_format="html5",
+            ),
+            "python-markdown",
+        )
+    except Exception:
+        escaped = html.escape(body)
+        return f"<pre>{escaped}</pre>", "escaped-text"
+
+
+def _workspace_note_preview_route(relative_path: str) -> str:
+    path = Path(relative_path)
+    parts = list(path.parts)
+    if not parts:
+        return "/"
+    if parts[-1].lower() in {"index.md", "_index.md"}:
+        parts = parts[:-1]
+    else:
+        parts[-1] = Path(parts[-1]).with_suffix("").name
+    cleaned = [part for part in parts if part and part != "."]
+    return "/" + "/".join(cleaned) + ("/" if cleaned else "")
+
+
+def _markdown_note_metadata(path: Path) -> dict[str, Any]:
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as handle:
+            sample = handle.read(16_384)
+    except OSError:
+        return _markdown_note_metadata_from_text("")
+    return _markdown_note_metadata_from_text(sample)
+
+
+def _markdown_note_title(path: Path) -> str | None:
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as handle:
+            sample = handle.read(16_384)
+    except OSError:
+        return None
+    return _markdown_note_title_from_text(sample)
+
+
+def _workspace_note_summary(path: Path, root: Path) -> dict[str, Any] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    if not path.is_file() or path.suffix.lower() not in {".md", ".mdx"}:
+        return None
+    if path.name.lower() == "_index.md":
+        return None
+    try:
+        relative_path = str(path.relative_to(root))
+    except ValueError:
+        relative_path = str(path)
+    cache_key = _cache_signature(path, stat)
+    cached = _WORKSPACE_NOTE_SUMMARY_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    metadata = _markdown_note_metadata(path)
+    relative_parts = Path(relative_path).parts
+    section = relative_parts[0] if len(relative_parts) > 1 else "root"
+    summary = {
+        "path": str(path),
+        "relative_path": relative_path,
+        "title": metadata["title"] or _fallback_note_title(path, root),
+        "layout": metadata["layout"],
+        "section": section,
+        "tags": metadata["tags"],
+        "categories": metadata["categories"],
+        "citations": _markdown_note_citations(path),
+        "page_id": metadata["page_id"],
+        "date": metadata["date"],
+        "lastmod": metadata["lastmod"],
+        "draft": metadata["draft"],
+        "size": stat.st_size,
+        "mtime": stat.st_mtime,
+    }
+    _WORKSPACE_NOTE_SUMMARY_CACHE[cache_key] = summary
+    _trim_note_cache(_WORKSPACE_NOTE_SUMMARY_CACHE)
+    return summary
+
+
+def _workspace_file_summary(path: Path, root: Path) -> dict[str, Any] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    try:
+        relative_path = str(path.relative_to(root))
+    except ValueError:
+        relative_path = str(path)
+    if relative_path == ".":
+        return None
+    return {
+        "path": str(path),
+        "relative_path": relative_path,
+        "name": path.name,
+        "parent": "" if path.parent == root else str(path.parent.relative_to(root)),
+        "is_directory": path.is_dir(),
+        "size": stat.st_size if path.is_file() else 0,
+        "mtime": stat.st_mtime,
+        "depth": len(Path(relative_path).parts) - 1,
+    }
+
+
+def _looks_like_text_file(path: Path, sample: bytes) -> bool:
+    if b"\x00" in sample:
+        return False
+    if path.suffix.lower() in _TEXT_FILE_SUFFIXES:
+        return True
+    try:
+        sample.decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        return False
+
+
+@router.get("/api/workspace-notes")
+async def list_workspace_notes(limit: int = 1000) -> dict[str, Any]:
+    """List Hugo/Markdown pages from the always-on content workspace."""
+
+    root = _workspace_notes_root()
+    requested_limit = max(1, min(int(limit), 2000))
+    seen: set[Path] = set()
+    notes: list[dict[str, Any]] = []
+    for dirname in _WORKSPACE_NOTE_DIR_NAMES:
+        base = root / dirname if dirname else root
+        if not base.exists() or not base.is_dir():
+            continue
+        max_depth = 8
+        for current, dirs, files in os.walk(base):
+            current_path = Path(current)
+            try:
+                depth = len(current_path.relative_to(base).parts)
+            except ValueError:
+                depth = 0
+            dirs[:] = [
+                item
+                for item in dirs
+                if item not in _WORKSPACE_NOTE_SKIP_DIRS
+                and not item.startswith(".dan")
+                and depth < max_depth
+            ]
+            dirs.sort(key=str.lower)
+            for filename in sorted(files, key=str.lower):
+                path = (current_path / filename).resolve()
+                if path in seen:
+                    continue
+                summary = _workspace_note_summary(path, root)
+                if summary is None:
+                    continue
+                seen.add(path)
+                notes.append(summary)
+                if len(notes) >= requested_limit:
+                    break
+            if len(notes) >= requested_limit:
+                break
+        if len(notes) >= requested_limit:
+            break
+    notes.sort(key=lambda item: (str(item["relative_path"]).count("/"), str(item["relative_path"])))
+    return {"root": str(root), "notes": notes[:requested_limit]}
+
+
+@router.get("/api/workspace-roots")
+async def list_workspace_roots(
+    query: str | None = None,
+    limit: int = 18,
+) -> dict[str, Any]:
+    """Suggest nearby development roots for the chunk workspace root switcher."""
+
+    default_root = _workspace_files_root()
+    requested_limit = max(1, min(int(limit), 50))
+    suggestions: list[dict[str, str]] = []
+    seen: set[str] = set()
+    _append_workspace_root_suggestion(
+        suggestions,
+        seen,
+        default_root,
+        kind="current",
+        limit=requested_limit,
+    )
+
+    raw_query = str(query or "").strip()
+    if raw_query:
+        candidate = _workspace_root_candidate(raw_query, default_root=default_root)
+        if candidate.exists() and candidate.is_dir():
+            _append_workspace_root_suggestion(
+                suggestions,
+                seen,
+                candidate,
+                kind="match",
+                limit=requested_limit,
+            )
+            # Exact root edits usually switch peer workspaces. A trailing slash
+            # explicitly asks to browse into the chosen directory instead.
+            base = candidate if raw_query.endswith(("/", "\\")) else candidate.parent
+            fragment = ""
+        else:
+            base = candidate.parent
+            fragment = candidate.name
+        for child in _matching_workspace_root_dirs(base, fragment):
+            _append_workspace_root_suggestion(
+                suggestions,
+                seen,
+                child,
+                kind="match",
+                limit=requested_limit,
+            )
+    else:
+        for child in _matching_workspace_root_dirs(default_root.parent, ""):
+            _append_workspace_root_suggestion(
+                suggestions,
+                seen,
+                child,
+                kind="nearby",
+                limit=requested_limit,
+            )
+
+    return {"root": str(default_root), "suggestions": suggestions[:requested_limit]}
+
+
+@router.get("/api/workspace-files")
+async def list_workspace_file_tree(
+    root_path: str | None = None,
+    limit: int = 2500,
+    max_depth: int = 6,
+) -> dict[str, Any]:
+    """List a VS Code-style development workspace file tree."""
+
+    root = _workspace_files_root(root_path)
+    requested_limit = max(1, min(int(limit), 5000))
+    requested_depth = max(1, min(int(max_depth), 12))
+    entries: list[dict[str, Any]] = []
+    for current, dirs, files in os.walk(root):
+        current_path = Path(current)
+        try:
+            depth = len(current_path.relative_to(root).parts)
+        except ValueError:
+            depth = 0
+        dirs[:] = [
+            item
+            for item in dirs
+            if item not in _WORKSPACE_FILE_SKIP_DIRS
+            and not item.startswith(".dan")
+            and depth < requested_depth
+        ]
+        for dirname in sorted(dirs, key=str.lower):
+            summary = _workspace_file_summary((current_path / dirname).resolve(), root)
+            if summary is not None:
+                entries.append(summary)
+                if len(entries) >= requested_limit:
+                    break
+        if len(entries) >= requested_limit:
+            break
+        for filename in sorted(files, key=str.lower):
+            if filename == ".DS_Store":
+                continue
+            summary = _workspace_file_summary((current_path / filename).resolve(), root)
+            if summary is not None:
+                entries.append(summary)
+                if len(entries) >= requested_limit:
+                    break
+        if len(entries) >= requested_limit:
+            break
+    entries.sort(key=lambda item: (str(item["relative_path"]).count("/"), not item["is_directory"], str(item["relative_path"]).lower()))
+    return {"root": str(root), "entries": entries[:requested_limit]}
+
+
+@router.get("/api/workspace-files/read")
+async def read_workspace_file(
+    path: str,
+    root_path: str | None = None,
+    limit: int = 200_000,
+) -> dict[str, Any]:
+    resolved, root = _resolve_workspace_file_path(path, root_path=root_path)
+    if not resolved.exists() or not resolved.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    read_limit = max(1024, min(int(limit), 1_000_000))
+    try:
+        with resolved.open("rb") as handle:
+            sample = handle.read(min(read_limit + 1, 1_000_001))
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    if not _looks_like_text_file(resolved, sample[:4096]):
+        raise HTTPException(status_code=400, detail="Selected file is not text-readable")
+    truncated = len(sample) > read_limit
+    if truncated:
+        sample = sample[:read_limit]
+    try:
+        content = sample.decode("utf-8")
+    except UnicodeDecodeError:
+        content = sample.decode("utf-8", errors="replace")
+    summary = _workspace_file_summary(resolved, root)
+    return {
+        "file": summary,
+        "content": content,
+        "truncated": truncated,
+        "root": str(root),
+    }
+
+
+@router.get("/api/workspace-notes/read")
+async def read_workspace_note(path: str) -> dict[str, Any]:
+    resolved = _resolve_workspace_note_path(path)
+    if not resolved.exists() or not resolved.is_file():
+        raise HTTPException(status_code=404, detail="Note not found")
+    try:
+        stat = resolved.stat()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    cache_key = _cache_signature(resolved, stat)
+    cached = _WORKSPACE_NOTE_READ_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        content = resolved.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Note is not valid UTF-8 text")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    root = _workspace_notes_root()
+    try:
+        relative_path = str(resolved.relative_to(root))
+    except ValueError:
+        relative_path = str(resolved)
+    metadata = _markdown_note_metadata_from_text(content[:16_384])
+    relative_parts = Path(relative_path).parts
+    section = relative_parts[0] if len(relative_parts) > 1 else "root"
+    summary = {
+        "path": str(resolved),
+        "relative_path": relative_path,
+        "title": metadata["title"] or _fallback_note_title(resolved, root),
+        "layout": metadata["layout"],
+        "section": section,
+        "tags": metadata["tags"],
+        "categories": metadata["categories"],
+        "citations": _markdown_note_citations_from_text(content),
+        "page_id": metadata["page_id"],
+        "date": metadata["date"],
+        "lastmod": metadata["lastmod"],
+        "draft": metadata["draft"],
+        "size": stat.st_size,
+        "mtime": stat.st_mtime,
+    }
+    result = {"note": summary, "content": content}
+    _WORKSPACE_NOTE_READ_CACHE[cache_key] = result
+    _WORKSPACE_NOTE_SUMMARY_CACHE[cache_key] = summary
+    _trim_note_cache(_WORKSPACE_NOTE_READ_CACHE)
+    _trim_note_cache(_WORKSPACE_NOTE_SUMMARY_CACHE)
+    return result
+
+
+@router.get("/api/workspace-notes/preview")
+async def preview_workspace_note(path: str) -> dict[str, Any]:
+    """Return a cached, live-compiled phone preview for a Hugo/Markdown page."""
+
+    resolved = _resolve_workspace_note_path(path)
+    if not resolved.exists() or not resolved.is_file():
+        raise HTTPException(status_code=404, detail="Note not found")
+    try:
+        stat = resolved.stat()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    cache_key = _cache_signature(resolved, stat)
+    cached = _WORKSPACE_NOTE_PREVIEW_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        content = resolved.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Note is not valid UTF-8 text")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    root = _workspace_notes_root()
+    try:
+        relative_path = str(resolved.relative_to(root))
+    except ValueError:
+        relative_path = str(resolved)
+    metadata = _markdown_note_metadata_from_text(content[:16_384])
+    body = _strip_markdown_frontmatter(content)
+    preview_body = _format_hugo_preview_body(body)
+    compiled_html, compiler = _compile_markdown_preview_html(preview_body)
+    relative_parts = Path(relative_path).parts
+    section = relative_parts[0] if len(relative_parts) > 1 else "root"
+    summary = {
+        "path": str(resolved),
+        "relative_path": relative_path,
+        "title": metadata["title"] or _fallback_note_title(resolved, root),
+        "layout": metadata["layout"],
+        "section": section,
+        "tags": metadata["tags"],
+        "categories": metadata["categories"],
+        "citations": _markdown_note_citations_from_text(content),
+        "page_id": metadata["page_id"],
+        "date": metadata["date"],
+        "lastmod": metadata["lastmod"],
+        "draft": metadata["draft"],
+        "size": stat.st_size,
+        "mtime": stat.st_mtime,
+    }
+    result = {
+        "note": summary,
+        "body_markdown": body,
+        "preview_markdown": preview_body,
+        "compiled_html": compiled_html,
+        "compiler": compiler,
+        "cache_key": cache_key,
+        "route_path": _workspace_note_preview_route(relative_path),
+        "compiled_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _WORKSPACE_NOTE_PREVIEW_CACHE[cache_key] = result
+    _WORKSPACE_NOTE_SUMMARY_CACHE[cache_key] = summary
+    _trim_note_cache(_WORKSPACE_NOTE_PREVIEW_CACHE)
+    _trim_note_cache(_WORKSPACE_NOTE_SUMMARY_CACHE)
+    return result
+
+
+@router.put("/api/workspace-notes/write")
+async def write_workspace_note(body: dict[str, Any]) -> dict[str, Any]:
+    resolved = _resolve_workspace_note_path(str(body.get("path") or ""))
+    content = body.get("content")
+    if not isinstance(content, str):
+        raise HTTPException(status_code=422, detail="content must be a string")
+    try:
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        resolved.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    try:
+        stat = resolved.stat()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    root = _workspace_notes_root()
+    try:
+        relative_path = str(resolved.relative_to(root))
+    except ValueError:
+        relative_path = str(resolved)
+    metadata = _markdown_note_metadata_from_text(content[:16_384])
+    relative_parts = Path(relative_path).parts
+    section = relative_parts[0] if len(relative_parts) > 1 else "root"
+    summary = {
+        "path": str(resolved),
+        "relative_path": relative_path,
+        "title": metadata["title"] or _fallback_note_title(resolved, root),
+        "layout": metadata["layout"],
+        "section": section,
+        "tags": metadata["tags"],
+        "categories": metadata["categories"],
+        "citations": _markdown_note_citations_from_text(content),
+        "page_id": metadata["page_id"],
+        "date": metadata["date"],
+        "lastmod": metadata["lastmod"],
+        "draft": metadata["draft"],
+        "size": stat.st_size,
+        "mtime": stat.st_mtime,
+    }
+    cache_key = _cache_signature(resolved, stat)
+    _WORKSPACE_NOTE_READ_CACHE[cache_key] = {"note": summary, "content": content}
+    _WORKSPACE_NOTE_SUMMARY_CACHE[cache_key] = summary
+    _trim_note_cache(_WORKSPACE_NOTE_READ_CACHE)
+    _trim_note_cache(_WORKSPACE_NOTE_SUMMARY_CACHE)
+    return {"status": "ok", "note": summary}
 
 
 @router.get("/api/code-refs/{workflow_id}")

@@ -189,6 +189,7 @@ def build_task_board_snapshot(
     thread_id: str = "",
     limit: int = 100,
     max_parallel_runs: int = 4,
+    surface_topic_key: str = "",
 ) -> BoardSnapshot:
     """Project persisted V2 task/run records into the compact async board."""
 
@@ -197,11 +198,21 @@ def build_task_board_snapshot(
         thread_id=thread_id,
         limit=limit,
     )
+    if surface_topic_key:
+        wanted = str(surface_topic_key)
+        tasks = [
+            task
+            for task in tasks
+            if str(task.metadata.get("surface_topic_key") or "") == wanted
+        ]
     runs = store.list_run_records(
         workspace_root=workspace_root,
         thread_id=thread_id,
         limit=limit,
     )
+    if surface_topic_key:
+        task_ids = {task.task_id for task in tasks}
+        runs = [run for run in runs if run.task_id in task_ids]
     tasks_by_id = {task.task_id: task for task in tasks}
     task_rows = [_board_task_from_record(task, runs) for task in tasks]
     active_runs: list[BoardRun] = []
@@ -307,11 +318,13 @@ def build_foreground_admission_input(
     """Build the cheap foreground context for one new turn."""
 
     attachments = [item.model_dump(mode="json") for item in turn.attachments]
+    surface_topic_key = str(turn.metadata.get("surface_topic_key") or "")
     board = build_task_board_snapshot(
         store,
         workspace_root=turn.workspace_root,
         thread_id=turn.thread_id,
         max_parallel_runs=max_parallel_runs,
+        surface_topic_key=surface_topic_key,
     )
     operator_context = structured_operator_context(turn.text, attachments=attachments)
     return ForegroundAdmissionInput(
@@ -497,6 +510,7 @@ def admit_foreground_turn(
         workspace_root=turn.workspace_root,
         thread_id=turn.thread_id,
         max_parallel_runs=max_parallel_runs,
+        surface_topic_key=str(turn.metadata.get("surface_topic_key") or ""),
     )
     return ForegroundAdmissionResult(
         input=admission,
@@ -585,7 +599,7 @@ def parse_admission_command(text: str) -> AdmissionCommandHints:
             target_id=target_id,
             payload_text=payload_text,
         )
-    if command in {"/append", "/inject"}:
+    if command in {"/append", "/continue", "/inject"}:
         return AdmissionCommandHints(
             command=command,
             explicit_append=True,

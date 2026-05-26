@@ -23,16 +23,27 @@ from dan.server.chat_v2_async_core import (
     admit_foreground_turn,
     build_task_board_snapshot,
     mark_background_run_started,
+    parse_admission_command,
 )
 from dan.server.chat_v2_progress import AgentProgressStateMachine, TelegramProgressSink
 from dan.server.chat_v2_organism import map_organism_log_row_to_agent_event
 from dan.server.chat_v2_backend import (
+    AgentBackendRunRequest,
+    _build_super_dan_args,
     _is_safe_backend_checkpoint,
+    _load_super_dan_cli,
     build_agent_backend_request,
 )
 from dan.server.chat_v2_store import ChatV2Store
 from dan.server.routers.chat import ChatMessageRequest
 from dan.server.routers import chat_v2 as chat_v2_router
+
+
+def test_v2_parse_admission_command_continuation_alias_is_append() -> None:
+    hints = parse_admission_command("/continue run compiler fixes now")
+    assert hints.explicit_append is True
+    assert hints.payload_text == "run compiler fixes now"
+    assert hints.command == "/continue"
 
 
 def test_v2_surface_turn_structures_telegram_attachment_inputs() -> None:
@@ -148,6 +159,36 @@ def test_v2_surface_turn_infers_workspace_from_message_path(tmp_path) -> None:
     assert turn.metadata["workspace_source"] == "message_path"
     assert turn.metadata["surface_topic_key"]
     assert str(workspace.resolve()).replace("/", "_") in decision.topic_key
+
+
+def test_v2_surface_turn_uses_conversation_lane_for_surface_topic(tmp_path) -> None:
+    req = ChatMessageRequest(
+        workflow_id="_scratch",
+        message="build one independent Telegram task",
+        mode="agent",
+        surface_type="telegram",
+        surface_id="bot",
+        session_id="chat-1:topic-7:m42",
+        thread_id="chat-1:topic-7",
+        surface_context={
+            "workspace_root": str(tmp_path),
+            "telegram": {
+                "chat_id": 1,
+                "message_thread_id": 7,
+                "message_id": 42,
+                "from_user_id": 9,
+                "chat_type": "private",
+            },
+            "conversation": {
+                "conversation_key": "chat-1:topic-7",
+                "lane_key": "chat-1:topic-7:m42",
+            },
+        },
+    )
+
+    turn = build_surface_turn_from_chat_request(req)
+
+    assert turn.metadata["surface_topic_key"].endswith("chat-1:topic-7:m42")
 
 
 def test_v2_triage_routes_control_and_agent_turns() -> None:
@@ -363,6 +404,53 @@ def test_v2_backend_runtime_treats_mutating_tool_start_as_safe_checkpoint() -> N
     )
 
 
+def test_v2_super_dan_args_forward_structured_surface_context(tmp_path) -> None:
+    history = [
+        {"role": "user", "content": "does it compile?"},
+        {"role": "assistant", "content": "Fresh validation failed earlier."},
+    ]
+    surface_context = {
+        "workspace_root": str(tmp_path),
+        "workspace_source": "super_tui",
+        "conversation": {"recent_turns": history},
+        "communication_policy": {"answer_budget": "brief", "latency_preference": "fast"},
+        "execution_policy": {
+            "autonomy_mode": "guided",
+            "stop_condition": "validation_passes",
+            "max_auto_fix_rounds": 0,
+            "allow_repair_cycles": False,
+        },
+        "surface_policy": {
+            "controller_lane": "execute",
+            "permission_scope": "transient_execute",
+            "phase_shape": "validation_gate",
+        },
+    }
+    request = AgentBackendRunRequest(
+        task_id="task-1",
+        run_id="run-1",
+        objective="can you make sure it successfully compiles?",
+        workspace_root=str(tmp_path),
+        history=[],
+        surface_context=surface_context,
+        metadata={},
+    )
+
+    args = _build_super_dan_args(
+        _load_super_dan_cli(),
+        request,
+        workspace_root=tmp_path,
+        objective=request.objective,
+    )
+
+    assert args._surface_history == history
+    assert args._tui_surface_history == history
+    assert args._surface_context == surface_context
+    assert args._tui_communication_policy["answer_budget"] == "brief"
+    assert args._tui_execution_policy["stop_condition"] == "validation_passes"
+    assert args._tui_surface_policy["phase_shape"] == "validation_gate"
+
+
 def test_v2_store_persists_tasks_runs_and_explicit_queue_lanes(tmp_path) -> None:
     store = ChatV2Store(tmp_path / "chat_v2")
     req = ChatMessageRequest(
@@ -532,20 +620,28 @@ def _async_core_turn(
     workspace: Path,
     turn_id: str,
     thread_id: str = "thread-async",
+    surface_type: str = "web",
+    surface_id: str = "v2",
+    surface_topic_key: str | None = None,
 ) -> SurfaceTurn:
+    topic_key = (
+        surface_topic_key
+        if surface_topic_key is not None
+        else f"private:{surface_type}:user:{thread_id}"
+    )
     return SurfaceTurn(
         id=turn_id,
         text=text,
         workspace_root=str(workspace),
         workspace_id=str(workspace),
-        surface_type="web",
-        surface_id="v2",
-        surface="web:v2",
+        surface_type=surface_type,
+        surface_id=surface_id,
+        surface=f"{surface_type}:{surface_id}",
         session_id=thread_id,
         thread_id=thread_id,
         metadata={
             "workspace_source": "explicit",
-            "surface_topic_key": f"private:web:user:{thread_id}",
+            "surface_topic_key": topic_key,
         },
     )
 
@@ -592,6 +688,51 @@ def test_v2_async_board_snapshot_survives_restart_and_parallel_admission(tmp_pat
         first.decision.run_id,
         second.decision.run_id,
     }
+
+
+def test_v2_async_board_snapshot_is_isolated_by_surface_topic_key(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    store = ChatV2Store(tmp_path / "chat_v2")
+    first = admit_foreground_turn(
+        store,
+        _async_core_turn(
+            "build script_a.py",
+            workspace=workspace,
+            turn_id="turn-a",
+            surface_topic_key="private:web:user:thread-async",
+        ),
+    )
+    assert first.decision.action == "start_parallel"
+    mark_background_run_started(store, first.decision.run_id, backend="deterministic")
+
+    second = admit_foreground_turn(
+        store,
+        _async_core_turn(
+            "build script_a.py",
+            workspace=workspace,
+            turn_id="turn-b",
+            surface_topic_key="private:telegram:user:thread-async",
+        ),
+    )
+
+    assert second.decision.action == "start_parallel"
+    assert second.decision.task_id != first.decision.task_id
+    mark_background_run_started(store, second.decision.run_id, backend="deterministic")
+
+    first_lane = build_task_board_snapshot(
+        store,
+        workspace_root=str(workspace),
+        thread_id="thread-async",
+        surface_topic_key="private:web:user:thread-async",
+    )
+    second_lane = build_task_board_snapshot(
+        store,
+        workspace_root=str(workspace),
+        thread_id="thread-async",
+        surface_topic_key="private:telegram:user:thread-async",
+    )
+    assert {run.run_id for run in first_lane.active_runs} == {first.decision.run_id}
+    assert {run.run_id for run in second_lane.active_runs} == {second.decision.run_id}
 
 
 def test_v2_async_admission_queues_overlapping_paths_with_dependency_reason(tmp_path) -> None:
