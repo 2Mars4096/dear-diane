@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type DragEvent,
   type KeyboardEvent,
   type MouseEvent,
   type PointerEvent,
@@ -41,7 +42,10 @@ import {
   listWorkspaceFileTree,
   listWorkspaceNotes,
   listWorkspaceRootSuggestions,
+  createWorkspaceFolder,
   getWorkspaceWireGuardStatus,
+  moveWorkspaceNotePath,
+  moveWorkspacePath,
   readWorkspaceFile,
   readWorkspaceNote,
   writeWorkspaceNote,
@@ -346,6 +350,82 @@ function joinPath(root: string, child: string) {
   return `${root.replace(/[\\/]+$/, "")}${separator}${child.replace(/^[\\/]+/, "")}`;
 }
 
+function parentPath(path: string) {
+  const normalized = path.replace(/[\\/]+$/, "");
+  const index = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+  return index > 0 ? normalized.slice(0, index) : "";
+}
+
+function safeRelativePath(path: string) {
+  return path
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^[\\/]+/, "")
+    .replace(/[\\/]+$/, "");
+}
+
+function slugifyPathPart(value: string, fallback = "untitled") {
+  const slug = value
+    .trim()
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/['"]/g, "")
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || fallback;
+}
+
+function compactDateStamp(date: Date) {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+    "-",
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds()),
+  ].join("");
+}
+
+function yamlQuote(value: string) {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function hugoFrontmatterTemplate(args: {
+  title: string;
+  pageID: string;
+  date: string;
+  author?: string;
+}) {
+  return [
+    "---",
+    `title: ${yamlQuote(args.title)}`,
+    'subtitle: ""',
+    `date: ${args.date}`,
+    `lastmod: ${args.date}`,
+    "draft: false",
+    `author: ${yamlQuote(args.author || "Adam")}`,
+    'abstract: ""',
+    'summary: ""',
+    'description: ""',
+    'link: ""',
+    `pageID: ${yamlQuote(args.pageID)}`,
+    "tags: []",
+    "categories: []",
+    "series: []",
+    "aliases: []",
+    "images: []",
+    "featured: false",
+    "math: true",
+    "toc: true",
+    "---",
+    "",
+    "",
+  ].join("\n");
+}
+
 function relativeFileLabel(path: string, root: string) {
   if (!root || !path.startsWith(root)) return path;
   return path.slice(root.length).replace(/^[\\/]+/, "") || fileName(path);
@@ -376,6 +456,45 @@ function noteRoutePath(note: WorkspaceNote, root: string) {
 function workspaceDisplayName(workspace: { name?: string; pinnedPaths?: string[] } | null | undefined) {
   const rootName = fileName(workspace?.pinnedPaths?.[0] ?? "");
   return rootName || workspace?.name || "Workspace";
+}
+
+function noteMovablePath(note: WorkspaceNote) {
+  const path = note.path || note.relativePath || "";
+  if (/^index\.mdx?$/i.test(fileName(path))) return parentPath(path) || path;
+  return path;
+}
+
+function isGeneratedNoteBundleName(name: string) {
+  const normalized = name.toLowerCase();
+  return (
+    /^note-\d{10,}$/.test(normalized) ||
+    /^note-\d{8}-\d{6}$/.test(normalized) ||
+    /^untitled-\d{8}-\d{6}$/.test(normalized) ||
+    /^folder-\d{8}-\d{6}$/.test(normalized)
+  );
+}
+
+function noteTitleBundleMove(note: WorkspaceNote) {
+  const path = note.path || "";
+  if (!/^index\.mdx?$/i.test(fileName(path))) return null;
+  const bundlePath = parentPath(path);
+  const bundleName = fileName(bundlePath);
+  if (!bundlePath || !isGeneratedNoteBundleName(bundleName)) return null;
+
+  const title = extractHugoPage(note.content, "").meta.title.trim();
+  const titleSlug = slugifyPathPart(title, "");
+  if (!titleSlug || titleSlug === bundleName) return null;
+
+  const destinationParent = parentPath(bundlePath);
+  if (!destinationParent) return null;
+  const destination = joinPath(destinationParent, titleSlug);
+  if (destination === bundlePath) return null;
+  return { source: bundlePath, destination };
+}
+
+function noteDropFolderPath(pathLabel: string) {
+  if (/^index\.mdx?$/i.test(fileName(pathLabel))) return parentPath(pathLabel);
+  return pathLabel;
 }
 
 function noteParentKeys(note: WorkspaceNote, root: string) {
@@ -859,6 +978,15 @@ function buildFileTree(entries: WorkspaceFileEntry[]): FileTreeNode[] {
   };
   sortNodes(roots);
   return roots;
+}
+
+function devFileByPath(nodes: FileTreeNode[], path: string): FileTreeNode | null {
+  for (const node of nodes) {
+    if (node.path === path) return node;
+    const child = devFileByPath(node.children, path);
+    if (child) return child;
+  }
+  return null;
 }
 
 function noteFolderLabel(part: string) {
@@ -2183,6 +2311,7 @@ function WorkspaceFileTree({
   expanded,
   onToggle,
   onSelect,
+  onMove,
 }: {
   nodes: FileTreeNode[];
   activePath: string | null;
@@ -2190,8 +2319,10 @@ function WorkspaceFileTree({
   expanded: Record<string, boolean>;
   onToggle: (path: string) => void;
   onSelect: (entry: WorkspaceFileEntry) => void;
+  onMove: (entry: WorkspaceFileEntry, targetDirectory: WorkspaceFileEntry) => void;
 }) {
   const normalizedQuery = query.trim().toLowerCase();
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
 
   const nodeMatches = useCallback(
     (node: FileTreeNode): boolean => {
@@ -2208,16 +2339,45 @@ function WorkspaceFileTree({
     if (!nodeMatches(node)) return null;
     const isOpen = Boolean(expanded[node.relative_path] || normalizedQuery);
     const isActive = activePath === node.path;
+    const isDropTarget = dropTarget === node.path;
     const visibleChildren = node.children.filter(nodeMatches);
     return (
       <div key={node.path}>
         <button
           type="button"
+          draggable
+          onDragStart={(event: DragEvent<HTMLButtonElement>) => {
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("application/dan-work-file", node.path);
+          }}
+          onDragOver={(event) => {
+            if (!node.is_directory) return;
+            const source = event.dataTransfer.getData("application/dan-work-file");
+            if (source && (source === node.path || node.path.startsWith(`${source}/`))) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            setDropTarget(node.path);
+          }}
+          onDragLeave={() => {
+            if (isDropTarget) setDropTarget(null);
+          }}
+          onDrop={(event) => {
+            if (!node.is_directory) return;
+            const source = event.dataTransfer.getData("application/dan-work-file");
+            setDropTarget(null);
+            if (!source || source === node.path) return;
+            const sourceNode = devFileByPath(nodes, source);
+            if (!sourceNode) return;
+            event.preventDefault();
+            onMove(sourceNode, node);
+          }}
           onClick={() => (node.is_directory ? onToggle(node.relative_path) : onSelect(node))}
           className={cx(
             "flex h-7 w-full items-center gap-1.5 rounded px-1.5 text-left text-[13px]",
             isActive
               ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-950"
+              : isDropTarget
+                ? "bg-sky-50 text-sky-900 ring-1 ring-sky-200 dark:bg-sky-950/40 dark:text-sky-100 dark:ring-sky-900"
               : "text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-900",
           )}
           style={{ paddingLeft: 6 + depth * 14 }}
@@ -2249,17 +2409,22 @@ function NoteTree({
   activeId,
   query,
   expanded,
+  root,
   onToggle,
   onSelect,
+  onMove,
 }: {
   nodes: NoteTreeNode[];
   activeId: string | null;
   query: string;
   expanded: Record<string, boolean>;
+  root: string;
   onToggle: (id: string) => void;
   onSelect: (note: WorkspaceNote) => void;
+  onMove: (sourcePath: string, targetFolderPath: string, sourceNoteId?: string) => void;
 }) {
   const normalizedQuery = query.trim().toLowerCase();
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
 
   const nodeMatches = useCallback(
     (node: NoteTreeNode): boolean => {
@@ -2277,6 +2442,14 @@ function NoteTree({
     const isOpen = Boolean(expanded[node.id] || normalizedQuery);
     const isActive = Boolean(node.note && node.note.id === activeId);
     const canSelect = Boolean(node.note);
+    const folderPath = noteDropFolderPath(node.pathLabel);
+    const targetFolderPath = folderPath ? joinPath(root, folderPath) : root;
+    const sourcePath = node.note
+      ? noteMovablePath(node.note)
+      : folderPath
+        ? joinPath(root, folderPath)
+        : "";
+    const isDropTarget = node.isFolder && dropTarget === targetFolderPath;
     return (
       <div key={node.id}>
         <div className="flex items-center gap-0.5">
@@ -2294,11 +2467,44 @@ function NoteTree({
           </button>
           <button
             type="button"
+            draggable={Boolean(sourcePath)}
+            onDragStart={(event: DragEvent<HTMLButtonElement>) => {
+              if (!sourcePath) return;
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData("application/dan-note-entry", sourcePath);
+              if (node.note) {
+                event.dataTransfer.setData("application/dan-note-id", node.note.id);
+              }
+            }}
+            onDragOver={(event) => {
+              if (!node.isFolder) return;
+              const source = event.dataTransfer.getData("application/dan-note-entry");
+              if (source && (source === targetFolderPath || targetFolderPath.startsWith(`${source}/`))) {
+                return;
+              }
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "move";
+              setDropTarget(targetFolderPath);
+            }}
+            onDragLeave={() => {
+              if (isDropTarget) setDropTarget(null);
+            }}
+            onDrop={(event) => {
+              if (!node.isFolder) return;
+              const source = event.dataTransfer.getData("application/dan-note-entry");
+              const sourceNoteId = event.dataTransfer.getData("application/dan-note-id") || undefined;
+              setDropTarget(null);
+              if (!source || source === targetFolderPath) return;
+              event.preventDefault();
+              onMove(source, targetFolderPath, sourceNoteId);
+            }}
             onClick={() => (node.note ? onSelect(node.note) : onToggle(node.id))}
             className={cx(
               "flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-left text-[13px] transition",
               isActive
                 ? "bg-slate-900 text-white shadow-sm dark:bg-slate-100 dark:text-slate-950"
+                : isDropTarget
+                  ? "bg-sky-50 text-sky-900 ring-1 ring-sky-200 dark:bg-sky-950/40 dark:text-sky-100 dark:ring-sky-900"
                 : "text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-900",
             )}
             title={node.pathLabel}
@@ -2390,6 +2596,8 @@ export default function ChunkWorkspaceApp() {
   const [rootSuggestions, setRootSuggestions] = useState<WorkspaceRootSuggestion[]>([]);
   const [storedRoots, setStoredRoots] = useState<string[]>(() => readStoredRoots());
   const [loadingRoots, setLoadingRoots] = useState(false);
+  const [noteCreateMenuOpen, setNoteCreateMenuOpen] = useState(false);
+  const [fileCreateMenuOpen, setFileCreateMenuOpen] = useState(false);
   const [showSessionRail, setShowSessionRail] = useState(initialLayout.showSessionRail);
   const [showFileExplorer, setShowFileExplorer] = useState(initialLayout.showFileExplorer);
   const [showConversationChunks, setShowConversationChunks] = useState(
@@ -2553,6 +2761,8 @@ export default function ChunkWorkspaceApp() {
 
     try {
       const { ok, summary } = await write;
+      let finalSummary = summary;
+      let finalNoteId = noteToSave.id;
       if (ok) {
         selfWriteAtRef.current[noteToSave.path] = Date.now();
         noteContentCacheRef.current[noteToSave.path] = {
@@ -2561,26 +2771,54 @@ export default function ChunkWorkspaceApp() {
           size: summary?.size ?? noteToSave.content.length,
         };
         persistNoteContentCache(noteContentCacheRef.current);
+
+        const titleMove = noteToSave.source === "server" ? noteTitleBundleMove(noteToSave) : null;
+        if (titleMove) {
+          try {
+            const moved = await moveWorkspaceNotePath(titleMove.source, titleMove.destination);
+            if (moved.note) {
+              finalSummary = moved.note;
+              finalNoteId = `server:${moved.note.path}`;
+              delete selfWriteAtRef.current[noteToSave.path];
+              selfWriteAtRef.current[moved.note.path] = Date.now();
+              delete noteContentCacheRef.current[noteToSave.path];
+              noteContentCacheRef.current[moved.note.path] = {
+                content: noteToSave.content,
+                updatedAt: Math.floor(moved.note.mtime * 1000),
+                size: moved.note.size,
+              };
+              persistNoteContentCache(noteContentCacheRef.current);
+              setActiveNoteId((current) => (current === noteToSave.id ? finalNoteId : current));
+              setStatus(`Saved as ${moved.note.relative_path}`);
+            }
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            setStatus(`Saved; folder rename skipped (${detail})`);
+          }
+        }
       }
       setNotes((previous) =>
         previous.map((note) =>
           note.id === noteToSave.id
             ? {
                 ...note,
-                title: summary?.title || note.title,
-                relativePath: summary?.relative_path || note.relativePath,
-                section: summary?.section || note.section,
-                layout: summary?.layout ?? note.layout,
-                pageID: summary?.page_id || note.pageID,
-                date: summary?.date || note.date,
-                lastmod: summary?.lastmod || note.lastmod,
-                draft: typeof summary?.draft === "boolean" ? summary.draft : note.draft,
-                tags: summary?.tags ?? note.tags,
-                categories: summary?.categories ?? note.categories,
-                citations: summary?.citations ?? note.citations,
+                id: finalNoteId,
+                path: finalSummary?.path || note.path,
+                title: finalSummary?.title || note.title,
+                relativePath: finalSummary?.relative_path || note.relativePath,
+                section: finalSummary?.section || note.section,
+                layout: finalSummary?.layout ?? note.layout,
+                pageID: finalSummary?.page_id || note.pageID,
+                date: finalSummary?.date || note.date,
+                lastmod: finalSummary?.lastmod || note.lastmod,
+                draft:
+                  typeof finalSummary?.draft === "boolean" ? finalSummary.draft : note.draft,
+                tags: finalSummary?.tags ?? note.tags,
+                categories: finalSummary?.categories ?? note.categories,
+                citations: finalSummary?.citations ?? note.citations,
                 status: ok ? "clean" : "error",
-                updatedAt: summary ? Math.floor(summary.mtime * 1000) : Date.now(),
-                size: summary?.size ?? noteToSave.content.length,
+                updatedAt: finalSummary ? Math.floor(finalSummary.mtime * 1000) : Date.now(),
+                size: finalSummary?.size ?? noteToSave.content.length,
                 error: ok ? undefined : note.error,
               }
             : note,
@@ -3464,37 +3702,247 @@ export default function ChunkWorkspaceApp() {
     ],
   );
 
-  const createNote = useCallback(() => {
-    const title = `Note ${notes.length + 1}`;
-    const stamp = Date.now();
-    const createdAt = new Date(stamp).toISOString();
-    const relativePath = `notes/note-${stamp}/index.md`;
-    const serverPath = notesRoot ? joinPath(notesRoot, relativePath) : "";
-    const content = `---\ntitle: "${title}"\nsubtitle: ""\ndate: ${createdAt}\ndraft: false\nabstract: ""\npageID: "notes-note-${stamp}"\ntags: []\ncategories: []\n---\n\n`;
-    const note = notesRoot
-      ? {
-          id: `server:${serverPath}`,
-          title,
-          path: serverPath,
-          relativePath,
-          section: pathParts(relativePath)[0] ?? "root",
-          source: "server" as const,
+  const focusNoteTitleField = useCallback((content: string) => {
+    window.requestAnimationFrame(() => {
+      const editor = noteEditorRef.current;
+      if (!editor) return;
+      const marker = 'title: "';
+      const start = content.indexOf(marker);
+      if (start < 0) {
+        editor.focus();
+        return;
+      }
+      const selectionStart = start + marker.length;
+      const selectionEnd = content.indexOf('"', selectionStart);
+      editor.focus();
+      editor.setSelectionRange(selectionStart, selectionEnd > selectionStart ? selectionEnd : selectionStart);
+    });
+  }, []);
+
+  const createNote = useCallback(
+    async (kind: "note" | "folder" = "note") => {
+      const now = new Date();
+      const stamp = compactDateStamp(now);
+      const rawFolderTitle =
+        kind === "folder" ? window.prompt("Folder page title or path", "") : "";
+      if (rawFolderTitle === null) return;
+      const folderTitle = rawFolderTitle.trim();
+      if (kind === "folder" && !folderTitle) return;
+
+      const facetSection = noteFacet.startsWith("section:")
+        ? noteFacet.slice("section:".length)
+        : "";
+      const section = safeRelativePath(
+        (facetSection || activeNoteSection || "notes") === "root"
+          ? "notes"
+          : facetSection || activeNoteSection || "notes",
+      );
+      const folderSlug =
+        kind === "folder"
+          ? safeRelativePath(folderTitle)
+              .split("/")
+              .filter(Boolean)
+              .map((part) => slugifyPathPart(part, "folder"))
+              .join("/")
+          : `note-${stamp}`;
+      const relativePath = `${section}/${folderSlug}/index.md`;
+      const serverPath = notesRoot ? joinPath(notesRoot, relativePath) : "";
+      if (
+        notes.some(
+          (note) =>
+            noteRelativePath(note, notesRoot).toLowerCase() === relativePath.toLowerCase(),
+        )
+      ) {
+        setStatus("Note folder already exists");
+        return;
+      }
+
+      const pageID = `${section}-${folderSlug}`
+        .replace(/[\\/]+/g, "-")
+        .replace(/[^A-Za-z0-9_-]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+      const title = kind === "folder" ? folderTitle.split(/[\\/]/).filter(Boolean).pop() || "" : "";
+      const content = hugoFrontmatterTemplate({
+        title,
+        pageID,
+        date: now.toISOString(),
+      });
+
+      if (!notesRoot) {
+        const local = {
+          ...createLocalNote(title || "Untitled note"),
           content,
           loaded: true,
           status: "dirty" as const,
-          updatedAt: Date.now(),
+        };
+        setNotes((previous) => [local, ...previous]);
+        setActiveNoteId(local.id);
+        setSelectedChunkId(null);
+        setActivePane("notes");
+        setPhonePage("note-edit");
+        focusNoteTitleField(content);
+        return;
+      }
+
+      setStatus(kind === "folder" ? "Creating note folder" : "Creating note");
+      try {
+        const response = await writeWorkspaceNote(serverPath, content);
+        const summary = response.note;
+        const note = summary
+          ? {
+              ...noteFromServerSummary(summary),
+              content,
+              loaded: true,
+              status: "clean" as const,
+            }
+          : ({
+              id: `server:${serverPath}`,
+              title: title || noteFolderLabel(folderSlug),
+              path: serverPath,
+              relativePath,
+              section,
+              source: "server" as const,
+              content,
+              loaded: true,
+              status: "clean" as const,
+              updatedAt: Date.now(),
+              size: content.length,
+              date: now.toISOString(),
+              draft: false,
+              tags: [],
+              categories: [],
+              citations: [],
+            } satisfies WorkspaceNote);
+        setNotes((previous) => [note, ...previous.filter((item) => item.id !== note.id)]);
+        setActiveNoteId(note.id);
+        setSelectedChunkId(null);
+        setActivePane("notes");
+        setPhonePage("note-edit");
+        setShowNoteEditor(true);
+        setShowNotesPreview(true);
+        setNoteRailView("pages");
+        const parentKeys = pathParts(relativePath).slice(0, -1);
+        setExpandedNoteFolders((previous) => {
+          const next = { ...previous };
+          for (let index = 0; index < parentKeys.length; index += 1) {
+            next[`folder:${parentKeys.slice(0, index + 1).join("/")}`] = true;
+          }
+          return next;
+        });
+        noteContentCacheRef.current[serverPath] = {
+          content,
+          updatedAt: note.updatedAt,
           size: content.length,
-          date: createdAt,
-          draft: false,
-          tags: [],
-          categories: [],
-          citations: [],
+        };
+        persistNoteContentCache(noteContentCacheRef.current);
+        setStatus(kind === "folder" ? "Note folder created" : "Note created");
+        focusNoteTitleField(content);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Note creation failed");
+      }
+    },
+    [
+      activeNoteSection,
+      focusNoteTitleField,
+      noteFacet,
+      notes,
+      notesRoot,
+    ],
+  );
+
+  const moveNoteEntry = useCallback(
+    async (sourcePath: string, targetFolderPath: string, sourceNoteId?: string) => {
+      if (!notesRoot) return;
+      const sourceNote = sourceNoteId ? notes.find((note) => note.id === sourceNoteId) : null;
+      const dirtyInsideSource = notes.some((note) => {
+        if (note.status !== "dirty" && note.status !== "saving") return false;
+        const movablePath = noteMovablePath(note);
+        return movablePath === sourcePath || Boolean(note.path?.startsWith(`${sourcePath}/`));
+      });
+      if (sourceNote?.status === "dirty" || sourceNote?.status === "saving" || dirtyInsideSource) {
+        setStatus("Save notes before moving them");
+        return;
+      }
+      const destination = joinPath(targetFolderPath, fileName(sourcePath));
+      if (destination === sourcePath) return;
+      setStatus("Moving note");
+      const activeWasMoved =
+        Boolean(activeNote?.path?.startsWith(`${sourcePath}/`)) ||
+        Boolean(activeNote && noteMovablePath(activeNote) === sourcePath);
+      try {
+        const moved = await moveWorkspaceNotePath(sourcePath, destination);
+        const payload = await listWorkspaceNotes();
+        const serverNotes = (payload.notes ?? []).map(noteFromServerSummary);
+        setNotes((previous) => [
+          ...serverNotes,
+          ...previous.filter((note) => note.source === "local"),
+        ]);
+        if (activeWasMoved && moved.note?.path) {
+          setActiveNoteId(`server:${moved.note.path}`);
         }
-      : createLocalNote(title);
-    setNotes((previous) => [note, ...previous]);
-    setActiveNoteId(note.id);
-    setSelectedChunkId(null);
-  }, [notes.length, notesRoot]);
+        const targetRelative = relativeFileLabel(targetFolderPath, notesRoot);
+        if (targetRelative) {
+          setExpandedNoteFolders((previous) => ({
+            ...previous,
+            [`folder:${targetRelative}`]: true,
+          }));
+        }
+        setStatus("Note moved");
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Note move failed");
+      }
+    },
+    [activeNote, notes, notesRoot],
+  );
+
+  const createDevelopmentFolder = useCallback(async () => {
+    const rawName = window.prompt("New workspace folder name", "");
+    if (rawName === null) return;
+    const folderName = safeRelativePath(rawName);
+    if (!folderName || !developmentRoot) return;
+    const basePath = activeFileEntry?.is_directory
+      ? activeFileEntry.path
+      : activeFileEntry?.path
+        ? parentPath(activeFileEntry.path)
+        : developmentRoot;
+    const targetPath = rawName.trim().startsWith("/") ? normalizeRootPath(rawName) : joinPath(basePath, folderName);
+    setStatus("Creating folder");
+    try {
+      await createWorkspaceFolder(targetPath, developmentRoot);
+      setExpandedFileDirs((previous) => ({
+        ...previous,
+        [relativeFileLabel(basePath, developmentRoot)]: true,
+      }));
+      await refreshDevFiles();
+      setStatus("Folder created");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Folder creation failed");
+    }
+  }, [activeFileEntry, developmentRoot, refreshDevFiles]);
+
+  const moveDevelopmentEntry = useCallback(
+    async (entry: WorkspaceFileEntry, targetDirectory: WorkspaceFileEntry) => {
+      if (!developmentRoot || !targetDirectory.is_directory) return;
+      const destination = joinPath(targetDirectory.path, entry.name);
+      if (destination === entry.path || destination.startsWith(`${entry.path}/`)) return;
+      setStatus("Moving workspace file");
+      const activeMoved =
+        activeFilePath === entry.path || Boolean(activeFilePath?.startsWith(`${entry.path}/`));
+      try {
+        const moved = await moveWorkspacePath(entry.path, destination, developmentRoot);
+        await refreshDevFiles();
+        if (activeMoved) setActiveFilePath(moved.file?.is_directory ? null : moved.file?.path ?? null);
+        setExpandedFileDirs((previous) => ({
+          ...previous,
+          [targetDirectory.relative_path]: true,
+        }));
+        setStatus("Workspace file moved");
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Workspace move failed");
+      }
+    },
+    [activeFilePath, developmentRoot, refreshDevFiles],
+  );
 
   const applyDevelopmentRoot = useCallback((root: string) => {
     const nextRoot = normalizeRootPath(root);
@@ -4525,14 +4973,46 @@ export default function ChunkWorkspaceApp() {
               <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
                 Content
               </div>
-              <button
-                type="button"
-                onClick={createNote}
-                className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
-                title="New page"
-              >
-                <Plus size={14} />
-              </button>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setNoteCreateMenuOpen((open) => !open)}
+                  onBlur={() => window.setTimeout(() => setNoteCreateMenuOpen(false), 120)}
+                  className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
+                  title="Create note or folder"
+                  aria-label="Create note or folder"
+                >
+                  <Plus size={14} />
+                </button>
+                {noteCreateMenuOpen && (
+                  <div className="absolute right-0 top-8 z-40 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 text-xs shadow-xl shadow-slate-950/10 dark:border-slate-800 dark:bg-slate-950">
+                    <button
+                      type="button"
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        setNoteCreateMenuOpen(false);
+                        void createNote("note");
+                      }}
+                      className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
+                    >
+                      <FileText size={13} />
+                      <span>New note</span>
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        setNoteCreateMenuOpen(false);
+                        void createNote("folder");
+                      }}
+                      className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
+                    >
+                      <FolderPlus size={13} />
+                      <span>New folder</span>
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
             <div className="space-y-2 border-b border-slate-200/80 p-3 dark:border-slate-800">
               <input
@@ -4578,6 +5058,7 @@ export default function ChunkWorkspaceApp() {
                       activeId={activeNoteId}
                       query={noteQuery}
                       expanded={expandedNoteFolders}
+                      root={notesRoot}
                       onToggle={(id) =>
                         setExpandedNoteFolders((previous) => ({
                           ...previous,
@@ -4585,6 +5066,7 @@ export default function ChunkWorkspaceApp() {
                         }))
                       }
                       onSelect={selectNote}
+                      onMove={moveNoteEntry}
                     />
                   ) : (
                     <div className="px-2 text-sm text-slate-400">No pages found.</div>
@@ -4759,7 +5241,7 @@ export default function ChunkWorkspaceApp() {
                 </button>
               </div>
             </div>
-            <div className="min-h-0 flex-1 overflow-auto px-7 py-6">
+            <div className="min-h-0 flex-1 overflow-auto px-7 py-6 lg:px-10">
               {activeNote?.status === "loading" || activeNote?.status === "error" ? (
                 <MarkdownRenderer
                   content={
@@ -4771,7 +5253,7 @@ export default function ChunkWorkspaceApp() {
               ) : isKnowledgeGraphPage ? (
                 <KnowledgeGraphView notes={notes} root={notesRoot} onSelect={selectNote} />
               ) : (
-                <article className="mx-auto max-w-3xl">
+                <article className="mx-auto w-full max-w-6xl">
                   {parsedActiveNote.hasFrontmatter && (
                     <header className="mb-6 border-b border-slate-200 pb-5 dark:border-slate-800">
                       <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
@@ -5088,14 +5570,44 @@ export default function ChunkWorkspaceApp() {
                 <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
                   Files
                 </div>
-                <button
-                  type="button"
-                  onClick={openFolder}
-                  className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
-                  title="Open development workspace"
-                >
-                  <FolderOpen size={14} />
-                </button>
+                <div className="flex items-center gap-1">
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setFileCreateMenuOpen((open) => !open)}
+                      onBlur={() => window.setTimeout(() => setFileCreateMenuOpen(false), 120)}
+                      className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
+                      title="Create workspace folder"
+                      aria-label="Create workspace folder"
+                    >
+                      <Plus size={14} />
+                    </button>
+                    {fileCreateMenuOpen && (
+                      <div className="absolute right-0 top-8 z-40 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 text-xs shadow-xl shadow-slate-950/10 dark:border-slate-800 dark:bg-slate-950">
+                        <button
+                          type="button"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            setFileCreateMenuOpen(false);
+                            void createDevelopmentFolder();
+                          }}
+                          className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
+                        >
+                          <FolderPlus size={13} />
+                          <span>New folder</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={openFolder}
+                    className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
+                    title="Open development workspace"
+                  >
+                    <FolderOpen size={14} />
+                  </button>
+                </div>
               </div>
               <div className="border-b border-slate-200/80 p-3 dark:border-slate-800">
                 {rootEditing ? (
@@ -5212,6 +5724,7 @@ export default function ChunkWorkspaceApp() {
                     expanded={expandedFileDirs}
                     onToggle={toggleFileDir}
                     onSelect={(entry) => setActiveFilePath(entry.path)}
+                    onMove={moveDevelopmentEntry}
                   />
                 ) : (
                   <div className="px-2 text-sm text-slate-400">No files loaded.</div>
