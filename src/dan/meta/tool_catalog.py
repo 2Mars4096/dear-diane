@@ -24,9 +24,13 @@ _PREFERRED_TOOL_IDS = [
     "text_translate",
     "git_status",
     "notify",
+    "browser_tabs",
+    "browser_inspect",
     "browser_open",
+    "browser_extract",
     "browser_download",
     "browser_screenshot",
+    "desktop_observe",
 ]
 
 

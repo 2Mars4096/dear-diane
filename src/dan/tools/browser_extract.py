@@ -50,4 +50,5 @@ async def browser_extract(
     truncated = original_length > max_length
     if truncated:
         text = text[:max_length] + "... [truncated]"
-    return {"text": text, "length": original_length, "truncated": truncated}
+    session_info = getattr(ctrl, "session_info", lambda: {})()
+    return {"text": text, "length": original_length, "truncated": truncated, "session": session_info}

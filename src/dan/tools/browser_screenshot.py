@@ -30,4 +30,5 @@ async def browser_screenshot(**_kwargs: object) -> dict:
 
     ctrl = await get_controller()
     path = await ctrl.screenshot()
-    return {"path": path}
+    session_info = getattr(ctrl, "session_info", lambda: {})()
+    return {"path": path, "session": session_info}

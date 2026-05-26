@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shlex
 import shutil
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
@@ -20,6 +22,10 @@ SCREENSHOT_DIR = os.path.expanduser("~/.dan/screenshots")
 DOWNLOAD_DIR = os.path.expanduser("~/.dan/downloads")
 PROFILE_DIR = os.path.expanduser("~/.dan/browser-profiles")
 MAX_SCREENSHOTS = 50
+_DEFAULT_NONINTERACTIVE_CHROMIUM_ARGS = (
+    "--use-mock-keychain",
+    "--password-store=basic",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +58,15 @@ class BrowserController(Protocol):
     async def type_text(self, selector: str, text: str) -> dict: ...
     async def fill(self, selector: str, text: str) -> dict: ...
     async def select(self, selector: str, value: str) -> dict: ...
+    async def inspect_dom(
+        self,
+        selector: str | None = None,
+        *,
+        include_html: bool = False,
+        include_elements: bool = True,
+        max_html_length: int = 50000,
+        element_limit: int = 100,
+    ) -> dict: ...
     async def wait_for(
         self, selector: str | None = None, timeout: float = 30.0
     ) -> dict: ...
@@ -68,6 +83,7 @@ class BrowserController(Protocol):
     async def list_tabs(self) -> list[dict]: ...
     async def switch_tab(self, index: int) -> dict: ...
     async def handle_native_dialog(self, dialog_type: str = "file_picker") -> dict: ...
+    def session_info(self) -> dict[str, Any]: ...
     async def close(self) -> None: ...
 
 
@@ -88,6 +104,109 @@ def is_playwright_available() -> bool:
         except ImportError:
             _playwright_available = False
     return _playwright_available
+
+
+def _browser_launch_args() -> list[str]:
+    """Return Chromium launch args suitable for non-interactive automation."""
+
+    disable_keychain = os.environ.get("DAN_BROWSER_DISABLE_KEYCHAIN", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    args: list[str] = []
+    if disable_keychain:
+        args.extend(_DEFAULT_NONINTERACTIVE_CHROMIUM_ARGS)
+    extra = os.environ.get("DAN_BROWSER_ARGS", "").strip()
+    if extra:
+        try:
+            args.extend(shlex.split(extra))
+        except ValueError:
+            logger.warning("Ignoring invalid DAN_BROWSER_ARGS value: %r", extra)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for arg in args:
+        if arg and arg not in seen:
+            seen.add(arg)
+            deduped.append(arg)
+    return deduped
+
+
+def _explicit_browser_executable_path() -> str | None:
+    value = os.environ.get("DAN_BROWSER_EXECUTABLE", "").strip()
+    if not value:
+        return None
+    if value.lower() in {"0", "false", "no", "off", "none"}:
+        return ""
+    return os.path.expanduser(value)
+
+
+def _system_browser_candidates() -> list[str]:
+    candidates: list[str] = []
+    if sys.platform == "darwin":
+        candidates.extend(
+            [
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                "/Applications/Chromium.app/Contents/MacOS/Chromium",
+                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+                "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            ]
+        )
+    elif os.name == "nt":
+        for root in (
+            os.environ.get("LOCALAPPDATA", ""),
+            os.environ.get("PROGRAMFILES", ""),
+            os.environ.get("PROGRAMFILES(X86)", ""),
+        ):
+            if root:
+                candidates.extend(
+                    [
+                        os.path.join(root, "Google", "Chrome", "Application", "chrome.exe"),
+                        os.path.join(root, "Microsoft", "Edge", "Application", "msedge.exe"),
+                    ]
+                )
+    for name in (
+        "chromium-browser",
+        "chromium",
+        "google-chrome",
+        "google-chrome-stable",
+        "microsoft-edge",
+        "brave-browser",
+    ):
+        resolved = shutil.which(name)
+        if resolved:
+            candidates.append(resolved)
+    return candidates
+
+
+def _fallback_browser_executable_path() -> str | None:
+    explicit = _explicit_browser_executable_path()
+    if explicit is not None:
+        return explicit or None
+    for candidate in _system_browser_candidates():
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _browser_launch_options(browser_type: Any, *, headless: bool) -> dict[str, Any]:
+    options: dict[str, Any] = {
+        "headless": headless,
+        "args": _browser_launch_args(),
+    }
+    explicit = _explicit_browser_executable_path()
+    if explicit is not None:
+        if explicit:
+            options["executable_path"] = explicit
+        return options
+    managed_path = str(getattr(browser_type, "executable_path", "") or "")
+    if managed_path and os.path.exists(managed_path):
+        return options
+    fallback = _fallback_browser_executable_path()
+    if fallback:
+        options["executable_path"] = fallback
+    return options
 
 
 def _ensure_screenshot_dir() -> str:
@@ -153,6 +272,18 @@ class PlaywrightBrowserController:
         self._page: Any = None
         self._context: Any = None
 
+    def session_info(self) -> dict[str, Any]:
+        """Return operator-visible browser session metadata."""
+
+        profile_dir = os.path.join(PROFILE_DIR, self._profile) if self._profile else None
+        return {
+            "headless": self._headless,
+            "profile": self._profile,
+            "profile_dir": profile_dir,
+            "gui_preview_available": not self._headless,
+            "preview": "local GUI browser window" if not self._headless else "headless browser session",
+        }
+
     async def _ensure_browser(self) -> Any:
         """Lazily launch browser and page.
 
@@ -172,7 +303,7 @@ class PlaywrightBrowserController:
             os.makedirs(user_data_dir, exist_ok=True)
             self._context = await self._playwright.chromium.launch_persistent_context(
                 user_data_dir,
-                headless=self._headless,
+                **_browser_launch_options(self._playwright.chromium, headless=self._headless),
             )
             self._page = (
                 self._context.pages[0]
@@ -180,7 +311,9 @@ class PlaywrightBrowserController:
                 else await self._context.new_page()
             )
         else:
-            self._browser = await self._playwright.chromium.launch(headless=self._headless)
+            self._browser = await self._playwright.chromium.launch(
+                **_browser_launch_options(self._playwright.chromium, headless=self._headless),
+            )
             self._context = await self._browser.new_context()
             self._page = await self._context.new_page()
 
@@ -205,7 +338,7 @@ class PlaywrightBrowserController:
         await page.goto(url, wait_until="domcontentloaded")
         if self.session:
             self.session.current_url = url
-        return {"status": "ok", "url": url, "title": await page.title()}
+        return {"status": "ok", "url": url, "title": await page.title(), "session": self.session_info()}
 
     async def click(self, selector: str) -> dict:
         page = await self._ensure_browser()
@@ -227,6 +360,116 @@ class PlaywrightBrowserController:
         await page.select_option(selector, value)
         return {"status": "ok", "selector": selector, "value": value}
 
+    async def inspect_dom(
+        self,
+        selector: str | None = None,
+        *,
+        include_html: bool = False,
+        include_elements: bool = True,
+        max_html_length: int = 50000,
+        element_limit: int = 100,
+    ) -> dict:
+        page = await self._ensure_browser()
+        html = ""
+        html_truncated = False
+        if include_html:
+            if selector:
+                html = await page.locator(selector).evaluate("(el) => el.outerHTML")
+            else:
+                html = await page.content()
+            original_length = len(html)
+            html_truncated = original_length > max_html_length
+            if html_truncated:
+                html = html[:max_html_length] + "... [truncated]"
+        else:
+            original_length = 0
+
+        elements: list[dict[str, Any]] = []
+        if include_elements:
+            elements = await page.evaluate(
+                """
+                ({ rootSelector, limit }) => {
+                  const root = rootSelector ? document.querySelector(rootSelector) : document;
+                  if (!root) return [];
+                  const esc = (value) => {
+                    if (window.CSS && CSS.escape) return CSS.escape(String(value));
+                    return String(value).replace(/\\\\/g, "\\\\\\\\").replace(/"/g, "\\\"");
+                  };
+                  const selectorFor = (el) => {
+                    if (el.id) return "#" + esc(el.id);
+                    const dataTest = el.getAttribute("data-testid") || el.getAttribute("data-test");
+                    if (dataTest) return `[data-testid="${esc(dataTest)}"]`;
+                    const name = el.getAttribute("name");
+                    const parts = [];
+                    let current = el;
+                    while (current && current.nodeType === Node.ELEMENT_NODE && current !== document.body) {
+                      let part = current.tagName.toLowerCase();
+                      if (current.id) {
+                        parts.unshift("#" + esc(current.id));
+                        break;
+                      }
+                      if (current === el && name) part += `[name="${esc(name)}"]`;
+                      const parent = current.parentElement;
+                      if (parent) {
+                        const siblings = Array.from(parent.children).filter(
+                          (sibling) => sibling.tagName === current.tagName
+                        );
+                        if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
+                      }
+                      parts.unshift(part);
+                      current = parent;
+                    }
+                    return parts.join(" > ");
+                  };
+                  const nodes = Array.from(root.querySelectorAll(
+                    "a, button, input, textarea, select, option, summary, label, [role], [onclick], [contenteditable='true']"
+                  ));
+                  return nodes.slice(0, limit).map((el, index) => {
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    const text = (el.innerText || el.textContent || el.getAttribute("aria-label") || "").trim();
+                    return {
+                      index,
+                      selector: selectorFor(el),
+                      tag: el.tagName.toLowerCase(),
+                      role: el.getAttribute("role"),
+                      type: el.getAttribute("type"),
+                      name: el.getAttribute("name"),
+                      id: el.id || null,
+                      text: text.slice(0, 240),
+                      aria_label: el.getAttribute("aria-label"),
+                      placeholder: el.getAttribute("placeholder"),
+                      href: el.getAttribute("href"),
+                      value: el.value || null,
+                      disabled: Boolean(el.disabled || el.getAttribute("aria-disabled") === "true"),
+                      visible: Boolean(rect.width && rect.height && style.visibility !== "hidden" && style.display !== "none"),
+                      bbox: {
+                        x: Math.round(rect.x),
+                        y: Math.round(rect.y),
+                        width: Math.round(rect.width),
+                        height: Math.round(rect.height),
+                      },
+                    };
+                  });
+                }
+                """,
+                {"rootSelector": selector, "limit": int(element_limit)},
+            )
+
+        tabs = await self.list_tabs()
+        return {
+            "url": page.url,
+            "title": await page.title(),
+            "selector": selector,
+            "tabs": tabs,
+            "html": html if include_html else None,
+            "html_length": original_length,
+            "html_truncated": html_truncated,
+            "elements": elements,
+            "element_count": len(elements),
+            "session": self.session_info(),
+        }
+
     async def wait_for(
         self, selector: str | None = None, timeout: float = 30.0
     ) -> dict:
@@ -235,7 +478,7 @@ class PlaywrightBrowserController:
             await page.wait_for_selector(selector, timeout=timeout * 1000)
         else:
             await page.wait_for_load_state("networkidle", timeout=timeout * 1000)
-        return {"status": "ok", "selector": selector}
+        return {"status": "ok", "selector": selector, "session": self.session_info()}
 
     async def extract_text(self, selector: str | None = None) -> str:
         page = await self._ensure_browser()
@@ -285,7 +528,7 @@ class PlaywrightBrowserController:
             return []
         pages = self._context.pages
         return [
-            {"index": i, "url": p.url, "title": await p.title()}
+            {"index": i, "url": p.url, "title": await p.title(), "session": self.session_info()}
             for i, p in enumerate(pages)
         ]
 
@@ -344,6 +587,15 @@ class MockBrowserController:
         self.actions.append(entry)
         return self._responses.get(action, {"status": "ok", **kwargs})
 
+    def session_info(self) -> dict[str, Any]:
+        return {
+            "headless": True,
+            "profile": "mock",
+            "profile_dir": None,
+            "gui_preview_available": False,
+            "preview": "mock browser session",
+        }
+
     async def open(self, url: str) -> dict:
         return self._record("open", url=url)
 
@@ -358,6 +610,58 @@ class MockBrowserController:
 
     async def select(self, selector: str, value: str) -> dict:
         return self._record("select", selector=selector, value=value)
+
+    async def inspect_dom(
+        self,
+        selector: str | None = None,
+        *,
+        include_html: bool = False,
+        include_elements: bool = True,
+        max_html_length: int = 50000,
+        element_limit: int = 100,
+    ) -> dict:
+        self._record(
+            "inspect_dom",
+            selector=selector,
+            include_html=include_html,
+            include_elements=include_elements,
+            max_html_length=max_html_length,
+            element_limit=element_limit,
+        )
+        return self._responses.get(
+            "inspect_dom",
+            {
+                "url": "about:blank",
+                "title": "New Tab",
+                "selector": selector,
+                "tabs": [{"index": 0, "url": "about:blank", "title": "New Tab"}],
+                "html": "<button id=\"ok\">OK</button>" if include_html else None,
+                "html_length": 27 if include_html else 0,
+                "html_truncated": False,
+                "elements": [
+                    {
+                        "index": 0,
+                        "selector": "#ok",
+                        "tag": "button",
+                        "role": None,
+                        "type": None,
+                        "name": None,
+                        "id": "ok",
+                        "text": "OK",
+                        "aria_label": None,
+                        "placeholder": None,
+                        "href": None,
+                        "value": None,
+                        "disabled": False,
+                        "visible": True,
+                        "bbox": {"x": 0, "y": 0, "width": 80, "height": 24},
+                    }
+                ]
+                if include_elements
+                else [],
+                "element_count": 1 if include_elements else 0,
+            },
+        )
 
     async def wait_for(
         self, selector: str | None = None, timeout: float = 30.0

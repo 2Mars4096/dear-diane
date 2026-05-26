@@ -45,4 +45,8 @@ async def browser_wait(
     from dan.tools._browser_session import get_controller
 
     ctrl = await get_controller()
-    return await ctrl.wait_for(selector, timeout)
+    result = await ctrl.wait_for(selector, timeout)
+    session_info = getattr(ctrl, "session_info", lambda: {})()
+    if isinstance(result, dict):
+        return {**result, "session": session_info}
+    return {"status": "ok", "selector": selector, "session": session_info}
