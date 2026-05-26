@@ -610,7 +610,10 @@ def _is_model_usage_payload(payload: Mapping[str, Any]) -> bool:
 def _usage_identity(payload: Mapping[str, Any], usage: Mapping[str, int]) -> str:
     explicit_id = payload.get("model_call_id") or payload.get("span_id")
     if explicit_id:
-        return str(explicit_id)
+        return "|".join(
+            str(payload.get(key) or "")
+            for key in ("contract_id", "parallel_lane", "worker_id", "sequence", "timestamp")
+        ) + f"|{explicit_id}"
     return "|".join(
         str(payload.get(key) or "")
         for key in ("timestamp", "event", "span_kind", "worker_id")

@@ -168,6 +168,7 @@ def test_super_dan_event_log_reader_handles_live_tool_artifacts_and_usage_totals
             "event": "model.responded",
             "span_kind": "model_call",
             "model_call_id": "model-call:2",
+            "worker_id": "builder",
             "usage": {
                 "prompt_tokens": 120,
                 "completion_tokens": 20,
@@ -177,6 +178,22 @@ def test_super_dan_event_log_reader_handles_live_tool_artifacts_and_usage_totals
                 "prompt_tokens": 220,
                 "completion_tokens": 30,
                 "total_tokens": 250,
+            },
+        },
+        {
+            "event": "model.responded",
+            "span_kind": "model_call",
+            "model_call_id": "model-call:2",
+            "worker_id": "validator",
+            "usage": {
+                "prompt_tokens": 50,
+                "completion_tokens": 5,
+                "total_tokens": 55,
+            },
+            "usage_totals": {
+                "prompt_tokens": 50,
+                "completion_tokens": 5,
+                "total_tokens": 55,
             },
         },
         {
@@ -196,7 +213,7 @@ def test_super_dan_event_log_reader_handles_live_tool_artifacts_and_usage_totals
 
     observation = benchmark.load_event_log_observation(event_log, case_id="short-note-create")
 
-    assert observation.token_usage["total_tokens"] == 250
+    assert observation.token_usage["total_tokens"] == 305
     assert observation.artifacts_changed == ("note.md",)
     assert observation.validation_passed is True
     assert observation.output_quality_score == 0.88
