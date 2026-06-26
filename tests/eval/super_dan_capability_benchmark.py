@@ -56,6 +56,7 @@ class SuperDanCapabilityObservation:
     artifacts_changed: tuple[str, ...] = ()
     tests_passed: int = 0
     tests_failed: int = 0
+    latest_test_exit_code: int | None = None
     event_count: int = 0
     tool_call_count: int = 0
     output_quality_score: float | None = None
@@ -334,6 +335,7 @@ def load_event_log_observation(
     answer_present = False
     tests_passed = 0
     tests_failed = 0
+    latest_test_exit_code: int | None = None
     tool_call_count = 0
     blockers: list[str] = []
     quality_values: list[float] = []
@@ -388,6 +390,7 @@ def load_event_log_observation(
 
         if "shell_check.completed" in event_name:
             exit_code = _safe_int(event.get("exit_code"), default=0)
+            latest_test_exit_code = exit_code
             if exit_code == 0:
                 tests_passed += 1
             else:
@@ -399,6 +402,7 @@ def load_event_log_observation(
             command = str(arguments.get("command") or "").lower()
             if tool_id == "shell_command" and _looks_like_test_command(command):
                 exit_code = _safe_int(result.get("exit_code"), default=1)
+                latest_test_exit_code = exit_code
                 if exit_code == 0:
                     tests_passed += 1
                 else:
@@ -467,6 +471,7 @@ def load_event_log_observation(
         artifacts_changed=tuple(artifacts),
         tests_passed=tests_passed,
         tests_failed=tests_failed,
+        latest_test_exit_code=latest_test_exit_code,
         event_count=len(events),
         tool_call_count=tool_call_count,
         output_quality_score=max(quality_values) if quality_values else None,
@@ -480,6 +485,10 @@ def _validation_score(
     case: SuperDanCapabilityCase,
     observation: SuperDanCapabilityObservation,
 ) -> float:
+    if observation.latest_test_exit_code == 0:
+        return 1.0
+    if observation.latest_test_exit_code is not None:
+        return 0.0
     if observation.validation_passed and observation.tests_failed == 0:
         return 1.0
     if observation.tests_failed > 0:

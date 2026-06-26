@@ -75,6 +75,30 @@ def test_super_dan_capability_scoring_rewards_delivery_and_penalizes_budget_wast
     assert wasteful_score.time_efficiency < 0.3
 
 
+def test_super_dan_capability_scoring_uses_latest_test_command_for_validation() -> None:
+    case = next(case for case in benchmark._benchmark_cases() if case.case_id == "medium-source-repair")
+    observation = benchmark.SuperDanCapabilityObservation(
+        case_id=case.case_id,
+        status="completed",
+        wall_time_seconds=120,
+        token_usage={"total_tokens": 20_000},
+        validation_passed=True,
+        artifacts_changed=("src/fix.py", "tests/test_fix.py"),
+        tests_passed=1,
+        tests_failed=1,
+        latest_test_exit_code=0,
+        event_count=20,
+        tool_call_count=8,
+        output_quality_score=0.91,
+        answer_present=True,
+    )
+
+    score = benchmark.score_observed_run(case, observation)
+
+    assert score.passed is True
+    assert score.validation_evidence == 1.0
+
+
 def test_super_dan_capability_scoring_requires_token_accounting_and_validation() -> None:
     case = next(case for case in benchmark._benchmark_cases() if case.case_id == "short-validation-truth")
     missing_metrics = benchmark.SuperDanCapabilityObservation(
@@ -141,6 +165,7 @@ def test_super_dan_event_log_reader_extracts_usage_time_delivery_and_validation(
     assert observation.token_usage["total_tokens"] == 150
     assert observation.validation_passed is True
     assert observation.tests_passed == 1
+    assert observation.latest_test_exit_code == 0
     assert observation.tool_call_count == 3
     assert observation.artifacts_changed == ("src/app.py", "tests/test_app.py")
     assert observation.output_quality_score == 0.88
@@ -243,7 +268,41 @@ def test_super_dan_event_log_reader_does_not_treat_tool_completion_as_run_comple
 
     assert observation.status == "incomplete"
     assert observation.tests_passed == 1
+    assert observation.latest_test_exit_code == 0
     assert observation.wall_time_seconds == 70
+
+
+def test_super_dan_event_log_reader_keeps_historical_failures_but_latest_test_passes(
+    tmp_path,
+) -> None:
+    event_log = tmp_path / "events.jsonl"
+    rows = [
+        {
+            "event": "tool.completed",
+            "tool_id": "shell_command",
+            "arguments": {"command": "python -m pytest -q"},
+            "result": {"exit_code": 1, "stdout": "1 failed, 3 passed\n"},
+        },
+        {
+            "event": "tool.completed",
+            "tool_id": "file_edit",
+            "result": {"path": "stats_tools.py"},
+        },
+        {
+            "event": "tool.completed",
+            "tool_id": "shell_command",
+            "arguments": {"command": "python -m pytest -q"},
+            "result": {"exit_code": 0, "stdout": "4 passed\n"},
+        },
+        {"event": "run.log.completed", "status": "completed", "validation_passed": True},
+    ]
+    event_log.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    observation = benchmark.load_event_log_observation(event_log, case_id="medium-source-repair")
+
+    assert observation.tests_failed == 1
+    assert observation.tests_passed == 1
+    assert observation.latest_test_exit_code == 0
 
 
 def test_super_dan_capability_summary_groups_lengths_and_surfaces_outliers() -> None:
