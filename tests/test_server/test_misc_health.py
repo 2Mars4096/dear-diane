@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from dan.notes import default_workspace_notes_root
 from dan.server import runtime_config
 from dan.server.routers import dependencies
 from dan.server.routers.misc import (
@@ -14,6 +15,17 @@ from dan.server.routers.misc import (
     preview_workspace_note,
 )
 from dan.worker.organism_log import write_organism_log
+
+
+def test_default_notes_root_uses_hugo_content_tree(monkeypatch, tmp_path: Path) -> None:
+    project = tmp_path / "my-knowledge-base"
+    content = project / "content"
+    content.mkdir(parents=True)
+    monkeypatch.setenv("DAN_DEFAULT_CONTENT_ROOTS", str(project))
+    monkeypatch.delenv("DAN_NOTES_WORKSPACE_ROOT", raising=False)
+    monkeypatch.delenv("DAN_NOTES_ROOT", raising=False)
+
+    assert default_workspace_notes_root(workspace_root=tmp_path) == content.resolve()
 
 
 @pytest.mark.asyncio

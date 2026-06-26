@@ -15,6 +15,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from dan.notes import enrich_notes_surface_context
+
 
 AttachmentKind = Literal[
     "image",
@@ -278,7 +280,16 @@ def legacy_request_with_v2_context(req: Any) -> Any:
 def build_surface_turn_from_chat_request(req: Any) -> SurfaceTurn:
     """Normalize the legacy `ChatMessageRequest` shape into `SurfaceTurn`."""
 
-    surface_context = dict(getattr(req, "surface_context", None) or {})
+    raw_surface_context = dict(getattr(req, "surface_context", None) or {})
+    surface_context = enrich_notes_surface_context(
+        raw_surface_context,
+        workspace_root=(
+            getattr(req, "workspace_root", None)
+            or raw_surface_context.get("workspace_root")
+            or raw_surface_context.get("workspace_path")
+            or raw_surface_context.get("cwd")
+        ),
+    )
     native = _native_surface_metadata(surface_context)
     surface_type = _clean(getattr(req, "surface_type", "") or native.get("surface_type"))
     surface_id = _clean(getattr(req, "surface_id", "") or native.get("surface_id"))
@@ -684,17 +695,26 @@ def _native_surface_metadata(surface_context: dict[str, Any]) -> dict[str, Any]:
 
 
 def _surface_capabilities(surface_type: str, surface_context: dict[str, Any]) -> list[str]:
+    surface_type = surface_type.lower()
+    defaults: list[str] = []
+    if surface_type == "telegram":
+        defaults = ["message_edit", "threaded_replies", "media_download"]
+    elif surface_type in {"whatsapp", "whatsapp-web"}:
+        defaults = ["media_download"]
+    elif surface_type in {"web", "editor", "cli"}:
+        defaults = ["streaming", "file_upload"]
+
     raw = surface_context.get("capabilities")
     if isinstance(raw, list):
-        return [str(item) for item in raw if str(item).strip()]
-    surface_type = surface_type.lower()
-    if surface_type == "telegram":
-        return ["message_edit", "threaded_replies", "media_download"]
-    if surface_type in {"whatsapp", "whatsapp-web"}:
-        return ["media_download"]
-    if surface_type in {"web", "editor", "cli"}:
-        return ["streaming", "file_upload"]
-    return []
+        return list(
+            dict.fromkeys(
+                [
+                    *[str(item) for item in raw if str(item).strip()],
+                    *defaults,
+                ]
+            )
+        )
+    return defaults
 
 
 def _privacy_scope(
@@ -1057,6 +1077,9 @@ def _agent_surface_context(surface_context: dict[str, Any]) -> dict[str, Any]:
         "workspace_root",
         "workspace_id",
         "workspace_source",
+        "notes_root",
+        "notes_feature",
+        "active_note",
         "surface_profile",
         "agent_profile",
         "agent_backend",

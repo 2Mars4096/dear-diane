@@ -34,9 +34,21 @@ from dan.server.chat_v2_backend import (
     _load_super_dan_cli,
     build_agent_backend_request,
 )
-from dan.server.chat_v2_store import ChatV2Store
+from dan.server.chat_v2_store import ChatV2Store, structured_operator_context
 from dan.server.routers.chat import ChatMessageRequest
 from dan.server.routers import chat_v2 as chat_v2_router
+
+
+def test_v2_operator_context_extracts_absolute_target_folder() -> None:
+    context = structured_operator_context(
+        'Can you build a static app in /private/tmp/dan-blueprint-smoke/trip-planner? '
+        "include README.md, see https://example.com/docs/guide, and run a quick smoke check."
+    )
+
+    assert context["target_paths"] == [
+        "README.md",
+        "/private/tmp/dan-blueprint-smoke/trip-planner",
+    ]
 
 
 def test_v2_parse_admission_command_continuation_alias_is_append() -> None:
@@ -107,6 +119,8 @@ def test_v2_surface_turn_structures_telegram_attachment_inputs() -> None:
         {"role": "assistant", "content": "I started the previous pass"},
     ]
     assert turn.metadata["surface_context"]["telegram"]["reply_to_text"] == "previous progress"
+    assert "message_edit" in turn.capabilities
+    assert "hugo_notes" in turn.capabilities
     assert [ref.kind for ref in turn.attachments] == ["pdf", "figure", "image"]
     assert turn.attachments[1].native_file_id == "tg-file-1"
     assert turn.attachments[2].metadata["source"] == "legacy_text_marker"
@@ -445,10 +459,47 @@ def test_v2_super_dan_args_forward_structured_surface_context(tmp_path) -> None:
 
     assert args._surface_history == history
     assert args._tui_surface_history == history
-    assert args._surface_context == surface_context
+    assert args._surface_context["workspace_root"] == surface_context["workspace_root"]
+    assert args._surface_context["conversation"] == surface_context["conversation"]
+    assert args._surface_context["communication_policy"] == surface_context["communication_policy"]
+    assert args._surface_context["execution_policy"] == surface_context["execution_policy"]
+    assert args._surface_context["surface_policy"] == surface_context["surface_policy"]
+    assert args._surface_context["notes_feature"]["kind"] == "hugo_notes"
     assert args._tui_communication_policy["answer_budget"] == "brief"
     assert args._tui_execution_policy["stop_condition"] == "validation_passes"
     assert args._tui_surface_policy["phase_shape"] == "validation_gate"
+
+
+def test_v2_surface_turn_carries_hugo_notes_feature(monkeypatch, tmp_path) -> None:
+    project = tmp_path / "my-knowledge-base"
+    content = project / "content"
+    content.mkdir(parents=True)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("DAN_DEFAULT_CONTENT_ROOTS", str(project))
+    monkeypatch.delenv("DAN_NOTES_WORKSPACE_ROOT", raising=False)
+    monkeypatch.delenv("DAN_NOTES_ROOT", raising=False)
+
+    req = ChatMessageRequest(
+        workflow_id="_scratch",
+        message="summarize this project",
+        mode="auto",
+        surface_type="cli",
+        surface_id="super-tui",
+        surface_context={
+            "workspace_root": str(workspace),
+            "capabilities": ["streaming"],
+        },
+    )
+
+    turn = build_surface_turn_from_chat_request(req)
+    surface_context = turn.metadata["surface_context"]
+
+    assert surface_context["notes_root"] == str(content.resolve())
+    assert surface_context["notes_feature"]["kind"] == "hugo_notes"
+    assert "Hugo content tree" in " ".join(surface_context["notes_feature"]["rules"])
+    assert "hugo_notes" in turn.capabilities
+    assert "streaming" in turn.capabilities
 
 
 def test_v2_store_persists_tasks_runs_and_explicit_queue_lanes(tmp_path) -> None:

@@ -17,6 +17,15 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
+from dan.notes import (
+    DEFAULT_CONTENT_PROJECT_NAME,
+    DEFAULT_NOTES_WORKSPACE_ROOT,
+    content_bootstrap_root_candidates,
+    default_workspace_notes_root,
+    expand_workspace_home,
+    notes_root_from_content_project,
+    workspace_notes_root,
+)
 from dan.server.capabilities.config import _update_env_file
 from dan.server.paths import resolve_workspace_root
 from dan.server.routers.dependencies import (
@@ -633,8 +642,8 @@ async def list_docs(request: Request):
     return {"docs": docs}
 
 
-_DEFAULT_NOTES_WORKSPACE_ROOT = "~/.codex/memories"
-_DEFAULT_CONTENT_PROJECT_NAME = "my-knowledge-base"
+_DEFAULT_NOTES_WORKSPACE_ROOT = DEFAULT_NOTES_WORKSPACE_ROOT
+_DEFAULT_CONTENT_PROJECT_NAME = DEFAULT_CONTENT_PROJECT_NAME
 _WORKSPACE_NOTE_DIR_NAMES = ("",)
 _WORKSPACE_NOTE_SKIP_DIRS = {
     ".git",
@@ -704,73 +713,33 @@ _WORKSPACE_NOTE_CACHE_LIMIT = 512
 
 
 def _expand_workspace_home(raw: str) -> Path:
-    return Path(raw).expanduser()
+    return expand_workspace_home(raw)
 
 
 def _content_bootstrap_root_candidates() -> list[Path]:
-    """Mirror the desktop v1 content bootstrap root order for the notes workspace."""
-
-    configured = [
-        _expand_workspace_home(value)
-        for value in str(os.environ.get("DAN_DEFAULT_CONTENT_ROOTS") or "").split(os.pathsep)
-        if value.strip()
-    ]
-    home = Path.home()
-    local_named = [
-        Path("/Volumes/data/Dropbox/Projects") / _DEFAULT_CONTENT_PROJECT_NAME,
-        home / "Dropbox" / "Projects" / _DEFAULT_CONTENT_PROJECT_NAME,
-        home / "Projects" / _DEFAULT_CONTENT_PROJECT_NAME,
-    ]
-    heuristic: list[Path] = []
-    for base in (Path.cwd(), Path(resolve_workspace_root())):
-        try:
-            resolved = base.expanduser().resolve()
-        except OSError:
-            resolved = base.expanduser()
-        heuristic.extend(
-            [
-                resolved.parent / _DEFAULT_CONTENT_PROJECT_NAME,
-                resolved.parent.parent / _DEFAULT_CONTENT_PROJECT_NAME,
-            ],
-        )
-
-    seen: set[str] = set()
-    candidates: list[Path] = []
-    for candidate in [*configured, *local_named, *heuristic]:
-        normalized = str(candidate.expanduser())
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        candidates.append(candidate.expanduser())
-    return candidates
+    return content_bootstrap_root_candidates(
+        workspace_root=resolve_workspace_root(),
+        cwd=Path.cwd(),
+    )
 
 
 def _notes_root_from_content_project(project_root: Path) -> Path:
-    content_root = project_root / "content"
-    if content_root.exists() and content_root.is_dir():
-        return content_root
-    content_notes = project_root / "content" / "notes"
-    if content_notes.exists() and content_notes.is_dir():
-        return content_notes
-    return project_root
+    return notes_root_from_content_project(project_root)
 
 
 def _default_workspace_notes_root() -> Path:
-    for candidate in _content_bootstrap_root_candidates():
-        try:
-            resolved = candidate.resolve()
-        except OSError:
-            continue
-        if resolved.exists() and resolved.is_dir():
-            return _notes_root_from_content_project(resolved).resolve()
-    return Path(_DEFAULT_NOTES_WORKSPACE_ROOT).expanduser().resolve()
+    return default_workspace_notes_root(
+        workspace_root=resolve_workspace_root(),
+        cwd=Path.cwd(),
+    )
 
 
 def _workspace_notes_root() -> Path:
-    explicit = os.environ.get("DAN_NOTES_WORKSPACE_ROOT") or os.environ.get("DAN_NOTES_ROOT")
-    root = Path(explicit).expanduser().resolve() if explicit else _default_workspace_notes_root()
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    return workspace_notes_root(
+        workspace_root=resolve_workspace_root(),
+        cwd=Path.cwd(),
+        create=True,
+    )
 
 
 def _workspace_files_root(root_path: str | None = None) -> Path:

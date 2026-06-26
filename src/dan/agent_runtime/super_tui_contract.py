@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from dan.notes import HUGO_NOTES_CAPABILITIES, enrich_notes_surface_context
+
 SUPER_TUI_SURFACE_PROFILE = "super_tui"
 SUPER_TUI_DEFAULT_BACKEND = "super_dan"
 SUPER_TUI_MAX_PROMOTED_CONTINUATIONS = 8
@@ -13,6 +15,7 @@ SUPER_TUI_AGENT_CAPABILITIES: tuple[str, ...] = (
     "background_agent_runs",
     "task_board",
     "checkpoint_commands",
+    *HUGO_NOTES_CAPABILITIES,
 )
 
 
@@ -73,6 +76,7 @@ def build_super_tui_surface_context(
     extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     context = dict(extra or {})
+    inherited_capabilities = _string_sequence(context.get("capabilities"))
     context.update(
         {
             "workspace_root": str(workspace_root),
@@ -85,9 +89,12 @@ def build_super_tui_surface_context(
             "execution_policy": dict(execution_policy or {}),
             "surface_policy": dict(surface_policy or {}),
             "appended_attachments": [dict(item) for item in attachments],
+            "capabilities": list(
+                dict.fromkeys([*inherited_capabilities, *SUPER_TUI_AGENT_CAPABILITIES])
+            ),
         }
     )
-    return context
+    return enrich_notes_surface_context(context, workspace_root=workspace_root)
 
 
 def build_super_tui_execute_overrides(

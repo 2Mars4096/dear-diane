@@ -8,6 +8,7 @@ from typing import Any, Callable, Protocol
 
 from pydantic import BaseModel, Field
 
+from dan.notes import enrich_notes_surface_context
 from dan.server.chat_v2 import AgentRunEvent, normalize_token_usage
 from dan.server.chat_v2_organism import map_organism_log_row_to_agent_event
 from dan.server.chat_v2_store import (
@@ -503,7 +504,7 @@ class SuperDanBackendAdapter:
             summary=str(
                 live_result.get("summary")
                 or live_result.get("error")
-                or f"Super DAN run {status}."
+                or ""
             ),
             artifact_refs=artifact_refs,
             trace_refs=[str(event_log_path)],
@@ -695,6 +696,10 @@ def build_agent_backend_request(
         or workspace_root
     )
     history = _normalize_history(payload.get("history"))
+    surface_context = enrich_notes_surface_context(
+        dict(payload.get("surface_context") or {}),
+        workspace_root=workspace_root,
+    )
     return AgentBackendRunRequest(
         task_id=run.task_id,
         run_id=run.run_id,
@@ -706,7 +711,7 @@ def build_agent_backend_request(
         attachments=list(payload.get("attachments") or []),
         history=history,
         reply_context=dict(payload.get("reply_context") or {}),
-        surface_context=dict(payload.get("surface_context") or {}),
+        surface_context=surface_context,
         profile_policy=profile_policy,
         mutation_policy=mutation_policy,
         approval_policy=approval_policy,
@@ -790,9 +795,11 @@ def _build_super_dan_args(
     setattr(args, "_code_like_live", True)
     setattr(args, "_stdin_is_tty", False)
     setattr(args, "_surface_attachments", list(request.attachments or []))
-    surface_context = dict(request.surface_context or {})
-    if surface_context:
-        setattr(args, "_surface_context", surface_context)
+    surface_context = enrich_notes_surface_context(
+        dict(request.surface_context or {}),
+        workspace_root=request.workspace_root,
+    )
+    setattr(args, "_surface_context", surface_context)
     history = _normalize_history(request.history)
     if not history:
         conversation = surface_context.get("conversation") if isinstance(surface_context, dict) else {}

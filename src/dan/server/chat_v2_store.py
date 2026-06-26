@@ -2214,17 +2214,22 @@ def structured_operator_context(
 
 
 def _operator_context_paths(text: str) -> list[str]:
-    pattern = re.compile(
+    file_pattern = re.compile(
         r"(?<![\w$])(?:[./~\w-]+/)?[\w.-]+\."
         r"(?:py|md|txt|json|jsonl|yaml|yml|toml|html|css|js|jsx|ts|tsx|csv|parquet|sql|sh)"
     )
+    absolute_path_pattern = re.compile(
+        r"(?<![:/\w$])(?:/|~/(?:[^/\s\"'`,;:()[\]{}<>]+/)*)"
+        r"[^/\s\"'`,;:()[\]{}<>]+(?:/[^/\s\"'`,;:()[\]{}<>]+)*"
+    )
     seen: set[str] = set()
     paths: list[str] = []
-    for match in pattern.finditer(text):
-        value = match.group(0).strip(".,;:()[]{}\"'")
-        if value and value not in seen:
-            seen.add(value)
-            paths.append(value)
+    for pattern in (file_pattern, absolute_path_pattern):
+        for match in pattern.finditer(text):
+            value = match.group(0).strip(".,;:()[]{}\"'?")
+            if value and value not in seen:
+                seen.add(value)
+                paths.append(value)
     return paths[:20]
 
 
