@@ -25,6 +25,11 @@
   - [x] 5-1. Resolve relative `shell_command.working_directory` values against the Super DAN workspace root
   - [x] 5-2. Kill raw and sandboxed shell subprocess sessions on timeout so child test processes do not survive wrapper termination
   - [x] 5-3. Add regressions for workspace-relative shell cwd and child-process timeout cleanup
+- [x] 6. Continue disposable live evals after the shell fix
+  - [x] 6-1. Rerun `short-validation-truth` after the shell fix and score final validation from the event log
+  - [x] 6-2. Run and score `medium-source-repair` against a disposable pytest fixture
+  - [x] 6-3. Fix the scorer so expected pre-fix test failures do not override the latest passing validation command
+  - [x] 6-4. Run `medium-existing-site-polish` until the live trace exposed the existing-artifact read-policy blocker, then stop the runaway process
 
 ## Decisions
 - Keep this under `tests/eval/` as a deterministic harness plus event-log scorer, not a live-provider test that would make default pytest depend on model credentials.
@@ -39,3 +44,6 @@
 - Live `short-note-create` passed after scorer fixes: `/private/tmp/dan-super-live-evals/short-note-create/.dan-super/runs/turn-02/events.jsonl`, score `0.7387`, 129.38s, 154,729 tokens, validation passed, `note.md` created.
 - Live `short-validation-truth` failed/incompleted on the disposable pytest fixture: `/private/tmp/dan-super-live-evals/short-validation-truth/.dan-super/runs/turn-01/events.jsonl`, score `0.1677`, 370.815s, 52,654 tokens, no `tool.completed` for the started `python -m pytest -q` shell command.
 - Root cause fixed: the live worker supplied `working_directory: "."`, which previously resolved against the parent process cwd instead of the workspace root and launched repo-level pytest; timeout cleanup killed only the shell wrapper, leaving the child process alive.
+- Post-fix `short-validation-truth` completed and reported correct validation evidence, but still failed the benchmark on efficiency: `/private/tmp/dan-super-live-evals/short-validation-truth-fixed/.dan-super/runs/turn-01/events.jsonl`, score `0.6701`, 182.202s, 137,359 tokens, `latest_test_exit_code=0`.
+- Live `medium-source-repair` passed after the scorer fix: `/private/tmp/dan-super-live-evals/medium-source-repair/.dan-super/runs/turn-01/events.jsonl`, score `0.8347`, 205.63s, 316,722 tokens, `stats_tools.py` patched, latest pytest `4 passed`.
+- Live `medium-existing-site-polish` was stopped as incomplete after repeated read-policy denials: `/private/tmp/dan-super-live-evals/medium-existing-site-polish/.dan-super/runs/turn-01/events.jsonl`, score `0.4117`, 258.09s, 112,530 tokens, no site files changed, `python validate_site.py` still fails with `expected a grid-based feature layout`.
