@@ -538,6 +538,20 @@ export default function GlobalSettingsPanel({
           onChange={(value) => update("theme", value)}
         />
       </SettingRow>
+      <SettingRow
+        label="Workspace Surface"
+        description="Visual skin for the Work/Notes workspace."
+      >
+        <Select<EditorSettings["workspaceSurfaceTheme"]>
+          value={settings.workspaceSurfaceTheme}
+          options={[
+            { value: "factory-worn", label: "Factory Worn" },
+            { value: "industrial", label: "Industrial Steel" },
+            { value: "original", label: "Original" },
+          ]}
+          onChange={(value) => update("workspaceSurfaceTheme", value)}
+        />
+      </SettingRow>
     </div>
   );
 

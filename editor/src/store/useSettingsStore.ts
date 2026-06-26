@@ -61,6 +61,7 @@ export function normalizeTerminalSettings(
 
 export interface EditorSettings {
   theme: "system" | "vs-dark" | "vs" | "hc-black";
+  workspaceSurfaceTheme: "original" | "industrial" | "factory-worn";
   fontSize: number;
   fontFamily: string;
   tabSize: number;
@@ -117,6 +118,7 @@ interface SettingsState extends EditorSettings {
 
 const DEFAULT_SETTINGS: EditorSettings = {
   theme: "system",
+  workspaceSurfaceTheme: "factory-worn",
   fontSize: 13,
   fontFamily: "SF Mono, Menlo, Monaco, monospace",
   tabSize: 2,
@@ -190,7 +192,7 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: "dan-editor-settings",
-      version: 3,
+      version: 4,
       migrate: (persistedState, version) => {
         const state = persistedState as Partial<SettingsState> | undefined;
         if (!state) return persistedState as SettingsState;
@@ -209,6 +211,10 @@ export const useSettingsStore = create<SettingsState>()(
               defaultTerminalProfile: migrated.defaultTerminalProfile ?? "",
             }),
           };
+        }
+
+        if (version < 4 && migrated.workspaceSurfaceTheme === undefined) {
+          migrated = { ...migrated, workspaceSurfaceTheme: "factory-worn" };
         }
 
         return migrated as SettingsState;

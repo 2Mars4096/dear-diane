@@ -179,6 +179,18 @@ function UserSettings() {
         />
       </SettingRow>
 
+      <SettingRow label="Workspace Surface" description="Visual skin for the Work/Notes workspace">
+        <Select<EditorSettings["workspaceSurfaceTheme"]>
+          value={settings.workspaceSurfaceTheme}
+          options={[
+            { value: "factory-worn", label: "Factory Worn" },
+            { value: "industrial", label: "Industrial Steel" },
+            { value: "original", label: "Original" },
+          ]}
+          onChange={(v) => update("workspaceSurfaceTheme", v)}
+        />
+      </SettingRow>
+
       <SettingRow label="Font Size" description="Editor font size in pixels (8–32)">
         <NumberInput
           value={settings.fontSize}
