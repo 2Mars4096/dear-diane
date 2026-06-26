@@ -55,6 +55,7 @@ from dan.worker.organisms.super_organism import (
     SuperOrganismReport,
     run_super_organism_demo,
 )
+from dan.worker.structured_payload import parse_jsonish_payload
 
 
 _GENERIC_SNAPSHOT_SKIP_DIR_NAMES = frozenset(
@@ -207,49 +208,33 @@ _SUPER_DAN_TOOL_DESCRIPTIONS: dict[str, str] = {
     "desktop_hotkey": "press a keyboard shortcut in the focused desktop app",
 }
 
-_SUPER_DAN_STAGE_QUESTIONS: dict[str, tuple[str, ...]] = {
+_SUPER_DAN_STAGE_RULE_INSTRUCTIONS: dict[str, str] = {
     "planner": (
-        "Is the objective narrow enough to build directly, or broad enough to benefit from a run-local plan?",
-        "What coherent large feature chunks or phases exist, and which one should be executed first?",
-        "If multiple sub-plans are needed, are they truly slices of the same parent phase rather than unrelated domains?",
-        "Which unchecked tasks can the executor complete and later justify with changed-file evidence?",
-        "What can stay as a note or backlog item instead of becoming an immediate plan file?",
+        "Generate the planning checks from this operator request, the active intent policy, available tools, "
+        "and workspace evidence already seen. Keep only checks that would change the next action; do not reuse "
+        "a fixed stage checklist."
     ),
     "plan_validator": (
-        "Do the plan files use all-digit numeric identifiers only, with no alphabetic or N-M placeholders?",
-        "Does each top-level phase represent one internally coherent large chunk of work?",
-        "Are sub-plan files coherent children of their parent phase instead of unrelated chunks hidden under one prefix?",
-        "Are there contradictions, duplicate ownership claims, or hidden third-level plan-file names?",
-        "Is the first executable build slice clear enough for the builder and validator to audit?",
+        "Generate validation checks for the emitted plan from its actual structure, identifiers, dependencies, "
+        "and promised deliverables. Keep deterministic format constraints, but make the substantive review "
+        "specific to this plan."
     ),
     "builder": (
-        "What durable artifact, code change, or workspace edit would actually satisfy the operator?",
-        "What file, dataset, or project evidence is necessary before writing?",
-        "Is this a create-new-artifact task, an edit-existing-artifact task, or an investigation that should produce a saved report?",
-        "Which path has the highest value if only one coherent slice can be completed now?",
-        "If a plan context is supplied, which unchecked plan task can be completed and honestly ticked with evidence?",
-        "What focused verification would make the result credible before final success?",
+        "Generate execution checks from the request-specific completion contract before acting. Decide whether "
+        "the operator needs an in-session answer, an edit, a saved artifact, or an explicit blocker; do not turn "
+        "answer-only review/summary work into file edits."
     ),
     "builder_retry": (
-        "Did the previous attempt produce useful evidence even though it did not mutate files?",
-        "Is more inspection justified, or is the next attempt ready to make a concrete write?",
-        "Which recommended target path is the best first durable artifact for this objective?",
-        "What existing substance must be preserved if the task is additive?",
-        "What is the smallest coherent write that would unblock validation?",
+        "Generate retry checks from the previous failure evidence and the operator's actual target. The next "
+        "attempt should repair the specific gap or report a blocker, not follow a generic retry recipe."
     ),
     "validator": (
-        "Did the changed files materially satisfy the original objective?",
-        "Are these the right files and are the changes substantive rather than a scaffold?",
-        "What concrete evidence supports pass or fail?",
-        "What important outliers, logical inconsistencies, missing artifacts, or objective gaps remain?",
-        "If this fails, what is the smallest repair brief that would make it pass?",
+        "Generate validation checks from the original request, the current frontier, and concrete evidence from "
+        "the run. Judge only the work that was actually due now, and make remaining-work notes explicit."
     ),
     "repair": (
-        "Which exact validator issue must be fixed before success is honest?",
-        "Can the failure be fixed by targeted edits rather than a broad rewrite?",
-        "What existing substance, structure, or data must be preserved?",
-        "What verification would prove the repair worked?",
-        "Is the correct action repair, or should the run honestly report a blocker?",
+        "Generate repair checks from the validator's concrete findings and the original operator contract. Prefer "
+        "the smallest honest repair, or report the blocker when repair is not currently justified."
     ),
 }
 
@@ -259,6 +244,7 @@ class OperatorIntentPolicy:
     """Structured operator constraints that must survive prompt/runtime boundaries."""
 
     active: bool = False
+    allow_workspace_mutation: bool = True
     target_artifacts: tuple[str, ...] = ()
     allowed_read_paths: tuple[str, ...] = ()
     allowed_write_paths: tuple[str, ...] = ()
@@ -273,6 +259,7 @@ class OperatorIntentPolicy:
     def to_payload(self) -> dict[str, Any]:
         return {
             "active": bool(self.active),
+            "allow_workspace_mutation": bool(self.allow_workspace_mutation),
             "target_artifacts": list(self.target_artifacts),
             "allowed_read_paths": list(self.allowed_read_paths),
             "allowed_write_paths": list(self.allowed_write_paths),
@@ -342,11 +329,24 @@ def _stage_questions_snippet(
     *,
     extra_questions: Sequence[str] | None = None,
 ) -> str:
-    questions = [
-        *_SUPER_DAN_STAGE_QUESTIONS.get(stage, ()),
-        *list(extra_questions or []),
+    instruction = _SUPER_DAN_STAGE_RULE_INSTRUCTIONS.get(
+        stage,
+        (
+            "Generate request-specific checks from the operator request, active policy, available tools, "
+            "and evidence already collected. Do not reuse a fixed stage checklist."
+        ),
+    )
+    generated_rule = (
+        "Write any needed who/what/where/how/quality/evidence gates in your own words for this request, "
+        "omit gates that do not affect completion, and do not reuse a fixed stage checklist."
+    )
+    deterministic_gates = [
+        f"Deterministic gate: {question}" for question in list(extra_questions or [])
     ]
-    return _bullet_section("Decision questions to consider", questions)
+    return _bullet_section(
+        "Request-specific checks to generate",
+        [instruction, generated_rule, *deterministic_gates],
+    )
 
 
 def _workspace_boundary_snippet() -> str:
@@ -849,6 +849,12 @@ def _super_plan_task_graph(value: Any) -> list[dict[str, Any]]:
             "parallel_safe": bool(parallel_raw) if parallel_raw is not None else True,
             "status": status,
         }
+        parent_id = str(item.get("parent_id") or item.get("parent") or "").strip()
+        branch_id = str(item.get("branch_id") or item.get("branch") or "").strip()
+        if parent_id:
+            task["parent_id"] = parent_id
+        if branch_id:
+            task["branch_id"] = branch_id
         if item.get("risk") is not None:
             task["risk"] = str(item.get("risk") or "").strip()
         if item.get("confidence") is not None:
@@ -1082,6 +1088,200 @@ def _super_plan_context_for_frontier_main(
     return payload
 
 
+def _super_plan_branch_id(task: Mapping[str, Any]) -> str:
+    explicit = str(task.get("branch_id") or "").strip()
+    if explicit:
+        return explicit
+    task_id = str(task.get("task_id") or "").strip()
+    if "-" in task_id:
+        return task_id.split("-", 1)[0]
+    return task_id or "root"
+
+
+def _super_plan_parallel_groups(
+    task_graph: Sequence[Mapping[str, Any]],
+    ready_task_ids: Sequence[str],
+) -> list[list[str]]:
+    ready = {str(item).strip() for item in ready_task_ids if str(item).strip()}
+    ready_tasks = [
+        dict(task)
+        for task in task_graph
+        if str(task.get("task_id") or "").strip() in ready
+        and bool(task.get("parallel_safe", True))
+        and _super_plan_task_owned_paths(task)
+    ]
+    groups: list[list[dict[str, Any]]] = []
+    for task in ready_tasks:
+        placed = False
+        for group in groups:
+            if not any(_super_plan_tasks_conflict(existing, task) for existing in group):
+                group.append(task)
+                placed = True
+                break
+        if not placed:
+            groups.append([task])
+    return [
+        [
+            str(task.get("task_id") or "").strip()
+            for task in group
+            if str(task.get("task_id") or "").strip()
+        ]
+        for group in groups
+        if len(group) > 1
+    ]
+
+
+def _super_plan_task_graph_state(
+    plan_context: Mapping[str, Any] | None,
+    *,
+    revision: int,
+    source: str,
+    update_reason: str,
+    update_scope: str = "whole_graph",
+    active_task_ids: Sequence[str] = (),
+    completed_task_ids: Sequence[str] = (),
+    ready_task_ids: Sequence[str] | None = None,
+    deferred_task_ids: Sequence[str] | None = None,
+    dependency_revisions: Sequence[Any] | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(plan_context, Mapping):
+        return None
+    task_graph = _super_plan_task_graph(plan_context.get("task_graph") or [])
+    if not task_graph:
+        return None
+    completed = {
+        str(item).strip()
+        for item in completed_task_ids
+        if str(item).strip()
+    }
+    active = {
+        str(item).strip()
+        for item in active_task_ids
+        if str(item).strip()
+    }
+    ready = {
+        str(item).strip()
+        for item in (
+            ready_task_ids
+            if ready_task_ids is not None
+            else plan_context.get("ready_task_ids") or plan_context.get("assigned_task_ids") or []
+        )
+        if str(item).strip()
+    }
+    if not ready and task_graph:
+        ready = set(_super_plan_ready_task_ids(task_graph, completed_task_ids=tuple(completed)))
+    deferred = {
+        str(item).strip()
+        for item in (
+            deferred_task_ids
+            if deferred_task_ids is not None
+            else plan_context.get("deferred_task_ids") or []
+        )
+        if str(item).strip()
+    }
+    if not deferred and task_graph:
+        deferred = set(
+            _super_plan_deferred_task_ids(
+                task_graph,
+                sorted(ready),
+                completed_task_ids=tuple(completed),
+            )
+        )
+    branch_counts: dict[str, dict[str, Any]] = {}
+    state_tasks: list[dict[str, Any]] = []
+    for task in task_graph:
+        task_id = str(task.get("task_id") or "").strip()
+        branch_id = _super_plan_branch_id(task)
+        status = str(task.get("status") or "").strip().lower()
+        if task_id in completed or status in {"done", "complete", "completed", "x"}:
+            state = "done"
+        elif task_id in active:
+            state = "active"
+        elif task_id in ready:
+            state = "ready"
+        elif task_id in deferred:
+            state = "deferred"
+        else:
+            state = "planned"
+        enriched = dict(task)
+        enriched["branch_id"] = branch_id
+        enriched["state"] = state
+        state_tasks.append(enriched)
+        branch = branch_counts.setdefault(
+            branch_id,
+            {
+                "branch_id": branch_id,
+                "task_ids": [],
+                "ready_task_ids": [],
+                "active_task_ids": [],
+                "completed_task_ids": [],
+                "deferred_task_ids": [],
+            },
+        )
+        branch["task_ids"].append(task_id)
+        if state == "ready":
+            branch["ready_task_ids"].append(task_id)
+        elif state == "active":
+            branch["active_task_ids"].append(task_id)
+        elif state == "done":
+            branch["completed_task_ids"].append(task_id)
+        elif state == "deferred":
+            branch["deferred_task_ids"].append(task_id)
+    return {
+        "schema": "super_dan_task_graph_v1",
+        "graph_id": str(plan_context.get("graph_id") or "run-local-task-graph"),
+        "revision": int(revision),
+        "source": str(source or "unknown"),
+        "update_reason": str(update_reason or "").strip(),
+        "update_scope": str(update_scope or "whole_graph"),
+        "tasks": state_tasks,
+        "ready_task_ids": sorted(ready),
+        "deferred_task_ids": sorted(deferred),
+        "active_task_ids": sorted(active),
+        "completed_task_ids": sorted(completed),
+        "parallel_groups": _super_plan_parallel_groups(task_graph, sorted(ready)),
+        "branches": list(branch_counts.values()),
+        "dependency_revisions": [
+            dict(item) if isinstance(item, Mapping) else str(item)
+            for item in (dependency_revisions if dependency_revisions is not None else plan_context.get("dependency_revisions") or [])
+        ],
+    }
+
+
+def _super_plan_context_with_graph_state(
+    plan_context: Mapping[str, Any] | None,
+    *,
+    revision: int,
+    source: str,
+    update_reason: str,
+    update_scope: str = "whole_graph",
+    active_task_ids: Sequence[str] = (),
+    completed_task_ids: Sequence[str] = (),
+    ready_task_ids: Sequence[str] | None = None,
+    deferred_task_ids: Sequence[str] | None = None,
+    dependency_revisions: Sequence[Any] | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(plan_context, Mapping):
+        return None
+    payload = dict(plan_context)
+    graph_state = _super_plan_task_graph_state(
+        payload,
+        revision=revision,
+        source=source,
+        update_reason=update_reason,
+        update_scope=update_scope,
+        active_task_ids=active_task_ids,
+        completed_task_ids=completed_task_ids,
+        ready_task_ids=ready_task_ids,
+        deferred_task_ids=deferred_task_ids,
+        dependency_revisions=dependency_revisions,
+    )
+    if graph_state is not None:
+        payload["task_graph_state"] = graph_state
+        payload["task_graph_revision"] = revision
+    return payload
+
+
 def _super_plan_context_payload(
     plan_context: Mapping[str, Any] | None,
     *,
@@ -1104,7 +1304,11 @@ def _super_plan_context_payload(
         "execution_mode": str(plan_context.get("execution_mode") or "dependency_frontier"),
         "parallel_worktree_task_ids": list(plan_context.get("parallel_worktree_task_ids") or []),
         "validation": dict(plan_context.get("validation") or {}),
+        "request_understanding": dict(plan_context.get("request_understanding") or {}),
     }
+    if isinstance(plan_context.get("task_graph_state"), Mapping):
+        payload["task_graph_state"] = dict(plan_context.get("task_graph_state") or {})
+        payload["task_graph_revision"] = plan_context.get("task_graph_revision")
     if include_task_state_key and plan_root is not None and workspace_root is not None:
         payload[include_task_state_key] = _super_plan_task_state(
             plan_root,
@@ -1194,6 +1398,8 @@ def _super_should_run_planner(
 ) -> bool:
     if prompt_only_creation_target:
         return False
+    if not operator_intent_policy.allow_workspace_mutation:
+        return False
     if operator_intent_policy.forbid_other_workspace_inputs:
         return False
     if "file_write" not in set(tool_ids):
@@ -1237,8 +1443,6 @@ def _super_should_run_planner(
         "implement",
         "create",
         "fix",
-        "review",
-        "analyze",
         "migrate",
         "rewrite",
     )
@@ -3024,11 +3228,75 @@ def _live_expected_return_shape() -> str:
     return json.dumps(
         {
             "candidate_id": "super-dan-live-general-001",
+            "request_understanding": {
+                "request_kind": "software | research | document | general",
+                "aspect_reviews": [
+                    {
+                        "aspect": "audience_or_user_need",
+                        "question": "what must be understood before doing the work?",
+                        "request_comment": "model-authored rule tailored to this request",
+                        "confidence": 0.8,
+                    }
+                ],
+                "confidence_scoped_acceptance": [
+                    {
+                        "criterion": "request-specific completion rule",
+                        "confidence": 0.8,
+                        "action": "do_or_explain",
+                    }
+                ],
+                "stop_rule": "request-specific condition for when it is honest to stop",
+            },
+            "task_graph_update": {
+                "scope": "whole_graph | branch_local",
+                "changed_task_ids": ["1-1"],
+                "reason": "model-authored graph revision or sequencing update",
+            },
+            "answer": "short user-facing summary of what was found or changed",
             "change_summary": ["short summary of concrete files written"],
             "target_files": ["path/to/changed-file.md"],
             "test_plan": ["inspect the changed artifact or run a focused verification command"],
             "risks": ["remaining limitations or assumptions"],
             "files_created": ["path/to/changed-file.md"],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _live_answer_return_shape() -> str:
+    return json.dumps(
+        {
+            "candidate_id": "super-dan-live-review-001",
+            "request_understanding": {
+                "request_kind": "software | research | document | general",
+                "aspect_reviews": [
+                    {
+                        "aspect": "answer_scope",
+                        "question": "what does the operator need answered?",
+                        "request_comment": "model-authored rule tailored to this request",
+                        "confidence": 0.8,
+                    }
+                ],
+                "confidence_scoped_acceptance": [
+                    {
+                        "criterion": "request-specific answer rule",
+                        "confidence": 0.8,
+                        "action": "do_or_explain",
+                    }
+                ],
+                "stop_rule": "request-specific condition for when it is honest to stop",
+            },
+            "task_graph_update": {
+                "scope": "whole_graph | branch_local",
+                "changed_task_ids": ["1-1"],
+                "reason": "model-authored graph revision or sequencing update",
+            },
+            "answer": "substantive in-session answer shaped by the operator's request; include only sections and details that help the operator understand the result",
+            "summary": ["key finding or status point"],
+            "risks": ["remaining limitations or assumptions"],
+            "validation": ["inspection evidence used for the answer"],
+            "remaining_work": ["follow-up work that would require explicit permission or a separate request"],
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -3052,6 +3320,19 @@ def _live_validation_return_shape() -> str:
             "remaining_work": [],
             "ready_next_task_ids": [],
             "dependency_revisions": [],
+            "task_graph_update": {
+                "scope": "branch_local",
+                "changed_task_ids": ["1-1"],
+                "reason": "validator sequencing update for the current branch only",
+            },
+            "aspect_coverage": [
+                {
+                    "aspect": "what",
+                    "status": "satisfied | deferred | blocked",
+                    "evidence": ["changed file, check, or inspected finding"],
+                    "gap": "",
+                }
+            ],
             "completion_scope": "full_objective | current_frontier",
             "comparison_note": "The result materially satisfies the operator objective and is not just a generic demo shell.",
         },
@@ -3063,6 +3344,30 @@ def _live_validation_return_shape() -> str:
 def _live_plan_return_shape() -> str:
     return json.dumps(
         {
+            "request_understanding": {
+                "request_kind": "software | research | document | general",
+                "aspect_reviews": [
+                    {
+                        "aspect": "target_scope",
+                        "question": "what must be understood before planning?",
+                        "request_comment": "model-authored rule tailored to this request",
+                        "confidence": 0.8,
+                    }
+                ],
+                "confidence_scoped_acceptance": [
+                    {
+                        "criterion": "request-specific planning/execution rule",
+                        "confidence": 0.8,
+                        "action": "do_or_explain",
+                    }
+                ],
+                "stop_rule": "request-specific condition for when it is honest to stop",
+            },
+            "task_graph_update": {
+                "scope": "whole_graph",
+                "changed_task_ids": ["1-1", "1-2"],
+                "reason": "initial model-authored task graph",
+            },
             "plan_files": [".dan-super/runs/turn-01/plans/1-coherent-phase.md"],
             "phase_summary": ["1: coherent large feature chunk"],
             "task_graph": [
@@ -3110,11 +3415,341 @@ def _live_plan_validation_return_shape() -> str:
             "blocking_issues": [],
             "suggested_fixes": [],
             "dependency_revisions": [],
+            "task_graph_update": {
+                "scope": "branch_local",
+                "changed_task_ids": ["1-1"],
+                "reason": "plan-validator graph correction scoped to affected branch",
+            },
             "comparison_note": "The numeric plan is coherent and ready for execution.",
         },
         ensure_ascii=False,
         sort_keys=True,
     )
+
+
+_REQUEST_UNDERSTANDING_ASPECTS: tuple[tuple[str, str], ...] = (
+    ("who", "Who is affected or served by the request?"),
+    ("what", "What concrete deliverable or change is being requested?"),
+    ("where", "Where should the work happen or be saved?"),
+    ("how", "How should DAN proceed, including constraints and allowed tools?"),
+    ("quality", "What hidden quality criteria matter beyond artifact shape?"),
+    ("evidence", "What evidence should prove the work is actually done?"),
+)
+
+
+_REQUEST_UNDERSTANDING_STAGE_GUIDANCE: dict[str, tuple[str, ...]] = {
+    "planner": (
+        "Turn the aspect comments into an acceptance contract with atomic criteria, likely failure modes, and evidence gates.",
+        "Decompose around ways the artifact could fail, not only around visible sections or files.",
+        "For broad work, name cheap alternatives, falsification checks, or decision points before committing to a design.",
+    ),
+    "plan_validator": (
+        "Act as an independent acceptance gate for the plan; compare each aspect comment against concrete plan coverage.",
+        "Reject plans that can produce artifact shape without quality gates, evidence tasks, or a credible ready frontier.",
+        "Require a requirement-to-evidence path for the current frontier and clearly deferred downstream work.",
+    ),
+    "builder": (
+        "Before finalizing, attempt every high-confidence criterion that can be satisfied with the enabled tools.",
+        "Build substantive behavior, evidence, or content; do not substitute plausible artifact shape for hidden quality.",
+        "When a criterion cannot be verified or completed now, name the blocker or remaining work explicitly.",
+    ),
+    "worktree": (
+        "Complete the assigned slice while preserving the whole-request quality contract.",
+        "Keep sibling and deferred tasks out of scope, but make the owned slice evidence-backed and integration-safe.",
+        "Return evidence for the owned paths rather than a prose claim that the slice is probably done.",
+    ),
+    "builder_retry": (
+        "Treat the retry as recovery from missing durable progress; make the smallest meaningful target update that advances the objective.",
+        "Use the aspect comments to choose a write that repairs a real requirement gap, not just a placeholder artifact.",
+        "If the enabled tools or policy prevent the needed write, report the precise blocker instead of inventing completion.",
+    ),
+    "validator": (
+        "Act as the independent inspector: compare changed artifacts against the aspect comments and acceptance criteria.",
+        "Fail artifact-shape-only results, happy-path-only demos, unsupported claims, or missing evidence for confidently doable criteria.",
+        "Populate aspect_coverage for who/what/where/how/quality/evidence with status, evidence, and any remaining gap.",
+    ),
+    "repair": (
+        "Repair the highest-impact failed criterion first, localized to the affected files or artifact sections.",
+        "Fix evidence and quality gaps directly; do not cover them with more persuasive prose.",
+        "Preserve validated substance and rerun or describe the focused checks that prove the repair addressed the failure.",
+    ),
+}
+
+
+def _request_understanding_kind(objective: str) -> str:
+    text = _single_line(objective).lower()
+    if not text:
+        return "general"
+    if any(phrase in text for phrase in ("research", "paper", "literature", "experiment", "citation")):
+        return "research"
+    if any(phrase in text for phrase in ("website", "landing page", "web app", "frontend", "page")):
+        return "website"
+    if any(phrase in text for phrase in ("app", "tool", "cli", "api", "dashboard", "feature", "bug", "test")):
+        return "software"
+    if any(phrase in text for phrase in ("report", "memo", "markdown", "document", "brief")):
+        return "document"
+    return "general"
+
+
+def _request_understanding_payload(
+    objective: str,
+    *,
+    workspace_root: Path,
+    operator_intent_policy: OperatorIntentPolicy | None = None,
+) -> dict[str, Any]:
+    """Build a compact rule-generation brief for live execution.
+
+    The brief is intentionally deterministic, but it is only meta-guidance. Live
+    planner/builder stages must generate the concrete request-specific aspect
+    reviews, acceptance criteria, and stop rule instead of inheriting a fixed
+    fallback checklist.
+    """
+
+    policy = operator_intent_policy or OperatorIntentPolicy()
+    clean_objective = _single_line(objective)
+    kind = _request_understanding_kind(clean_objective)
+    target_paths = _explicit_objective_artifact_paths(
+        clean_objective,
+        workspace_root=workspace_root,
+    )
+    if not target_paths:
+        target_paths = list(policy.target_artifacts)
+    rule_generation_brief = [
+        "Generate the actual aspect reviews, acceptance criteria, and stop rule from the operator's exact wording and the active intent policy.",
+        "Choose the response shape before planning work: in-session answer, inspection findings, workspace edit, saved artifact, or clarification.",
+        "Default explain, review, summarize, check, status, and 'what is this' style requests to an in-session answer unless the operator explicitly asks to save, export, edit, or create a named artifact.",
+        "Do not turn a casual explanation request into document creation; file-existence checks are valid acceptance criteria only when persistence is part of the request.",
+        "Generated criteria must test semantic delivery and evidence, not only tool success, artifact existence, or a completed status event.",
+        "When intent is uncertain, generate criteria that answer or explain the blocker instead of inventing extra workspace work.",
+    ]
+    if target_paths:
+        rule_generation_brief.append(
+            f"Use explicit target path hints as context, but still decide whether the operator asked for a file change: {', '.join(target_paths[:6])}."
+        )
+    else:
+        rule_generation_brief.append(
+            f"Use the active workspace root only as context unless the generated rules justify workspace work: {workspace_root}."
+        )
+    if policy.forbid_other_workspace_inputs:
+        rule_generation_brief.append(
+            "The generated rules must honor the operator's source boundary and avoid relying on other workspace inputs."
+        )
+    if not policy.allow_existing_artifact_reuse:
+        rule_generation_brief.append(
+            "The generated rules must not depend on existing artifacts as source material."
+        )
+    if not policy.allow_shell_command:
+        rule_generation_brief.append("The generated rules must not require shell commands.")
+    if not policy.allow_workspace_mutation:
+        rule_generation_brief.append(
+            "The generated rules must treat the deliverable as an in-session answer or inspection result, not a workspace mutation."
+        )
+
+    return {
+        "schema": "super_dan_request_understanding_v1",
+        "source": "rule_generation_brief",
+        "request_kind": kind,
+        "original_request": clean_objective,
+        "workspace_root": str(workspace_root),
+        "target_paths": list(target_paths),
+        "rule_generation_brief": rule_generation_brief,
+        "aspect_reviews": [],
+        "confidence_scoped_acceptance": [],
+        "stop_rule": "",
+    }
+
+
+def _request_understanding_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, tuple):
+        return list(value)
+    scalar = _single_line(value)
+    return [scalar] if scalar else []
+
+
+def _normalize_model_request_understanding_payload(
+    value: Any,
+    *,
+    fallback: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    parsed = parse_jsonish_payload(value)
+    if not isinstance(parsed, Mapping):
+        return None
+    nested = parsed.get("request_understanding")
+    if isinstance(nested, Mapping):
+        parsed = nested
+
+    aspect_items: list[dict[str, Any]] = []
+    raw_aspects = (
+        parsed.get("aspect_reviews")
+        or parsed.get("understanding_rules")
+        or parsed.get("rules")
+        or []
+    )
+    for index, item in enumerate(_request_understanding_list(raw_aspects), start=1):
+        if isinstance(item, Mapping):
+            aspect = _single_line(
+                item.get("aspect")
+                or item.get("name")
+                or item.get("dimension")
+                or f"rule_{index}"
+            )
+            question = _single_line(
+                item.get("question")
+                or item.get("prompt")
+                or "What must be understood for this request?"
+            )
+            comment = _single_line(
+                item.get("request_comment")
+                or item.get("comment")
+                or item.get("rule")
+                or item.get("summary")
+                or item.get("criterion")
+            )
+            confidence = _coerce_float(item.get("confidence") if item.get("confidence") is not None else 0.8)
+        else:
+            aspect = f"rule_{index}"
+            question = "What must be understood for this request?"
+            comment = _single_line(item)
+            confidence = 0.8
+        if not aspect or not comment:
+            continue
+        aspect_items.append(
+            {
+                "aspect": aspect[:80],
+                "question": question[:180],
+                "request_comment": comment[:500],
+                "confidence": max(0.0, min(1.0, confidence)),
+            }
+        )
+
+    criteria_items: list[dict[str, Any]] = []
+    raw_criteria = (
+        parsed.get("confidence_scoped_acceptance")
+        or parsed.get("acceptance_criteria")
+        or parsed.get("criteria")
+        or []
+    )
+    for item in _request_understanding_list(raw_criteria):
+        if isinstance(item, Mapping):
+            criterion = _single_line(
+                item.get("criterion")
+                or item.get("rule")
+                or item.get("summary")
+                or item.get("request_comment")
+            )
+            confidence = _coerce_float(item.get("confidence") if item.get("confidence") is not None else 0.8)
+            action = _single_line(item.get("action") or "do_or_explain") or "do_or_explain"
+        else:
+            criterion = _single_line(item)
+            confidence = 0.8
+            action = "do_or_explain"
+        if not criterion:
+            continue
+        criteria_items.append(
+            {
+                "criterion": criterion[:500],
+                "confidence": max(0.0, min(1.0, confidence)),
+                "action": action[:80],
+            }
+        )
+
+    stop_rule = _single_line(parsed.get("stop_rule") or parsed.get("completion_rule") or "")
+    if not aspect_items and not criteria_items and not stop_rule:
+        return None
+
+    return {
+        "schema": "super_dan_request_understanding_v1",
+        "source": "model_authored",
+        "request_kind": _single_line(parsed.get("request_kind") or fallback.get("request_kind") or "general"),
+        "original_request": _single_line(parsed.get("original_request") or fallback.get("original_request") or ""),
+        "workspace_root": _single_line(parsed.get("workspace_root") or fallback.get("workspace_root") or ""),
+        "target_paths": _super_plan_string_list(parsed.get("target_paths") or fallback.get("target_paths") or []),
+        "aspect_reviews": aspect_items or list(fallback.get("aspect_reviews") or []),
+        "confidence_scoped_acceptance": criteria_items or list(fallback.get("confidence_scoped_acceptance") or []),
+        "stop_rule": stop_rule or _single_line(fallback.get("stop_rule") or ""),
+    }
+
+
+def _extract_request_understanding_from_outputs(
+    outputs: Any,
+    *,
+    fallback: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    parsed = parse_jsonish_payload(outputs)
+    if isinstance(parsed, Mapping):
+        normalized = _normalize_model_request_understanding_payload(parsed, fallback=fallback)
+        if normalized is not None:
+            return normalized
+        for key in ("result", "text", "answer", "final_response"):
+            if key in parsed:
+                nested = _normalize_model_request_understanding_payload(parsed.get(key), fallback=fallback)
+                if nested is not None:
+                    return nested
+    return None
+
+
+def _request_understanding_contract(
+    payload: Mapping[str, Any] | None,
+    *,
+    stage: str | None = None,
+) -> str:
+    if not isinstance(payload, Mapping) or not payload:
+        return ""
+    stage_key = str(stage or "").strip()
+    aspect_lines: list[str] = []
+    for item in payload.get("aspect_reviews") or []:
+        if not isinstance(item, Mapping):
+            continue
+        aspect = str(item.get("aspect") or "").strip()
+        comment = _single_line(item.get("request_comment") or "")
+        if aspect and comment:
+            aspect_lines.append(f"- {aspect}: {comment}")
+    criteria_lines: list[str] = []
+    for item in payload.get("confidence_scoped_acceptance") or []:
+        if not isinstance(item, Mapping):
+            continue
+        criterion = _single_line(item.get("criterion") or "")
+        if criterion:
+            criteria_lines.append(f"- {criterion}")
+    brief_lines = [
+        _single_line(item)
+        for item in _request_understanding_list(payload.get("rule_generation_brief") or [])
+        if _single_line(item)
+    ]
+    if not aspect_lines and not criteria_lines and not brief_lines:
+        return ""
+    lines = [
+        "Request rule-generation brief: keep end-to-end responsibility, but execute stage-by-stage with explicit gates. "
+        "The fixed text below is meta-guidance only; generate the concrete request-specific aspect reviews, "
+        "acceptance criteria, and stop rule before deciding what counts as complete.",
+    ]
+    if stage_key:
+        lines.append(f"Current stage: {stage_key}.")
+    stage_guidance = _REQUEST_UNDERSTANDING_STAGE_GUIDANCE.get(stage_key, ())
+    if stage_guidance:
+        lines.append("Stage-specific request handling:")
+        lines.extend(f"- {item}" for item in stage_guidance)
+    if brief_lines:
+        lines.append("Rules brief for the model to turn into request-specific criteria:")
+        lines.extend(f"- {item}" for item in brief_lines[:12])
+    if aspect_lines:
+        lines.append("Generated aspect review comments:")
+        lines.extend(aspect_lines[:8])
+    if criteria_lines:
+        lines.append("Generated confidence-scoped acceptance criteria:")
+        lines.extend(criteria_lines[:10])
+    stop_rule = _single_line(payload.get("stop_rule") or "")
+    if stop_rule:
+        lines.append(f"Stop rule: {stop_rule}")
+    lines.append(
+        "When your stage returns structured JSON, include `request_understanding` with model-authored "
+        "`aspect_reviews`, `confidence_scoped_acceptance`, and `stop_rule`; keep only details useful to the operator."
+    )
+    return "\n".join(lines)
 
 
 def _super_report_evidence_blocks(report: SuperOrganismReport) -> list[dict[str, Any]]:
@@ -3678,14 +4313,19 @@ def _live_generic_planner_task(
     plan_root: Path,
     plan_root_relative: str,
     operator_intent_policy: OperatorIntentPolicy | None = None,
+    request_understanding: Mapping[str, Any] | None = None,
 ) -> str:
     policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
+    understanding_note = _request_understanding_contract(request_understanding, stage="planner")
+    if understanding_note:
+        understanding_note += " "
     return (
         "Create a run-local Super DAN execution plan for this broad objective, then stop. "
         f"Operator objective: {report.target}. "
         f"Workspace root: {workspace_root}. "
         f"Temporary plan root: {plan_root} (`{plan_root_relative}`). "
         f"{policy_note} "
+        f"{understanding_note}"
         "Do not implement the deliverable in this stage. Inspect only the context needed to make the plan coherent. "
         "Break the work into at most two file levels: top-level numeric phase files and optional numeric sub-plan files. "
         "Predict a dependency task graph even if the dependencies are imperfect: each task should name its prerequisites, "
@@ -3702,8 +4342,12 @@ def _live_generic_plan_validation_task(
     plan_root: Path,
     plan_files: Sequence[str],
     operator_intent_policy: OperatorIntentPolicy | None = None,
+    request_understanding: Mapping[str, Any] | None = None,
 ) -> str:
     policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
+    understanding_note = _request_understanding_contract(request_understanding, stage="plan_validator")
+    if understanding_note:
+        understanding_note += " "
     rendered_files = ", ".join(str(path) for path in plan_files) or "none"
     return (
         "Validate the run-local Super DAN plan before execution. "
@@ -3712,6 +4356,7 @@ def _live_generic_plan_validation_task(
         f"Plan root: {plan_root}. "
         f"Plan files: {rendered_files}. "
         f"{policy_note} "
+        f"{understanding_note}"
         "Read the plan files, then decide whether they are coherent, numeric, non-contradictory, and ready for a builder. "
         "Reject plans that use alphabet placeholders, create third-level plan files, mix unrelated sub-plans under one "
         "phase, or fail to identify a dependency-ready frontier. Audit the predicted DAG: dependencies may be imperfect, "
@@ -3727,11 +4372,16 @@ def _live_generic_task(
     operator_intent_policy: OperatorIntentPolicy | None = None,
     prompt_only_creation_target: str | None = None,
     plan_context: Mapping[str, Any] | None = None,
+    request_understanding: Mapping[str, Any] | None = None,
 ) -> str:
-    policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
+    policy = operator_intent_policy or OperatorIntentPolicy()
+    policy_note = _operator_intent_policy_prompt(policy)
     plan_note = _super_plan_executor_contract(plan_context)
     if plan_note:
         plan_note += " "
+    understanding_note = _request_understanding_contract(request_understanding, stage="builder")
+    if understanding_note:
+        understanding_note += " "
     constrained_creation_note = ""
     if prompt_only_creation_target:
         constrained_creation_note = (
@@ -3764,6 +4414,23 @@ def _live_generic_task(
             "make concrete source or validation edits that create user actions, visible feedback, state transitions, "
             "and a repeatable short interaction loop. "
         )
+    if not policy.allow_workspace_mutation:
+        return (
+            "Answer the operator objective from inspection in the current workspace now, using only the enabled tools. "
+            f"Operator objective: {report.target}. "
+            f"Workspace root: {workspace_root}. "
+            f"{policy_note} "
+            f"{coordination_sentence}"
+            f"{understanding_note}"
+            "Inspect the existing project or workspace as needed, but do not create or edit workspace files. "
+            f"{workspace_scope_note}"
+            "If the objective asks for current external facts, use web_search when available instead of guessing. "
+            "The deliverable is the in-session answer, not a saved summary file, unless the operator explicitly asks for a file or artifact. "
+            "Finish with a substantive direct answer for the operator: include a Summary, evidence-backed findings, "
+            "important limitations, and any follow-up work that would require explicit permission or a separate request. "
+            "For project-summary or 'what is this project about' requests, explain what the project is, main components, current state, important files, and blockers or next steps. "
+            "Return the requested compact JSON-like answer summary with an `answer` field containing the actual response the operator should read."
+        )
     return (
         "Execute the operator objective in the current workspace now, using the enabled tools to produce the requested deliverable. "
         f"Operator objective: {report.target}. "
@@ -3772,6 +4439,7 @@ def _live_generic_task(
         f"{constrained_creation_note}"
         f"{coordination_sentence}"
         f"{plan_note}"
+        f"{understanding_note}"
         f"{interactive_source_note}"
         f"{workspace_context_sentence}"
         f"{workspace_scope_note}"
@@ -3791,8 +4459,12 @@ def _live_generic_worktree_task(
     task: Mapping[str, Any],
     plan_context: Mapping[str, Any] | None = None,
     operator_intent_policy: OperatorIntentPolicy | None = None,
+    request_understanding: Mapping[str, Any] | None = None,
 ) -> str:
     policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
+    understanding_note = _request_understanding_contract(request_understanding, stage="worktree")
+    if understanding_note:
+        understanding_note += " "
     task_id = str(task.get("task_id") or "").strip()
     goal = str(task.get("goal") or "").strip()
     owned = ", ".join(_super_plan_task_owned_paths(task)) or "the task-owned files"
@@ -3810,6 +4482,7 @@ def _live_generic_worktree_task(
         f"Owned paths for this worker: {owned}. "
         f"Expected validation evidence: {checks}. "
         f"{policy_note} "
+        f"{understanding_note}"
         f"{plan_note}"
         "Only edit files under the owned paths for this task. Do not implement sibling ready tasks or deferred downstream tasks. "
         "Do not edit `.dan-super` state or plan files from a worktree worker. "
@@ -3828,11 +4501,15 @@ def _live_generic_builder_retry_task(
     operator_intent_policy: OperatorIntentPolicy | None = None,
     prompt_only_creation_target: str | None = None,
     plan_context: Mapping[str, Any] | None = None,
+    request_understanding: Mapping[str, Any] | None = None,
 ) -> str:
     policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
     plan_note = _super_plan_executor_contract(plan_context)
     if plan_note:
         plan_note += " "
+    understanding_note = _request_understanding_contract(request_understanding, stage="builder_retry")
+    if understanding_note:
+        understanding_note += " "
     preservation_note = ""
     if additive_recovery_required:
         preservation_note = (
@@ -3862,7 +4539,7 @@ def _live_generic_builder_retry_task(
         constrained_creation_note = (
             "Constrained creation condition: other workspace inputs are forbidden and the explicit target "
             f"`{prompt_only_creation_target}` is missing. Create that target from the objective and policy alone. "
-            "Do not take a read-only/checking call before the first write. "
+            "Do not take an inspection/checking call before the first write. "
         )
     return (
         "Run another Super DAN builder attempt now, narrowed by the previous no-mutation result. "
@@ -3875,6 +4552,7 @@ def _live_generic_builder_retry_task(
         f"{target_note}"
         f"{constrained_creation_note}"
         f"{plan_note}"
+        f"{understanding_note}"
         "The previous builder returned or timed out without a durable workspace mutation. Use any useful evidence it produced, "
         "then decide whether a concrete write is now justified. If it is, make at least one concrete file_write or file_edit "
         "call before finalizing. If the objective asks for a report or markdown deliverable, create or update the report "
@@ -3891,11 +4569,15 @@ def _live_generic_validation_task(
     post_run_file_state: Mapping[str, Mapping[str, Any]] | None = None,
     operator_intent_policy: OperatorIntentPolicy | None = None,
     plan_context: Mapping[str, Any] | None = None,
+    request_understanding: Mapping[str, Any] | None = None,
 ) -> str:
     policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
     plan_note = _super_plan_validation_contract(plan_context)
     if plan_note:
         plan_note += " "
+    understanding_note = _request_understanding_contract(request_understanding, stage="validator")
+    if understanding_note:
+        understanding_note += " "
     state_note = ""
     if pre_run_file_state:
         state_note = (
@@ -3922,6 +4604,7 @@ def _live_generic_validation_task(
         f"{policy_note} "
         f"{state_note}"
         f"{plan_note}"
+        f"{understanding_note}"
         f"{frontier_note}"
         "Inspect the mutated files and relevant read-only evidence, then decide whether the result materially advances the "
         "objective. For report or markdown objectives, verify that a report-like artifact was actually written and is not just "
@@ -3940,11 +4623,15 @@ def _live_generic_repair_task(
     current_file_state: Mapping[str, Mapping[str, Any]] | None = None,
     operator_intent_policy: OperatorIntentPolicy | None = None,
     plan_context: Mapping[str, Any] | None = None,
+    request_understanding: Mapping[str, Any] | None = None,
 ) -> str:
     policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
     plan_note = _super_plan_executor_contract(plan_context)
     if plan_note:
         plan_note += " "
+    understanding_note = _request_understanding_contract(request_understanding, stage="repair")
+    if understanding_note:
+        understanding_note += " "
     effective_repair_brief = repair_brief or _generic_validation_repair_brief(validation)
     changed = ", ".join(str(path) for path in mutated_paths) or "none recorded"
     state_note = ""
@@ -3966,11 +4653,12 @@ def _live_generic_repair_task(
         f"Current mutated files: {changed}. "
         f"{policy_note} "
         f"{plan_note}"
+        f"{understanding_note}"
         f"{state_note}"
         f"{frontier_note}"
         f"Validation feedback: {effective_repair_brief or 'validator rejected the previous deliverable'}. "
         "When validation feedback lists exact files, missing source markers, compiler diagnostics, or shell guard "
-        "FAIL lines, treat those as the repair targets. Re-read only the focused range needed for the edit, then "
+        "FAIL lines, treat those as the repair targets. Refresh at most the focused range needed for the edit, then "
         "mutate the named source or validation files directly before any broad re-audit. Editing a secondary "
         "validator/helper file alone is not sufficient when the feedback also names broken product source. "
         "Make concrete workspace edits that address that feedback; do not return a summary-only response. If the deliverable is "
@@ -4075,6 +4763,94 @@ def _objective_forbids_existing_artifact_reuse(objective: str) -> bool:
     return any(re.search(pattern, lowered) for pattern in patterns)
 
 
+def _objective_forbids_workspace_mutation(objective: str) -> bool:
+    lowered = " ".join(str(objective or "").lower().split())
+    if not lowered:
+        return False
+    patterns = (
+        r"\bread[-\s]?only\b",
+        r"\bdo\s+not\s+(?:edit|modify|change|write|create|delete|touch|mutate)\s+(?:any\s+)?(?:workspace\s+)?files?\b",
+        r"\bdon['’]?t\s+(?:edit|modify|change|write|create|delete|touch|mutate)\s+(?:any\s+)?(?:workspace\s+)?files?\b",
+        r"\bdont\s+(?:edit|modify|change|write|create|delete|touch|mutate)\s+(?:any\s+)?(?:workspace\s+)?files?\b",
+        r"\bwithout\s+(?:editing|modifying|changing|writing|creating|deleting|touching|mutating)\s+(?:any\s+)?(?:workspace\s+)?files?\b",
+        r"\bno\s+(?:file\s+)?(?:edits?|writes?|changes?|modifications?|mutations?)\b",
+    )
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
+def _objective_requests_workspace_mutation(objective: str) -> bool:
+    lowered = " ".join(str(objective or "").lower().split())
+    if not lowered:
+        return False
+    patterns = (
+        r"\b(?:edit|modify|change|write|create|delete|touch|mutate|fix|repair|implement|build|add|update|save|export|materialize)\b",
+        r"\bmake\s+(?:a\s+)?(?:change|changes|edit|edits|fix|fixes|patch|patches|improvement|improvements)\b",
+        r"\b(?:produce|generate)\s+(?:a\s+)?(?:file|artifact|document|markdown|report|memo|patch|diff)\b",
+    )
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
+def _objective_is_project_answer_request(objective: str) -> bool:
+    lowered = " ".join(str(objective or "").lower().split())
+    if not lowered:
+        return False
+    project_target = r"(?:project|repo|repository|codebase|workspace)"
+    patterns = (
+        rf"\bwhat\s+(?:is|does|are)\s+(?:this|the)\s+{project_target}\s+(?:about|do|for)\b",
+        rf"\btell\s+me\s+about\s+(?:this|the)\s+{project_target}\b",
+        rf"\b{project_target}\s+(?:summary|overview)\b",
+        rf"\b(?:summarize|summarise|summary)\s+(?:of\s+)?(?:this|the)?\s*{project_target}\b",
+        rf"\b(?:give|write|create)\s+(?:me\s+)?(?:a\s+)?(?:brief\s+)?(?:summary|overview)\s+of\s+(?:this|the)\s+{project_target}\b",
+        rf"\bhelp\s+me\s+(?:understand|summarize|summarise|summary)\s+(?:what\s+)?(?:this|the)?\s*{project_target}\s*(?:is\s+)?(?:about)?\b",
+    )
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
+def _objective_explicitly_requests_saved_answer_artifact(objective: str) -> bool:
+    lowered = " ".join(str(objective or "").lower().split())
+    if not lowered:
+        return False
+    if re.search(r"(?<!\w)[\w./~-]+\.(?:md|txt|json|html|py|ts|tsx|jsx|csv|yaml|yml|toml)\b", lowered):
+        return True
+    if re.search(r"\b(?:readme|file|artifact|document|markdown|md)\b", lowered):
+        return True
+    if re.search(r"\b(?:edit|modify|change|update|fix|repair|implement|build|add|delete|touch|mutate)\b", lowered):
+        return True
+    if re.search(r"\b(?:save|export|materialize)\b", lowered):
+        return True
+    return False
+
+
+def _objective_is_assessment_only_request(objective: str) -> bool:
+    lowered = " ".join(str(objective or "").lower().split())
+    if not lowered:
+        return False
+    project_answer = _objective_is_project_answer_request(lowered)
+    if _objective_requests_workspace_mutation(lowered):
+        if not project_answer or _objective_explicitly_requests_saved_answer_artifact(lowered):
+            return False
+    assessment_patterns = (
+        r"\b(?:review|audit|assess|evaluate|inspect|check|look\s+over|analyze|analyse|summarize|summarise|explain)\b",
+        r"\bwhat\s+(?:do\s+you\s+think|is\s+going\s+on|is\s+the\s+status)\b",
+        r"\bhelp\s+me\s+(?:understand|review|audit|assess|evaluate|inspect|check|analyze|analyse|summarize|summarise|summary)\b",
+    )
+    return project_answer or any(re.search(pattern, lowered) for pattern in assessment_patterns)
+
+
+def _objective_forbids_shell_command(objective: str) -> bool:
+    lowered = " ".join(str(objective or "").lower().split())
+    if not lowered:
+        return False
+    patterns = (
+        r"\bdo\s+not\s+run\s+(?:any\s+)?(?:external\s+)?(?:shell\s+|terminal\s+)?commands?\b",
+        r"\bdon['’]?t\s+run\s+(?:any\s+)?(?:external\s+)?(?:shell\s+|terminal\s+)?commands?\b",
+        r"\bdont\s+run\s+(?:any\s+)?(?:external\s+)?(?:shell\s+|terminal\s+)?commands?\b",
+        r"\bwithout\s+running\s+(?:any\s+)?(?:external\s+)?(?:shell\s+|terminal\s+)?commands?\b",
+        r"\bno\s+(?:external\s+)?(?:shell\s+|terminal\s+)?commands?\b",
+    )
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
 def _operator_intent_policy_from_objective(
     objective: str,
     *,
@@ -4088,29 +4864,49 @@ def _operator_intent_policy_from_objective(
     )
     forbid_other_inputs = _objective_forbids_other_workspace_inputs(objective)
     forbid_existing_reuse = _objective_forbids_existing_artifact_reuse(objective)
+    forbid_workspace_mutation = _objective_forbids_workspace_mutation(objective)
+    assessment_only = _objective_is_assessment_only_request(objective)
+    forbid_shell_command = forbid_workspace_mutation or assessment_only or _objective_forbids_shell_command(objective)
     constraints: list[str] = []
     if forbid_other_inputs:
         constraints.append("Do not read, inspect, list, or otherwise use other workspace files.")
     if forbid_existing_reuse:
         constraints.append("Do not reuse existing workspace artifacts as source material.")
+    if assessment_only:
+        constraints.append("This is an assessment request; inspect the workspace and answer with findings.")
+        constraints.append("Do not create or edit review documents unless the operator explicitly asks for a saved artifact or file changes.")
+    if forbid_workspace_mutation:
+        constraints.append("Do not write, edit, create, delete, or otherwise mutate workspace files.")
+        constraints.append("Return a direct answer or read-only findings only; no workspace mutation is required.")
+    if forbid_shell_command:
+        constraints.append("Do not run shell, terminal, or external commands.")
     if not constraints:
         return OperatorIntentPolicy(target_artifacts=target_artifacts)
 
     allowed_targets = target_artifacts
     return OperatorIntentPolicy(
         active=True,
+        allow_workspace_mutation=not (forbid_workspace_mutation or assessment_only),
         target_artifacts=target_artifacts,
         allowed_read_paths=allowed_targets if forbid_other_inputs else (),
-        allowed_write_paths=allowed_targets,
+        allowed_write_paths=() if (forbid_workspace_mutation or assessment_only) else allowed_targets,
         forbid_other_workspace_inputs=forbid_other_inputs,
         allow_directory_listing=not forbid_other_inputs,
         allow_git_context=not forbid_other_inputs,
-        allow_shell_command=not forbid_other_inputs,
+        allow_shell_command=not (forbid_other_inputs or forbid_shell_command),
         allow_existing_artifact_reuse=not (forbid_other_inputs or forbid_existing_reuse),
         source_scope=(
-            "operator_prompt_and_target_artifacts_only"
-            if forbid_other_inputs
-            else "workspace_allowed_without_existing_artifact_reuse"
+            "operator_prompt_read_only"
+            if forbid_workspace_mutation
+            else (
+                "operator_prompt_assessment_answer_only"
+                if assessment_only
+                else (
+                "operator_prompt_and_target_artifacts_only"
+                if forbid_other_inputs
+                else "workspace_allowed_without_existing_artifact_reuse"
+                )
+            )
         ),
         constraints=tuple(constraints),
     )
@@ -4122,6 +4918,7 @@ def _operator_intent_policy_from_request(request: ExecutionRequest) -> OperatorI
         return OperatorIntentPolicy()
     return OperatorIntentPolicy(
         active=bool(raw.get("active")),
+        allow_workspace_mutation=bool(raw.get("allow_workspace_mutation", True)),
         target_artifacts=tuple(str(path) for path in raw.get("target_artifacts") or ()),
         allowed_read_paths=tuple(str(path) for path in raw.get("allowed_read_paths") or ()),
         allowed_write_paths=tuple(str(path) for path in raw.get("allowed_write_paths") or ()),
@@ -4150,6 +4947,8 @@ def _operator_intent_policy_prompt(policy: OperatorIntentPolicy) -> str:
         lines.append("- Allowed workspace reads: none before the target artifact exists.")
     if policy.allowed_write_paths:
         lines.append(f"- Allowed workspace writes: {', '.join(policy.allowed_write_paths)}.")
+    elif not policy.allow_workspace_mutation:
+        lines.append("- Allowed workspace writes: none.")
     for constraint in policy.constraints:
         lines.append(f"- {constraint}")
     if not policy.allow_directory_listing:
@@ -4168,6 +4967,8 @@ def _filter_tool_ids_for_operator_intent(
     if not policy.active:
         return list(tool_ids)
     blocked: set[str] = set()
+    if not policy.allow_workspace_mutation:
+        blocked.update({"file_write", "file_edit"})
     if not policy.allow_directory_listing:
         blocked.add("list_directory")
     if not policy.allow_git_context:
@@ -4214,6 +5015,8 @@ def _operator_policy_tool_decision(
         return False, "operator_intent_blocks_git_context"
     if tool == "shell_command" and not policy.allow_shell_command:
         return False, "operator_intent_blocks_shell_context"
+    if tool in {"file_write", "file_edit"} and not policy.allow_workspace_mutation:
+        return False, "operator_intent_blocks_workspace_mutation"
     if tool == "file_read":
         relative = _operator_policy_relative_path(str(args.get("path") or ""), workspace_root=workspace_root)
         if not relative or relative not in allowed_reads:
@@ -5071,6 +5874,11 @@ def _normalize_validation_payload(payload: Any) -> dict[str, Any]:
         "remaining_work": remaining_work,
         "ready_next_task_ids": ready_next,
         "dependency_revisions": dependency_revisions,
+        "aspect_coverage": [
+            dict(item)
+            for item in (payload.get("aspect_coverage") or [])
+            if isinstance(item, Mapping)
+        ] if isinstance(payload.get("aspect_coverage"), list) else [],
         "completion_scope": str(payload.get("completion_scope") or "").strip(),
         "comparison_note": str(payload.get("comparison_note") or "").strip(),
     }
@@ -5437,6 +6245,7 @@ def _log_final_validation_event(
         remaining_work=list(validation.get("remaining_work") or []) or None,
         ready_next_task_ids=list(validation.get("ready_next_task_ids") or []) or None,
         dependency_revisions=list(validation.get("dependency_revisions") or []) or None,
+        aspect_coverage=list(validation.get("aspect_coverage") or []) or None,
         deterministic_failures=list(deterministic_failures or []) or None,
         changed_required_files=list(changed_required_files or []),
         builder_retry_attempted=retry_attempted,
@@ -6363,11 +7172,31 @@ async def _run_live_generic_execution(
         generic_tool_ids = _prompt_only_creation_tool_ids(generic_tool_ids)
         generic_preferred_tool_ids = _prompt_only_creation_tool_ids(generic_preferred_tool_ids)
     generic_evidence = [] if prompt_only_creation_target else _super_report_evidence_blocks(report)
+    request_understanding = _request_understanding_payload(
+        str(report.target or ""),
+        workspace_root=workspace_root,
+        operator_intent_policy=operator_intent_policy,
+    )
+    _log_live_event(
+        event_logger,
+        "live.request_understanding.briefed",
+        request_understanding_schema=request_understanding.get("schema"),
+        request_kind=request_understanding.get("request_kind"),
+        original_request=request_understanding.get("original_request"),
+        workspace_root=request_understanding.get("workspace_root"),
+        target_paths=list(request_understanding.get("target_paths") or []),
+        source=request_understanding.get("source"),
+        rule_generation_brief=list(request_understanding.get("rule_generation_brief") or []),
+        aspect_reviews=list(request_understanding.get("aspect_reviews") or []),
+        confidence_scoped_acceptance=list(request_understanding.get("confidence_scoped_acceptance") or []),
+        stop_rule=request_understanding.get("stop_rule"),
+    )
     generic_input_payload: dict[str, Any] = {
         "objective": report.target,
         "workspace_root": str(workspace_root),
         "write_pacing": dict(pacing_policy),
         "operator_intent_policy": operator_intent_payload,
+        "request_understanding": dict(request_understanding),
     }
     if prompt_only_creation_target:
         generic_input_payload.update(
@@ -6404,11 +7233,12 @@ async def _run_live_generic_execution(
     planning_token_usage: dict[str, int] | None = None
     planning_tool_calls_total = 0
     planning_event_count_total = 0
+    task_graph_revision = 0
     plan_root = _super_plan_root(event_logger=event_logger, workspace_root=workspace_root)
     plan_root_relative = _super_plan_root_relative(plan_root, workspace_root)
 
     async def run_optional_planner() -> tuple[dict[str, Any] | None, dict[str, int] | None]:
-        nonlocal planning_tool_calls_total, planning_event_count_total
+        nonlocal planning_tool_calls_total, planning_event_count_total, request_understanding, task_graph_revision
         planner_tool_ids = [
             tool_id
             for tool_id in ("list_directory", "file_read", "file_write", "file_edit")
@@ -6456,6 +7286,7 @@ async def _run_live_generic_execution(
                 plan_root=plan_root,
                 plan_root_relative=plan_root_relative,
                 operator_intent_policy=operator_intent_policy,
+                request_understanding=request_understanding,
             ),
             scope=f"workspace={workspace_root}; Super DAN run-local temporary planning",
             hard_constraints=[
@@ -6504,6 +7335,7 @@ async def _run_live_generic_execution(
                 "plan_root": str(plan_root),
                 "plan_root_relative": plan_root_relative,
                 "operator_intent_policy": operator_intent_payload,
+                "request_understanding": dict(request_understanding),
             },
             metadata={
                 "surface": "super_organism",
@@ -6539,6 +7371,26 @@ async def _run_live_generic_execution(
         planning_event_count_total += len(planner_events)
         plan_files = _super_plan_files(plan_root, workspace_root)
         planner_payload = _extract_validation_payload(dict(planner_result.outputs))
+        updated_understanding = _extract_request_understanding_from_outputs(
+            planner_payload,
+            fallback=request_understanding,
+        )
+        if updated_understanding is not None:
+            request_understanding = updated_understanding
+            _log_live_event(
+                event_logger,
+                "live.request_understanding.updated",
+                source="planner",
+                request_understanding=dict(request_understanding),
+                request_understanding_schema=request_understanding.get("schema"),
+                request_kind=request_understanding.get("request_kind"),
+                original_request=request_understanding.get("original_request"),
+                workspace_root=request_understanding.get("workspace_root"),
+                target_paths=list(request_understanding.get("target_paths") or []),
+                aspect_reviews=list(request_understanding.get("aspect_reviews") or []),
+                confidence_scoped_acceptance=list(request_understanding.get("confidence_scoped_acceptance") or []),
+                stop_rule=request_understanding.get("stop_rule"),
+            )
         initial_slice: list[str] = []
         initial_task_graph: list[dict[str, Any]] = []
         initial_ready_task_ids: list[str] = []
@@ -6559,6 +7411,43 @@ async def _run_live_generic_execution(
                     initial_task_graph,
                     initial_ready_task_ids,
                 )
+        initial_plan_context = {
+            "enabled": True,
+            "usable": False,
+            "persistence": "run_temp",
+            "plan_root": str(plan_root),
+            "plan_root_relative": plan_root_relative,
+            "plan_files": list(plan_files),
+            "assigned_task_ids": list(initial_ready_task_ids),
+            "ready_task_ids": list(initial_ready_task_ids),
+            "deferred_task_ids": list(initial_deferred_task_ids),
+            "task_graph": list(initial_task_graph),
+            "dependency_revisions": [],
+            "execution_mode": "dependency_frontier",
+            "request_understanding": dict(request_understanding),
+        }
+        if initial_task_graph:
+            task_graph_revision += 1
+            initial_plan_context = _super_plan_context_with_graph_state(
+                initial_plan_context,
+                revision=task_graph_revision,
+                source="planner",
+                update_reason="Initial model-authored task graph.",
+                update_scope="whole_graph",
+                ready_task_ids=initial_ready_task_ids,
+                deferred_task_ids=initial_deferred_task_ids,
+            ) or initial_plan_context
+            _log_live_event(
+                event_logger,
+                "live.task_graph.updated",
+                source="planner",
+                plan_context=_super_plan_context_payload(
+                    initial_plan_context,
+                    plan_root=plan_root,
+                    workspace_root=workspace_root,
+                ),
+                task_graph_state=dict(initial_plan_context.get("task_graph_state") or {}),
+            )
         _log_live_event(
             event_logger,
             "live.planning.completed",
@@ -6568,6 +7457,12 @@ async def _run_live_generic_execution(
             event_count=len(planner_events),
             plan_file_count=len(plan_files),
             plan_files=list(plan_files),
+            task_graph=list(initial_task_graph),
+            ready_task_ids=list(initial_ready_task_ids),
+            deferred_task_ids=list(initial_deferred_task_ids),
+            first_build_slice=list(initial_slice),
+            task_graph_state=dict(initial_plan_context.get("task_graph_state") or {}),
+            request_understanding=dict(request_understanding),
             error=planner_result.error,
         )
         if planner_result.status != "completed" or planner_result.error or not plan_files:
@@ -6600,6 +7495,7 @@ async def _run_live_generic_execution(
                 plan_root=plan_root,
                 plan_files=plan_files,
                 operator_intent_policy=operator_intent_policy,
+                request_understanding=request_understanding,
             ),
             scope=f"workspace={workspace_root}; Super DAN run-local plan validation",
             hard_constraints=[
@@ -6645,6 +7541,7 @@ async def _run_live_generic_execution(
                 "plan_files": list(plan_files),
                 "plan_task_state": _super_plan_task_state(plan_root, workspace_root=workspace_root),
                 "operator_intent_policy": operator_intent_payload,
+                "request_understanding": dict(request_understanding),
             },
             metadata={
                 "surface": "super_organism",
@@ -6678,8 +7575,9 @@ async def _run_live_generic_execution(
         usage = _merge_token_usage(usage, _extract_execution_usage(plan_validation_result))
         planning_tool_calls_total += len(plan_validation_tools)
         planning_event_count_total += len(plan_validation_events)
+        raw_plan_validation_payload = _extract_validation_payload(dict(plan_validation_result.outputs))
         plan_validation = _normalize_plan_validation_payload(
-            _extract_validation_payload(dict(plan_validation_result.outputs)),
+            raw_plan_validation_payload,
             plan_files=plan_files,
         )
         if plan_validation_result.status != "completed":
@@ -6698,6 +7596,70 @@ async def _run_live_generic_execution(
             plan_validation["deferred_task_ids"] = list(initial_deferred_task_ids)
         if not plan_validation.get("first_build_slice") and plan_validation.get("ready_task_ids"):
             plan_validation["first_build_slice"] = list(plan_validation.get("ready_task_ids") or [])
+        task_graph_update = (
+            planner_payload.get("task_graph_update")
+            if isinstance(planner_payload, Mapping) and isinstance(planner_payload.get("task_graph_update"), Mapping)
+            else {}
+        )
+        validation_graph_update = (
+            raw_plan_validation_payload.get("task_graph_update")
+            if isinstance(raw_plan_validation_payload, Mapping)
+            and isinstance(raw_plan_validation_payload.get("task_graph_update"), Mapping)
+            else {}
+        )
+        update_scope = str(
+            validation_graph_update.get("scope")
+            or task_graph_update.get("scope")
+            or ("branch_local" if plan_validation.get("dependency_revisions") else "whole_graph")
+        ).strip()
+        update_reason = str(
+            validation_graph_update.get("reason")
+            or task_graph_update.get("reason")
+            or "Plan validation normalized the task graph and ready frontier."
+        ).strip()
+        validation_plan_context = {
+            "enabled": True,
+            "usable": True,
+            "persistence": "run_temp",
+            "plan_root": str(plan_root),
+            "plan_root_relative": plan_root_relative,
+            "plan_files": list(plan_files),
+            "assigned_task_ids": list(
+                plan_validation.get("ready_task_ids")
+                or plan_validation.get("first_build_slice")
+                or []
+            ),
+            "ready_task_ids": list(plan_validation.get("ready_task_ids") or []),
+            "deferred_task_ids": list(plan_validation.get("deferred_task_ids") or []),
+            "task_graph": list(plan_validation.get("task_graph") or []),
+            "dependency_revisions": list(plan_validation.get("dependency_revisions") or []),
+            "execution_mode": "dependency_frontier",
+            "validation": plan_validation,
+            "request_understanding": dict(request_understanding),
+        }
+        if plan_validation.get("task_graph"):
+            task_graph_revision += 1
+            validation_plan_context = _super_plan_context_with_graph_state(
+                validation_plan_context,
+                revision=task_graph_revision,
+                source="plan_validator",
+                update_reason=update_reason,
+                update_scope=update_scope or "whole_graph",
+                ready_task_ids=list(plan_validation.get("ready_task_ids") or []),
+                deferred_task_ids=list(plan_validation.get("deferred_task_ids") or []),
+                dependency_revisions=list(plan_validation.get("dependency_revisions") or []),
+            ) or validation_plan_context
+            _log_live_event(
+                event_logger,
+                "live.task_graph.updated",
+                source="plan_validator",
+                plan_context=_super_plan_context_payload(
+                    validation_plan_context,
+                    plan_root=plan_root,
+                    workspace_root=workspace_root,
+                ),
+                task_graph_state=dict(validation_plan_context.get("task_graph_state") or {}),
+            )
         _log_live_event(
             event_logger,
             "live.plan_validation.completed",
@@ -6710,32 +7672,15 @@ async def _run_live_generic_execution(
             plan_files=list(plan_files),
             ready_task_ids=list(plan_validation.get("ready_task_ids") or []),
             deferred_task_ids=list(plan_validation.get("deferred_task_ids") or []),
+            first_build_slice=list(plan_validation.get("first_build_slice") or []),
+            task_graph=list(plan_validation.get("task_graph") or []),
+            dependency_revisions=list(plan_validation.get("dependency_revisions") or []),
+            task_graph_state=dict(validation_plan_context.get("task_graph_state") or {}),
             blocking_issues=list(plan_validation.get("blocking_issues") or []),
         )
         if not plan_validation.get("passed"):
             return None, usage
-        return (
-            {
-                "enabled": True,
-                "usable": True,
-                "persistence": "run_temp",
-                "plan_root": str(plan_root),
-                "plan_root_relative": plan_root_relative,
-                "plan_files": list(plan_files),
-                "assigned_task_ids": list(
-                    plan_validation.get("ready_task_ids")
-                    or plan_validation.get("first_build_slice")
-                    or []
-                ),
-                "ready_task_ids": list(plan_validation.get("ready_task_ids") or []),
-                "deferred_task_ids": list(plan_validation.get("deferred_task_ids") or []),
-                "task_graph": list(plan_validation.get("task_graph") or []),
-                "dependency_revisions": list(plan_validation.get("dependency_revisions") or []),
-                "execution_mode": "dependency_frontier",
-                "validation": plan_validation,
-            },
-            usage,
-        )
+        return (validation_plan_context, usage)
 
     plan_context, planning_token_usage = await run_optional_planner()
     full_plan_context = dict(plan_context) if isinstance(plan_context, Mapping) else None
@@ -6857,6 +7802,7 @@ async def _run_live_generic_execution(
                     task=frontier_task,
                     plan_context=task_plan_context,
                     operator_intent_policy=operator_intent_policy,
+                    request_understanding=request_understanding,
                 ),
                 scope=f"workspace={worktree_root}; isolated Super DAN ready-frontier task {plan_task_id}",
                 hard_constraints=[
@@ -6902,6 +7848,7 @@ async def _run_live_generic_execution(
                     "plan_task": frontier_task,
                     "owned_paths": list(owned_paths),
                     "operator_intent_policy": operator_intent_payload,
+                    "request_understanding": dict(request_understanding),
                     "plan_context": _super_plan_context_payload(
                         task_plan_context,
                         plan_root=plan_root,
@@ -7080,6 +8027,32 @@ async def _run_live_generic_execution(
             "events": collected_events,
         }
 
+    if isinstance(plan_context, Mapping) and plan_context.get("task_graph"):
+        active_frontier_ids = [
+            *list(plan_context.get("assigned_task_ids") or plan_context.get("ready_task_ids") or []),
+            *list(plan_context.get("parallel_worktree_task_ids") or []),
+        ]
+        task_graph_revision += 1
+        plan_context = _super_plan_context_with_graph_state(
+            plan_context,
+            revision=task_graph_revision,
+            source="execution_frontier",
+            update_reason="Execution admitted the current ready frontier; non-overlapping branches may run in parallel.",
+            update_scope="branch_local",
+            active_task_ids=active_frontier_ids,
+        ) or dict(plan_context)
+        _log_live_event(
+            event_logger,
+            "live.task_graph.updated",
+            source="execution_frontier",
+            plan_context=_super_plan_context_payload(
+                plan_context,
+                plan_root=plan_root,
+                workspace_root=workspace_root,
+            ),
+            task_graph_state=dict(plan_context.get("task_graph_state") or {}),
+        )
+
     if plan_context:
         generic_input_payload["plan_context"] = _super_plan_context_payload(
             plan_context,
@@ -7103,15 +8076,34 @@ async def _run_live_generic_execution(
             "After one focused inspection of the failing source/test/error context, the live worker should make "
             "a material source or test edit, or report the exact blocker that prevents the edit."
         )
+    mutation_required = operator_intent_policy.allow_workspace_mutation
+    worker_success_criteria = (
+        [
+            "The final answer is a substantive in-session answer to the requested review, assessment, or project-summary question.",
+            "Findings are grounded in available workspace evidence.",
+            "Any limitations or follow-up work are explicit.",
+        ]
+        if not mutation_required
+        else [
+            "At least one workspace file is created or edited.",
+            "The change materially advances the operator objective.",
+            "The final answer names changed files, validation plan, and remaining risks.",
+        ]
+    )
+    definition_of_done = (
+        "The final response answers the operator in-session with a substantive summary, evidence-backed findings, "
+        "limitations, and any follow-up work that would require explicit permission or a separate request; a file-change receipt alone is not done."
+        if not mutation_required
+        else (
+            "At least one workspace file was created or edited and the final response names the changed files, "
+            "a concise validation plan, and remaining risks."
+        )
+    )
     worker_brief = role_brief(
             role=RoleSpec(
                 role_label="workspace_worker",
                 responsibility="Execute the requested Super DAN deliverable directly in the workspace.",
-                success_criteria=[
-                    "At least one workspace file is created or edited.",
-                    "The change materially advances the operator objective.",
-                    "The final answer names changed files, validation plan, and remaining risks.",
-                ],
+                success_criteria=worker_success_criteria,
                 trace_role="super-dan.live.general-builder",
             ),
             task=_live_generic_task(
@@ -7120,10 +8112,15 @@ async def _run_live_generic_execution(
                 operator_intent_policy=operator_intent_policy,
                 prompt_only_creation_target=prompt_only_creation_target,
                 plan_context=plan_context,
+                request_understanding=request_understanding,
             ),
             scope=f"workspace={workspace_root}; native Super DAN live general workspace execution",
             hard_constraints=[
-                "Actually mutate workspace files before finalizing.",
+                *(
+                    ["Do not create, edit, delete, or otherwise mutate workspace files; answer from inspection."]
+                    if not mutation_required
+                    else ["Actually mutate workspace files before finalizing."]
+                ),
                 *(
                     [
                         "For interactive source implementation objectives, after minimal inspection the first durable output must be product source, scene/state, UI, asset, or validation/test edits, not `.dan-super` plans or analysis notes.",
@@ -7140,28 +8137,48 @@ async def _run_live_generic_execution(
                     else []
                 ),
                 "Default to the current workspace root; only use explicit external paths when the operator asks and runtime policy allows.",
-                "When the requested deliverable is a saved report, markdown file, data note, or other document artifact, write that artifact to the workspace.",
+                *(
+                    [
+                        "When the requested deliverable is a saved report, markdown file, data note, or other document artifact, write that artifact to the workspace.",
+                    ]
+                    if mutation_required
+                    else []
+                ),
                 *(
                     [
                         "Follow the supplied run-local plan context, but treat the actual deliverable edit as mandatory; plan-file edits alone do not satisfy the objective.",
                         "Tick plan checkboxes only for work completed with evidence.",
                     ]
-                    if plan_context
+                    if plan_context and mutation_required
                     else []
                 ),
                 "Use web_search for current external facts when the enabled tool is available.",
                 *list(operator_intent_policy.constraints),
             ],
             soft_constraints=[
-                "Prefer a bounded concrete deliverable over broad speculative analysis.",
+                *(
+                    ["Prefer a bounded concrete deliverable over broad speculative analysis."]
+                    if mutation_required
+                    else ["Prefer a concise evidence-backed answer over creating a workspace artifact."]
+                ),
                 "For broad maps, cover the highest-value chain first and mark lower-confidence gaps clearly.",
                 "Prefer primary/company/regulatory/source-grounded evidence over unsourced memory when current facts matter.",
-                "Use shell_command only when it materially verifies or inspects the workspace.",
                 "Keep the final summary concise and inspectable.",
-                "Inspect first, then make a bounded coherent implementation.",
-                "Prefer `file_edit` over whole-file `file_write` when the target file already exists.",
-                "After one failed or truncated large write, immediately switch to a smaller patch strategy.",
-                "Avoid rereading the same files unless the next edit truly needs exact grounding.",
+                *(
+                    [
+                        "Use shell_command only when it materially verifies or inspects the workspace.",
+                        "Inspect first, then make a bounded coherent implementation.",
+                        "Prefer `file_edit` over whole-file `file_write` when the target file already exists.",
+                        "After one failed or truncated large write, immediately switch to a smaller patch strategy.",
+                    ]
+                    if mutation_required
+                    else []
+                ),
+                (
+                    "Avoid rereading the same files unless the next edit truly needs exact grounding."
+                    if mutation_required
+                    else "Avoid rereading the same files unless the next finding truly needs exact grounding."
+                ),
                 *(
                     [
                         "For targeted repairs, prefer the smallest responsible path/function/edit range over broad repository discovery.",
@@ -7183,11 +8200,12 @@ async def _run_live_generic_execution(
                 snippets.no_scratch_files_contract(),
             ],
             output_contract=OutputContract(
-                definition_of_done=(
-                    "At least one workspace file was created or edited and the final response names the changed files, "
-                    "a concise validation plan, and remaining risks."
+                definition_of_done=definition_of_done,
+                expected_return_shape=(
+                    _live_answer_return_shape()
+                    if not mutation_required
+                    else _live_expected_return_shape()
                 ),
-                expected_return_shape=_live_expected_return_shape(),
             ),
             sampling_policy={
                 "profile": choice.sampling_policy,
@@ -7277,6 +8295,26 @@ async def _run_live_generic_execution(
     events.extend(list(worktree_summary.get("events") or []))
     if worktree_prepared_tasks and full_plan_context:
         plan_context = full_plan_context
+    updated_understanding = _extract_request_understanding_from_outputs(
+        dict(result.outputs) if isinstance(result.outputs, Mapping) else result.outputs,
+        fallback=request_understanding,
+    )
+    if updated_understanding is not None:
+        request_understanding = updated_understanding
+        _log_live_event(
+            event_logger,
+            "live.request_understanding.updated",
+            source="builder",
+            request_understanding=dict(request_understanding),
+            request_understanding_schema=request_understanding.get("schema"),
+            request_kind=request_understanding.get("request_kind"),
+            original_request=request_understanding.get("original_request"),
+            workspace_root=request_understanding.get("workspace_root"),
+            target_paths=list(request_understanding.get("target_paths") or []),
+            aspect_reviews=list(request_understanding.get("aspect_reviews") or []),
+            confidence_scoped_acceptance=list(request_understanding.get("confidence_scoped_acceptance") or []),
+            stop_rule=request_understanding.get("stop_rule"),
+        )
     build_token_usage = _merge_token_usage(
         planning_token_usage,
         _merge_token_usage(
@@ -7289,17 +8327,28 @@ async def _run_live_generic_execution(
         workspace_root=workspace_root,
         exclude_roots=_super_plan_exclude_roots(plan_context),
     )
+    mutation_required = operator_intent_policy.allow_workspace_mutation
     error = result.error
-    if not mutated_paths and not error:
+    if mutation_required and not mutated_paths and not error:
         error = "live execution finished without any workspace file mutations"
-    validation = _failed_validation_payload(
-        reason=error or "live execution did not meet the exit contract",
-        missing_requirements=(
-            ["No workspace file mutations were observed."]
-            if not mutated_paths
-            else None
-        ),
-    )
+    if not mutation_required and result.status == "completed" and not error:
+        validation = {
+            "passed": True,
+            "overall_score": 1.0,
+            "dimension_scores": {},
+            "repair_brief": "",
+            "missing_requirements": [],
+            "comparison_note": "Operator policy did not require workspace mutation; no changed files were required.",
+        }
+    else:
+        validation = _failed_validation_payload(
+            reason=error or "live execution did not meet the exit contract",
+            missing_requirements=(
+                ["No workspace file mutations were observed."]
+                if mutation_required and not mutated_paths
+                else None
+            ),
+        )
     validation_tool_calls_total = 0
     validation_event_count_total = 0
     validation_token_usage: dict[str, int] | None = None
@@ -7342,6 +8391,7 @@ async def _run_live_generic_execution(
                     post_run_file_state=post_run_file_state,
                     operator_intent_policy=operator_intent_policy,
                     plan_context=validator_plan_context,
+                    request_understanding=request_understanding,
                 ),
                 scope=f"workspace={workspace_root}; native Super DAN general workspace validation",
                 hard_constraints=[
@@ -7402,6 +8452,7 @@ async def _run_live_generic_execution(
                     "pre_run_file_state": pre_run_file_state,
                     "post_run_file_state": post_run_file_state,
                     "operator_intent_policy": operator_intent_payload,
+                    "request_understanding": dict(request_understanding),
                     "plan_context": validator_plan_context,
                 },
                 metadata={
@@ -7527,6 +8578,7 @@ async def _run_live_generic_execution(
                     operator_intent_policy=operator_intent_policy,
                     prompt_only_creation_target=prompt_only_creation_target,
                     plan_context=plan_context,
+                    request_understanding=request_understanding,
                 ),
                 scope=f"workspace={workspace_root}; native Super DAN generic builder retry",
                 hard_constraints=[
@@ -7590,6 +8642,7 @@ async def _run_live_generic_execution(
                     "pre_run_workspace_file_state": dict(pre_run_workspace_state),
                     "pre_existing_workspace_paths": list(pre_existing_workspace_paths),
                     "operator_intent_policy": operator_intent_payload,
+                    "request_understanding": dict(request_understanding),
                     "plan_context": _super_plan_context_payload(
                         plan_context,
                         plan_root=plan_root,
@@ -7714,7 +8767,7 @@ async def _run_live_generic_execution(
     if mutated_paths:
         validation = await run_generic_validator(mutated_paths)
         record_validation_usage(validation)
-    elif result.status == "completed":
+    elif mutation_required and result.status == "completed":
         await run_generic_builder_retry()
 
     repair_attempts = 0
@@ -7767,6 +8820,7 @@ async def _run_live_generic_execution(
                 current_file_state=repair_current_file_state,
                 operator_intent_policy=operator_intent_policy,
                 plan_context=plan_context,
+                request_understanding=request_understanding,
             ),
             scope=f"workspace={workspace_root}; native Super DAN general workspace validation repair",
             hard_constraints=[
@@ -7826,6 +8880,7 @@ async def _run_live_generic_execution(
                 "current_file_state": repair_current_file_state,
                 "write_pacing": dict(pacing_policy),
                 "operator_intent_policy": operator_intent_payload,
+                "request_understanding": dict(request_understanding),
                 "plan_context": _super_plan_context_payload(
                     plan_context,
                     plan_root=plan_root,
@@ -7922,7 +8977,11 @@ async def _run_live_generic_execution(
         )
     status = (
         "completed"
-        if result.status == "completed" and mutated_paths and bool(validation.get("passed"))
+        if (
+            result.status == "completed"
+            and bool(validation.get("passed"))
+            and (bool(mutated_paths) or not mutation_required)
+        )
         else "failed"
     )
     token_usage = _merge_token_usage(
@@ -7951,6 +9010,13 @@ async def _run_live_generic_execution(
         "objective_kind": "general",
         "token_usage": token_usage,
         "validation": validation,
+        "request_understanding": dict(request_understanding),
+        "plan_context": _super_plan_context_payload(
+            plan_context,
+            plan_root=plan_root,
+            workspace_root=workspace_root,
+            include_task_state_key="task_state_final",
+        ),
     }
 
 

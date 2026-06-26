@@ -1850,6 +1850,42 @@ class _FakeNoOpWebsiteProvider:
         )
 
 
+class _FakeReadOnlyDirectReplyProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.tool_names_by_call: list[list[str]] = []
+        self.rendered_messages: list[str] = []
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.calls += 1
+        self.tool_names_by_call.append(
+            [
+                str(tool.get("function", {}).get("name") or "")
+                for tool in (kwargs.get("tools") or [])
+                if isinstance(tool, dict)
+            ]
+        )
+        self.rendered_messages.append(
+            "\n".join(
+                str(message.get("content") or "")
+                for message in messages
+                if isinstance(message, dict)
+            )
+        )
+        return CompletionResult(
+            text="blueprint smoke test ok",
+            model=model,
+            finish_reason="stop",
+        )
+
+
 class _FakeBuilderRetryWebsiteProvider:
     def __init__(self) -> None:
         self.calls = 0
@@ -1980,7 +2016,8 @@ class _FakeTargetedBuilderRetryHtmlProvider:
         if self.calls == 1:
             assert "Super DAN organism context" in rendered_messages
             assert "Available tool guide" in rendered_messages
-            assert "Decision questions to consider" in rendered_messages
+            assert "Request-specific checks to generate" in rendered_messages
+            assert "fixed stage checklist" in rendered_messages
             assert "Workspace boundary policy" in rendered_messages
             assert "DAN Code" not in rendered_messages
             assert "DAN Research" not in rendered_messages
@@ -3051,6 +3088,172 @@ def test_live_context_routes_markdown_report_request_to_generic_workspace_lane(t
     assert "web_search" in task
 
 
+def test_super_dan_request_understanding_packet_is_rule_generation_brief(tmp_path) -> None:
+    objective = (
+        "Build a production-ready app for analysts at app/index.html "
+        "with search and mobile layout."
+    )
+    policy = super_cli._operator_intent_policy_from_objective(
+        objective,
+        workspace_root=tmp_path,
+    )
+    payload = super_cli._request_understanding_payload(
+        objective,
+        workspace_root=tmp_path,
+        operator_intent_policy=policy,
+    )
+
+    assert payload["schema"] == "super_dan_request_understanding_v1"
+    assert payload["source"] == "rule_generation_brief"
+    assert payload["request_kind"] == "software"
+    assert payload["target_paths"] == ["app/index.html"]
+    assert payload["aspect_reviews"] == []
+    assert payload["confidence_scoped_acceptance"] == []
+    assert payload["stop_rule"] == ""
+    brief = " ".join(payload["rule_generation_brief"])
+    assert "Generate the actual aspect reviews" in brief
+    assert "what is this" in brief
+    assert "in-session answer" in brief
+    assert "file-existence checks" in brief
+
+    contract = super_cli._request_understanding_contract(payload)
+    assert "Request rule-generation brief" in contract
+    assert "meta-guidance only" in contract
+    assert "Rules brief for the model" in contract
+    assert "Generated aspect review comments" not in contract
+    assert "Generated confidence-scoped acceptance criteria" not in contract
+    assert "Stop rule" not in contract
+    assert "include `request_understanding`" in contract
+
+    planner_contract = super_cli._request_understanding_contract(payload, stage="planner")
+    assert "Current stage: planner" in planner_contract
+    assert "acceptance contract with atomic criteria" in planner_contract
+    assert "Decompose around ways the artifact could fail" in planner_contract
+
+    repair_contract = super_cli._request_understanding_contract(payload, stage="repair")
+    assert "Current stage: repair" in repair_contract
+    assert "highest-impact failed criterion" in repair_contract
+
+
+def test_super_dan_model_authored_request_understanding_supplies_generated_rules(tmp_path) -> None:
+    fallback = super_cli._request_understanding_payload(
+        "wait, don't edit anything; help me summarize what this project is about",
+        workspace_root=tmp_path,
+        operator_intent_policy=super_cli.OperatorIntentPolicy(allow_workspace_mutation=False),
+    )
+
+    payload = super_cli._extract_request_understanding_from_outputs(
+        {
+            "request_understanding": {
+                "request_kind": "project_summary",
+                "aspect_reviews": [
+                    {
+                        "aspect": "answer_scope",
+                        "question": "What does the user actually want to read?",
+                        "request_comment": "Explain the project purpose, architecture, current status, and blockers without editing files.",
+                        "confidence": 0.91,
+                    }
+                ],
+                "acceptance_criteria": [
+                    "Return a useful project summary instead of only reporting that the run completed."
+                ],
+                "stop_rule": "Stop only after the final answer gives the requested project summary or names the blocker.",
+            }
+        },
+        fallback=fallback,
+    )
+
+    assert payload is not None
+    assert payload["source"] == "model_authored"
+    assert payload["request_kind"] == "project_summary"
+    assert payload["aspect_reviews"][0]["aspect"] == "answer_scope"
+    assert "without editing files" in payload["aspect_reviews"][0]["request_comment"]
+    assert payload["confidence_scoped_acceptance"][0]["criterion"].startswith(
+        "Return a useful project summary"
+    )
+    assert "project summary" in payload["stop_rule"]
+
+
+def test_super_dan_generic_prompts_include_request_understanding_contract(tmp_path) -> None:
+    objective = (
+        "Build a production-ready app for analysts at app/index.html "
+        "with search and mobile layout."
+    )
+    report = super_cli.run_super_organism_demo(objective)
+    policy = super_cli._operator_intent_policy_from_objective(
+        report.target,
+        workspace_root=tmp_path,
+    )
+    understanding = super_cli._request_understanding_payload(
+        report.target,
+        workspace_root=tmp_path,
+        operator_intent_policy=policy,
+    )
+
+    builder = super_cli._live_generic_task(
+        report,
+        workspace_root=tmp_path,
+        operator_intent_policy=policy,
+        request_understanding=understanding,
+    )
+    planner = super_cli._live_generic_planner_task(
+        report,
+        workspace_root=tmp_path,
+        plan_root=tmp_path / ".dan-super" / "runs" / "turn-01" / "plans",
+        plan_root_relative=".dan-super/runs/turn-01/plans",
+        operator_intent_policy=policy,
+        request_understanding=understanding,
+    )
+    retry = super_cli._live_generic_builder_retry_task(
+        report,
+        workspace_root=tmp_path,
+        failure_reason="no workspace files were changed",
+        attempt=1,
+        recommended_write_paths=["app/index.html"],
+        operator_intent_policy=policy,
+        request_understanding=understanding,
+    )
+    validator = super_cli._live_generic_validation_task(
+        report,
+        workspace_root=tmp_path,
+        operator_intent_policy=policy,
+        request_understanding=understanding,
+    )
+    repair = super_cli._live_generic_repair_task(
+        report,
+        workspace_root=tmp_path,
+        validation={
+            "repair_brief": "Search behavior lacks edge-case handling.",
+            "missing_requirements": ["empty search state"],
+            "comparison_note": "The app only covers the happy path.",
+        },
+        mutated_paths=[str(tmp_path / "app" / "index.html")],
+        operator_intent_policy=policy,
+        request_understanding=understanding,
+    )
+
+    assert "Request rule-generation brief" in builder
+    assert "meta-guidance only" in builder
+    assert "Current stage: builder" in builder
+    assert "high-confidence criterion" in builder
+    assert "what is this" in builder
+    assert "file-existence checks" in builder
+    assert "read-only" not in builder
+    assert "read only" not in builder.lower()
+    assert "Current stage: planner" in planner
+    assert "failure modes" in planner
+    assert "Current stage: builder_retry" in retry
+    assert "missing durable progress" in retry
+    assert "precise blocker" in retry
+    assert "Rules brief for the model" in validator
+    assert "Generated confidence-scoped acceptance criteria" not in validator
+    assert "Current stage: validator" in validator
+    assert "independent inspector" in validator
+    assert "aspect_coverage" in validator
+    assert "Current stage: repair" in repair
+    assert "highest-impact failed criterion" in repair
+
+
 def test_implicit_live_probe_allows_markdown_report_with_model(tmp_path) -> None:
     args = build_parser().parse_args(
         [
@@ -3408,7 +3611,9 @@ def test_live_tasks_include_paced_incremental_execution_guidance(tmp_path) -> No
     assert "use larger direct writes" in pacing_contract
     assert "Super DAN organism context" in stage_contract
     assert "Available tool guide" in stage_contract
-    assert "Decision questions to consider" in stage_contract
+    assert "Request-specific checks to generate" in stage_contract
+    assert "fixed stage checklist" in stage_contract
+    assert "What durable artifact" not in stage_contract
 
 
 def test_super_dan_shell_tool_guide_describes_terminal_filesystem_operations() -> None:
@@ -3735,6 +3940,161 @@ def test_operator_intent_policy_runtime_decision_blocks_other_workspace_inputs(t
     )
     assert not allowed
     assert reason == "operator_intent_blocks_file_write:other.html"
+
+
+def test_operator_intent_policy_blocks_no_edit_and_external_commands(tmp_path) -> None:
+    policy = super_cli._operator_intent_policy_from_objective(
+        "Reply exactly OK. Do not edit files or run external commands.",
+        workspace_root=tmp_path,
+    )
+
+    assert policy.active is True
+    assert policy.allow_workspace_mutation is False
+    assert policy.allow_shell_command is False
+    assert policy.allowed_write_paths == ()
+    assert "Allowed workspace writes: none." in super_cli._operator_intent_policy_prompt(policy)
+
+    filtered = super_cli._filter_tool_ids_for_operator_intent(
+        ["file_read", "file_edit", "file_write", "shell_command", "workspace_check"],
+        policy,
+    )
+
+    assert filtered == ["file_read", "workspace_check"]
+
+    for tool_id in ("file_edit", "file_write"):
+        allowed, reason = super_cli._operator_policy_tool_decision(
+            policy,
+            tool_id=tool_id,
+            arguments={"path": "AGENTS.md", "content": "mutated\n"},
+            workspace_root=tmp_path,
+        )
+        assert allowed is False
+        assert reason == "operator_intent_blocks_workspace_mutation"
+
+    allowed, reason = super_cli._operator_policy_tool_decision(
+        policy,
+        tool_id="shell_command",
+        arguments={"command": "echo OK"},
+        workspace_root=tmp_path,
+    )
+    assert allowed is False
+    assert reason == "operator_intent_blocks_shell_context"
+
+
+def test_operator_intent_policy_defaults_review_requests_to_answer_only(tmp_path) -> None:
+    objective = "help me review this project?"
+    report = super_cli.run_super_organism_demo(objective)
+    policy = super_cli._operator_intent_policy_from_objective(
+        objective,
+        workspace_root=tmp_path,
+    )
+
+    assert policy.active is True
+    assert policy.allow_workspace_mutation is False
+    assert policy.allow_shell_command is False
+    assert policy.allow_directory_listing is True
+    assert policy.allow_git_context is True
+    assert policy.allowed_write_paths == ()
+    assert policy.source_scope == "operator_prompt_assessment_answer_only"
+    assert "assessment request" in " ".join(policy.constraints)
+
+    filtered = super_cli._filter_tool_ids_for_operator_intent(
+        [
+            "list_directory",
+            "file_read",
+            "file_edit",
+            "file_write",
+            "git_diff",
+            "shell_command",
+            "workspace_check",
+        ],
+        policy,
+    )
+    assert filtered == ["list_directory", "file_read", "git_diff", "workspace_check"]
+
+    task = super_cli._live_generic_task(
+        report,
+        workspace_root=tmp_path,
+        operator_intent_policy=policy,
+    )
+    assert "do not create or edit workspace files" in task.lower()
+    assert "include a Summary" in task
+    assert "Actually mutate workspace files" not in task
+
+
+@pytest.mark.parametrize(
+    "objective",
+    [
+        "what is this project about?",
+        "tell me about this project",
+        "help me summary this project",
+        "create a project summary for me",
+        "write me a project summary",
+        "give me a summary of this repo",
+    ],
+)
+def test_operator_intent_policy_defaults_project_summary_requests_to_session_answers(
+    tmp_path,
+    objective,
+) -> None:
+    report = super_cli.run_super_organism_demo(objective)
+    policy = super_cli._operator_intent_policy_from_objective(
+        objective,
+        workspace_root=tmp_path,
+    )
+
+    assert policy.active is True
+    assert policy.allow_workspace_mutation is False
+    assert policy.allow_shell_command is False
+    assert policy.allowed_write_paths == ()
+    assert policy.source_scope == "operator_prompt_assessment_answer_only"
+
+    filtered = super_cli._filter_tool_ids_for_operator_intent(
+        ["file_read", "file_edit", "file_write", "shell_command", "workspace_check"],
+        policy,
+    )
+    assert filtered == ["file_read", "workspace_check"]
+
+    task = super_cli._live_generic_task(
+        report,
+        workspace_root=tmp_path,
+        operator_intent_policy=policy,
+    )
+    assert "in-session answer" in task
+    assert "do not create or edit workspace files" in task.lower()
+    assert "what is this project about" in task
+    assert "Actually mutate workspace files" not in task
+
+
+@pytest.mark.parametrize(
+    "objective",
+    [
+        "Create PROJECT_SUMMARY.md with a project summary.",
+        "Write a markdown file summarizing this project.",
+        "Review this project and update README.md with your findings.",
+    ],
+)
+def test_operator_intent_policy_allows_project_summary_file_when_explicit(
+    tmp_path,
+    objective,
+) -> None:
+    policy = super_cli._operator_intent_policy_from_objective(
+        objective,
+        workspace_root=tmp_path,
+    )
+
+    assert policy.allow_workspace_mutation is True
+    assert "assessment request" not in " ".join(policy.constraints)
+
+
+def test_operator_intent_policy_allows_review_requests_with_explicit_edits(tmp_path) -> None:
+    policy = super_cli._operator_intent_policy_from_objective(
+        "Review this project and update README.md with your findings.",
+        workspace_root=tmp_path,
+    )
+
+    assert policy.allow_workspace_mutation is True
+    assert "assessment request" not in " ".join(policy.constraints)
 
 
 def test_main_verbose_text_summary_prints_full_trace(capsys) -> None:
@@ -4877,6 +5237,41 @@ def test_targeted_source_repair_objective_skips_run_local_planner() -> None:
     )
 
 
+def test_answer_only_review_objective_skips_run_local_planner(tmp_path) -> None:
+    objective = "help me review this project?"
+    policy = super_cli._operator_intent_policy_from_objective(
+        objective,
+        workspace_root=tmp_path,
+    )
+
+    assert policy.allow_workspace_mutation is False
+    assert (
+        super_cli._super_should_run_planner(
+            objective,
+            operator_intent_policy=policy,
+            prompt_only_creation_target=None,
+            tool_ids=["list_directory", "file_read", "file_write", "file_edit"],
+        )
+        is False
+    )
+
+
+def test_plain_review_or_analyze_words_do_not_trigger_planner_by_themselves() -> None:
+    for objective in [
+        "review this project architecture",
+        "analyze this codebase and tell me what you find",
+    ]:
+        assert (
+            super_cli._super_should_run_planner(
+                objective,
+                operator_intent_policy=super_cli.OperatorIntentPolicy(),
+                prompt_only_creation_target=None,
+                tool_ids=["list_directory", "file_read", "file_write", "file_edit"],
+            )
+            is False
+        )
+
+
 def test_main_live_targeted_repair_prompt_requires_material_edit_or_blocker(
     tmp_path,
     capsys,
@@ -4954,6 +5349,11 @@ def test_main_live_generic_dag_deferred_tasks_do_not_trigger_repair(
     )
     assert plan_validation["ready_task_ids"] == ["1-1", "1-2"]
     assert plan_validation["deferred_task_ids"] == ["2-1"]
+    assert [task["task_id"] for task in plan_validation["task_graph"]] == [
+        "1-1",
+        "1-2",
+        "2-1",
+    ]
     assert not any(row.get("event") == "live.generic_repair.started" for row in event_rows)
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"
@@ -5209,6 +5609,59 @@ def test_main_live_generic_fails_without_workspace_mutations(tmp_path, capsys, m
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]
     assert final_validation["builder_retry_attempted"] is True
+
+
+def test_main_live_generic_no_edit_direct_reply_completes_without_retry(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    fake_provider = _FakeReadOnlyDirectReplyProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            (
+                "Blueprint smoke test verification: reply with exactly "
+                "'blueprint smoke test ok'. Do not edit files or run external commands."
+            ),
+            "--live",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = capsys.readouterr().out
+    assert "Live Run: completed" in stdout
+    assert "workspace file mutations" not in stdout
+    assert fake_provider.calls == 1
+    assert fake_provider.tool_names_by_call
+    assert "file_edit" not in fake_provider.tool_names_by_call[0]
+    assert "file_write" not in fake_provider.tool_names_by_call[0]
+    assert "shell_command" not in fake_provider.tool_names_by_call[0]
+    assert "Allowed workspace writes: none." in fake_provider.rendered_messages[0]
+
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert not any(row.get("event") == "live.planning.started" for row in event_rows)
+    assert not any(row.get("event") == "live.builder_retry.started" for row in event_rows)
+    final_validation = [
+        row for row in event_rows if row.get("event") == "live.validation.completed"
+    ][-1]
+    assert final_validation["passed"] is True
+    assert final_validation["builder_retry_attempted"] is False
+    assert final_validation["changed_required_files"] == []
 
 
 def test_main_live_generic_uses_generic_builder_retry(

@@ -5817,6 +5817,8 @@ def test_super_tui_async_surface_turn_carries_communication_policy(tmp_path) -> 
     assert turn.metadata["surface_context"]["execution_policy"]["max_auto_fix_rounds"] == 4
     assert turn.metadata["surface_policy"]["controller_lane"] == "execute"
     assert turn.metadata["surface_context"]["surface_policy"]["phase_shape"] == "repair_loop"
+    assert turn.metadata["surface_context"]["notes_feature"]["kind"] == "hugo_notes"
+    assert "hugo_notes" in turn.capabilities
 
 
 def test_super_tui_async_admission_payload_carries_communication_policy(tmp_path) -> None:
