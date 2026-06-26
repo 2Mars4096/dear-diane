@@ -40,6 +40,8 @@ class _OpenAICompatibilityProfile:
     low_budget_text_thinking_threshold: int | None = None
     disabled_thinking_temperature: float | None = None
     stream_via_complete: bool = False
+    requires_tool_parameters_object_type: bool = False
+    flattens_root_tool_parameter_unions: bool = False
 
 
 class OpenAIProvider:
@@ -273,6 +275,8 @@ class OpenAIProvider:
             low_budget_text_thinking_threshold=low_budget_threshold,
             disabled_thinking_temperature=0.6,
             stream_via_complete=normalized.startswith("kimi-"),
+            requires_tool_parameters_object_type=True,
+            flattens_root_tool_parameter_unions=True,
         )
 
     def get_model_behavior(self, model: str) -> ModelBehaviorProfile:
@@ -494,9 +498,51 @@ class OpenAIProvider:
         return normalized
 
     @classmethod
+    def _normalize_tool_parameters_for_openai_compatibility(
+        cls,
+        parameters: Any,
+        *,
+        require_object_type: bool = False,
+        flatten_root_unions: bool = False,
+    ) -> Any:
+        if not isinstance(parameters, dict):
+            if require_object_type:
+                return {"type": "object", "properties": {}}
+            return parameters
+
+        normalized = cls._normalize_json_schema_for_openai_compatibility(parameters)
+        if not require_object_type:
+            return normalized
+
+        if not isinstance(normalized, dict):
+            return {"type": "object", "properties": {}}
+
+        if flatten_root_unions and (
+            isinstance(normalized.get("anyOf"), list)
+            or isinstance(normalized.get("oneOf"), list)
+        ):
+            normalized = {
+                key: cls._normalize_json_schema_for_openai_compatibility(value)
+                for key, value in parameters.items()
+                if key not in {"anyOf", "oneOf"}
+            }
+            if not isinstance(normalized, dict):
+                normalized = {}
+
+        normalized = dict(normalized)
+        normalized["type"] = "object"
+        normalized.setdefault("properties", {})
+        if normalized.get("required") == []:
+            normalized.pop("required", None)
+        return normalized
+
+    @classmethod
     def _normalize_tool_schemas_for_openai_compatibility(
         cls,
         tools: Any,
+        *,
+        require_parameters_object_type: bool = False,
+        flatten_root_parameter_unions: bool = False,
     ) -> Any:
         if not isinstance(tools, list):
             return tools
@@ -511,10 +557,13 @@ class OpenAIProvider:
             if isinstance(function_payload, dict):
                 normalized_function = dict(function_payload)
                 parameters = normalized_function.get("parameters")
-                if isinstance(parameters, dict):
-                    normalized_function["parameters"] = (
-                        cls._normalize_json_schema_for_openai_compatibility(parameters)
+                normalized_function["parameters"] = (
+                    cls._normalize_tool_parameters_for_openai_compatibility(
+                        parameters,
+                        require_object_type=require_parameters_object_type,
+                        flatten_root_unions=flatten_root_parameter_unions,
                     )
+                )
                 normalized_tool["function"] = normalized_function
             normalized_tools.append(normalized_tool)
         return normalized_tools
@@ -669,6 +718,7 @@ class OpenAIProvider:
     ) -> CompletionResult:
         messages = normalize_openai_messages_for_multimodal(messages)
         effective_temperature = self._normalize_temperature(model, temperature)
+        profile = self._compatibility_profile(model)
         call_kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -676,7 +726,9 @@ class OpenAIProvider:
         }
         if "tools" in call_kwargs:
             call_kwargs["tools"] = self._normalize_tool_schemas_for_openai_compatibility(
-                call_kwargs.get("tools")
+                call_kwargs.get("tools"),
+                require_parameters_object_type=profile.requires_tool_parameters_object_type,
+                flatten_root_parameter_unions=profile.flattens_root_tool_parameter_unions,
             )
         if effective_temperature is not None:
             call_kwargs["temperature"] = effective_temperature
@@ -769,9 +821,12 @@ class OpenAIProvider:
             "stream_options": {"include_usage": True},
             **kwargs,
         }
+        profile = self._compatibility_profile(model)
         if "tools" in call_kwargs:
             call_kwargs["tools"] = self._normalize_tool_schemas_for_openai_compatibility(
-                call_kwargs.get("tools")
+                call_kwargs.get("tools"),
+                require_parameters_object_type=profile.requires_tool_parameters_object_type,
+                flatten_root_parameter_unions=profile.flattens_root_tool_parameter_unions,
             )
         if effective_temperature is not None:
             call_kwargs["temperature"] = effective_temperature
