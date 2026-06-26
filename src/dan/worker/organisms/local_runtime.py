@@ -1219,6 +1219,34 @@ def _tool_ids_are_read_only(tool_ids: Sequence[str]) -> bool:
     return bool(available) and not any(tool_id in _READ_ONLY_TOOL_EXCLUSIONS for tool_id in available)
 
 
+def _request_forbids_workspace_mutation(request: CompletionRequest) -> bool:
+    raw_policy = request.metadata.get("operator_intent_policy")
+    if isinstance(raw_policy, Mapping) and raw_policy.get("allow_workspace_mutation") is False:
+        return True
+
+    text = " ".join(
+        str(part or "")
+        for part in (
+            request.system_prompt,
+            request.user_prompt,
+            request.metadata.get("operator_prompt"),
+            request.metadata.get("objective"),
+        )
+    )
+    lowered = " ".join(text.lower().split())
+    if not lowered:
+        return False
+    patterns = (
+        r"\bread[-\s]?only\b",
+        r"\bdo\s+not\s+(?:edit|modify|change|write|create|delete|touch|mutate)\s+(?:any\s+)?(?:workspace\s+)?files?\b",
+        r"\bdon['’]?t\s+(?:edit|modify|change|write|create|delete|touch|mutate)\s+(?:any\s+)?(?:workspace\s+)?files?\b",
+        r"\bdont\s+(?:edit|modify|change|write|create|delete|touch|mutate)\s+(?:any\s+)?(?:workspace\s+)?files?\b",
+        r"\bwithout\s+(?:editing|modifying|changing|writing|creating|deleting|touching|mutating)\s+(?:any\s+)?(?:workspace\s+)?files?\b",
+        r"\bno\s+(?:file\s+)?(?:edits?|writes?|changes?|modifications?|mutations?)\b",
+    )
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
 def _workspace_supports_git(workspace_root: str | Path) -> bool:
     try:
         _find_repo(str(Path(workspace_root).expanduser().resolve()))
@@ -4724,10 +4752,28 @@ class ToolLoopCompletionProvider:
         exclusive_write_owner = bool(exclusive_write_owner_path)
 
         requested_tool_schemas = self._resolve_tool_schemas(request.tools)
-        tool_schemas = _validator_read_only_tool_schemas(
-            request,
-            requested_tool_schemas,
-        )
+        operator_read_only = _request_forbids_workspace_mutation(request)
+        if operator_read_only:
+            allowed_read_only_tools = set(
+                _read_only_tool_ids(
+                    [
+                        _tool_schema_name(tool)
+                        for tool in requested_tool_schemas
+                        if isinstance(tool, dict) and _tool_schema_name(tool)
+                    ]
+                )
+            )
+            tool_schemas = [
+                dict(tool)
+                for tool in requested_tool_schemas
+                if isinstance(tool, dict)
+                and _tool_schema_name(tool) in allowed_read_only_tools
+            ]
+        else:
+            tool_schemas = _validator_read_only_tool_schemas(
+                request,
+                requested_tool_schemas,
+            )
         exclusive_owner_prefers_file_edit = _exclusive_write_owner_prefers_file_edit(
             request,
             tool_schemas,
@@ -4735,7 +4781,11 @@ class ToolLoopCompletionProvider:
         )
         if len(tool_schemas) != len(requested_tool_schemas):
             self._emit_event(
-                "toolloop.validator_tools_narrowed",
+                (
+                    "toolloop.operator_read_only_tools_narrowed"
+                    if operator_read_only
+                    else "toolloop.validator_tools_narrowed"
+                ),
                 enabled_tools=[
                     _tool_schema_name(tool)
                     for tool in tool_schemas
@@ -4767,6 +4817,17 @@ class ToolLoopCompletionProvider:
         )
         if tool_policy:
             messages.append({"role": "system", "content": tool_policy})
+        if operator_read_only:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "Operator policy: this is a read-only/no-mutation turn. "
+                        "Do not claim any file was changed, created, edited, or deleted. "
+                        "Use only read-only evidence if needed, then return the requested answer."
+                    ),
+                }
+            )
         messages.append({"role": "user", "content": _completion_request_user_content(request)})
 
         executed_tools: list[dict[str, Any]] = []
