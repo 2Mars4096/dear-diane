@@ -154,6 +154,7 @@ export const CHAT_V2_ENDPOINTS = {
   streamEvents: (channelId: string) => `/api/chat/${channelId}/events`,
   stopStream: (channelId: string) => `/api/chat/${channelId}/stop`,
   createAgentRun: "/api/v2/agent-runs",
+  listTasks: "/api/v2/tasks",
   getTask: (taskId: string) => `/api/v2/tasks/${taskId}`,
   listThreadTasks: (threadId: string) => `/api/v2/threads/${threadId}/tasks`,
   getAgentRun: (runId: string) => `/api/v2/agent-runs/${runId}`,
@@ -387,6 +388,22 @@ export async function getChatV2Task(
     await fetch(CHAT_V2_ENDPOINTS.getTask(taskId)),
   );
   return payload.task;
+}
+
+export async function listChatV2Tasks(options: {
+  limit?: number;
+  workspaceRoot?: string;
+  threadId?: string;
+} = {}): Promise<ChatV2TaskSnapshot[]> {
+  const params = new URLSearchParams();
+  if (options.limit) params.set("limit", String(options.limit));
+  if (options.workspaceRoot) params.set("workspace_root", options.workspaceRoot);
+  if (options.threadId) params.set("thread_id", options.threadId);
+  const suffix = params.toString();
+  const payload = await readJson<{ tasks: ChatV2TaskSnapshot[] }>(
+    await fetch(`${CHAT_V2_ENDPOINTS.listTasks}${suffix ? `?${suffix}` : ""}`),
+  );
+  return Array.isArray(payload.tasks) ? payload.tasks : [];
 }
 
 export async function listChatV2ThreadTasks(

@@ -19,6 +19,7 @@ describe("chatV2Api", () => {
       "/api/chat/chat-abc/stop",
     );
     expect(CHAT_V2_ENDPOINTS.createAgentRun).toBe("/api/v2/agent-runs");
+    expect(CHAT_V2_ENDPOINTS.listTasks).toBe("/api/v2/tasks");
     expect(CHAT_V2_ENDPOINTS.getTask("task-1")).toBe("/api/v2/tasks/task-1");
     expect(CHAT_V2_ENDPOINTS.listThreadTasks("thread-1")).toBe(
       "/api/v2/threads/thread-1/tasks",

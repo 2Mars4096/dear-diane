@@ -9,12 +9,15 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   type PointerEvent,
+  type ReactNode,
 } from "react";
 import {
   Activity,
   Archive,
+  ArrowUp,
   Bot,
   Cable,
+  Check,
   ChevronDown,
   ChevronRight,
   Circle,
@@ -24,6 +27,8 @@ import {
   Folder,
   FolderPlus,
   FolderOpen,
+  Link as LinkIcon,
+  Lightbulb,
   Loader2,
   MessageSquareText,
   NotebookPen,
@@ -35,6 +40,7 @@ import {
   Shield,
   Square,
   TerminalSquare,
+  Trash2,
   WandSparkles,
   X,
 } from "lucide-react";
@@ -59,10 +65,12 @@ import {
   connectChatV2AgentRunEvents,
   createChatV2AgentRun,
   createChatV2Thread,
+  deleteChatV2Thread,
   executeChatV2AgentRun,
   getChatV2AgentRun,
   getChatV2AgentRunEvents,
   getChatV2Thread,
+  listChatV2Tasks,
   listChatV2ThreadTasks,
   listChatV2Threads,
   normalizeChatV2History,
@@ -81,6 +89,7 @@ import {
   nativeWatch,
 } from "../../lib/electronBridge";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
+import { useSettingsStore } from "../../store/useSettingsStore";
 import type { ChatMessage, RunEventPayload } from "../../types/chat";
 import MarkdownRenderer from "../shared/MarkdownRenderer";
 
@@ -92,6 +101,7 @@ const NOTE_CONTENT_CACHE_STORAGE_KEY = "dan.chunkWorkspace.noteContentCache.v1";
 const LAST_THREAD_STORAGE_KEY = "dan.chunkWorkspace.lastThread.v1";
 const ROOT_SUGGESTION_STORAGE_KEY = "dan.chunkWorkspace.roots.v1";
 const THREAD_WORKSPACE_STORAGE_KEY = "dan.chunkWorkspace.threadWorkspaces.v1";
+const SESSION_RESPONSE_SEEN_STORAGE_KEY = "dan.chunkWorkspace.sessionResponseSeen.v1";
 const LAYOUT_STORAGE_KEY = "dan.chunkWorkspace.layout.v1";
 const UI_STATE_STORAGE_KEY = "dan.chunkWorkspace.uiState.v1";
 const WORKSPACE_SURFACE_TYPE = "frontend";
@@ -100,6 +110,13 @@ const WORKSPACE_SURFACE = `${WORKSPACE_SURFACE_TYPE}:${WORKSPACE_SURFACE_ID}`;
 const LEFT_RAIL_DEFAULT_WIDTH = 292;
 const LEFT_RAIL_MIN_WIDTH = 220;
 const LEFT_RAIL_MAX_WIDTH = 420;
+const ROOT_PICKER_DEFAULT_WIDTH = 420;
+const ROOT_PICKER_MIN_WIDTH = 300;
+const ROOT_PICKER_MAX_WIDTH = 760;
+const ROOT_PICKER_DEFAULT_HEIGHT = 192;
+const ROOT_PICKER_MIN_HEIGHT = 128;
+const ROOT_PICKER_MAX_HEIGHT = 360;
+const COLLAPSED_PANE_WIDTH = 44;
 
 type NoteSource = "local" | "disk" | "server";
 type NoteStatus = "clean" | "dirty" | "saving" | "error" | "loading";
@@ -173,6 +190,20 @@ interface NoteCacheEntry {
 
 type ChunkKind = "chat" | "agent" | "code" | "diff";
 type ChunkStatus = "clean" | "dirty" | "running" | "queued" | "error";
+type BlueprintNodeStatus = "done" | "active" | "ready" | "future" | "queued" | "blocked";
+type BlueprintNodeKind =
+  | "request"
+  | "understanding"
+  | "plan"
+  | "task"
+  | "worktree"
+  | "build"
+  | "tool"
+  | "change"
+  | "validation"
+  | "repair"
+  | "answer"
+  | "queue";
 type WorkspacePane = "work" | "notes";
 type PhonePage = "chat" | "sessions" | "files" | "preview" | "note-list" | "note-edit" | "note-preview";
 type NoteRailView = "pages" | "tags" | "sections";
@@ -188,6 +219,46 @@ interface WorkspaceChunk {
   status: ChunkStatus;
   meta: string;
   role?: ChatMessage["role"];
+  taskId?: string | null;
+  runId?: string | null;
+}
+
+interface BlueprintPlanTask {
+  taskId: string;
+  goal: string;
+  dependsOn: string[];
+  ownedPaths: string[];
+  deliverables: string[];
+  validation: string[];
+  status: string;
+  parallelSafe: boolean;
+}
+
+interface BlueprintPlanContext {
+  taskGraph: BlueprintPlanTask[];
+  readyTaskIds: string[];
+  deferredTaskIds: string[];
+  assignedTaskIds: string[];
+  parallelWorktreeTaskIds: string[];
+  dependencyRevisions: string[];
+  planFiles: string[];
+  planRootRelative: string;
+}
+
+interface BlueprintNode {
+  id: string;
+  title: string;
+  detail: string;
+  meta: string;
+  body: string;
+  previewBody?: string;
+  rawRequest?: string;
+  status: BlueprintNodeStatus;
+  kind: BlueprintNodeKind;
+  compact?: boolean;
+  depth?: number;
+  dependencyIds?: string[];
+  sourceChunkId?: string;
   taskId?: string | null;
   runId?: string | null;
 }
@@ -208,6 +279,10 @@ interface QueueRow {
   detail: string;
   status: string;
   active: boolean;
+  kind: "task" | "followup";
+  lane: "task" | "append" | "continue_after_current";
+  taskId?: string | null;
+  runId?: string | null;
 }
 
 interface SessionSwipeState {
@@ -227,6 +302,8 @@ interface LayoutPreferences {
   showNoteEditor: boolean;
   showNotesPreview: boolean;
   leftRailWidth: number;
+  rootPickerWidth: number;
+  rootPickerHeight: number;
 }
 
 interface WorkspaceUiState {
@@ -273,14 +350,92 @@ interface NoteMentionState {
 
 const terminalTaskStatuses = new Set(["completed", "failed", "blocked", "stopped"]);
 const terminalQueueStatuses = new Set(["completed", "done", "failed", "cancelled", "canceled", "stopped"]);
+const STALE_RUNNING_TASK_MS = 24 * 60 * 60 * 1000;
 
 function cx(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
 }
 
+function railCardTone(active: boolean, dropTarget = false) {
+  return active
+    ? "border-slate-900 bg-white text-slate-950 shadow-sm dark:border-slate-100 dark:bg-slate-900 dark:text-slate-100"
+    : dropTarget
+      ? "border-sky-200 bg-sky-50 text-sky-900 ring-1 ring-sky-200 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-100 dark:ring-sky-900"
+      : "border-transparent bg-slate-50 text-slate-600 hover:border-slate-200 hover:bg-white hover:shadow-sm dark:bg-slate-950/40 dark:text-slate-300 dark:hover:border-slate-800 dark:hover:bg-slate-900";
+}
+
+function PaneHeaderButton({
+  title,
+  onClick,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900 dark:hover:text-slate-200"
+    >
+      {children}
+    </button>
+  );
+}
+
+function CollapsedPaneRail({
+  label,
+  title,
+  onClick,
+  children,
+  edge = "right",
+}: {
+  label: string;
+  title: string;
+  onClick: () => void;
+  children: ReactNode;
+  edge?: "left" | "right";
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      className={cx(
+        "hidden min-h-0 w-full shrink-0 flex-col items-center justify-center gap-2 bg-white/70 text-slate-500 transition hover:bg-white hover:text-slate-900 dark:bg-slate-950/80 dark:hover:bg-slate-900 dark:hover:text-slate-100 md:flex",
+        edge === "right"
+          ? "border-r border-slate-200/80 dark:border-slate-800"
+          : "border-l border-slate-200/80 dark:border-slate-800",
+      )}
+      style={{ width: COLLAPSED_PANE_WIDTH }}
+    >
+      <span className="grid h-7 w-7 place-items-center rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-950">
+        {children}
+      </span>
+      <span className="rotate-180 whitespace-nowrap text-[10px] font-bold uppercase tracking-[0.16em] [writing-mode:vertical-rl]">
+        {label}
+      </span>
+    </button>
+  );
+}
+
 function clampLeftRailWidth(value: number) {
   if (!Number.isFinite(value)) return LEFT_RAIL_DEFAULT_WIDTH;
   return Math.min(LEFT_RAIL_MAX_WIDTH, Math.max(LEFT_RAIL_MIN_WIDTH, Math.round(value)));
+}
+
+function clampRootPickerWidth(value: number) {
+  if (!Number.isFinite(value)) return ROOT_PICKER_DEFAULT_WIDTH;
+  return Math.min(ROOT_PICKER_MAX_WIDTH, Math.max(ROOT_PICKER_MIN_WIDTH, Math.round(value)));
+}
+
+function clampRootPickerHeight(value: number) {
+  if (!Number.isFinite(value)) return ROOT_PICKER_DEFAULT_HEIGHT;
+  return Math.min(ROOT_PICKER_MAX_HEIGHT, Math.max(ROOT_PICKER_MIN_HEIGHT, Math.round(value)));
 }
 
 function usePhoneViewport() {
@@ -303,7 +458,7 @@ function wireGuardDisplay(status: WorkspaceWireGuardStatus | null) {
   if (!status) return { label: "WG", detail: "checking", tone: "unknown" };
   const label = status.mode === "alias-nywg" ? "WG nywg" : "WG";
   if (status.active) return { label, detail: "active", tone: "ok" };
-  if (status.config_present) return { label, detail: "ready", tone: "warn" };
+  if (status.config_present) return { label, detail: "inactive", tone: "warn" };
   return { label, detail: "setup", tone: "unknown" };
 }
 
@@ -678,6 +833,15 @@ function noteFacetTitle(facet: string) {
   return value;
 }
 
+function noteRailViewForFacet(facet: string): NoteRailView | null {
+  const [kind, ...rest] = facet.split(":");
+  const value = rest.join(":");
+  if (!value) return null;
+  if (kind === "tag") return "tags";
+  if (kind === "section" || kind === "category") return "sections";
+  return null;
+}
+
 function pageIdFromNote(note: WorkspaceNote) {
   return note.pageID?.trim() || "";
 }
@@ -736,6 +900,22 @@ function rootSuggestion(
   };
 }
 
+function parentRootPath(path: string) {
+  const normalized = normalizeRootPath(path);
+  if (!normalized || normalized === "/" || /^[a-z]:[\\/]$/i.test(normalized)) return "";
+  const slashIndex = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+  if (slashIndex < 0) return "";
+  if (slashIndex === 0) return "/";
+  return normalized.slice(0, slashIndex);
+}
+
+function browsingRootPath(path: string) {
+  const normalized = normalizeRootPath(path);
+  if (!normalized) return "";
+  if (normalized === "/" || /^[a-z]:[\\/]$/i.test(normalized)) return normalized;
+  return `${normalized}/`;
+}
+
 function mergeRootSuggestions(
   ...groups: Array<Array<WorkspaceRootSuggestion | null | undefined>>
 ) {
@@ -751,6 +931,38 @@ function mergeRootSuggestions(
     }
   }
   return suggestions;
+}
+
+function workspaceIdForTask(
+  task: ChatV2TaskSnapshot,
+  workspaces: Array<{ id: string; pinnedPaths: string[] }>,
+) {
+  const workspaceId = textValue(task.metadata?.workspace_id);
+  if (workspaceId && workspaces.some((item) => item.id === workspaceId)) return workspaceId;
+  const roots = new Map(
+    workspaces.flatMap((item) => {
+      const root = normalizeRootPath(item.pinnedPaths[0] ?? "");
+      return root ? [[root, item.id] as const] : [];
+    }),
+  );
+  const workspaceRoot = normalizeRootPath(textValue(task.metadata?.workspace_root));
+  if (workspaceRoot && roots.has(workspaceRoot)) return roots.get(workspaceRoot) ?? "";
+  const idAsRoot = normalizeRootPath(workspaceId);
+  return idAsRoot && roots.has(idAsRoot) ? roots.get(idAsRoot) ?? "" : "";
+}
+
+function workspaceIdForTasks(
+  tasks: ChatV2TaskSnapshot[],
+  workspaces: Array<{ id: string; pinnedPaths: string[] }>,
+) {
+  const orderedTasks = [...tasks].sort(
+    (a, b) => timestampValue(taskRunUpdatedAt(b), 0) - timestampValue(taskRunUpdatedAt(a), 0),
+  );
+  for (const task of orderedTasks) {
+    const workspaceId = workspaceIdForTask(task, workspaces);
+    if (workspaceId) return workspaceId;
+  }
+  return "";
 }
 
 function readStoredRoots() {
@@ -802,11 +1014,35 @@ function readStoredThreadWorkspaces() {
   }
 }
 
+function readStoredSessionResponseSeen() {
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(SESSION_RESPONSE_SEEN_STORAGE_KEY) || "{}",
+    ) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).flatMap(([key, value]) =>
+        typeof value === "string" && key.includes(":") ? [[key, value]] : [],
+      ),
+    ) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
 function persistThreadWorkspaces(bindings: Record<string, string>) {
   try {
     window.localStorage.setItem(THREAD_WORKSPACE_STORAGE_KEY, JSON.stringify(bindings));
   } catch {
     // Workspace/session grouping stays local and best effort.
+  }
+}
+
+function persistSessionResponseSeen(seen: Record<string, string>) {
+  try {
+    window.localStorage.setItem(SESSION_RESPONSE_SEEN_STORAGE_KEY, JSON.stringify(seen));
+  } catch {
+    // Response-read state is local and best effort.
   }
 }
 
@@ -820,6 +1056,8 @@ function readStoredLayout(): LayoutPreferences {
     showNoteEditor: true,
     showNotesPreview: true,
     leftRailWidth: LEFT_RAIL_DEFAULT_WIDTH,
+    rootPickerWidth: ROOT_PICKER_DEFAULT_WIDTH,
+    rootPickerHeight: ROOT_PICKER_DEFAULT_HEIGHT,
   };
   try {
     const parsed = JSON.parse(window.localStorage.getItem(LAYOUT_STORAGE_KEY) || "{}") as
@@ -857,6 +1095,14 @@ function readStoredLayout(): LayoutPreferences {
         typeof parsed.leftRailWidth === "number"
           ? clampLeftRailWidth(parsed.leftRailWidth)
           : defaults.leftRailWidth,
+      rootPickerWidth:
+        typeof parsed.rootPickerWidth === "number"
+          ? clampRootPickerWidth(parsed.rootPickerWidth)
+          : defaults.rootPickerWidth,
+      rootPickerHeight:
+        typeof parsed.rootPickerHeight === "number"
+          ? clampRootPickerHeight(parsed.rootPickerHeight)
+          : defaults.rootPickerHeight,
     };
   } catch {
     return defaults;
@@ -898,6 +1144,14 @@ function readStoredUiState(): WorkspaceUiState {
     const parsed = JSON.parse(window.localStorage.getItem(UI_STATE_STORAGE_KEY) || "{}") as
       Partial<WorkspaceUiState>;
     const storedNoteRailView = (parsed as { noteRailView?: unknown }).noteRailView;
+    const storedNoteFacet = typeof parsed.noteFacet === "string" ? parsed.noteFacet : "all";
+    const normalizedNoteRailView =
+      storedNoteRailView === "tags" || storedNoteRailView === "sections"
+        ? storedNoteRailView
+        : storedNoteRailView === "categories"
+          ? "sections"
+          : "pages";
+    const restoredFacetRailView = noteRailViewForFacet(storedNoteFacet);
     return {
       activePane: parsed.activePane === "notes" ? "notes" : defaults.activePane,
       selectedChunkId:
@@ -906,13 +1160,11 @@ function readStoredUiState(): WorkspaceUiState {
         typeof parsed.activeFilePath === "string" ? parsed.activeFilePath : null,
       threadQuery: typeof parsed.threadQuery === "string" ? parsed.threadQuery : "",
       noteQuery: typeof parsed.noteQuery === "string" ? parsed.noteQuery : "",
-      noteFacet: typeof parsed.noteFacet === "string" ? parsed.noteFacet : "all",
+      noteFacet: storedNoteFacet,
       noteRailView:
-        storedNoteRailView === "tags" || storedNoteRailView === "sections"
-          ? storedNoteRailView
-          : storedNoteRailView === "categories"
-            ? "sections"
-            : "pages",
+        normalizedNoteRailView === "pages" && restoredFacetRailView
+          ? restoredFacetRailView
+          : normalizedNoteRailView,
       devFileQuery: typeof parsed.devFileQuery === "string" ? parsed.devFileQuery : "",
       expandedFileDirs: booleanRecord(parsed.expandedFileDirs),
       expandedNoteFolders: booleanRecord(parsed.expandedNoteFolders),
@@ -1259,8 +1511,262 @@ function taskRunId(task: ChatV2TaskSnapshot) {
   return typeof runId === "string" ? runId : "";
 }
 
+function metadataObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function taskRunUpdatedAt(task: ChatV2TaskSnapshot) {
+  return (
+    textValue(task.metadata?.run_updated_at) ||
+    textValue(task.metadata?.["_run_updated_at"]) ||
+    textValue(task.metadata?.updated_at) ||
+    textValue(task.metadata?.stop_requested_at) ||
+    textValue(task.metadata?.thread_updated_at) ||
+    textValue(task.metadata?.["_thread_updated_at"])
+  );
+}
+
+function taskLastUpdateAge(task: ChatV2TaskSnapshot) {
+  const updatedAt = taskRunUpdatedAt(task);
+  return updatedAt ? compactThreadTime(updatedAt) : "";
+}
+
+function taskStopRequested(task?: ChatV2TaskSnapshot | null) {
+  const metadata = task?.metadata ?? {};
+  return Boolean(metadata.stop_requested || metadata.stop_requested_at || metadata.stop_command);
+}
+
+function taskIsStaleRunning(task?: ChatV2TaskSnapshot | null) {
+  if (task?.status !== "running") return false;
+  const updatedAt = taskRunUpdatedAt(task);
+  if (!updatedAt) return false;
+  const timestamp = new Date(updatedAt).getTime();
+  return Number.isFinite(timestamp) && Date.now() - timestamp > STALE_RUNNING_TASK_MS;
+}
+
+function isTaskRunning(task?: ChatV2TaskSnapshot | null) {
+  return Boolean(task?.status === "running" && !taskStopRequested(task) && !taskIsStaleRunning(task));
+}
+
 function isTaskTerminal(task?: ChatV2TaskSnapshot | null) {
   return Boolean(task && terminalTaskStatuses.has(task.status));
+}
+
+function taskNeedsAttention(task?: ChatV2TaskSnapshot | null) {
+  return Boolean(
+    task &&
+      (["failed", "blocked", "stopped"].includes(task.status) ||
+        taskStopRequested(task) ||
+        taskIsStaleRunning(task)),
+  );
+}
+
+function selectActiveRunningTask(tasks: ChatV2TaskSnapshot[]) {
+  return tasks.find(isTaskRunning) ?? null;
+}
+
+function runningTaskMapByThreadId(tasks: ChatV2TaskSnapshot[]) {
+  const entries = tasks
+    .filter(isTaskRunning)
+    .map((task) => [task.thread_id, task] as const);
+  return new Map(entries);
+}
+
+function mergeTaskSnapshots(...groups: ChatV2TaskSnapshot[][]) {
+  const byId = new Map<string, ChatV2TaskSnapshot>();
+  for (const group of groups) {
+    for (const task of group) {
+      if (!task.task_id) continue;
+      byId.set(task.task_id, task);
+    }
+  }
+  return [...byId.values()];
+}
+
+function taskRequestText(task?: ChatV2TaskSnapshot | null) {
+  if (!task) return "";
+  const lastSurfaceTurn = metadataObject(task.metadata?.last_surface_turn);
+  return (
+    textValue(lastSurfaceTurn.text) ||
+    textValue(task.metadata?.request_text) ||
+    textValue(task.metadata?.prompt) ||
+    textValue(task.metadata?.objective)
+  );
+}
+
+function newestSessionTask(tasks: ChatV2TaskSnapshot[]) {
+  return [...tasks].sort(
+    (a, b) => timestampValue(taskRunUpdatedAt(b), 0) - timestampValue(taskRunUpdatedAt(a), 0),
+  )[0] ?? null;
+}
+
+function sessionTaskStatusLabel(task?: ChatV2TaskSnapshot | null) {
+  if (!task) return "";
+  if (taskStopRequested(task)) return "stop requested";
+  if (taskIsStaleRunning(task)) return "stale";
+  if (taskNeedsAttention(task)) return task.status;
+  if (task.status === "completed") return "done";
+  if (task.status === "waiting_dependency") return "waiting";
+  if (task.status === "needs_input") return "needs input";
+  return task.status.replace(/_/g, " ");
+}
+
+function sessionCardDisplay(thread: ChatV2ThreadSummary, tasks: ChatV2TaskSnapshot[]) {
+  const latestTask = newestSessionTask(tasks);
+  const title = thread.title?.trim() || "Untitled";
+  const requestTitle = taskRequestText(latestTask);
+  const displayTitle =
+    title === "New Super DAN Session" && requestTitle ? titleFromText(requestTitle) : title;
+  const kind = thread.mode === "agent" ? "Super DAN" : "Chat";
+  const updated = compactThreadTime(thread.updated_at);
+  const timeSuffix = updated ? ` · ${updated}` : "";
+  if (tasks.length > 0) {
+    const runLabel = `${tasks.length} ${tasks.length === 1 ? "run" : "runs"}`;
+    const status = sessionTaskStatusLabel(latestTask);
+    return {
+      title: displayTitle,
+      detail: `${kind} · ${runLabel}${status ? ` · ${status}` : ""}${timeSuffix}`,
+    };
+  }
+  if (thread.mode === "agent" && thread.message_count === 0) {
+    return {
+      title: displayTitle,
+      detail: `${kind} · No request yet${timeSuffix}`,
+    };
+  }
+  return {
+    title: displayTitle,
+    detail: `${kind} · ${thread.message_count} ${thread.message_count === 1 ? "message" : "messages"}${timeSuffix}`,
+  };
+}
+
+function taskReadyResponseSummary(task: ChatV2TaskSnapshot) {
+  const result = metadataObject(task.metadata?.backend_result);
+  const candidates = [
+    ...detailItemsFromValue(task.latest_progress),
+    ...detailItemsFromValue(task.metadata?.latest_summary),
+    ...detailItemsForKeys(result, [
+      "answer",
+      "final_answer",
+      "public_response",
+      "final_response",
+      "response",
+      "summary",
+      "change_summary",
+      "completion_summary",
+      "outcome",
+      "message",
+      "result_summary",
+    ]),
+  ];
+  return candidates.find((item) => item && !isGenericCompletionText(item)) ?? "";
+}
+
+function sessionReadyResponseAt(tasks: ChatV2TaskSnapshot[]) {
+  const completedWithResponse = tasks.filter(
+    (task) => task.status === "completed" && taskReadyResponseSummary(task),
+  );
+  if (completedWithResponse.length === 0) return "";
+  return completedWithResponse
+    .map((task) => taskRunUpdatedAt(task))
+    .filter(Boolean)
+    .sort((a, b) => timestampValue(b, 0) - timestampValue(a, 0))[0] ?? "";
+}
+
+function sessionHasNewReadyResponse(tasks: ChatV2TaskSnapshot[], seenAt?: string) {
+  const readyAt = sessionReadyResponseAt(tasks);
+  if (!readyAt) return false;
+  const readyTimestamp = timestampValue(readyAt, 0);
+  const seenTimestamp = timestampValue(seenAt, 0);
+  return readyTimestamp > 0 && readyTimestamp > seenTimestamp;
+}
+
+function shouldAutoRestoreSession(args: {
+  activeThreadPresent: boolean;
+  creatingSession: boolean;
+  targetThreadId?: string | null;
+  threadCount: number;
+}) {
+  return Boolean(
+    !args.activeThreadPresent &&
+      !args.creatingSession &&
+      args.targetThreadId &&
+      args.threadCount > 0,
+  );
+}
+
+type ActiveThreadSelection = {
+  id: string;
+  workflowId: string;
+  title?: string;
+} | null;
+
+type ThreadIdentity = {
+  id: string;
+  workflow_id?: string;
+  workflowId?: string;
+};
+
+function threadIdentityWorkflowId(thread: ThreadIdentity) {
+  return thread.workflow_id ?? thread.workflowId ?? "";
+}
+
+function savedThreadSelectionMatches(
+  saved: { threadId?: string; workflowId?: string } | null,
+  thread: ThreadIdentity,
+) {
+  if (!saved?.threadId || saved.threadId !== thread.id) return false;
+  const workflowId = threadIdentityWorkflowId(thread);
+  return !saved.workflowId || !workflowId || saved.workflowId === workflowId;
+}
+
+function threadMatchesTarget(
+  thread: ChatV2ThreadSummary,
+  targetThreadId?: string | null,
+  targetWorkflowId?: string | null,
+) {
+  return Boolean(
+    targetThreadId &&
+      thread.id === targetThreadId &&
+      (!targetWorkflowId || thread.workflow_id === targetWorkflowId),
+  );
+}
+
+function findThreadTarget(
+  threads: ChatV2ThreadSummary[],
+  targetThreadId?: string | null,
+  targetWorkflowId?: string | null,
+) {
+  return (
+    threads.find((thread) => threadMatchesTarget(thread, targetThreadId, targetWorkflowId)) ??
+    null
+  );
+}
+
+function restorableThreadTarget(
+  threads: ChatV2ThreadSummary[],
+  targetThreadId?: string | null,
+  targetWorkflowId?: string | null,
+) {
+  const match = findThreadTarget(threads, targetThreadId, targetWorkflowId);
+  return match && !match.archived ? match : null;
+}
+
+function activeThreadArchivedSummary(
+  selection: ActiveThreadSelection,
+  threads: ChatV2ThreadSummary[],
+) {
+  if (!selection) return null;
+  return (
+    threads.find(
+      (thread) =>
+        thread.archived &&
+        thread.id === selection.id &&
+        thread.workflow_id === selection.workflowId,
+    ) ?? null
+  );
 }
 
 function textValue(value: unknown) {
@@ -1278,7 +1784,9 @@ function stringList(value: unknown) {
 }
 
 function parseJsonObject(text: string): Record<string, unknown> | null {
-  const trimmed = text.trim();
+  let trimmed = text.trim();
+  const fencedJson = trimmed.match(/^```[ \t]*(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*$/i);
+  if (fencedJson) trimmed = fencedJson[1]?.trim() ?? "";
   if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null;
   try {
     const parsed = JSON.parse(trimmed);
@@ -1294,13 +1802,6 @@ function normalizeSummaryLine(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function addSection(lines: string[], label: string, items: string[]) {
-  if (items.length === 0) return;
-  if (lines.length > 0) lines.push("");
-  lines.push(`### ${label}`, "");
-  for (const item of items) lines.push(`- ${item}`);
-}
-
 function normalizeStructuredMarkdown(content: string) {
   if (!/\*\*(Files|Risks|Checks):\*\*/.test(content)) return content;
   return content
@@ -1310,54 +1811,286 @@ function normalizeStructuredMarkdown(content: string) {
     .trim();
 }
 
+function isGenericCompletionText(value: string) {
+  return /^(completed|finished|run completed|run finished|super dan completed|super dan run completed)\.?$/i.test(
+    value.trim(),
+  );
+}
+
 function pathBullets(paths: string[], verb: string) {
   return paths.map((path) => `${verb}: \`${path}\``);
 }
 
-function formatStructuredAgentSummary(content: string) {
-  const data = parseJsonObject(content);
-  if (!data) return "";
+interface StructuredAgentDisplay {
+  body: string;
+  previewBody: string;
+}
 
-  const lines: string[] = [];
-  const primary = [
-    ...stringList(data.answer),
-    ...stringList(data.final_answer),
-    ...stringList(data.summary),
-    ...stringList(data.change_summary),
-    ...stringList(data.message),
-  ];
-  const primaryItems = primary.map(normalizeSummaryLine).filter(Boolean);
-  if (primaryItems.length === 1) lines.push(primaryItems[0]);
-  if (primaryItems.length > 1) addSection(lines, "Summary", primaryItems);
+function detailItemsForKeys(record: Record<string, unknown>, keys: string[]) {
+  return uniqueStringList(
+    keys.flatMap((key) =>
+      detailItemsFromValue(record[key])
+        .map(normalizeSummaryLine)
+        .filter((item) => item && !isGenericCompletionText(item)),
+    ),
+  );
+}
 
-  const created = [
-    ...stringList(data.files_created),
-    ...stringList(data.created_files),
-    ...stringList(data.artifacts_created),
-  ];
-  const changed = [
-    ...stringList(data.files_changed),
-    ...stringList(data.changed_files),
-    ...stringList(data.files_modified),
-    ...stringList(data.modified_files),
-  ].filter((path) => !created.includes(path));
-  const artifacts = stringList(data.artifacts).filter(
+function pathItemsFromValue(value: unknown): string[] {
+  if (Array.isArray(value)) return uniqueStringList(value.flatMap(pathItemsFromValue));
+  const record = recordValue(value);
+  if (record) {
+    const path =
+      scalarDetailText(record.path) ||
+      scalarDetailText(record.file) ||
+      scalarDetailText(record.relative_path) ||
+      scalarDetailText(record.name);
+    return path ? [path] : [];
+  }
+  const scalar = scalarDetailText(value);
+  return scalar ? [scalar] : [];
+}
+
+function pathItemsForKeys(record: Record<string, unknown>, keys: string[]) {
+  return uniqueStringList(keys.flatMap((key) => pathItemsFromValue(record[key])));
+}
+
+const DIRECT_FINAL_ANSWER_KEYS = [
+  "answer",
+  "final_answer",
+  "public_response",
+  "final_response",
+  "response",
+];
+
+function structuredAgentDisplayFromRecord(data: Record<string, unknown>): StructuredAgentDisplay | null {
+  const finalAnswerItems = detailItemsForKeys(data, DIRECT_FINAL_ANSWER_KEYS);
+  const changeItems = detailItemsForKeys(data, [
+    "summary",
+    "change_summary",
+    "completion_summary",
+    "outcome",
+    "message",
+    "result_summary",
+  ]);
+
+  const created = pathItemsForKeys(data, [
+    "files_created",
+    "created_files",
+    "artifacts_created",
+  ]);
+  const changed = pathItemsForKeys(data, [
+    "files_changed",
+    "changed_files",
+    "files_modified",
+    "modified_files",
+  ]).filter((path) => !created.includes(path));
+  const artifacts = pathItemsForKeys(data, ["artifacts", "artifact_refs"]).filter(
     (path) => !created.includes(path) && !changed.includes(path),
   );
-  addSection(lines, "Files", [
+  const fileItems = [
     ...pathBullets(created, "Created"),
     ...pathBullets(changed, "Changed"),
     ...pathBullets(artifacts, "Artifact"),
+  ];
+  const riskItems = detailItemsForKeys(data, ["risks", "risk", "warnings"]);
+  const checkItems = detailItemsForKeys(data, [
+    "validation",
+    "validation_summary",
+    "checks",
+    "tests",
   ]);
-  addSection(lines, "Risks", stringList(data.risks).map(normalizeSummaryLine));
-  addSection(lines, "Checks", [
-    ...stringList(data.validation),
-    ...stringList(data.checks),
-    ...stringList(data.tests),
-  ].map(normalizeSummaryLine));
+  const remainingItems = detailItemsForKeys(data, [
+    "remaining_work",
+    "remaining",
+    "blockers",
+    "blocked_on",
+    "next_steps",
+  ]);
+  const bodyItems = finalAnswerItems.length
+    ? finalAnswerItems
+    : changeItems.length
+      ? compactDetailItems(changeItems, 2)
+      : fileItems.length
+        ? compactDetailItems(fileItems, 2)
+        : checkItems.length
+          ? compactDetailItems(checkItems, 2)
+          : remainingItems.length
+            ? compactDetailItems(remainingItems, 2)
+            : riskItems.length
+              ? compactDetailItems(riskItems, 2)
+              : [];
+  const body =
+    bodyItems.length === 1 ? bodyItems[0] : bodyItems.map((item) => `- ${item}`).join("\n");
+  const hasPreviewSections =
+    bodyItems.length > 0 ||
+    changeItems.length > 0 ||
+    fileItems.length > 0 ||
+    checkItems.length > 0 ||
+    remainingItems.length > 0 ||
+    riskItems.length > 0;
+  const summaryItems = hasPreviewSections ? bodyItems : [];
+  const previewBody = detailMarkdown("", [
+    {
+      title: "Summary",
+      items: summaryItems,
+    },
+    {
+      title: "What Changed",
+      items: finalAnswerItems.length > 0 ? changeItems : [],
+    },
+    { title: "Files", items: fileItems },
+    { title: "Checks", items: checkItems },
+    { title: "Needs Attention", items: [...remainingItems, ...riskItems] },
+  ]);
 
-  if (lines.length === 0) return "";
-  return lines.join("\n");
+  if (!body && !previewBody) return null;
+  return {
+    body: body || (previewBody ? "Run completed." : ""),
+    previewBody: previewBody || body,
+  };
+}
+
+function formatStructuredAgentDisplay(content: string): StructuredAgentDisplay | null {
+  const data = parseJsonObject(content);
+  return data ? structuredAgentDisplayFromRecord(data) : null;
+}
+
+function structuredAgentDisplayFromValue(
+  value: unknown,
+  seen = new Set<unknown>(),
+  depth = 0,
+): StructuredAgentDisplay | null {
+  if (depth > 4 || seen.has(value)) return null;
+  const record = recordValue(value);
+  if (record) {
+    seen.add(value);
+    const direct = structuredAgentDisplayFromRecord(record);
+    if (direct) return direct;
+    for (const key of ["result", "final", "output", "outputs", "response", "data", "payload"]) {
+      const nested = structuredAgentDisplayFromValue(record[key], seen, depth + 1);
+      if (nested) return nested;
+    }
+    return null;
+  }
+  if (Array.isArray(value)) {
+    seen.add(value);
+    for (const item of value) {
+      const nested = structuredAgentDisplayFromValue(item, seen, depth + 1);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+
+function formatStructuredAgentSummary(content: string) {
+  const structured = formatStructuredAgentDisplay(content);
+  if (structured) return structured.previewBody;
+  return "";
+}
+
+function structuredValueHasDirectFinalAnswer(
+  value: unknown,
+  seen = new Set<unknown>(),
+  depth = 0,
+): boolean {
+  if (depth > 4 || seen.has(value)) return false;
+  const record = recordValue(value);
+  if (record) {
+    seen.add(value);
+    if (detailItemsForKeys(record, DIRECT_FINAL_ANSWER_KEYS).length > 0) return true;
+    for (const key of ["result", "final", "output", "outputs", "data", "payload"]) {
+      if (structuredValueHasDirectFinalAnswer(record[key], seen, depth + 1)) return true;
+    }
+    return false;
+  }
+  if (Array.isArray(value)) {
+    seen.add(value);
+    return value.some((item) => structuredValueHasDirectFinalAnswer(item, seen, depth + 1));
+  }
+  return false;
+}
+
+function structuredValueHasAnswerSummary(
+  value: unknown,
+  seen = new Set<unknown>(),
+  depth = 0,
+): boolean {
+  if (depth > 4 || seen.has(value)) return false;
+  const record = recordValue(value);
+  if (record) {
+    seen.add(value);
+    const summaryItems = detailItemsForKeys(record, ["summary", "result_summary", "message"]);
+    if (summaryItems.some((item) => item && !looksLikeFileReceiptOnly(item))) return true;
+    for (const key of ["result", "final", "output", "outputs", "data", "payload"]) {
+      if (structuredValueHasAnswerSummary(record[key], seen, depth + 1)) return true;
+    }
+    return false;
+  }
+  if (Array.isArray(value)) {
+    seen.add(value);
+    return value.some((item) => structuredValueHasAnswerSummary(item, seen, depth + 1));
+  }
+  return false;
+}
+
+function looksLikeFileReceiptOnly(content: string) {
+  const normalized = content.trim();
+  if (!normalized) return false;
+  const hasReceiptVerb =
+    /^(?:created|updated|changed|wrote|fixed|added|deleted|modified|saved)\b/i.test(normalized) ||
+    /\b(?:created|updated|changed|wrote|fixed|added|deleted|modified|saved):/i.test(normalized) ||
+    /\b(?:workspace changes|files?|artifacts?)\b/i.test(normalized);
+  const hasFileReference =
+    /[`'"]?[\w./~-]+\.(?:md|txt|json|html|css|js|ts|tsx|jsx|py|csv|yaml|yml|toml)\b/i.test(normalized) ||
+    /\b(?:readme|project_summary|project_overview|file)\b/i.test(normalized);
+  return hasReceiptVerb && hasFileReference;
+}
+
+function userFacingAgentDisplay(content: string): StructuredAgentDisplay {
+  const structured = formatStructuredAgentDisplay(content);
+  if (structured) return structured;
+  if (parseJsonObject(content)) {
+    return {
+      body: "No user-facing result was returned.",
+      previewBody: "No user-facing result was returned.",
+    };
+  }
+  const normalized = normalizeStructuredMarkdown(content);
+  return {
+    body: normalized,
+    previewBody: normalized,
+  };
+}
+
+function isUsableFinalResponseSource(
+  content: string,
+  options: { requireDirectAnswer?: boolean } = {},
+) {
+  const normalized = content.trim();
+  if (!normalized || isGenericCompletionText(normalized)) return false;
+  if (options.requireDirectAnswer && looksLikeFileReceiptOnly(normalized)) return false;
+  const parsed = parseJsonObject(normalized);
+  if (!parsed) return true;
+  if (
+    options.requireDirectAnswer &&
+    !structuredValueHasDirectFinalAnswer(parsed) &&
+    !structuredValueHasAnswerSummary(parsed)
+  ) {
+    return false;
+  }
+  return Boolean(formatStructuredAgentDisplay(normalized));
+}
+
+function missingFinalResponseMessage(hasWorkspaceEvidence: boolean, requireDirectAnswer = false) {
+  if (requireDirectAnswer) {
+    return hasWorkspaceEvidence
+      ? "The run produced workspace or file evidence, but DAN did not return the in-session answer this request asked for."
+      : "The run finished, but DAN did not return the in-session answer this request asked for.";
+  }
+  return hasWorkspaceEvidence
+    ? "The run finished and workspace evidence was recorded, but DAN did not return the final answer for this request."
+    : "The run finished, but DAN did not return the final answer for this request.";
 }
 
 function timestampValue(value: unknown, fallback: number) {
@@ -1371,10 +2104,20 @@ function timestampValue(value: unknown, fallback: number) {
 function objectiveFromRun(run: ChatV2AgentRunRecord | null, task: ChatV2TaskSnapshot) {
   const payload = run?.command?.payload ?? {};
   const metadata = task.metadata ?? {};
+  const lastSurfaceTurn = metadataObject(metadata.last_surface_turn);
+  const operatorContext = metadataObject(metadata.operator_context);
+  const runOperatorContext = metadataObject(payload.operator_context);
   return (
     textValue(payload.text) ||
     textValue(payload.message) ||
     textValue(payload.objective) ||
+    textValue(runOperatorContext.raw_text) ||
+    textValue(runOperatorContext.follow_up_objective) ||
+    textValue(metadata.run_command_text) ||
+    textValue(metadata["_run_command_text"]) ||
+    textValue(lastSurfaceTurn.text) ||
+    textValue(operatorContext.raw_text) ||
+    textValue(operatorContext.follow_up_objective) ||
     textValue(metadata.text) ||
     textValue(metadata.message) ||
     textValue(metadata.objective)
@@ -1384,7 +2127,7 @@ function objectiveFromRun(run: ChatV2AgentRunRecord | null, task: ChatV2TaskSnap
 function answerEventFromAgentEvents(events: ChatV2AgentRunEvent[]) {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (terminalTaskStatuses.has(event.type) && humanEventSummary(event)) return event;
+    if (event.type === "completed" && humanEventSummary(event)) return event;
   }
   return null;
 }
@@ -1401,13 +2144,30 @@ function eventPayloadText(event: ChatV2AgentRunEvent, key: string) {
   return textValue(eventPayload(event)[key]);
 }
 
+function structuredEventPayloadSummary(event: ChatV2AgentRunEvent) {
+  return structuredAgentDisplayFromValue(eventPayload(event))?.previewBody || "";
+}
+
 function isMachineSummary(summary: string, event: ChatV2AgentRunEvent) {
   const source = eventSource(event);
   const text = summary.trim();
   if (!text) return true;
   if (text === source || text === event.type) return true;
   if (/^Token usage\b/i.test(text)) return true;
-  if (["completed", "acknowledged", "released", "model.requested", "tool.started"].includes(text)) {
+  if (
+    isGenericCompletionText(text) ||
+    [
+      "completed",
+      "run completed",
+      "run finished",
+      "super dan completed",
+      "acknowledged",
+      "released",
+      "model.requested",
+      "tool.started",
+      "denied",
+    ].includes(text.toLowerCase())
+  ) {
     return true;
   }
   return /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/i.test(text) && !/\s/.test(text);
@@ -1417,11 +2177,39 @@ function humanEventSummary(event: ChatV2AgentRunEvent) {
   const summary = eventSummary(event).trim();
   const structured = formatStructuredAgentSummary(summary);
   if (structured) return structured;
+  const payloadStructured = structuredEventPayloadSummary(event);
+  if (payloadStructured && (terminalTaskStatuses.has(event.type) || isMachineSummary(summary, event))) {
+    return payloadStructured;
+  }
   return isMachineSummary(summary, event) ? "" : summary;
 }
 
 function toolLabel(toolId: string) {
   return toolId.replace(/_/g, " ");
+}
+
+function readableToolPolicyReason(reason: string) {
+  const normalized = reason.trim();
+  if (!normalized) return "the current run policy blocked it";
+  if (normalized === "operator_intent_blocks_directory_listing") {
+    return "the current request blocks directory listing";
+  }
+  if (normalized === "operator_intent_blocks_git_context") {
+    return "the current request blocks git context";
+  }
+  if (normalized === "operator_intent_blocks_shell_context") {
+    return "the current request blocks shell commands";
+  }
+  if (normalized === "operator_intent_blocks_workspace_mutation") {
+    return "the current request blocks workspace changes";
+  }
+  const fileRead = normalized.match(/^operator_intent_blocks_file_read:(.+)$/);
+  if (fileRead) return `the current request blocks reading \`${fileRead[1]}\``;
+  const fileWrite = normalized.match(/^operator_intent_blocks_file_write:(.+)$/);
+  if (fileWrite) return `the current request blocks writing \`${fileWrite[1]}\``;
+  const workspaceCheck = normalized.match(/^operator_intent_blocks_workspace_check:(.+)$/);
+  if (workspaceCheck) return `the current request blocks checking \`${workspaceCheck[1]}\``;
+  return normalized.replace(/_/g, " ");
 }
 
 function pathFromEvent(event: ChatV2AgentRunEvent) {
@@ -1442,8 +2230,6 @@ function pathFromEvent(event: ChatV2AgentRunEvent) {
 function eventActivityLine(event: ChatV2AgentRunEvent) {
   const source = eventSource(event);
   const payload = eventPayload(event);
-  const human = humanEventSummary(event);
-  if (human && event.type !== "token_usage_recorded") return human;
 
   if (source === "model.requested") {
     const model = eventPayloadText(event, "model");
@@ -1461,6 +2247,25 @@ function eventActivityLine(event: ChatV2AgentRunEvent) {
     const toolId = eventPayloadText(event, "tool_id");
     return toolId ? `Using ${toolLabel(toolId)}.` : "Using a workspace tool.";
   }
+  if (source === "tool.policy_denied") {
+    const toolId = eventPayloadText(event, "tool_id");
+    const path = pathFromEvent(event);
+    const reason = readableToolPolicyReason(eventPayloadText(event, "reason"));
+    return `${toolId ? toolLabel(toolId) : "Tool"} denied${path ? ` for \`${path}\`` : ""}: ${reason}.`;
+  }
+  if (source === "tool.denied") {
+    const toolId = eventPayloadText(event, "tool_id");
+    const path = pathFromEvent(event);
+    const reason = eventPayloadText(event, "reason") || eventPayloadText(event, "error");
+    if (!reason) return "";
+    return `${toolId ? toolLabel(toolId) : "Tool"} denied${path ? ` for \`${path}\`` : ""}: ${readableToolPolicyReason(reason)}.`;
+  }
+  if (source === "tool.failed") {
+    const toolId = eventPayloadText(event, "tool_id");
+    const path = pathFromEvent(event);
+    const reason = eventPayloadText(event, "error") || humanEventSummary(event);
+    return `${toolId ? toolLabel(toolId) : "Tool"} failed${path ? ` for \`${path}\`` : ""}${reason ? `: ${readableToolPolicyReason(reason)}` : ""}.`;
+  }
   if (source === "tool.completed") {
     const toolId = eventPayloadText(event, "tool_id");
     const path = pathFromEvent(event);
@@ -1470,6 +2275,9 @@ function eventActivityLine(event: ChatV2AgentRunEvent) {
     if (changed && path) return `Changed \`${path}\`.`;
     return toolId ? `Finished ${toolLabel(toolId)}.` : "Finished a workspace tool.";
   }
+  const human = humanEventSummary(event);
+  if (human && event.type !== "token_usage_recorded") return human;
+
   if (source === "super.heartbeat") {
     const detail = eventPayloadText(event, "detail");
     return detail ? `Working: ${detail}.` : "Working.";
@@ -1479,7 +2287,7 @@ function eventActivityLine(event: ChatV2AgentRunEvent) {
     return "Working in this workspace.";
   }
   if (event.type === "failed" || event.type === "blocked") return human || "Super DAN needs attention.";
-  if (event.type === "completed") return human || "Super DAN completed.";
+  if (event.type === "completed") return human || "";
   return "";
 }
 
@@ -1585,26 +2393,1441 @@ function compactAgentRunChunks(events: ChatV2AgentRunEvent[]) {
   return chunks.slice(-6);
 }
 
+function recordValue(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function printableTextValue(value: unknown) {
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return textValue(value);
+}
+
+function uniqueStringList(values: string[]) {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    unique.push(trimmed);
+  }
+  return unique;
+}
+
+interface BlueprintDetailSection {
+  title: string;
+  items: string[];
+}
+
+function humanizeDetailKey(key: string) {
+  return key.replace(/^_+/, "").replace(/_/g, " ");
+}
+
+function scalarDetailText(value: unknown) {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
+
+function isLowValueDetailText(value: string) {
+  return /^(do_or_explain|do-or-explain|n\/a|none|null)$/i.test(value.trim());
+}
+
+function recordDetailLine(record: Record<string, unknown>) {
+  for (const pair of [
+    ["aspect", "request_comment"],
+    ["criterion", "action"],
+    ["question", "request_comment"],
+    ["path", "status"],
+    ["target", "status"],
+    ["summary", "detail"],
+    ["status", "detail"],
+  ] as const) {
+    const first = scalarDetailText(record[pair[0]]);
+    const second = scalarDetailText(record[pair[1]]);
+    if (first && second && !isLowValueDetailText(second)) return `${first}: ${second}`;
+    if (first) return first;
+    if (second && !isLowValueDetailText(second)) return second;
+  }
+  const entries = Object.entries(record)
+    .map(([key, value]) => [humanizeDetailKey(key), scalarDetailText(value)] as const)
+    .filter(([, value]) => value)
+    .slice(0, 4);
+  return entries.map(([key, value]) => `${key}: ${value}`).join(" · ");
+}
+
+function detailItemsFromValue(value: unknown) {
+  if (Array.isArray(value)) {
+    return uniqueStringList(
+      value
+        .map((item) => {
+          const record = recordValue(item);
+          return record ? recordDetailLine(record) : scalarDetailText(item);
+        })
+        .filter(Boolean),
+    );
+  }
+  const record = recordValue(value);
+  if (record) {
+    const line = recordDetailLine(record);
+    return line ? [line] : [];
+  }
+  const scalar = scalarDetailText(value);
+  return scalar ? [scalar] : [];
+}
+
+function compactDetailItems(items: string[], limit = 8) {
+  const unique = uniqueStringList(items).filter(Boolean);
+  if (unique.length <= limit) return unique;
+  return [...unique.slice(0, limit), `${unique.length - limit} more not shown here`];
+}
+
+function detailMarkdown(intro: string, sections: BlueprintDetailSection[]) {
+  const lines = [intro.trim()].filter(Boolean);
+  for (const section of sections) {
+    const items = compactDetailItems(section.items);
+    if (items.length === 0) continue;
+    lines.push("", `### ${section.title}`, ...items.map((item) => `- ${item}`));
+  }
+  return lines.join("\n");
+}
+
+function collectRecordsMatching(
+  value: unknown,
+  predicate: (record: Record<string, unknown>) => boolean,
+  results: Record<string, unknown>[] = [],
+  seen = new Set<unknown>(),
+  depth = 0,
+) {
+  if (depth > 6 || seen.has(value)) return results;
+  const record = recordValue(value);
+  if (!record) {
+    if (Array.isArray(value)) {
+      seen.add(value);
+      for (const item of value) collectRecordsMatching(item, predicate, results, seen, depth + 1);
+    }
+    return results;
+  }
+  seen.add(value);
+  if (predicate(record)) results.push(record);
+  for (const nested of Object.values(record)) {
+    if (nested && (typeof nested === "object" || Array.isArray(nested))) {
+      collectRecordsMatching(nested, predicate, results, seen, depth + 1);
+    }
+  }
+  return results;
+}
+
+function collectNamedRecords(value: unknown, key: string) {
+  const records: Record<string, unknown>[] = [];
+  collectRecordsMatching(value, (record) => {
+    const nested = recordValue(record[key]);
+    if (nested) records.push(nested);
+    return false;
+  });
+  return records;
+}
+
+function looksLikeRequestUnderstanding(record: Record<string, unknown>) {
+  return Boolean(
+    record.schema === "super_dan_request_understanding_v1" ||
+      record.request_understanding_schema === "super_dan_request_understanding_v1" ||
+      record.rule_generation_brief ||
+      record.aspect_reviews ||
+      record.confidence_scoped_acceptance ||
+      record.stop_rule,
+  );
+}
+
+function latestRequestUnderstanding(
+  events: ChatV2AgentRunEvent[],
+  tasks: ChatV2TaskSnapshot[],
+) {
+  const candidates: Record<string, unknown>[] = [];
+  for (const event of events) {
+    candidates.push(...collectRecordsMatching(eventPayload(event), looksLikeRequestUnderstanding));
+  }
+  for (const task of tasks) {
+    candidates.push(...collectRecordsMatching(task.metadata, looksLikeRequestUnderstanding));
+  }
+  return candidates[candidates.length - 1] ?? null;
+}
+
+function operatorContextRecords(events: ChatV2AgentRunEvent[], tasks: ChatV2TaskSnapshot[]) {
+  const records: Record<string, unknown>[] = [];
+  for (const task of tasks) records.push(...collectNamedRecords(task.metadata, "operator_context"));
+  for (const event of events) records.push(...collectNamedRecords(eventPayload(event), "operator_context"));
+  return records;
+}
+
+function collectFieldItems(records: Array<Record<string, unknown> | null>, keys: string[]) {
+  return uniqueStringList(
+    records.flatMap((record) => {
+      if (!record) return [];
+      return keys.flatMap((key) => detailItemsFromValue(record[key]));
+    }),
+  );
+}
+
+function planTaskGraphFromValue(value: unknown): BlueprintPlanTask[] {
+  const container = recordValue(value);
+  const rawItems = container ? container.tasks ?? container.task_graph : value;
+  if (!Array.isArray(rawItems)) return [];
+  const seen = new Set<string>();
+  const tasks: BlueprintPlanTask[] = [];
+  for (const item of rawItems) {
+    const record = recordValue(item);
+    if (!record) continue;
+    const taskId =
+      printableTextValue(record.task_id) ||
+      printableTextValue(record.id) ||
+      printableTextValue(record.number);
+    if (!taskId || seen.has(taskId)) continue;
+    seen.add(taskId);
+    tasks.push({
+      taskId,
+      goal:
+        printableTextValue(record.goal) ||
+        printableTextValue(record.summary) ||
+        printableTextValue(record.title) ||
+        "Projected task",
+      dependsOn: uniqueStringList([
+        ...stringList(record.depends_on),
+        ...stringList(record.dependencies),
+      ]),
+      ownedPaths: uniqueStringList([
+        ...stringList(record.owned_paths),
+        ...stringList(record.owner_paths),
+        ...stringList(record.paths),
+      ]),
+      deliverables: uniqueStringList(stringList(record.deliverables)),
+      validation: uniqueStringList([
+        ...stringList(record.validation),
+        ...stringList(record.checks),
+        ...stringList(record.acceptance),
+      ]),
+      status: printableTextValue(record.status) || "planned",
+      parallelSafe: typeof record.parallel_safe === "boolean" ? record.parallel_safe : true,
+    });
+  }
+  return tasks;
+}
+
+function hasPlanContextShape(record: Record<string, unknown>) {
+  return Boolean(
+    record.plan_context ||
+      record.task_graph ||
+      record.tasks ||
+      record.ready_task_ids ||
+      record.assigned_task_ids ||
+      record.deferred_task_ids ||
+      record.first_build_slice ||
+      record.plan_files,
+  );
+}
+
+function normalizePlanContext(value: unknown): BlueprintPlanContext | null {
+  const record = recordValue(value);
+  if (!record || !hasPlanContextShape(record)) return null;
+  const validation = recordValue(record.validation);
+  const taskGraph =
+    planTaskGraphFromValue(record.task_graph ?? record.tasks) ||
+    planTaskGraphFromValue(validation?.task_graph ?? validation?.tasks);
+  const validationTaskGraph = taskGraph.length
+    ? taskGraph
+    : planTaskGraphFromValue(validation?.task_graph ?? validation?.tasks);
+  const readyTaskIds = uniqueStringList([
+    ...stringList(record.ready_task_ids),
+    ...stringList(record.first_build_slice),
+    ...stringList(validation?.ready_task_ids),
+    ...stringList(validation?.first_build_slice),
+  ]);
+  const context: BlueprintPlanContext = {
+    taskGraph: validationTaskGraph,
+    readyTaskIds,
+    deferredTaskIds: uniqueStringList([
+      ...stringList(record.deferred_task_ids),
+      ...stringList(validation?.deferred_task_ids),
+    ]),
+    assignedTaskIds: uniqueStringList(stringList(record.assigned_task_ids)),
+    parallelWorktreeTaskIds: uniqueStringList(stringList(record.parallel_worktree_task_ids)),
+    dependencyRevisions: uniqueStringList([
+      ...stringList(record.dependency_revisions),
+      ...stringList(validation?.dependency_revisions),
+    ]),
+    planFiles: uniqueStringList(stringList(record.plan_files)),
+    planRootRelative: printableTextValue(record.plan_root_relative),
+  };
+  const hasContent =
+    context.taskGraph.length > 0 ||
+    context.readyTaskIds.length > 0 ||
+    context.deferredTaskIds.length > 0 ||
+    context.assignedTaskIds.length > 0 ||
+    context.planFiles.length > 0;
+  return hasContent ? context : null;
+}
+
+function collectPlanContextCandidates(
+  value: unknown,
+  candidates: Record<string, unknown>[],
+  seen = new Set<unknown>(),
+  depth = 0,
+) {
+  if (depth > 5 || seen.has(value)) return;
+  const record = recordValue(value);
+  if (!record) return;
+  seen.add(value);
+  if (hasPlanContextShape(record)) candidates.push(record);
+  for (const key of [
+    "plan_context",
+    "input_payload",
+    "raw_result",
+    "backend_result",
+    "validation",
+    "payload",
+  ]) {
+    collectPlanContextCandidates(record[key], candidates, seen, depth + 1);
+  }
+}
+
+function extractBlueprintPlanContext(events: ChatV2AgentRunEvent[]) {
+  const merged: BlueprintPlanContext = {
+    taskGraph: [],
+    readyTaskIds: [],
+    deferredTaskIds: [],
+    assignedTaskIds: [],
+    parallelWorktreeTaskIds: [],
+    dependencyRevisions: [],
+    planFiles: [],
+    planRootRelative: "",
+  };
+  let found = false;
+  for (const event of events) {
+    const candidates: Record<string, unknown>[] = [];
+    collectPlanContextCandidates(eventPayload(event), candidates);
+    for (const candidate of candidates) {
+      const context = normalizePlanContext(candidate);
+      if (!context) continue;
+      found = true;
+      if (context.taskGraph.length > 0) merged.taskGraph = context.taskGraph;
+      if (context.readyTaskIds.length > 0) merged.readyTaskIds = context.readyTaskIds;
+      if (context.deferredTaskIds.length > 0) merged.deferredTaskIds = context.deferredTaskIds;
+      if (context.assignedTaskIds.length > 0) merged.assignedTaskIds = context.assignedTaskIds;
+      if (context.parallelWorktreeTaskIds.length > 0) {
+        merged.parallelWorktreeTaskIds = context.parallelWorktreeTaskIds;
+      }
+      if (context.dependencyRevisions.length > 0) {
+        merged.dependencyRevisions = context.dependencyRevisions;
+      }
+      if (context.planFiles.length > 0) merged.planFiles = context.planFiles;
+      if (context.planRootRelative) merged.planRootRelative = context.planRootRelative;
+    }
+  }
+  return found ? merged : null;
+}
+
+function hasEventSource(events: ChatV2AgentRunEvent[], match: string | ((source: string) => boolean)) {
+  return events.some((event) => {
+    const source = eventSource(event);
+    return typeof match === "string" ? source === match : match(source);
+  });
+}
+
+function latestEventSource(events: ChatV2AgentRunEvent[]) {
+  const latest = events[events.length - 1];
+  return latest ? eventSource(latest) : "";
+}
+
+function eventPlanTaskId(event: ChatV2AgentRunEvent) {
+  const payload = eventPayload(event);
+  return (
+    eventPayloadText(event, "plan_task_id") ||
+    eventPayloadText(event, "owner_scope") ||
+    (eventSource(event).startsWith("live.worktree") ? textValue(payload.task_id) : "")
+  );
+}
+
+function completedPlanTaskIdsFromEvents(
+  events: ChatV2AgentRunEvent[],
+  planContext: BlueprintPlanContext | null,
+) {
+  const completed = new Set<string>();
+  for (const task of planContext?.taskGraph ?? []) {
+    if (["done", "complete", "completed", "x"].includes(task.status.toLowerCase())) {
+      completed.add(task.taskId);
+    }
+  }
+  for (const event of events) {
+    const source = eventSource(event);
+    const payload = eventPayload(event);
+    if (
+      source === "live.worktree_task.completed" ||
+      source === "live.worktree.diff_applied" ||
+      source === "super.worktree.diff_admitted"
+    ) {
+      const taskId = eventPlanTaskId(event);
+      if (taskId) completed.add(taskId);
+    }
+    for (const taskId of [
+      ...stringList(payload.applied_task_ids),
+      ...stringList(recordValue(payload.raw_result)?.applied_task_ids),
+    ]) {
+      completed.add(taskId);
+    }
+  }
+  if (events.some((event) => event.type === "completed")) {
+    for (const taskId of planContext?.assignedTaskIds ?? []) completed.add(taskId);
+  }
+  return completed;
+}
+
+function activePlanTaskIdsFromEvents(
+  events: ChatV2AgentRunEvent[],
+  planContext: BlueprintPlanContext | null,
+  hasActiveRun: boolean,
+) {
+  if (!hasActiveRun) return new Set<string>();
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!event) continue;
+    const source = eventSource(event);
+    if (source === "live.worktree_task.completed" || terminalTaskStatuses.has(event.type)) continue;
+    const taskId = eventPlanTaskId(event);
+    if (taskId) return new Set([taskId]);
+  }
+  if (planContext?.assignedTaskIds.length) return new Set(planContext.assignedTaskIds);
+  if (planContext?.readyTaskIds.length) return new Set([planContext.readyTaskIds[0]!]);
+  return new Set<string>();
+}
+
+function taskBody(task: BlueprintPlanTask, context: BlueprintPlanContext) {
+  const lines = [`### ${task.taskId}`, "", task.goal];
+  if (task.dependsOn.length > 0) {
+    lines.push("", `Depends on: ${task.dependsOn.map((item) => `\`${item}\``).join(", ")}`);
+  }
+  if (task.ownedPaths.length > 0) {
+    lines.push("", "Owned paths:", ...task.ownedPaths.map((path) => `- \`${path}\``));
+  }
+  if (task.deliverables.length > 0) {
+    lines.push("", "Deliverables:", ...task.deliverables.map((path) => `- \`${path}\``));
+  }
+  if (task.validation.length > 0) {
+    lines.push("", "Validation:", ...task.validation.map((check) => `- ${check}`));
+  }
+  if (context.dependencyRevisions.length > 0) {
+    lines.push("", "Dependency revisions:", ...context.dependencyRevisions.map((item) => `- ${item}`));
+  }
+  return lines.join("\n");
+}
+
+function compactTaskDetail(task: BlueprintPlanTask) {
+  const paths = uniqueStringList([...task.ownedPaths, ...task.deliverables]).slice(0, 2);
+  const suffix = paths.length > 0 ? ` · ${paths.join(", ")}` : "";
+  return `${task.dependsOn.length > 0 ? `after ${task.dependsOn.join(", ")}` : "ready when reached"}${suffix}`;
+}
+
+function phaseStatus(args: {
+  started: boolean;
+  completed: boolean;
+  failed?: boolean;
+  active: boolean;
+  planned: boolean;
+}): BlueprintNodeStatus {
+  if (args.failed) return "blocked";
+  if (args.completed) return "done";
+  if (args.started && args.active) return "active";
+  if (args.started) return "ready";
+  return args.planned ? "future" : "queued";
+}
+
+function threadTitleLooksPlaceholder(title: string) {
+  const normalized = title.trim().toLowerCase();
+  return Boolean(
+    !normalized ||
+      /^new\s+(super\s+dan\s+)?session$/.test(normalized) ||
+      /^untitled(?:\s+(?:dan\s+super\s+)?session|\s+chat)?$/.test(normalized) ||
+      normalized === "workspace thread",
+  );
+}
+
+function textForbidsWorkspaceMutation(text: string) {
+  const normalized = " ".concat(text.trim().toLowerCase().replace(/\s+/g, " "), " ");
+  if (!normalized.trim()) return false;
+  return (
+    /\bread[-\s]?only\b/.test(normalized) ||
+    /\bdo\s+not\s+(?:edit|modify|change|write|create|delete|touch|mutate)\s+(?:anything|any\s+files?|any\s+workspace\s+files?|workspace\s+files?|files?)\b/.test(normalized) ||
+    /\bdon['’]?t\s+(?:edit|modify|change|write|create|delete|touch|mutate)\s+(?:anything|any\s+files?|any\s+workspace\s+files?|workspace\s+files?|files?)\b/.test(normalized) ||
+    /\bdont\s+(?:edit|modify|change|write|create|delete|touch|mutate)\s+(?:anything|any\s+files?|any\s+workspace\s+files?|workspace\s+files?|files?)\b/.test(normalized) ||
+    /\bwithout\s+(?:editing|modifying|changing|writing|creating|deleting|touching|mutating)\s+(?:anything|any\s+files?|any\s+workspace\s+files?|workspace\s+files?|files?)\b/.test(normalized) ||
+    /\bno\s+(?:file\s+)?(?:edits?|writes?|changes?|modifications?|mutations?)\b/.test(normalized)
+  );
+}
+
+function textRequestsWorkspaceMutation(text: string) {
+  const normalized = " ".concat(text.trim().toLowerCase().replace(/\s+/g, " "), " ");
+  if (!normalized.trim()) return false;
+  return (
+    /\b(?:edit|modify|change|write|create|delete|touch|mutate|fix|repair|implement|build|add|update|save|export|materialize)\b/.test(normalized) ||
+    /\bmake\s+(?:a\s+)?(?:change|changes|edit|edits|fix|fixes|patch|patches|improvement|improvements)\b/.test(normalized) ||
+    /\b(?:produce|generate)\s+(?:a\s+)?(?:file|artifact|document|markdown|report|memo|patch|diff)\b/.test(normalized)
+  );
+}
+
+function textRequestsProjectAnswer(text: string) {
+  const normalized = " ".concat(text.trim().toLowerCase().replace(/\s+/g, " "), " ");
+  if (!normalized.trim()) return false;
+  const projectTarget = "(?:project|repo|repository|codebase|workspace)";
+  return (
+    new RegExp(`\\bwhat\\s+(?:is|does|are)\\s+(?:this|the)\\s+${projectTarget}\\s+(?:about|do|for)\\b`).test(normalized) ||
+    new RegExp(`\\btell\\s+me\\s+about\\s+(?:this|the)\\s+${projectTarget}\\b`).test(normalized) ||
+    new RegExp(`\\b${projectTarget}\\s+(?:summary|overview)\\b`).test(normalized) ||
+    new RegExp(`\\b(?:summarize|summarise|summary)\\s+(?:of\\s+)?(?:this|the)?\\s*${projectTarget}\\b`).test(normalized) ||
+    new RegExp(`\\b(?:give|write|create)\\s+(?:me\\s+)?(?:a\\s+)?(?:brief\\s+)?(?:summary|overview)\\s+of\\s+(?:this|the)\\s+${projectTarget}\\b`).test(normalized) ||
+    new RegExp(`\\bhelp\\s+me\\s+(?:understand|summarize|summarise|summary)\\s+(?:what\\s+)?(?:this|the)?\\s*${projectTarget}\\s*(?:is\\s+)?(?:about)?\\b`).test(normalized)
+  );
+}
+
+function textExplicitlyRequestsSavedAnswerArtifact(text: string) {
+  const normalized = " ".concat(text.trim().toLowerCase().replace(/\s+/g, " "), " ");
+  if (!normalized.trim()) return false;
+  return (
+    /(?<!\w)[\w./~-]+\.(?:md|txt|json|html|py|ts|tsx|jsx|csv|yaml|yml|toml)\b/.test(normalized) ||
+    /\b(?:readme|file|artifact|document|markdown|md)\b/.test(normalized) ||
+    /\b(?:edit|modify|change|update|fix|repair|implement|build|add|delete|touch|mutate)\b/.test(normalized) ||
+    /\b(?:save|export|materialize)\b/.test(normalized)
+  );
+}
+
+function textRequestsAssessmentOnly(text: string) {
+  const normalized = " ".concat(text.trim().toLowerCase().replace(/\s+/g, " "), " ");
+  if (!normalized.trim()) return false;
+  const projectAnswer = textRequestsProjectAnswer(normalized);
+  if (textRequestsWorkspaceMutation(normalized)) {
+    if (!projectAnswer || textExplicitlyRequestsSavedAnswerArtifact(normalized)) return false;
+  }
+  return (
+    /\b(?:review|audit|assess|evaluate|inspect|check|look\s+over|analyze|analyse|summarize|summarise|explain)\b/.test(normalized) ||
+    /\bwhat\s+(?:do\s+you\s+think|is\s+going\s+on|is\s+the\s+status)\b/.test(normalized) ||
+    /\bhelp\s+me\s+(?:understand|review|audit|assess|evaluate|inspect|check|analyze|analyse|summarize|summarise|summary)\b/.test(normalized) ||
+    projectAnswer
+  );
+}
+
+function textForbidsShellCommands(text: string) {
+  const normalized = " ".concat(text.trim().toLowerCase().replace(/\s+/g, " "), " ");
+  if (!normalized.trim()) return false;
+  return (
+    /\bdo\s+not\s+run\s+(?:any\s+)?(?:external\s+)?(?:shell\s+|terminal\s+)?commands?\b/.test(normalized) ||
+    /\bdo\s+not\b[^.?!]*(?:\bor\s+)?run\s+(?:any\s+)?(?:external\s+)?(?:shell\s+|terminal\s+)?commands?\b/.test(normalized) ||
+    /\bdon['’]?t\s+run\s+(?:any\s+)?(?:external\s+)?(?:shell\s+|terminal\s+)?commands?\b/.test(normalized) ||
+    /\bdon['’]?t\b[^.?!]*(?:\bor\s+)?run\s+(?:any\s+)?(?:external\s+)?(?:shell\s+|terminal\s+)?commands?\b/.test(normalized) ||
+    /\bdont\s+run\s+(?:any\s+)?(?:external\s+)?(?:shell\s+|terminal\s+)?commands?\b/.test(normalized) ||
+    /\bdont\b[^.?!]*(?:\bor\s+)?run\s+(?:any\s+)?(?:external\s+)?(?:shell\s+|terminal\s+)?commands?\b/.test(normalized) ||
+    /\bwithout\s+running\s+(?:any\s+)?(?:external\s+)?(?:shell\s+|terminal\s+)?commands?\b/.test(normalized) ||
+    /\bno\s+(?:external\s+)?(?:shell\s+|terminal\s+)?commands?\b/.test(normalized)
+  );
+}
+
+function requestTargetPaths(text: string) {
+  const matches = [
+    ...text.matchAll(
+      /(?<![:/\w$])(?:\/|~\/(?:[^/\s"'`,;:()[\]{}<>]+\/)*)[^/\s"'`,;:()[\]{}<>]+(?:\/[^/\s"'`,;:()[\]{}<>]+)*/g,
+    ),
+    ...text.matchAll(
+      /(?<![\w$])(?:[./~\w-]+\/)?[\w.-]+\.(?:html|css|js|md|txt|json|jsonl|yaml|yml|toml|ts|tsx|jsx|py|sh|csv)/g,
+    ),
+  ];
+  return uniqueStringList(matches.map((match) => match[0].replace(/[.,;:()[\]{}"'?]+$/g, "")));
+}
+
+function addRequestTask(
+  tasks: BlueprintPlanTask[],
+  taskId: string,
+  goal: string,
+  dependsOn: string[],
+  options: {
+    ownedPaths?: string[];
+    deliverables?: string[];
+    validation?: string[];
+    parallelSafe?: boolean;
+  } = {},
+) {
+  tasks.push({
+    taskId,
+    goal,
+    dependsOn,
+    ownedPaths: uniqueStringList(options.ownedPaths ?? []),
+    deliverables: uniqueStringList(options.deliverables ?? []),
+    validation: uniqueStringList(options.validation ?? []),
+    status: "projected",
+    parallelSafe: options.parallelSafe ?? true,
+  });
+}
+
+function deriveRequestPlanContext(text: string): BlueprintPlanContext | null {
+  if (!text.trim() || textForbidsWorkspaceMutation(text) || textRequestsAssessmentOnly(text)) return null;
+  const targets = requestTargetPaths(text);
+  if (targets.length === 0) return null;
+  const folderTargets = targets.filter((path) => !/\.[a-z0-9]+$/i.test(path));
+  const mentionedFiles = targets.filter((path) => /\.[a-z0-9]+$/i.test(path));
+  const primaryTarget = targets[0] ?? "";
+
+  const tasks: BlueprintPlanTask[] = [];
+  addRequestTask(tasks, "1", "Understand explicit target scope", [], {
+    ownedPaths: targets,
+    deliverables: targets,
+    validation: ["Targets are carried into execution context"],
+    parallelSafe: false,
+  });
+  addRequestTask(tasks, "2", "Execute the current target slice", ["1"], {
+    ownedPaths: mentionedFiles.length > 0 ? mentionedFiles : folderTargets,
+    deliverables: mentionedFiles.length > 0 ? mentionedFiles : folderTargets,
+    validation: ["Current slice has concrete evidence before it is treated as done"],
+    parallelSafe: false,
+  });
+  addRequestTask(tasks, "3", "Validate and summarize target coverage", ["2"], {
+    ownedPaths: [],
+    deliverables: targets,
+    validation: ["Final response states covered targets, evidence, blockers, and remaining work"],
+    parallelSafe: false,
+  });
+
+  const taskIds = tasks.map((task) => task.taskId);
+  return {
+    taskGraph: tasks,
+    readyTaskIds: taskIds.slice(0, 1),
+    deferredTaskIds: taskIds.slice(1),
+    assignedTaskIds: [],
+    parallelWorktreeTaskIds: [],
+    dependencyRevisions: [],
+    planFiles: [],
+    planRootRelative: primaryTarget
+      ? `request target: ${primaryTarget}`
+      : "request-derived blueprint",
+  };
+}
+
+function requestPreviewBody(args: {
+  requestBody: string;
+  understanding: Record<string, unknown> | null;
+  operatorContexts: Record<string, unknown>[];
+  readOnlyRun: boolean;
+  assessmentOnlyRun: boolean;
+  noShellRun: boolean;
+}) {
+  const records = [args.understanding, ...args.operatorContexts];
+  const targetItems = uniqueStringList([
+    ...collectFieldItems(records, ["target_paths", "target_artifacts"]),
+    ...requestTargetPaths(args.requestBody),
+  ]);
+  const constraints = collectFieldItems(records, [
+    "hard_constraints",
+    "soft_constraints",
+    "constraints",
+  ]);
+  if (args.assessmentOnlyRun) {
+    constraints.push("Review response expected; file edits are not expected unless requested.");
+  } else if (args.readOnlyRun) {
+    constraints.push("Workspace file mutation is not expected for this request.");
+  }
+  if (args.noShellRun) constraints.push("Shell or terminal commands are not expected for this request.");
+  return detailMarkdown("", [
+    { title: "Targets", items: targetItems },
+    { title: "Constraints", items: constraints },
+    {
+      title: "Validation Expectations",
+      items: collectFieldItems(records, [
+        "validation_requirements",
+        "confidence_scoped_acceptance",
+      ]),
+    },
+  ]);
+}
+
+function understandingPreviewBody(args: {
+  requestBody: string;
+  understanding: Record<string, unknown> | null;
+  operatorContexts: Record<string, unknown>[];
+}) {
+  const records = [args.understanding, ...args.operatorContexts];
+  const source = scalarDetailText(args.understanding?.source);
+  const sourceLabel =
+    source === "model_authored"
+      ? "tailored by DAN"
+      : source === "rule_generation_brief"
+        ? "generating rules"
+        : source === "deterministic_scaffold"
+          ? "initial scaffold"
+        : "";
+  const requestKind = scalarDetailText(args.understanding?.request_kind);
+  const summary = requestKind
+    ? `Request kind: ${requestKind}${sourceLabel ? ` · ${sourceLabel}` : ""}`
+    : "DAN is establishing the request scope, target, constraints, and evidence gates.";
+  return detailMarkdown(summary, [
+    {
+      title: "Rules Brief",
+      items: collectFieldItems(records, ["rule_generation_brief"]),
+    },
+    {
+      title: "Aspect Review",
+      items: collectFieldItems(records, ["aspect_reviews"]),
+    },
+    {
+      title: "Acceptance Criteria",
+      items: collectFieldItems(records, ["confidence_scoped_acceptance"]),
+    },
+    {
+      title: "Stop Rule",
+      items: collectFieldItems(records, ["stop_rule"]),
+    },
+    {
+      title: "Original Request",
+      items: uniqueStringList([
+        scalarDetailText(args.understanding?.original_request),
+        args.requestBody,
+      ]),
+    },
+  ]);
+}
+
+function planPreviewBody(planContext: BlueprintPlanContext | null) {
+  if (!planContext) return "Waiting for the planner to emit a task graph or frontier metadata.";
+  return detailMarkdown("Planning determines the next visible frontier without claiming future work is done.", [
+    {
+      title: "Plan Files",
+      items: planContext.planFiles.map((path) => `\`${path}\``),
+    },
+    {
+      title: "Ready Frontier",
+      items: planContext.readyTaskIds.map((id) => `\`${id}\``),
+    },
+    {
+      title: "Deferred Frontier",
+      items: planContext.deferredTaskIds.map((id) => `\`${id}\``),
+    },
+    {
+      title: "Projected Tasks",
+      items: planContext.taskGraph.map((task) => `${task.taskId}: ${task.goal}`),
+    },
+  ]);
+}
+
+function recentActivityItems(events: ChatV2AgentRunEvent[]) {
+  return uniqueStringList(
+    events
+      .slice(-8)
+      .map(eventActivityLine)
+      .filter(Boolean),
+  );
+}
+
+function executionPreviewBody(args: {
+  intro: string;
+  events: ChatV2AgentRunEvent[];
+  tasks: ChatV2TaskSnapshot[];
+  activeTask: ChatV2TaskSnapshot | null;
+}) {
+  const taskItems = args.tasks.map((task) => {
+    const label = taskMessageLabel(task);
+    return `${task.status}${task.phase ? ` · ${task.phase}` : ""}${label ? `: ${label}` : ""}`;
+  });
+  const artifactItems = args.tasks.flatMap((task) =>
+    task.latest_artifact_refs.flatMap((artifact) => detailItemsFromValue(artifact)),
+  );
+  return detailMarkdown(args.intro, [
+    {
+      title: "Active Task",
+      items: args.activeTask
+        ? [`${args.activeTask.task_id}: ${taskProgressLabel(args.activeTask)}`]
+        : [],
+    },
+    { title: "Recent Activity", items: recentActivityItems(args.events) },
+    { title: "Task State", items: taskItems },
+    { title: "Artifacts", items: artifactItems },
+  ]);
+}
+
+function validationPreviewBody(args: {
+  latestValidation: ChatV2AgentRunEvent | undefined;
+  understanding: Record<string, unknown> | null;
+}) {
+  const payload = args.latestValidation ? eventPayload(args.latestValidation) : {};
+  const validationResultItems = uniqueStringList([
+    typeof payload.passed === "boolean" ? (payload.passed ? "Passed" : "Needs attention") : "",
+    ...collectFieldItems([payload], [
+      "summary",
+      "comparison_note",
+      "validation_summary",
+      "message",
+      "status",
+    ]),
+  ]);
+  const acceptanceItems = collectFieldItems([args.understanding], ["confidence_scoped_acceptance"]);
+  const rulesBriefItems = collectFieldItems([args.understanding], ["rule_generation_brief"]);
+  return detailMarkdown(
+    args.latestValidation && humanEventSummary(args.latestValidation)
+      ? humanEventSummary(args.latestValidation)
+      : "Validation checks the current frontier before final response.",
+    [
+      {
+        title: "Validation Result",
+        items: validationResultItems,
+      },
+      {
+        title: "Aspect Coverage",
+        items: collectFieldItems([payload], ["aspect_coverage"]),
+      },
+      {
+        title: "Acceptance Criteria",
+        items: acceptanceItems,
+      },
+      {
+        title: "Rules Brief",
+        items: acceptanceItems.length > 0 ? [] : rulesBriefItems,
+      },
+    ],
+  );
+}
+
+function chunkMatchesRun(chunk: WorkspaceChunk, activeRunId: string) {
+  return !activeRunId || !chunk.runId || chunk.runId === activeRunId;
+}
+
+function isFinalAnswerChunk(chunk: WorkspaceChunk) {
+  if (chunk.kind !== "agent") return false;
+  if (/outcome/i.test(chunk.title) || /^agent-outcome:/.test(chunk.id)) return false;
+  return /answer|terminal/i.test(chunk.title) || /^agent-(answer|terminal):/.test(chunk.id);
+}
+
+function isOutcomeChunk(chunk: WorkspaceChunk) {
+  return chunk.kind === "agent" && (/outcome/i.test(chunk.title) || /^agent-outcome:/.test(chunk.id));
+}
+
+function latestMatchingChunk(
+  chunks: WorkspaceChunk[],
+  activeRunId: string,
+  predicate: (chunk: WorkspaceChunk) => boolean,
+) {
+  return [...chunks]
+    .reverse()
+    .find((chunk) => predicate(chunk) && chunkMatchesRun(chunk, activeRunId));
+}
+
+function conversationUserChunks(chunks: WorkspaceChunk[], limit = 4) {
+  return chunks
+    .filter(
+      (chunk) =>
+        chunk.kind === "chat" &&
+        chunk.role === "user" &&
+        Boolean(chunk.body.trim()),
+    )
+    .slice(-limit);
+}
+
+function markdownListItems(content: string) {
+  return uniqueStringList(
+    content
+      .split(/\r?\n/)
+      .map((line) => line.trim().replace(/^[-*]\s+/, ""))
+      .filter(Boolean),
+  );
+}
+
+function buildBlueprintNodes(args: {
+  tasks: ChatV2TaskSnapshot[];
+  agentEvents: ChatV2AgentRunEvent[];
+  chunks: WorkspaceChunk[];
+  activeRunId: string;
+  activeRunningTask: ChatV2TaskSnapshot | null;
+  queueRows: QueueRow[];
+  activeThreadTitle: string;
+}) {
+  const {
+    tasks,
+    agentEvents,
+    chunks,
+    activeRunId,
+    activeRunningTask,
+    queueRows,
+    activeThreadTitle,
+  } = args;
+  const hasActiveRun = Boolean(activeRunId && activeRunningTask);
+  const activeRunEvents =
+    activeRunId && agentEvents.some((event) => event.run_id === activeRunId)
+      ? agentEvents.filter((event) => event.run_id === activeRunId)
+      : agentEvents;
+  const activeRunTasks =
+    activeRunId && tasks.some((task) => taskRunId(task) === activeRunId)
+      ? tasks.filter((task) => taskRunId(task) === activeRunId)
+      : tasks;
+  const emittedPlanContext = extractBlueprintPlanContext(activeRunEvents);
+  const latestUserChunk = [...chunks].reverse().find((chunk) => chunk.role === "user");
+  const latestAnswerChunk = latestMatchingChunk(chunks, activeRunId, isFinalAnswerChunk);
+  const latestOutcomeChunk = latestMatchingChunk(chunks, activeRunId, isOutcomeChunk);
+  const latestOutcomeItems = latestOutcomeChunk ? markdownListItems(latestOutcomeChunk.body) : [];
+  const latestAnswerEvent = answerEventFromAgentEvents(activeRunEvents);
+  const latestAnswerEventBody = latestAnswerEvent ? humanEventSummary(latestAnswerEvent) : "";
+  const latestTerminalTaskWithProgress =
+    [...activeRunTasks].reverse().find((task) => Boolean(humanTerminalTaskProgress(task))) ?? null;
+  const latestTerminalTaskRaw = latestTerminalTaskWithProgress
+    ? rawTerminalTaskProgress(latestTerminalTaskWithProgress)
+    : "";
+  const latestTerminalTaskBody = latestTerminalTaskWithProgress
+    ? humanTerminalTaskProgress(latestTerminalTaskWithProgress)
+    : "";
+  const latestCompletedEvent = [...activeRunEvents].reverse().find((event) => event.type === "completed");
+  const runCompleted = Boolean(
+    latestCompletedEvent || activeRunTasks.some((task) => task.status === "completed"),
+  );
+  const latestWorkingChunk = [...chunks]
+    .reverse()
+    .find((chunk) => chunk.status === "running" && (!activeRunId || !chunk.runId || chunk.runId === activeRunId));
+  const nodes: BlueprintNode[] = [];
+  const latestSource = latestEventSource(activeRunEvents);
+  const firstTask = activeRunTasks[0] ?? null;
+  const attentionTask = activeRunTasks.find(taskNeedsAttention) ?? null;
+  const attentionRunId = attentionTask ? taskRunId(attentionTask) : "";
+  const attentionDetail = attentionTask ? taskAttentionDetail(attentionTask) : "";
+  const hasRunEvidence = activeRunTasks.length > 0 || activeRunEvents.length > 0 || hasActiveRun;
+  const taskRequestLabel = tasks
+    .map(taskMessageLabel)
+    .find((label) => label && !/^super dan (is |completed|needs attention)/i.test(label));
+  const fallbackThreadTitle =
+    hasRunEvidence && !threadTitleLooksPlaceholder(activeThreadTitle) ? activeThreadTitle.trim() : "";
+  const requestBody = latestUserChunk?.body || taskRequestLabel || fallbackThreadTitle;
+  const validationSaysNoMutation = activeRunEvents.some((event) => {
+    if (eventSource(event) !== "live.validation.completed") return false;
+    const comparison = textValue(eventPayload(event).comparison_note).toLowerCase();
+    return comparison.includes("forbade workspace mutation");
+  });
+  const assessmentOnlyRun = textRequestsAssessmentOnly(requestBody);
+  const projectAnswerRun = assessmentOnlyRun && textRequestsProjectAnswer(requestBody);
+  const readOnlyRun = assessmentOnlyRun || textForbidsWorkspaceMutation(requestBody) || validationSaysNoMutation;
+  const noShellRun = textForbidsShellCommands(requestBody);
+  const requestUnderstanding = latestRequestUnderstanding(activeRunEvents, activeRunTasks);
+  const operatorContexts = operatorContextRecords(activeRunEvents, activeRunTasks);
+  const requestPlanContext = readOnlyRun ? null : deriveRequestPlanContext(requestBody);
+  const planContext = emittedPlanContext ?? requestPlanContext;
+  const completedTaskIds = completedPlanTaskIdsFromEvents(activeRunEvents, planContext);
+  const activeTaskIds = activePlanTaskIdsFromEvents(activeRunEvents, planContext, hasActiveRun);
+  const readyTaskIds = new Set(planContext?.readyTaskIds ?? []);
+  const deferredTaskIds = new Set(planContext?.deferredTaskIds ?? []);
+  const worktreeTaskIds = new Set(planContext?.parallelWorktreeTaskIds ?? []);
+  const directResponseDetail = assessmentOnlyRun
+    ? projectAnswerRun
+      ? "Project answer; no file edits expected"
+      : "Review response; no file edits expected"
+    : noShellRun
+    ? "No file edits or shell commands allowed"
+    : "No file edits allowed";
+  const requestTargetCount = requestBody ? requestTargetPaths(requestBody).length : 0;
+  const requestNodeDetail = requestTargetCount
+    ? `${requestTargetCount} explicit target${requestTargetCount === 1 ? "" : "s"} captured`
+    : readOnlyRun || noShellRun
+      ? "Request constraints captured"
+      : "Request captured";
+
+  if (latestUserChunk || requestBody) {
+    nodes.push({
+      id: latestUserChunk?.id ? `blueprint:${latestUserChunk.id}` : "blueprint:request",
+      title: "Operator request",
+      detail: requestNodeDetail,
+      meta: "input",
+      body: requestBody ? "Ready for request understanding." : "Waiting for a request.",
+      previewBody: requestPreviewBody({
+        requestBody,
+        understanding: requestUnderstanding,
+        operatorContexts,
+        readOnlyRun,
+        assessmentOnlyRun,
+        noShellRun,
+      }),
+      rawRequest: requestBody,
+      status: "done",
+      kind: "request",
+      sourceChunkId: latestUserChunk?.id,
+      taskId: latestUserChunk?.taskId ?? firstTask?.task_id,
+      runId: latestUserChunk?.runId ?? (firstTask ? taskRunId(firstTask) : null),
+    });
+  }
+
+  if (requestBody && (hasRunEvidence || requestUnderstanding || operatorContexts.length > 0)) {
+    const understandingDone = Boolean(requestUnderstanding);
+    const understandingModelAuthored = scalarDetailText(requestUnderstanding?.source) === "model_authored";
+    const understandingRuleBrief =
+      scalarDetailText(requestUnderstanding?.source) === "rule_generation_brief";
+    nodes.push({
+      id: "blueprint:understanding",
+      title: "Understand request",
+      detail: understandingDone
+        ? understandingModelAuthored
+          ? "Scope, constraints, targets, and acceptance gates tailored"
+          : understandingRuleBrief
+            ? "Rule-generation brief sent to DAN"
+            : "Scope, constraints, targets, and acceptance gates scaffolded"
+        : "Extracting scope, constraints, targets, and evidence gates",
+      meta: scalarDetailText(requestUnderstanding?.request_kind) || "request contract",
+      body: understandingDone
+        ? understandingModelAuthored
+          ? "DAN tailored the request-understanding rules for this run."
+          : understandingRuleBrief
+            ? "DAN is asking the model to generate request-specific rules for this run."
+            : "DAN started from a request-understanding scaffold for this run."
+        : "DAN is identifying the work contract before treating execution as complete.",
+      previewBody: understandingPreviewBody({
+        requestBody,
+        understanding: requestUnderstanding,
+        operatorContexts,
+      }),
+      status: understandingModelAuthored ? "done" : hasActiveRun ? "active" : "ready",
+      kind: "understanding",
+      runId: activeRunId || (firstTask ? taskRunId(firstTask) : null),
+      taskId: activeRunningTask?.task_id ?? firstTask?.task_id,
+    });
+  }
+
+  const planningStarted = hasEventSource(activeRunEvents, (source) => source.startsWith("live.planning"));
+  const planningCompleted = Boolean(
+    planContext?.taskGraph.length ||
+      hasEventSource(activeRunEvents, "live.plan_validation.completed") ||
+      hasEventSource(activeRunEvents, "live.planning.completed"),
+  );
+  const planningFallbackActive = hasActiveRun && !planningStarted && !planningCompleted && !planContext;
+  if (hasActiveRun || planningStarted || planningCompleted || planContext) {
+    nodes.push({
+      id: "blueprint:planning",
+      title: "Blueprint planning",
+      detail:
+        planContext?.taskGraph.length
+          ? `${planContext.taskGraph.length} projected tasks · ${planContext.readyTaskIds.length || 0} ready now`
+          : planContext?.planFiles.length
+            ? `${planContext.planFiles.length} plan files emitted`
+            : "Predicting the task graph and ready frontier",
+      meta: planContext?.planRootRelative || "plan frontier",
+      body: [
+        planContext?.planRootRelative ? `Plan root: \`${planContext.planRootRelative}\`` : "",
+        planContext?.planFiles.length
+          ? ["Plan files:", ...planContext.planFiles.map((path) => `- \`${path}\``)].join("\n")
+          : "",
+        planContext?.readyTaskIds.length
+          ? `Ready now: ${planContext.readyTaskIds.map((id) => `\`${id}\``).join(", ")}`
+          : "",
+        planContext?.deferredTaskIds.length
+          ? `Future/deferred: ${planContext.deferredTaskIds.map((id) => `\`${id}\``).join(", ")}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n") ||
+        (planningFallbackActive
+          ? "No separate task graph has been emitted yet; following the current run phases."
+          : "Waiting for the planner to emit a task graph."),
+      previewBody: planPreviewBody(planContext),
+      status: phaseStatus({
+        started: planningStarted || planningFallbackActive,
+        completed: planningCompleted,
+        active: hasActiveRun,
+        planned: hasActiveRun,
+      }),
+      kind: "plan",
+      compact: !planningCompleted,
+      runId: activeRunId,
+      taskId: activeRunningTask?.task_id,
+    });
+  }
+
+  if (planContext?.taskGraph.length) {
+    for (const task of planContext.taskGraph) {
+      const done = completedTaskIds.has(task.taskId);
+      const active = activeTaskIds.has(task.taskId) && !done;
+      const ready = readyTaskIds.has(task.taskId) && !done && !active;
+      const future = deferredTaskIds.has(task.taskId) || (!done && !active && !ready);
+      const kind: BlueprintNodeKind = worktreeTaskIds.has(task.taskId) ? "worktree" : "task";
+      nodes.push({
+        id: `blueprint:task:${task.taskId}`,
+        title: `${task.taskId}. ${task.goal}`,
+        detail: compactTaskDetail(task),
+        meta: kind === "worktree" ? "parallel lane" : task.parallelSafe ? "parallel-safe" : "serial",
+        body: taskBody(task, planContext),
+        previewBody: taskBody(task, planContext),
+        status: done ? "done" : active ? "active" : ready ? "ready" : future ? "future" : "queued",
+        kind,
+        compact: future,
+        depth: Math.min(task.dependsOn.length, 2),
+        dependencyIds: task.dependsOn,
+        runId: activeRunId,
+        taskId: activeRunningTask?.task_id,
+      });
+    }
+  } else if (hasActiveRun || activeRunEvents.length > 0 || attentionTask) {
+    const buildStarted = hasEventSource(activeRunEvents, (source) =>
+      [
+        "live.generic_execution.started",
+        "live.generic_build.started",
+        "live.website_build.started",
+        "tool.started",
+        "tool.completed",
+        "tool.failed",
+        "tool.denied",
+        "tool.policy_denied",
+      ].includes(source),
+    );
+    const buildCompleted =
+      hasEventSource(activeRunEvents, (source) => source.includes("generic_build.completed")) ||
+      Boolean((latestAnswerChunk || latestAnswerEvent || latestOutcomeChunk || runCompleted) && !hasActiveRun);
+    const buildIntro =
+      attentionDetail ||
+      latestWorkingChunk?.body ||
+      (readOnlyRun ? directResponseDetail : "Execution details will appear as Super DAN emits events.");
+    nodes.push({
+      id: "blueprint:build",
+      title: attentionTask
+        ? "Execution needs attention"
+        : planContext?.readyTaskIds.length
+        ? `Execute ready frontier ${planContext.readyTaskIds.join(", ")}`
+        : readOnlyRun
+          ? assessmentOnlyRun
+            ? projectAnswerRun
+              ? "Prepare answer"
+              : "Prepare review response"
+            : "Prepare direct response"
+          : "Execute workspace change",
+      detail:
+        attentionDetail ||
+        latestWorkingChunk?.body ||
+        (readOnlyRun ? directResponseDetail : "Use tools, edit files, and collect artifacts"),
+      meta: attentionTask?.status || latestSource || "workspace lane",
+      body: buildIntro,
+      previewBody: executionPreviewBody({
+        intro: buildIntro,
+        events: activeRunEvents,
+        tasks: activeRunTasks,
+        activeTask: activeRunningTask || attentionTask,
+      }),
+      status: attentionTask
+        ? "blocked"
+        : phaseStatus({
+            started: buildStarted || hasActiveRun,
+            completed: buildCompleted,
+            active: hasActiveRun,
+            planned: true,
+          }),
+      kind: "build",
+      sourceChunkId: latestWorkingChunk?.id,
+      runId: activeRunId || attentionRunId,
+      taskId: activeRunningTask?.task_id || attentionTask?.task_id,
+    });
+  }
+
+  const validationStarted = hasEventSource(activeRunEvents, (source) => source.startsWith("live.validation"));
+  const validationCompleted = hasEventSource(activeRunEvents, "live.validation.completed");
+  const latestValidation = [...activeRunEvents]
+    .reverse()
+    .find((event) => eventSource(event).startsWith("live.validation"));
+  const validationFailed = Boolean(
+    latestValidation &&
+      (latestValidation.type === "failed" ||
+        latestValidation.type === "blocked" ||
+        eventPayload(latestValidation).passed === false),
+  );
+  if (hasActiveRun || validationStarted || validationCompleted || planContext?.taskGraph.length) {
+    nodes.push({
+      id: "blueprint:validation",
+      title: "Validate current frontier",
+      detail:
+        latestValidation && humanEventSummary(latestValidation)
+          ? humanEventSummary(latestValidation)
+          : validationCompleted
+            ? "Validation result emitted"
+            : "Checks run after the current executable slice",
+      meta: latestValidation ? eventSource(latestValidation) : "validation",
+      body:
+        latestValidation && humanEventSummary(latestValidation)
+          ? humanEventSummary(latestValidation)
+          : "Super DAN validates the current frontier before claiming the full future graph is done.",
+      previewBody: validationPreviewBody({
+        latestValidation,
+        understanding: requestUnderstanding,
+      }),
+      status: phaseStatus({
+        started: validationStarted,
+        completed: validationCompleted && !validationFailed,
+        failed: validationFailed,
+        active: hasActiveRun,
+        planned: true,
+      }),
+      kind: "validation",
+      compact: !validationStarted,
+      runId: activeRunId,
+      taskId: activeRunningTask?.task_id,
+    });
+  }
+
+  const repairStarted = hasEventSource(activeRunEvents, (source) =>
+    source.includes("repair") || source.includes("retry"),
+  );
+  if (repairStarted) {
+    nodes.push({
+      id: "blueprint:repair",
+      title: "Repair or retry",
+      detail: "Validation requested a bounded correction",
+      meta: latestSource,
+      body: latestWorkingChunk?.body || "Super DAN is repairing a rejected or incomplete slice.",
+      status: hasActiveRun ? "active" : "done",
+      kind: "repair",
+      sourceChunkId: latestWorkingChunk?.id,
+      runId: activeRunId,
+      taskId: activeRunningTask?.task_id,
+    });
+  }
+
+  if (latestAnswerChunk || latestOutcomeChunk || hasActiveRun || (nodes.length > 0 && hasRunEvidence)) {
+    const latestAnswerEventRaw = latestAnswerEvent ? eventSummary(latestAnswerEvent).trim() : "";
+    const latestAnswerEventSourceBody =
+      latestAnswerEventRaw && formatStructuredAgentDisplay(latestAnswerEventRaw)
+        ? latestAnswerEventRaw
+        : latestAnswerEventBody;
+    const directAnswerRequired = readOnlyRun || assessmentOnlyRun;
+    const finalAnswerSource = [
+      latestAnswerChunk?.body || "",
+      latestAnswerEventSourceBody,
+      latestTerminalTaskRaw,
+      latestTerminalTaskBody,
+    ].find((source) =>
+      isUsableFinalResponseSource(source, { requireDirectAnswer: directAnswerRequired }),
+    ) || "";
+    const finalDone = Boolean(finalAnswerSource);
+    const finalMissing = Boolean(
+      !finalDone && !hasActiveRun && !attentionTask && (runCompleted || latestOutcomeChunk),
+    );
+    const finalSourceBody =
+      finalAnswerSource ||
+      (finalMissing
+        ? missingFinalResponseMessage(latestOutcomeItems.length > 0, directAnswerRequired)
+        : attentionTask
+          ? attentionDetail || "Super DAN needs attention before it can answer."
+          : "This will become solid when Super DAN emits the final answer.");
+    const finalDisplay = userFacingAgentDisplay(finalSourceBody);
+    nodes.push({
+      id: latestAnswerChunk?.id ? `blueprint:${latestAnswerChunk.id}` : "blueprint:answer",
+      title: "Final response",
+      detail:
+        finalMissing
+          ? "Final answer missing"
+          : latestAnswerChunk?.meta ||
+            (latestAnswerEvent ? eventSource(latestAnswerEvent) : "") ||
+            (runCompleted || latestOutcomeChunk ? "Run completed" : "") ||
+            (attentionTask ? "Stopped before final response" : "Summarize what changed and what remains"),
+      meta:
+        finalMissing
+          ? "missing answer"
+          : latestAnswerChunk?.meta ||
+            (latestAnswerEvent ? eventSource(latestAnswerEvent) : "") ||
+            attentionTask?.status ||
+            "answer",
+      body: finalDisplay.body,
+      previewBody: detailMarkdown(finalDisplay.previewBody, [
+        {
+          title: "Workspace Changes",
+          items: latestOutcomeItems,
+        },
+        {
+          title: "Remaining Attention",
+          items: [
+            ...(finalMissing
+              ? [
+                  directAnswerRequired
+                    ? "Ask DAN to answer in this session, or rerun the request without creating files."
+                    : "Ask DAN to summarize this session or rerun the request.",
+                ]
+              : []),
+            ...(attentionTask ? [attentionDetail || taskAttentionDetail(attentionTask)] : []),
+          ],
+        },
+      ]),
+      status: finalDone ? "done" : attentionTask || finalMissing ? "blocked" : hasActiveRun ? "future" : "queued",
+      kind: "answer",
+      compact: !finalDone && !finalMissing,
+      sourceChunkId: latestAnswerChunk?.id || latestOutcomeChunk?.id,
+      runId:
+        latestAnswerChunk?.runId ||
+        latestOutcomeChunk?.runId ||
+        latestAnswerEvent?.run_id ||
+        latestCompletedEvent?.run_id ||
+        (latestTerminalTaskWithProgress ? taskRunId(latestTerminalTaskWithProgress) : "") ||
+        activeRunId ||
+        attentionRunId,
+      taskId:
+        latestAnswerChunk?.taskId ||
+        latestOutcomeChunk?.taskId ||
+        latestAnswerEvent?.task_id ||
+        latestCompletedEvent?.task_id ||
+        latestTerminalTaskWithProgress?.task_id ||
+        activeRunningTask?.task_id ||
+        attentionTask?.task_id,
+    });
+  }
+
+  queueRows.forEach((row, index) => {
+    if (row.kind === "followup") {
+      nodes.push(...followUpBlueprintNodes(row, index));
+      return;
+    }
+    nodes.push({
+      id: `blueprint:${row.id}`,
+      title: row.label,
+      detail: row.detail,
+      meta: row.status,
+      body: row.detail,
+      status: queueBlueprintStatus(row.status),
+      kind: "queue",
+      compact: true,
+      depth: Math.min(index + 1, 2),
+      runId: row.runId,
+      taskId: row.taskId,
+    });
+  });
+
+  return nodes;
+}
+
+export function buildBlueprintNodesForTest(args: Parameters<typeof buildBlueprintNodes>[0]) {
+  return buildBlueprintNodes(args);
+}
+
+export function conversationUserChunksForTest(chunks: WorkspaceChunk[], limit?: number) {
+  return conversationUserChunks(chunks, limit);
+}
+
+export function queueRowsFromTasksForTest(tasks: ChatV2TaskSnapshot[]) {
+  return queueRowsFromTasks(tasks);
+}
+
+export function selectActiveRunningTaskForTest(tasks: ChatV2TaskSnapshot[]) {
+  return selectActiveRunningTask(tasks);
+}
+
+export function sessionProgressTaskForTest(tasks: ChatV2TaskSnapshot[], threadId: string) {
+  return runningTaskMapByThreadId(tasks).get(threadId) ?? null;
+}
+
+export function sessionReadyResponseAtForTest(tasks: ChatV2TaskSnapshot[]) {
+  return sessionReadyResponseAt(tasks);
+}
+
+export function sessionHasNewReadyResponseForTest(
+  tasks: ChatV2TaskSnapshot[],
+  seenAt?: string,
+) {
+  return sessionHasNewReadyResponse(tasks, seenAt);
+}
+
+export function sessionStatusTasksForTest(
+  selectedTasks: ChatV2TaskSnapshot[],
+  backgroundTasks: ChatV2TaskSnapshot[],
+) {
+  return mergeTaskSnapshots(backgroundTasks, selectedTasks);
+}
+
+export function sessionCardDisplayForTest(
+  thread: ChatV2ThreadSummary,
+  tasks: ChatV2TaskSnapshot[],
+) {
+  return sessionCardDisplay(thread, tasks);
+}
+
+export function shouldAutoRestoreSessionForTest(args: Parameters<typeof shouldAutoRestoreSession>[0]) {
+  return shouldAutoRestoreSession(args);
+}
+
+export function restorableThreadTargetForTest(
+  threads: ChatV2ThreadSummary[],
+  targetThreadId?: string | null,
+  targetWorkflowId?: string | null,
+) {
+  return restorableThreadTarget(threads, targetThreadId, targetWorkflowId);
+}
+
+export function activeThreadArchivedSummaryForTest(
+  selection: ActiveThreadSelection,
+  threads: ChatV2ThreadSummary[],
+) {
+  return activeThreadArchivedSummary(selection, threads);
+}
+
+export function workspaceIdForTasksForTest(
+  tasks: ChatV2TaskSnapshot[],
+  workspaces: Array<{ id: string; pinnedPaths: string[] }>,
+) {
+  return workspaceIdForTasks(tasks, workspaces);
+}
+
+export function noteRailViewForFacetForTest(facet: string) {
+  return noteRailViewForFacet(facet);
+}
+
+export function workPlanHeaderSubtitleForTest(node: BlueprintNode | null, fallbackTitle?: string | null) {
+  return workPlanHeaderSubtitle(node, fallbackTitle);
+}
+
+export function blueprintLiveStatusForTest(
+  node: BlueprintNode,
+  tasks: ChatV2TaskSnapshot[],
+  events: ChatV2AgentRunEvent[],
+  activeTask: ChatV2TaskSnapshot | null,
+) {
+  return blueprintLiveStatus(node, tasks, events, activeTask);
+}
+
+function blueprintAnchorNode(nodes: BlueprintNode[]) {
+  return (
+    nodes.find((node) => node.status === "active") ??
+    nodes.find((node) => node.status === "ready") ??
+    [...nodes].reverse().find((node) => node.status === "done") ??
+    nodes[0] ??
+    null
+  );
+}
+
+function isMachineProgressText(text: string) {
+  return Boolean(
+    !text ||
+      ["model.requested", "tool.started", "completed"].includes(text) ||
+      (/^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/i.test(text) && !/\s/.test(text)) ||
+      /^Token usage\b/i.test(text),
+  );
+}
+
+function taskProgressFallbackLabel(task: ChatV2TaskSnapshot) {
+  if (task.status === "running") return "Super DAN is working";
+  if (task.status === "queued") return "Super DAN is queued";
+  if (task.status === "waiting_dependency") return "Super DAN is waiting";
+  if (task.status === "needs_input") return "Super DAN needs input";
+  if (task.status === "paused") return "Super DAN is paused";
+  if (task.status === "completed") return "Super DAN completed";
+  if (task.status === "failed" || task.status === "blocked") return "Super DAN needs attention";
+  return task.phase || "Super DAN task";
+}
+
 function taskProgressLabel(task: ChatV2TaskSnapshot) {
   const text = textValue(task.latest_progress);
-  if (
-    !text ||
-    ["model.requested", "tool.started", "completed"].includes(text) ||
-    (/^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/i.test(text) && !/\s/.test(text)) ||
-    /^Token usage\b/i.test(text)
-  ) {
-    if (task.status === "running") return "Super DAN is working";
-    if (task.status === "queued") return "Super DAN is queued";
-    if (task.status === "completed") return "Super DAN completed";
-    if (task.status === "failed" || task.status === "blocked") return "Super DAN needs attention";
-    return task.phase || "Super DAN task";
-  }
-  return text;
+  if (isMachineProgressText(text)) return taskProgressFallbackLabel(task);
+  const structured = formatStructuredAgentDisplay(text);
+  if (structured) return structured.body;
+  return parseJsonObject(text) ? taskProgressFallbackLabel(task) : text;
 }
 
 function taskMessageLabel(task: ChatV2TaskSnapshot) {
   const metadata = task.metadata ?? {};
+  const lastSurfaceTurn = metadataObject(metadata.last_surface_turn);
+  const operatorContext = metadataObject(metadata.operator_context);
   return (
+    textValue(metadata.run_command_text) ||
+    textValue(metadata["_run_command_text"]) ||
+    textValue(lastSurfaceTurn.text) ||
+    textValue(operatorContext.raw_text) ||
+    textValue(operatorContext.follow_up_objective) ||
     textValue(metadata.message) ||
     textValue(metadata.objective) ||
     textValue(metadata.text) ||
@@ -1612,16 +3835,195 @@ function taskMessageLabel(task: ChatV2TaskSnapshot) {
   );
 }
 
+function taskAttentionDetail(task: ChatV2TaskSnapshot) {
+  const message = taskMessageLabel(task);
+  if (taskIsStaleRunning(task)) {
+    const age = taskLastUpdateAge(task);
+    return [
+      `Saved run still says running${age ? `, but last updated ${age} ago` : ""}.`,
+      message,
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+  if (taskStopRequested(task)) {
+    return taskProgressLabel(task) || message || "Stop was requested for this run.";
+  }
+  return message;
+}
+
+function humanTerminalTaskProgress(task: ChatV2TaskSnapshot) {
+  if (task.status !== "completed") return "";
+  const text = rawTerminalTaskProgress(task);
+  if (!text || /^Super DAN (?:is |completed|needs attention)/i.test(text)) return "";
+  const structured = formatStructuredAgentDisplay(text);
+  if (structured) return structured.body;
+  return parseJsonObject(text) ? "" : text;
+}
+
+function rawTerminalTaskProgress(task: ChatV2TaskSnapshot) {
+  if (task.status !== "completed") return "";
+  const text = textValue(task.latest_progress);
+  return isMachineProgressText(text) ? "" : text;
+}
+
+function taskQueueLabel(status: string) {
+  const normalized = status.trim().toLowerCase();
+  if (normalized === "running") return "Active run";
+  if (normalized === "stale_running") return "Stale run";
+  if (normalized === "stop_requested") return "Stop requested";
+  if (normalized === "queued") return "Queued run";
+  if (normalized === "waiting_dependency") return "Waiting on dependency";
+  if (normalized === "needs_input") return "Needs input";
+  if (normalized === "paused") return "Paused";
+  if (normalized === "blocked") return "Blocked";
+  if (normalized === "stopped") return "Stopped";
+  return normalized ? normalized.replace(/_/g, " ") : "Pending run";
+}
+
+function queueBlueprintStatus(status: string): BlueprintNodeStatus {
+  const normalized = status.trim().toLowerCase();
+  if (normalized === "running" || normalized === "injected") return "active";
+  if (
+    normalized === "needs_input" ||
+    normalized === "paused" ||
+    normalized === "blocked" ||
+    normalized === "stale_running" ||
+    normalized === "stop_requested" ||
+    normalized === "stopped"
+  ) {
+    return "blocked";
+  }
+  return "queued";
+}
+
+function followUpPhaseStatuses(row: QueueRow): {
+  request: BlueprintNodeStatus;
+  plan: BlueprintNodeStatus;
+  action: BlueprintNodeStatus;
+  response: BlueprintNodeStatus;
+} {
+  const status = queueBlueprintStatus(row.status);
+  if (status === "blocked") {
+    return { request: "done", plan: "blocked", action: "future", response: "future" };
+  }
+  if (status === "active") {
+    return { request: "done", plan: "done", action: "active", response: "future" };
+  }
+  if (status === "done") {
+    return { request: "done", plan: "done", action: "done", response: "done" };
+  }
+  return { request: "done", plan: "future", action: "future", response: "future" };
+}
+
+function followUpTimingLabel(row: QueueRow) {
+  return row.lane === "continue_after_current"
+    ? "Starts after the current run completes"
+    : "Joins the current run at a safe checkpoint";
+}
+
+function followUpPlanBody(row: QueueRow) {
+  return detailMarkdown(followUpTimingLabel(row), [
+    {
+      title: "Follow-Up",
+      items: [row.detail],
+    },
+  ]);
+}
+
+function followUpBlueprintNodes(row: QueueRow, index: number): BlueprintNode[] {
+  const status = followUpPhaseStatuses(row);
+  const baseDepth = Math.min(index + 1, 2);
+  const childDepth = Math.min(baseDepth + 1, 2);
+  const runId = row.runId ?? null;
+  const taskId = row.taskId ?? null;
+  const timing = followUpTimingLabel(row);
+  return [
+    {
+      id: `blueprint:${row.id}:request`,
+      title: "Follow-up request",
+      detail: row.label,
+      meta: "follow-up",
+      body: "Ready for follow-up planning.",
+      previewBody: "",
+      rawRequest: row.detail,
+      status: status.request,
+      kind: "request",
+      compact: true,
+      depth: baseDepth,
+      runId,
+      taskId,
+    },
+    {
+      id: `blueprint:${row.id}:plan`,
+      title: "Plan follow-up",
+      detail: timing,
+      meta: row.status,
+      body: timing,
+      previewBody: followUpPlanBody(row),
+      status: status.plan,
+      kind: "plan",
+      compact: status.plan === "future",
+      depth: childDepth,
+      runId,
+      taskId,
+    },
+    {
+      id: `blueprint:${row.id}:action`,
+      title: "Work on follow-up",
+      detail:
+        status.action === "active"
+          ? "Applying the follow-up now"
+          : "Waits until the follow-up is admitted",
+      meta: row.status,
+      body:
+        status.action === "active"
+          ? "Super DAN is working on this follow-up."
+          : "This becomes solid when Super DAN reaches the follow-up.",
+      previewBody: followUpPlanBody(row),
+      status: status.action,
+      kind: "build",
+      compact: status.action === "future",
+      depth: childDepth,
+      runId,
+      taskId,
+    },
+    {
+      id: `blueprint:${row.id}:response`,
+      title: "Follow-up response",
+      detail: "Answer after the follow-up is handled",
+      meta: "answer",
+      body: "This becomes solid when Super DAN responds to the follow-up.",
+      previewBody: followUpPlanBody(row),
+      status: status.response,
+      kind: "answer",
+      compact: status.response === "future",
+      depth: childDepth,
+      runId,
+      taskId,
+    },
+  ];
+}
+
 function queueRowsFromTasks(tasks: ChatV2TaskSnapshot[]) {
   const rows: QueueRow[] = [];
   for (const task of tasks) {
     if (!isTaskTerminal(task)) {
+      const status = taskStopRequested(task)
+        ? "stop_requested"
+        : taskIsStaleRunning(task)
+          ? "stale_running"
+          : task.status || "queued";
       rows.push({
         id: `task:${task.task_id}`,
-        label: task.status === "queued" ? "Queued run" : "Active run",
-        detail: taskMessageLabel(task),
-        status: task.status,
-        active: task.status !== "queued",
+        label: taskQueueLabel(status),
+        detail: status === task.status ? taskMessageLabel(task) : taskAttentionDetail(task),
+        status,
+        active: status === "running",
+        kind: "task",
+        lane: "task",
+        taskId: task.task_id,
+        runId: taskRunId(task),
       });
     }
 
@@ -1634,26 +4036,64 @@ function queueRowsFromTasks(tasks: ChatV2TaskSnapshot[]) {
         detail: item.text.trim() || "Queued message",
         status,
         active: false,
+        kind: "followup",
+        lane: item.lane,
+        taskId: item.task_id || task.task_id,
+        runId: taskRunId(task),
       });
     }
   }
   return rows.slice(0, 8);
 }
 
-async function loadSuperDanThreadHistory(threadId: string, title: string) {
+function taskWithRunHistory(
+  task: ChatV2TaskSnapshot,
+  run: ChatV2AgentRunRecord | null,
+  threadUpdatedAt?: string,
+) {
+  const payload = run?.command?.payload ?? {};
+  const operatorContext = metadataObject(payload.operator_context);
+  const runCommandText =
+    textValue(payload.text) ||
+    textValue(payload.message) ||
+    textValue(payload.objective) ||
+    textValue(operatorContext.raw_text) ||
+    textValue(operatorContext.follow_up_objective);
+  return {
+    ...task,
+    metadata: {
+      ...(task.metadata ?? {}),
+      ...(run?.created_at ? { run_created_at: run.created_at } : {}),
+      ...(run?.updated_at ? { run_updated_at: run.updated_at } : {}),
+      ...(run?.status ? { run_status: run.status } : {}),
+      ...(runCommandText ? { run_command_text: runCommandText } : {}),
+      ...(threadUpdatedAt ? { thread_updated_at: threadUpdatedAt } : {}),
+    },
+  };
+}
+
+async function loadSuperDanThreadHistory(threadId: string, title: string, threadUpdatedAt?: string) {
   const tasks = await listChatV2ThreadTasks(threadId);
   const items = await Promise.all(
     [...tasks].reverse().map(async (task) => {
       const runId = taskRunId(task);
-      if (!runId) return { task, run: null, events: [] as ChatV2AgentRunEvent[], runId: "" };
+      if (!runId) {
+        return {
+          task: taskWithRunHistory(task, null, threadUpdatedAt),
+          run: null,
+          events: [] as ChatV2AgentRunEvent[],
+          runId: "",
+        };
+      }
       const [run, events] = await Promise.all([
         getChatV2AgentRun(runId).catch(() => null),
         getChatV2AgentRunEvents(runId).catch(() => [] as ChatV2AgentRunEvent[]),
       ]);
-      return { task, run, events, runId };
+      return { task: taskWithRunHistory(task, run, threadUpdatedAt), run, events, runId };
     }),
   );
   const events = items.flatMap((item) => item.events);
+  const loadedTasks = items.map((item) => item.task);
   const messages: ChatMessage[] = [];
   for (const item of items) {
     const objective =
@@ -1694,13 +4134,15 @@ async function loadSuperDanThreadHistory(threadId: string, title: string) {
       });
     }
   }
-  return { tasks, events, messages };
+  return { tasks: loadedTasks, events, messages };
 }
 
 function buildSurfaceContext(args: {
   note: WorkspaceNote | null;
   selectedChunk: WorkspaceChunk | null;
+  selectedBlueprintNode: BlueprintNode | null;
   workspaceRoot: string;
+  workspaceId?: string;
   notesRoot: string;
   activeFile: WorkspaceFileEntry | null;
   activeFileContent: string;
@@ -1709,7 +4151,9 @@ function buildSurfaceContext(args: {
   const {
     note,
     selectedChunk,
+    selectedBlueprintNode,
     workspaceRoot,
+    workspaceId,
     notesRoot,
     activeFile,
     activeFileContent,
@@ -1718,6 +4162,7 @@ function buildSurfaceContext(args: {
   return {
     identity: { name: "DAN Workspace", role: "chunk_workspace" },
     workspace_root: workspaceRoot,
+    workspace_id: workspaceId || workspaceRoot,
     notes_root: notesRoot,
     workspace_source: "chunk_workspace",
     ui_surface: "chunk_workspace",
@@ -1765,6 +4210,19 @@ function buildSurfaceContext(args: {
           preview: selectedChunk.body.slice(0, 1400),
         }
       : null,
+    selected_blueprint_node: selectedBlueprintNode
+      ? {
+          id: selectedBlueprintNode.id,
+          title: selectedBlueprintNode.title,
+          kind: selectedBlueprintNode.kind,
+          status: selectedBlueprintNode.status,
+          detail: selectedBlueprintNode.detail,
+          meta: selectedBlueprintNode.meta,
+          taskId: selectedBlueprintNode.taskId ?? null,
+          runId: selectedBlueprintNode.runId ?? null,
+          preview: selectedBlueprintNode.body.slice(0, 1400),
+        }
+      : null,
     active_file: activeFile
       ? {
           path: activeFile.path,
@@ -1776,43 +4234,62 @@ function buildSurfaceContext(args: {
   };
 }
 
-function statusTone(status: ChunkStatus) {
-  if (status === "running") return "border-blue-200 bg-blue-50 text-blue-700";
-  if (status === "dirty" || status === "queued") return "border-amber-200 bg-amber-50 text-amber-700";
-  if (status === "error") return "border-rose-200 bg-rose-50 text-rose-700";
-  return "border-slate-200 bg-slate-50 text-slate-500";
-}
-
-function chunkTone(chunk: WorkspaceChunk) {
-  const title = chunk.title.toLowerCase();
-  if (chunk.status === "error") {
+function blueprintStatusTone(status: BlueprintNodeStatus) {
+  if (status === "active") {
     return {
-      card: "border-rose-200 border-l-4 border-l-rose-500 bg-rose-50/35 dark:border-rose-900/70 dark:border-l-rose-400 dark:bg-rose-950/20",
-      icon: "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-200",
+      node: "border-cyan-400 bg-cyan-50/80 text-slate-950 shadow-[0_8px_24px_rgba(8,145,178,0.12)] ring-1 ring-cyan-200 dark:border-cyan-500 dark:bg-cyan-950/25 dark:text-cyan-50 dark:ring-cyan-800",
+      marker: "border-cyan-500 bg-cyan-500 text-white",
+      badge: "border-cyan-300 bg-cyan-100 text-cyan-800 dark:border-cyan-700 dark:bg-cyan-950 dark:text-cyan-100",
     };
   }
-  if (chunk.status === "running") {
+  if (status === "ready") {
     return {
-      card: "border-blue-200 border-l-4 border-l-blue-500 bg-blue-50/35 dark:border-blue-900/70 dark:border-l-blue-400 dark:bg-blue-950/20",
-      icon: "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-200",
+      node: "border-amber-300 bg-amber-50/65 text-slate-900 dark:border-amber-700 dark:bg-amber-950/20 dark:text-amber-50",
+      marker: "border-amber-500 bg-amber-400 text-amber-950",
+      badge: "border-amber-300 bg-amber-100 text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100",
     };
   }
-  if (title.includes("outcome")) {
+  if (status === "blocked") {
     return {
-      card: "border-emerald-200 border-l-4 border-l-emerald-500 bg-emerald-50/30 dark:border-emerald-900/70 dark:border-l-emerald-400 dark:bg-emerald-950/15",
-      icon: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-200",
+      node: "border-rose-300 bg-rose-50/70 text-slate-950 dark:border-rose-800 dark:bg-rose-950/25 dark:text-rose-50",
+      marker: "border-rose-500 bg-rose-500 text-white",
+      badge: "border-rose-300 bg-rose-100 text-rose-800 dark:border-rose-700 dark:bg-rose-950 dark:text-rose-100",
     };
   }
-  if (title.includes("answer")) {
+  if (status === "future") {
     return {
-      card: "border-sky-200 border-l-4 border-l-sky-500 bg-sky-50/30 dark:border-sky-900/70 dark:border-l-sky-400 dark:bg-sky-950/15",
-      icon: "bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-200",
+      node: "border-dashed border-slate-300 bg-white/45 text-slate-500 opacity-75 dark:border-slate-700 dark:bg-slate-950/35 dark:text-slate-400",
+      marker: "border-slate-300 bg-white text-slate-400 dark:border-slate-700 dark:bg-slate-950",
+      badge: "border-slate-200 bg-white/70 text-slate-400 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-500",
+    };
+  }
+  if (status === "queued") {
+    return {
+      node: "border-dashed border-violet-200 bg-violet-50/35 text-slate-600 dark:border-violet-900 dark:bg-violet-950/15 dark:text-violet-100",
+      marker: "border-violet-300 bg-violet-100 text-violet-700 dark:border-violet-800 dark:bg-violet-950 dark:text-violet-200",
+      badge: "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-800 dark:bg-violet-950 dark:text-violet-100",
     };
   }
   return {
-    card: "border-slate-200 border-l-4 border-l-slate-300 bg-white dark:border-slate-800 dark:border-l-slate-700 dark:bg-slate-950",
-    icon: "bg-slate-100 text-slate-500 dark:bg-slate-900 dark:text-slate-300",
+    node: "border-emerald-200 bg-white text-slate-900 dark:border-emerald-900/70 dark:bg-slate-950 dark:text-slate-100",
+    marker: "border-emerald-500 bg-emerald-500 text-white",
+    badge: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-100",
   };
+}
+
+function blueprintKindIcon(kind: BlueprintNodeKind) {
+  if (kind === "request") return MessageSquareText;
+  if (kind === "understanding") return Lightbulb;
+  if (kind === "plan") return Cable;
+  if (kind === "task") return Activity;
+  if (kind === "worktree") return FolderOpen;
+  if (kind === "build") return TerminalSquare;
+  if (kind === "tool") return WandSparkles;
+  if (kind === "change") return FileText;
+  if (kind === "validation") return Shield;
+  if (kind === "repair") return WandSparkles;
+  if (kind === "answer") return Bot;
+  return Clock3;
 }
 
 function noteStatusText(note: WorkspaceNote | null) {
@@ -1924,6 +4401,85 @@ function FacetIndex({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+function FacetArticlePanel({
+  kind,
+  facet,
+  notes,
+  activeNoteId,
+  root,
+  onBack,
+  onSelectNote,
+}: {
+  kind: "tag" | "section" | "category";
+  facet: string;
+  notes: WorkspaceNote[];
+  activeNoteId: string | null;
+  root: string;
+  onBack: () => void;
+  onSelectNote: (note: WorkspaceNote) => void;
+}) {
+  const isTag = kind === "tag";
+  const title = isTag
+    ? noteFacetTitle(facet).replace(/^Tag · /, "#")
+    : noteFacetTitle(facet).replace(/^Category · /, "");
+  const articleLabel = notes.length === 1 ? "article" : "articles";
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        onClick={onBack}
+        className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[12px] font-medium text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-slate-100"
+      >
+        <ChevronRight size={13} className="rotate-180" />
+        <span>{isTag ? "All tags" : "All categories"}</span>
+      </button>
+      <div className="overflow-hidden rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950">
+        <div className="border-b border-slate-200 bg-slate-50/80 px-3 py-2 dark:border-slate-800 dark:bg-slate-900/60">
+          <div className="truncate text-[13px] font-semibold text-slate-900 dark:text-slate-100">
+            {title}
+          </div>
+          <div className="mt-0.5 text-[11px] text-slate-400">
+            {notes.length} {articleLabel}
+          </div>
+        </div>
+        <div className="max-h-[55vh] space-y-1 overflow-auto p-1.5">
+          {notes.length > 0 ? (
+            notes.map((note) => {
+              const active = note.id === activeNoteId;
+              const parentLabel = noteParentPathLabel(note, root) || noteSection(note, root);
+              return (
+                <button
+                  key={note.id}
+                  type="button"
+                  onClick={() => onSelectNote(note)}
+                  className={cx(
+                    "flex w-full min-w-0 items-start gap-2 rounded-lg px-2.5 py-2 text-left transition",
+                    active
+                      ? "bg-slate-900 text-white shadow-sm dark:bg-slate-100 dark:text-slate-950"
+                      : "text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-900",
+                  )}
+                >
+                  <FileText size={13} className="mt-0.5 shrink-0 opacity-55" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[13px] font-medium">
+                      {note.title || fileName(note.relativePath || note.path || "Untitled")}
+                    </span>
+                    <span className="mt-0.5 block truncate text-[11px] opacity-55">
+                      {parentLabel}
+                    </span>
+                  </span>
+                </button>
+              );
+            })
+          ) : (
+            <div className="px-2 py-3 text-sm text-slate-400">No articles found.</div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -2225,82 +4781,556 @@ function KnowledgeGraphView({
   );
 }
 
-function ChunkCard({
-  chunk,
-  active,
-  onSelect,
+function BlueprintNodePreview({
+  node,
+  tasks,
+  events,
+  activeTask,
 }: {
-  chunk: WorkspaceChunk;
-  active: boolean;
-  onSelect: () => void;
+  node: BlueprintNode;
+  tasks: ChatV2TaskSnapshot[];
+  events: ChatV2AgentRunEvent[];
+  activeTask: ChatV2TaskSnapshot | null;
 }) {
-  const Icon =
-    chunk.kind === "agent"
-      ? Bot
-      : chunk.kind === "chat"
-        ? MessageSquareText
-        : chunk.kind === "code"
-          ? TerminalSquare
-          : FileText;
-  const tone = chunkTone(chunk);
-  const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    onSelect();
-  };
+  const liveStatus = blueprintLiveStatus(node, tasks, events, activeTask);
+  if (node.kind === "request" && node.rawRequest) {
+    const requestDetails = (node.previewBody || "").trim();
+    return (
+      <div className="space-y-4">
+        <LiveStatusCard status={liveStatus} />
+        <section className="rounded-md border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-800 dark:bg-slate-900/60">
+          <div className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-800 dark:text-slate-200">
+            {node.rawRequest}
+          </div>
+        </section>
+        {requestDetails && <MarkdownRenderer content={requestDetails} />}
+      </div>
+    );
+  }
 
   return (
-    <article
-      role="button"
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={handleKeyDown}
-      aria-pressed={active}
+    <div className="space-y-4">
+      <LiveStatusCard status={liveStatus} />
+      <MarkdownRenderer
+        content={node.previewBody || node.body || "_Waiting for output._"}
+      />
+    </div>
+  );
+}
+
+function strippedStepTitle(title: string) {
+  return title.replace(/^\d+\.\s*/, "").trim();
+}
+
+function workPlanHeaderSubtitle(node: BlueprintNode | null, fallbackTitle?: string | null) {
+  if (!node) {
+    const fallback = fallbackTitle && !threadTitleLooksPlaceholder(fallbackTitle) ? fallbackTitle.trim() : "";
+    return fallback || "Waiting for a request";
+  }
+  if (node.kind === "request") return "Request captured";
+  if (node.kind === "understanding") {
+    return node.status === "done" ? "Request understood" : "Understanding request";
+  }
+  if (node.kind === "plan") return node.status === "done" ? "Steps planned" : "Planning next steps";
+  if (node.kind === "validation") {
+    return node.status === "done" ? "Checks complete" : "Checking the result";
+  }
+  if (node.kind === "answer") {
+    if (node.status === "blocked") return node.detail || "Final answer needs attention";
+    return node.status === "done" ? "Final response ready" : "Preparing final response";
+  }
+  if (node.kind === "repair") return "Repairing a step";
+  if (node.kind === "queue") return "Waiting to run";
+  if (node.kind === "build") {
+    if (node.status === "blocked") return "Work needs attention";
+    if (node.status === "done") return "Work completed";
+    return "Working on the current step";
+  }
+  if (node.kind === "task" || node.kind === "worktree") {
+    return `${node.status === "active" ? "Current" : "Selected"} step: ${strippedStepTitle(node.title)}`;
+  }
+  return strippedStepTitle(node.title) || "Work step selected";
+}
+
+interface BlueprintLiveStatus {
+  status: string;
+  now: string;
+  latestUpdate: string;
+  recentUpdates: string[];
+  results: string[];
+}
+
+function displayStatusLabel(status: BlueprintNodeStatus) {
+  if (status === "active") return "In progress";
+  if (status === "done") return "Done";
+  if (status === "ready") return "Ready";
+  if (status === "future") return "Waiting";
+  if (status === "queued") return "Queued";
+  if (status === "blocked") return "Needs attention";
+  return status;
+}
+
+function stepNowLabel(node: BlueprintNode, activeTask: ChatV2TaskSnapshot | null) {
+  const activeMatchesNode =
+    activeTask &&
+    ((!node.runId && !node.taskId) ||
+      (node.runId && taskRunId(activeTask) === node.runId) ||
+      (node.taskId && activeTask.task_id === node.taskId));
+  if (activeMatchesNode) return taskProgressLabel(activeTask);
+  if (node.status === "done") return "This step is complete.";
+  if (node.status === "blocked") return node.detail || "This step needs attention.";
+  if (node.status === "ready") return "Ready to run when reached.";
+  if (node.status === "future") return "Waiting for earlier steps.";
+  if (node.status === "queued") return "Waiting in the queue.";
+  if (node.status === "active") return node.detail || "Working on this step.";
+  return workPlanHeaderSubtitle(node);
+}
+
+function eventMatchesNode(event: ChatV2AgentRunEvent, node: BlueprintNode) {
+  if (node.runId && event.run_id === node.runId) return true;
+  if (node.taskId && event.task_id === node.taskId) return true;
+  return false;
+}
+
+function taskMatchesNode(task: ChatV2TaskSnapshot, node: BlueprintNode) {
+  if (node.runId && taskRunId(task) === node.runId) return true;
+  if (node.taskId && task.task_id === node.taskId) return true;
+  return false;
+}
+
+function blueprintLiveStatus(
+  node: BlueprintNode,
+  tasks: ChatV2TaskSnapshot[],
+  events: ChatV2AgentRunEvent[],
+  activeTask: ChatV2TaskSnapshot | null,
+): BlueprintLiveStatus {
+  const relatedEvents = events.filter((event) => eventMatchesNode(event, node));
+  const eventScope = relatedEvents.length > 0 ? relatedEvents : events;
+  const relatedTasks = tasks.filter((task) => taskMatchesNode(task, node));
+  const latestEventLine =
+    [...eventScope].reverse().map(eventActivityLine).find(Boolean) || "";
+  const latestTaskLine =
+    [...relatedTasks]
+      .reverse()
+      .map(taskProgressLabel)
+      .find((line) => line && !/^Super DAN completed$/i.test(line)) || "";
+  const recentUpdates = uniqueStringList(
+    eventScope
+      .slice(-6)
+      .map(eventActivityLine)
+      .filter(Boolean),
+  ).slice(-4);
+  const results = uniqueStringList([
+    ...changedPathLines(eventScope),
+    ...artifactLines(eventScope),
+  ]).slice(-5);
+
+  return {
+    status: displayStatusLabel(node.status),
+    now: stepNowLabel(node, activeTask),
+    latestUpdate: latestEventLine || latestTaskLine || node.detail,
+    recentUpdates,
+    results,
+  };
+}
+
+const STATUS_TOOL_LABELS = [
+  "browser click",
+  "browser fill",
+  "browser inspect",
+  "browser screenshot",
+  "file edit",
+  "file read",
+  "file write",
+  "git diff",
+  "git status",
+  "http request",
+  "list directory",
+  "python eval",
+  "shell command",
+  "web fetch",
+  "web search",
+  "workspace check",
+];
+
+const STATUS_TOOL_LABEL_SET = new Set(STATUS_TOOL_LABELS);
+const STATUS_TOKEN_PATTERN = new RegExp(
+  `(\`[^\`]+\`|https?:\\/\\/[^\\s),]+|\\b(?:${STATUS_TOOL_LABELS.join("|")})\\b|\\b(?:denied|failed|blocked|needs attention)\\b)`,
+  "gi",
+);
+
+function isStatusToolToken(value: string) {
+  return STATUS_TOOL_LABEL_SET.has(value.trim().toLowerCase().replace(/_/g, " "));
+}
+
+function isStatusFileToken(value: string) {
+  const text = value.trim();
+  return Boolean(
+    /[/\\]/.test(text) ||
+      /\.(?:md|txt|json|html|css|js|ts|tsx|jsx|py|csv|yaml|yml|toml|gd|tscn|png|jpg|jpeg|svg|pdf)$/i.test(text) ||
+      /^(?:readme|agents|package|tsconfig|vite\.config)\b/i.test(text),
+  );
+}
+
+function statusTokenChip(
+  text: string,
+  kind: "tool" | "file" | "link" | "state" | "code",
+  key: string,
+) {
+  if (kind === "link") {
+    return (
+      <a
+        key={key}
+        href={text}
+        target="_blank"
+        rel="noreferrer"
+        className="mx-0.5 inline-flex max-w-full items-center gap-1 rounded border border-sky-300/60 bg-sky-50/70 px-1.5 py-0.5 align-baseline text-[0.86em] font-medium text-sky-800 no-underline hover:border-sky-400 hover:bg-sky-100 dark:border-sky-700/70 dark:bg-sky-950/40 dark:text-sky-200"
+      >
+        <LinkIcon size={11} />
+        <span className="truncate">{text}</span>
+      </a>
+    );
+  }
+  const classes =
+    kind === "tool"
+      ? "border-cyan-300/60 bg-cyan-50/70 text-cyan-800 dark:border-cyan-700/70 dark:bg-cyan-950/40 dark:text-cyan-200"
+      : kind === "file"
+        ? "border-amber-300/60 bg-amber-50/70 text-amber-900 dark:border-amber-700/70 dark:bg-amber-950/40 dark:text-amber-200"
+        : kind === "state"
+          ? "border-rose-300/70 bg-rose-50/80 text-rose-800 dark:border-rose-700/70 dark:bg-rose-950/45 dark:text-rose-200"
+          : "border-slate-300/70 bg-slate-100/70 text-slate-700 dark:border-slate-700 dark:bg-slate-950/60 dark:text-slate-200";
+  const Icon = kind === "tool" ? TerminalSquare : kind === "file" ? FileText : kind === "state" ? Shield : null;
+  return (
+    <span
+      key={key}
       className={cx(
-        "w-full cursor-pointer rounded-xl border p-4 text-left shadow-[0_1px_2px_rgba(15,23,42,0.04)] outline-none transition focus-visible:ring-2 focus-visible:ring-slate-300 dark:focus-visible:ring-slate-600",
-        tone.card,
-        active
-          ? "ring-2 ring-slate-300 dark:ring-slate-600"
-          : "hover:border-slate-300 hover:shadow-md dark:hover:border-slate-700",
+        "mx-0.5 inline-flex max-w-full items-center gap-1 rounded px-1.5 py-0.5 align-baseline text-[0.86em] font-medium",
+        "border",
+        classes,
       )}
     >
-      <div className="flex gap-3.5">
-        <div
-          className={cx(
-            "mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-lg",
-            tone.icon,
-          )}
-        >
-          <Icon size={16} />
+      {Icon && <Icon size={11} />}
+      <span className="truncate">{text}</span>
+    </span>
+  );
+}
+
+function StatusLine({ text }: { text: string }) {
+  const parts: ReactNode[] = [];
+  let lastIndex = 0;
+  const source = text || "";
+  for (const match of source.matchAll(STATUS_TOKEN_PATTERN)) {
+    const raw = match[0];
+    const index = match.index ?? 0;
+    if (index > lastIndex) parts.push(source.slice(lastIndex, index));
+    if (raw.startsWith("`") && raw.endsWith("`")) {
+      const value = raw.slice(1, -1);
+      const kind = isStatusToolToken(value) ? "tool" : isStatusFileToken(value) ? "file" : "code";
+      parts.push(statusTokenChip(value, kind, `${index}:${raw}`));
+    } else if (/^https?:\/\//i.test(raw)) {
+      parts.push(statusTokenChip(raw, "link", `${index}:${raw}`));
+    } else if (isStatusToolToken(raw)) {
+      parts.push(statusTokenChip(raw, "tool", `${index}:${raw}`));
+    } else {
+      parts.push(statusTokenChip(raw, "state", `${index}:${raw}`));
+    }
+    lastIndex = index + raw.length;
+  }
+  if (lastIndex < source.length) parts.push(source.slice(lastIndex));
+  return <>{parts}</>;
+}
+
+function LiveStatusCard({ status }: { status: BlueprintLiveStatus }) {
+  return (
+    <section className="rounded-md border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-800 dark:bg-slate-900/60">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
+          Live Status
         </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0">
-              <div className="truncate text-[14px] font-semibold leading-5 text-slate-950 dark:text-slate-100">
-                {chunk.title}
-              </div>
-              <div className="mt-0.5 truncate text-[11px] leading-4 text-slate-500">
-                {chunk.filePath || chunk.meta}
-              </div>
+        <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">
+          {status.status}
+        </span>
+      </div>
+      <div className="space-y-3 text-sm text-slate-700 dark:text-slate-300">
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-slate-400">
+            Now
+          </div>
+          <div className="mt-1 leading-6">
+            <StatusLine text={status.now} />
+          </div>
+        </div>
+        {status.latestUpdate && (
+          <div>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-slate-400">
+              Latest Update
             </div>
-            <span
-              className={cx(
-                "shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold",
-                statusTone(chunk.status),
-              )}
-            >
-              {chunk.status}
-            </span>
+            <div className="mt-1 leading-6">
+              <StatusLine text={status.latestUpdate} />
+            </div>
           </div>
-          <div className="mt-3 min-w-0 whitespace-normal break-words text-sm leading-6 text-slate-700 dark:text-slate-300">
-            <MarkdownRenderer
-              content={chunk.body || "Waiting for output..."}
-              className="[&_code]:break-words [&_h3]:mb-1 [&_h3]:mt-3 [&_h3]:text-[11px] [&_h3]:uppercase [&_h3]:tracking-[0.16em] [&_li]:break-words [&_li]:leading-6 [&_ol]:my-1 [&_p]:my-0 [&_p]:break-words [&_p]:leading-6 [&_ul]:my-1.5"
-            />
+        )}
+        {status.recentUpdates.length > 0 && (
+          <div>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-slate-400">
+              Recent Updates
+            </div>
+            <ul className="mt-1 list-disc space-y-1 pl-5 leading-6">
+              {status.recentUpdates.map((item) => (
+                <li key={item}>
+                  <StatusLine text={item} />
+                </li>
+              ))}
+            </ul>
           </div>
+        )}
+        {status.results.length > 0 && (
+          <div>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-slate-400">
+              Results So Far
+            </div>
+            <ul className="mt-1 list-disc space-y-1 pl-5 leading-6">
+              {status.results.map((item) => (
+                <li key={item}>
+                  <StatusLine text={item.replace(/^- /, "")} />
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function BlueprintView({
+  nodes,
+  conversationChunks,
+  activeNodeId,
+  selectedNodeId,
+  selectedChunkId,
+  loading,
+  onSelect,
+  onSelectConversationChunk,
+}: {
+  nodes: BlueprintNode[];
+  conversationChunks: WorkspaceChunk[];
+  activeNodeId: string | null;
+  selectedNodeId: string | null;
+  selectedChunkId: string | null;
+  loading: boolean;
+  onSelect: (node: BlueprintNode) => void;
+  onSelectConversationChunk: (chunk: WorkspaceChunk) => void;
+}) {
+  const activeRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!activeNodeId) return;
+    window.requestAnimationFrame(() => {
+      activeRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+  }, [activeNodeId, nodes.length]);
+
+  const counts = nodes.reduce(
+    (acc, node) => {
+      acc[node.status] += 1;
+      return acc;
+    },
+    {
+      done: 0,
+      active: 0,
+      ready: 0,
+      future: 0,
+      queued: 0,
+      blocked: 0,
+    } satisfies Record<BlueprintNodeStatus, number>,
+  );
+
+  if (nodes.length === 0) {
+    return (
+      <div className="dan-blueprint-board grid min-h-52 place-items-center rounded-md border border-dashed border-slate-200 bg-white/70 p-5 text-center text-sm text-slate-400 dark:border-slate-800 dark:bg-slate-950/70">
+        {loading ? "Loading work plan..." : "No work plan has been emitted yet."}
+      </div>
+    );
+  }
+
+  return (
+    <div className="dan-blueprint-board min-h-full rounded-md border border-slate-200/80 bg-[linear-gradient(to_right,rgba(148,163,184,0.10)_1px,transparent_1px),linear-gradient(to_bottom,rgba(148,163,184,0.10)_1px,transparent_1px)] bg-[size:28px_28px] p-4 dark:border-slate-800 dark:bg-slate-950">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+          <Cable size={13} />
+          Run Steps
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+          {(["active", "ready", "done", "future", "queued", "blocked"] as const).map((status) => {
+            if (counts[status] === 0) return null;
+            const tone = blueprintStatusTone(status);
+            return (
+              <span
+                key={status}
+                data-status={status}
+                className={cx("dan-blueprint-status-count rounded-full border px-2 py-0.5 font-semibold", tone.badge)}
+              >
+                {status} {counts[status]}
+              </span>
+            );
+          })}
         </div>
       </div>
-    </article>
+
+      {conversationChunks.length > 0 && (
+        <section className="mb-4 space-y-2" aria-label="Recent user messages">
+          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+            <MessageSquareText size={13} />
+            Conversation
+          </div>
+          <div className="space-y-2">
+            {conversationChunks.map((chunk) => {
+              const selected = chunk.id === selectedChunkId;
+              const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                onSelectConversationChunk(chunk);
+              };
+              return (
+                <article
+                  key={chunk.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => onSelectConversationChunk(chunk)}
+                  onKeyDown={handleKeyDown}
+                  data-selected={selected ? "true" : undefined}
+                  className={cx(
+                    "dan-user-chat-box block w-full cursor-pointer rounded-md border px-3 py-2.5 text-left text-sm outline-none transition focus-visible:ring-2 focus-visible:ring-cyan-300",
+                    selected
+                      ? "border-cyan-300 bg-cyan-50/70 text-slate-950 ring-1 ring-cyan-200 dark:border-cyan-500 dark:bg-cyan-950/20 dark:text-cyan-50 dark:ring-cyan-800"
+                      : "border-slate-200 bg-white/75 text-slate-700 hover:border-slate-300 dark:border-slate-800 dark:bg-slate-950/45 dark:text-slate-300 dark:hover:border-slate-700",
+                  )}
+                >
+                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+                    You
+                  </div>
+                  <MarkdownRenderer
+                    content={chunk.body}
+                    className="max-h-32 overflow-hidden text-sm leading-6 [overflow-wrap:anywhere] [&_code]:break-words [&_p]:my-0 [&_p]:break-words [&_p]:leading-6"
+                  />
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      <ol className="relative space-y-2.5">
+        <div className="dan-blueprint-rail-line absolute bottom-4 left-[18px] top-4 w-px bg-slate-200 dark:bg-slate-800" />
+        {nodes.map((node, index) => {
+          const tone = blueprintStatusTone(node.status);
+          const Icon = blueprintKindIcon(node.kind);
+          const active = node.id === activeNodeId;
+          const selected = node.id === selectedNodeId;
+          const leftOffset = Math.min(node.depth ?? 0, 2) * 22;
+          const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            onSelect(node);
+          };
+
+          return (
+            <li
+              key={node.id}
+              className="relative"
+              style={{ marginLeft: leftOffset }}
+            >
+              <article
+                ref={active ? activeRef : undefined}
+                role="button"
+                data-status={node.status}
+                data-current={active ? "true" : undefined}
+                tabIndex={0}
+                aria-current={active ? "step" : undefined}
+                aria-pressed={selected}
+                onClick={() => onSelect(node)}
+                onKeyDown={handleKeyDown}
+                className={cx(
+                  "dan-blueprint-node group relative max-w-full cursor-pointer overflow-hidden rounded-md border px-3 text-left outline-none transition focus-visible:ring-2 focus-visible:ring-slate-300 dark:focus-visible:ring-slate-600",
+                  node.compact ? "py-2" : "py-3",
+                  tone.node,
+                  active &&
+                    "ring-2 ring-cyan-300 ring-offset-1 ring-offset-white dark:ring-cyan-500 dark:ring-offset-slate-950",
+                  selected && !active && "ring-2 ring-slate-300 dark:ring-slate-600",
+                  !selected && "hover:border-slate-400 dark:hover:border-slate-600",
+                )}
+              >
+                <div
+                  className={cx(
+                    "dan-blueprint-marker absolute -left-[32px] top-3 grid h-7 w-7 place-items-center rounded-full border text-[11px] shadow-sm",
+                    tone.marker,
+                  )}
+                >
+                  {node.status === "active" ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : node.status === "future" ? (
+                    <Circle size={10} />
+                  ) : (
+                    <Icon size={13} />
+                  )}
+                </div>
+                <div className="flex min-w-0 items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div
+                      className={cx(
+                        "break-words font-semibold leading-5",
+                        node.compact ? "text-[13px]" : "text-[14px]",
+                      )}
+                    >
+                      {node.title}
+                    </div>
+                    <div className="mt-0.5 line-clamp-2 break-words text-[11px] leading-4 text-slate-500 [overflow-wrap:anywhere] dark:text-slate-400">
+                      {node.detail}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <span
+                      className={cx("dan-blueprint-badge rounded-full border px-2 py-0.5 text-[10px] font-semibold", tone.badge)}
+                    >
+                      {node.status}
+                    </span>
+                    <span className="hidden rounded-full border border-slate-200 bg-white/60 px-2 py-0.5 text-[10px] text-slate-400 dark:border-slate-800 dark:bg-slate-950 sm:inline">
+                      {index + 1}
+                    </span>
+                  </div>
+                </div>
+                {!node.compact && (
+                  <div
+                    className={cx(
+                      "mt-2 max-w-full overflow-hidden text-sm leading-6 text-slate-700 [overflow-wrap:anywhere] dark:text-slate-300",
+                      node.kind === "answer" ? "max-h-56" : "max-h-28",
+                    )}
+                  >
+                    <MarkdownRenderer
+                      content={node.body || "Waiting for output..."}
+                      className="max-w-full overflow-hidden [&_code]:break-words [&_h3]:mb-1 [&_h3]:mt-0 [&_h3]:text-[11px] [&_h3]:uppercase [&_h3]:tracking-[0.12em] [&_li]:break-words [&_li]:leading-6 [&_ol]:my-1 [&_p]:my-0 [&_p]:break-words [&_p]:leading-6 [&_ul]:my-1.5"
+                    />
+                  </div>
+                )}
+                {node.dependencyIds && node.dependencyIds.length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-1 text-[10px] text-slate-400">
+                    {node.dependencyIds.slice(0, 4).map((dependency) => (
+                      <span
+                        key={dependency}
+                        className="rounded-full border border-slate-200 bg-white/60 px-1.5 py-0.5 dark:border-slate-800 dark:bg-slate-950"
+                      >
+                        after {dependency}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </article>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
   );
 }
 
@@ -2372,15 +5402,13 @@ function WorkspaceFileTree({
             onMove(sourceNode, node);
           }}
           onClick={() => (node.is_directory ? onToggle(node.relative_path) : onSelect(node))}
+          data-active={isActive ? "true" : undefined}
+          data-drop-target={isDropTarget ? "true" : undefined}
           className={cx(
-            "flex h-7 w-full items-center gap-1.5 rounded px-1.5 text-left text-[13px]",
-            isActive
-              ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-950"
-              : isDropTarget
-                ? "bg-sky-50 text-sky-900 ring-1 ring-sky-200 dark:bg-sky-950/40 dark:text-sky-100 dark:ring-sky-900"
-              : "text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-900",
+            "dan-rail-card-row dan-work-file-row group/session flex min-h-8 w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[13px] transition",
+            railCardTone(isActive, isDropTarget),
           )}
-          style={{ paddingLeft: 6 + depth * 14 }}
+          style={{ paddingLeft: 10 + depth * 14 }}
         >
           {node.is_directory ? (
             isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />
@@ -2452,15 +5480,26 @@ function NoteTree({
     const isDropTarget = node.isFolder && dropTarget === targetFolderPath;
     return (
       <div key={node.id}>
-        <div className="flex items-center gap-0.5">
+        <div
+          className={cx(
+            "dan-rail-card-row dan-note-tree-row group/session flex min-w-0 items-center gap-1 rounded-lg border transition",
+            railCardTone(isActive, isDropTarget),
+          )}
+          data-active={isActive ? "true" : undefined}
+          data-drop-target={isDropTarget ? "true" : undefined}
+          style={{ marginLeft: depth * 14 }}
+        >
           <button
             type="button"
-            onClick={() => (hasChildren ? onToggle(node.id) : node.note && onSelect(node.note))}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (hasChildren) onToggle(node.id);
+              else if (node.note) onSelect(node.note);
+            }}
             className={cx(
-              "grid h-7 w-5 shrink-0 place-items-center rounded text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-900",
+              "grid h-8 w-7 shrink-0 place-items-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-900",
               !hasChildren && "pointer-events-none opacity-0",
             )}
-            style={{ marginLeft: depth * 14 }}
             aria-label={isOpen ? "Collapse note folder" : "Expand note folder"}
           >
             {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
@@ -2499,14 +5538,7 @@ function NoteTree({
               onMove(source, targetFolderPath, sourceNoteId);
             }}
             onClick={() => (node.note ? onSelect(node.note) : onToggle(node.id))}
-            className={cx(
-              "flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-left text-[13px] transition",
-              isActive
-                ? "bg-slate-900 text-white shadow-sm dark:bg-slate-100 dark:text-slate-950"
-                : isDropTarget
-                  ? "bg-sky-50 text-sky-900 ring-1 ring-sky-200 dark:bg-sky-950/40 dark:text-sky-100 dark:ring-sky-900"
-                : "text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-900",
-            )}
+            className="flex min-h-8 min-w-0 flex-1 items-center gap-2 py-2 pr-2 text-left text-[13px]"
             title={node.pathLabel}
           >
             {node.isFolder ? (
@@ -2547,10 +5579,14 @@ export default function ChunkWorkspaceApp() {
   const [selectedChunkId, setSelectedChunkId] = useState<string | null>(
     initialUiState.selectedChunkId,
   );
+  const [selectedBlueprintNodeId, setSelectedBlueprintNodeId] = useState<string | null>(null);
   const [threads, setThreads] = useState<ChatV2ThreadSummary[]>([]);
   const [threadQuery, setThreadQuery] = useState(initialUiState.threadQuery);
   const [threadWorkspaces, setThreadWorkspaces] = useState<Record<string, string>>(
     () => readStoredThreadWorkspaces(),
+  );
+  const [sessionResponseSeen, setSessionResponseSeen] = useState<Record<string, string>>(
+    () => readStoredSessionResponseSeen(),
   );
   const [collapsedThreadGroups, setCollapsedThreadGroups] = useState<Record<string, boolean>>(
     initialUiState.collapsedThreadGroups,
@@ -2564,6 +5600,7 @@ export default function ChunkWorkspaceApp() {
   const [pendingAssistantIds, setPendingAssistantIds] = useState<Record<string, boolean>>({});
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [tasks, setTasks] = useState<ChatV2TaskSnapshot[]>([]);
+  const [backgroundTasks, setBackgroundTasks] = useState<ChatV2TaskSnapshot[]>([]);
   const [agentEvents, setAgentEvents] = useState<ChatV2AgentRunEvent[]>([]);
   const [input, setInput] = useState("");
   const [activeRunPlacement, setActiveRunPlacement] = useState<ActiveRunPlacement>("steer");
@@ -2610,6 +5647,8 @@ export default function ChunkWorkspaceApp() {
   const [showNoteEditor, setShowNoteEditor] = useState(initialLayout.showNoteEditor);
   const [showNotesPreview, setShowNotesPreview] = useState(initialLayout.showNotesPreview);
   const [leftRailWidth, setLeftRailWidth] = useState(initialLayout.leftRailWidth);
+  const [rootPickerWidth, setRootPickerWidth] = useState(initialLayout.rootPickerWidth);
+  const [rootPickerHeight, setRootPickerHeight] = useState(initialLayout.rootPickerHeight);
   const [phonePage, setPhonePage] = useState<PhonePage>(
     initialUiState.activePane === "notes" ? "note-preview" : "chat",
   );
@@ -2623,14 +5662,24 @@ export default function ChunkWorkspaceApp() {
   const removeWorkspace = useWorkspaceStore((state) => state.removeWorkspace);
   const setActiveWorkspace = useWorkspaceStore((state) => state.setActiveWorkspace);
   const updateWorkspace = useWorkspaceStore((state) => state.updateWorkspace);
+  const workspaceSurfaceTheme = useSettingsStore((state) => state.workspaceSurfaceTheme);
+  const workspaceSurfaceThemeClass =
+    workspaceSurfaceTheme === "factory-worn"
+      ? "dan-machine-theme dan-factory-worn-theme"
+      : workspaceSurfaceTheme === "industrial"
+        ? "dan-machine-theme"
+        : "";
   const workspace = useMemo(
     () => workspaces.find((item) => item.id === activeWorkspaceId),
     [activeWorkspaceId, workspaces],
   );
 
   const messagesRef = useRef<ChatMessage[]>([]);
+  const activeThreadRef = useRef<typeof activeThread>(activeThread);
   const streamRef = useRef<WebSocket | null>(null);
   const agentStreamRef = useRef<WebSocket | null>(null);
+  const sessionSelectionSeqRef = useRef(0);
+  const creatingSessionRef = useRef(false);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const noteEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const sessionSwipeRef = useRef<SessionSwipeState | null>(null);
@@ -2640,6 +5689,11 @@ export default function ChunkWorkspaceApp() {
   );
   const selfWriteAtRef = useRef<Record<string, number>>({});
   const serverNotesLoadedRef = useRef(false);
+
+  useEffect(() => {
+    activeThreadRef.current = activeThread;
+  }, [activeThread]);
+
   const activeNote = notes.find((note) => note.id === activeNoteId) ?? notes[0] ?? null;
   const activeNoteSection = activeNote ? noteSection(activeNote, notesRoot) : "";
   const deferredNoteContent = useDeferredValue(activeNote?.content ?? "");
@@ -2708,7 +5762,8 @@ export default function ChunkWorkspaceApp() {
   }, []);
   const selectNoteFacet = useCallback((facet: string) => {
     setNoteFacet(facet);
-    setNoteRailView("pages");
+    const nextRailView = noteRailViewForFacet(facet);
+    if (nextRailView) setNoteRailView(nextRailView);
     setPhonePage("note-list");
   }, []);
   const handleNotePreviewClick = useCallback(
@@ -2856,6 +5911,10 @@ export default function ChunkWorkspaceApp() {
   }, [threadWorkspaces]);
 
   useEffect(() => {
+    persistSessionResponseSeen(sessionResponseSeen);
+  }, [sessionResponseSeen]);
+
+  useEffect(() => {
     setNoteMentionIndex(0);
   }, [noteMention?.query]);
 
@@ -2873,6 +5932,8 @@ export default function ChunkWorkspaceApp() {
       showNoteEditor,
       showNotesPreview,
       leftRailWidth,
+      rootPickerWidth,
+      rootPickerHeight,
     });
   }, [
     showSessionRail,
@@ -2883,6 +5944,8 @@ export default function ChunkWorkspaceApp() {
     showNoteEditor,
     showNotesPreview,
     leftRailWidth,
+    rootPickerWidth,
+    rootPickerHeight,
   ]);
 
   useEffect(() => {
@@ -2921,20 +5984,93 @@ export default function ChunkWorkspaceApp() {
     }
   }, []);
 
+  const mergeBackgroundTasks = useCallback((nextTasks: ChatV2TaskSnapshot[]) => {
+    if (nextTasks.length === 0) return;
+    setBackgroundTasks((previous) => mergeTaskSnapshots(previous, nextTasks).slice(0, 160));
+  }, []);
+
+  const refreshBackgroundTasks = useCallback(async () => {
+    try {
+      const next = await listChatV2Tasks({ limit: 160 });
+      setBackgroundTasks(next);
+      return next;
+    } catch {
+      setBackgroundTasks([]);
+      return [];
+    }
+  }, []);
+
   useEffect(() => {
     void refreshThreads();
   }, [refreshThreads]);
 
+  useEffect(() => {
+    void refreshBackgroundTasks();
+    const timer = window.setInterval(() => void refreshBackgroundTasks(), 10_000);
+    return () => window.clearInterval(timer);
+  }, [refreshBackgroundTasks]);
+
   const refreshTasks = useCallback(async (threadId: string) => {
+    const isSelectedThread = () => activeThreadRef.current?.id === threadId;
     try {
       const next = await listChatV2ThreadTasks(threadId);
-      setTasks(next);
+      mergeBackgroundTasks(next);
+      if (isSelectedThread()) setTasks(next);
       return next;
     } catch {
-      setTasks([]);
+      if (isSelectedThread()) setTasks([]);
       return [];
     }
+  }, [mergeBackgroundTasks]);
+
+  const clearActiveSessionView = useCallback((statusText?: string) => {
+    streamRef.current?.close();
+    streamRef.current = null;
+    agentStreamRef.current?.close();
+    agentStreamRef.current = null;
+    setActiveThread(null);
+    setLoadingThreadId(null);
+    setMessages([]);
+    messagesRef.current = [];
+    setPendingAssistantIds({});
+    setTasks([]);
+    setAgentEvents([]);
+    setSelectedChunkId(null);
+    setSelectedBlueprintNodeId(null);
+    if (statusText) setStatus(statusText);
   }, []);
+
+  const clearStoredThreadSelection = useCallback((thread: ThreadIdentity) => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(LAST_THREAD_STORAGE_KEY) || "null") as
+        | { threadId?: string; workflowId?: string }
+        | null;
+      if (savedThreadSelectionMatches(saved, thread)) {
+        window.localStorage.removeItem(LAST_THREAD_STORAGE_KEY);
+      }
+    } catch {
+      window.localStorage.removeItem(LAST_THREAD_STORAGE_KEY);
+    }
+  }, []);
+
+  const removeThreadFromWorkspaceSlots = useCallback(
+    (threadId: string) => {
+      for (const item of workspaces) {
+        const nextOpenThreadIds = item.openThreadIds.filter((id) => id !== threadId);
+        const nextActiveThreadId = item.activeThreadId === threadId ? null : item.activeThreadId;
+        if (
+          nextActiveThreadId !== item.activeThreadId ||
+          nextOpenThreadIds.length !== item.openThreadIds.length
+        ) {
+          updateWorkspace(item.id, {
+            activeThreadId: nextActiveThreadId,
+            openThreadIds: nextOpenThreadIds,
+          });
+        }
+      }
+    },
+    [updateWorkspace, workspaces],
+  );
 
   useEffect(() => {
     const saved = (() => {
@@ -2948,25 +6084,56 @@ export default function ChunkWorkspaceApp() {
     })();
     const targetThreadId = workspace?.activeThreadId || saved?.threadId;
     const targetWorkflowId = workspace?.activeThreadId ? undefined : saved?.workflowId;
-    if (!targetThreadId || activeThread || threads.length === 0) return;
-    const match = threads.find(
-      (thread) =>
-        thread.id === targetThreadId &&
-        (!targetWorkflowId || thread.workflow_id === targetWorkflowId),
-    );
+    const archivedTarget = findThreadTarget(threads, targetThreadId, targetWorkflowId);
+    if (archivedTarget?.archived) {
+      clearStoredThreadSelection(archivedTarget);
+      removeThreadFromWorkspaceSlots(archivedTarget.id);
+      return;
+    }
+    const match = restorableThreadTarget(threads, targetThreadId, targetWorkflowId);
+    if (
+      !shouldAutoRestoreSession({
+        activeThreadPresent: Boolean(activeThread),
+        creatingSession: creatingSessionRef.current,
+        targetThreadId: match?.id,
+        threadCount: threads.length,
+      })
+    ) {
+      return;
+    }
     if (!match) return;
+    const selectionSeq = ++sessionSelectionSeqRef.current;
     void getChatV2Thread(match.workflow_id, match.id)
       .then(async (thread) => {
-        const history = await loadSuperDanThreadHistory(thread.id, thread.title).catch(() => ({
+        const history = await loadSuperDanThreadHistory(thread.id, thread.title, thread.updated_at).catch(() => ({
           tasks: [] as ChatV2TaskSnapshot[],
           events: [] as ChatV2AgentRunEvent[],
           messages: [] as ChatMessage[],
         }));
+        if (sessionSelectionSeqRef.current !== selectionSeq) return;
         const restoredMessages = thread.messages.length > 0 ? thread.messages : history.messages;
+        const restoredWorkspaceId =
+          (workspace?.activeThreadId === thread.id ? workspace.id : "") ||
+          workspaceIdForTasks(history.tasks, workspaces);
+        if (restoredWorkspaceId) {
+          const restoredWorkspace = workspaces.find((item) => item.id === restoredWorkspaceId);
+          setActiveWorkspace(restoredWorkspaceId);
+          setThreadWorkspaces((previous) => ({
+            ...previous,
+            [threadWorkspaceKey(thread.workflow_id, thread.id)]: restoredWorkspaceId,
+          }));
+          updateWorkspace(restoredWorkspaceId, {
+            activeThreadId: thread.id,
+            openThreadIds: restoredWorkspace?.openThreadIds.includes(thread.id)
+              ? restoredWorkspace.openThreadIds
+              : [...(restoredWorkspace?.openThreadIds ?? []), thread.id],
+          });
+        }
         setActiveThread({ id: thread.id, workflowId: thread.workflow_id, title: thread.title });
         setMessages(restoredMessages);
         messagesRef.current = restoredMessages;
         setTasks(history.tasks);
+        mergeBackgroundTasks(history.tasks);
         setAgentEvents(history.events);
         if (thread.messages.length === 0 && restoredMessages.length > 0) {
           void saveChatV2Thread(thread.workflow_id, thread.id, {
@@ -2979,8 +6146,37 @@ export default function ChunkWorkspaceApp() {
           JSON.stringify({ threadId: thread.id, workflowId: thread.workflow_id }),
         );
       })
-      .catch(() => setStatus("Session restore failed"));
-  }, [activeThread, refreshThreads, threads, workspace?.activeThreadId]);
+      .catch(() => {
+        if (sessionSelectionSeqRef.current === selectionSeq) setStatus("Session restore failed");
+      });
+  }, [
+    activeThread,
+    clearStoredThreadSelection,
+    mergeBackgroundTasks,
+    removeThreadFromWorkspaceSlots,
+    refreshThreads,
+    setActiveWorkspace,
+    threads,
+    updateWorkspace,
+    workspace?.activeThreadId,
+    workspace?.id,
+    workspaces,
+  ]);
+
+  useEffect(() => {
+    const archivedSelection = activeThreadArchivedSummary(activeThread, threads);
+    if (!archivedSelection) return;
+    sessionSelectionSeqRef.current += 1;
+    clearStoredThreadSelection(archivedSelection);
+    removeThreadFromWorkspaceSlots(archivedSelection.id);
+    clearActiveSessionView("Session archived");
+  }, [
+    activeThread,
+    clearActiveSessionView,
+    clearStoredThreadSelection,
+    removeThreadFromWorkspaceSlots,
+    threads,
+  ]);
 
   const addServerNotes = useCallback((summaries: WorkspaceNoteSummary[]) => {
     setNotes((previous) => {
@@ -3279,6 +6475,10 @@ export default function ChunkWorkspaceApp() {
     () => messageChunks.concat(eventChunks),
     [eventChunks, messageChunks],
   );
+  const userConversationChunks = useMemo(
+    () => conversationUserChunks(chunks),
+    [chunks],
+  );
 
   const selectedChunk = chunks.find((chunk) => chunk.id === selectedChunkId) ?? null;
 
@@ -3287,14 +6487,51 @@ export default function ChunkWorkspaceApp() {
     if (!chunks.some((chunk) => chunk.id === selectedChunkId)) setSelectedChunkId(null);
   }, [chunks, selectedChunkId]);
 
-  const activeRunningTask = tasks.find((task) => !isTaskTerminal(task)) ?? null;
+  const activeRunningTask = selectActiveRunningTask(tasks);
   const activeRunId = activeRunningTask ? taskRunId(activeRunningTask) : "";
-  const runningTaskByThreadId = useMemo(() => {
-    const entries = tasks
-      .filter((task) => !isTaskTerminal(task))
-      .map((task) => [task.thread_id, task] as const);
+  const sessionStatusTasks = useMemo(
+    () => mergeTaskSnapshots(backgroundTasks, tasks),
+    [backgroundTasks, tasks],
+  );
+  const runningTaskByThreadId = useMemo(
+    () => runningTaskMapByThreadId(sessionStatusTasks),
+    [sessionStatusTasks],
+  );
+  const tasksByThreadId = useMemo(() => {
+    const grouped = new Map<string, ChatV2TaskSnapshot[]>();
+    for (const task of sessionStatusTasks) {
+      if (!task.thread_id) continue;
+      grouped.set(task.thread_id, [...(grouped.get(task.thread_id) ?? []), task]);
+    }
+    return grouped;
+  }, [sessionStatusTasks]);
+  const taskWorkspaceByThreadId = useMemo(() => {
+    const entries = sessionStatusTasks.flatMap((task) => {
+      const workspaceId = workspaceIdForTask(task, workspaces);
+      return workspaceId ? [[task.thread_id, workspaceId] as const] : [];
+    });
     return new Map(entries);
-  }, [tasks]);
+  }, [sessionStatusTasks, workspaces]);
+
+  const markSessionResponseSeen = useCallback(
+    (thread: ThreadIdentity, threadTasks: ChatV2TaskSnapshot[]) => {
+      const readyAt = sessionReadyResponseAt(threadTasks);
+      if (!readyAt) return;
+      const key = threadWorkspaceKey(threadIdentityWorkflowId(thread), thread.id);
+      setSessionResponseSeen((previous) => {
+        const currentTimestamp = timestampValue(previous[key], 0);
+        const readyTimestamp = timestampValue(readyAt, 0);
+        if (readyTimestamp <= currentTimestamp) return previous;
+        return { ...previous, [key]: readyAt };
+      });
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!activeThread) return;
+    markSessionResponseSeen(activeThread, tasks);
+  }, [activeThread, markSessionResponseSeen, tasks]);
 
   const noteFacetOptions = useMemo(() => {
     const sections = new Map<string, number>();
@@ -3401,6 +6638,7 @@ export default function ChunkWorkspaceApp() {
       }
       const group = groupByWorkspaceId.get(
         threadWorkspaces[threadWorkspaceKey(thread.workflow_id, thread.id)] ??
+          taskWorkspaceByThreadId.get(thread.id) ??
           storedThreadGroupById.get(thread.id) ??
           "",
       );
@@ -3443,7 +6681,7 @@ export default function ChunkWorkspaceApp() {
           ]
         : [];
     return visibleGroups.concat(visibleProjectGroups, archivedGroup);
-  }, [threadQuery, threadWorkspaces, threads, workspaces]);
+  }, [taskWorkspaceByThreadId, threadQuery, threadWorkspaces, threads, workspaces]);
   const rootOptions = useMemo(
     () =>
       mergeRootSuggestions(
@@ -3459,19 +6697,43 @@ export default function ChunkWorkspaceApp() {
       ),
     [developmentRoot, devRoot, rootSuggestions, storedRoots, workspaceSlots],
   );
+  const rootBrowsePath = normalizeRootPath(rootInput || developmentRoot || devRoot);
+  const rootParentPath = parentRootPath(rootBrowsePath);
   const hasActiveRun = Boolean(activeRunId && activeRunningTask);
   const queueRows = useMemo(() => queueRowsFromTasks(tasks), [tasks]);
   const showAgentQueuePanel = queueRows.length > 0;
+  const blueprintNodes = useMemo(
+    () =>
+      buildBlueprintNodes({
+        tasks,
+        agentEvents,
+        chunks,
+        activeRunId,
+        activeRunningTask,
+        queueRows,
+        activeThreadTitle: activeThread?.title || "",
+      }),
+    [activeRunId, activeRunningTask, activeThread?.title, agentEvents, chunks, queueRows, tasks],
+  );
+  const activeBlueprintNode = useMemo(() => blueprintAnchorNode(blueprintNodes), [blueprintNodes]);
+  const selectedBlueprintNode =
+    blueprintNodes.find((node) => node.id === selectedBlueprintNodeId) ?? null;
+
+  useEffect(() => {
+    if (!selectedBlueprintNodeId) return;
+    if (!blueprintNodes.some((node) => node.id === selectedBlueprintNodeId)) {
+      setSelectedBlueprintNodeId(null);
+    }
+  }, [blueprintNodes, selectedBlueprintNodeId]);
+
   const notesGridTemplate = [
-    showNotesRail ? `${leftRailWidth}px` : "",
-    showNoteEditor ? "minmax(0,1fr)" : "",
-    showNotesPreview ? "minmax(0,1fr)" : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
+    showNotesRail ? `${leftRailWidth}px` : `${COLLAPSED_PANE_WIDTH}px`,
+    showNoteEditor ? "minmax(0,1fr)" : `${COLLAPSED_PANE_WIDTH}px`,
+    showNotesPreview ? "minmax(0,1fr)" : `${COLLAPSED_PANE_WIDTH}px`,
+  ].join(" ");
   const renderSessionRail = isPhoneViewport ? phonePage === "sessions" : showSessionRail;
   const renderFileExplorer = isPhoneViewport ? phonePage === "files" : showFileExplorer;
-  const renderWorkMain = !isPhoneViewport || phonePage === "chat";
+  const renderWorkMain = isPhoneViewport ? phonePage === "chat" : showConversationChunks;
   const renderSidecarPreview = isPhoneViewport ? phonePage === "preview" : showSidecarPreview;
   const renderNotesRail = isPhoneViewport ? phonePage === "note-list" : showNotesRail;
   const renderNoteEditor = isPhoneViewport ? phonePage === "note-edit" : showNoteEditor;
@@ -3497,6 +6759,27 @@ export default function ChunkWorkspaceApp() {
       window.addEventListener("pointerup", handleUp);
     },
     [leftRailWidth],
+  );
+  const startRootPickerResize = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const startWidth = rootPickerWidth;
+      const startHeight = rootPickerHeight;
+      const handleMove = (moveEvent: globalThis.PointerEvent) => {
+        setRootPickerWidth(clampRootPickerWidth(startWidth + moveEvent.clientX - startX));
+        setRootPickerHeight(clampRootPickerHeight(startHeight + moveEvent.clientY - startY));
+      };
+      const handleUp = () => {
+        window.removeEventListener("pointermove", handleMove);
+        window.removeEventListener("pointerup", handleUp);
+      };
+      window.addEventListener("pointermove", handleMove);
+      window.addEventListener("pointerup", handleUp);
+    },
+    [rootPickerHeight, rootPickerWidth],
   );
 
   const refreshWireGuardStatus = useCallback(async () => {
@@ -3592,13 +6875,19 @@ export default function ChunkWorkspaceApp() {
     (workflowId: string, threadId: string, workspaceId?: string | null) => {
       const targetWorkspaceId = workspaceId || activeWorkspaceId;
       if (!targetWorkspaceId) return;
+      const targetWorkspace = workspaces.find((item) => item.id === targetWorkspaceId);
       setThreadWorkspaces((previous) => ({
         ...previous,
         [threadWorkspaceKey(workflowId, threadId)]: targetWorkspaceId,
       }));
-      updateWorkspace(targetWorkspaceId, { activeThreadId: threadId });
+      updateWorkspace(targetWorkspaceId, {
+        activeThreadId: threadId,
+        openThreadIds: targetWorkspace?.openThreadIds.includes(threadId)
+          ? targetWorkspace.openThreadIds
+          : [...(targetWorkspace?.openThreadIds ?? []), threadId],
+      });
     },
-    [activeWorkspaceId, updateWorkspace],
+    [activeWorkspaceId, updateWorkspace, workspaces],
   );
 
   const updateActiveNote = useCallback(
@@ -3964,6 +7253,20 @@ export default function ChunkWorkspaceApp() {
     setStatus("Workspace root changed");
   }, [createWorkspace, setActiveWorkspace, updateWorkspace, workspace?.id]);
 
+  const browseDevelopmentRoot = useCallback((root: string) => {
+    const nextRoot = browsingRootPath(root);
+    if (!nextRoot) return;
+    setRootEditing(true);
+    setRootInput(nextRoot);
+    setStatus("Browsing workspace roots");
+  }, []);
+
+  const closeRootPicker = useCallback(() => {
+    setRootEditing(false);
+    setRootInput(developmentRoot);
+    setRootSuggestions([]);
+  }, [developmentRoot]);
+
   const createDevelopmentWorkspace = useCallback(() => {
     const id = createWorkspace(undefined, "chat");
     setActiveWorkspace(id);
@@ -3986,7 +7289,45 @@ export default function ChunkWorkspaceApp() {
     applyDevelopmentRoot(folder);
   }, [applyDevelopmentRoot, developmentRoot, rootOptions]);
 
-  const startNewSession = useCallback(async () => {
+  const startNewSession = useCallback(async (workspaceIdOverride?: string | null) => {
+    const targetWorkspaceId = workspaceIdOverride ?? workspace?.id ?? activeWorkspaceId;
+    const activeThreadWorkspaceKey = activeThread
+      ? threadWorkspaceKey(activeThread.workflowId, activeThread.id)
+      : "";
+    const activeThreadWorkspaceId = activeThreadWorkspaceKey
+      ? threadWorkspaces[activeThreadWorkspaceKey]
+      : "";
+    const activeThreadInTargetWorkspace = Boolean(
+      !targetWorkspaceId ||
+        activeThreadWorkspaceId === targetWorkspaceId ||
+        (workspace?.id === targetWorkspaceId && workspace.activeThreadId === activeThread?.id),
+    );
+    const activeBlankSession =
+      activeThread?.title === "New Super DAN Session" &&
+      messages.length === 0 &&
+      tasks.length === 0 &&
+      agentEvents.length === 0 &&
+      activeThreadInTargetWorkspace;
+    if (activeBlankSession) {
+      if (targetWorkspaceId) {
+        setActiveWorkspace(targetWorkspaceId);
+        setCollapsedThreadGroups((previous) => ({
+          ...previous,
+          [`workspace:${targetWorkspaceId}`]: false,
+        }));
+      }
+      setActivePane("work");
+      setStatus("Ready");
+      window.setTimeout(() => composerRef.current?.focus(), 0);
+      return;
+    }
+    if (creatingSessionRef.current) {
+      setStatus("Creating session");
+      window.setTimeout(() => composerRef.current?.focus(), 0);
+      return;
+    }
+    creatingSessionRef.current = true;
+    const selectionSeq = ++sessionSelectionSeqRef.current;
     streamRef.current?.close();
     streamRef.current = null;
     agentStreamRef.current?.close();
@@ -4000,8 +7341,10 @@ export default function ChunkWorkspaceApp() {
     setTasks([]);
     setAgentEvents([]);
     setSelectedChunkId(null);
+    setSelectedBlueprintNodeId(null);
     setInput("");
     setActivePane("work");
+    if (targetWorkspaceId) setActiveWorkspace(targetWorkspaceId);
     try {
       const created = await createChatV2Thread(DEFAULT_WORKFLOW_ID, {
         title: "New Super DAN Session",
@@ -4012,12 +7355,13 @@ export default function ChunkWorkspaceApp() {
         workflowId: created.workflow_id || DEFAULT_WORKFLOW_ID,
         title: created.title || "New Super DAN Session",
       };
+      if (sessionSelectionSeqRef.current !== selectionSeq) return;
       setActiveThread(next);
-      bindThreadToWorkspace(next.workflowId, next.id);
-      if (activeWorkspaceId) {
+      bindThreadToWorkspace(next.workflowId, next.id, targetWorkspaceId);
+      if (targetWorkspaceId) {
         setCollapsedThreadGroups((previous) => ({
           ...previous,
-          [`workspace:${activeWorkspaceId}`]: false,
+          [`workspace:${targetWorkspaceId}`]: false,
         }));
       }
       window.localStorage.setItem(
@@ -4025,15 +7369,38 @@ export default function ChunkWorkspaceApp() {
         JSON.stringify({ threadId: next.id, workflowId: next.workflowId }),
       );
       await refreshThreads();
-      setStatus("Ready");
+      if (sessionSelectionSeqRef.current === selectionSeq) setStatus("Ready");
     } catch {
-      setStatus("Session create failed");
+      if (sessionSelectionSeqRef.current === selectionSeq) setStatus("Session create failed");
+    } finally {
+      creatingSessionRef.current = false;
     }
-    window.setTimeout(() => composerRef.current?.focus(), 0);
-  }, [activeWorkspaceId, bindThreadToWorkspace, refreshThreads]);
+    if (sessionSelectionSeqRef.current === selectionSeq) {
+      window.setTimeout(() => composerRef.current?.focus(), 0);
+    }
+  }, [
+    activeThread?.title,
+    activeThread?.id,
+    activeThread?.workflowId,
+    activeWorkspaceId,
+    agentEvents.length,
+    bindThreadToWorkspace,
+    messages.length,
+    refreshThreads,
+    setActiveWorkspace,
+    tasks.length,
+    threadWorkspaces,
+    workspace?.activeThreadId,
+    workspace?.id,
+  ]);
 
   const openSession = useCallback(
     async (summary: ChatV2ThreadSummary, workspaceId?: string | null) => {
+      if (summary.archived) {
+        setStatus("Restore session to view it");
+        return;
+      }
+      const selectionSeq = ++sessionSelectionSeqRef.current;
       streamRef.current?.close();
       streamRef.current = null;
       agentStreamRef.current?.close();
@@ -4056,16 +7423,19 @@ export default function ChunkWorkspaceApp() {
       setStatus("Loading session");
       try {
         const thread = await getChatV2Thread(summary.workflow_id, summary.id);
-        const history = await loadSuperDanThreadHistory(thread.id, thread.title).catch(() => ({
+        const history = await loadSuperDanThreadHistory(thread.id, thread.title, thread.updated_at).catch(() => ({
           tasks: [] as ChatV2TaskSnapshot[],
           events: [] as ChatV2AgentRunEvent[],
           messages: [] as ChatMessage[],
         }));
+        if (sessionSelectionSeqRef.current !== selectionSeq) return;
         const loadedMessages = thread.messages.length > 0 ? thread.messages : history.messages;
-        if (workspaceId) {
-          setActiveWorkspace(workspaceId);
-          bindThreadToWorkspace(thread.workflow_id, thread.id, workspaceId);
+        const resolvedWorkspaceId = workspaceId || workspaceIdForTasks(history.tasks, workspaces);
+        if (resolvedWorkspaceId) {
+          setActiveWorkspace(resolvedWorkspaceId);
+          bindThreadToWorkspace(thread.workflow_id, thread.id, resolvedWorkspaceId);
         }
+        markSessionResponseSeen(thread, history.tasks);
         setActivePane("work");
         setSelectedChunkId(null);
         setActiveThread({
@@ -4077,6 +7447,7 @@ export default function ChunkWorkspaceApp() {
         messagesRef.current = loadedMessages;
         setPendingAssistantIds({});
         setTasks(history.tasks);
+        mergeBackgroundTasks(history.tasks);
         setAgentEvents(history.events);
         if (thread.messages.length === 0 && loadedMessages.length > 0) {
           void saveChatV2Thread(thread.workflow_id, thread.id, {
@@ -4090,6 +7461,7 @@ export default function ChunkWorkspaceApp() {
         );
         setStatus(loadedMessages.length === 0 ? "Session has no saved Super DAN history" : "Ready");
       } catch {
+        if (sessionSelectionSeqRef.current !== selectionSeq) return;
         const failed = makeMessage(
           "assistant",
           `Could not load session "${summary.title || summary.id}".`,
@@ -4098,10 +7470,38 @@ export default function ChunkWorkspaceApp() {
         messagesRef.current = [failed];
         setStatus("Session load failed");
       } finally {
-        setLoadingThreadId((current) => (current === summary.id ? null : current));
+        if (sessionSelectionSeqRef.current === selectionSeq) {
+          setLoadingThreadId((current) => (current === summary.id ? null : current));
+        }
       }
     },
-    [bindThreadToWorkspace, refreshThreads, setActiveWorkspace],
+    [
+      bindThreadToWorkspace,
+      markSessionResponseSeen,
+      mergeBackgroundTasks,
+      refreshThreads,
+      setActiveWorkspace,
+      workspaces,
+    ],
+  );
+
+  const viewSessionProgress = useCallback(
+    async (thread: ChatV2ThreadSummary, workspaceId?: string | null) => {
+      if (thread.archived) {
+        setStatus("Restore session to view progress");
+        return;
+      }
+      setActivePane("work");
+      setPhonePage("chat");
+      setShowConversationChunks(true);
+      setSelectedChunkId(null);
+      setSelectedBlueprintNodeId(null);
+      if (activeThread?.id === thread.id) {
+        return;
+      }
+      await openSession(thread, workspaceId);
+    },
+    [activeThread?.id, openSession],
   );
 
   const stopSessionRun = useCallback(
@@ -4127,6 +7527,7 @@ export default function ChunkWorkspaceApp() {
               item.task_id === response.task!.task_id ? response.task! : item,
             ),
           );
+          mergeBackgroundTasks([response.task]);
         }
         setAgentEvents((previous) => [...previous, response.event].slice(-80));
         setStatus(response.event.summary || "Stop requested");
@@ -4134,7 +7535,7 @@ export default function ChunkWorkspaceApp() {
         setStatus("Stop request failed");
       }
     },
-    [activeRunningTask, activeThread?.id],
+    [activeRunningTask, activeThread?.id, mergeBackgroundTasks],
   );
 
   const archiveSession = useCallback(
@@ -4146,17 +7547,13 @@ export default function ChunkWorkspaceApp() {
             : item,
         ),
       );
+      if (archived) {
+        clearStoredThreadSelection(thread);
+        removeThreadFromWorkspaceSlots(thread.id);
+      }
       if (archived && activeThread?.id === thread.id) {
-        streamRef.current?.close();
-        streamRef.current = null;
-        agentStreamRef.current?.close();
-        agentStreamRef.current = null;
-        setActiveThread(null);
-        setMessages([]);
-        messagesRef.current = [];
-        setTasks([]);
-        setAgentEvents([]);
-        setSelectedChunkId(null);
+        sessionSelectionSeqRef.current += 1;
+        clearActiveSessionView();
       }
       setStatus(archived ? "Archiving session" : "Restoring session");
       try {
@@ -4168,7 +7565,52 @@ export default function ChunkWorkspaceApp() {
         setStatus(archived ? "Archive failed" : "Restore failed");
       }
     },
-    [activeThread?.id, refreshThreads],
+    [
+      activeThread?.id,
+      clearActiveSessionView,
+      clearStoredThreadSelection,
+      refreshThreads,
+      removeThreadFromWorkspaceSlots,
+    ],
+  );
+
+  const deleteArchivedSession = useCallback(
+    async (thread: ChatV2ThreadSummary) => {
+      if (!thread.archived) return;
+      const title = thread.title || "Untitled session";
+      const confirmed = window.confirm(`Permanently delete "${title}"? This cannot be undone.`);
+      if (!confirmed) return;
+
+      setStatus("Deleting session");
+      setThreads((previous) =>
+        previous.filter(
+          (item) => !(item.id === thread.id && item.workflow_id === thread.workflow_id),
+        ),
+      );
+      setBackgroundTasks((previous) => previous.filter((task) => task.thread_id !== thread.id));
+      clearStoredThreadSelection(thread);
+      removeThreadFromWorkspaceSlots(thread.id);
+      if (activeThread?.id === thread.id) {
+        sessionSelectionSeqRef.current += 1;
+        clearActiveSessionView();
+      }
+
+      try {
+        await deleteChatV2Thread(thread.workflow_id, thread.id);
+        await refreshThreads();
+        setStatus("Session deleted");
+      } catch {
+        await refreshThreads();
+        setStatus("Delete failed");
+      }
+    },
+    [
+      activeThread?.id,
+      clearActiveSessionView,
+      clearStoredThreadSelection,
+      refreshThreads,
+      removeThreadFromWorkspaceSlots,
+    ],
   );
 
   const beginSessionSwipe = useCallback(
@@ -4178,7 +7620,7 @@ export default function ChunkWorkspaceApp() {
       archived: boolean,
     ) => {
       const actionTarget = (event.target as HTMLElement).closest("[data-session-action]");
-      if (actionTarget || event.button !== 0) return;
+      if (actionTarget || event.button !== 0 || event.pointerType === "mouse") return;
       const key = threadWorkspaceKey(thread.workflow_id, thread.id);
       sessionSwipeRef.current = {
         key,
@@ -4226,6 +7668,8 @@ export default function ChunkWorkspaceApp() {
   const ensureThread = useCallback(
     async (prompt: string) => {
       if (activeThread) return activeThread;
+      const targetWorkspaceId = workspace?.id ?? activeWorkspaceId;
+      const selectionSeq = ++sessionSelectionSeqRef.current;
       const created = await createChatV2Thread(DEFAULT_WORKFLOW_ID, {
         title: titleFromText(prompt),
         mode: "agent",
@@ -4235,16 +7679,18 @@ export default function ChunkWorkspaceApp() {
         workflowId: created.workflow_id || DEFAULT_WORKFLOW_ID,
         title: created.title,
       };
-      setActiveThread(next);
-      bindThreadToWorkspace(next.workflowId, next.id);
-      window.localStorage.setItem(
-        LAST_THREAD_STORAGE_KEY,
-        JSON.stringify({ threadId: next.id, workflowId: next.workflowId }),
-      );
-      await refreshThreads();
+      if (sessionSelectionSeqRef.current === selectionSeq) {
+        setActiveThread(next);
+        bindThreadToWorkspace(next.workflowId, next.id, targetWorkspaceId);
+        window.localStorage.setItem(
+          LAST_THREAD_STORAGE_KEY,
+          JSON.stringify({ threadId: next.id, workflowId: next.workflowId }),
+        );
+        await refreshThreads();
+      }
       return next;
     },
-    [activeThread, bindThreadToWorkspace, refreshThreads],
+    [activeThread, activeWorkspaceId, bindThreadToWorkspace, refreshThreads, workspace?.id],
   );
 
   const persistMessages = useCallback(
@@ -4299,9 +7745,10 @@ export default function ChunkWorkspaceApp() {
       agentStreamRef.current = connectChatV2AgentRunEvents(
         runId,
         (event) => {
+          if (event.task_id) void refreshTasks(thread.id);
+          if (activeThreadRef.current?.id !== thread.id) return;
           setAgentEvents((previous) => [...previous, event].slice(-80));
           attachRunEventToAssistant(assistantId, runEventPayloadFromAgentEvent(event));
-          if (event.task_id) void refreshTasks(thread.id);
           if (event.type === "completed" || event.type === "failed" || event.type === "blocked") {
             const finalText =
               humanEventSummary(event) || (event.type === "completed" ? "Completed." : eventSummary(event));
@@ -4332,7 +7779,11 @@ export default function ChunkWorkspaceApp() {
           }
         },
         undefined,
-        () => setStatus("Super DAN event stream interrupted"),
+        () => {
+          if (activeThreadRef.current?.id === thread.id) {
+            setStatus("Super DAN event stream interrupted");
+          }
+        },
       );
     },
     [
@@ -4341,7 +7792,7 @@ export default function ChunkWorkspaceApp() {
       persistMessages,
       refreshTasks,
       workspace?.id,
-      developmentRoot,
+        developmentRoot,
     ],
   );
 
@@ -4351,6 +7802,12 @@ export default function ChunkWorkspaceApp() {
       queueCommand: "append_followup" | "continue_after_current" = "append_followup",
     ) => {
       const thread = await ensureThread(prompt);
+      bindThreadToWorkspace(thread.workflowId, thread.id, workspace?.id ?? activeWorkspaceId);
+      const sendSelectionSeq = sessionSelectionSeqRef.current;
+      const isStillSelectedThread = () =>
+        sessionSelectionSeqRef.current === sendSelectionSeq &&
+        (!activeThreadRef.current || activeThreadRef.current.id === thread.id);
+      setSelectedBlueprintNodeId(null);
       const user = makeMessage("user", prompt);
       const assistant = makeMessage(
         "assistant",
@@ -4377,7 +7834,9 @@ export default function ChunkWorkspaceApp() {
             surface_context: buildSurfaceContext({
               note: activeNote,
               selectedChunk,
+              selectedBlueprintNode,
               workspaceRoot: developmentRoot,
+              workspaceId: workspace?.id ?? activeWorkspaceId ?? "",
               notesRoot,
               activeFile: activeFileEntry,
               activeFileContent,
@@ -4385,22 +7844,33 @@ export default function ChunkWorkspaceApp() {
             }),
           },
         });
-        if (response.task) setTasks((previous) => [response.task!, ...previous]);
-        setAgentEvents((previous) => [...previous, response.event].slice(-80));
-        const finalMessages = applyMessages((previous) =>
+        if (response.task) {
+          mergeBackgroundTasks([response.task]);
+          if (isStillSelectedThread()) {
+            setTasks((previous) => [response.task!, ...previous]);
+          }
+        }
+        if (response.event && isStillSelectedThread()) {
+          setAgentEvents((previous) => [...previous, response.event].slice(-80));
+        }
+        const updateAssistant = (previous: ChatMessage[]) =>
           previous.map((message) =>
             message.id === assistant.id
               ? { ...message, content: response.event.summary || assistant.content }
               : message,
-          ),
-        );
+          );
+        const finalMessages = isStillSelectedThread()
+          ? applyMessages(updateAssistant)
+          : updateAssistant(nextMessages);
         await initialPersist;
         await persistMessages(thread, finalMessages, "agent");
-        setStatus(
-          queueCommand === "continue_after_current"
-            ? "Queued after current Super DAN run"
-            : "Steering Super DAN",
-        );
+        if (isStillSelectedThread()) {
+          setStatus(
+            queueCommand === "continue_after_current"
+              ? "Queued after current Super DAN run"
+              : "Steering Super DAN",
+          );
+        }
         return;
       }
 
@@ -4417,17 +7887,34 @@ export default function ChunkWorkspaceApp() {
         surface_context: buildSurfaceContext({
           note: activeNote,
           selectedChunk,
+          selectedBlueprintNode,
           workspaceRoot: developmentRoot,
+          workspaceId: workspace?.id ?? activeWorkspaceId ?? "",
           notesRoot,
           activeFile: activeFileEntry,
           activeFileContent,
           wireGuardStatus,
         }),
       });
-      if (created.task) setTasks((previous) => [created.task!, ...previous]);
-      if (created.event) setAgentEvents((previous) => [...previous, created.event!].slice(-80));
+      const createdTaskWorkspaceId =
+        (created.task ? workspaceIdForTask(created.task, workspaces) : "") ||
+        workspace?.id ||
+        activeWorkspaceId ||
+        "";
+      if (createdTaskWorkspaceId) {
+        bindThreadToWorkspace(thread.workflowId, thread.id, createdTaskWorkspaceId);
+      }
+      if (created.task) {
+        mergeBackgroundTasks([created.task]);
+        if (isStillSelectedThread()) {
+          setTasks((previous) => [created.task!, ...previous]);
+        }
+      }
+      if (created.event && isStillSelectedThread()) {
+        setAgentEvents((previous) => [...previous, created.event!].slice(-80));
+      }
       const runId = created.task_run_ref?.run_id || created.v2_control_plane.run_id || "";
-      const linkedMessages = applyMessages((previous) =>
+      const linkAssistant = (previous: ChatMessage[]) =>
         previous.map((message) =>
           message.id === assistant.id
             ? {
@@ -4452,19 +7939,24 @@ export default function ChunkWorkspaceApp() {
                     textValue(created.task?.metadata?.workspace_id) ||
                     created.task_run_ref?.workspace_id ||
                     workspace?.id ||
+                    activeWorkspaceId ||
                     "",
                 },
               }
             : message,
-        ),
-      );
+        );
+      const linkedMessages = isStillSelectedThread()
+        ? applyMessages(linkAssistant)
+        : linkAssistant(nextMessages);
       await initialPersist;
       if (!runId) {
         await persistMessages(thread, linkedMessages, "agent");
-        setStatus("Super DAN queued");
+        if (isStillSelectedThread()) setStatus("Super DAN queued");
         return;
       }
-      connectAgentStream(runId, thread, assistant.id);
+      if (isStillSelectedThread()) {
+        connectAgentStream(runId, thread, assistant.id);
+      }
       const executed = await executeChatV2AgentRun(runId, {
         backend: SUPER_DAN_BACKEND,
         surface_profile: SUPER_TUI_PROFILE,
@@ -4483,24 +7975,34 @@ export default function ChunkWorkspaceApp() {
           selected_backend: SUPER_DAN_BACKEND,
         },
       });
-      if (executed.task) setTasks((previous) => [executed.task!, ...previous]);
-      setStatus("Super DAN running");
+      if (executed.task) {
+        mergeBackgroundTasks([executed.task]);
+        if (isStillSelectedThread()) {
+          setTasks((previous) => [executed.task!, ...previous]);
+        }
+      }
+      if (isStillSelectedThread()) setStatus("Super DAN running");
       await persistMessages(thread, linkedMessages, "agent");
     },
     [
       activeNote,
       activeFileContent,
       activeFileEntry,
+      activeWorkspaceId,
       activeRunId,
       activeRunningTask,
       applyMessages,
+      bindThreadToWorkspace,
       connectAgentStream,
       developmentRoot,
       ensureThread,
+      mergeBackgroundTasks,
       notesRoot,
       persistMessages,
       selectedChunk,
+      selectedBlueprintNode,
       wireGuardStatus,
+      workspaces,
       workspace?.id,
     ],
   );
@@ -4510,6 +8012,7 @@ export default function ChunkWorkspaceApp() {
     if (!prompt || sending) return;
     const mode = modeOverride ?? (hasActiveRun ? activeRunPlacement : "steer");
     setInput("");
+    setSelectedBlueprintNodeId(null);
     setSending(true);
     try {
       if (mode === "queue") await sendAgent(prompt, "continue_after_current");
@@ -4644,8 +8147,13 @@ export default function ChunkWorkspaceApp() {
   }, []);
 
   return (
-    <div className="dan-phone-workspace flex h-screen flex-col overflow-hidden bg-[#f4f7fb] text-slate-950 antialiased dark:bg-slate-950 dark:text-slate-100">
-      <header className="dan-workspace-header flex h-14 shrink-0 items-center justify-between border-b border-slate-200/80 bg-white/95 px-4 shadow-[0_1px_0_rgba(15,23,42,0.03)] backdrop-blur dark:border-slate-800 dark:bg-slate-950/95">
+    <div
+      className={cx(
+        workspaceSurfaceThemeClass,
+        "dan-phone-workspace flex h-screen flex-col overflow-hidden bg-[#f4f7fb] text-slate-950 antialiased dark:bg-slate-950 dark:text-slate-100",
+      )}
+    >
+      <header className="dan-workspace-header relative z-40 flex h-14 shrink-0 items-center justify-between border-b border-slate-200/80 bg-white/95 px-4 shadow-[0_1px_0_rgba(15,23,42,0.03)] backdrop-blur dark:border-slate-800 dark:bg-slate-950/95">
         <div className="flex min-w-0 items-center gap-3">
           <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100/70 p-0.5 shadow-inner dark:border-slate-800 dark:bg-slate-900">
             <button
@@ -4708,37 +8216,14 @@ export default function ChunkWorkspaceApp() {
                       </option>
                     ))}
                   </select>
-                  <button
-                    type="button"
-                    onClick={createDevelopmentWorkspace}
-                    className="grid h-6 w-6 shrink-0 place-items-center rounded-md border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-950 dark:hover:text-slate-100"
-                    title="New workspace"
-                    aria-label="New workspace"
-                  >
-                    <Plus size={13} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={openFolder}
-                    className="grid h-6 w-6 shrink-0 place-items-center rounded-md border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-950 dark:hover:text-slate-100"
-                    title="Open root folder"
-                    aria-label="Open root folder"
-                  >
-                    <FolderOpen size={13} />
-                  </button>
-                  {workspaces.length > 1 && activeWorkspaceId && (
-                    <button
-                      type="button"
-                      onClick={() => removeWorkspace(activeWorkspaceId)}
-                      className="grid h-6 w-6 shrink-0 place-items-center rounded-md border border-slate-200 bg-white text-slate-400 transition hover:border-slate-300 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-950 dark:hover:text-slate-100"
-                      title="Close workspace"
-                      aria-label="Close workspace"
-                    >
-                      <X size={12} />
-                    </button>
-                  )}
                 </div>
-                <div className="relative mt-0.5 max-w-[560px]">
+                <div
+                  className="relative mt-0.5 min-w-0"
+                  style={{
+                    width: rootPickerWidth,
+                    maxWidth: "min(760px, calc(100vw - 260px))",
+                  }}
+                >
                   <label className="flex h-5 min-w-0 items-center gap-1.5 rounded-md border border-transparent pr-1 text-[11px] leading-4 text-slate-500 transition hover:border-slate-200 hover:bg-slate-50 focus-within:border-slate-300 focus-within:bg-white dark:hover:border-slate-800 dark:hover:bg-slate-900 dark:focus-within:bg-slate-950">
                     <span className="shrink-0 text-slate-400">Root</span>
                     <input
@@ -4754,8 +8239,7 @@ export default function ChunkWorkspaceApp() {
                       onKeyDown={(event) => {
                         if (event.key === "Enter") applyDevelopmentRoot(rootInput);
                         if (event.key === "Escape") {
-                          setRootEditing(false);
-                          setRootInput(developmentRoot);
+                          closeRootPicker();
                         }
                       }}
                       placeholder="/path/to/workspace"
@@ -4766,34 +8250,138 @@ export default function ChunkWorkspaceApp() {
                       <Loader2 size={11} className="shrink-0 animate-spin text-slate-400" />
                     )}
                   </label>
-                  {rootEditing && rootOptions.length > 0 && (
-                    <div className="absolute left-0 top-6 z-50 w-[560px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl shadow-slate-950/10 dark:border-slate-800 dark:bg-slate-950">
-                      <div className="border-b border-slate-200 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400 dark:border-slate-800">
-                        Workspace Roots
-                      </div>
-                      <div className="max-h-56 overflow-auto p-1.5">
-                        {rootOptions.slice(0, 8).map((option) => (
+                  {rootEditing && (
+                    <div className="absolute left-0 top-6 z-[70] w-full overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg shadow-slate-950/10 dark:border-slate-800 dark:bg-slate-950">
+                      <div className="flex items-center justify-between gap-1 border-b border-slate-200 px-2 py-1.5 dark:border-slate-800">
+                        <div className="min-w-0">
+                          <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">
+                            Workspace Roots
+                          </div>
+                          <div className="truncate font-mono text-[10px] leading-4 text-slate-400">
+                            {rootBrowsePath || "Choose a folder"}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
                           <button
-                            key={option.path}
                             type="button"
                             onMouseDown={(event) => {
                               event.preventDefault();
-                              applyDevelopmentRoot(option.path);
+                              applyDevelopmentRoot(rootInput);
+                            }}
+                            disabled={!normalizeRootPath(rootInput)}
+                            className="grid h-6 w-6 place-items-center rounded-md border border-slate-200 text-slate-500 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-800 dark:hover:bg-slate-900 dark:hover:text-slate-100"
+                            title="Use this folder as workspace root"
+                            aria-label="Use this folder as workspace root"
+                          >
+                            <Check size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                              browseDevelopmentRoot(rootParentPath);
+                            }}
+                            disabled={!rootParentPath}
+                            className="grid h-6 w-6 place-items-center rounded-md border border-slate-200 text-slate-500 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-800 dark:hover:bg-slate-900 dark:hover:text-slate-100"
+                            title="Go to parent folder"
+                            aria-label="Go to parent folder"
+                          >
+                            <ArrowUp size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                              closeRootPicker();
+                            }}
+                            className="grid h-6 w-6 place-items-center rounded-md border border-slate-200 text-slate-500 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 dark:border-slate-800 dark:hover:bg-slate-900 dark:hover:text-slate-100"
+                            title="Close workspace root picker"
+                            aria-label="Close workspace root picker"
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                      </div>
+                      <div
+                        className="overflow-auto p-1.5"
+                        style={{ maxHeight: `min(${rootPickerHeight}px, calc(100vh - 150px))` }}
+                      >
+                        {rootParentPath && (
+                          <button
+                            type="button"
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                              browseDevelopmentRoot(rootParentPath);
                             }}
                             className="flex w-full min-w-0 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-900 dark:hover:text-slate-100"
                           >
-                            <Folder size={13} className="shrink-0 text-slate-400" />
+                            <ArrowUp size={13} className="shrink-0 text-slate-400" />
                             <span className="min-w-0 flex-1">
-                              <span className="block truncate font-semibold">{option.name}</span>
+                              <span className="block truncate font-semibold">Parent folder</span>
                               <span className="block truncate font-mono text-[10px] text-slate-400">
-                                {option.path}
+                                {rootParentPath}
                               </span>
                             </span>
                             <span className="shrink-0 rounded-full border border-slate-200 px-1.5 py-0.5 text-[10px] capitalize text-slate-400 dark:border-slate-800">
-                              {option.kind}
+                              up
                             </span>
                           </button>
-                        ))}
+                        )}
+                        {rootOptions.length > 0 ? (
+                          rootOptions.slice(0, 10).map((option) => (
+                            <div
+                              key={option.path}
+                              className="flex min-w-0 items-center gap-1 rounded-lg text-xs text-slate-600 transition hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-900"
+                            >
+                              <button
+                                type="button"
+                                onMouseDown={(event) => {
+                                  event.preventDefault();
+                                  applyDevelopmentRoot(option.path);
+                                }}
+                                className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-2 text-left transition hover:text-slate-950 dark:hover:text-slate-100"
+                                title="Use as workspace root"
+                              >
+                                <Folder size={13} className="shrink-0 text-slate-400" />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate font-semibold">{option.name}</span>
+                                  <span className="block truncate font-mono text-[10px] text-slate-400">
+                                    {option.path}
+                                  </span>
+                                </span>
+                                <span className="shrink-0 rounded-full border border-slate-200 px-1.5 py-0.5 text-[10px] capitalize text-slate-400 dark:border-slate-800">
+                                  {option.kind}
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                onMouseDown={(event) => {
+                                  event.preventDefault();
+                                  browseDevelopmentRoot(option.path);
+                                }}
+                                className="mr-1 grid h-7 w-7 shrink-0 place-items-center rounded-md text-slate-400 transition hover:bg-white hover:text-slate-900 dark:hover:bg-slate-950 dark:hover:text-slate-100"
+                                title="Browse inside this folder"
+                                aria-label={`Browse inside ${option.name}`}
+                              >
+                                <ChevronRight size={13} />
+                              </button>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="px-2.5 py-3 text-xs text-slate-400">
+                            {loadingRoots ? "Looking for folders..." : "No matching folders."}
+                          </div>
+                        )}
+                      </div>
+                      <div
+                        role="separator"
+                        aria-label="Resize workspace root picker"
+                        title="Resize picker"
+                        onPointerDown={startRootPickerResize}
+                        className="absolute bottom-0 right-0 h-5 w-5 cursor-nwse-resize rounded-tl-md text-slate-300 transition hover:bg-slate-100 hover:text-slate-500 dark:hover:bg-slate-900"
+                      >
+                        <span className="absolute bottom-1 right-1 h-2.5 w-2.5 border-b border-r border-current" />
+                        <span className="absolute bottom-1 right-1 h-1.5 w-1.5 border-b border-r border-current" />
                       </div>
                     </div>
                   )}
@@ -4845,8 +8433,8 @@ export default function ChunkWorkspaceApp() {
               <button
                 type="button"
                 onClick={() => setShowConversationChunks((visible) => !visible)}
-                title="Toggle conversation chunks (⌥⇧C)"
-                aria-label="Toggle conversation chunks"
+                title="Toggle blueprint view (⌥⇧C)"
+                aria-label="Toggle blueprint view"
                 className={cx(
                   "grid h-8 w-8 place-items-center rounded-lg border transition",
                   showConversationChunks
@@ -4854,7 +8442,7 @@ export default function ChunkWorkspaceApp() {
                     : "border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950",
                 )}
               >
-                <MessageSquareText size={14} />
+                <Cable size={14} />
               </button>
               <button
                 type="button"
@@ -4924,40 +8512,61 @@ export default function ChunkWorkspaceApp() {
               </button>
             </div>
           )}
-          {activeRunningTask && (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">
-              <Loader2 size={12} className="animate-spin" />
-              Agent
-            </span>
-          )}
           <button
             type="button"
             onClick={() => void refreshWireGuardStatus()}
             className={cx(
-              "dan-wireguard-pill inline-flex max-w-[170px] items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold shadow-sm transition",
+              "dan-wireguard-button relative grid h-8 w-8 place-items-center rounded-lg border shadow-sm transition",
               wireGuardUi.tone === "ok"
-                ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/35 dark:text-emerald-200"
+                ? "border-emerald-300 bg-emerald-50 text-emerald-700 hover:border-emerald-400 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/35 dark:text-emerald-200 dark:hover:border-emerald-700 dark:hover:bg-emerald-950/50"
                 : wireGuardUi.tone === "warn"
-                  ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-200"
-                  : "border-slate-200 bg-white text-slate-500 dark:border-slate-800 dark:bg-slate-900",
+                  ? "border-amber-300 bg-amber-50 text-amber-700 hover:border-amber-400 hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950/35 dark:text-amber-200 dark:hover:border-amber-700 dark:hover:bg-amber-950/50"
+                  : "border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:border-slate-700 dark:hover:text-slate-200",
             )}
             title={
               wireGuardStatus
-                ? `${wireGuardStatus.interface}: ${wireGuardStatus.conflict_policy}`
-                : "Read-only WireGuard status"
+                ? `${wireGuardUi.label} ${wireGuardUi.detail}. ${wireGuardStatus.interface}: ${wireGuardStatus.conflict_policy}`
+                : "WireGuard checking. Read-only status"
             }
+            aria-label={`Refresh WireGuard status: ${wireGuardUi.detail}`}
           >
             {wireGuardLoading ? (
-              <Loader2 size={12} className="shrink-0 animate-spin" />
+              <Loader2 size={14} className="shrink-0 animate-spin" />
             ) : (
-              <Shield size={12} className="shrink-0" />
+              <Shield size={14} className="shrink-0" />
             )}
-            <span className="truncate">
-              {wireGuardUi.label} · {wireGuardUi.detail}
+            <span
+              aria-hidden="true"
+              className={cx(
+                "absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full ring-2",
+                wireGuardUi.tone === "ok"
+                  ? "bg-emerald-500 ring-emerald-50 dark:bg-emerald-400 dark:ring-emerald-950"
+                  : wireGuardUi.tone === "warn"
+                    ? "bg-amber-500 ring-amber-50 dark:bg-amber-400 dark:ring-amber-950"
+                    : "bg-slate-400 ring-white dark:bg-slate-500 dark:ring-slate-950",
+              )}
+            />
+            <span className="sr-only">
+              {wireGuardUi.label} {wireGuardUi.detail}
             </span>
           </button>
-          <span className="max-w-[180px] truncate rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-500 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-            {status}
+          <span
+            className={cx(
+              "inline-flex max-w-[180px] items-center gap-1.5 truncate rounded-full border px-2.5 py-1 text-xs shadow-sm",
+              activeRunningTask
+                ? "border-amber-300 bg-amber-50 font-semibold text-amber-700 dark:border-amber-800 dark:bg-amber-950/35 dark:text-amber-200"
+                : "border-slate-200 bg-white font-medium text-slate-500 dark:border-slate-800 dark:bg-slate-900",
+            )}
+            title={activeRunningTask ? "Agent running" : status}
+          >
+            {activeRunningTask ? (
+              <>
+                <Loader2 size={12} className="shrink-0 animate-spin" />
+                <span className="truncate">Agent</span>
+              </>
+            ) : (
+              <span className="truncate">{status}</span>
+            )}
           </span>
         </div>
       </header>
@@ -4967,50 +8576,69 @@ export default function ChunkWorkspaceApp() {
           className="dan-notes-pages grid min-h-0 flex-1 bg-[#f4f7fb] dark:bg-slate-950"
           style={{ gridTemplateColumns: effectiveNotesGridTemplate }}
         >
+          {!isPhoneViewport && !renderNotesRail && (
+            <CollapsedPaneRail
+              label="Content"
+              title="Show content pane"
+              onClick={() => setShowNotesRail(true)}
+            >
+              <NotebookPen size={14} />
+            </CollapsedPaneRail>
+          )}
           {renderNotesRail && (
           <aside className="dan-phone-page relative flex min-h-0 flex-col border-r border-slate-200/80 bg-white/85 dark:border-slate-800 dark:bg-slate-950">
             <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/80 px-3 dark:border-slate-800">
               <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
                 Content
               </div>
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setNoteCreateMenuOpen((open) => !open)}
-                  onBlur={() => window.setTimeout(() => setNoteCreateMenuOpen(false), 120)}
-                  className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
-                  title="Create note or folder"
-                  aria-label="Create note or folder"
-                >
-                  <Plus size={14} />
-                </button>
-                {noteCreateMenuOpen && (
-                  <div className="absolute right-0 top-8 z-40 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 text-xs shadow-xl shadow-slate-950/10 dark:border-slate-800 dark:bg-slate-950">
-                    <button
-                      type="button"
-                      onMouseDown={(event) => {
-                        event.preventDefault();
-                        setNoteCreateMenuOpen(false);
-                        void createNote("note");
-                      }}
-                      className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
-                    >
-                      <FileText size={13} />
-                      <span>New note</span>
-                    </button>
-                    <button
-                      type="button"
-                      onMouseDown={(event) => {
-                        event.preventDefault();
-                        setNoteCreateMenuOpen(false);
-                        void createNote("folder");
-                      }}
-                      className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
-                    >
-                      <FolderPlus size={13} />
-                      <span>New folder</span>
-                    </button>
-                  </div>
+              <div className="flex items-center gap-1">
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setNoteCreateMenuOpen((open) => !open)}
+                    onBlur={() => window.setTimeout(() => setNoteCreateMenuOpen(false), 120)}
+                    className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
+                    title="Create note or folder"
+                    aria-label="Create note or folder"
+                  >
+                    <Plus size={14} />
+                  </button>
+                  {noteCreateMenuOpen && (
+                    <div className="absolute right-0 top-8 z-40 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 text-xs shadow-xl shadow-slate-950/10 dark:border-slate-800 dark:bg-slate-950">
+                      <button
+                        type="button"
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                          setNoteCreateMenuOpen(false);
+                          void createNote("note");
+                        }}
+                        className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
+                      >
+                        <FileText size={13} />
+                        <span>New note</span>
+                      </button>
+                      <button
+                        type="button"
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                          setNoteCreateMenuOpen(false);
+                          void createNote("folder");
+                        }}
+                        className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
+                      >
+                        <FolderPlus size={13} />
+                        <span>New folder</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {!isPhoneViewport && (
+                  <PaneHeaderButton
+                    title="Collapse content pane"
+                    onClick={() => setShowNotesRail(false)}
+                  >
+                    <ChevronRight size={13} className="rotate-180" />
+                  </PaneHeaderButton>
                 )}
               </div>
             </div>
@@ -5074,22 +8702,46 @@ export default function ChunkWorkspaceApp() {
                 </>
               )}
               {noteRailView === "tags" && (
-                <FacetIndex
-                  kind="tag"
-                  entries={visibleTagFacetOptions}
-                  activeFacet={noteFacet}
-                  total={notes.length}
-                  onSelect={selectNoteFacet}
-                />
+                noteRailViewForFacet(noteFacet) === "tags" ? (
+                  <FacetArticlePanel
+                    kind="tag"
+                    facet={noteFacet}
+                    notes={visibleNotes}
+                    activeNoteId={activeNoteId}
+                    root={notesRoot}
+                    onBack={() => selectNoteFacet("all")}
+                    onSelectNote={selectNote}
+                  />
+                ) : (
+                  <FacetIndex
+                    kind="tag"
+                    entries={visibleTagFacetOptions}
+                    activeFacet={noteFacet}
+                    total={notes.length}
+                    onSelect={selectNoteFacet}
+                  />
+                )
               )}
               {noteRailView === "sections" && (
-                <FacetIndex
-                  kind="section"
-                  entries={visibleSectionFacetOptions}
-                  activeFacet={noteFacet}
-                  total={notes.length}
-                  onSelect={selectNoteFacet}
-                />
+                noteRailViewForFacet(noteFacet) === "sections" ? (
+                  <FacetArticlePanel
+                    kind={noteFacet.startsWith("category:") ? "category" : "section"}
+                    facet={noteFacet}
+                    notes={visibleNotes}
+                    activeNoteId={activeNoteId}
+                    root={notesRoot}
+                    onBack={() => selectNoteFacet("all")}
+                    onSelectNote={selectNote}
+                  />
+                ) : (
+                  <FacetIndex
+                    kind="section"
+                    entries={visibleSectionFacetOptions}
+                    activeFacet={noteFacet}
+                    total={notes.length}
+                    onSelect={selectNoteFacet}
+                  />
+                )
               )}
             </div>
             {!isPhoneViewport && (
@@ -5103,6 +8755,15 @@ export default function ChunkWorkspaceApp() {
           </aside>
           )}
 
+          {!isPhoneViewport && !renderNoteEditor && (
+            <CollapsedPaneRail
+              label="Source"
+              title="Show Markdown source"
+              onClick={() => setShowNoteEditor(true)}
+            >
+              <FileText size={14} />
+            </CollapsedPaneRail>
+          )}
           {renderNoteEditor && (
           <div className="dan-phone-page relative flex min-h-0 flex-col border-r border-slate-200/80 bg-white dark:border-slate-800 dark:bg-slate-950">
             <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/80 px-4 dark:border-slate-800">
@@ -5114,6 +8775,17 @@ export default function ChunkWorkspaceApp() {
                   {activeNote ? noteRelativePath(activeNote, notesRoot) : "local note"}
                 </div>
               </div>
+              {!isPhoneViewport && (
+                <PaneHeaderButton
+                  title="Collapse Markdown source"
+                  onClick={() => {
+                    if (!showNotesPreview) setShowNotesPreview(true);
+                    setShowNoteEditor(false);
+                  }}
+                >
+                  <ChevronRight size={13} className="rotate-180" />
+                </PaneHeaderButton>
+              )}
             </div>
             {activeNote?.status === "error" && (
               <div className="border-b border-rose-200 bg-rose-50 px-5 py-2 text-[12px] leading-5 text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-200">
@@ -5174,6 +8846,16 @@ export default function ChunkWorkspaceApp() {
           </div>
           )}
 
+          {!isPhoneViewport && !renderNotesPreview && (
+            <CollapsedPaneRail
+              label="Preview"
+              title="Show note preview"
+              onClick={() => setShowNotesPreview(true)}
+              edge="left"
+            >
+              <PanelRight size={14} />
+            </CollapsedPaneRail>
+          )}
           {renderNotesPreview && (
           <div className="dan-phone-page flex min-h-0 flex-col bg-white dark:bg-slate-950">
             <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-slate-200/80 px-4 dark:border-slate-800">
@@ -5239,6 +8921,17 @@ export default function ChunkWorkspaceApp() {
                 >
                   <ChevronRight size={13} />
                 </button>
+                {!isPhoneViewport && (
+                  <PaneHeaderButton
+                    title="Collapse note preview"
+                    onClick={() => {
+                      if (!showNoteEditor) setShowNoteEditor(true);
+                      setShowNotesPreview(false);
+                    }}
+                  >
+                    <ChevronRight size={13} />
+                  </PaneHeaderButton>
+                )}
               </div>
             </div>
             <div className="min-h-0 flex-1 overflow-auto px-7 py-6 lg:px-10">
@@ -5328,6 +9021,15 @@ export default function ChunkWorkspaceApp() {
         </section>
       ) : (
         <section className="dan-work-pages flex min-h-0 flex-1 bg-[#f4f7fb] dark:bg-slate-950">
+          {!isPhoneViewport && !renderSessionRail && (
+            <CollapsedPaneRail
+              label="Sessions"
+              title="Show sessions pane"
+              onClick={() => setShowSessionRail(true)}
+            >
+              <PanelLeft size={14} />
+            </CollapsedPaneRail>
+          )}
           {renderSessionRail && (
             <aside
               className="dan-phone-page dan-session-page relative flex min-h-0 shrink-0 flex-col border-r border-slate-200/80 bg-white/85 shadow-[1px_0_0_rgba(15,23,42,0.02)] dark:border-slate-800 dark:bg-slate-950"
@@ -5337,15 +9039,45 @@ export default function ChunkWorkspaceApp() {
                 <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
                   Sessions
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void startNewSession()}
-                  title="New session in active workspace"
-                  aria-label="New session in active workspace"
-                  className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
-                >
-                  <Plus size={14} />
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={createDevelopmentWorkspace}
+                    title="New workspace"
+                    aria-label="New workspace"
+                    className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
+                  >
+                    <Plus size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={openFolder}
+                    title="Open root folder"
+                    aria-label="Open root folder"
+                    className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
+                  >
+                    <FolderOpen size={13} />
+                  </button>
+                  {workspaces.length > 1 && activeWorkspaceId && (
+                    <button
+                      type="button"
+                      onClick={() => removeWorkspace(activeWorkspaceId)}
+                      title="Close workspace"
+                      aria-label="Close workspace"
+                      className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-400 shadow-sm transition hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                  {!isPhoneViewport && (
+                    <PaneHeaderButton
+                      title="Collapse sessions pane"
+                      onClick={() => setShowSessionRail(false)}
+                    >
+                      <ChevronRight size={13} className="rotate-180" />
+                    </PaneHeaderButton>
+                  )}
+                </div>
               </div>
               <div className="shrink-0 border-b border-slate-200/80 p-3 dark:border-slate-800">
                 <label className="flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50/90 px-2.5 shadow-inner dark:border-slate-800 dark:bg-slate-900">
@@ -5413,25 +9145,46 @@ export default function ChunkWorkspaceApp() {
                             </span>
                           </button>
                           {group.workspaceId && (
-                            <button
-                              type="button"
-                              onClick={() => removeWorkspace(group.workspaceId!)}
-                              title={`Close ${group.name}`}
-                              aria-label={`Close ${group.name}`}
-                              className="mr-1 mt-1 grid h-5 w-5 shrink-0 place-items-center rounded text-slate-400 opacity-0 hover:bg-white hover:text-slate-700 hover:opacity-100 group-hover/workspace:opacity-100 dark:hover:bg-slate-950 dark:hover:text-slate-200"
-                            >
-                              <X size={12} />
-                            </button>
+                            <div className="mr-1 mt-1 flex shrink-0 items-center gap-0.5">
+                              <button
+                                type="button"
+                                onClick={() => void startNewSession(group.workspaceId)}
+                                title={`New session in ${group.name}`}
+                                aria-label={`New session in ${group.name}`}
+                                className="grid h-5 w-5 shrink-0 place-items-center rounded text-slate-400 transition hover:bg-white hover:text-slate-700 dark:hover:bg-slate-950 dark:hover:text-slate-200"
+                              >
+                                <Plus size={12} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => removeWorkspace(group.workspaceId!)}
+                                title={`Close ${group.name}`}
+                                aria-label={`Close ${group.name}`}
+                                className="grid h-5 w-5 shrink-0 place-items-center rounded text-slate-400 opacity-0 transition hover:bg-white hover:text-slate-700 hover:opacity-100 group-hover/workspace:opacity-100 dark:hover:bg-slate-950 dark:hover:text-slate-200"
+                              >
+                                <X size={12} />
+                              </button>
+                            </div>
                           )}
                         </div>
                         {!collapsed && (
                           <div className="ml-4 mt-1 space-y-1 border-l border-slate-200 pl-2 dark:border-slate-800">
                             {group.threads.map((thread) => {
-                              const active = activeThread?.id === thread.id;
                               const threadRunningTask = runningTaskByThreadId.get(thread.id);
                               const threadIsRunning = Boolean(threadRunningTask);
+                              const threadTasks = tasksByThreadId.get(thread.id) ?? [];
+                              const sessionDisplay = sessionCardDisplay(thread, threadTasks);
                               const archived = Boolean(thread.archived || group.id === "archived");
+                              const active = !archived && activeThread?.id === thread.id;
                               const sessionKey = threadWorkspaceKey(thread.workflow_id, thread.id);
+                              const hasNewReadyResponse = Boolean(
+                                !archived &&
+                                  !active &&
+                                  sessionHasNewReadyResponse(
+                                    threadTasks,
+                                    sessionResponseSeen[sessionKey],
+                                  ),
+                              );
                               const swipeOffset = sessionSwipeOffsets[sessionKey] ?? 0;
                               return (
                                 <div
@@ -5454,7 +9207,8 @@ export default function ChunkWorkspaceApp() {
                                   </div>
                                   <div
                                     className={cx(
-                                      "group/session relative flex w-full min-w-0 items-start gap-1 rounded-lg border transition",
+                                      "group/session relative flex w-full min-w-0 items-start gap-1 overflow-hidden rounded-lg border transition",
+                                      threadIsRunning && "dan-session-live-card",
                                       active
                                         ? "border-slate-900 bg-white text-slate-950 shadow-sm dark:border-slate-100 dark:bg-slate-900 dark:text-slate-100"
                                         : "border-transparent bg-slate-50 text-slate-600 hover:border-slate-200 hover:bg-white hover:shadow-sm dark:bg-slate-950/40 dark:text-slate-300 dark:hover:border-slate-800 dark:hover:bg-slate-900",
@@ -5471,45 +9225,64 @@ export default function ChunkWorkspaceApp() {
                                           event.preventDefault();
                                           return;
                                         }
+                                        if (archived) {
+                                          setStatus("Restore session to view it");
+                                          return;
+                                        }
                                         void openSession(thread, group.workspaceId);
                                       }}
                                       className="flex min-w-0 flex-1 items-start gap-2 px-2.5 py-2 text-left"
                                     >
-                                      <span
-                                        className={cx(
-                                          "mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full",
-                                          threadIsRunning
-                                            ? "bg-blue-500"
-                                            : active
-                                              ? "bg-slate-900 dark:bg-slate-100"
-                                              : "bg-slate-400",
-                                        )}
-                                      />
+                                      {hasNewReadyResponse && (
+                                        <span
+                                          aria-hidden="true"
+                                          className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500"
+                                        />
+                                      )}
                                       <span className="min-w-0 flex-1">
                                         <span className="block truncate text-[12px] font-semibold leading-4">
-                                          {thread.title || "Untitled"}
+                                          {sessionDisplay.title}
                                         </span>
                                         <span className="mt-0.5 block truncate text-[10px] text-slate-400">
-                                          {thread.mode === "agent" ? "Super DAN" : "Chat"} ·{" "}
-                                          {thread.message_count} messages
-                                          {compactThreadTime(thread.updated_at)
-                                            ? ` · ${compactThreadTime(thread.updated_at)}`
-                                            : ""}
-                                          {threadIsRunning ? " · running" : ""}
+                                          {sessionDisplay.detail}
                                         </span>
                                       </span>
                                     </button>
                                     <div className="flex shrink-0 items-center gap-0.5 py-1 pr-1">
                                       {threadIsRunning && (
+                                        <>
+                                          <button
+                                            type="button"
+                                            data-session-action
+                                            onClick={() => void viewSessionProgress(thread, group.workspaceId)}
+                                            title="View progress"
+                                            aria-label="View progress"
+                                            className="dan-session-live-button grid h-6 w-6 place-items-center rounded-md text-blue-500 transition hover:bg-blue-50 hover:text-blue-700 dark:text-blue-300 dark:hover:bg-blue-950/40 dark:hover:text-blue-100"
+                                          >
+                                            <Activity size={12} className="dan-session-live-icon" />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            data-session-action
+                                            onClick={() => void stopSessionRun(thread, threadRunningTask)}
+                                            title="Stop running session"
+                                            aria-label="Stop running session"
+                                            className="grid h-6 w-6 place-items-center rounded-md text-slate-400 transition hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+                                          >
+                                            <Square size={11} />
+                                          </button>
+                                        </>
+                                      )}
+                                      {archived && (
                                         <button
                                           type="button"
                                           data-session-action
-                                          onClick={() => void stopSessionRun(thread, threadRunningTask)}
-                                          title="Stop running session"
-                                          aria-label="Stop running session"
+                                          onClick={() => void deleteArchivedSession(thread)}
+                                          title="Delete permanently"
+                                          aria-label="Delete session permanently"
                                           className="grid h-6 w-6 place-items-center rounded-md text-slate-400 transition hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40 dark:hover:text-red-300"
                                         >
-                                          <Square size={11} />
+                                          <Trash2 size={12} />
                                         </button>
                                       )}
                                       <button
@@ -5540,16 +9313,7 @@ export default function ChunkWorkspaceApp() {
                   )}
                 </div>
               </div>
-              <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-t border-slate-200/80 px-3 text-[11px] text-slate-400 dark:border-slate-800">
-                <button
-                  type="button"
-                  onClick={createDevelopmentWorkspace}
-                  title="New workspace"
-                  className="inline-flex h-7 min-w-0 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-slate-500 shadow-sm hover:border-slate-300 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
-                >
-                  <FolderPlus size={12} />
-                  <span className="truncate">New Workspace</span>
-                </button>
+              <div className="flex h-10 shrink-0 items-center justify-end gap-2 border-t border-slate-200/80 px-3 text-[11px] text-slate-400 dark:border-slate-800">
                 <span className="shrink-0">
                   {workspaces.length} workspaces · {threads.length} sessions
                 </span>
@@ -5563,6 +9327,15 @@ export default function ChunkWorkspaceApp() {
                 />
               )}
             </aside>
+          )}
+          {!isPhoneViewport && !renderFileExplorer && (
+            <CollapsedPaneRail
+              label="Files"
+              title="Show files pane"
+              onClick={() => setShowFileExplorer(true)}
+            >
+              <Folder size={14} />
+            </CollapsedPaneRail>
           )}
           {renderFileExplorer && (
             <aside className="dan-phone-page dan-files-page flex min-h-0 w-[270px] shrink-0 flex-col border-r border-slate-200/80 bg-white/85 dark:border-slate-800 dark:bg-slate-950">
@@ -5607,6 +9380,14 @@ export default function ChunkWorkspaceApp() {
                   >
                     <FolderOpen size={14} />
                   </button>
+                  {!isPhoneViewport && (
+                    <PaneHeaderButton
+                      title="Collapse files pane"
+                      onClick={() => setShowFileExplorer(false)}
+                    >
+                      <ChevronRight size={13} className="rotate-180" />
+                    </PaneHeaderButton>
+                  )}
                 </div>
               </div>
               <div className="border-b border-slate-200/80 p-3 dark:border-slate-800">
@@ -5733,6 +9514,15 @@ export default function ChunkWorkspaceApp() {
             </aside>
           )}
 
+          {!isPhoneViewport && !renderWorkMain && (
+            <CollapsedPaneRail
+              label="Plan"
+              title="Show work plan"
+              onClick={() => setShowConversationChunks(true)}
+            >
+              <Cable size={14} />
+            </CollapsedPaneRail>
+          )}
           {renderWorkMain && (
           <div
             className={cx(
@@ -5745,9 +9535,9 @@ export default function ChunkWorkspaceApp() {
             <div className="flex min-h-0 min-w-0 flex-col bg-white/90 dark:bg-slate-950">
               <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/80 bg-white/80 px-4 backdrop-blur dark:border-slate-800 dark:bg-slate-950/80">
                 <div className="min-w-0">
-                  <div className="truncate text-[15px] font-semibold leading-5">Conversation Chunks</div>
+                  <div className="truncate text-[15px] font-semibold leading-5">Work Plan</div>
                   <div className="truncate text-[11px] leading-4 text-slate-500">
-                    {selectedChunk?.title || activeThread?.title || "Super DAN and narrator history"}
+                    {workPlanHeaderSubtitle(selectedBlueprintNode ?? activeBlueprintNode, activeThread?.title)}
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
@@ -5776,40 +9566,38 @@ export default function ChunkWorkspaceApp() {
                   )}
                   <button
                     type="button"
-                    onClick={() => setShowConversationChunks((visible) => !visible)}
+                    onClick={() => setShowConversationChunks(false)}
                     className="grid h-8 w-8 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
-                    title="Toggle conversation chunks"
+                    title="Collapse work plan"
+                    aria-label="Collapse work plan"
                   >
-                    <MessageSquareText size={14} />
+                    <ChevronRight size={14} className="rotate-180" />
                   </button>
                 </div>
               </div>
 
               <div className="min-h-0 flex-1 overflow-auto p-4">
-                {showConversationChunks ? (
-                  chunks.length > 0 ? (
-                    <div className="space-y-3">
-                      {chunks.slice(-14).map((chunk) => (
-                        <ChunkCard
-                          key={chunk.id}
-                          chunk={chunk}
-                          active={selectedChunk?.id === chunk.id}
-                          onSelect={() => setSelectedChunkId(chunk.id)}
-                        />
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="rounded-md border border-dashed border-slate-200 bg-white p-3 text-sm text-slate-400 dark:border-slate-800 dark:bg-slate-950">
-                      {loadingThreadId === activeThread?.id
-                        ? "Loading session..."
-                        : activeThread
-                          ? "This session has no saved Super DAN history."
-                          : "No Super DAN history yet."}
-                    </div>
-                  )
+                {isPhoneViewport || showConversationChunks ? (
+                  <BlueprintView
+                    nodes={blueprintNodes}
+                    conversationChunks={userConversationChunks}
+                    activeNodeId={activeBlueprintNode?.id ?? null}
+                    selectedNodeId={selectedBlueprintNode?.id ?? null}
+                    selectedChunkId={selectedChunk?.id ?? null}
+                    loading={loadingThreadId === activeThread?.id}
+                    onSelect={(node) => {
+                      setSelectedBlueprintNodeId(node.id);
+                      if (node.sourceChunkId) setSelectedChunkId(node.sourceChunkId);
+                      else setSelectedChunkId(null);
+                    }}
+                    onSelectConversationChunk={(chunk) => {
+                      setSelectedBlueprintNodeId(null);
+                      setSelectedChunkId(chunk.id);
+                    }}
+                  />
                 ) : (
                   <div className="rounded-md border border-dashed border-slate-200 bg-white p-3 text-sm text-slate-400 dark:border-slate-800 dark:bg-slate-950">
-                    Conversation chunks hidden.
+                    Work plan hidden.
                   </div>
                 )}
               </div>
@@ -5831,8 +9619,24 @@ export default function ChunkWorkspaceApp() {
 
               <div className="shrink-0 border-t border-slate-200/80 bg-white/95 p-3 shadow-[0_-1px_0_rgba(15,23,42,0.02)] dark:border-slate-800 dark:bg-slate-950">
                 <div className="flex gap-2">
-                  <div className="hidden h-11 shrink-0 rounded-lg border border-slate-200 bg-slate-100/70 p-0.5 shadow-inner dark:border-slate-800 dark:bg-slate-900 sm:flex">
-                    {hasActiveRun ? (
+                  <div className="hidden h-11 shrink-0 items-center gap-1 rounded-lg border border-slate-200 bg-slate-100/70 p-0.5 shadow-inner dark:border-slate-800 dark:bg-slate-900 sm:flex">
+                    <div
+                      title={
+                        hasActiveRun
+                          ? "Super DAN is running; choose how this message should be sent"
+                          : "Start a Super DAN run"
+                      }
+                      className={cx(
+                        "inline-flex h-9 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold transition",
+                        hasActiveRun
+                          ? "text-slate-600 dark:text-slate-300"
+                          : "bg-white text-slate-950 shadow-sm dark:bg-slate-100 dark:text-slate-950",
+                      )}
+                    >
+                      <Bot size={13} />
+                      Super DAN
+                    </div>
+                    {hasActiveRun && (
                       (["steer", "queue"] as const).map((mode) => (
                         <button
                           key={mode}
@@ -5854,14 +9658,6 @@ export default function ChunkWorkspaceApp() {
                           {mode === "queue" ? "Next" : "Steer"}
                         </button>
                       ))
-                    ) : (
-                      <div
-                        title="Start a Super DAN run"
-                        className="inline-flex h-9 items-center gap-1.5 rounded-md bg-white px-2.5 text-xs font-semibold text-slate-950 shadow-sm dark:bg-slate-100 dark:text-slate-950"
-                      >
-                        <WandSparkles size={13} />
-                        Super DAN
-                      </div>
                     )}
                   </div>
                   <textarea
@@ -5870,11 +9666,13 @@ export default function ChunkWorkspaceApp() {
                     onChange={(event) => setInput(event.target.value)}
                     onKeyDown={handleComposerKeyDown}
                     placeholder={
-                      selectedChunk
-                        ? `Ask Super DAN about ${selectedChunk.title}`
-                        : activeFileEntry
-                          ? `Ask Super DAN about ${activeFileEntry.relative_path}`
-                          : "Ask Super DAN to work in this workspace"
+                      selectedBlueprintNode
+                        ? `Ask Super DAN about ${selectedBlueprintNode.title}`
+                        : selectedChunk
+                          ? `Ask Super DAN about ${selectedChunk.title}`
+                          : activeFileEntry
+                            ? `Ask Super DAN about ${activeFileEntry.relative_path}`
+                            : "Ask Super DAN to work in this workspace"
                     }
                     rows={1}
                     className="max-h-32 min-h-11 flex-1 resize-none rounded-lg border border-slate-200 bg-slate-50/90 px-3 py-2.5 text-sm leading-6 outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:bg-white focus:shadow-sm dark:border-slate-800 dark:bg-slate-900"
@@ -5893,12 +9691,17 @@ export default function ChunkWorkspaceApp() {
                       : "Run"}
                   </button>
                 </div>
-                {(activeFileEntry || selectedChunk || hasActiveRun) && (
+                {(activeFileEntry || selectedBlueprintNode || selectedChunk || hasActiveRun) && (
                   <div className="mt-1 flex items-center gap-3 text-[11px] text-slate-400">
                     {activeFileEntry && (
                       <span className="truncate">File: {activeFileEntry.relative_path}</span>
                     )}
-                    {selectedChunk && <span className="truncate">Chunk: {selectedChunk.title}</span>}
+                    {selectedBlueprintNode && (
+                      <span className="truncate">Step: {selectedBlueprintNode.title}</span>
+                    )}
+                    {!selectedBlueprintNode && selectedChunk && (
+                      <span className="truncate">Chunk: {selectedChunk.title}</span>
+                    )}
                     {hasActiveRun && <span className="truncate">Run: {activeRunId}</span>}
                   </div>
                 )}
@@ -5910,25 +9713,48 @@ export default function ChunkWorkspaceApp() {
                 <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/80 px-4 dark:border-slate-800">
                   <div className="min-w-0">
                     <div className="truncate text-[15px] font-semibold leading-5">
-                      {selectedChunk ? selectedChunk.title : activeFileEntry?.name || "Preview"}
+                      {selectedBlueprintNode
+                        ? selectedBlueprintNode.title
+                        : selectedChunk
+                          ? selectedChunk.title
+                          : activeFileEntry?.name || "Preview"}
                     </div>
                     <div className="truncate text-[11px] leading-4 text-slate-500">
-                      {selectedChunk?.meta ||
+                      {selectedBlueprintNode?.meta ||
+                        selectedBlueprintNode?.detail ||
+                        selectedChunk?.meta ||
                         activeFileEntry?.relative_path ||
-                        "Select a chunk or file"}
+                      "Select a step or file"}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={openActiveFile}
-                    disabled={!activeFileEntry}
-                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
-                  >
-                    Open
-                  </button>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={openActiveFile}
+                      disabled={!activeFileEntry}
+                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
+                    >
+                      Open
+                    </button>
+                    {!isPhoneViewport && (
+                      <PaneHeaderButton
+                        title="Collapse preview pane"
+                        onClick={() => setShowSidecarPreview(false)}
+                      >
+                        <ChevronRight size={13} />
+                      </PaneHeaderButton>
+                    )}
+                  </div>
                 </div>
                 <div className="min-h-0 flex-1 overflow-auto p-4">
-                  {selectedChunk ? (
+                  {selectedBlueprintNode ? (
+                    <BlueprintNodePreview
+                      node={selectedBlueprintNode}
+                      tasks={tasks}
+                      events={agentEvents}
+                      activeTask={activeRunningTask}
+                    />
+                  ) : selectedChunk ? (
                     <MarkdownRenderer content={selectedChunk.body || "_Waiting for output._"} />
                   ) : activeFileStatus === "loading" ? (
                     <div className="flex items-center gap-2 text-sm text-slate-400">
@@ -5940,10 +9766,10 @@ export default function ChunkWorkspaceApp() {
                       {activeFileContent || "_empty file_"}
                     </pre>
                   ) : (
-                    <div className="text-sm text-slate-400">Select a development file.</div>
+                    <div className="text-sm text-slate-400">Select a step or development file.</div>
                   )}
                 </div>
-                {activeFileEntry && !selectedChunk && (
+                {activeFileEntry && !selectedBlueprintNode && !selectedChunk && (
                   <div className="border-t border-slate-200 px-3 py-2 text-[11px] text-slate-400 dark:border-slate-800">
                     {compactFileSize(activeFileEntry.size)}
                     {activeFileStatus === "error" ? " · preview unavailable" : ""}
@@ -5958,23 +9784,48 @@ export default function ChunkWorkspaceApp() {
               <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/80 px-4 dark:border-slate-800">
                 <div className="min-w-0">
                   <div className="truncate text-[15px] font-semibold leading-5">
-                    {selectedChunk ? selectedChunk.title : activeFileEntry?.name || "Preview"}
+                    {selectedBlueprintNode
+                      ? selectedBlueprintNode.title
+                      : selectedChunk
+                        ? selectedChunk.title
+                        : activeFileEntry?.name || "Preview"}
                   </div>
                   <div className="truncate text-[11px] leading-4 text-slate-500">
-                    {selectedChunk?.meta || activeFileEntry?.relative_path || "Select a chunk or file"}
+                    {selectedBlueprintNode?.meta ||
+                      selectedBlueprintNode?.detail ||
+                      selectedChunk?.meta ||
+                      activeFileEntry?.relative_path ||
+                    "Select a step or file"}
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={openActiveFile}
-                  disabled={!activeFileEntry}
-                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
-                >
-                  Open
-                </button>
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={openActiveFile}
+                    disabled={!activeFileEntry}
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
+                  >
+                    Open
+                  </button>
+                  {!isPhoneViewport && (
+                    <PaneHeaderButton
+                      title="Collapse preview pane"
+                      onClick={() => setShowSidecarPreview(false)}
+                    >
+                      <ChevronRight size={13} />
+                    </PaneHeaderButton>
+                  )}
+                </div>
               </div>
               <div className="min-h-0 flex-1 overflow-auto p-4">
-                {selectedChunk ? (
+                {selectedBlueprintNode ? (
+                  <BlueprintNodePreview
+                    node={selectedBlueprintNode}
+                    tasks={tasks}
+                    events={agentEvents}
+                    activeTask={activeRunningTask}
+                  />
+                ) : selectedChunk ? (
                   <MarkdownRenderer content={selectedChunk.body || "_Waiting for output._"} />
                 ) : activeFileStatus === "loading" ? (
                   <div className="flex items-center gap-2 text-sm text-slate-400">
@@ -5986,14 +9837,29 @@ export default function ChunkWorkspaceApp() {
                     {activeFileContent || "_empty file_"}
                   </pre>
                 ) : (
-                  <div className="text-sm text-slate-400">Select a chunk or development file.</div>
+                  <div className="text-sm text-slate-400">Select a step or development file.</div>
                 )}
               </div>
             </aside>
           )}
+          {!isPhoneViewport && !renderSidecarPreview && (
+            <CollapsedPaneRail
+              label="Preview"
+              title="Show preview pane"
+              onClick={() => setShowSidecarPreview(true)}
+              edge="left"
+            >
+              <PanelRight size={14} />
+            </CollapsedPaneRail>
+          )}
         </section>
       )}
-      <nav className="dan-phone-nav hidden shrink-0 border-t border-slate-200/80 bg-white/95 px-2 py-1.5 shadow-[0_-8px_24px_rgba(15,23,42,0.06)] backdrop-blur dark:border-slate-800 dark:bg-slate-950/95">
+      <nav
+        className={cx(
+          "dan-phone-nav hidden shrink-0 border-t border-slate-200/80 bg-white/95 px-2 py-1.5 shadow-[0_-8px_24px_rgba(15,23,42,0.06)] backdrop-blur dark:border-slate-800 dark:bg-slate-950/95",
+          workspaceSurfaceTheme === "factory-worn" && "dan-phone-nav-factory-worn",
+        )}
+      >
         {activePane === "work"
           ? ([
               ["chat", MessageSquareText, "Chat"],
@@ -6008,6 +9874,9 @@ export default function ChunkWorkspaceApp() {
                 className={cx(
                   "dan-phone-nav-button",
                   phonePage === page && "dan-phone-nav-button-active",
+                  phonePage === page &&
+                    workspaceSurfaceTheme === "factory-worn" &&
+                    "dan-phone-nav-button-active-factory-worn",
                 )}
               >
                 <Icon size={17} />
@@ -6034,6 +9903,9 @@ export default function ChunkWorkspaceApp() {
                 className={cx(
                   "dan-phone-nav-button",
                   phonePage === page && "dan-phone-nav-button-active",
+                  phonePage === page &&
+                    workspaceSurfaceTheme === "factory-worn" &&
+                    "dan-phone-nav-button-active-factory-worn",
                 )}
               >
                 <Icon size={17} />
