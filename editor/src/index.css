@@ -919,22 +919,69 @@ html, body {
 
 .dan-factory-worn-theme .dan-user-chat-box {
   background:
-    radial-gradient(circle at 17px 13px, oklch(0.50 0.010 78 / 0.026) 0 0.65px, transparent 1.5px),
-    radial-gradient(circle at 33px 24px, oklch(0.045 0.005 90 / 0.36) 0 1px, transparent 2px),
+    radial-gradient(circle at 17px 13px, oklch(0.50 0.010 78 / 0.034) 0 0.65px, transparent 1.5px),
+    radial-gradient(circle at 33px 24px, oklch(0.045 0.005 90 / 0.42) 0 1px, transparent 2px),
+    radial-gradient(circle at 48px 34px, oklch(0.58 0.007 78 / 0.014) 0 0.45px, transparent 1.15px),
+    radial-gradient(ellipse 120px 30px at 78% 18%, oklch(0.092 0.008 74 / 0.28), transparent 72%),
+    radial-gradient(ellipse 88px 24px at 12% 92%, oklch(0.058 0.005 90 / 0.28), transparent 72%),
     linear-gradient(180deg, oklch(0.262 0.007 82 / 0.96), oklch(0.210 0.006 88 / 0.96)),
     var(--machine-brush) !important;
+  background-size: 39px 31px, 59px 51px, 17px 19px, auto, auto, auto, auto;
   border-color: oklch(0.33 0.014 76 / 0.78) !important;
   color: var(--machine-text) !important;
+  position: relative;
+  overflow: hidden;
   box-shadow:
     inset 0 0 0 1px oklch(0.040 0.005 90 / 0.48),
-    inset 0 -2px 0 oklch(0.040 0.005 90 / 0.42) !important;
+    inset 0 -2px 0 oklch(0.040 0.005 90 / 0.42),
+    inset 8px 0 18px oklch(0.050 0.005 90 / 0.18),
+    inset -8px 0 18px oklch(0.050 0.005 90 / 0.16) !important;
+}
+
+.dan-factory-worn-theme .dan-user-chat-box > * {
+  position: relative;
+  z-index: 1;
+}
+
+.dan-factory-worn-theme .dan-user-chat-box::before,
+.dan-factory-worn-theme .dan-user-chat-box::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.dan-factory-worn-theme .dan-user-chat-box::before {
+  background:
+    radial-gradient(circle at 24px 18px, oklch(0.055 0.005 90 / 0.22) 0 0.8px, transparent 1.8px),
+    radial-gradient(circle at 71px 49px, oklch(0.54 0.008 78 / 0.018) 0 0.45px, transparent 1.2px),
+    radial-gradient(ellipse 18px 1px at 18% 22%, oklch(0.070 0.005 90 / 0.18) 0 42%, transparent 46%),
+    radial-gradient(ellipse 20px 1px at 76% 68%, oklch(0.060 0.005 90 / 0.14) 0 40%, transparent 46%),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0 15px,
+      oklch(0.055 0.005 90 / 0.070) 15px 16px,
+      transparent 16px 31px
+    );
+  background-size: 83px 61px, 97px 73px, auto, auto, auto;
+}
+
+.dan-factory-worn-theme .dan-user-chat-box::after {
+  background:
+    radial-gradient(ellipse 52px 20px at 0% 0%, oklch(0.040 0.005 90 / 0.38), transparent 72%),
+    radial-gradient(ellipse 42px 15px at 100% 0%, oklch(0.044 0.005 90 / 0.34), transparent 70%),
+    radial-gradient(ellipse 66px 18px at 50% 100%, oklch(0.038 0.005 90 / 0.30), transparent 72%),
+    radial-gradient(circle at 92% 44%, oklch(0.036 0.005 90 / 0.22) 0 1.7px, transparent 3px),
+    radial-gradient(circle at 6% 65%, oklch(0.036 0.005 90 / 0.20) 0 1.6px, transparent 3px);
 }
 
 .dan-factory-worn-theme .dan-user-chat-box[data-selected="true"] {
   --tw-ring-color: oklch(0.64 0.092 68 / 0.44);
   border-color: oklch(0.62 0.092 68 / 0.92) !important;
   background:
-    radial-gradient(circle at 17px 13px, oklch(0.52 0.012 78 / 0.030) 0 0.7px, transparent 1.5px),
+    radial-gradient(circle at 17px 13px, oklch(0.52 0.012 78 / 0.040) 0 0.7px, transparent 1.5px),
+    radial-gradient(circle at 33px 24px, oklch(0.045 0.005 90 / 0.40) 0 1px, transparent 2px),
+    radial-gradient(ellipse 108px 30px at 82% 16%, oklch(0.115 0.020 58 / 0.25), transparent 72%),
     linear-gradient(180deg, oklch(0.278 0.017 62 / 0.98), oklch(0.218 0.012 70 / 0.98)),
     var(--machine-brush) !important;
   box-shadow:
@@ -1089,6 +1136,150 @@ html, body {
 
 .dan-bg-stream-pulse {
   animation: dan-bg-pulse 1.5s ease-in-out infinite;
+}
+
+/* -- Workspace rails: shared card anatomy --------------------------------- */
+
+.dan-rail-card-row {
+  min-height: 2.5rem;
+}
+
+.dan-rail-card-kind {
+  display: inline-grid;
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+  place-items: center;
+  color: oklch(0.52 0.026 252);
+}
+
+.dan-rail-card-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1rem;
+}
+
+.dan-rail-card-meta {
+  display: block;
+  margin-top: 0.125rem;
+  overflow: hidden;
+  color: oklch(0.56 0.030 252);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.625rem;
+  line-height: 0.875rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dark .dan-rail-card-kind {
+  color: oklch(0.68 0.040 252);
+}
+
+.dark .dan-rail-card-meta {
+  color: oklch(0.64 0.030 252);
+}
+
+.dan-factory-worn-theme .dan-rail-card-kind {
+  color: oklch(0.620 0.036 78);
+}
+
+.dan-factory-worn-theme .dan-rail-card-meta {
+  color: oklch(0.565 0.032 80);
+}
+
+/* -- Workspace sessions: split-flap count --------------------------------- */
+
+.dan-session-count-flap {
+  position: relative;
+  display: inline-flex;
+  min-width: 1.42rem;
+  height: 1.08rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid oklch(0.72 0.014 82 / 0.72);
+  border-radius: 0.16rem;
+  background:
+    linear-gradient(180deg, oklch(0.900 0.006 84), oklch(0.825 0.007 86) 49%, oklch(0.720 0.008 88) 50%, oklch(0.800 0.007 86));
+  color: oklch(0.345 0.018 82);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.625rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  box-shadow:
+    inset 0 1px 0 oklch(0.990 0.004 84 / 0.18),
+    inset 0 -1px 0 oklch(0.360 0.012 86 / 0.14);
+}
+
+.dan-session-count-flap::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: oklch(0.270 0.010 86 / 0.28);
+  transform: translateY(-0.5px);
+}
+
+.dan-session-count-flap::after {
+  content: none;
+}
+
+.dan-session-count-flap-active {
+  border-color: oklch(0.560 0.038 78 / 0.80);
+  color: oklch(0.255 0.024 82);
+  box-shadow:
+    inset 0 1px 0 oklch(0.990 0.004 84 / 0.20),
+    inset 0 -1px 0 oklch(0.360 0.014 86 / 0.16),
+    0 0 0 1px oklch(0.620 0.036 78 / 0.10);
+}
+
+.dark .dan-session-count-flap {
+  border-color: oklch(0.34 0.016 252 / 0.78);
+  background:
+    linear-gradient(180deg, oklch(0.235 0.022 252), oklch(0.172 0.020 254) 49%, oklch(0.115 0.018 256) 50%, oklch(0.188 0.020 254));
+  color: oklch(0.800 0.040 252);
+  box-shadow:
+    inset 0 1px 0 oklch(0.560 0.030 252 / 0.16),
+    inset 0 -1px 0 oklch(0.030 0.010 256 / 0.50),
+    0 1px 3px oklch(0.040 0.010 256 / 0.42);
+}
+
+.dark .dan-session-count-flap::before {
+  background: oklch(0.030 0.010 256 / 0.58);
+}
+
+.dark .dan-session-count-flap::after {
+  content: none;
+}
+
+.dan-factory-worn-theme .dan-session-count-flap {
+  border-color: oklch(0.38 0.018 78 / 0.82);
+  background:
+    linear-gradient(180deg, oklch(0.290 0.010 80), oklch(0.230 0.010 84) 49%, oklch(0.155 0.009 86) 50%, oklch(0.230 0.010 84));
+  color: oklch(0.700 0.035 78);
+  box-shadow:
+    inset 0 1px 0 oklch(0.620 0.012 78 / 0.08),
+    inset 0 -1px 0 oklch(0.040 0.006 90 / 0.54),
+    0 1px 3px oklch(0.050 0.006 90 / 0.34);
+}
+
+.dan-factory-worn-theme .dan-session-count-flap::before {
+  background: oklch(0.040 0.006 90 / 0.62);
+}
+
+.dan-factory-worn-theme .dan-session-count-flap::after {
+  background: oklch(0.760 0.014 78 / 0.060);
+}
+
+.dan-factory-worn-theme .dan-session-count-flap-active {
+  border-color: oklch(0.60 0.075 72 / 0.78);
+  color: oklch(0.800 0.080 76);
 }
 
 /* -- Workspace sessions: live run indicator ------------------------------- */

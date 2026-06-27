@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   activeThreadArchivedSummaryForTest,
+  buildSessionGroupsForTest,
   blueprintLiveStatusForTest,
   buildBlueprintNodesForTest,
   conversationUserChunksForTest,
@@ -608,6 +609,50 @@ describe("workspace blueprint nodes", () => {
     ).toBeNull();
   });
 
+  it("keeps archived sessions in one group with workspace subgroups", () => {
+    const groups = buildSessionGroupsForTest({
+      threads: [
+        thread({ id: "active-ra", title: "Active RA" }),
+        thread({ id: "archived-ra", title: "Old RA", archived: true }),
+        thread({
+          id: "archived-scratch",
+          title: "Old Scratch",
+          workflow_id: "_scratch",
+          archived: true,
+        }),
+      ],
+      workspaces: [
+        {
+          id: "ra-neo",
+          name: "ra-neo",
+          pinnedPaths: ["/Users/lizhi/Downloads/local_projects/ra-neo"],
+          activeThreadId: "active-ra",
+          openThreadIds: ["active-ra"],
+        },
+      ],
+      threadQuery: "",
+      threadWorkspaces: {
+        "_scratch:active-ra": "ra-neo",
+        "_scratch:archived-ra": "ra-neo",
+      },
+      taskWorkspaceByThreadId: new Map(),
+    });
+
+    const archived = groups.find((group) => group.id === "archived");
+    expect(archived).toMatchObject({
+      name: "Archived",
+      threads: expect.arrayContaining([
+        expect.objectContaining({ id: "archived-ra" }),
+        expect.objectContaining({ id: "archived-scratch" }),
+      ]),
+    });
+    expect(archived?.subgroups?.map((group) => group.name)).toEqual(["ra-neo", "Scratch"]);
+    expect(archived?.subgroups?.[0].threads.map((item) => item.id)).toEqual(["archived-ra"]);
+    expect(archived?.subgroups?.[1].threads.map((item) => item.id)).toEqual([
+      "archived-scratch",
+    ]);
+  });
+
   it("keeps a newly selected blank session empty while another session runs in the background", () => {
     const backgroundRunning = task({
       task_id: "other-running",
@@ -737,6 +782,137 @@ describe("workspace blueprint nodes", () => {
     const futureNode = nodes.find((node) => node.id === "blueprint:task:2-1");
     expect(futureNode?.status).toBe("future");
     expect(futureNode?.compact).toBe(true);
+  });
+
+  it("renders revisioned task graph snapshots with branch-local state", () => {
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeThreadTitle: "Seminar trip planner",
+      chunks: [
+        {
+          id: "message:user-graph",
+          kind: "chat",
+          title: "You · Request",
+          body: "Build a seminar trip planner",
+          status: "clean",
+          meta: "user",
+          role: "user",
+        },
+      ],
+      agentEvents: [
+        {
+          type: "worker_started",
+          source_event_type: "live.task_graph.updated",
+          summary: "Task graph updated.",
+          payload: {
+            task_graph_state: {
+              schema: "super_dan_task_graph_v1",
+              revision: 5,
+              version_id: "v2.b1.3+b2.1",
+              root_version_id: "v2",
+              base_version_id: "v2",
+              parent_version_ids: ["v2.b1.2", "v2"],
+              source: "validator",
+              update_scope: "branch_local",
+              update_reason: "Validator advanced the ready frontier.",
+              changed_task_ids: ["1-1"],
+              changed_branch_ids: ["1", "2"],
+              tasks: [
+                {
+                  task_id: "1-1",
+                  branch_id: "1",
+                  goal: "Create app shell",
+                  depends_on: [],
+                  owned_paths: ["index.html"],
+                  deliverables: ["index.html"],
+                  validation: ["open the page"],
+                  state: "done",
+                  parallel_safe: true,
+                },
+                {
+                  task_id: "1-2",
+                  branch_id: "1",
+                  goal: "Add trip data",
+                  depends_on: [],
+                  owned_paths: ["data/trips.json"],
+                  deliverables: ["data/trips.json"],
+                  validation: ["read data file"],
+                  state: "ready",
+                  parallel_safe: true,
+                },
+                {
+                  task_id: "2-1",
+                  branch_id: "2",
+                  goal: "Add persistence",
+                  depends_on: ["1-1", "1-2"],
+                  owned_paths: ["app.js"],
+                  deliverables: ["app.js"],
+                  validation: ["localStorage smoke"],
+                  state: "deferred",
+                  parallel_safe: false,
+                },
+              ],
+              ready_task_ids: ["1-2"],
+              deferred_task_ids: ["2-1"],
+              active_task_ids: [],
+              completed_task_ids: ["1-1"],
+              parallel_groups: [["1-1", "1-2"]],
+              branches: [
+                {
+                  branch_id: "1",
+                  task_ids: ["1-1", "1-2"],
+                  ready_task_ids: ["1-2"],
+                  active_task_ids: [],
+                  completed_task_ids: ["1-1"],
+                  deferred_task_ids: [],
+                },
+                {
+                  branch_id: "2",
+                  task_ids: ["2-1"],
+                  ready_task_ids: [],
+                  active_task_ids: [],
+                  completed_task_ids: [],
+                  deferred_task_ids: ["2-1"],
+                },
+              ],
+              branch_refs: [
+                {
+                  branch_id: "1",
+                  version_id: "v2.b1.3",
+                  parent_version_id: "v2.b1.2",
+                  base_version_id: "v2",
+                  local_revision: 3,
+                  changed: true,
+                },
+                {
+                  branch_id: "2",
+                  version_id: "v2.b2.1",
+                  parent_version_id: "v2",
+                  base_version_id: "v2",
+                  local_revision: 1,
+                  changed: true,
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+
+    const planNode = nodes.find((node) => node.id === "blueprint:planning");
+    expect(planNode?.detail).toContain("v2.b1.3+b2.1");
+    expect(planNode?.meta).toBe("validator");
+    expect(planNode?.body).toContain("Validator advanced the ready frontier.");
+    expect(planNode?.previewBody).toContain("Graph Version");
+    expect(planNode?.previewBody).toContain("Parents: v2.b1.2, v2");
+    expect(planNode?.previewBody).toContain("Parallel Groups");
+    expect(planNode?.previewBody).toContain("Branch Refs");
+    expect(planNode?.previewBody).toContain("1: 2 tasks, 1 ready, 1 done");
+    expect(nodes.find((node) => node.id === "blueprint:task:1-1")?.status).toBe("done");
+    const readyNode = nodes.find((node) => node.id === "blueprint:task:1-2");
+    expect(readyNode?.status).toBe("ready");
+    expect(readyNode?.meta).toContain("branch 1");
+    expect(nodes.find((node) => node.id === "blueprint:task:2-1")?.status).toBe("future");
   });
 
   it("derives generic target blueprint steps before the backend emits a planning DAG", () => {

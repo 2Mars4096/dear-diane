@@ -27,6 +27,7 @@ import {
   Folder,
   FolderPlus,
   FolderOpen,
+  GripVertical,
   Link as LinkIcon,
   Lightbulb,
   Loader2,
@@ -88,6 +89,7 @@ import {
   nativeShell,
   nativeWatch,
 } from "../../lib/electronBridge";
+import { workspaceSurfaceThemeClassName } from "../../lib/workspaceSurfaceTheme";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import type { ChatMessage, RunEventPayload } from "../../types/chat";
@@ -104,6 +106,7 @@ const THREAD_WORKSPACE_STORAGE_KEY = "dan.chunkWorkspace.threadWorkspaces.v1";
 const SESSION_RESPONSE_SEEN_STORAGE_KEY = "dan.chunkWorkspace.sessionResponseSeen.v1";
 const LAYOUT_STORAGE_KEY = "dan.chunkWorkspace.layout.v1";
 const UI_STATE_STORAGE_KEY = "dan.chunkWorkspace.uiState.v1";
+const WORKSPACE_DRAG_MIME = "application/x-dan-workspace-id";
 const WORKSPACE_SURFACE_TYPE = "frontend";
 const WORKSPACE_SURFACE_ID = "chunk-workspace";
 const WORKSPACE_SURFACE = `${WORKSPACE_SURFACE_TYPE}:${WORKSPACE_SURFACE_ID}`;
@@ -225,12 +228,15 @@ interface WorkspaceChunk {
 
 interface BlueprintPlanTask {
   taskId: string;
+  parentId?: string;
+  branchId?: string;
   goal: string;
   dependsOn: string[];
   ownedPaths: string[];
   deliverables: string[];
   validation: string[];
   status: string;
+  state?: string;
   parallelSafe: boolean;
 }
 
@@ -239,10 +245,25 @@ interface BlueprintPlanContext {
   readyTaskIds: string[];
   deferredTaskIds: string[];
   assignedTaskIds: string[];
+  activeTaskIds: string[];
+  completedTaskIds: string[];
   parallelWorktreeTaskIds: string[];
   dependencyRevisions: string[];
   planFiles: string[];
   planRootRelative: string;
+  graphRevision: number | null;
+  graphVersionId: string;
+  graphRootVersionId: string;
+  graphBaseVersionId: string;
+  graphParentVersionIds: string[];
+  graphSource: string;
+  graphUpdateReason: string;
+  graphUpdateScope: string;
+  graphChangedTaskIds: string[];
+  graphChangedBranchIds: string[];
+  parallelGroups: string[][];
+  graphBranches: string[];
+  graphBranchRefs: string[];
 }
 
 interface BlueprintNode {
@@ -268,9 +289,10 @@ interface SessionGroup {
   name: string;
   workspaceId: string | null;
   root: string;
-  shortcut: string;
   threads: ChatV2ThreadSummary[];
   defaultCollapsed?: boolean;
+  archived?: boolean;
+  subgroups?: SessionGroup[];
 }
 
 interface QueueRow {
@@ -406,14 +428,14 @@ function CollapsedPaneRail({
       title={title}
       aria-label={title}
       className={cx(
-        "hidden min-h-0 w-full shrink-0 flex-col items-center justify-center gap-2 bg-white/70 text-slate-500 transition hover:bg-white hover:text-slate-900 dark:bg-slate-950/80 dark:hover:bg-slate-900 dark:hover:text-slate-100 md:flex",
+        "dan-collapsed-pane-rail hidden min-h-0 w-full shrink-0 flex-col items-center justify-center gap-2 bg-white/70 text-slate-500 transition hover:bg-white hover:text-slate-900 dark:bg-slate-950/80 dark:hover:bg-slate-900 dark:hover:text-slate-100 md:flex",
         edge === "right"
           ? "border-r border-slate-200/80 dark:border-slate-800"
           : "border-l border-slate-200/80 dark:border-slate-800",
       )}
       style={{ width: COLLAPSED_PANE_WIDTH }}
     >
-      <span className="grid h-7 w-7 place-items-center rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-950">
+      <span className="dan-collapsed-pane-rail-icon grid h-7 w-7 place-items-center rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-950">
         {children}
       </span>
       <span className="rotate-180 whitespace-nowrap text-[10px] font-bold uppercase tracking-[0.16em] [writing-mode:vertical-rl]">
@@ -1210,6 +1232,18 @@ function compactFileSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function workspaceFileCardMeta(entry: WorkspaceFileEntry) {
+  if (entry.is_directory) return entry.parent || "folder";
+  return [entry.parent || "top level", compactFileSize(entry.size)].filter(Boolean).join(" · ");
+}
+
+function noteCardMeta(note: WorkspaceNote, root: string) {
+  const section = noteSection(note, root);
+  const location = noteParentPathLabel(note, root) || (section === "root" ? "top level" : section);
+  const status = note.status === "clean" ? "" : noteStatusText(note).toLowerCase();
+  return [location, compactFileSize(note.size ?? 0), status].filter(Boolean).join(" · ");
+}
+
 function buildFileTree(entries: WorkspaceFileEntry[]): FileTreeNode[] {
   const nodes = new Map<string, FileTreeNode>();
   for (const entry of entries) nodes.set(entry.relative_path, { ...entry, children: [] });
@@ -1769,6 +1803,149 @@ function activeThreadArchivedSummary(
   );
 }
 
+function buildSessionGroups(args: {
+  threads: ChatV2ThreadSummary[];
+  workspaces: Array<{
+    id: string;
+    name?: string;
+    pinnedPaths: string[];
+    activeThreadId?: string | null;
+    openThreadIds: string[];
+  }>;
+  threadQuery: string;
+  threadWorkspaces: Record<string, string>;
+  taskWorkspaceByThreadId: Map<string, string>;
+}) {
+  const query = args.threadQuery.trim().toLowerCase();
+  const workspaceGroups: SessionGroup[] = args.workspaces.map((item) => ({
+    id: `workspace:${item.id}`,
+    name: workspaceDisplayName(item),
+    workspaceId: item.id,
+    root: item.pinnedPaths[0] ?? "",
+    threads: [],
+  }));
+  const groupByWorkspaceId = new Map(workspaceGroups.map((group) => [group.workspaceId, group]));
+  const workspaceById = new Map(args.workspaces.map((workspace) => [workspace.id, workspace]));
+  const workspaceOrder = new Map(args.workspaces.map((workspace, index) => [workspace.id, index]));
+  const storedThreadGroupById = new Map<string, string>();
+  for (const item of args.workspaces) {
+    for (const threadId of [item.activeThreadId, ...item.openThreadIds]) {
+      if (threadId) storedThreadGroupById.set(threadId, item.id);
+    }
+  }
+
+  const projectGroups = new Map<string, SessionGroup>();
+  const archivedGroups = new Map<string, SessionGroup>();
+  const resolvedWorkspaceId = (thread: ChatV2ThreadSummary) =>
+    args.threadWorkspaces[threadWorkspaceKey(thread.workflow_id, thread.id)] ??
+    args.taskWorkspaceByThreadId.get(thread.id) ??
+    storedThreadGroupById.get(thread.id) ??
+    "";
+
+  const projectGroupFor = (thread: ChatV2ThreadSummary) => {
+    const workflowId = thread.workflow_id || "unknown";
+    const projectId = `project:${workflowId}`;
+    const projectGroup =
+      projectGroups.get(projectId) ??
+      ({
+        id: projectId,
+        name: `Project: ${projectLabelFromWorkflowId(workflowId)}`,
+        workspaceId: null,
+        root: workflowId === DEFAULT_WORKFLOW_ID ? "" : workflowId,
+        threads: [],
+        defaultCollapsed: true,
+      } satisfies SessionGroup);
+    projectGroups.set(projectId, projectGroup);
+    return projectGroup;
+  };
+
+  const archivedGroupFor = (thread: ChatV2ThreadSummary, workspaceId: string) => {
+    const workspace = workspaceById.get(workspaceId);
+    if (workspace) {
+      const groupId = `archived:workspace:${workspace.id}`;
+      const group =
+        archivedGroups.get(groupId) ??
+        ({
+          id: groupId,
+          name: workspaceDisplayName(workspace),
+          workspaceId: workspace.id,
+          root: workspace.pinnedPaths[0] ?? "",
+          threads: [],
+          defaultCollapsed: !query,
+          archived: true,
+        } satisfies SessionGroup);
+      archivedGroups.set(groupId, group);
+      return group;
+    }
+    const workflowId = thread.workflow_id || "unknown";
+    const groupId = `archived:project:${workflowId}`;
+    const group =
+      archivedGroups.get(groupId) ??
+      ({
+        id: groupId,
+        name: projectLabelFromWorkflowId(workflowId),
+        workspaceId: null,
+        root: workflowId === DEFAULT_WORKFLOW_ID ? "" : workflowId,
+        threads: [],
+        defaultCollapsed: !query,
+        archived: true,
+      } satisfies SessionGroup);
+    archivedGroups.set(groupId, group);
+    return group;
+  };
+
+  for (const thread of args.threads) {
+    const haystack = `${thread.title} ${thread.workflow_id} ${thread.id}`.toLowerCase();
+    if (query && !haystack.includes(query)) continue;
+    const workspaceId = resolvedWorkspaceId(thread);
+    if (thread.archived) {
+      archivedGroupFor(thread, workspaceId).threads.push(thread);
+      continue;
+    }
+    const group = groupByWorkspaceId.get(workspaceId);
+    if (group) {
+      group.threads.push(thread);
+      continue;
+    }
+    projectGroupFor(thread).threads.push(thread);
+  }
+
+  const visibleGroups = workspaceGroups.filter((group) => !query || group.threads.length > 0);
+  const visibleProjectGroups = [...projectGroups.values()]
+    .filter((group) => group.threads.length > 0)
+    .sort((a, b) => b.threads.length - a.threads.length || a.name.localeCompare(b.name));
+  const visibleArchivedGroups = [...archivedGroups.values()]
+    .filter((group) => group.threads.length > 0)
+    .sort((a, b) => {
+      const aOrder = a.workspaceId
+        ? workspaceOrder.get(a.workspaceId) ?? Number.MAX_SAFE_INTEGER
+        : Number.MAX_SAFE_INTEGER;
+      const bOrder = b.workspaceId
+        ? workspaceOrder.get(b.workspaceId) ?? Number.MAX_SAFE_INTEGER
+        : Number.MAX_SAFE_INTEGER;
+      if (aOrder !== bOrder) return aOrder - bOrder;
+      return b.threads.length - a.threads.length || a.name.localeCompare(b.name);
+    });
+  const archivedThreads = visibleArchivedGroups.flatMap((group) => group.threads);
+  const archivedGroup =
+    archivedThreads.length > 0
+      ? [
+          {
+            id: "archived",
+            name: "Archived",
+            workspaceId: null,
+            root: "",
+            threads: archivedThreads,
+            defaultCollapsed: !query,
+            archived: true,
+            subgroups: visibleArchivedGroups,
+          } satisfies SessionGroup,
+        ]
+      : [];
+
+  return visibleGroups.concat(visibleProjectGroups, archivedGroup);
+}
+
 function textValue(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -2243,6 +2420,13 @@ function eventActivityLine(event: ChatV2AgentRunEvent) {
     }
     return "";
   }
+  if (source === "live.task_graph.updated") {
+    const graphState = recordValue(payload.task_graph_state);
+    const versionId = printableTextValue(graphState?.version_id);
+    const revision = printableTextValue(graphState?.revision);
+    const graphSource = printableTextValue(graphState?.source) || eventPayloadText(event, "source");
+    return `Task graph updated${versionId ? ` to ${versionId}` : revision ? ` to r${revision}` : ""}${graphSource ? ` by ${graphSource}` : ""}.`;
+  }
   if (source === "tool.started") {
     const toolId = eventPayloadText(event, "tool_id");
     return toolId ? `Using ${toolLabel(toolId)}.` : "Using a workspace tool.";
@@ -2586,8 +2770,12 @@ function planTaskGraphFromValue(value: unknown): BlueprintPlanTask[] {
       printableTextValue(record.number);
     if (!taskId || seen.has(taskId)) continue;
     seen.add(taskId);
+    const parentId = printableTextValue(record.parent_id) || printableTextValue(record.parent);
+    const branchId = printableTextValue(record.branch_id) || printableTextValue(record.branch);
     tasks.push({
       taskId,
+      ...(parentId ? { parentId } : {}),
+      ...(branchId ? { branchId } : {}),
       goal:
         printableTextValue(record.goal) ||
         printableTextValue(record.summary) ||
@@ -2609,15 +2797,87 @@ function planTaskGraphFromValue(value: unknown): BlueprintPlanTask[] {
         ...stringList(record.acceptance),
       ]),
       status: printableTextValue(record.status) || "planned",
+      state: printableTextValue(record.state),
       parallelSafe: typeof record.parallel_safe === "boolean" ? record.parallel_safe : true,
     });
   }
   return tasks;
 }
 
+function graphStateFromRecord(record: Record<string, unknown>) {
+  const directSchema = printableTextValue(record.schema);
+  if (directSchema === "super_dan_task_graph_v1") return record;
+  const nested = recordValue(record.task_graph_state);
+  if (nested && printableTextValue(nested.schema) === "super_dan_task_graph_v1") return nested;
+  return null;
+}
+
+function numericValue(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function parallelGroupsFromValue(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => uniqueStringList(stringList(item)))
+    .filter((group) => group.length > 1);
+}
+
+function branchSummariesFromValue(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return uniqueStringList(
+    value
+      .map((item) => {
+        const record = recordValue(item);
+        if (!record) return scalarDetailText(item);
+        const branchId = printableTextValue(record.branch_id) || printableTextValue(record.id);
+        if (!branchId) return recordDetailLine(record);
+        const taskCount = stringList(record.task_ids).length;
+        const activeCount = stringList(record.active_task_ids).length;
+        const readyCount = stringList(record.ready_task_ids).length;
+        const doneCount = stringList(record.completed_task_ids).length;
+        const deferredCount = stringList(record.deferred_task_ids).length;
+        const bits = [
+          taskCount ? `${taskCount} tasks` : "",
+          activeCount ? `${activeCount} active` : "",
+          readyCount ? `${readyCount} ready` : "",
+          doneCount ? `${doneCount} done` : "",
+          deferredCount ? `${deferredCount} deferred` : "",
+        ].filter(Boolean);
+        return `${branchId}: ${bits.join(", ") || "planned"}`;
+      })
+      .filter(Boolean),
+  );
+}
+
+function branchRefsFromValue(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return uniqueStringList(
+    value
+      .map((item) => {
+        const record = recordValue(item);
+        if (!record) return scalarDetailText(item);
+        const branchId = printableTextValue(record.branch_id) || printableTextValue(record.ref_name);
+        const versionId = printableTextValue(record.version_id);
+        if (!branchId || !versionId) return recordDetailLine(record);
+        const parent = printableTextValue(record.parent_version_id);
+        const changed = record.changed === true ? " changed" : "";
+        return `${branchId}: ${versionId}${parent ? ` from ${parent}` : ""}${changed}`;
+      })
+      .filter(Boolean),
+  );
+}
+
 function hasPlanContextShape(record: Record<string, unknown>) {
   return Boolean(
     record.plan_context ||
+      record.task_graph_state ||
+      printableTextValue(record.schema) === "super_dan_task_graph_v1" ||
       record.task_graph ||
       record.tasks ||
       record.ready_task_ids ||
@@ -2632,13 +2892,16 @@ function normalizePlanContext(value: unknown): BlueprintPlanContext | null {
   const record = recordValue(value);
   if (!record || !hasPlanContextShape(record)) return null;
   const validation = recordValue(record.validation);
-  const taskGraph =
-    planTaskGraphFromValue(record.task_graph ?? record.tasks) ||
-    planTaskGraphFromValue(validation?.task_graph ?? validation?.tasks);
-  const validationTaskGraph = taskGraph.length
-    ? taskGraph
+  const graphState = graphStateFromRecord(record);
+  const graphTaskGraph = planTaskGraphFromValue(graphState?.tasks);
+  const directTaskGraph = graphTaskGraph.length
+    ? graphTaskGraph
+    : planTaskGraphFromValue(record.task_graph ?? record.tasks);
+  const validationTaskGraph = directTaskGraph.length
+    ? directTaskGraph
     : planTaskGraphFromValue(validation?.task_graph ?? validation?.tasks);
   const readyTaskIds = uniqueStringList([
+    ...stringList(graphState?.ready_task_ids),
     ...stringList(record.ready_task_ids),
     ...stringList(record.first_build_slice),
     ...stringList(validation?.ready_task_ids),
@@ -2648,23 +2911,46 @@ function normalizePlanContext(value: unknown): BlueprintPlanContext | null {
     taskGraph: validationTaskGraph,
     readyTaskIds,
     deferredTaskIds: uniqueStringList([
+      ...stringList(graphState?.deferred_task_ids),
       ...stringList(record.deferred_task_ids),
       ...stringList(validation?.deferred_task_ids),
     ]),
     assignedTaskIds: uniqueStringList(stringList(record.assigned_task_ids)),
+    activeTaskIds: uniqueStringList(stringList(graphState?.active_task_ids)),
+    completedTaskIds: uniqueStringList(stringList(graphState?.completed_task_ids)),
     parallelWorktreeTaskIds: uniqueStringList(stringList(record.parallel_worktree_task_ids)),
     dependencyRevisions: uniqueStringList([
-      ...stringList(record.dependency_revisions),
-      ...stringList(validation?.dependency_revisions),
+      ...detailItemsFromValue(graphState?.dependency_revisions),
+      ...detailItemsFromValue(record.dependency_revisions),
+      ...detailItemsFromValue(validation?.dependency_revisions),
     ]),
     planFiles: uniqueStringList(stringList(record.plan_files)),
     planRootRelative: printableTextValue(record.plan_root_relative),
+    graphRevision:
+      numericValue(graphState?.revision) ??
+      numericValue(record.task_graph_revision) ??
+      numericValue(record.graph_revision),
+    graphVersionId: printableTextValue(graphState?.version_id),
+    graphRootVersionId: printableTextValue(graphState?.root_version_id),
+    graphBaseVersionId: printableTextValue(graphState?.base_version_id),
+    graphParentVersionIds: uniqueStringList(stringList(graphState?.parent_version_ids)),
+    graphSource: printableTextValue(graphState?.source),
+    graphUpdateReason: printableTextValue(graphState?.update_reason),
+    graphUpdateScope: printableTextValue(graphState?.update_scope),
+    graphChangedTaskIds: uniqueStringList(stringList(graphState?.changed_task_ids)),
+    graphChangedBranchIds: uniqueStringList(stringList(graphState?.changed_branch_ids)),
+    parallelGroups: parallelGroupsFromValue(graphState?.parallel_groups),
+    graphBranches: branchSummariesFromValue(graphState?.branches),
+    graphBranchRefs: branchRefsFromValue(graphState?.branch_refs),
   };
   const hasContent =
     context.taskGraph.length > 0 ||
     context.readyTaskIds.length > 0 ||
     context.deferredTaskIds.length > 0 ||
     context.assignedTaskIds.length > 0 ||
+    context.activeTaskIds.length > 0 ||
+    context.completedTaskIds.length > 0 ||
+    context.graphRevision !== null ||
     context.planFiles.length > 0;
   return hasContent ? context : null;
 }
@@ -2698,10 +2984,25 @@ function extractBlueprintPlanContext(events: ChatV2AgentRunEvent[]) {
     readyTaskIds: [],
     deferredTaskIds: [],
     assignedTaskIds: [],
+    activeTaskIds: [],
+    completedTaskIds: [],
     parallelWorktreeTaskIds: [],
     dependencyRevisions: [],
     planFiles: [],
     planRootRelative: "",
+    graphRevision: null,
+    graphVersionId: "",
+    graphRootVersionId: "",
+    graphBaseVersionId: "",
+    graphParentVersionIds: [],
+    graphSource: "",
+    graphUpdateReason: "",
+    graphUpdateScope: "",
+    graphChangedTaskIds: [],
+    graphChangedBranchIds: [],
+    parallelGroups: [],
+    graphBranches: [],
+    graphBranchRefs: [],
   };
   let found = false;
   for (const event of events) {
@@ -2711,10 +3012,18 @@ function extractBlueprintPlanContext(events: ChatV2AgentRunEvent[]) {
       const context = normalizePlanContext(candidate);
       if (!context) continue;
       found = true;
-      if (context.taskGraph.length > 0) merged.taskGraph = context.taskGraph;
+      const newerGraph =
+        context.graphRevision !== null &&
+        (merged.graphRevision === null || context.graphRevision >= merged.graphRevision);
+      const unversionedGraph = context.graphRevision === null && merged.graphRevision === null;
+      if (context.taskGraph.length > 0 && (newerGraph || unversionedGraph || merged.taskGraph.length === 0)) {
+        merged.taskGraph = context.taskGraph;
+      }
       if (context.readyTaskIds.length > 0) merged.readyTaskIds = context.readyTaskIds;
       if (context.deferredTaskIds.length > 0) merged.deferredTaskIds = context.deferredTaskIds;
       if (context.assignedTaskIds.length > 0) merged.assignedTaskIds = context.assignedTaskIds;
+      if (context.activeTaskIds.length > 0) merged.activeTaskIds = context.activeTaskIds;
+      if (context.completedTaskIds.length > 0) merged.completedTaskIds = context.completedTaskIds;
       if (context.parallelWorktreeTaskIds.length > 0) {
         merged.parallelWorktreeTaskIds = context.parallelWorktreeTaskIds;
       }
@@ -2723,6 +3032,21 @@ function extractBlueprintPlanContext(events: ChatV2AgentRunEvent[]) {
       }
       if (context.planFiles.length > 0) merged.planFiles = context.planFiles;
       if (context.planRootRelative) merged.planRootRelative = context.planRootRelative;
+      if (newerGraph) {
+        merged.graphRevision = context.graphRevision;
+        merged.graphVersionId = context.graphVersionId;
+        merged.graphRootVersionId = context.graphRootVersionId;
+        merged.graphBaseVersionId = context.graphBaseVersionId;
+        merged.graphParentVersionIds = context.graphParentVersionIds;
+        merged.graphSource = context.graphSource;
+        merged.graphUpdateReason = context.graphUpdateReason;
+        merged.graphUpdateScope = context.graphUpdateScope;
+        merged.graphChangedTaskIds = context.graphChangedTaskIds;
+        merged.graphChangedBranchIds = context.graphChangedBranchIds;
+        merged.parallelGroups = context.parallelGroups;
+        merged.graphBranches = context.graphBranches;
+        merged.graphBranchRefs = context.graphBranchRefs;
+      }
     }
   }
   return found ? merged : null;
@@ -2754,8 +3078,12 @@ function completedPlanTaskIdsFromEvents(
   planContext: BlueprintPlanContext | null,
 ) {
   const completed = new Set<string>();
+  for (const taskId of planContext?.completedTaskIds ?? []) completed.add(taskId);
   for (const task of planContext?.taskGraph ?? []) {
-    if (["done", "complete", "completed", "x"].includes(task.status.toLowerCase())) {
+    if (
+      ["done", "complete", "completed", "x"].includes(task.status.toLowerCase()) ||
+      ["done", "complete", "completed", "x"].includes((task.state || "").toLowerCase())
+    ) {
       completed.add(task.taskId);
     }
   }
@@ -2777,7 +3105,7 @@ function completedPlanTaskIdsFromEvents(
       completed.add(taskId);
     }
   }
-  if (events.some((event) => event.type === "completed")) {
+  if (completed.size === 0 && events.some((event) => event.type === "completed")) {
     for (const taskId of planContext?.assignedTaskIds ?? []) completed.add(taskId);
   }
   return completed;
@@ -2797,6 +3125,7 @@ function activePlanTaskIdsFromEvents(
     const taskId = eventPlanTaskId(event);
     if (taskId) return new Set([taskId]);
   }
+  if (planContext?.activeTaskIds.length) return new Set(planContext.activeTaskIds);
   if (planContext?.assignedTaskIds.length) return new Set(planContext.assignedTaskIds);
   if (planContext?.readyTaskIds.length) return new Set([planContext.readyTaskIds[0]!]);
   return new Set<string>();
@@ -2804,6 +3133,14 @@ function activePlanTaskIdsFromEvents(
 
 function taskBody(task: BlueprintPlanTask, context: BlueprintPlanContext) {
   const lines = [`### ${task.taskId}`, "", task.goal];
+  const branchLine = [
+    task.parentId ? `parent \`${task.parentId}\`` : "",
+    task.branchId ? `branch \`${task.branchId}\`` : "",
+    task.state ? `state ${task.state}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  if (branchLine) lines.push("", branchLine);
   if (task.dependsOn.length > 0) {
     lines.push("", `Depends on: ${task.dependsOn.map((item) => `\`${item}\``).join(", ")}`);
   }
@@ -2825,7 +3162,8 @@ function taskBody(task: BlueprintPlanTask, context: BlueprintPlanContext) {
 function compactTaskDetail(task: BlueprintPlanTask) {
   const paths = uniqueStringList([...task.ownedPaths, ...task.deliverables]).slice(0, 2);
   const suffix = paths.length > 0 ? ` · ${paths.join(", ")}` : "";
-  return `${task.dependsOn.length > 0 ? `after ${task.dependsOn.join(", ")}` : "ready when reached"}${suffix}`;
+  const branch = task.branchId ? `branch ${task.branchId} · ` : "";
+  return `${branch}${task.dependsOn.length > 0 ? `after ${task.dependsOn.join(", ")}` : "ready when reached"}${suffix}`;
 }
 
 function phaseStatus(args: {
@@ -3000,12 +3338,27 @@ function deriveRequestPlanContext(text: string): BlueprintPlanContext | null {
     readyTaskIds: taskIds.slice(0, 1),
     deferredTaskIds: taskIds.slice(1),
     assignedTaskIds: [],
+    activeTaskIds: [],
+    completedTaskIds: [],
     parallelWorktreeTaskIds: [],
     dependencyRevisions: [],
     planFiles: [],
     planRootRelative: primaryTarget
       ? `request target: ${primaryTarget}`
       : "request-derived blueprint",
+    graphRevision: null,
+    graphVersionId: "",
+    graphRootVersionId: "",
+    graphBaseVersionId: "",
+    graphParentVersionIds: [],
+    graphSource: "",
+    graphUpdateReason: "",
+    graphUpdateScope: "",
+    graphChangedTaskIds: [],
+    graphChangedBranchIds: [],
+    parallelGroups: [],
+    graphBranches: [],
+    graphBranchRefs: [],
   };
 }
 
@@ -3094,7 +3447,32 @@ function understandingPreviewBody(args: {
 
 function planPreviewBody(planContext: BlueprintPlanContext | null) {
   if (!planContext) return "Waiting for the planner to emit a task graph or frontier metadata.";
+  const graphLabel =
+    planContext.graphVersionId ||
+    (planContext.graphRevision !== null ? `r${planContext.graphRevision}` : "");
+  const revisionItems = uniqueStringList([
+    graphLabel
+      ? `${graphLabel}${planContext.graphSource ? ` · ${planContext.graphSource}` : ""}${planContext.graphUpdateScope ? ` · ${planContext.graphUpdateScope}` : ""}`
+      : "",
+    planContext.graphRootVersionId ? `Root: ${planContext.graphRootVersionId}` : "",
+    planContext.graphBaseVersionId ? `Base: ${planContext.graphBaseVersionId}` : "",
+    planContext.graphParentVersionIds.length
+      ? `Parents: ${planContext.graphParentVersionIds.join(", ")}`
+      : "",
+    planContext.graphRevision !== null ? `Event order: r${planContext.graphRevision}` : "",
+    planContext.graphUpdateReason,
+    planContext.graphChangedBranchIds.length
+      ? `Branches: ${planContext.graphChangedBranchIds.map((id) => `\`${id}\``).join(", ")}`
+      : "",
+    planContext.graphChangedTaskIds.length
+      ? `Changed: ${planContext.graphChangedTaskIds.map((id) => `\`${id}\``).join(", ")}`
+      : "",
+  ]);
   return detailMarkdown("Planning determines the next visible frontier without claiming future work is done.", [
+    {
+      title: "Graph Version",
+      items: revisionItems,
+    },
     {
       title: "Plan Files",
       items: planContext.planFiles.map((path) => `\`${path}\``),
@@ -3102,6 +3480,26 @@ function planPreviewBody(planContext: BlueprintPlanContext | null) {
     {
       title: "Ready Frontier",
       items: planContext.readyTaskIds.map((id) => `\`${id}\``),
+    },
+    {
+      title: "Active Frontier",
+      items: planContext.activeTaskIds.map((id) => `\`${id}\``),
+    },
+    {
+      title: "Completed",
+      items: planContext.completedTaskIds.map((id) => `\`${id}\``),
+    },
+    {
+      title: "Parallel Groups",
+      items: planContext.parallelGroups.map((group) => group.map((id) => `\`${id}\``).join(" + ")),
+    },
+    {
+      title: "Branches",
+      items: planContext.graphBranches,
+    },
+    {
+      title: "Branch Refs",
+      items: planContext.graphBranchRefs,
     },
     {
       title: "Deferred Frontier",
@@ -3396,17 +3794,33 @@ function buildBlueprintNodes(args: {
   );
   const planningFallbackActive = hasActiveRun && !planningStarted && !planningCompleted && !planContext;
   if (hasActiveRun || planningStarted || planningCompleted || planContext) {
+    const graphVersionLabel =
+      planContext?.graphVersionId ||
+      (planContext?.graphRevision !== null && planContext?.graphRevision !== undefined
+        ? `r${planContext.graphRevision}`
+        : "");
     nodes.push({
       id: "blueprint:planning",
       title: "Blueprint planning",
       detail:
         planContext?.taskGraph.length
-          ? `${planContext.taskGraph.length} projected tasks · ${planContext.readyTaskIds.length || 0} ready now`
+          ? `${graphVersionLabel ? `${graphVersionLabel} · ` : ""}${planContext.taskGraph.length} projected tasks · ${planContext.readyTaskIds.length || 0} ready now`
           : planContext?.planFiles.length
             ? `${planContext.planFiles.length} plan files emitted`
             : "Predicting the task graph and ready frontier",
-      meta: planContext?.planRootRelative || "plan frontier",
+      meta:
+        planContext && planContext.graphRevision !== null && planContext.graphSource
+          ? planContext.graphSource
+          : planContext?.planRootRelative || "plan frontier",
       body: [
+        graphVersionLabel
+          ? `Graph: ${graphVersionLabel}${planContext?.graphUpdateScope ? ` · ${planContext.graphUpdateScope}` : ""}`
+          : "",
+        planContext?.graphRootVersionId ? `Root: ${planContext.graphRootVersionId}` : "",
+        planContext?.graphParentVersionIds.length
+          ? `Parents: ${planContext.graphParentVersionIds.join(", ")}`
+          : "",
+        planContext?.graphUpdateReason || "",
         planContext?.planRootRelative ? `Plan root: \`${planContext.planRootRelative}\`` : "",
         planContext?.planFiles.length
           ? ["Plan files:", ...planContext.planFiles.map((path) => `- \`${path}\``)].join("\n")
@@ -3416,6 +3830,11 @@ function buildBlueprintNodes(args: {
           : "",
         planContext?.deferredTaskIds.length
           ? `Future/deferred: ${planContext.deferredTaskIds.map((id) => `\`${id}\``).join(", ")}`
+          : "",
+        planContext?.parallelGroups.length
+          ? `Parallel: ${planContext.parallelGroups
+              .map((group) => group.map((id) => `\`${id}\``).join(" + "))
+              .join("; ")}`
           : "",
       ]
         .filter(Boolean)
@@ -3439,16 +3858,27 @@ function buildBlueprintNodes(args: {
 
   if (planContext?.taskGraph.length) {
     for (const task of planContext.taskGraph) {
-      const done = completedTaskIds.has(task.taskId);
-      const active = activeTaskIds.has(task.taskId) && !done;
-      const ready = readyTaskIds.has(task.taskId) && !done && !active;
-      const future = deferredTaskIds.has(task.taskId) || (!done && !active && !ready);
+      const taskState = (task.state || "").toLowerCase();
+      const done =
+        completedTaskIds.has(task.taskId) ||
+        ["done", "complete", "completed", "x"].includes(taskState);
+      const active = (activeTaskIds.has(task.taskId) || taskState === "active") && !done;
+      const ready = (readyTaskIds.has(task.taskId) || taskState === "ready") && !done && !active;
+      const future =
+        deferredTaskIds.has(task.taskId) ||
+        taskState === "deferred" ||
+        (!done && !active && !ready);
       const kind: BlueprintNodeKind = worktreeTaskIds.has(task.taskId) ? "worktree" : "task";
+      const meta = uniqueStringList([
+        kind === "worktree" ? "parallel lane" : "",
+        task.branchId ? `branch ${task.branchId}` : "",
+        task.parallelSafe ? "parallel-safe" : "serial",
+      ]).join(" · ");
       nodes.push({
         id: `blueprint:task:${task.taskId}`,
         title: `${task.taskId}. ${task.goal}`,
         detail: compactTaskDetail(task),
-        meta: kind === "worktree" ? "parallel lane" : task.parallelSafe ? "parallel-safe" : "serial",
+        meta,
         body: taskBody(task, planContext),
         previewBody: taskBody(task, planContext),
         status: done ? "done" : active ? "active" : ready ? "ready" : future ? "future" : "queued",
@@ -3754,6 +4184,10 @@ export function activeThreadArchivedSummaryForTest(
   threads: ChatV2ThreadSummary[],
 ) {
   return activeThreadArchivedSummary(selection, threads);
+}
+
+export function buildSessionGroupsForTest(args: Parameters<typeof buildSessionGroups>[0]) {
+  return buildSessionGroups(args);
 }
 
 export function workspaceIdForTasksForTest(
@@ -4450,27 +4884,25 @@ function FacetArticlePanel({
           {notes.length > 0 ? (
             notes.map((note) => {
               const active = note.id === activeNoteId;
-              const parentLabel = noteParentPathLabel(note, root) || noteSection(note, root);
               return (
                 <button
                   key={note.id}
                   type="button"
                   onClick={() => onSelectNote(note)}
                   className={cx(
-                    "flex w-full min-w-0 items-start gap-2 rounded-lg px-2.5 py-2 text-left transition",
-                    active
-                      ? "bg-slate-900 text-white shadow-sm dark:bg-slate-100 dark:text-slate-950"
-                      : "text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-900",
+                    "dan-rail-card-row dan-note-tree-row flex w-full min-w-0 items-start gap-1.5 rounded-lg border px-1.5 py-2 text-left transition",
+                    railCardTone(active),
                   )}
                 >
-                  <FileText size={13} className="mt-0.5 shrink-0 opacity-55" />
+                  <span className="h-3.5 w-3.5 shrink-0" />
+                  <span className="dan-rail-card-kind mt-0.5">
+                    <FileText size={12} />
+                  </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px] font-medium">
+                    <span className="dan-rail-card-title block truncate">
                       {note.title || fileName(note.relativePath || note.path || "Untitled")}
                     </span>
-                    <span className="mt-0.5 block truncate text-[11px] opacity-55">
-                      {parentLabel}
-                    </span>
+                    <span className="dan-rail-card-meta">{noteCardMeta(note, root)}</span>
                   </span>
                 </button>
               );
@@ -5169,8 +5601,12 @@ function BlueprintView({
               <span
                 key={status}
                 data-status={status}
-                className={cx("dan-blueprint-status-count rounded-full border px-2 py-0.5 font-semibold", tone.badge)}
+                className={cx(
+                  "dan-blueprint-status-count inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-semibold",
+                  tone.badge,
+                )}
               >
+                {status === "done" ? <Check size={11} strokeWidth={2.6} /> : null}
                 {status} {counts[status]}
               </span>
             );
@@ -5291,8 +5727,12 @@ function BlueprintView({
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
                     <span
-                      className={cx("dan-blueprint-badge rounded-full border px-2 py-0.5 text-[10px] font-semibold", tone.badge)}
+                      className={cx(
+                        "dan-blueprint-badge inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold",
+                        tone.badge,
+                      )}
                     >
+                      {node.status === "done" ? <Check size={11} strokeWidth={2.6} /> : null}
                       {node.status}
                     </span>
                     <span className="hidden rounded-full border border-slate-200 bg-white/60 px-2 py-0.5 text-[10px] text-slate-400 dark:border-slate-800 dark:bg-slate-950 sm:inline">
@@ -5405,22 +5845,29 @@ function WorkspaceFileTree({
           data-active={isActive ? "true" : undefined}
           data-drop-target={isDropTarget ? "true" : undefined}
           className={cx(
-            "dan-rail-card-row dan-work-file-row group/session flex min-h-8 w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[13px] transition",
+            "dan-rail-card-row dan-work-file-row group/session flex w-full min-w-0 items-start gap-1.5 rounded-lg border px-1.5 py-2 text-left transition",
             railCardTone(isActive, isDropTarget),
           )}
-          style={{ paddingLeft: 10 + depth * 14 }}
+          style={{ paddingLeft: 6 + depth * 14 }}
         >
-          {node.is_directory ? (
-            isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />
-          ) : (
-            <span className="w-[13px] shrink-0" />
-          )}
-          {node.is_directory ? (
-            <Folder size={14} className="shrink-0 text-slate-500" />
-          ) : (
-            <File size={14} className="shrink-0 text-slate-400" />
-          )}
-          <span className="min-w-0 flex-1 truncate">{node.name}</span>
+          <span className="flex w-4 shrink-0 flex-col items-center pt-0.5">
+            {node.is_directory ? (
+              isOpen ? (
+                <ChevronDown size={14} className="shrink-0 text-slate-400" />
+              ) : (
+                <ChevronRight size={14} className="shrink-0 text-slate-400" />
+              )
+            ) : (
+              <span className="h-3.5 w-3.5 shrink-0" />
+            )}
+          </span>
+          <span className="dan-rail-card-kind mt-0.5">
+            {node.is_directory ? <Folder size={12} /> : <File size={12} />}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="dan-rail-card-title block truncate">{node.name}</span>
+            <span className="dan-rail-card-meta">{workspaceFileCardMeta(node)}</span>
+          </span>
         </button>
         {node.is_directory && isOpen && visibleChildren.length > 0 && (
           <div>{visibleChildren.map((child) => renderNode(child, depth + 1))}</div>
@@ -5482,12 +5929,12 @@ function NoteTree({
       <div key={node.id}>
         <div
           className={cx(
-            "dan-rail-card-row dan-note-tree-row group/session flex min-w-0 items-center gap-1 rounded-lg border transition",
+            "dan-rail-card-row dan-note-tree-row group/session flex min-w-0 items-start gap-1.5 rounded-lg border px-1.5 py-2 transition",
             railCardTone(isActive, isDropTarget),
           )}
           data-active={isActive ? "true" : undefined}
           data-drop-target={isDropTarget ? "true" : undefined}
-          style={{ marginLeft: depth * 14 }}
+          style={{ paddingLeft: 6 + depth * 14 }}
         >
           <button
             type="button"
@@ -5497,7 +5944,7 @@ function NoteTree({
               else if (node.note) onSelect(node.note);
             }}
             className={cx(
-              "grid h-8 w-7 shrink-0 place-items-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-900",
+              "flex w-4 shrink-0 flex-col items-center pt-0.5 text-slate-400 transition hover:text-slate-700 dark:hover:text-slate-200",
               !hasChildren && "pointer-events-none opacity-0",
             )}
             aria-label={isOpen ? "Collapse note folder" : "Expand note folder"}
@@ -5538,21 +5985,28 @@ function NoteTree({
               onMove(source, targetFolderPath, sourceNoteId);
             }}
             onClick={() => (node.note ? onSelect(node.note) : onToggle(node.id))}
-            className="flex min-h-8 min-w-0 flex-1 items-center gap-2 py-2 pr-2 text-left text-[13px]"
+            className="flex min-w-0 flex-1 items-start gap-1.5 text-left"
             title={node.pathLabel}
           >
-            {node.isFolder ? (
-              isOpen ? (
-                <FolderOpen size={14} className="shrink-0 opacity-70" />
+            <span className="dan-rail-card-kind mt-0.5">
+              {node.isFolder ? (
+                isOpen ? (
+                  <FolderOpen size={12} />
+                ) : (
+                  <Folder size={12} />
+                )
               ) : (
-                <Folder size={14} className="shrink-0 opacity-70" />
-              )
-            ) : (
-              <FileText size={14} className="shrink-0 opacity-70" />
-            )}
-            <span className="min-w-0 flex-1 truncate">{node.label}</span>
+                <FileText size={12} />
+              )}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="dan-rail-card-title block truncate">{node.label}</span>
+              <span className="dan-rail-card-meta">
+                {node.note ? noteCardMeta(node.note, root) : node.pathLabel || "folder"}
+              </span>
+            </span>
             {canSelect && node.note?.status === "dirty" && (
-              <Circle size={8} className="shrink-0" fill="currentColor" />
+              <Circle size={8} className="mt-1.5 shrink-0" fill="currentColor" />
             )}
           </button>
         </div>
@@ -5655,6 +6109,8 @@ export default function ChunkWorkspaceApp() {
   const [wireGuardStatus, setWireGuardStatus] = useState<WorkspaceWireGuardStatus | null>(null);
   const [wireGuardLoading, setWireGuardLoading] = useState(false);
   const [sessionSwipeOffsets, setSessionSwipeOffsets] = useState<Record<string, number>>({});
+  const [draggingWorkspaceId, setDraggingWorkspaceId] = useState<string | null>(null);
+  const [dragOverWorkspaceId, setDragOverWorkspaceId] = useState<string | null>(null);
 
   const workspaces = useWorkspaceStore((state) => state.workspaces);
   const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
@@ -5662,13 +6118,9 @@ export default function ChunkWorkspaceApp() {
   const removeWorkspace = useWorkspaceStore((state) => state.removeWorkspace);
   const setActiveWorkspace = useWorkspaceStore((state) => state.setActiveWorkspace);
   const updateWorkspace = useWorkspaceStore((state) => state.updateWorkspace);
+  const reorderWorkspace = useWorkspaceStore((state) => state.reorderWorkspace);
   const workspaceSurfaceTheme = useSettingsStore((state) => state.workspaceSurfaceTheme);
-  const workspaceSurfaceThemeClass =
-    workspaceSurfaceTheme === "factory-worn"
-      ? "dan-machine-theme dan-factory-worn-theme"
-      : workspaceSurfaceTheme === "industrial"
-        ? "dan-machine-theme"
-        : "";
+  const workspaceSurfaceThemeClass = workspaceSurfaceThemeClassName(workspaceSurfaceTheme);
   const workspace = useMemo(
     () => workspaces.find((item) => item.id === activeWorkspaceId),
     [activeWorkspaceId, workspaces],
@@ -6610,78 +7062,34 @@ export default function ChunkWorkspaceApp() {
     [devFiles],
   );
   const workspaceSlots = useMemo(() => workspaces.slice(0, 9), [workspaces]);
-  const sessionGroups = useMemo(() => {
-    const query = threadQuery.trim().toLowerCase();
-    const groups: SessionGroup[] = workspaces.map((item, index) => ({
-      id: `workspace:${item.id}`,
-      name: workspaceDisplayName(item),
-      workspaceId: item.id,
-      root: item.pinnedPaths[0] ?? "",
-      shortcut: index < 9 ? String(index + 1) : "",
-      threads: [],
-    }));
-    const groupByWorkspaceId = new Map(groups.map((group) => [group.workspaceId, group]));
-    const storedThreadGroupById = new Map<string, string>();
-    for (const item of workspaces) {
-      for (const threadId of [item.activeThreadId, ...item.openThreadIds]) {
-        if (threadId) storedThreadGroupById.set(threadId, item.id);
-      }
-    }
-    const projectGroups = new Map<string, SessionGroup>();
-    const archivedThreads: ChatV2ThreadSummary[] = [];
-    for (const thread of threads) {
-      const haystack = `${thread.title} ${thread.workflow_id} ${thread.id}`.toLowerCase();
-      if (query && !haystack.includes(query)) continue;
-      if (thread.archived) {
-        archivedThreads.push(thread);
-        continue;
-      }
-      const group = groupByWorkspaceId.get(
-        threadWorkspaces[threadWorkspaceKey(thread.workflow_id, thread.id)] ??
-          taskWorkspaceByThreadId.get(thread.id) ??
-          storedThreadGroupById.get(thread.id) ??
-          "",
-      );
-      if (group) {
-        group.threads.push(thread);
-        continue;
-      }
-      const workflowId = thread.workflow_id || "unknown";
-      const projectId = `project:${workflowId}`;
-      const projectGroup =
-        projectGroups.get(projectId) ??
-        ({
-          id: projectId,
-          name: `Project: ${projectLabelFromWorkflowId(workflowId)}`,
-          workspaceId: null,
-          root: workflowId === DEFAULT_WORKFLOW_ID ? "" : workflowId,
-          shortcut: "",
-          threads: [],
-          defaultCollapsed: true,
-        } satisfies SessionGroup);
-      projectGroup.threads.push(thread);
-      projectGroups.set(projectId, projectGroup);
-    }
-    const visibleGroups = groups.filter((group) => !query || group.threads.length > 0);
-    const visibleProjectGroups = [...projectGroups.values()]
-      .filter((group) => group.threads.length > 0)
-      .sort((a, b) => b.threads.length - a.threads.length || a.name.localeCompare(b.name));
-    const archivedGroup =
-      archivedThreads.length > 0
-        ? [
-            {
-              id: "archived",
-              name: "Archived",
-              workspaceId: null,
-              root: "",
-              shortcut: "",
-              threads: archivedThreads,
-              defaultCollapsed: !query,
-            } satisfies SessionGroup,
-          ]
-        : [];
-    return visibleGroups.concat(visibleProjectGroups, archivedGroup);
-  }, [taskWorkspaceByThreadId, threadQuery, threadWorkspaces, threads, workspaces]);
+  const sessionGroups = useMemo(
+    () =>
+      buildSessionGroups({
+        threads,
+        workspaces,
+        threadQuery,
+        threadWorkspaces,
+        taskWorkspaceByThreadId,
+      }),
+    [taskWorkspaceByThreadId, threadQuery, threadWorkspaces, threads, workspaces],
+  );
+  const workspaceDragIdFromEvent = useCallback(
+    (event: DragEvent<HTMLElement>) =>
+      event.dataTransfer.getData(WORKSPACE_DRAG_MIME) ||
+      event.dataTransfer.getData("text/plain") ||
+      draggingWorkspaceId,
+    [draggingWorkspaceId],
+  );
+  const reorderWorkspaceById = useCallback(
+    (sourceWorkspaceId: string, targetWorkspaceId: string) => {
+      if (sourceWorkspaceId === targetWorkspaceId) return;
+      const fromIndex = workspaces.findIndex((item) => item.id === sourceWorkspaceId);
+      const toIndex = workspaces.findIndex((item) => item.id === targetWorkspaceId);
+      if (fromIndex < 0 || toIndex < 0) return;
+      reorderWorkspace(fromIndex, toIndex);
+    },
+    [reorderWorkspace, workspaces],
+  );
   const rootOptions = useMemo(
     () =>
       mergeRootSuggestions(
@@ -8146,6 +8554,142 @@ export default function ChunkWorkspaceApp() {
     };
   }, []);
 
+  const renderSessionCountPill = (count: number, active = false) => (
+    <span
+      title={`${count} ${count === 1 ? "session" : "sessions"}`}
+      aria-label={`${count} ${count === 1 ? "session" : "sessions"}`}
+      className={cx("dan-session-count-flap", active && "dan-session-count-flap-active")}
+    >
+      {count}
+    </span>
+  );
+
+  const renderSessionThreadRows = (group: SessionGroup) =>
+    group.threads.map((thread) => {
+      const threadRunningTask = runningTaskByThreadId.get(thread.id);
+      const threadIsRunning = Boolean(threadRunningTask);
+      const threadTasks = tasksByThreadId.get(thread.id) ?? [];
+      const sessionDisplay = sessionCardDisplay(thread, threadTasks);
+      const archived = Boolean(thread.archived || group.archived);
+      const active = !archived && activeThread?.id === thread.id;
+      const sessionKey = threadWorkspaceKey(thread.workflow_id, thread.id);
+      const hasNewReadyResponse = Boolean(
+        !archived &&
+          !active &&
+          sessionHasNewReadyResponse(threadTasks, sessionResponseSeen[sessionKey]),
+      );
+      const swipeOffset = sessionSwipeOffsets[sessionKey] ?? 0;
+      return (
+        <div
+          key={sessionKey}
+          className="relative overflow-hidden rounded-lg"
+          onPointerDown={(event) => beginSessionSwipe(event, thread, archived)}
+          onPointerMove={moveSessionSwipe}
+          onPointerUp={endSessionSwipe}
+          onPointerCancel={endSessionSwipe}
+        >
+          <div
+            className={cx(
+              "pointer-events-none absolute inset-y-0 flex items-center px-3 text-[10px] font-semibold uppercase tracking-[0.14em]",
+              archived
+                ? "left-0 text-slate-500 dark:text-slate-400"
+                : "right-0 text-slate-500 dark:text-slate-400",
+            )}
+          >
+            {archived ? "Restore" : "Archive"}
+          </div>
+          <div
+            className={cx(
+              "group/session relative flex w-full min-w-0 items-start gap-1 overflow-hidden rounded-lg border transition",
+              threadIsRunning && "dan-session-live-card",
+              active
+                ? "border-slate-900 bg-white text-slate-950 shadow-sm dark:border-slate-100 dark:bg-slate-900 dark:text-slate-100"
+                : "border-transparent bg-slate-50 text-slate-600 hover:border-slate-200 hover:bg-white hover:shadow-sm dark:bg-slate-950/40 dark:text-slate-300 dark:hover:border-slate-800 dark:hover:bg-slate-900",
+            )}
+            style={{
+              transform: swipeOffset ? `translateX(${swipeOffset}px)` : undefined,
+            }}
+          >
+            <button
+              type="button"
+              onClick={(event) => {
+                if (suppressSessionClickRef.current === sessionKey) {
+                  suppressSessionClickRef.current = null;
+                  event.preventDefault();
+                  return;
+                }
+                if (archived) {
+                  setStatus("Restore session to view it");
+                  return;
+                }
+                void openSession(thread, group.workspaceId);
+              }}
+              className="flex min-w-0 flex-1 items-start gap-2 px-2.5 py-2 text-left"
+            >
+              {hasNewReadyResponse && (
+                <span
+                  aria-hidden="true"
+                  className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500"
+                />
+              )}
+              <span className="min-w-0 flex-1">
+                <span className="dan-rail-card-title block truncate">{sessionDisplay.title}</span>
+                <span className="dan-rail-card-meta">{sessionDisplay.detail}</span>
+              </span>
+            </button>
+            <div className="flex shrink-0 items-center gap-0.5 py-1 pr-1">
+              {threadIsRunning && (
+                <>
+                  <button
+                    type="button"
+                    data-session-action
+                    onClick={() => void viewSessionProgress(thread, group.workspaceId)}
+                    title="View progress"
+                    aria-label="View progress"
+                    className="dan-session-live-button grid h-6 w-6 place-items-center rounded-md text-blue-500 transition hover:bg-blue-50 hover:text-blue-700 dark:text-blue-300 dark:hover:bg-blue-950/40 dark:hover:text-blue-100"
+                  >
+                    <Activity size={12} className="dan-session-live-icon" />
+                  </button>
+                  <button
+                    type="button"
+                    data-session-action
+                    onClick={() => void stopSessionRun(thread, threadRunningTask)}
+                    title="Stop running session"
+                    aria-label="Stop running session"
+                    className="grid h-6 w-6 place-items-center rounded-md text-slate-400 transition hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+                  >
+                    <Square size={11} />
+                  </button>
+                </>
+              )}
+              {archived && (
+                <button
+                  type="button"
+                  data-session-action
+                  onClick={() => void deleteArchivedSession(thread)}
+                  title="Delete permanently"
+                  aria-label="Delete session permanently"
+                  className="grid h-6 w-6 place-items-center rounded-md text-slate-400 transition hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+                >
+                  <Trash2 size={12} />
+                </button>
+              )}
+              <button
+                type="button"
+                data-session-action
+                onClick={() => void archiveSession(thread, !archived)}
+                title={archived ? "Restore session" : "Archive session"}
+                aria-label={archived ? "Restore session" : "Archive session"}
+                className="grid h-6 w-6 place-items-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+              >
+                {archived ? <ChevronRight size={12} /> : <Archive size={12} />}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    });
+
   return (
     <div
       className={cx(
@@ -8210,9 +8754,9 @@ export default function ChunkWorkspaceApp() {
                     className="min-w-0 max-w-[260px] rounded-md border border-transparent bg-transparent py-0 pr-7 text-[15px] font-semibold leading-5 text-slate-950 outline-none transition hover:border-slate-200 hover:bg-slate-50 focus:border-slate-300 focus:bg-white dark:text-slate-100 dark:hover:border-slate-800 dark:hover:bg-slate-900 dark:focus:bg-slate-950"
                     title="Switch workspace"
                   >
-                    {workspaces.map((item, index) => (
+                    {workspaces.map((item) => (
                       <option key={item.id} value={item.id}>
-                        {index + 1} {workspaceDisplayName(item)}
+                        {workspaceDisplayName(item)}
                       </option>
                     ))}
                   </select>
@@ -9091,17 +9635,88 @@ export default function ChunkWorkspaceApp() {
                 </label>
               </div>
               <div className="min-h-0 flex-1 overflow-auto p-3">
-                <div className="space-y-1.5">
+                <div className="space-y-2">
                   {sessionGroups.map((group) => {
                     const collapsed = threadQuery.trim()
                       ? false
                       : (collapsedThreadGroups[group.id] ?? group.defaultCollapsed ?? false);
-                    const workspaceGroupActive = group.workspaceId === activeWorkspaceId;
+                    const workspaceGroupActive =
+                      !group.archived && group.workspaceId === activeWorkspaceId;
+                    const workspaceGroupDraggable = Boolean(group.workspaceId && !group.archived);
+                    const workspaceGroupDragging = draggingWorkspaceId === group.workspaceId;
+                    const workspaceGroupDropTarget =
+                      workspaceGroupDraggable &&
+                      dragOverWorkspaceId === group.workspaceId &&
+                      draggingWorkspaceId !== group.workspaceId;
                     return (
                       <div key={group.id} className="group/workspace">
                         <div
+                          draggable={workspaceGroupDraggable}
+                          onDragStart={(event) => {
+                            if (!group.workspaceId || group.archived) return;
+                            if (
+                              event.target instanceof HTMLElement &&
+                              event.target.closest("[data-workspace-action]")
+                            ) {
+                              event.preventDefault();
+                              return;
+                            }
+                            setDraggingWorkspaceId(group.workspaceId);
+                            event.dataTransfer.effectAllowed = "move";
+                            event.dataTransfer.setData(WORKSPACE_DRAG_MIME, group.workspaceId);
+                            event.dataTransfer.setData("text/plain", group.workspaceId);
+                          }}
+                          onDragEnter={(event) => {
+                            if (!group.workspaceId || group.archived) return;
+                            const sourceWorkspaceId = workspaceDragIdFromEvent(event);
+                            if (!sourceWorkspaceId || sourceWorkspaceId === group.workspaceId) {
+                              return;
+                            }
+                            setDragOverWorkspaceId(group.workspaceId);
+                          }}
+                          onDragOver={(event) => {
+                            if (!group.workspaceId || group.archived) return;
+                            const sourceWorkspaceId = workspaceDragIdFromEvent(event);
+                            if (!sourceWorkspaceId || sourceWorkspaceId === group.workspaceId) {
+                              return;
+                            }
+                            event.preventDefault();
+                            event.dataTransfer.dropEffect = "move";
+                            setDragOverWorkspaceId(group.workspaceId);
+                          }}
+                          onDragLeave={(event) => {
+                            if (!group.workspaceId) return;
+                            if (
+                              event.relatedTarget instanceof Node &&
+                              event.currentTarget.contains(event.relatedTarget)
+                            ) {
+                              return;
+                            }
+                            setDragOverWorkspaceId((current) =>
+                              current === group.workspaceId ? null : current,
+                            );
+                          }}
+                          onDrop={(event) => {
+                            if (!group.workspaceId || group.archived) return;
+                            const sourceWorkspaceId = workspaceDragIdFromEvent(event);
+                            if (!sourceWorkspaceId || sourceWorkspaceId === group.workspaceId) {
+                              return;
+                            }
+                            event.preventDefault();
+                            reorderWorkspaceById(sourceWorkspaceId, group.workspaceId);
+                            setDraggingWorkspaceId(null);
+                            setDragOverWorkspaceId(null);
+                          }}
+                          onDragEnd={() => {
+                            setDraggingWorkspaceId(null);
+                            setDragOverWorkspaceId(null);
+                          }}
                           className={cx(
                             "flex items-start gap-1 rounded-lg transition",
+                            workspaceGroupDraggable && "cursor-grab active:cursor-grabbing",
+                            workspaceGroupDragging && "opacity-60",
+                            workspaceGroupDropTarget &&
+                              "ring-1 ring-amber-300/80 ring-offset-1 ring-offset-white dark:ring-amber-500/60 dark:ring-offset-slate-950",
                             workspaceGroupActive
                               ? "bg-slate-100/90 shadow-sm dark:bg-slate-900"
                               : "hover:bg-slate-50 dark:hover:bg-slate-900/70",
@@ -9118,36 +9733,41 @@ export default function ChunkWorkspaceApp() {
                             }}
                             className="flex min-w-0 flex-1 items-start gap-1.5 px-1.5 py-2 text-left"
                           >
-                            {collapsed ? (
-                              <ChevronRight size={14} className="mt-0.5 shrink-0 text-slate-400" />
-                            ) : (
-                              <ChevronDown size={14} className="mt-0.5 shrink-0 text-slate-400" />
-                            )}
+                            <span className="flex w-4 shrink-0 flex-col items-center gap-0.5 pt-0.5">
+                              {collapsed ? (
+                                <ChevronRight size={14} className="shrink-0 text-slate-400" />
+                              ) : (
+                                <ChevronDown size={14} className="shrink-0 text-slate-400" />
+                              )}
+                              {workspaceGroupDraggable && (
+                                <GripVertical
+                                  size={12}
+                                  className="shrink-0 text-slate-300 opacity-0 transition group-hover/workspace:opacity-100 dark:text-slate-600"
+                                  aria-hidden="true"
+                                />
+                              )}
+                            </span>
                             <span className="min-w-0 flex-1">
                               <span className="flex min-w-0 items-center gap-1.5">
-                                {group.shortcut && (
-                                  <span className="shrink-0 text-[10px] font-semibold text-slate-400">
-                                    {group.shortcut}
-                                  </span>
+                                {renderSessionCountPill(
+                                  group.threads.length,
+                                  workspaceGroupActive,
                                 )}
-                                <span className="block truncate text-[12px] font-semibold leading-4 text-slate-700 dark:text-slate-200">
+                                <span className="dan-rail-card-title block truncate text-slate-700 dark:text-slate-200">
                                   {group.name}
-                                </span>
-                                <span className="ml-auto shrink-0 text-[11px] text-slate-400">
-                                  {group.threads.length}
                                 </span>
                               </span>
                               {group.root && (
-                                <span className="mt-0.5 block truncate font-mono text-[10px] text-slate-500">
-                                  {fileName(group.root)}
-                                </span>
+                                <span className="dan-rail-card-meta">{fileName(group.root)}</span>
                               )}
                             </span>
                           </button>
-                          {group.workspaceId && (
+                          {group.workspaceId && !group.archived && (
                             <div className="mr-1 mt-1 flex shrink-0 items-center gap-0.5">
                               <button
                                 type="button"
+                                data-workspace-action
+                                draggable={false}
                                 onClick={() => void startNewSession(group.workspaceId)}
                                 title={`New session in ${group.name}`}
                                 aria-label={`New session in ${group.name}`}
@@ -9157,6 +9777,8 @@ export default function ChunkWorkspaceApp() {
                               </button>
                               <button
                                 type="button"
+                                data-workspace-action
+                                draggable={false}
                                 onClick={() => removeWorkspace(group.workspaceId!)}
                                 title={`Close ${group.name}`}
                                 aria-label={`Close ${group.name}`}
@@ -9168,140 +9790,57 @@ export default function ChunkWorkspaceApp() {
                           )}
                         </div>
                         {!collapsed && (
-                          <div className="ml-4 mt-1 space-y-1 border-l border-slate-200 pl-2 dark:border-slate-800">
-                            {group.threads.map((thread) => {
-                              const threadRunningTask = runningTaskByThreadId.get(thread.id);
-                              const threadIsRunning = Boolean(threadRunningTask);
-                              const threadTasks = tasksByThreadId.get(thread.id) ?? [];
-                              const sessionDisplay = sessionCardDisplay(thread, threadTasks);
-                              const archived = Boolean(thread.archived || group.id === "archived");
-                              const active = !archived && activeThread?.id === thread.id;
-                              const sessionKey = threadWorkspaceKey(thread.workflow_id, thread.id);
-                              const hasNewReadyResponse = Boolean(
-                                !archived &&
-                                  !active &&
-                                  sessionHasNewReadyResponse(
-                                    threadTasks,
-                                    sessionResponseSeen[sessionKey],
-                                  ),
-                              );
-                              const swipeOffset = sessionSwipeOffsets[sessionKey] ?? 0;
-                              return (
-                                <div
-                                  key={sessionKey}
-                                  className="relative overflow-hidden rounded-lg"
-                                  onPointerDown={(event) => beginSessionSwipe(event, thread, archived)}
-                                  onPointerMove={moveSessionSwipe}
-                                  onPointerUp={endSessionSwipe}
-                                  onPointerCancel={endSessionSwipe}
-                                >
-                                  <div
-                                    className={cx(
-                                      "pointer-events-none absolute inset-y-0 flex items-center px-3 text-[10px] font-semibold uppercase tracking-[0.14em]",
-                                      archived
-                                        ? "left-0 text-slate-500 dark:text-slate-400"
-                                        : "right-0 text-slate-500 dark:text-slate-400",
-                                    )}
-                                  >
-                                    {archived ? "Restore" : "Archive"}
-                                  </div>
-                                  <div
-                                    className={cx(
-                                      "group/session relative flex w-full min-w-0 items-start gap-1 overflow-hidden rounded-lg border transition",
-                                      threadIsRunning && "dan-session-live-card",
-                                      active
-                                        ? "border-slate-900 bg-white text-slate-950 shadow-sm dark:border-slate-100 dark:bg-slate-900 dark:text-slate-100"
-                                        : "border-transparent bg-slate-50 text-slate-600 hover:border-slate-200 hover:bg-white hover:shadow-sm dark:bg-slate-950/40 dark:text-slate-300 dark:hover:border-slate-800 dark:hover:bg-slate-900",
-                                    )}
-                                    style={{
-                                      transform: swipeOffset ? `translateX(${swipeOffset}px)` : undefined,
-                                    }}
-                                  >
-                                    <button
-                                      type="button"
-                                      onClick={(event) => {
-                                        if (suppressSessionClickRef.current === sessionKey) {
-                                          suppressSessionClickRef.current = null;
-                                          event.preventDefault();
-                                          return;
-                                        }
-                                        if (archived) {
-                                          setStatus("Restore session to view it");
-                                          return;
-                                        }
-                                        void openSession(thread, group.workspaceId);
-                                      }}
-                                      className="flex min-w-0 flex-1 items-start gap-2 px-2.5 py-2 text-left"
-                                    >
-                                      {hasNewReadyResponse && (
-                                        <span
-                                          aria-hidden="true"
-                                          className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500"
-                                        />
-                                      )}
-                                      <span className="min-w-0 flex-1">
-                                        <span className="block truncate text-[12px] font-semibold leading-4">
-                                          {sessionDisplay.title}
-                                        </span>
-                                        <span className="mt-0.5 block truncate text-[10px] text-slate-400">
-                                          {sessionDisplay.detail}
-                                        </span>
-                                      </span>
-                                    </button>
-                                    <div className="flex shrink-0 items-center gap-0.5 py-1 pr-1">
-                                      {threadIsRunning && (
-                                        <>
-                                          <button
-                                            type="button"
-                                            data-session-action
-                                            onClick={() => void viewSessionProgress(thread, group.workspaceId)}
-                                            title="View progress"
-                                            aria-label="View progress"
-                                            className="dan-session-live-button grid h-6 w-6 place-items-center rounded-md text-blue-500 transition hover:bg-blue-50 hover:text-blue-700 dark:text-blue-300 dark:hover:bg-blue-950/40 dark:hover:text-blue-100"
-                                          >
-                                            <Activity size={12} className="dan-session-live-icon" />
-                                          </button>
-                                          <button
-                                            type="button"
-                                            data-session-action
-                                            onClick={() => void stopSessionRun(thread, threadRunningTask)}
-                                            title="Stop running session"
-                                            aria-label="Stop running session"
-                                            className="grid h-6 w-6 place-items-center rounded-md text-slate-400 transition hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40 dark:hover:text-red-300"
-                                          >
-                                            <Square size={11} />
-                                          </button>
-                                        </>
-                                      )}
-                                      {archived && (
-                                        <button
-                                          type="button"
-                                          data-session-action
-                                          onClick={() => void deleteArchivedSession(thread)}
-                                          title="Delete permanently"
-                                          aria-label="Delete session permanently"
-                                          className="grid h-6 w-6 place-items-center rounded-md text-slate-400 transition hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40 dark:hover:text-red-300"
-                                        >
-                                          <Trash2 size={12} />
-                                        </button>
-                                      )}
+                          <div className="ml-4 mt-2 space-y-2 border-l border-slate-200 pl-2 dark:border-slate-800">
+                            {group.subgroups?.length ? (
+                              <div className="space-y-2">
+                                {group.subgroups.map((subgroup) => {
+                                  const subgroupCollapsed = threadQuery.trim()
+                                    ? false
+                                    : (collapsedThreadGroups[subgroup.id] ??
+                                      subgroup.defaultCollapsed ??
+                                      false);
+                                  return (
+                                    <div key={subgroup.id} className="space-y-2">
                                       <button
                                         type="button"
-                                        data-session-action
-                                        onClick={() => void archiveSession(thread, !archived)}
-                                        title={archived ? "Restore session" : "Archive session"}
-                                        aria-label={archived ? "Restore session" : "Archive session"}
-                                        className="grid h-6 w-6 place-items-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                                        onClick={() => toggleThreadGroup(subgroup.id)}
+                                        className="flex w-full min-w-0 items-start gap-1.5 rounded-lg px-1.5 py-2 text-left transition hover:bg-slate-50 dark:hover:bg-slate-900/70"
                                       >
-                                        {archived ? <ChevronRight size={12} /> : <Archive size={12} />}
+                                        {subgroupCollapsed ? (
+                                          <ChevronRight size={13} className="mt-0.5 shrink-0 text-slate-400" />
+                                        ) : (
+                                          <ChevronDown size={13} className="mt-0.5 shrink-0 text-slate-400" />
+                                        )}
+                                        <span className="min-w-0 flex-1">
+                                          <span className="flex min-w-0 items-center gap-1.5">
+                                            {renderSessionCountPill(subgroup.threads.length)}
+                                            <span className="dan-rail-card-title block truncate text-slate-700 dark:text-slate-200">
+                                              {subgroup.name}
+                                            </span>
+                                          </span>
+                                          {subgroup.root && (
+                                            <span className="dan-rail-card-meta">
+                                              {fileName(subgroup.root)}
+                                            </span>
+                                          )}
+                                        </span>
                                       </button>
+                                      {!subgroupCollapsed && (
+                                        <div className="ml-4 space-y-2 border-l border-slate-200 pl-2 dark:border-slate-800">
+                                          {renderSessionThreadRows(subgroup)}
+                                        </div>
+                                      )}
                                     </div>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                            {group.threads.length === 0 && (
-                              <div className="px-2 py-1 text-xs text-slate-400">No sessions</div>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <>
+                                {renderSessionThreadRows(group)}
+                                {group.threads.length === 0 && (
+                                  <div className="px-2 py-1 text-xs text-slate-400">No sessions</div>
+                                )}
+                              </>
                             )}
                           </div>
                         )}
@@ -9315,7 +9854,7 @@ export default function ChunkWorkspaceApp() {
               </div>
               <div className="flex h-10 shrink-0 items-center justify-end gap-2 border-t border-slate-200/80 px-3 text-[11px] text-slate-400 dark:border-slate-800">
                 <span className="shrink-0">
-                  {workspaces.length} workspaces · {threads.length} sessions
+                  {threads.length} {threads.length === 1 ? "session" : "sessions"}
                 </span>
               </div>
               {!isPhoneViewport && (
@@ -9620,45 +10159,39 @@ export default function ChunkWorkspaceApp() {
               <div className="shrink-0 border-t border-slate-200/80 bg-white/95 p-3 shadow-[0_-1px_0_rgba(15,23,42,0.02)] dark:border-slate-800 dark:bg-slate-950">
                 <div className="flex gap-2">
                   <div className="hidden h-11 shrink-0 items-center gap-1 rounded-lg border border-slate-200 bg-slate-100/70 p-0.5 shadow-inner dark:border-slate-800 dark:bg-slate-900 sm:flex">
-                    <div
-                      title={
-                        hasActiveRun
-                          ? "Super DAN is running; choose how this message should be sent"
-                          : "Start a Super DAN run"
-                      }
-                      className={cx(
-                        "inline-flex h-9 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold transition",
-                        hasActiveRun
-                          ? "text-slate-600 dark:text-slate-300"
-                          : "bg-white text-slate-950 shadow-sm dark:bg-slate-100 dark:text-slate-950",
-                      )}
-                    >
-                      <Bot size={13} />
-                      Super DAN
-                    </div>
-                    {hasActiveRun && (
-                      (["steer", "queue"] as const).map((mode) => (
+                    {(["steer", "queue"] as const).map((mode) => {
+                      const queueUnavailable = mode === "queue" && !hasActiveRun;
+                      const active =
+                        mode === "steer"
+                          ? activeRunPlacement === "steer" || !hasActiveRun
+                          : hasActiveRun && activeRunPlacement === "queue";
+                      return (
                         <button
                           key={mode}
                           type="button"
                           onClick={() => setActiveRunPlacement(mode)}
+                          disabled={queueUnavailable}
                           title={
                             mode === "queue"
-                              ? "Queue this message after the current Super DAN run (Option+Enter)"
-                              : "Steer the active Super DAN run now (Enter)"
+                              ? hasActiveRun
+                                ? "Queue this message after the current run (Option+Enter)"
+                                : "Next is available while a run is active"
+                              : hasActiveRun
+                                ? "Steer the active run now (Enter)"
+                                : "Start work with this message"
                           }
                           className={cx(
-                            "inline-flex h-9 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold capitalize transition",
-                            activeRunPlacement === mode
+                            "inline-flex h-9 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold capitalize transition disabled:cursor-not-allowed disabled:opacity-40",
+                            active
                               ? "bg-white text-slate-950 shadow-sm dark:bg-slate-100 dark:text-slate-950"
                               : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200",
                           )}
                         >
-                          {mode === "queue" ? <Activity size={13} /> : <WandSparkles size={13} />}
+                          {mode === "queue" ? <Clock3 size={13} /> : <WandSparkles size={13} />}
                           {mode === "queue" ? "Next" : "Steer"}
                         </button>
-                      ))
-                    )}
+                      );
+                    })}
                   </div>
                   <textarea
                     ref={composerRef}
@@ -9684,11 +10217,7 @@ export default function ChunkWorkspaceApp() {
                     className="inline-flex h-11 items-center gap-1.5 rounded-lg bg-slate-950 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-slate-100 dark:text-slate-950 dark:hover:bg-white"
                   >
                     {sending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-                    {hasActiveRun
-                      ? activeRunPlacement === "queue"
-                        ? "Next"
-                        : "Steer"
-                      : "Run"}
+                    {hasActiveRun && activeRunPlacement === "queue" ? "Next" : "Steer"}
                   </button>
                 </div>
                 {(activeFileEntry || selectedBlueprintNode || selectedChunk || hasActiveRun) && (
