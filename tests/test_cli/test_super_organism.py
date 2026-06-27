@@ -1886,6 +1886,60 @@ class _FakeReadOnlyDirectReplyProvider:
         )
 
 
+class _FakeMissingThenRecoveredAnswerProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.tool_names_by_call: list[list[str]] = []
+        self.rendered_messages: list[str] = []
+
+    async def complete(
+        self,
+        messages,
+        model,
+        temperature=0.7,
+        max_tokens=None,
+        **kwargs,
+    ) -> CompletionResult:
+        self.calls += 1
+        self.tool_names_by_call.append(
+            [
+                str(tool.get("function", {}).get("name") or "")
+                for tool in (kwargs.get("tools") or [])
+                if isinstance(tool, dict)
+            ]
+        )
+        rendered_messages = "\n".join(
+            str(message.get("content") or "")
+            for message in messages
+            if isinstance(message, dict)
+        )
+        self.rendered_messages.append(rendered_messages)
+        if self.calls == 1:
+            return CompletionResult(
+                text="Run finished.",
+                model=model,
+                finish_reason="stop",
+            )
+        assert "Recover the missing final answer" in rendered_messages
+        assert "actual in-session answer" in rendered_messages
+        return CompletionResult(
+            text=json.dumps(
+                {
+                    "answer": (
+                        "This project is a Super DAN workspace for coordinating durable agent runs, "
+                        "tool use, validation, and the Work Plan UI around one operator request."
+                    ),
+                    "summary": ["Super DAN coordinates read-only answers and workspace-changing tasks."],
+                    "risks": [],
+                    "remaining_work": [],
+                },
+                sort_keys=True,
+            ),
+            model=model,
+            finish_reason="stop",
+        )
+
+
 class _FakeBuilderRetryWebsiteProvider:
     def __init__(self) -> None:
         self.calls = 0
@@ -2042,7 +2096,7 @@ class _FakeTargetedBuilderRetryHtmlProvider:
             assert "Recommended builder retry targets" in rendered_messages
             assert "Available tool guide" in rendered_messages
             assert "`file_write`: create new files" in rendered_messages
-            assert "Which recommended target path is the best first durable artifact" in rendered_messages
+            assert "Make the first durable write to" in rendered_messages
             assert "animation-two-stick-figures-battling.html" in rendered_messages
             assert "list_directory" not in tool_names
             assert "web_search" not in tool_names
@@ -4025,7 +4079,9 @@ def test_operator_intent_policy_defaults_review_requests_to_answer_only(tmp_path
 @pytest.mark.parametrize(
     "objective",
     [
+        "what is this project",
         "what is this project about?",
+        "what's this repo?",
         "tell me about this project",
         "help me summary this project",
         "create a project summary for me",
@@ -5354,6 +5410,43 @@ def test_main_live_generic_dag_deferred_tasks_do_not_trigger_repair(
         "1-2",
         "2-1",
     ]
+    graph_updates = [
+        row for row in event_rows if row.get("event") == "live.task_graph.updated"
+    ]
+    assert [row.get("source") for row in graph_updates] == [
+        "planner",
+        "plan_validator",
+        "execution_frontier",
+        "execution_result",
+        "validator",
+    ]
+    assert [
+        row["task_graph_state"]["revision"]
+        for row in graph_updates
+    ] == [1, 2, 3, 4, 5]
+    assert [
+        row["task_graph_state"]["version_id"]
+        for row in graph_updates
+    ] == ["v1", "v2", "v2.b1.1", "v2.b1.2", "v2.b1.3"]
+    assert graph_updates[-1]["task_graph_state"]["root_version_id"] == "v2"
+    assert graph_updates[-1]["task_graph_state"]["parent_version_ids"] == ["v2.b1.2"]
+    assert graph_updates[0]["task_graph_state"]["schema"] == "super_dan_task_graph_v1"
+    assert graph_updates[0]["task_graph_state"]["parallel_groups"] == [["1-1", "1-2"]]
+    execution_tasks = {
+        task["task_id"]: task["state"]
+        for task in graph_updates[3]["task_graph_state"]["tasks"]
+    }
+    assert execution_tasks["1-1"] == "done"
+    assert execution_tasks["1-2"] == "active"
+    validator_tasks = {
+        task["task_id"]: task["state"]
+        for task in graph_updates[-1]["task_graph_state"]["tasks"]
+    }
+    assert validator_tasks == {
+        "1-1": "done",
+        "1-2": "ready",
+        "2-1": "deferred",
+    }
     assert not any(row.get("event") == "live.generic_repair.started" for row in event_rows)
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"
@@ -5361,6 +5454,7 @@ def test_main_live_generic_dag_deferred_tasks_do_not_trigger_repair(
     assert final_validation["passed"] is True
     assert final_validation["completion_scope"] == "current_frontier"
     assert final_validation["deferred_task_gaps"] == ["2-1 app demo remains deferred"]
+    assert final_validation["task_graph_state"]["revision"] == 5
     assert final_validation.get("deterministic_failures") in (None, [])
 
 
@@ -5409,6 +5503,27 @@ def test_main_live_generic_admits_ready_frontier_worktree_task(
     assert any(row.get("event") == "super.worktree.task_planned" for row in event_rows)
     assert any(row.get("event") == "super.worktree.diff_admitted" for row in event_rows)
     assert any(row.get("event") == "live.worktree.diff_applied" for row in event_rows)
+    graph_updates = [
+        row for row in event_rows if row.get("event") == "live.task_graph.updated"
+    ]
+    assert [
+        row["task_graph_state"]["version_id"]
+        for row in graph_updates
+    ] == ["v1", "v2", "v2.b1.1", "v2.b1.2", "v2.b1.3+b2.1"]
+    execution_tasks = {
+        task["task_id"]: task["state"]
+        for task in graph_updates[3]["task_graph_state"]["tasks"]
+    }
+    assert execution_tasks["1-1"] == "done"
+    assert execution_tasks["1-2"] == "done"
+    validator_tasks = {
+        task["task_id"]: task["state"]
+        for task in graph_updates[-1]["task_graph_state"]["tasks"]
+    }
+    assert validator_tasks["1-1"] == "done"
+    assert validator_tasks["1-2"] == "done"
+    assert validator_tasks["2-1"] == "ready"
+    assert graph_updates[-1]["task_graph_state"]["parent_version_ids"] == ["v2.b1.2", "v2"]
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]
@@ -5662,6 +5777,60 @@ def test_main_live_generic_no_edit_direct_reply_completes_without_retry(
     assert final_validation["passed"] is True
     assert final_validation["builder_retry_attempted"] is False
     assert final_validation["changed_required_files"] == []
+
+
+def test_main_live_generic_answer_only_recovers_missing_final_answer(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    fake_provider = _FakeMissingThenRecoveredAnswerProvider()
+    monkeypatch.setattr(
+        super_cli,
+        "_build_live_provider",
+        lambda model, api_key=None, base_url=None: fake_provider,
+    )
+
+    exit_code = main(
+        [
+            "what is this project",
+            "--live",
+            "--json",
+            "--model",
+            "fake-live-model",
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    live_build = payload["live_build"]
+    assert live_build["status"] == "completed"
+    assert live_build["answer_recovery_attempts"] == 1
+    assert "Super DAN workspace" in live_build["summary"]
+    assert live_build["validation"]["passed"] is True
+    assert fake_provider.calls == 2
+    assert "file_edit" not in fake_provider.tool_names_by_call[0]
+    assert "file_write" not in fake_provider.tool_names_by_call[0]
+    assert "shell_command" not in fake_provider.tool_names_by_call[0]
+    assert "file_edit" not in fake_provider.tool_names_by_call[1]
+    assert "file_write" not in fake_provider.tool_names_by_call[1]
+    assert "shell_command" not in fake_provider.tool_names_by_call[1]
+
+    event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
+    event_rows = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [row.get("event") for row in event_rows].count("live.answer_recovery.started") == 1
+    assert [row.get("event") for row in event_rows].count("live.answer_recovery.completed") == 1
+    final_validation = [
+        row for row in event_rows if row.get("event") == "live.validation.completed"
+    ][-1]
+    assert final_validation["passed"] is True
+    assert not final_validation.get("deterministic_failures")
 
 
 def test_main_live_generic_uses_generic_builder_retry(
