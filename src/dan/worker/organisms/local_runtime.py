@@ -1219,9 +1219,47 @@ def _tool_ids_are_read_only(tool_ids: Sequence[str]) -> bool:
     return bool(available) and not any(tool_id in _READ_ONLY_TOOL_EXCLUSIONS for tool_id in available)
 
 
-def _request_forbids_workspace_mutation(request: CompletionRequest) -> bool:
+def _operator_intent_policy_payload(request: CompletionRequest) -> Mapping[str, Any]:
     raw_policy = request.metadata.get("operator_intent_policy")
-    if isinstance(raw_policy, Mapping) and raw_policy.get("allow_workspace_mutation") is False:
+    return raw_policy if isinstance(raw_policy, Mapping) else {}
+
+
+def _operator_intent_blocked_tool_ids(request: CompletionRequest) -> set[str]:
+    policy = _operator_intent_policy_payload(request)
+    if not policy:
+        return set()
+
+    blocked: set[str] = set()
+    if policy.get("allow_workspace_mutation") is False:
+        blocked.update({"file_edit", "file_write"})
+    if policy.get("allow_shell_command") is False:
+        blocked.add("shell_command")
+    if policy.get("allow_directory_listing") is False:
+        blocked.add("list_directory")
+    if policy.get("allow_git_context") is False:
+        blocked.update({"git_status", "git_diff", "git_log"})
+    if policy.get("forbid_other_workspace_inputs") is True and not policy.get("allowed_read_paths"):
+        blocked.add("file_read")
+    return blocked
+
+
+def _operator_intent_tool_schemas(
+    request: CompletionRequest,
+    tool_schemas: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    blocked = _operator_intent_blocked_tool_ids(request)
+    if not blocked:
+        return [dict(tool) for tool in tool_schemas if isinstance(tool, dict)]
+    return [
+        dict(tool)
+        for tool in tool_schemas
+        if isinstance(tool, dict) and _tool_schema_name(tool) not in blocked
+    ]
+
+
+def _request_forbids_workspace_mutation(request: CompletionRequest) -> bool:
+    raw_policy = _operator_intent_policy_payload(request)
+    if raw_policy.get("allow_workspace_mutation") is False:
         return True
 
     text = " ".join(
@@ -2936,6 +2974,8 @@ def _write_capable_coding_stage_first_write_nudge_reason(
     executed_tools: Sequence[dict[str, Any]],
     workspace_root: Path,
 ) -> str | None:
+    if _request_forbids_workspace_mutation(request):
+        return None
     if _coding_output_kind(request) is None:
         return None
     if _tool_ids_are_read_only(tool_ids):
@@ -4752,6 +4792,32 @@ class ToolLoopCompletionProvider:
         exclusive_write_owner = bool(exclusive_write_owner_path)
 
         requested_tool_schemas = self._resolve_tool_schemas(request.tools)
+        operator_intent_tool_schemas = _operator_intent_tool_schemas(
+            request,
+            requested_tool_schemas,
+        )
+        if len(operator_intent_tool_schemas) != len(requested_tool_schemas):
+            enabled_tool_names = {
+                _tool_schema_name(tool)
+                for tool in operator_intent_tool_schemas
+                if _tool_schema_name(tool)
+            }
+            self._emit_event(
+                "toolloop.operator_intent_tools_narrowed",
+                enabled_tools=[
+                    _tool_schema_name(tool)
+                    for tool in operator_intent_tool_schemas
+                    if _tool_schema_name(tool)
+                ],
+                dropped_tools=[
+                    _tool_schema_name(tool)
+                    for tool in requested_tool_schemas
+                    if _tool_schema_name(tool)
+                    and _tool_schema_name(tool) not in enabled_tool_names
+                ],
+                **event_context,
+            )
+        requested_tool_schemas = operator_intent_tool_schemas
         operator_read_only = _request_forbids_workspace_mutation(request)
         if operator_read_only:
             allowed_read_only_tools = set(

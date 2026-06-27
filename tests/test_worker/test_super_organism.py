@@ -727,6 +727,80 @@ def test_interactive_source_requests_force_earlier_first_write() -> None:
     assert local_runtime_module._prewrite_successful_read_nudge_threshold(interactive_request) == 2
 
 
+def test_operator_intent_policy_narrows_runtime_tools_before_model() -> None:
+    request = CompletionRequest(
+        model="fake",
+        system_prompt="",
+        user_prompt="What is this project?",
+        metadata={
+            "operator_intent_policy": {
+                "active": True,
+                "allow_workspace_mutation": False,
+                "allow_shell_command": False,
+            }
+        },
+    )
+    tools = [
+        {"type": "function", "function": {"name": "file_read"}},
+        {"type": "function", "function": {"name": "file_edit"}},
+        {"type": "function", "function": {"name": "file_write"}},
+        {"type": "function", "function": {"name": "shell_command"}},
+        {"type": "function", "function": {"name": "workspace_check"}},
+    ]
+
+    narrowed = local_runtime_module._operator_intent_tool_schemas(request, tools)
+
+    assert [
+        local_runtime_module._tool_schema_name(tool)
+        for tool in narrowed
+    ] == ["file_read", "workspace_check"]
+
+
+def test_operator_intent_policy_suppresses_first_write_nudge(tmp_path) -> None:
+    request = CompletionRequest(
+        model="fake",
+        system_prompt="",
+        user_prompt="What is this project?",
+        output_contract=OutputContract(
+            expected_return_shape=json.dumps(
+                {
+                    "candidate_id": "",
+                    "change_summary": [],
+                    "target_files": [],
+                    "test_plan": [],
+                    "risks": [],
+                }
+            )
+        ),
+        metadata={
+            "organism_stage": "execution",
+            "operator_intent_policy": {
+                "active": True,
+                "allow_workspace_mutation": False,
+                "allow_shell_command": False,
+            },
+        },
+    )
+    executed_tools = [
+        {
+            "ok": True,
+            "tool_id": "file_read",
+            "arguments": {"path": f"src/file_{index}.py"},
+            "result": {"path": f"src/file_{index}.py"},
+        }
+        for index in range(3)
+    ]
+
+    reason = local_runtime_module._write_capable_coding_stage_first_write_nudge_reason(
+        request=request,
+        tool_ids=["file_read", "file_edit", "file_write", "shell_command"],
+        executed_tools=executed_tools,
+        workspace_root=tmp_path,
+    )
+
+    assert reason is None
+
+
 def test_validation_repair_requires_all_required_paths_before_finalize(tmp_path) -> None:
     request = CompletionRequest(
         model="fake",
