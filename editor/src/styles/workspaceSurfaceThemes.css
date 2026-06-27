@@ -1,0 +1,492 @@
+/*
+ * Desktop surface theme overrides.
+ *
+ * index.css still contains the original component and dark Factory Worn rules.
+ * This late-loaded file owns cross-surface theme variants so new looks can be
+ * added by changing tokens and role selectors instead of editing each panel.
+ */
+
+.dan-desktop-surface-theme {
+  --dan-theme-ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme {
+  --machine-bg: oklch(0.890 0.012 86);
+  --machine-bg-deep: oklch(0.835 0.011 88);
+  --machine-panel: oklch(0.932 0.010 86);
+  --machine-panel-hi: oklch(0.965 0.008 86);
+  --machine-panel-low: oklch(0.850 0.012 88);
+  --machine-plate: oklch(0.875 0.011 84);
+  --machine-border: oklch(0.690 0.024 80 / 0.72);
+  --machine-border-strong: oklch(0.565 0.034 78 / 0.80);
+  --machine-text: oklch(0.255 0.018 82);
+  --machine-muted: oklch(0.465 0.024 82);
+  --machine-faint: oklch(0.610 0.020 82);
+  --machine-active: oklch(0.535 0.112 66);
+  --machine-ready: oklch(0.570 0.102 78);
+  --machine-done: oklch(0.455 0.060 126);
+  --machine-danger: oklch(0.505 0.095 34);
+  --machine-queued: oklch(0.520 0.030 84);
+  --machine-brush:
+    repeating-linear-gradient(
+      0deg,
+      oklch(0.505 0.016 82 / 0.045) 0 1px,
+      transparent 1px 8px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      oklch(0.995 0.004 86 / 0.50) 0 1px,
+      transparent 1px 18px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent 0 31px,
+      oklch(0.555 0.014 82 / 0.060) 31px 32px
+    );
+  --machine-fine-grid:
+    linear-gradient(to right, oklch(0.560 0.024 82 / 0.140) 1px, transparent 1px),
+    linear-gradient(to bottom, oklch(0.560 0.024 82 / 0.105) 1px, transparent 1px);
+  background:
+    radial-gradient(circle at 19px 15px, oklch(0.500 0.032 82 / 0.080) 0 0.8px, transparent 1.7px),
+    radial-gradient(circle at 7px 27px, oklch(0.380 0.014 88 / 0.095) 0 1px, transparent 2px),
+    radial-gradient(circle at 29px 33px, oklch(0.990 0.004 82 / 0.500) 0 0.55px, transparent 1.3px),
+    linear-gradient(180deg, var(--machine-bg), var(--machine-bg-deep)) !important;
+  background-size: 43px 37px, 61px 53px, 17px 19px, auto;
+  color: var(--machine-text);
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme
+  :where(.text-slate-950, .text-slate-900, .text-slate-800, .text-slate-700, .text-gray-200, .text-gray-300) {
+  color: var(--machine-text) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme
+  :where(.text-slate-600, .text-slate-500, .text-slate-400, .text-gray-400, .text-gray-500, .text-gray-600) {
+  color: var(--machine-muted) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme
+  :where(.border-slate-200, .border-slate-200\/80, .border-slate-300, .border-slate-700, .border-slate-800, .border-gray-800, .border-\[\#3c3c3c\], .border-\[\#2d2d2d\]) {
+  border-color: var(--machine-border) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme
+  :where([class*="bg-white"], [class*="bg-slate-50"], [class*="bg-slate-100"], [class*="bg-slate-900"], [class*="bg-slate-950"], [class*="bg-gray-800"], [class*="bg-gray-900"], [class*="bg-[#1e1e1e]"], [class*="bg-[#252526]"], [class*="bg-[#3c3c3c]"]) {
+  background-color: var(--machine-panel) !important;
+  background-image:
+    radial-gradient(circle at 18px 14px, oklch(0.475 0.026 82 / 0.075) 0 0.8px, transparent 1.7px),
+    radial-gradient(circle at 30px 24px, oklch(0.390 0.012 88 / 0.060) 0 0.9px, transparent 1.8px),
+    linear-gradient(180deg, oklch(0.990 0.004 88 / 0.42), transparent 50%),
+    var(--machine-brush) !important;
+  background-size: 41px 35px, 59px 53px, auto, auto !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-workspace-header {
+  background:
+    radial-gradient(circle at 18px 14px, oklch(0.510 0.022 82 / 0.070) 0 0.75px, transparent 1.7px),
+    radial-gradient(circle at 33px 26px, oklch(0.380 0.012 88 / 0.065) 0 1px, transparent 2.1px),
+    linear-gradient(180deg, oklch(0.955 0.010 86), oklch(0.870 0.012 88)),
+    var(--machine-brush) !important;
+  background-size: 43px 31px, 59px 47px, auto, auto;
+  border-color: var(--machine-border-strong) !important;
+  box-shadow:
+    inset 0 -1px 0 oklch(0.520 0.018 82 / 0.22),
+    0 1px 0 oklch(0.990 0.004 88 / 0.72) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme
+  :where(.dan-work-pages, .dan-notes-pages) {
+  background:
+    radial-gradient(circle at 19px 17px, oklch(0.470 0.026 82 / 0.075) 0 0.85px, transparent 1.8px),
+    radial-gradient(circle at 7px 29px, oklch(0.380 0.012 88 / 0.075) 0 1px, transparent 2px),
+    repeating-linear-gradient(
+      90deg,
+      oklch(0.575 0.014 82 / 0.045) 0 1px,
+      transparent 1px 22px
+    ),
+    linear-gradient(180deg, oklch(0.895 0.012 86), oklch(0.840 0.011 88)) !important;
+  background-size: 43px 37px, 67px 59px, auto, auto;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme
+  :where(.dan-phone-page, .dan-session-page, .dan-files-page) {
+  background:
+    radial-gradient(circle at 16px 12px, oklch(0.470 0.026 82 / 0.070) 0 0.8px, transparent 1.6px),
+    radial-gradient(circle at 31px 25px, oklch(0.380 0.012 88 / 0.055) 0 1px, transparent 2px),
+    linear-gradient(180deg, oklch(0.918 0.010 86), oklch(0.850 0.011 88)),
+    var(--machine-brush) !important;
+  background-size: 39px 31px, 57px 49px, auto, auto;
+  border-color: var(--machine-border) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme :where(input, textarea) {
+  background:
+    linear-gradient(180deg, oklch(0.960 0.008 86), oklch(0.905 0.010 88)),
+    repeating-linear-gradient(
+      90deg,
+      oklch(0.565 0.014 82 / 0.045) 0 1px,
+      transparent 1px 10px
+    ) !important;
+  border-color: var(--machine-border) !important;
+  color: var(--machine-text) !important;
+  box-shadow:
+    inset 0 1px 2px oklch(0.430 0.012 88 / 0.12),
+    inset 0 0 0 1px oklch(0.995 0.004 88 / 0.52) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme :where(input, textarea)::placeholder {
+  color: var(--machine-faint) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme :where(button) {
+  border-color: var(--machine-border) !important;
+  box-shadow:
+    inset 0 1px 0 oklch(0.995 0.004 88 / 0.54),
+    inset 0 -1px 0 oklch(0.520 0.014 84 / 0.12) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme
+  :where(button[class~="bg-white"], button[class~="bg-slate-50"], button[class~="bg-slate-100"], button[class~="bg-slate-950"], button[class~="bg-gray-800"], button[class~="bg-gray-900"]) {
+  background:
+    linear-gradient(90deg, oklch(0.995 0.004 88 / 0.22), transparent 16%, transparent 78%, oklch(0.520 0.010 88 / 0.08)),
+    repeating-linear-gradient(
+      90deg,
+      oklch(0.995 0.004 88 / 0.16) 0 1px,
+      transparent 1px 7px
+    ),
+    radial-gradient(circle at 17px 13px, oklch(0.455 0.010 86 / 0.036) 0 0.65px, transparent 1.5px),
+    linear-gradient(180deg, oklch(0.940 0.004 88), oklch(0.790 0.006 90)),
+    var(--machine-brush) !important;
+  color: var(--machine-text) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme button[class~="bg-slate-950"] {
+  background:
+    linear-gradient(90deg, oklch(0.885 0.004 88 / 0.24), transparent 18%, transparent 76%, oklch(0.245 0.010 90 / 0.14)),
+    repeating-linear-gradient(
+      90deg,
+      oklch(0.940 0.004 88 / 0.12) 0 1px,
+      transparent 1px 6px
+    ),
+    radial-gradient(circle at 21px 15px, oklch(0.990 0.004 88 / 0.22) 0 0.7px, transparent 1.6px),
+    linear-gradient(180deg, oklch(0.560 0.008 90), oklch(0.395 0.010 92)),
+    var(--machine-brush) !important;
+  border-color: oklch(0.445 0.014 90 / 0.78) !important;
+  color: oklch(0.968 0.004 88) !important;
+  box-shadow:
+    inset 0 1px 0 oklch(0.990 0.004 88 / 0.32),
+    inset 0 -2px 0 oklch(0.210 0.010 92 / 0.34),
+    0 2px 6px oklch(0.360 0.010 88 / 0.16) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme button[class~="bg-slate-950"]:hover:not(:disabled) {
+  background:
+    linear-gradient(90deg, oklch(0.910 0.004 88 / 0.28), transparent 18%, transparent 76%, oklch(0.245 0.010 90 / 0.12)),
+    repeating-linear-gradient(
+      90deg,
+      oklch(0.960 0.004 88 / 0.13) 0 1px,
+      transparent 1px 6px
+    ),
+    radial-gradient(circle at 21px 15px, oklch(0.990 0.004 88 / 0.24) 0 0.7px, transparent 1.6px),
+    linear-gradient(180deg, oklch(0.600 0.008 90), oklch(0.435 0.010 92)),
+    var(--machine-brush) !important;
+  border-color: oklch(0.485 0.014 90 / 0.80) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-files-page {
+  background:
+    linear-gradient(90deg, oklch(0.990 0.004 88 / 0.20), transparent 18%, transparent 82%, oklch(0.510 0.010 88 / 0.06)),
+    repeating-linear-gradient(
+      90deg,
+      oklch(0.990 0.004 88 / 0.13) 0 1px,
+      transparent 1px 9px
+    ),
+    radial-gradient(circle at 16px 12px, oklch(0.430 0.010 86 / 0.050) 0 0.8px, transparent 1.6px),
+    radial-gradient(circle at 31px 25px, oklch(0.350 0.010 90 / 0.040) 0 1px, transparent 2px),
+    linear-gradient(180deg, oklch(0.908 0.005 88), oklch(0.790 0.006 90)),
+    var(--machine-brush) !important;
+  background-size: auto, auto, 39px 31px, 57px 49px, auto, auto;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-collapsed-pane-rail {
+  background:
+    linear-gradient(90deg, oklch(0.960 0.004 88 / 0.22), transparent 20%, transparent 76%, oklch(0.300 0.010 90 / 0.12)),
+    repeating-linear-gradient(
+      0deg,
+      oklch(0.990 0.004 88 / 0.10) 0 1px,
+      transparent 1px 8px
+    ),
+    radial-gradient(circle at 50% 18px, oklch(0.990 0.004 88 / 0.34) 0 1px, transparent 2px),
+    linear-gradient(180deg, oklch(0.720 0.008 90), oklch(0.560 0.010 92)),
+    var(--machine-brush) !important;
+  border-color: oklch(0.465 0.014 90 / 0.66) !important;
+  color: oklch(0.225 0.014 90) !important;
+  box-shadow:
+    inset 1px 0 0 oklch(0.990 0.004 88 / 0.36),
+    inset -1px 0 0 oklch(0.245 0.010 92 / 0.18) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-collapsed-pane-rail:hover {
+  background:
+    linear-gradient(90deg, oklch(0.980 0.004 88 / 0.24), transparent 20%, transparent 76%, oklch(0.300 0.010 90 / 0.10)),
+    repeating-linear-gradient(
+      0deg,
+      oklch(0.990 0.004 88 / 0.11) 0 1px,
+      transparent 1px 8px
+    ),
+    radial-gradient(circle at 50% 18px, oklch(0.990 0.004 88 / 0.38) 0 1px, transparent 2px),
+    linear-gradient(180deg, oklch(0.755 0.008 90), oklch(0.600 0.010 92)),
+    var(--machine-brush) !important;
+  color: oklch(0.190 0.014 90) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-collapsed-pane-rail-icon {
+  background:
+    linear-gradient(90deg, oklch(0.995 0.004 88 / 0.18), transparent 70%),
+    linear-gradient(180deg, oklch(0.940 0.004 88), oklch(0.790 0.006 90)) !important;
+  border-color: oklch(0.515 0.014 90 / 0.66) !important;
+  color: inherit !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-rail-card-kind {
+  color: var(--machine-muted) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-rail-card-meta {
+  color: var(--machine-muted) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-session-count-flap {
+  border-color: oklch(0.600 0.014 86 / 0.74);
+  background:
+    linear-gradient(180deg, oklch(0.855 0.007 86), oklch(0.780 0.008 88) 49%, oklch(0.665 0.010 90) 50%, oklch(0.745 0.008 88)) !important;
+  color: oklch(0.250 0.018 86) !important;
+  box-shadow:
+    inset 0 1px 0 oklch(0.995 0.004 86 / 0.16),
+    inset 0 -1px 0 oklch(0.360 0.012 88 / 0.16) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-session-count-flap::before {
+  background: oklch(0.250 0.012 88 / 0.30);
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-session-count-flap::after {
+  content: none;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-session-count-flap-active {
+  border-color: oklch(0.505 0.034 76 / 0.76);
+  color: oklch(0.215 0.026 78) !important;
+  box-shadow:
+    inset 0 1px 0 oklch(0.995 0.004 86 / 0.18),
+    inset 0 -1px 0 oklch(0.420 0.014 88 / 0.16),
+    0 0 0 1px oklch(0.640 0.040 74 / 0.10) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-blueprint-board {
+  background:
+    radial-gradient(circle at 16px 13px, oklch(0.485 0.020 82 / 0.060) 0 0.72px, transparent 1.6px),
+    radial-gradient(circle at 7px 25px, oklch(0.360 0.012 88 / 0.070) 0 1px, transparent 2px),
+    var(--machine-fine-grid),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0 27px,
+      oklch(0.555 0.016 82 / 0.060) 27px 28px
+    ),
+    linear-gradient(180deg, oklch(0.900 0.010 86), oklch(0.842 0.010 88)) !important;
+  background-size: 41px 35px, 61px 55px, 28px 28px, auto, auto;
+  border-color: var(--machine-border-strong) !important;
+  box-shadow:
+    inset 0 0 0 1px oklch(0.995 0.004 88 / 0.50),
+    inset 0 -10px 24px oklch(0.570 0.016 84 / 0.080) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-blueprint-node,
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-user-chat-box {
+  background:
+    radial-gradient(circle at 17px 13px, oklch(0.500 0.016 82 / 0.050) 0 0.65px, transparent 1.5px),
+    radial-gradient(circle at 33px 24px, oklch(0.365 0.012 88 / 0.055) 0 1px, transparent 2px),
+    linear-gradient(180deg, oklch(0.950 0.008 86 / 0.99), oklch(0.870 0.010 88 / 0.99)),
+    var(--machine-brush) !important;
+  border-color: var(--machine-border) !important;
+  color: var(--machine-text) !important;
+  box-shadow:
+    inset 0 1px 0 oklch(0.995 0.004 88 / 0.62),
+    inset 0 -2px 0 oklch(0.560 0.014 84 / 0.10),
+    0 4px 10px oklch(0.420 0.018 82 / 0.10) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-user-chat-box {
+  background:
+    radial-gradient(circle at 17px 13px, oklch(0.500 0.016 82 / 0.056) 0 0.65px, transparent 1.5px),
+    radial-gradient(circle at 33px 24px, oklch(0.365 0.012 88 / 0.064) 0 1px, transparent 2px),
+    radial-gradient(circle at 48px 34px, oklch(0.990 0.004 84 / 0.42) 0 0.5px, transparent 1.1px),
+    radial-gradient(ellipse 120px 30px at 78% 18%, oklch(0.995 0.004 86 / 0.50), transparent 72%),
+    radial-gradient(ellipse 88px 24px at 12% 92%, oklch(0.535 0.014 82 / 0.08), transparent 72%),
+    linear-gradient(180deg, oklch(0.938 0.008 86 / 0.99), oklch(0.846 0.010 88 / 0.99)),
+    var(--machine-brush) !important;
+  background-size: 39px 31px, 59px 51px, 17px 19px, auto, auto, auto, auto;
+  border-color: oklch(0.640 0.022 80 / 0.72) !important;
+  box-shadow:
+    inset 0 1px 0 oklch(0.995 0.004 88 / 0.66),
+    inset 0 -2px 0 oklch(0.560 0.014 84 / 0.13),
+    inset 8px 0 18px oklch(0.520 0.014 84 / 0.052),
+    inset -8px 0 18px oklch(0.520 0.014 84 / 0.045),
+    0 3px 9px oklch(0.420 0.018 82 / 0.10) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-blueprint-node::before,
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-blueprint-node::after {
+  opacity: 0.34;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-user-chat-box::before {
+  background:
+    radial-gradient(circle at 24px 18px, oklch(0.455 0.014 82 / 0.070) 0 0.8px, transparent 1.8px),
+    radial-gradient(circle at 71px 49px, oklch(0.990 0.004 84 / 0.42) 0 0.45px, transparent 1.2px),
+    radial-gradient(ellipse 18px 1px at 18% 22%, oklch(0.440 0.012 84 / 0.080) 0 42%, transparent 46%),
+    radial-gradient(ellipse 20px 1px at 76% 68%, oklch(0.430 0.012 84 / 0.058) 0 40%, transparent 46%),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0 15px,
+      oklch(0.535 0.014 84 / 0.055) 15px 16px,
+      transparent 16px 31px
+    );
+  background-size: 83px 61px, 97px 73px, auto, auto, auto;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-user-chat-box::after {
+  background:
+    radial-gradient(ellipse 52px 20px at 0% 0%, oklch(0.480 0.014 84 / 0.095), transparent 72%),
+    radial-gradient(ellipse 42px 15px at 100% 0%, oklch(0.480 0.014 84 / 0.075), transparent 70%),
+    radial-gradient(ellipse 66px 18px at 50% 100%, oklch(0.480 0.014 84 / 0.070), transparent 72%),
+    radial-gradient(circle at 92% 44%, oklch(0.420 0.012 84 / 0.070) 0 1.7px, transparent 3px),
+    radial-gradient(circle at 6% 65%, oklch(0.420 0.012 84 / 0.058) 0 1.6px, transparent 3px);
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-blueprint-node[aria-pressed="true"],
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-user-chat-box[data-selected="true"] {
+  --tw-ring-color: oklch(0.545 0.090 68 / 0.38);
+  --tw-ring-offset-color: oklch(0.900 0.010 86);
+  border-color: var(--machine-active) !important;
+  box-shadow:
+    inset 0 1px 0 oklch(0.995 0.004 88 / 0.62),
+    0 0 0 2px oklch(0.545 0.090 68 / 0.30),
+    0 6px 14px oklch(0.430 0.022 82 / 0.13) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-user-chat-box[data-selected="true"] {
+  background:
+    radial-gradient(circle at 17px 13px, oklch(0.525 0.018 74 / 0.064) 0 0.7px, transparent 1.5px),
+    radial-gradient(circle at 33px 24px, oklch(0.360 0.012 86 / 0.060) 0 1px, transparent 2px),
+    radial-gradient(ellipse 108px 30px at 82% 16%, oklch(0.980 0.018 70 / 0.48), transparent 72%),
+    linear-gradient(180deg, oklch(0.926 0.018 72 / 0.99), oklch(0.835 0.020 74 / 0.99)),
+    var(--machine-brush) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-blueprint-node[data-status="active"],
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-blueprint-node[data-current="true"] {
+  background:
+    radial-gradient(circle at 17px 13px, oklch(0.985 0.006 78 / 0.36) 0 0.7px, transparent 1.5px),
+    linear-gradient(180deg, oklch(0.915 0.030 70 / 0.99), oklch(0.810 0.032 72 / 0.99)),
+    var(--machine-brush) !important;
+  border-color: var(--machine-active) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-blueprint-node[data-status="done"] {
+  background:
+    radial-gradient(circle at 17px 13px, oklch(0.520 0.018 126 / 0.040) 0 0.65px, transparent 1.5px),
+    linear-gradient(180deg, oklch(0.915 0.018 126 / 0.98), oklch(0.825 0.020 126 / 0.98)),
+    var(--machine-brush) !important;
+  border-color: var(--machine-done) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-blueprint-node[data-status="blocked"] {
+  background:
+    radial-gradient(circle at 17px 13px, oklch(0.520 0.022 34 / 0.040) 0 0.65px, transparent 1.5px),
+    linear-gradient(180deg, oklch(0.910 0.020 34 / 0.98), oklch(0.825 0.024 34 / 0.98)),
+    var(--machine-brush) !important;
+  border-color: var(--machine-danger) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme .dan-blueprint-node[data-status="future"] {
+  background:
+    radial-gradient(circle at 17px 13px, oklch(0.500 0.010 82 / 0.026) 0 0.6px, transparent 1.5px),
+    linear-gradient(180deg, oklch(0.855 0.008 86 / 0.86), oklch(0.790 0.008 88 / 0.86)),
+    var(--machine-brush) !important;
+  border-color: oklch(0.655 0.014 82 / 0.60) !important;
+  opacity: 0.72;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme
+  :where(.dan-blueprint-marker, .dan-blueprint-badge, .dan-blueprint-status-count) {
+  background:
+    linear-gradient(180deg, oklch(0.965 0.006 86), oklch(0.865 0.008 88)) !important;
+  color: var(--machine-muted) !important;
+  border-color: var(--machine-border) !important;
+  box-shadow:
+    inset 0 1px 0 oklch(0.995 0.004 88 / 0.50),
+    inset 0 -1px 0 oklch(0.560 0.014 84 / 0.10) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme
+  :where(.dan-blueprint-node[data-status="active"], .dan-blueprint-node[data-current="true"])
+  :where(.dan-blueprint-marker, .dan-blueprint-badge),
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme
+  :where(.dan-blueprint-status-count[data-status="active"], .dan-blueprint-status-count[data-status="ready"]) {
+  color: oklch(0.460 0.110 68) !important;
+  border-color: var(--machine-active) !important;
+  background:
+    linear-gradient(180deg, oklch(0.940 0.032 72), oklch(0.835 0.036 74)) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme
+  :where(.dan-blueprint-node[data-status="done"] .dan-blueprint-marker, .dan-blueprint-node[data-status="done"] .dan-blueprint-badge, .dan-blueprint-status-count[data-status="done"]) {
+  color: var(--machine-done) !important;
+  border-color: var(--machine-done) !important;
+  background:
+    linear-gradient(180deg, oklch(0.930 0.018 126), oklch(0.830 0.020 126)) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme
+  .dan-blueprint-node[data-status="done"]
+  .dan-blueprint-marker,
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme
+  .dan-blueprint-node[data-status="done"]
+  .dan-blueprint-badge,
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme
+  .dan-blueprint-status-count[data-status="done"] {
+  background:
+    radial-gradient(circle at 35% 26%, oklch(0.990 0.006 144 / 0.62) 0 1px, transparent 2px),
+    linear-gradient(180deg, oklch(0.908 0.044 142), oklch(0.742 0.062 145)) !important;
+  border-color: oklch(0.472 0.092 145 / 0.82) !important;
+  color: oklch(0.230 0.060 145) !important;
+  box-shadow:
+    inset 0 1px 0 oklch(0.985 0.010 142 / 0.58),
+    inset 0 -1px 0 oklch(0.315 0.070 145 / 0.18),
+    0 1px 4px oklch(0.330 0.050 145 / 0.14) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme
+  .dan-blueprint-node[data-status="done"]
+  .dan-blueprint-badge
+  svg {
+  color: oklch(0.265 0.084 145) !important;
+  filter: drop-shadow(0 1px 0 oklch(0.980 0.010 142 / 0.46));
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme
+  :where([class*="bg-emerald-"], [class*="bg-cyan-"], [class*="bg-blue-"], [class*="bg-sky-"]) {
+  background:
+    linear-gradient(180deg, oklch(0.930 0.028 78), oklch(0.835 0.026 82)) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme
+  :where([class*="text-emerald"], [class*="text-cyan"], [class*="text-blue"], [class*="text-sky"]) {
+  color: oklch(0.450 0.090 72) !important;
+}
+
+:root[data-resolved-appearance="light"] .dan-factory-worn-theme
+  :where([class*="border-emerald"], [class*="border-cyan"], [class*="border-blue"], [class*="border-sky"]) {
+  border-color: oklch(0.560 0.080 72 / 0.72) !important;
+}

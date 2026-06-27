@@ -4,6 +4,7 @@ import {
   useSettingsStore,
   type EditorSettings,
 } from "../../store/useSettingsStore";
+import { WORKSPACE_SURFACE_THEME_OPTIONS } from "../../lib/workspaceSurfaceTheme";
 import { useCodeStore } from "../../store/useCodeStore";
 
 /* ------------------------------------------------------------------ */
@@ -179,14 +180,13 @@ function UserSettings() {
         />
       </SettingRow>
 
-      <SettingRow label="Workspace Surface" description="Visual skin for the Work/Notes workspace">
+      <SettingRow
+        label="Desktop Surface"
+        description="Factory Worn follows the app Light/Dark theme"
+      >
         <Select<EditorSettings["workspaceSurfaceTheme"]>
           value={settings.workspaceSurfaceTheme}
-          options={[
-            { value: "factory-worn", label: "Factory Worn" },
-            { value: "industrial", label: "Industrial Steel" },
-            { value: "original", label: "Original" },
-          ]}
+          options={WORKSPACE_SURFACE_THEME_OPTIONS}
           onChange={(v) => update("workspaceSurfaceTheme", v)}
         />
       </SettingRow>

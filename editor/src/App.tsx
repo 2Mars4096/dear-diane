@@ -4,6 +4,7 @@ import {
   applyAppearanceTheme,
   subscribeToSystemAppearance,
 } from "./lib/appearanceTheme";
+import { workspaceSurfaceThemeClassName } from "./lib/workspaceSurfaceTheme";
 import { useSettingsStore } from "./store/useSettingsStore";
 
 const AppShell = lazy(() => import("./components/shell/AppShell"));
@@ -41,6 +42,8 @@ function ClassicApp() {
 
 export default function App() {
   useAppearanceTheme();
+  const workspaceSurfaceTheme = useSettingsStore((s) => s.workspaceSurfaceTheme);
+  const desktopSurfaceClassName = workspaceSurfaceThemeClassName(workspaceSurfaceTheme);
   const [v2Route, setV2Route] = useState(() => isV2Route());
   const [workspaceRoute, setWorkspaceRoute] = useState(() => isWorkspaceRoute());
 
@@ -54,14 +57,16 @@ export default function App() {
   }, []);
 
   return (
-    <Suspense
-      fallback={
-        <div className="grid h-screen w-screen place-items-center bg-white text-sm text-gray-500 dark:bg-gray-950 dark:text-gray-400">
-          Loading DAN
-        </div>
-      }
-    >
-      {workspaceRoute ? <ChunkWorkspaceApp /> : v2Route ? <ChatV2App /> : <ClassicApp />}
-    </Suspense>
+    <div className={`h-screen w-screen overflow-hidden ${desktopSurfaceClassName}`}>
+      <Suspense
+        fallback={
+          <div className="grid h-screen w-screen place-items-center bg-white text-sm text-gray-500 dark:bg-gray-950 dark:text-gray-400">
+            Loading DAN
+          </div>
+        }
+      >
+        {workspaceRoute ? <ChunkWorkspaceApp /> : v2Route ? <ChatV2App /> : <ClassicApp />}
+      </Suspense>
+    </div>
   );
 }

@@ -21,6 +21,7 @@ import {
   type RuntimeConfigKey,
   type RuntimeSettingsMap,
 } from "../../lib/api";
+import { WORKSPACE_SURFACE_THEME_OPTIONS } from "../../lib/workspaceSurfaceTheme";
 import {
   useSettingsStore,
   type EditorSettings,
@@ -539,16 +540,12 @@ export default function GlobalSettingsPanel({
         />
       </SettingRow>
       <SettingRow
-        label="Workspace Surface"
-        description="Visual skin for the Work/Notes workspace."
+        label="Desktop Surface"
+        description="Factory Worn follows the app Light/Dark theme; the current worn look is its dark mode."
       >
         <Select<EditorSettings["workspaceSurfaceTheme"]>
           value={settings.workspaceSurfaceTheme}
-          options={[
-            { value: "factory-worn", label: "Factory Worn" },
-            { value: "industrial", label: "Industrial Steel" },
-            { value: "original", label: "Original" },
-          ]}
+          options={WORKSPACE_SURFACE_THEME_OPTIONS}
           onChange={(value) => update("workspaceSurfaceTheme", value)}
         />
       </SettingRow>
