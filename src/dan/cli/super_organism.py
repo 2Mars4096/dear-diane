@@ -75,6 +75,7 @@ _SUPER_DAN_REPAIR_MAX_TOKENS = 64_000
 _SUPER_DAN_VALIDATOR_MAX_TOKENS = 12_000
 _SUPER_DAN_PLANNER_MAX_TOKENS = 16_000
 _SUPER_DAN_PLAN_VALIDATOR_MAX_TOKENS = 8_000
+_SUPER_DAN_REQUEST_UNDERSTANDING_MAX_TOKENS = 8_000
 _SUPER_DAN_GENERIC_BUILDER_RETRY_ATTEMPTS = 2
 _SUPER_DAN_PLAN_CHECKBOX_RE = re.compile(r"^(\s*)-\s*\[([ xX])\]\s*(.+?)\s*$")
 _GENERIC_ALIAS_TEXT_EXTENSIONS = frozenset(
@@ -2859,7 +2860,9 @@ class SuperProgressRenderer:
         if name == "live.validation.completed":
             verdict = "passed" if event.get("passed") else "failed"
             score = _coerce_float(event.get("overall_score"))
-            self._emit(event, f"[validation] {verdict} {score:.2f}")
+            scope = str(event.get("validation_scope") or event.get("completion_scope") or "").strip()
+            scope_suffix = f" ({scope})" if scope else ""
+            self._emit(event, f"[validation] {verdict} {score:.2f}{scope_suffix}")
             failures = [
                 _truncate_text(item, limit=180)
                 for item in (event.get("deterministic_failures") or [])
@@ -2867,6 +2870,15 @@ class SuperProgressRenderer:
             ]
             for failure in failures[:2]:
                 self._emit(event, f"[validation] gap: {failure}")
+            check_records = [
+                item
+                for item in (event.get("deterministic_checks") or [])
+                if isinstance(item, Mapping)
+            ]
+            for check in check_records[:2]:
+                label = _truncate_text(check.get("check") or "deterministic check", limit=80)
+                status = str(check.get("status") or "checked").strip()
+                self._emit(event, f"[validation] check {status}: {label}")
             return
         if name == "live.builder_retry.started":
             attempt = int(event.get("attempt") or 1)
@@ -3664,11 +3676,74 @@ def _live_answer_return_shape() -> str:
     )
 
 
+def _live_request_understanding_return_shape() -> str:
+    return json.dumps(
+        {
+            "request_understanding": {
+                "request_kind": "software | research | document | project_summary | general",
+                "aspect_reviews": [
+                    {
+                        "aspect": "answer_scope_or_delivery_target",
+                        "question": "What must be understood before planning or executing this exact request?",
+                        "request_comment": (
+                            "Model-authored understanding tailored to the operator's wording, work contract, "
+                            "available sources, and confidence limits."
+                        ),
+                        "confidence": 0.8,
+                    }
+                ],
+                "confidence_scoped_acceptance": [
+                    {
+                        "criterion": (
+                            "Request-specific completion rule. Good: semantic delivery/evidence expectation. "
+                            "Bad: only tool success, artifact existence, or a completed status event."
+                        ),
+                        "confidence": 0.8,
+                        "action": "do_or_explain",
+                    }
+                ],
+                "stop_rule": "When it is honest to stop, answer, continue, or report a blocker for this request.",
+            },
+            "task_graph": [
+                {
+                    "task_id": "1",
+                    "goal": "Request-shaped work step, written for this run rather than a fixed template.",
+                    "branch_id": "b1",
+                    "parent_id": "",
+                    "depends_on": [],
+                    "owned_paths": ["Files or targets this step owns, if any."],
+                    "deliverables": ["What this step must produce for the operator."],
+                    "validation": ["Deterministic or semantic check expected for this step."],
+                    "status": "ready | deferred | blocked",
+                    "parallel_safe": True,
+                }
+            ],
+            "ready_task_ids": ["1"],
+            "deferred_task_ids": [],
+            "task_graph_update": {
+                "scope": "whole_graph",
+                "changed_task_ids": ["1"],
+                "reason": "Initial request-understanding task graph for this run.",
+            },
+            "source_tracking": {
+                "files_read": ["Only files actually used to understand the request."],
+                "links_opened": ["Links/web_search used for current external facts, if any."],
+                "commands_run": ["Read-only checks used, if any."],
+            },
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
 def _live_validation_return_shape() -> str:
     return json.dumps(
         {
             "passed": True,
             "overall_score": 0.9,
+            "validation_scope": "branch_frontier | graph_level | answer_delivery",
+            "validated_branch_ids": ["b1"],
+            "validated_task_ids": ["1-1"],
             "dimension_scores": {
                 "objective_alignment": 0.9,
                 "artifact_specificity": 0.9,
@@ -3681,6 +3756,37 @@ def _live_validation_return_shape() -> str:
             "remaining_work": [],
             "ready_next_task_ids": [],
             "dependency_revisions": [],
+            "branch_results": [
+                {
+                    "branch_id": "b1",
+                    "task_ids": ["1-1"],
+                    "status": "passed | needs_repair | blocked | deferred",
+                    "evidence": ["changed file, command result, or inspected finding"],
+                    "gap": "",
+                }
+            ],
+            "deterministic_checks": [
+                {
+                    "check": "lint, test, file existence, static inspection, or command result",
+                    "source": "tool | command | file | event",
+                    "status": "passed | failed | skipped",
+                    "evidence": "What was checked and what was observed.",
+                }
+            ],
+            "llm_semantic_checks": [
+                {
+                    "check": "Compare delivery against the original request and generated understanding.",
+                    "status": "passed | failed | uncertain",
+                    "evidence": "Why the delivery does or does not satisfy the request.",
+                }
+            ],
+            "graph_level_validation": {
+                "all_ready_branches_passed": True,
+                "remaining_deferred_task_ids": [],
+                "ready_next_task_ids": [],
+                "repair_scope": "",
+                "evidence": ["graph state or branch result summary"],
+            },
             "task_graph_update": {
                 "scope": "branch_local",
                 "changed_task_ids": ["1-1"],
@@ -4749,6 +4855,35 @@ def _live_generic_planner_task(
     )
 
 
+def _live_request_understanding_task(
+    report: SuperOrganismReport,
+    *,
+    workspace_root: Path,
+    operator_intent_policy: OperatorIntentPolicy | None = None,
+    request_understanding: Mapping[str, Any] | None = None,
+) -> str:
+    policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
+    understanding_note = _request_understanding_contract(request_understanding, stage="request_understanding")
+    if understanding_note:
+        understanding_note += " "
+    return (
+        "Generate the model-authored request understanding for this run before any planning or execution. "
+        f"Operator objective: {report.target}. "
+        f"Workspace root: {workspace_root}. "
+        f"{policy_note} "
+        f"{understanding_note}"
+        "Use the deterministic packet only as a rule-generation brief and work-contract source; do not treat it as the final "
+        "aspect review, acceptance criteria, or stop rule. Inspect only high-value read-only context when it materially changes "
+        "the understanding, such as project rules, central README/architecture files, explicit target files, recent surface "
+        "conversation, links, or current external facts when web_search is enabled. Do not create, edit, delete, or validate "
+        "workspace files in this stage. Do not write plan files or implement the deliverable. Return only a compact structured payload with "
+        "`request_understanding`, including model-authored `aspect_reviews`, `confidence_scoped_acceptance`, and `stop_rule`, "
+        "plus a small initial `task_graph` that reflects the actual user-visible work path for this request. The graph should "
+        "name ready versus deferred work, expected validation for each node, and branch ids when work can proceed in parallel; "
+        "for a tiny answer-only request, a one- or two-node graph is enough. Also return source_tracking for context actually used."
+    )
+
+
 def _live_generic_plan_validation_task(
     report: SuperOrganismReport,
     *,
@@ -5081,6 +5216,18 @@ def _live_generic_validation_task(
             "safe, and supported by changed-file evidence. Do not fail solely because deferred downstream DAG tasks remain; "
             "record those under deferred_task_gaps or remaining_work. "
         )
+    validation_flow_note = (
+        "Validate in this order: branch-wise current frontier first, then graph-level readiness only after every active "
+        "branch has succeeded, then final answer/delivery fit. For each active branch, name the branch_id/task_ids when "
+        "known, state whether it passed, needs repair, is blocked, or is deferred, and put that in branch_results. "
+        "If a branch fails, return passed=false with a focused branch-local task_graph_update and repair_brief; do not "
+        "hide the failed branch behind a generic completion status. If all ready branches pass but downstream work remains, "
+        "return passed=true with completion_scope=current_frontier plus ready_next_task_ids or deferred_task_gaps. If the "
+        "whole graph is being closed, use validation_scope=graph_level and explain whether all branch results jointly "
+        "satisfy the original request. Record deterministic_checks for concrete evidence such as lint/test/build commands, "
+        "file existence, static inspection, changed-file evidence, or tool/run results. Record llm_semantic_checks only "
+        "for judgment calls that compare the original request, model-generated understanding, task graph, and delivery. "
+    )
     return (
         "Validate the live workspace deliverable now in read-only mode. "
         f"Operator objective: {report.target}. "
@@ -5090,6 +5237,7 @@ def _live_generic_validation_task(
         f"{plan_note}"
         f"{understanding_note}"
         f"{frontier_note}"
+        f"{validation_flow_note}"
         "Validate semantic completion and request fit. Compare the original user request, generated request-understanding criteria, attempted work, mutated files, source tracking, "
         "checks, and latest task graph. Decide whether the result materially advances the objective. For report or markdown objectives, "
         "verify that a report-like artifact was actually written and is not just a generic planning memo. For software objectives, "
@@ -6506,6 +6654,13 @@ def _failed_validation_payload(
     }
 
 
+def _validation_mapping_list(payload: Mapping[str, Any], key: str) -> list[dict[str, Any]]:
+    value = payload.get(key)
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, Mapping)]
+
+
 def _normalize_validation_payload(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return _failed_validation_payload(
@@ -6517,6 +6672,12 @@ def _normalize_validation_payload(payload: Any) -> dict[str, Any]:
     deferred_gaps = _super_plan_string_list(payload.get("deferred_task_gaps") or [])
     remaining_work = _super_plan_string_list(payload.get("remaining_work") or [])
     ready_next = _super_plan_string_list(payload.get("ready_next_task_ids") or [])
+    validation_scope = str(payload.get("validation_scope") or "").strip()
+    completion_scope = str(payload.get("completion_scope") or "").strip()
+    if not validation_scope and completion_scope == "current_frontier":
+        validation_scope = "branch_frontier"
+    elif not validation_scope and completion_scope == "full_objective":
+        validation_scope = "graph_level"
     dependency_revisions = [
         dict(item)
         for item in (payload.get("dependency_revisions") or [])
@@ -6527,6 +6688,11 @@ def _normalize_validation_payload(payload: Any) -> dict[str, Any]:
         "passed": bool(payload.get("passed")),
         "overall_score": _coerce_float(payload.get("overall_score")),
         "dimension_scores": dict(dimension_scores) if isinstance(dimension_scores, dict) else {},
+        "validation_scope": validation_scope,
+        "validated_branch_ids": _super_plan_string_list(
+            payload.get("validated_branch_ids") or []
+        ),
+        "validated_task_ids": _super_plan_string_list(payload.get("validated_task_ids") or []),
         "repair_brief": str(payload.get("repair_brief") or "").strip(),
         "missing_requirements": (
             [str(item).strip() for item in missing_requirements if str(item).strip()]
@@ -6538,13 +6704,21 @@ def _normalize_validation_payload(payload: Any) -> dict[str, Any]:
         "remaining_work": remaining_work,
         "ready_next_task_ids": ready_next,
         "dependency_revisions": dependency_revisions,
+        "branch_results": _validation_mapping_list(payload, "branch_results"),
+        "deterministic_checks": _validation_mapping_list(payload, "deterministic_checks"),
+        "llm_semantic_checks": _validation_mapping_list(payload, "llm_semantic_checks"),
+        "graph_level_validation": (
+            dict(payload.get("graph_level_validation") or {})
+            if isinstance(payload.get("graph_level_validation"), Mapping)
+            else {}
+        ),
         "task_graph_update": task_graph_update,
         "aspect_coverage": [
             dict(item)
             for item in (payload.get("aspect_coverage") or [])
             if isinstance(item, Mapping)
         ] if isinstance(payload.get("aspect_coverage"), list) else [],
-        "completion_scope": str(payload.get("completion_scope") or "").strip(),
+        "completion_scope": completion_scope,
         "comparison_note": str(payload.get("comparison_note") or "").strip(),
     }
 
@@ -7027,12 +7201,23 @@ def _log_final_validation_event(
         status=validation.get("status"),
         passed=validation.get("passed"),
         overall_score=validation.get("overall_score"),
+        validation_scope=validation.get("validation_scope") or None,
         completion_scope=validation.get("completion_scope") or None,
+        validated_branch_ids=list(validation.get("validated_branch_ids") or []) or None,
+        validated_task_ids=list(validation.get("validated_task_ids") or []) or None,
         blocking_current_task_failures=list(validation.get("blocking_current_task_failures") or []) or None,
         deferred_task_gaps=list(validation.get("deferred_task_gaps") or []) or None,
         remaining_work=list(validation.get("remaining_work") or []) or None,
         ready_next_task_ids=list(validation.get("ready_next_task_ids") or []) or None,
         dependency_revisions=list(validation.get("dependency_revisions") or []) or None,
+        branch_results=list(validation.get("branch_results") or []) or None,
+        deterministic_checks=list(validation.get("deterministic_checks") or []) or None,
+        llm_semantic_checks=list(validation.get("llm_semantic_checks") or []) or None,
+        graph_level_validation=(
+            dict(validation.get("graph_level_validation") or {})
+            if isinstance(validation.get("graph_level_validation"), Mapping)
+            else None
+        ),
         task_graph_update=(
             dict(validation.get("task_graph_update") or {})
             if isinstance(validation.get("task_graph_update"), Mapping)
@@ -7048,6 +7233,56 @@ def _log_final_validation_event(
         tool_calls=int(validation.get("tool_calls") or 0),
         event_count=int(validation.get("event_count") or 0),
     )
+
+
+def _validation_failure_check_records(
+    failures: Sequence[str],
+    *,
+    source: str,
+) -> list[dict[str, str]]:
+    return [
+        {
+            "check": "Deterministic validation check",
+            "source": source,
+            "status": "failed",
+            "evidence": str(failure).strip(),
+        }
+        for failure in failures
+        if str(failure).strip()
+    ]
+
+
+def _append_validation_check_records(
+    validation: dict[str, Any],
+    records: Sequence[Mapping[str, Any]],
+) -> None:
+    existing = [
+        dict(item)
+        for item in (validation.get("deterministic_checks") or [])
+        if isinstance(item, Mapping)
+    ]
+    seen = {
+        (
+            str(item.get("check") or ""),
+            str(item.get("source") or ""),
+            str(item.get("status") or ""),
+            str(item.get("evidence") or ""),
+        )
+        for item in existing
+    }
+    for record in records:
+        item = dict(record)
+        key = (
+            str(item.get("check") or ""),
+            str(item.get("source") or ""),
+            str(item.get("status") or ""),
+            str(item.get("evidence") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        existing.append(item)
+    validation["deterministic_checks"] = existing
 
 
 async def _run_live_validation(
@@ -7098,6 +7333,13 @@ async def _run_live_validation(
             validation["error"] = pre_model_shell_failures[0]
             validation["token_usage"] = {}
             validation["deterministic_failures"] = list(deterministic_failures)
+            _append_validation_check_records(
+                validation,
+                _validation_failure_check_records(
+                    pre_model_shell_failures,
+                    source="validation_command",
+                ),
+            )
             _log_live_event(
                 event_logger,
                 "live.validation.model_skipped",
@@ -7147,6 +7389,13 @@ async def _run_live_validation(
         for item in (validation.get("deterministic_failures") or [])
         if str(item).strip()
     )
+    _append_validation_check_records(
+        validation,
+        _validation_failure_check_records(
+            validation.get("deterministic_failures") or [],
+            source="validator_report",
+        ),
+    )
     shell_failures = []
     if not shell_validation_ran:
         shell_failures = await _run_validation_shell_commands(
@@ -7161,6 +7410,13 @@ async def _run_live_validation(
         for failure in shell_failures:
             if failure not in deterministic_failures:
                 deterministic_failures.append(failure)
+        _append_validation_check_records(
+            validation,
+            _validation_failure_check_records(
+                shell_failures,
+                source="validation_command",
+            ),
+        )
     validation["deterministic_failures"] = list(deterministic_failures)
     return validation
 
@@ -8027,9 +8283,232 @@ async def _run_live_generic_execution(
     planning_token_usage: dict[str, int] | None = None
     planning_tool_calls_total = 0
     planning_event_count_total = 0
+    request_understanding_token_usage: dict[str, int] | None = None
+    request_understanding_tool_calls_total = 0
+    request_understanding_event_count_total = 0
     task_graph_revision = 0
+    understanding_plan_context: dict[str, Any] | None = None
     plan_root = _super_plan_root(event_logger=event_logger, workspace_root=workspace_root)
     plan_root_relative = _super_plan_root_relative(plan_root, workspace_root)
+
+    async def run_model_request_understanding() -> bool:
+        nonlocal request_understanding
+        nonlocal understanding_plan_context
+        nonlocal request_understanding_token_usage
+        nonlocal request_understanding_tool_calls_total
+        nonlocal request_understanding_event_count_total
+        nonlocal task_graph_revision
+        understanding_tool_ids = (
+            []
+            if prompt_only_creation_target
+            else [
+                tool_id
+                for tool_id in ("list_directory", "file_read", "web_search")
+                if tool_id in set(generic_read_only_tool_ids)
+            ]
+        )
+        _log_live_event(
+            event_logger,
+            "live.request_understanding.started",
+            model=model,
+            workspace_root=str(workspace_root),
+            tool_ids=list(understanding_tool_ids),
+            operator_intent_policy=operator_intent_payload if operator_intent_policy.active else None,
+        )
+        understanding_worker_id = "super-dan.live.general.request-understanding"
+        understanding_brief = role_brief(
+            role=RoleSpec(
+                role_label="request_understander",
+                responsibility="Generate the request-specific understanding contract before planning or execution.",
+                success_criteria=[
+                    "The output contains model-authored aspect reviews tailored to the operator request.",
+                    "The output contains request-specific acceptance criteria and a stop rule.",
+                    "The output contains a compact initial task graph for the user-visible work path.",
+                    "No workspace files are created, edited, deleted, or validated in this stage.",
+                ],
+                trace_role="super-dan.live.general.request-understanding",
+            ),
+            task=_live_request_understanding_task(
+                report,
+                workspace_root=workspace_root,
+                operator_intent_policy=operator_intent_policy,
+                request_understanding=request_understanding,
+            ),
+            scope=f"workspace={workspace_root}; Super DAN request understanding preflight",
+            hard_constraints=[
+                "Do not create, edit, delete, or otherwise mutate workspace files.",
+                "Do not write plan files or execute the deliverable.",
+                "Return structured request-understanding and initial task-graph data only.",
+                *list(operator_intent_policy.constraints),
+            ],
+            soft_constraints=[
+                "Use no tools when the request can be understood from the conversation and work contract.",
+                "Prefer explicit targets, project rules, and central files before broad discovery when read tools are enabled.",
+                "If a criterion is uncertain, turn that uncertainty into a do-or-explain acceptance rule rather than hidden future work.",
+            ],
+            tool_policy={
+                "allowed_tool_ids": list(understanding_tool_ids),
+                "preferred_tool_ids": [
+                    tool_id
+                    for tool_id in ("file_read", "list_directory", "web_search")
+                    if tool_id in set(understanding_tool_ids)
+                ],
+                "max_tool_calls": max(1, min(int(args.max_tool_calls), 8)),
+            },
+            contract_snippets=[
+                *_super_dan_stage_snippets("planner", tool_ids=understanding_tool_ids),
+            ],
+            output_contract=OutputContract(
+                definition_of_done=(
+                    "A model-authored request_understanding payload is returned before planning or execution."
+                ),
+                expected_return_shape=_live_request_understanding_return_shape(),
+            ),
+            sampling_policy={
+                "profile": "deterministic",
+                "temperature": 0.0,
+                "max_tokens": _SUPER_DAN_REQUEST_UNDERSTANDING_MAX_TOKENS,
+            },
+            evidence=[] if prompt_only_creation_target else _super_report_evidence_blocks(report),
+            input_payload={
+                "objective": report.target,
+                "workspace_root": str(workspace_root),
+                "operator_intent_policy": operator_intent_payload,
+                "request_understanding": dict(request_understanding),
+            },
+            metadata={
+                "surface": "super_organism",
+                "mode": "live",
+                "tool_budget_profile": "super_dan_live",
+                "trace_id": run_trace_id,
+                "root_task_id": run_task_id,
+                "organism_id": report.organism_id,
+                "organ_id": "super-dan.live.general",
+                "organism_stage": "request_understanding",
+                "worker_id": understanding_worker_id,
+                "operator_intent_policy": operator_intent_payload,
+            },
+        )
+        understanding_worker = _live_cell_from_brief(
+            model=model,
+            brief=understanding_brief,
+            worker_id=understanding_worker_id,
+            organism_stage="request_understanding",
+        )
+        understanding_result, understanding_tools, understanding_events = await _execute_live_request(
+            worker=understanding_worker,
+            request=_request_from_live_brief(understanding_brief, args=args),
+            tool_ids=understanding_tool_ids,
+            workspace_root=workspace_root,
+            args=args,
+            model=model,
+            provider=provider,
+            event_logger=event_logger,
+        )
+        request_understanding_token_usage = _extract_execution_usage(understanding_result)
+        request_understanding_tool_calls_total += len(understanding_tools)
+        request_understanding_event_count_total += len(understanding_events)
+        payload_source = (
+            dict(understanding_result.outputs)
+            if isinstance(understanding_result.outputs, Mapping)
+            else understanding_result.outputs
+        )
+        understanding_payload = _extract_validation_payload(payload_source)
+        updated_understanding = _extract_request_understanding_from_outputs(
+            understanding_payload,
+            fallback=request_understanding,
+        )
+        if updated_understanding is not None:
+            request_understanding = updated_understanding
+            generic_input_payload["request_understanding"] = dict(request_understanding)
+            initial_task_graph = _super_plan_task_graph(
+                understanding_payload.get("task_graph") if isinstance(understanding_payload, Mapping) else []
+            )
+            initial_ready_task_ids = _super_plan_string_list(
+                understanding_payload.get("ready_task_ids") if isinstance(understanding_payload, Mapping) else []
+            )
+            if not initial_ready_task_ids and initial_task_graph:
+                initial_ready_task_ids = _super_plan_ready_task_ids(initial_task_graph)
+            initial_deferred_task_ids = _super_plan_string_list(
+                understanding_payload.get("deferred_task_ids") if isinstance(understanding_payload, Mapping) else []
+            )
+            if not initial_deferred_task_ids and initial_task_graph:
+                initial_deferred_task_ids = _super_plan_deferred_task_ids(
+                    initial_task_graph,
+                    initial_ready_task_ids,
+                )
+            if initial_task_graph:
+                graph_update = _super_plan_graph_update_payload(understanding_payload)
+                task_graph_revision += 1
+                initial_context: dict[str, Any] = {
+                    "enabled": True,
+                    "usable": True,
+                    "persistence": "run_memory",
+                    "plan_root": "",
+                    "plan_root_relative": "",
+                    "plan_files": [],
+                    "assigned_task_ids": list(initial_ready_task_ids),
+                    "ready_task_ids": list(initial_ready_task_ids),
+                    "deferred_task_ids": list(initial_deferred_task_ids),
+                    "task_graph": list(initial_task_graph),
+                    "dependency_revisions": [],
+                    "execution_mode": "dependency_frontier",
+                    "request_understanding": dict(request_understanding),
+                }
+                understanding_plan_context = _super_plan_context_with_graph_state(
+                    initial_context,
+                    revision=task_graph_revision,
+                    source="request_understanding",
+                    update_reason=(
+                        graph_update.get("reason")
+                        or "Initial model-authored task graph from request understanding."
+                    ),
+                    update_scope=graph_update.get("scope") or "whole_graph",
+                    changed_task_ids=list(graph_update.get("changed_task_ids") or []),
+                    ready_task_ids=initial_ready_task_ids,
+                    deferred_task_ids=initial_deferred_task_ids,
+                ) or initial_context
+                generic_input_payload["plan_context"] = _super_plan_context_payload(
+                    understanding_plan_context,
+                    plan_root=plan_root,
+                    workspace_root=workspace_root,
+                )
+                _log_live_event(
+                    event_logger,
+                    "live.task_graph.updated",
+                    source="request_understanding",
+                    plan_context=_super_plan_context_payload(
+                        understanding_plan_context,
+                        plan_root=plan_root,
+                        workspace_root=workspace_root,
+                    ),
+                    task_graph_state=dict(understanding_plan_context.get("task_graph_state") or {}),
+                )
+            _log_live_event(
+                event_logger,
+                "live.request_understanding.updated",
+                source="request_understanding",
+                request_understanding=dict(request_understanding),
+                request_understanding_schema=request_understanding.get("schema"),
+                request_kind=request_understanding.get("request_kind"),
+                original_request=request_understanding.get("original_request"),
+                workspace_root=request_understanding.get("workspace_root"),
+                target_paths=list(request_understanding.get("target_paths") or []),
+                aspect_reviews=list(request_understanding.get("aspect_reviews") or []),
+                confidence_scoped_acceptance=list(request_understanding.get("confidence_scoped_acceptance") or []),
+                stop_rule=request_understanding.get("stop_rule"),
+            )
+            return True
+        _log_live_event(
+            event_logger,
+            "live.request_understanding.fallback",
+            model=model,
+            status=understanding_result.status,
+            error=understanding_result.error,
+            reason="model did not return request_understanding with aspect reviews, acceptance criteria, or a stop rule",
+            request_understanding=dict(request_understanding),
+        )
+        return False
 
     async def run_optional_planner() -> tuple[dict[str, Any] | None, dict[str, int] | None]:
         nonlocal planning_tool_calls_total, planning_event_count_total, request_understanding, task_graph_revision
@@ -8470,7 +8949,42 @@ async def _run_live_generic_execution(
             return None, usage
         return (validation_plan_context, usage)
 
+    if not await run_model_request_understanding():
+        error = "request understanding stage did not return model-authored acceptance criteria"
+        return {
+            "status": "failed",
+            "mode": "live",
+            "model": model,
+            "workspace_root": str(workspace_root),
+            "files": [],
+            "required_files": [],
+            "missing_files": [],
+            "tool_calls": request_understanding_tool_calls_total,
+            "mutated_paths": [],
+            "event_count": request_understanding_event_count_total,
+            "summary": "",
+            "error": error,
+            "summary_label": "Live Run",
+            "objective_kind": "general",
+            "answer_recovery_attempts": 0,
+            "token_usage": request_understanding_token_usage,
+            "validation": {
+                "passed": False,
+                "repair_brief": error,
+                "missing_requirements": [error],
+            },
+            "request_understanding": dict(request_understanding),
+            "plan_context": _super_plan_context_payload(
+                None,
+                plan_root=plan_root,
+                workspace_root=workspace_root,
+                include_task_state_key="task_state_final",
+            ),
+        }
+
     plan_context, planning_token_usage = await run_optional_planner()
+    if not plan_context and understanding_plan_context:
+        plan_context = dict(understanding_plan_context)
     full_plan_context = dict(plan_context) if isinstance(plan_context, Mapping) else None
     worktree_prepared_tasks: list[dict[str, Any]] = []
     main_frontier_task: dict[str, Any] | None = None
@@ -9132,10 +9646,13 @@ async def _run_live_generic_execution(
             stop_rule=request_understanding.get("stop_rule"),
         )
     build_token_usage = _merge_token_usage(
-        planning_token_usage,
+        request_understanding_token_usage,
         _merge_token_usage(
-            _extract_execution_usage(result),
-            worktree_summary.get("token_usage"),
+            planning_token_usage,
+            _merge_token_usage(
+                _extract_execution_usage(result),
+                worktree_summary.get("token_usage"),
+            ),
         ),
     )
     mutated_paths = _mutation_paths_from_tools(
@@ -9382,6 +9899,9 @@ async def _run_live_generic_execution(
                     responsibility="Validate the Super DAN workspace deliverable in read-only mode.",
                     success_criteria=[
                         "Mutated files and relevant git evidence were inspected.",
+                        "Each active branch/frontier task has an explicit branch_result with evidence, status, and gap.",
+                        "Concrete deterministic checks are separated from LLM semantic fit checks.",
+                        "Graph-level completion is claimed only after all ready branches pass or remaining branch work is named.",
                         "The implementation materially advances the operator objective.",
                         "Placeholder-style or non-responsive changes are rejected.",
                     ],
@@ -9416,6 +9936,8 @@ async def _run_live_generic_execution(
                 soft_constraints=[
                     "Prefer concrete missing requirements over vague criticism.",
                     "Judge material advancement against the operator objective.",
+                    "Use tests, lints, file existence, static inspection, and command outcomes as deterministic checks when available.",
+                    "Use LLM judgment only for semantic fit against the request, understanding, and task graph.",
                 ],
                 allowed_tool_ids=generic_read_only_tool_ids,
                 tool_policy={
@@ -10128,10 +10650,16 @@ async def _run_live_generic_execution(
             len(executed_tools)
             + validation_tool_calls_total
             + planning_tool_calls_total
+            + request_understanding_tool_calls_total
             + int(worktree_summary.get("tool_calls") or 0)
         ),
         "mutated_paths": list(mutated_paths),
-        "event_count": len(events) + validation_event_count_total + planning_event_count_total,
+        "event_count": (
+            len(events)
+            + validation_event_count_total
+            + planning_event_count_total
+            + request_understanding_event_count_total
+        ),
         "summary": final_summary,
         "error": error,
         "summary_label": "Live Run",

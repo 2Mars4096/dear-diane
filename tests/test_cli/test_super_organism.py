@@ -768,6 +768,7 @@ def _file_write_call(call_id: str, path: str, content: str) -> dict:
 class _FakeLiveCodingProvider:
     def __init__(self) -> None:
         self.calls = 0
+        self.work_calls = 0
         self.rendered_messages: list[str] = []
 
     async def complete(
@@ -781,7 +782,70 @@ class _FakeLiveCodingProvider:
         self.calls += 1
         rendered = "\n".join(str(message.get("content") or "") for message in messages)
         self.rendered_messages.append(rendered)
-        if self.calls == 1:
+        if "Generate the model-authored request understanding" in rendered:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "request_understanding": {
+                            "request_kind": "software",
+                            "aspect_reviews": [
+                                {
+                                    "aspect": "implementation_path",
+                                    "question": "What is the requested source-workspace change?",
+                                    "request_comment": "Make a bounded workspace change and verify it.",
+                                    "confidence": 0.9,
+                                }
+                            ],
+                            "confidence_scoped_acceptance": [
+                                {
+                                    "criterion": "Create or update the requested workspace artifact and validate it.",
+                                    "confidence": 0.9,
+                                    "action": "do_or_explain",
+                                }
+                            ],
+                            "stop_rule": "Stop when the workspace change is present and validation evidence or blocker is explicit.",
+                        },
+                        "task_graph": [
+                            {
+                                "task_id": "1",
+                                "goal": "Make the bounded workspace change",
+                                "branch_id": "b1",
+                                "depends_on": [],
+                                "owned_paths": ["SUPER_DAN_LIVE_NOTE.md"],
+                                "deliverables": ["SUPER_DAN_LIVE_NOTE.md"],
+                                "validation": ["inspect SUPER_DAN_LIVE_NOTE.md"],
+                                "status": "ready",
+                                "parallel_safe": False,
+                            },
+                            {
+                                "task_id": "2",
+                                "goal": "Validate and summarize the result",
+                                "branch_id": "b1",
+                                "depends_on": ["1"],
+                                "owned_paths": [],
+                                "deliverables": ["final response"],
+                                "validation": ["model validation"],
+                                "status": "deferred",
+                                "parallel_safe": False,
+                            },
+                        ],
+                        "ready_task_ids": ["1"],
+                        "deferred_task_ids": ["2"],
+                        "task_graph_update": {
+                            "scope": "whole_graph",
+                            "changed_task_ids": ["1", "2"],
+                            "reason": "Initial fake request-understanding graph.",
+                        },
+                        "source_tracking": {"files_read": [], "links_opened": [], "commands_run": []},
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 6, "completion_tokens": 4, "total_tokens": 10},
+                finish_reason="stop",
+            )
+        self.work_calls += 1
+        if self.work_calls == 1:
             tool_calls = [
                 _file_write_call(
                     "call-generic",
@@ -801,7 +865,7 @@ class _FakeLiveCodingProvider:
                     "tool_calls": tool_calls,
                 },
             )
-        if self.calls == 2:
+        if self.work_calls == 2:
             return CompletionResult(
                 text=json.dumps(
                     {
@@ -843,6 +907,7 @@ class _FakeLiveCodingProvider:
 class _FakeLivePlannerProvider:
     def __init__(self) -> None:
         self.calls = 0
+        self.work_calls = 0
         self.rendered_messages: list[str] = []
 
     async def complete(
@@ -856,7 +921,70 @@ class _FakeLivePlannerProvider:
         self.calls += 1
         rendered = "\n".join(str(message.get("content") or "") for message in messages)
         self.rendered_messages.append(rendered)
-        if self.calls == 1:
+        if "Generate the model-authored request understanding" in rendered:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "request_understanding": {
+                            "request_kind": "document",
+                            "aspect_reviews": [
+                                {
+                                    "aspect": "deliverable_scope",
+                                    "question": "What should the validation report cover?",
+                                    "request_comment": "Clean the dataset and produce a validation report.",
+                                    "confidence": 0.9,
+                                }
+                            ],
+                            "confidence_scoped_acceptance": [
+                                {
+                                    "criterion": "Deliver a validation report grounded in workspace evidence.",
+                                    "confidence": 0.9,
+                                    "action": "do_or_explain",
+                                }
+                            ],
+                            "stop_rule": "Stop when the report exists, plan evidence is reconciled, and validation passes.",
+                        },
+                        "task_graph": [
+                            {
+                                "task_id": "1",
+                                "goal": "Plan dataset cleaning and validation report",
+                                "branch_id": "b1",
+                                "depends_on": [],
+                                "owned_paths": [".dan-super/runs/turn-01/plans"],
+                                "deliverables": ["run-local plan"],
+                                "validation": ["plan validator"],
+                                "status": "ready",
+                                "parallel_safe": False,
+                            },
+                            {
+                                "task_id": "2",
+                                "goal": "Create the validation report",
+                                "branch_id": "b1",
+                                "depends_on": ["1"],
+                                "owned_paths": ["cleaned-dataset-validation.md"],
+                                "deliverables": ["cleaned-dataset-validation.md"],
+                                "validation": ["inspect report"],
+                                "status": "deferred",
+                                "parallel_safe": False,
+                            },
+                        ],
+                        "ready_task_ids": ["1"],
+                        "deferred_task_ids": ["2"],
+                        "task_graph_update": {
+                            "scope": "whole_graph",
+                            "changed_task_ids": ["1", "2"],
+                            "reason": "Initial fake broad-work graph.",
+                        },
+                        "source_tracking": {"files_read": [], "links_opened": [], "commands_run": []},
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 6, "completion_tokens": 4, "total_tokens": 10},
+                finish_reason="stop",
+            )
+        self.work_calls += 1
+        if self.work_calls == 1:
             assert "Run-local plan file contract" in rendered
             assert "all-digit numeric identifiers" in rendered
             assert "top-level phase" in rendered.lower()
@@ -904,7 +1032,7 @@ class _FakeLivePlannerProvider:
                     "tool_calls": tool_calls,
                 },
             )
-        if self.calls == 2:
+        if self.work_calls == 2:
             return CompletionResult(
                 text=json.dumps(
                     {
@@ -922,7 +1050,7 @@ class _FakeLivePlannerProvider:
                 usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
                 finish_reason="stop",
             )
-        if self.calls == 3:
+        if self.work_calls == 3:
             assert "Validate the run-local execution plan" in rendered
             assert "Reject alphabetic plan ids" in rendered
             return CompletionResult(
@@ -941,7 +1069,7 @@ class _FakeLivePlannerProvider:
                 usage={"prompt_tokens": 9, "completion_tokens": 4, "total_tokens": 13},
                 finish_reason="stop",
             )
-        if self.calls == 4:
+        if self.work_calls == 4:
             assert "Plan execution contract" in rendered
             tool_calls = [
                 _file_write_call(
@@ -981,7 +1109,7 @@ class _FakeLivePlannerProvider:
                     "tool_calls": tool_calls,
                 },
             )
-        if self.calls == 5:
+        if self.work_calls == 5:
             return CompletionResult(
                 text=json.dumps(
                     {
@@ -1027,6 +1155,7 @@ class _FakeLivePlannerProvider:
 class _FakeLiveDagPlannerProvider:
     def __init__(self) -> None:
         self.calls = 0
+        self.work_calls = 0
         self.rendered_messages: list[str] = []
 
     async def complete(
@@ -1069,7 +1198,47 @@ class _FakeLiveDagPlannerProvider:
                 "parallel_safe": True,
             },
         ]
-        if self.calls == 1:
+        if "Generate the model-authored request understanding" in rendered:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "request_understanding": {
+                            "request_kind": "software",
+                            "aspect_reviews": [
+                                {
+                                    "aspect": "multi_part_scope",
+                                    "question": "What branches must this local project system cover?",
+                                    "request_comment": "Shared core and gallery can start before app demos.",
+                                    "confidence": 0.9,
+                                }
+                            ],
+                            "confidence_scoped_acceptance": [
+                                {
+                                    "criterion": "Advance the ready frontier and explicitly defer downstream app work.",
+                                    "confidence": 0.9,
+                                    "action": "do_or_explain",
+                                }
+                            ],
+                            "stop_rule": "Stop only after ready branch progress is validated and deferred work is named.",
+                        },
+                        "task_graph": task_graph,
+                        "ready_task_ids": ["1-1", "1-2"],
+                        "deferred_task_ids": ["2-1"],
+                        "task_graph_update": {
+                            "scope": "whole_graph",
+                            "changed_task_ids": ["1-1", "1-2", "2-1"],
+                            "reason": "Initial fake DAG from request understanding.",
+                        },
+                        "source_tracking": {"files_read": [], "links_opened": [], "commands_run": []},
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 6, "completion_tokens": 4, "total_tokens": 10},
+                finish_reason="stop",
+            )
+        self.work_calls += 1
+        if self.work_calls == 1:
             assert "dependency task graph" in rendered
             assert "ready frontier" in rendered
             tool_calls = [
@@ -1100,7 +1269,7 @@ class _FakeLiveDagPlannerProvider:
                     "tool_calls": tool_calls,
                 },
             )
-        if self.calls == 2:
+        if self.work_calls == 2:
             return CompletionResult(
                 text=json.dumps(
                     {
@@ -1118,7 +1287,7 @@ class _FakeLiveDagPlannerProvider:
                 usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
                 finish_reason="stop",
             )
-        if self.calls == 3:
+        if self.work_calls == 3:
             assert "dependency-ready frontier" in rendered
             return CompletionResult(
                 text=json.dumps(
@@ -1140,7 +1309,7 @@ class _FakeLiveDagPlannerProvider:
                 usage={"prompt_tokens": 9, "completion_tokens": 4, "total_tokens": 13},
                 finish_reason="stop",
             )
-        if self.calls == 4:
+        if self.work_calls == 4:
             assert "Dependency-frontier execution contract" in rendered
             assert "1-1, 1-2" in rendered
             assert "2-1" in rendered
@@ -1163,7 +1332,7 @@ class _FakeLiveDagPlannerProvider:
                     "tool_calls": tool_calls,
                 },
             )
-        if self.calls == 5:
+        if self.work_calls == 5:
             return CompletionResult(
                 text=json.dumps(
                     {
@@ -1264,6 +1433,46 @@ class _FakeLiveWorktreeParallelProvider:
         self.rendered_messages.append(rendered)
         has_tool_response = self._has_tool_response(messages)
         task_graph = self._task_graph()
+
+        if "Generate the model-authored request understanding" in rendered:
+            return CompletionResult(
+                text=json.dumps(
+                    {
+                        "request_understanding": {
+                            "request_kind": "software",
+                            "aspect_reviews": [
+                                {
+                                    "aspect": "parallel_foundation_scope",
+                                    "question": "Which ready branches can advance independently?",
+                                    "request_comment": "The shared core and gallery shell can split before app demos.",
+                                    "confidence": 0.9,
+                                }
+                            ],
+                            "confidence_scoped_acceptance": [
+                                {
+                                    "criterion": "Advance both non-conflicting ready foundation branches and defer app demos.",
+                                    "confidence": 0.9,
+                                    "action": "do_or_explain",
+                                }
+                            ],
+                            "stop_rule": "Stop when the ready frontier is delivered and deferred branch gaps are named.",
+                        },
+                        "task_graph": task_graph,
+                        "ready_task_ids": ["1-1", "1-2"],
+                        "deferred_task_ids": ["2-1"],
+                        "task_graph_update": {
+                            "scope": "whole_graph",
+                            "changed_task_ids": ["1-1", "1-2", "2-1"],
+                            "reason": "Initial fake parallel DAG from request understanding.",
+                        },
+                        "source_tracking": {"files_read": [], "links_opened": [], "commands_run": []},
+                    },
+                    sort_keys=True,
+                ),
+                model=model,
+                usage={"prompt_tokens": 6, "completion_tokens": 4, "total_tokens": 10},
+                finish_reason="stop",
+            )
 
         if "Understand the operator request and project context" in rendered:
             if not has_tool_response:
@@ -3265,6 +3474,12 @@ def test_super_dan_generic_prompts_include_request_understanding_contract(tmp_pa
         operator_intent_policy=policy,
     )
 
+    understanding_task = super_cli._live_request_understanding_task(
+        report,
+        workspace_root=tmp_path,
+        operator_intent_policy=policy,
+        request_understanding=understanding,
+    )
     builder = super_cli._live_generic_task(
         report,
         workspace_root=tmp_path,
@@ -3307,6 +3522,20 @@ def test_super_dan_generic_prompts_include_request_understanding_contract(tmp_pa
         request_understanding=understanding,
     )
 
+    understanding_shape = json.loads(super_cli._live_request_understanding_return_shape())
+    assert "request_understanding" in understanding_shape
+    assert "aspect_reviews" in understanding_shape["request_understanding"]
+    assert "confidence_scoped_acceptance" in understanding_shape["request_understanding"]
+    assert "stop_rule" in understanding_shape["request_understanding"]
+    assert "task_graph" in understanding_shape
+    assert "ready_task_ids" in understanding_shape
+    assert "task_graph_update" in understanding_shape
+    assert "Generate the model-authored request understanding" in understanding_task
+    assert "deterministic packet only as a rule-generation brief" in understanding_task
+    assert "Do not write plan files" in understanding_task
+    assert "small initial `task_graph`" in understanding_task
+    assert "`request_understanding`" in understanding_task
+    assert "Do not create, edit, delete" in understanding_task
     assert "Request understanding:" in builder
     assert "meta-guidance only" in builder
     assert "Current stage: builder" in builder
@@ -3327,9 +3556,69 @@ def test_super_dan_generic_prompts_include_request_understanding_contract(tmp_pa
     assert "Criteria hooks:" in validator
     assert "Model-generated confidence-scoped acceptance criteria" not in validator
     assert "Current stage: validator" in validator
+    assert "branch-wise current frontier first" in validator
+    assert "graph-level readiness" in validator
+    assert "deterministic_checks" in validator
+    assert "llm_semantic_checks" in validator
     assert "Validate semantic completion and request fit" in validator
     assert "Current stage: repair" in repair
     assert "Repair only the current ready/frontier blocker" in repair
+
+    validation_shape = json.loads(super_cli._live_validation_return_shape())
+    assert validation_shape["validation_scope"] == "branch_frontier | graph_level | answer_delivery"
+    assert "validated_branch_ids" in validation_shape
+    assert "validated_task_ids" in validation_shape
+    assert "branch_results" in validation_shape
+    assert "deterministic_checks" in validation_shape
+    assert "llm_semantic_checks" in validation_shape
+    assert "graph_level_validation" in validation_shape
+
+
+def test_super_dan_validation_payload_preserves_branch_and_check_evidence() -> None:
+    payload = super_cli._normalize_validation_payload(
+        {
+            "passed": False,
+            "overall_score": 0.42,
+            "completion_scope": "current_frontier",
+            "validated_branch_ids": ["b1"],
+            "validated_task_ids": ["1-1"],
+            "branch_results": [
+                {
+                    "branch_id": "b1",
+                    "task_ids": ["1-1"],
+                    "status": "needs_repair",
+                    "gap": "Missing lint evidence.",
+                }
+            ],
+            "deterministic_checks": [
+                {
+                    "check": "npm test -- blueprintNodes",
+                    "source": "command",
+                    "status": "failed",
+                    "evidence": "1 failed",
+                }
+            ],
+            "llm_semantic_checks": [
+                {
+                    "check": "Request asks for in-session answer.",
+                    "status": "failed",
+                    "evidence": "Only a file was created.",
+                }
+            ],
+            "graph_level_validation": {
+                "all_ready_branches_passed": False,
+                "repair_scope": "branch_local",
+            },
+        }
+    )
+
+    assert payload["validation_scope"] == "branch_frontier"
+    assert payload["validated_branch_ids"] == ["b1"]
+    assert payload["validated_task_ids"] == ["1-1"]
+    assert payload["branch_results"][0]["gap"] == "Missing lint evidence."
+    assert payload["deterministic_checks"][0]["check"] == "npm test -- blueprintNodes"
+    assert payload["llm_semantic_checks"][0]["status"] == "failed"
+    assert payload["graph_level_validation"]["repair_scope"] == "branch_local"
 
 
 def test_implicit_live_probe_allows_markdown_report_with_model(tmp_path) -> None:
@@ -5365,7 +5654,7 @@ def test_main_live_generic_uses_optional_run_local_planner_for_broad_work(
     assert "[planning] started" in stdout
     assert "[planning] validation passed" in stdout
     assert "Live Run: completed" in stdout
-    assert fake_provider.calls == 6
+    assert fake_provider.calls == 7
     assert (tmp_path / "cleaned-dataset-validation.md").exists()
     plan_root = tmp_path / ".dan-super" / "runs" / "turn-01" / "plans"
     assert (plan_root / "1-dataset-cleaning-pipeline.md").exists()
@@ -5379,6 +5668,11 @@ def test_main_live_generic_uses_optional_run_local_planner_for_broad_work(
         for line in event_log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+    graph_updates = [
+        row for row in event_rows if row.get("event") == "live.task_graph.updated"
+    ]
+    assert graph_updates
+    assert graph_updates[0]["source"] == "request_understanding"
     assert any(row.get("event") == "live.planning.started" for row in event_rows)
     assert any(row.get("event") == "live.plan_validation.completed" for row in event_rows)
     final_validation = [
@@ -5421,11 +5715,12 @@ def test_main_live_interactive_source_objective_skips_run_local_planner(
     stdout = capsys.readouterr().out
     assert "[planning] started" not in stdout
     assert "Live Run: completed" in stdout
-    assert fake_provider.calls == 3
+    assert fake_provider.calls == 4
     assert fake_provider.rendered_messages
-    assert "Interactive source implementation condition" in fake_provider.rendered_messages[0]
-    assert "Do not use `.dan-super` plan files" in fake_provider.rendered_messages[0]
-    assert "Current step:" in fake_provider.rendered_messages[0]
+    first_builder_prompt = fake_provider.rendered_messages[1]
+    assert "Interactive source implementation condition" in first_builder_prompt
+    assert "Do not use `.dan-super` plan files" in first_builder_prompt
+    assert "Current step:" in first_builder_prompt
     assert (tmp_path / "SUPER_DAN_LIVE_NOTE.md").exists()
     event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
     event_rows = [
@@ -5434,6 +5729,12 @@ def test_main_live_interactive_source_objective_skips_run_local_planner(
         if line.strip()
     ]
     assert not any(row.get("event") == "live.planning.started" for row in event_rows)
+    graph_updates = [
+        row for row in event_rows if row.get("event") == "live.task_graph.updated"
+    ]
+    assert graph_updates
+    assert graph_updates[0]["source"] == "request_understanding"
+    assert graph_updates[0]["task_graph_state"]["tasks"][0]["task_id"] == "1"
 
 
 def test_source_file_repair_objective_skips_run_local_planner() -> None:
@@ -5536,9 +5837,9 @@ def test_main_live_targeted_repair_prompt_requires_material_edit_or_blocker(
     assert exit_code == 0
     stdout = capsys.readouterr().out
     assert "[planning] started" not in stdout
-    assert fake_provider.calls == 3
+    assert fake_provider.calls == 4
     assert fake_provider.rendered_messages
-    first_prompt = fake_provider.rendered_messages[0]
+    first_prompt = fake_provider.rendered_messages[1]
     assert "targeted source repair objectives" in first_prompt
     assert "make a concrete file_edit/file_write mutation" in first_prompt
     assert "report a precise blocker" in first_prompt
@@ -5571,7 +5872,7 @@ def test_main_live_generic_dag_deferred_tasks_do_not_trigger_repair(
     assert exit_code == 0
     stdout = capsys.readouterr().out
     assert "Live Run: completed" in stdout
-    assert fake_provider.calls == 6
+    assert fake_provider.calls == 7
     assert (tmp_path / "src" / "core.js").exists()
     event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
     event_rows = [
@@ -5593,6 +5894,7 @@ def test_main_live_generic_dag_deferred_tasks_do_not_trigger_repair(
         row for row in event_rows if row.get("event") == "live.task_graph.updated"
     ]
     assert [row.get("source") for row in graph_updates] == [
+        "request_understanding",
         "planner",
         "plan_validator",
         "execution_frontier",
@@ -5602,18 +5904,18 @@ def test_main_live_generic_dag_deferred_tasks_do_not_trigger_repair(
     assert [
         row["task_graph_state"]["revision"]
         for row in graph_updates
-    ] == [1, 2, 3, 4, 5]
+    ] == [1, 2, 3, 4, 5, 6]
     assert [
         row["task_graph_state"]["version_id"]
         for row in graph_updates
-    ] == ["v1", "v2", "v2.b1.1", "v2.b1.2", "v2.b1.3"]
-    assert graph_updates[-1]["task_graph_state"]["root_version_id"] == "v2"
-    assert graph_updates[-1]["task_graph_state"]["parent_version_ids"] == ["v2.b1.2"]
+    ] == ["v1", "v2", "v3", "v3.b1.1", "v3.b1.2", "v3.b1.3"]
+    assert graph_updates[-1]["task_graph_state"]["root_version_id"] == "v3"
+    assert graph_updates[-1]["task_graph_state"]["parent_version_ids"] == ["v3.b1.2"]
     assert graph_updates[0]["task_graph_state"]["schema"] == "super_dan_task_graph_v1"
     assert graph_updates[0]["task_graph_state"]["parallel_groups"] == [["1-1", "1-2"]]
     execution_tasks = {
         task["task_id"]: task["state"]
-        for task in graph_updates[3]["task_graph_state"]["tasks"]
+        for task in graph_updates[4]["task_graph_state"]["tasks"]
     }
     assert execution_tasks["1-1"] == "done"
     assert execution_tasks["1-2"] == "active"
@@ -5633,7 +5935,7 @@ def test_main_live_generic_dag_deferred_tasks_do_not_trigger_repair(
     assert final_validation["passed"] is True
     assert final_validation["completion_scope"] == "current_frontier"
     assert final_validation["deferred_task_gaps"] == ["2-1 app demo remains deferred"]
-    assert final_validation["task_graph_state"]["revision"] == 5
+    assert final_validation["task_graph_state"]["revision"] == 6
     assert final_validation.get("deterministic_failures") in (None, [])
 
 
@@ -5667,7 +5969,7 @@ def test_main_live_generic_admits_ready_frontier_worktree_task(
     assert "[worktree] frontier started: 1-2" in stdout
     assert "[worktree] diff admitted" in stdout
     assert "Live Run: completed" in stdout
-    assert fake_provider.calls == 8
+    assert fake_provider.calls == 9
     assert (tmp_path / "src" / "core.js").read_text(encoding="utf-8") == (
         "export const coreReady = true;\n"
     )
@@ -5688,10 +5990,10 @@ def test_main_live_generic_admits_ready_frontier_worktree_task(
     assert [
         row["task_graph_state"]["version_id"]
         for row in graph_updates
-    ] == ["v1", "v2", "v2.b1.1", "v2.b1.2", "v2.b1.3+b2.1"]
+    ] == ["v1", "v2", "v3", "v3.b1.1", "v3.b1.2", "v3.b1.3+b2.1"]
     execution_tasks = {
         task["task_id"]: task["state"]
-        for task in graph_updates[3]["task_graph_state"]["tasks"]
+        for task in graph_updates[4]["task_graph_state"]["tasks"]
     }
     assert execution_tasks["1-1"] == "done"
     assert execution_tasks["1-2"] == "done"
@@ -5702,7 +6004,7 @@ def test_main_live_generic_admits_ready_frontier_worktree_task(
     assert validator_tasks["1-1"] == "done"
     assert validator_tasks["1-2"] == "done"
     assert validator_tasks["2-1"] == "ready"
-    assert graph_updates[-1]["task_graph_state"]["parent_version_ids"] == ["v2.b1.2", "v2"]
+    assert graph_updates[-1]["task_graph_state"]["parent_version_ids"] == ["v3.b1.2", "v3"]
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"
     ][-1]
