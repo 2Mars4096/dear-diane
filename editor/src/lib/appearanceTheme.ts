@@ -2,6 +2,7 @@ import type { EditorSettings } from "../store/useSettingsStore";
 
 export type AppearanceTheme = EditorSettings["theme"];
 export type MonacoTheme = Exclude<AppearanceTheme, "system">;
+export type WorkspaceSurfaceTone = EditorSettings["workspaceSurfaceTone"];
 
 function systemPrefersDark(): boolean {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
@@ -17,7 +18,19 @@ export function resolveMonacoTheme(theme: AppearanceTheme): MonacoTheme {
   return theme;
 }
 
-export function applyAppearanceTheme(theme: AppearanceTheme) {
+export function resolveSurfaceAppearance(
+  theme: AppearanceTheme,
+  surfaceTone: WorkspaceSurfaceTone = "system",
+) {
+  if (surfaceTone === "day") return "light";
+  if (surfaceTone === "night") return "dark";
+  return resolveMonacoTheme(theme) === "vs" ? "light" : "dark";
+}
+
+export function applyAppearanceTheme(
+  theme: AppearanceTheme,
+  surfaceTone: WorkspaceSurfaceTone = "system",
+) {
   if (typeof document === "undefined") return;
 
   const root = document.documentElement;
@@ -27,6 +40,8 @@ export function applyAppearanceTheme(theme: AppearanceTheme) {
   root.classList.toggle("dark", dark);
   root.dataset.appearance = theme;
   root.dataset.resolvedAppearance = dark ? "dark" : "light";
+  root.dataset.surfaceAppearance = surfaceTone;
+  root.dataset.resolvedSurfaceAppearance = resolveSurfaceAppearance(theme, surfaceTone);
   root.style.colorScheme = dark ? "dark" : "light";
 }
 

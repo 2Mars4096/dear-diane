@@ -57,12 +57,12 @@ function createRenderer(): Marked {
       highlighted = escapeHtml(text);
     }
     const label = lang
-      ? `<span class="absolute right-3 top-2 text-[10px] text-slate-400">${escapeHtml(lang)}</span>`
+      ? `<span class="dan-markdown-code-label absolute right-3 top-2 text-[10px] text-slate-400">${escapeHtml(lang)}</span>`
       : "";
     return (
-      `<div class="relative my-3 overflow-hidden rounded-md border border-slate-800 bg-slate-950">` +
+      `<div class="dan-markdown-code-frame relative my-3 overflow-hidden rounded-md border border-slate-800 bg-slate-950">` +
       label +
-      `<pre class="m-0 overflow-x-auto p-3 pr-12 text-xs leading-5 text-slate-100"><code>${highlighted}</code></pre>` +
+      `<pre class="dan-markdown-code-scroll m-0 overflow-x-auto p-3 pr-12 text-xs leading-5 text-slate-100"><code>${highlighted}</code></pre>` +
       `</div>`
     );
   };

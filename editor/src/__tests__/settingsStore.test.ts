@@ -27,9 +27,12 @@ describe("useSettingsStore", () => {
 
   it("defaults the workspace surface to Factory Worn while preserving theme switching", () => {
     expect(useSettingsStore.getState().workspaceSurfaceTheme).toBe("factory-worn");
+    expect(useSettingsStore.getState().workspaceSurfaceTone).toBe("system");
 
     useSettingsStore.getState().updateSetting("workspaceSurfaceTheme", "original");
+    useSettingsStore.getState().updateSetting("workspaceSurfaceTone", "day");
 
     expect(useSettingsStore.getState().workspaceSurfaceTheme).toBe("original");
+    expect(useSettingsStore.getState().workspaceSurfaceTone).toBe("day");
   });
 });

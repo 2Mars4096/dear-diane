@@ -4,7 +4,10 @@ import {
   useSettingsStore,
   type EditorSettings,
 } from "../../store/useSettingsStore";
-import { WORKSPACE_SURFACE_THEME_OPTIONS } from "../../lib/workspaceSurfaceTheme";
+import {
+  WORKSPACE_SURFACE_THEME_OPTIONS,
+  WORKSPACE_SURFACE_TONE_OPTIONS,
+} from "../../lib/workspaceSurfaceTheme";
 import { useCodeStore } from "../../store/useCodeStore";
 
 /* ------------------------------------------------------------------ */
@@ -182,12 +185,23 @@ function UserSettings() {
 
       <SettingRow
         label="Desktop Surface"
-        description="Factory Worn follows the app Light/Dark theme"
+        description="Visual skin for the workspace panes"
       >
         <Select<EditorSettings["workspaceSurfaceTheme"]>
           value={settings.workspaceSurfaceTheme}
           options={WORKSPACE_SURFACE_THEME_OPTIONS}
           onChange={(v) => update("workspaceSurfaceTheme", v)}
+        />
+      </SettingRow>
+
+      <SettingRow
+        label="Surface Tone"
+        description="Day or night look for the workspace skin"
+      >
+        <Select<EditorSettings["workspaceSurfaceTone"]>
+          value={settings.workspaceSurfaceTone}
+          options={WORKSPACE_SURFACE_TONE_OPTIONS}
+          onChange={(v) => update("workspaceSurfaceTone", v)}
         />
       </SettingRow>
 

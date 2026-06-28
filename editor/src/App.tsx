@@ -23,16 +23,19 @@ function isWorkspaceRoute() {
 
 function useAppearanceTheme() {
   const theme = useSettingsStore((s) => s.theme);
+  const workspaceSurfaceTone = useSettingsStore((s) => s.workspaceSurfaceTone);
 
   useEffect(() => {
-    const apply = () =>
-      applyAppearanceTheme(useSettingsStore.getState().theme);
+    const apply = () => {
+      const settings = useSettingsStore.getState();
+      applyAppearanceTheme(settings.theme, settings.workspaceSurfaceTone);
+    };
 
     apply();
-    if (theme !== "system") return;
+    if (theme !== "system" && workspaceSurfaceTone !== "system") return;
 
     return subscribeToSystemAppearance(apply);
-  }, [theme]);
+  }, [theme, workspaceSurfaceTone]);
 }
 
 function ClassicApp() {
@@ -43,7 +46,11 @@ function ClassicApp() {
 export default function App() {
   useAppearanceTheme();
   const workspaceSurfaceTheme = useSettingsStore((s) => s.workspaceSurfaceTheme);
-  const desktopSurfaceClassName = workspaceSurfaceThemeClassName(workspaceSurfaceTheme);
+  const workspaceSurfaceTone = useSettingsStore((s) => s.workspaceSurfaceTone);
+  const desktopSurfaceClassName = workspaceSurfaceThemeClassName(
+    workspaceSurfaceTheme,
+    workspaceSurfaceTone,
+  );
   const [v2Route, setV2Route] = useState(() => isV2Route());
   const [workspaceRoute, setWorkspaceRoute] = useState(() => isWorkspaceRoute());
 
