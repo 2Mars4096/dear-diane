@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   activeThreadArchivedSummaryForTest,
+  blueprintCardContentForTest,
   buildSessionGroupsForTest,
   blueprintTimelineItemsForTest,
   blueprintLiveStatusForTest,
@@ -8,9 +9,11 @@ import {
   conversationUserChunksForTest,
   liveTaskGraphRevisionsForTest,
   liveTaskTreeForTest,
+  noteMetaItemsForTest,
   noteRailViewForFacetForTest,
   normalizeStructuredMarkdownForTest,
   queueRowsFromTasksForTest,
+  recentModifiedNotesForTest,
   restorableThreadTargetForTest,
   sessionCardDisplayForTest,
   sessionHasNewReadyResponseForTest,
@@ -24,7 +27,11 @@ import {
   workspaceComposerPlaceholderForTest,
   workspaceAgentExecutePayloadForTest,
   workspaceAgentOptionsForTest,
+  workspaceModelOptionsForTest,
+  workspaceSelectionFromStorageForTest,
+  workspaceSurfaceContextForTest,
   workspaceIdForTasksForTest,
+  workingNoteCardsForTest,
 } from "../ChunkWorkspaceApp";
 import type {
   ChatV2AgentRunEvent,
@@ -87,15 +94,13 @@ function thread(overrides: Partial<ChatV2ThreadSummary>): ChatV2ThreadSummary {
 }
 
 describe("workspace blueprint nodes", () => {
-  it("keeps Super DAN as the default agent selection", () => {
-    const options = workspaceAgentOptionsForTest();
-    const payload = workspaceAgentExecutePayloadForTest("super_dan_default");
+  it("keeps Native Super DAN as the default agent with a separate default model", () => {
+    const agentOptions = workspaceAgentOptionsForTest();
+    const modelOptions = workspaceModelOptionsForTest("native");
+    const payload = workspaceAgentExecutePayloadForTest("native", "native_default");
 
-    expect(options.map((option) => option.id)).toEqual([
-      "super_dan_default",
-      "super_dan_kimi_k26",
-      "codex",
-    ]);
+    expect(agentOptions.map((option) => option.id)).toEqual(["native", "codex"]);
+    expect(modelOptions.map((option) => option.id)).toEqual(["native_default", "native_kimi_k26"]);
     expect(payload.backend).toBe("super_dan");
     expect(payload.profile_policy).toMatchObject({
       backend: "super_dan",
@@ -103,13 +108,14 @@ describe("workspace blueprint nodes", () => {
     });
     expect(payload.profile_policy).not.toHaveProperty("model");
     expect(payload.metadata).toMatchObject({
-      selected_agent: "super_dan_default",
+      selected_agent: "native",
+      selected_model_option: "native_default",
       gui_for: "dan super-tui",
     });
   });
 
   it("routes the Kimi option through the existing Super DAN backend", () => {
-    const payload = workspaceAgentExecutePayloadForTest("super_dan_kimi_k26");
+    const payload = workspaceAgentExecutePayloadForTest("native", "native_kimi_k26");
 
     expect(payload.backend).toBe("super_dan");
     expect(payload.profile_policy).toMatchObject({
@@ -117,25 +123,85 @@ describe("workspace blueprint nodes", () => {
       model: "kimi-k2.6",
     });
     expect(payload.metadata).toMatchObject({
-      selected_agent: "super_dan_kimi_k26",
+      selected_agent: "native",
+      selected_model_option: "native_kimi_k26",
       selected_model: "kimi-k2.6",
       gui_for: "dan super-tui",
     });
   });
 
-  it("routes the Codex option through the Codex backend without a model override", () => {
-    const payload = workspaceAgentExecutePayloadForTest("codex");
+  it("routes Codex model and reasoning config through the Codex backend", () => {
+    const modelOptions = workspaceModelOptionsForTest("codex");
+    const payload = workspaceAgentExecutePayloadForTest("codex", "codex_gpt_5_5_high");
 
+    expect(modelOptions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "codex_gpt_5_5_low", model: "gpt-5.5", reasoningEffort: "low" }),
+        expect.objectContaining({ id: "codex_gpt_5_5_medium", model: "gpt-5.5", reasoningEffort: "medium" }),
+        expect.objectContaining({ id: "codex_gpt_5_5_high", model: "gpt-5.5", reasoningEffort: "high" }),
+        expect.objectContaining({ id: "codex_gpt_5_5_xhigh", model: "gpt-5.5", reasoningEffort: "xhigh" }),
+      ]),
+    );
     expect(payload.backend).toBe("codex");
     expect(payload.profile_policy).toMatchObject({
       backend: "codex",
       surface_profile: "super_tui",
+      codex_model: "gpt-5.5",
+      codex_reasoning_effort: "high",
     });
-    expect(payload.profile_policy).not.toHaveProperty("model");
     expect(payload.metadata).toMatchObject({
       selected_agent: "codex",
       selected_backend: "codex",
+      selected_model: "gpt-5.5",
+      selected_reasoning_effort: "high",
       gui_for: "codex exec",
+    });
+  });
+
+  it("remembers model selections separately for each workspace Agent", () => {
+    const selection = workspaceSelectionFromStorageForTest({
+      storedAgent: "codex",
+      storedModel: "native_default",
+      storedModelsByAgent: JSON.stringify({
+        native: "native_kimi_k26",
+        codex: "codex_gpt_5_5_high",
+      }),
+    });
+
+    expect(selection.agentId).toBe("codex");
+    expect(selection.modelId).toBe("codex_gpt_5_5_high");
+    expect(selection.modelSelectionsByAgent).toEqual({
+      native: "native_kimi_k26",
+      codex: "codex_gpt_5_5_high",
+    });
+  });
+
+  it("migrates older single-value workspace selector storage", () => {
+    expect(
+      workspaceSelectionFromStorageForTest({
+        storedAgent: "super_dan_kimi_k26",
+      }),
+    ).toMatchObject({
+      agentId: "native",
+      modelId: "native_kimi_k26",
+      modelSelectionsByAgent: {
+        native: "native_kimi_k26",
+        codex: "codex_gpt_5_5_medium",
+      },
+    });
+
+    expect(
+      workspaceSelectionFromStorageForTest({
+        storedAgent: "codex",
+        storedModel: "codex_gpt_5_5_xhigh",
+      }),
+    ).toMatchObject({
+      agentId: "codex",
+      modelId: "codex_gpt_5_5_xhigh",
+      modelSelectionsByAgent: {
+        native: "native_default",
+        codex: "codex_gpt_5_5_xhigh",
+      },
     });
   });
 
@@ -168,6 +234,348 @@ describe("workspace blueprint nodes", () => {
         selectedBlueprintTitle: "Final response",
       }),
     ).toBe("Ask Super DAN about Final response");
+  });
+
+  it("renders active Work card content from live branch updates", () => {
+    const activeTask = task({
+      task_id: "active-task",
+      status: "running",
+      latest_progress: "Thinking with kimi-k2.6.",
+      metadata: { active_run_id: "run-1" },
+    });
+    const events: ChatV2AgentRunEvent[] = [
+      {
+        type: "worker_started",
+        source_event_type: "live.generic_build.started",
+        run_id: "run-1",
+        task_id: "active-task",
+        summary: "Inspecting GameLoop.gd and EcsStore.gd.",
+        payload: { branch_id: "b1" },
+      },
+      {
+        type: "worker_started",
+        source_event_type: "live.generic_build.started",
+        run_id: "run-1",
+        task_id: "active-task",
+        summary: "Checking SpatialHash.gd neighbor queries.",
+        payload: { branch_id: "b2" },
+      },
+    ];
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "run-1",
+      activeRunningTask: activeTask,
+      tasks: [activeTask],
+      agentEvents: events,
+    });
+    const build = nodes.find((node) => node.kind === "build");
+
+    expect(blueprintCardContentForTest(build!, [activeTask], events, activeTask)).toContain(
+      "**b1:** Inspecting GameLoop.gd and EcsStore.gd.",
+    );
+    expect(blueprintCardContentForTest(build!, [activeTask], events, activeTask)).toContain(
+      "**b2:** Checking SpatialHash.gd neighbor queries.",
+    );
+  });
+
+  it("highlights Codex as the active Work card agent", () => {
+    const activeTask = task({
+      task_id: "codex-task",
+      status: "running",
+      latest_progress: "Codex is working.",
+      metadata: {
+        active_run_id: "run-codex",
+        selected_agent: "codex",
+        selected_backend: "codex",
+      },
+    });
+    const events: ChatV2AgentRunEvent[] = [
+      {
+        type: "worker_started",
+        source_event_type: "live.generic_build.started",
+        run_id: "run-codex",
+        task_id: "codex-task",
+        summary: "Codex thread started.",
+      },
+    ];
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "run-codex",
+      activeRunningTask: activeTask,
+      tasks: [activeTask],
+      agentEvents: events,
+    });
+    const build = nodes.find((node) => node.kind === "build")!;
+    const content = blueprintCardContentForTest(build, [activeTask], events, activeTask);
+
+    expect(content).toContain("`Codex` is working.");
+    expect(content).toContain("`Codex` thread started.");
+  });
+
+  it("shows native active Work card agent as DAN", () => {
+    const activeTask = task({
+      task_id: "native-task",
+      status: "running",
+      latest_progress: "",
+      metadata: {
+        active_run_id: "run-native",
+        selected_agent: "native",
+        selected_backend: "super_dan",
+      },
+    });
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "run-native",
+      activeRunningTask: activeTask,
+      tasks: [activeTask],
+      agentEvents: [
+        {
+          type: "worker_started",
+          source_event_type: "live.generic_build.started",
+          run_id: "run-native",
+          task_id: "native-task",
+          summary: "Native run started.",
+        },
+      ],
+    });
+    const build = nodes.find((node) => node.kind === "build")!;
+
+    expect(blueprintCardContentForTest(build, [activeTask], [], activeTask)).toContain("`DAN` is working");
+  });
+
+  it("renders done and future Work card content as state-specific summaries", () => {
+    const activeTask = task({
+      task_id: "active-task",
+      status: "running",
+      metadata: { active_run_id: "run-1" },
+    });
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "run-1",
+      activeRunningTask: activeTask,
+      tasks: [activeTask],
+      agentEvents: [
+        {
+          type: "worker_started",
+          source_event_type: "live.generic_build.started",
+          run_id: "run-1",
+          task_id: "active-task",
+          summary: "Working.",
+        },
+      ],
+    });
+    const build = nodes.find((node) => node.kind === "build")!;
+    const doneNode = {
+      ...build,
+      status: "done" as const,
+      detail: "old subtitle should not be needed",
+      body: "Confirmed the sparse-slot batching bug and summarized the candidate repair.",
+    };
+    const futureNode = {
+      ...build,
+      status: "future" as const,
+      detail: "old subtitle should not be needed",
+      body: "Apply the slot-mapping patch, then run focused Godot validation.",
+    };
+
+    expect(blueprintCardContentForTest(doneNode, [], [], null)).toBe(
+      "Confirmed the sparse-slot batching bug and summarized the candidate repair.",
+    );
+    expect(blueprintCardContentForTest(futureNode, [], [], null)).toBe(
+      "Apply the slot-mapping patch, then run focused Godot validation.",
+    );
+  });
+
+  it("uses a Notes-specific composer placeholder outside active runs", () => {
+    expect(
+      workspaceComposerPlaceholderForTest({
+        hasActiveRun: false,
+        placement: "steer",
+        workspaceMode: "notes",
+        selectedBlueprintTitle: "Final response",
+        activeNoteTitle: "Knowledge Graph",
+      }),
+    ).toBe("Ask Super DAN about Knowledge Graph");
+  });
+
+  it("adds Hugo notes workspace rules for Notes-pane agent runs", () => {
+    const context = workspaceSurfaceContextForTest({
+      workspaceMode: "notes",
+      notesRoot: "/kb/content",
+      note: {
+        id: "note-graph",
+        title: "Knowledge Graph",
+        path: "/kb/content/notes/graph/index.md",
+        source: "server",
+        content:
+          "---\n" +
+          "title: Knowledge Graph\n" +
+          "layout: graph\n" +
+          "pageID: graph-home\n" +
+          "tags: [knowledge]\n" +
+          "categories: [notes]\n" +
+          "draft: false\n" +
+          "---\n\n" +
+          "Body with @paper-a.",
+        loaded: true,
+        status: "dirty",
+        updatedAt: 1,
+        tags: [],
+        categories: [],
+        citations: ["paper-a"],
+      },
+    });
+
+    expect(context.workspace_mode).toBe("notes");
+    expect(context.active_note).toMatchObject({
+      title: "Knowledge Graph",
+      relative_path: "notes/graph/index.md",
+      section: "notes",
+      layout: "graph",
+      pageID: "graph-home",
+      dirty: true,
+    });
+    expect(context.notes_workspace).toMatchObject({
+      kind: "hugo_notes",
+      role: "primary_workspace",
+      active: true,
+      root: "/kb/content",
+      active_note: expect.objectContaining({ pageID: "graph-home" }),
+    });
+    expect(context.notes_workspace.rules).toContain(
+      "Treat the notes root as a Hugo content tree, not a scratch folder.",
+    );
+    expect(context.notes_workspace.write_policy).toContain("create or edit notes only");
+  });
+
+  it("shows a Last Update metadata chip from file mtime when lastmod is absent", () => {
+    const updatedAt = Date.UTC(2026, 6, 17, 8, 30);
+    const items = noteMetaItemsForTest(
+      {
+        id: "note-mauto",
+        title: "Turin Automobile Museum Guide",
+        path: "/kb/content/blogs/travel-plans/italy-2026/guides/turin-automobile-museum/index.md",
+        relativePath: "blogs/travel-plans/italy-2026/guides/turin-automobile-museum/index.md",
+        source: "server",
+        content: "",
+        loaded: true,
+        status: "clean",
+        updatedAt,
+        tags: [],
+        categories: [],
+        citations: [],
+      },
+      "---\n" +
+        "title: Turin Automobile Museum Guide\n" +
+        "date: 2026-06-21\n" +
+        "author: Adam\n" +
+        "---\n\n" +
+        "Opening hours and ticket notes.",
+    );
+
+    const expected = new Date(updatedAt).toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
+    expect(Object.fromEntries(items)).toMatchObject({
+      Date: expect.any(String),
+      "Last Update": expected,
+      Author: "Adam",
+    });
+  });
+
+  it("prefers Hugo lastmod over file mtime for the Last Update metadata chip", () => {
+    const items = noteMetaItemsForTest(
+      {
+        id: "note-mauto",
+        title: "Turin Automobile Museum Guide",
+        source: "server",
+        content: "",
+        loaded: true,
+        status: "clean",
+        updatedAt: Date.UTC(2026, 6, 17, 8, 30),
+        tags: [],
+        categories: [],
+        citations: [],
+      },
+      "---\n" +
+        "title: Turin Automobile Museum Guide\n" +
+        "lastmod: 2026-07-18\n" +
+        "---\n\n" +
+        "Opening hours and ticket notes.",
+    );
+
+    expect(Object.fromEntries(items)["Last Update"]).toBe(
+      new Date("2026-07-18").toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      }),
+    );
+  });
+
+  it("limits recent modified Notes pages to the five newest mtimes", () => {
+    const notes = Array.from({ length: 6 }, (_, index) => ({
+      id: `note-${index + 1}`,
+      title: `Note ${index + 1}`,
+      relativePath: `blogs/note-${index + 1}/index.md`,
+      source: "server" as const,
+      content: "",
+      loaded: true,
+      status: "clean" as const,
+      updatedAt: Date.UTC(2026, 5, index + 1, 12, 0),
+      tags: [],
+      categories: [],
+      citations: [],
+    }));
+
+    const recent = recentModifiedNotesForTest(notes, "/kb/content");
+
+    expect(recent.map((item) => item.id)).toEqual([
+      "note-6",
+      "note-5",
+      "note-4",
+      "note-3",
+      "note-2",
+    ]);
+    expect(recent[0]).toMatchObject({
+      path: "blogs/note-6/index.md",
+      section: "blogs",
+    });
+  });
+
+  it("builds a Notes working card with the edited target and body chunk", () => {
+    const cards = workingNoteCardsForTest(
+      {
+        id: "note-mauto",
+        title: "Turin Automobile Museum Guide",
+        relativePath: "blogs/travel-plans/italy-2026/guides/turin-automobile-museum/index.md",
+        source: "server",
+        content:
+          "---\n" +
+          "title: Turin Automobile Museum Guide\n" +
+          "pageID: blogs-travel-italy-2026-guide-turin-automobile-museum\n" +
+          "---\n\n" +
+          "## Tickets\n" +
+          "Opening hours, ticket prices, and booking notes for MAUTO.",
+        loaded: true,
+        status: "dirty",
+        updatedAt: Date.UTC(2026, 5, 28, 12, 0),
+        tags: [],
+        categories: [],
+        citations: [],
+      },
+      "/kb/content",
+    );
+
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({
+      state: "Editing",
+      target: "body",
+      path: "blogs/travel-plans/italy-2026/guides/turin-automobile-museum/index.md",
+    });
+    expect(cards[0].snippet).toContain("Tickets Opening hours");
   });
 
   it("keeps Notes taxonomy selections inside their taxonomy rails", () => {
@@ -1065,6 +1473,39 @@ describe("workspace blueprint nodes", () => {
       status: "running",
       latest_progress: "Fresh selected state",
     });
+  });
+
+  it("lets a fresher completed background snapshot clear stale selected running state", () => {
+    const background = task({
+      task_id: "same-task",
+      thread_id: "selected-thread",
+      status: "completed",
+      latest_progress: "Finished with a useful answer",
+      metadata: {
+        active_run_id: "selected-run",
+        run_updated_at: "2026-06-29T12:10:00.000Z",
+      },
+    });
+    const selected = task({
+      task_id: "same-task",
+      thread_id: "selected-thread",
+      status: "running",
+      latest_progress: "Older selected running state",
+      metadata: {
+        active_run_id: "selected-run",
+        run_updated_at: "2026-06-29T12:00:00.000Z",
+      },
+    });
+
+    const merged = sessionStatusTasksForTest([selected], [background]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({
+      status: "completed",
+      latest_progress: "Finished with a useful answer",
+    });
+    expect(sessionProgressTaskForTest(merged, "selected-thread")).toBeNull();
+    expect(sessionCardDisplayForTest(thread({}), merged).detail).toContain("1 run · done");
   });
 
   it("shows session progress actions only for genuinely running tasks", () => {

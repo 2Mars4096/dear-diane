@@ -115,48 +115,120 @@ const SESSION_RESPONSE_SEEN_STORAGE_KEY = "dan.chunkWorkspace.sessionResponseSee
 const LAYOUT_STORAGE_KEY = "dan.chunkWorkspace.layout.v1";
 const UI_STATE_STORAGE_KEY = "dan.chunkWorkspace.uiState.v1";
 const AGENT_SELECTION_STORAGE_KEY = "dan.chunkWorkspace.agentSelection.v1";
+const MODEL_SELECTION_STORAGE_KEY = "dan.chunkWorkspace.modelSelection.v1";
+const MODEL_SELECTIONS_BY_AGENT_STORAGE_KEY = "dan.chunkWorkspace.modelSelectionsByAgent.v1";
 const WORKSPACE_DRAG_MIME = "application/x-dan-workspace-id";
 type WorkspaceDropPlacement = "before" | "after";
 const WORKSPACE_SURFACE_TYPE = "frontend";
 const WORKSPACE_SURFACE_ID = "chunk-workspace";
 const WORKSPACE_SURFACE = `${WORKSPACE_SURFACE_TYPE}:${WORKSPACE_SURFACE_ID}`;
-type WorkspaceAgentSelectionId = "super_dan_default" | "super_dan_kimi_k26" | "codex";
+const NOTES_WORKSPACE_RULES = [
+  "Treat the notes root as a Hugo content tree, not a scratch folder.",
+  "Edit Markdown or MDX pages in place and preserve YAML frontmatter unless the operator asks to change metadata.",
+  "Prefer Hugo bundle pages such as folder/index.md or index.mdx when creating durable notes.",
+  "Preserve existing fields including title, layout, date, lastmod, pageID, tags, categories, aliases, images, math, toc, and draft.",
+  "Use pageID and @pageID citations for cross-note references when available.",
+  "Keep note reads, writes, and moves inside the configured notes root.",
+];
+const NOTES_WORKSPACE_WRITE_POLICY =
+  "Use the notes workspace as context by default; create or edit notes only when the operator asks for notes, memory, documentation, or a saved artifact.";
+type WorkspaceAgentSelectionId = "native" | "codex";
+type WorkspaceCodexReasoningEffort = "low" | "medium" | "high" | "xhigh";
 type WorkspaceAgentOption = {
   id: WorkspaceAgentSelectionId;
   label: string;
   shortLabel: string;
-  description: string;
   backend: typeof SUPER_DAN_BACKEND | typeof CODEX_BACKEND;
-  model?: string;
 };
-const DEFAULT_AGENT_SELECTION_ID: WorkspaceAgentSelectionId = "super_dan_default";
+type WorkspaceModelOption = {
+  id: string;
+  agentId: WorkspaceAgentSelectionId;
+  label: string;
+  shortLabel: string;
+  model?: string;
+  reasoningEffort?: WorkspaceCodexReasoningEffort;
+};
+type WorkspaceModelSelectionByAgent = Record<WorkspaceAgentSelectionId, string>;
+type StoredWorkspaceSelection = {
+  agentId: WorkspaceAgentSelectionId;
+  modelId: string;
+  modelSelectionsByAgent: WorkspaceModelSelectionByAgent;
+};
+const DEFAULT_AGENT_SELECTION_ID: WorkspaceAgentSelectionId = "native";
 const WORKSPACE_AGENT_OPTIONS: WorkspaceAgentOption[] = [
   {
-    id: "super_dan_default",
-    label: "Super DAN",
-    shortLabel: "Super DAN",
-    description: "Use the existing Super DAN backend and configured model.",
+    id: "native",
+    label: "Native",
+    shortLabel: "Native",
     backend: SUPER_DAN_BACKEND,
-  },
-  {
-    id: "super_dan_kimi_k26",
-    label: "Super DAN · Kimi K2.6",
-    shortLabel: "Kimi K2.6",
-    description: "Use Super DAN with the existing Kimi K2.6 model path.",
-    backend: SUPER_DAN_BACKEND,
-    model: "kimi-k2.6",
   },
   {
     id: "codex",
     label: "Codex",
     shortLabel: "Codex",
-    description: "Run the workspace task through the Codex CLI agent.",
     backend: CODEX_BACKEND,
   },
+];
+const DEFAULT_MODEL_SELECTION_BY_AGENT: Record<WorkspaceAgentSelectionId, string> = {
+  native: "native_default",
+  codex: "codex_gpt_5_5_medium",
+};
+const CODEX_REASONING_EFFORTS: WorkspaceCodexReasoningEffort[] = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+];
+const CODEX_MODEL_CATALOG = [
+  { key: "gpt_5_5", model: "gpt-5.5", label: "GPT-5.5" },
+  { key: "gpt_5_4", model: "gpt-5.4", label: "GPT-5.4" },
+  { key: "gpt_5_4_mini", model: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
+  { key: "gpt_5_3_codex_spark", model: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark" },
+  { key: "gpt_5_3_codex", model: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
+  { key: "gpt_5_2", model: "gpt-5.2", label: "GPT-5.2" },
+  { key: "codex_auto_review", model: "codex-auto-review", label: "Codex Auto Review" },
+];
+const WORKSPACE_MODEL_OPTIONS: WorkspaceModelOption[] = [
+  {
+    id: "native_default",
+    agentId: "native",
+    label: "Default",
+    shortLabel: "Default",
+  },
+  {
+    id: "native_kimi_k26",
+    agentId: "native",
+    label: "Kimi K2.6",
+    shortLabel: "Kimi K2.6",
+    model: "kimi-k2.6",
+  },
+  ...CODEX_MODEL_CATALOG.flatMap((model) =>
+    CODEX_REASONING_EFFORTS.map((reasoningEffort) => ({
+      id: `codex_${model.key}_${reasoningEffort}`,
+      agentId: "codex" as const,
+      label: `${model.label} · ${reasoningEffort}`,
+      shortLabel: `${model.label} ${reasoningEffort}`,
+      model: model.model,
+      reasoningEffort,
+    })),
+  ),
 ];
 
 function isWorkspaceAgentSelectionId(value: string | null | undefined): value is WorkspaceAgentSelectionId {
   return WORKSPACE_AGENT_OPTIONS.some((option) => option.id === value);
+}
+
+function legacyWorkspaceSelection(value: string | null | undefined): {
+  agentId: WorkspaceAgentSelectionId;
+  modelId: string;
+} {
+  if (value === "codex") {
+    return { agentId: "codex", modelId: DEFAULT_MODEL_SELECTION_BY_AGENT.codex };
+  }
+  if (value === "super_dan_kimi_k26") {
+    return { agentId: "native", modelId: "native_kimi_k26" };
+  }
+  return { agentId: "native", modelId: DEFAULT_MODEL_SELECTION_BY_AGENT.native };
 }
 
 function workspaceAgentOptionForId(id: string | null | undefined): WorkspaceAgentOption {
@@ -167,30 +239,144 @@ function workspaceAgentOptionForId(id: string | null | undefined): WorkspaceAgen
   );
 }
 
-function buildWorkspaceAgentExecutePayload(option: WorkspaceAgentOption) {
+function workspaceModelOptionsForAgent(agentId: WorkspaceAgentSelectionId) {
+  return WORKSPACE_MODEL_OPTIONS.filter((option) => option.agentId === agentId);
+}
+
+function workspaceModelOptionForId(
+  id: string | null | undefined,
+  agentId: WorkspaceAgentSelectionId,
+): WorkspaceModelOption {
+  return (
+    WORKSPACE_MODEL_OPTIONS.find((option) => option.id === id && option.agentId === agentId) ??
+    WORKSPACE_MODEL_OPTIONS.find(
+      (option) => option.id === DEFAULT_MODEL_SELECTION_BY_AGENT[agentId] && option.agentId === agentId,
+    ) ??
+    workspaceModelOptionsForAgent(agentId)[0]
+  );
+}
+
+function defaultWorkspaceModelSelectionsByAgent(): WorkspaceModelSelectionByAgent {
+  return { ...DEFAULT_MODEL_SELECTION_BY_AGENT };
+}
+
+function normalizeWorkspaceModelSelectionsByAgent(value: unknown): Partial<WorkspaceModelSelectionByAgent> {
+  const normalized: Partial<WorkspaceModelSelectionByAgent> = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return normalized;
+  const record = value as Record<string, unknown>;
+  for (const agentOption of WORKSPACE_AGENT_OPTIONS) {
+    const modelId = record[agentOption.id];
+    if (typeof modelId !== "string") continue;
+    const modelOption = WORKSPACE_MODEL_OPTIONS.find(
+      (option) => option.id === modelId && option.agentId === agentOption.id,
+    );
+    if (modelOption) {
+      normalized[agentOption.id] = modelOption.id;
+    }
+  }
+  return normalized;
+}
+
+function parseWorkspaceModelSelectionsByAgent(
+  value: string | null | undefined,
+): Partial<WorkspaceModelSelectionByAgent> {
+  if (!value) return {};
+  try {
+    return normalizeWorkspaceModelSelectionsByAgent(JSON.parse(value));
+  } catch {
+    return {};
+  }
+}
+
+function workspaceSelectionFromStorageValues({
+  storedAgent = null,
+  storedModel = null,
+  storedModelsByAgent = null,
+}: {
+  storedAgent?: string | null;
+  storedModel?: string | null;
+  storedModelsByAgent?: string | null;
+} = {}): StoredWorkspaceSelection {
+  const legacySelection = legacyWorkspaceSelection(storedAgent);
+  const agentId = isWorkspaceAgentSelectionId(storedAgent) ? storedAgent : legacySelection.agentId;
+  const storedModelSelectionsByAgent = parseWorkspaceModelSelectionsByAgent(storedModelsByAgent);
+  const modelSelectionsByAgent = defaultWorkspaceModelSelectionsByAgent();
+
+  for (const agentOption of WORKSPACE_AGENT_OPTIONS) {
+    const storedModelId = storedModelSelectionsByAgent[agentOption.id];
+    if (storedModelId) {
+      modelSelectionsByAgent[agentOption.id] = storedModelId;
+    }
+  }
+
+  if (!storedModelSelectionsByAgent[legacySelection.agentId]) {
+    modelSelectionsByAgent[legacySelection.agentId] = workspaceModelOptionForId(
+      legacySelection.modelId,
+      legacySelection.agentId,
+    ).id;
+  }
+
+  const storedGlobalModelId =
+    storedModel && workspaceModelOptionForId(storedModel, agentId).id === storedModel
+      ? storedModel
+      : null;
+  const modelId = workspaceModelOptionForId(
+    storedModelSelectionsByAgent[agentId] ?? storedGlobalModelId ?? modelSelectionsByAgent[agentId],
+    agentId,
+  ).id;
+  modelSelectionsByAgent[agentId] = modelId;
+
+  return { agentId, modelId, modelSelectionsByAgent };
+}
+
+function readStoredWorkspaceSelection(): StoredWorkspaceSelection {
+  if (typeof window === "undefined") {
+    return workspaceSelectionFromStorageValues();
+  }
+  return workspaceSelectionFromStorageValues({
+    storedAgent: window.localStorage.getItem(AGENT_SELECTION_STORAGE_KEY),
+    storedModel: window.localStorage.getItem(MODEL_SELECTION_STORAGE_KEY),
+    storedModelsByAgent: window.localStorage.getItem(MODEL_SELECTIONS_BY_AGENT_STORAGE_KEY),
+  });
+}
+
+function buildWorkspaceAgentExecutePayload(
+  agentOption: WorkspaceAgentOption,
+  modelOption: WorkspaceModelOption,
+) {
   const profilePolicy: Record<string, unknown> = {
-    backend: option.backend,
+    backend: agentOption.backend,
     surface_profile: SUPER_TUI_PROFILE,
   };
-  if (option.model) {
-    profilePolicy.model = option.model;
+  if (modelOption.model) {
+    if (agentOption.backend === CODEX_BACKEND) {
+      profilePolicy.codex_model = modelOption.model;
+    } else {
+      profilePolicy.model = modelOption.model;
+    }
+  }
+  if (agentOption.backend === CODEX_BACKEND && modelOption.reasoningEffort) {
+    profilePolicy.codex_reasoning_effort = modelOption.reasoningEffort;
   }
   return {
-    backend: option.backend,
+    backend: agentOption.backend,
     surface_profile: SUPER_TUI_PROFILE,
     background: true,
     profile_policy: profilePolicy,
     metadata: {
-      backend: option.backend,
+      backend: agentOption.backend,
       surface_profile: SUPER_TUI_PROFILE,
       compatibility_profile: SUPER_TUI_PROFILE,
       surface: "gui:chunk-workspace",
       requested_from: "chunk_workspace",
-      gui_for: option.backend === CODEX_BACKEND ? "codex exec" : "dan super-tui",
-      selected_backend: option.backend,
-      selected_agent: option.id,
-      selected_agent_label: option.label,
-      ...(option.model ? { selected_model: option.model } : {}),
+      gui_for: agentOption.backend === CODEX_BACKEND ? "codex exec" : "dan super-tui",
+      selected_backend: agentOption.backend,
+      selected_agent: agentOption.id,
+      selected_agent_label: agentOption.label,
+      selected_model_option: modelOption.id,
+      selected_model_label: modelOption.label,
+      ...(modelOption.model ? { selected_model: modelOption.model } : {}),
+      ...(modelOption.reasoningEffort ? { selected_reasoning_effort: modelOption.reasoningEffort } : {}),
     },
   };
 }
@@ -204,6 +390,7 @@ const ROOT_PICKER_DEFAULT_HEIGHT = 192;
 const ROOT_PICKER_MIN_HEIGHT = 128;
 const ROOT_PICKER_MAX_HEIGHT = 360;
 const COLLAPSED_PANE_WIDTH = 44;
+const RECENT_MODIFIED_LIMIT = 5;
 
 type NoteSource = "local" | "disk" | "server";
 type NoteStatus = "clean" | "dirty" | "saving" | "error" | "loading";
@@ -507,6 +694,27 @@ interface NoteMentionState {
   start: number;
   end: number;
   query: string;
+}
+
+interface RecentModifiedNote {
+  id: string;
+  note: WorkspaceNote;
+  title: string;
+  path: string;
+  section: string;
+  updatedAt: number;
+  updatedLabel: string;
+}
+
+interface WorkingNoteCard {
+  id: string;
+  note: WorkspaceNote;
+  title: string;
+  state: string;
+  path: string;
+  target: string;
+  snippet: string;
+  status: NoteStatus | "agent";
 }
 
 const terminalTaskStatuses = new Set(["completed", "failed", "blocked", "stopped"]);
@@ -907,6 +1115,19 @@ function formatHugoDate(value: string) {
   });
 }
 
+function formatNoteUpdatedDate(note: WorkspaceNote | null, lastmod: string) {
+  const frontmatterDate = formatHugoDate(lastmod);
+  if (frontmatterDate) return frontmatterDate;
+  if (!note?.updatedAt) return "";
+  const parsed = new Date(note.updatedAt);
+  if (!Number.isFinite(parsed.getTime())) return "";
+  return parsed.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
 function extractHugoPage(content: string, fallbackTitle: string): ParsedHugoPage {
   const match = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/.exec(content);
   const data = match ? parseYamlFrontmatter(match[1]) : {};
@@ -944,6 +1165,130 @@ function formatHugoPreviewBody(body: string) {
     .replace(/(^|[\s(])@([A-Za-z0-9][A-Za-z0-9_-]+)/g, "$1[@$2](#$2)");
 }
 
+function noteModifiedTimestamp(note: WorkspaceNote) {
+  return Number.isFinite(note.updatedAt) ? note.updatedAt : 0;
+}
+
+function formatRecentModifiedLabel(timestamp: number) {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return "No timestamp";
+  const parsed = new Date(timestamp);
+  if (!Number.isFinite(parsed.getTime())) return "No timestamp";
+  return parsed.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function recentModifiedNotes(
+  notes: WorkspaceNote[],
+  root: string,
+  limit = RECENT_MODIFIED_LIMIT,
+): RecentModifiedNote[] {
+  return [...notes]
+    .map((note) => {
+      const updatedAt = noteModifiedTimestamp(note);
+      return {
+        id: note.id,
+        note,
+        title: note.title,
+        path: noteRelativePath(note, root),
+        section: noteSection(note, root),
+        updatedAt,
+        updatedLabel: formatRecentModifiedLabel(updatedAt),
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.updatedAt - a.updatedAt ||
+        a.path.localeCompare(b.path, undefined, { sensitivity: "base" }),
+    )
+    .slice(0, Math.max(0, limit));
+}
+
+function compactNoteSnippet(value: string) {
+  return value
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, " ")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^[\s>*+-]+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function noteWorkingState(note: WorkspaceNote | null, activeTask: ChatV2TaskSnapshot | null) {
+  if (!note) return null;
+  if (note.status === "dirty") return "Editing";
+  if (note.status === "saving") return "Saving";
+  if (note.status === "loading") return "Loading";
+  if (note.status === "error") return "Needs attention";
+  if (activeTask) return "Agent";
+  return null;
+}
+
+function noteWorkingTargetAndSnippet(
+  note: WorkspaceNote,
+  state: string,
+  activeTask: ChatV2TaskSnapshot | null,
+) {
+  if (note.status === "error") {
+    return {
+      target: "page",
+      snippet: note.error || "The selected page needs attention.",
+    };
+  }
+  if (activeTask && state === "Agent") {
+    return {
+      target: "agent run",
+      snippet:
+        compactNoteSnippet(activeTask.latest_progress || activeTask.phase || "") ||
+        "Super DAN is working in the Notes workspace.",
+    };
+  }
+  const page = extractHugoPage(note.content || "", note.title);
+  const bodySnippet = compactNoteSnippet(page.body);
+  if (bodySnippet) {
+    return {
+      target: "body",
+      snippet: bodySnippet,
+    };
+  }
+  const frontmatterSnippet = compactNoteSnippet(
+    [page.meta.title, page.meta.subtitle, page.meta.abstract, page.meta.pageID]
+      .filter(Boolean)
+      .join(" · "),
+  );
+  return {
+    target: "frontmatter",
+    snippet: frontmatterSnippet || note.title || "No note text loaded yet.",
+  };
+}
+
+function workingNoteCards(
+  note: WorkspaceNote | null,
+  root: string,
+  activeTask: ChatV2TaskSnapshot | null = null,
+): WorkingNoteCard[] {
+  const state = noteWorkingState(note, activeTask);
+  if (!note || !state) return [];
+  const { target, snippet } = noteWorkingTargetAndSnippet(note, state, activeTask);
+  return [
+    {
+      id: note.id,
+      note,
+      title: note.title,
+      state,
+      path: noteRelativePath(note, root),
+      target,
+      snippet,
+      status: state === "Agent" ? "agent" : note.status,
+    },
+  ];
+}
+
 function extractPageIdCitations(content: string) {
   const seen = new Set<string>();
   const citations: string[] = [];
@@ -961,7 +1306,7 @@ function noteMetaItems(note: WorkspaceNote | null, page: ParsedHugoPage) {
   const meta = page.meta;
   return [
     ["Date", formatHugoDate(meta.date)],
-    ["Updated", formatHugoDate(meta.lastmod)],
+    ["Last Update", formatNoteUpdatedDate(note, meta.lastmod)],
     ["Author", meta.author],
     ["PageID", meta.pageID],
     ["Link", meta.link],
@@ -1798,15 +2143,78 @@ function runningTaskMapByThreadId(tasks: ChatV2TaskSnapshot[]) {
   return new Map(entries);
 }
 
+function taskSnapshotTime(task: ChatV2TaskSnapshot) {
+  return Math.max(
+    timestampValue(taskRunUpdatedAt(task), 0),
+    timestampValue(taskRunStartedAt(task), 0),
+  );
+}
+
+function taskStatusRank(task: ChatV2TaskSnapshot) {
+  if (isTaskTerminal(task)) return 4;
+  if (isTaskRunning(task)) return 3;
+  if (task.status === "needs_input" || task.status === "waiting_dependency") return 2;
+  if (task.status === "queued") return 1;
+  return 0;
+}
+
+function preferredTaskSnapshot(
+  current: ChatV2TaskSnapshot | undefined,
+  incoming: ChatV2TaskSnapshot,
+) {
+  if (!current) return incoming;
+  const currentTime = taskSnapshotTime(current);
+  const incomingTime = taskSnapshotTime(incoming);
+  if (incomingTime !== currentTime) return incomingTime > currentTime ? incoming : current;
+  const currentRank = taskStatusRank(current);
+  const incomingRank = taskStatusRank(incoming);
+  if (incomingRank !== currentRank) return incomingRank > currentRank ? incoming : current;
+  return incoming;
+}
+
 function mergeTaskSnapshots(...groups: ChatV2TaskSnapshot[][]) {
   const byId = new Map<string, ChatV2TaskSnapshot>();
   for (const group of groups) {
     for (const task of group) {
       if (!task.task_id) continue;
-      byId.set(task.task_id, task);
+      byId.set(task.task_id, preferredTaskSnapshot(byId.get(task.task_id), task));
     }
   }
   return [...byId.values()];
+}
+
+function applyRunEventToTaskSnapshot(
+  task: ChatV2TaskSnapshot,
+  event: ChatV2AgentRunEvent,
+): ChatV2TaskSnapshot {
+  const eventTaskId = event.task_id || "";
+  if (!eventTaskId || task.task_id !== eventTaskId) return task;
+  const progress = humanEventSummary(event) || event.summary || event.type;
+  return {
+    ...task,
+    status: event.type || task.status,
+    latest_progress: progress || task.latest_progress,
+    blocker: event.type === "blocked" || event.type === "failed" ? progress || task.blocker : task.blocker,
+    metadata: {
+      ...(task.metadata ?? {}),
+      ...(event.run_id ? { active_run_id: event.run_id, run_status: event.type } : {}),
+      run_updated_at: new Date().toISOString(),
+    },
+  };
+}
+
+function applyRunEventToTaskSnapshots(
+  tasks: ChatV2TaskSnapshot[],
+  event: ChatV2AgentRunEvent,
+) {
+  if (!event.task_id) return tasks;
+  let changed = false;
+  const next = tasks.map((task) => {
+    if (task.task_id !== event.task_id) return task;
+    changed = true;
+    return applyRunEventToTaskSnapshot(task, event);
+  });
+  return changed ? next : tasks;
 }
 
 function taskRequestText(task?: ChatV2TaskSnapshot | null) {
@@ -4205,7 +4613,7 @@ function buildBlueprintNodesForRunScope(args: {
   const taskRequestSources = activeRunTasks.length > 0 ? activeRunTasks : appendingActiveFollowUp ? [] : tasks;
   const taskRequestLabel = taskRequestSources
     .map(taskMessageLabel)
-    .find((label) => label && !/^super dan (is |completed|needs attention)/i.test(label));
+    .find((label) => label && !isGenericAgentStatusText(label) && !taskMessageLooksOperational(label));
   const fallbackThreadTitle =
     hasRunEvidence && !threadTitleLooksPlaceholder(activeThreadTitle) ? activeThreadTitle.trim() : "";
   const requestBody = primaryUserChunk?.body || taskRequestLabel || fallbackThreadTitle;
@@ -4844,14 +5252,22 @@ export function buildBlueprintNodesForTest(args: Parameters<typeof buildBlueprin
 function workspaceComposerPlaceholder(args: {
   hasActiveRun: boolean;
   placement: ActiveRunPlacement;
+  workspaceMode?: WorkspacePane;
   selectedBlueprintTitle?: string | null;
   selectedChunkTitle?: string | null;
   activeFilePath?: string | null;
+  activeNoteTitle?: string | null;
+  activeNotePath?: string | null;
 }) {
   if (args.hasActiveRun) {
     return args.placement === "queue"
       ? "Type the next message to run after the current one."
       : "Type to steer the active run. Leave empty to stop.";
+  }
+  if (args.workspaceMode === "notes") {
+    if (args.activeNoteTitle) return `Ask Super DAN about ${args.activeNoteTitle}`;
+    if (args.activeNotePath) return `Ask Super DAN about ${args.activeNotePath}`;
+    return "Ask Super DAN about this Hugo note";
   }
   if (args.selectedBlueprintTitle) return `Ask Super DAN about ${args.selectedBlueprintTitle}`;
   if (args.selectedChunkTitle) return `Ask Super DAN about ${args.selectedChunkTitle}`;
@@ -4869,8 +5285,47 @@ export function workspaceAgentOptionsForTest() {
   return WORKSPACE_AGENT_OPTIONS.map((option) => ({ ...option }));
 }
 
-export function workspaceAgentExecutePayloadForTest(id: string) {
-  return buildWorkspaceAgentExecutePayload(workspaceAgentOptionForId(id));
+export function workspaceModelOptionsForTest(agentId: WorkspaceAgentSelectionId = DEFAULT_AGENT_SELECTION_ID) {
+  return workspaceModelOptionsForAgent(agentId).map((option) => ({ ...option }));
+}
+
+export function workspaceSelectionFromStorageForTest(
+  args: Parameters<typeof workspaceSelectionFromStorageValues>[0] = {},
+) {
+  const selection = workspaceSelectionFromStorageValues(args);
+  return {
+    ...selection,
+    modelSelectionsByAgent: { ...selection.modelSelectionsByAgent },
+  };
+}
+
+export function workspaceAgentExecutePayloadForTest(agentId: string, modelId?: string) {
+  const agentOption = workspaceAgentOptionForId(agentId);
+  const modelOption = workspaceModelOptionForId(modelId, agentOption.id);
+  return buildWorkspaceAgentExecutePayload(agentOption, modelOption);
+}
+
+export function workspaceSurfaceContextForTest(
+  args: Partial<Parameters<typeof buildSurfaceContext>[0]> = {},
+) {
+  return buildSurfaceContext({
+    note: null,
+    selectedChunk: null,
+    selectedBlueprintNode: null,
+    workspaceRoot: "/tmp/workspace",
+    workspaceId: "workspace",
+    notesRoot: "/tmp/knowledge/content",
+    workspaceMode: "work",
+    agentSelection: workspaceAgentOptionForId(DEFAULT_AGENT_SELECTION_ID),
+    modelSelection: workspaceModelOptionForId(
+      DEFAULT_MODEL_SELECTION_BY_AGENT[DEFAULT_AGENT_SELECTION_ID],
+      DEFAULT_AGENT_SELECTION_ID,
+    ),
+    activeFile: null,
+    activeFileContent: "",
+    wireGuardStatus: null,
+    ...args,
+  });
 }
 
 export function liveTaskTreeForTest(nodes: BlueprintNode[]) {
@@ -4986,6 +5441,30 @@ export function noteRailViewForFacetForTest(facet: string) {
   return noteRailViewForFacet(facet);
 }
 
+export function noteMetaItemsForTest(
+  note: WorkspaceNote | null,
+  content: string,
+  fallbackTitle = "Note",
+) {
+  return noteMetaItems(note, extractHugoPage(content, fallbackTitle));
+}
+
+export function recentModifiedNotesForTest(
+  notes: WorkspaceNote[],
+  root = "",
+  limit = RECENT_MODIFIED_LIMIT,
+) {
+  return recentModifiedNotes(notes, root, limit);
+}
+
+export function workingNoteCardsForTest(
+  note: WorkspaceNote | null,
+  root = "",
+  activeTask: ChatV2TaskSnapshot | null = null,
+) {
+  return workingNoteCards(note, root, activeTask);
+}
+
 export function workPlanHeaderSubtitleForTest(node: BlueprintNode | null, fallbackTitle?: string | null) {
   return workPlanHeaderSubtitle(node, fallbackTitle);
 }
@@ -5001,6 +5480,15 @@ export function blueprintLiveStatusForTest(
   activeTask: ChatV2TaskSnapshot | null,
 ) {
   return blueprintLiveStatus(node, tasks, events, activeTask);
+}
+
+export function blueprintCardContentForTest(
+  node: BlueprintNode,
+  tasks: ChatV2TaskSnapshot[],
+  events: ChatV2AgentRunEvent[],
+  activeTask: ChatV2TaskSnapshot | null,
+) {
+  return blueprintCardContent(node, tasks, events, activeTask);
 }
 
 function blueprintAnchorNode(nodes: BlueprintNode[]) {
@@ -5023,15 +5511,71 @@ function isMachineProgressText(text: string) {
   );
 }
 
+function isGenericAgentStatusText(text: string) {
+  return /^(?:(?:Super\s+)?DAN|Codex) (?:(?:is )?(?:working|queued|waiting|paused)|needs (?:input|attention)|completed|task)\b/i.test(
+    text.trim(),
+  );
+}
+
+function taskAgentDisplayLabel(task?: ChatV2TaskSnapshot | null) {
+  const metadata = task?.metadata ?? {};
+  const agentSelection = recordValue(metadata.agent_selection);
+  const backend =
+    textValue(metadata.selected_backend) ||
+    textValue(metadata.backend) ||
+    textValue(metadata.agent_backend) ||
+    textValue(agentSelection?.backend);
+  const selectedAgent =
+    textValue(metadata.selected_agent) ||
+    textValue(metadata.agent_id) ||
+    textValue(agentSelection?.id);
+  const label =
+    textValue(metadata.selected_agent_label) ||
+    textValue(metadata.agent_label) ||
+    textValue(agentSelection?.label);
+  const guiFor = textValue(metadata.gui_for);
+  if (
+    backend === CODEX_BACKEND ||
+    selectedAgent === "codex" ||
+    /\bcodex\b/i.test(label) ||
+    /\bcodex\b/i.test(guiFor)
+  ) {
+    return "Codex";
+  }
+  return "DAN";
+}
+
+function wrapWorkAgentToken(
+  text: string,
+  pattern: RegExp,
+  label: "Codex" | "DAN",
+) {
+  return text.replace(pattern, (match, offset: number, fullText: string) => {
+    const previous = fullText[offset - 1] ?? "";
+    const next = fullText[offset + match.length] ?? "";
+    if (previous === "`" || next === "`") return match;
+    return `\`${label}\``;
+  });
+}
+
+function highlightWorkAgentText(text: string, task?: ChatV2TaskSnapshot | null) {
+  const agentLabel = taskAgentDisplayLabel(task);
+  if (agentLabel === "Codex") {
+    return wrapWorkAgentToken(text, /\bCodex\b/g, "Codex");
+  }
+  return wrapWorkAgentToken(text, /\b(?:Super\s+)?DAN\b/g, "DAN");
+}
+
 function taskProgressFallbackLabel(task: ChatV2TaskSnapshot) {
-  if (task.status === "running") return "Super DAN is working";
-  if (task.status === "queued") return "Super DAN is queued";
-  if (task.status === "waiting_dependency") return "Super DAN is waiting";
-  if (task.status === "needs_input") return "Super DAN needs input";
-  if (task.status === "paused") return "Super DAN is paused";
-  if (task.status === "completed") return "Super DAN completed";
-  if (task.status === "failed" || task.status === "blocked") return "Super DAN needs attention";
-  return task.phase || "Super DAN task";
+  const agent = taskAgentDisplayLabel(task);
+  if (task.status === "running") return `${agent} is working`;
+  if (task.status === "queued") return `${agent} is queued`;
+  if (task.status === "waiting_dependency") return `${agent} is waiting`;
+  if (task.status === "needs_input") return `${agent} needs input`;
+  if (task.status === "paused") return `${agent} is paused`;
+  if (task.status === "completed") return `${agent} completed`;
+  if (task.status === "failed" || task.status === "blocked") return `${agent} needs attention`;
+  return task.phase || `${agent} task`;
 }
 
 function taskProgressLabel(task: ChatV2TaskSnapshot) {
@@ -5059,6 +5603,12 @@ function taskMessageLabel(task: ChatV2TaskSnapshot) {
   );
 }
 
+function taskMessageLooksOperational(text: string) {
+  return /^(?:(?:super\s+)?dan|codex|native)\s+(?:is\s+|completed|needs attention)/i.test(
+    text.trim(),
+  );
+}
+
 function normalizeComparableText(value: string) {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
@@ -5068,7 +5618,7 @@ function isUsableAttentionReason(text: string, requestText = "") {
   if (!normalized) return false;
   if (isGenericCompletionText(normalized) || isGenericNeedsAttentionText(normalized)) return false;
   if (["blocked", "failed", "denied", "stopped"].includes(normalized.toLowerCase())) return false;
-  if (/^Super DAN (?:is |completed|needs attention)/i.test(normalized)) return false;
+  if (isGenericAgentStatusText(normalized)) return false;
   if (isMachineProgressText(normalized)) return false;
   return !requestText || normalizeComparableText(normalized) !== normalizeComparableText(requestText);
 }
@@ -5131,7 +5681,7 @@ function taskAttentionDetail(task: ChatV2TaskSnapshot) {
 function humanTerminalTaskProgress(task: ChatV2TaskSnapshot) {
   if (task.status !== "completed") return "";
   const text = rawTerminalTaskProgress(task);
-  if (!text || /^Super DAN (?:is |completed|needs attention)/i.test(text)) return "";
+  if (!text || isGenericAgentStatusText(text)) return "";
   const structured = formatStructuredAgentDisplay(text);
   if (structured) return structured.body;
   return parseJsonObject(text) ? "" : text;
@@ -5421,7 +5971,9 @@ function buildSurfaceContext(args: {
   workspaceRoot: string;
   workspaceId?: string;
   notesRoot: string;
+  workspaceMode: WorkspacePane;
   agentSelection?: WorkspaceAgentOption;
+  modelSelection?: WorkspaceModelOption;
   activeFile: WorkspaceFileEntry | null;
   activeFileContent: string;
   wireGuardStatus: WorkspaceWireGuardStatus | null;
@@ -5433,17 +5985,47 @@ function buildSurfaceContext(args: {
     workspaceRoot,
     workspaceId,
     notesRoot,
+    workspaceMode,
     agentSelection,
+    modelSelection,
     activeFile,
     activeFileContent,
     wireGuardStatus,
   } = args;
   const selectedAgent = agentSelection ?? workspaceAgentOptionForId(DEFAULT_AGENT_SELECTION_ID);
+  const selectedModel =
+    modelSelection ??
+    workspaceModelOptionForId(DEFAULT_MODEL_SELECTION_BY_AGENT[selectedAgent.id], selectedAgent.id);
+  const parsedNote = note ? extractHugoPage(note.content, note.title) : null;
+  const activeNoteContext = note
+    ? {
+        id: note.id,
+        title: parsedNote?.meta.title || note.title,
+        path: note.path ?? null,
+        relative_path: noteRelativePath(note, notesRoot),
+        section: noteSection(note, notesRoot),
+        source: note.source,
+        dirty: note.status === "dirty",
+        layout: parsedNote?.meta.layout || note.layout || null,
+        pageID: parsedNote?.meta.pageID || note.pageID || null,
+        tags: parsedNote?.meta.tags.length ? parsedNote.meta.tags : note.tags,
+        categories: parsedNote?.meta.categories.length ? parsedNote.meta.categories : note.categories,
+        citations: note.citations,
+        draft:
+          parsedNote?.meta.draft === "true"
+            ? true
+            : parsedNote?.meta.draft === "false"
+              ? false
+              : note.draft ?? null,
+        content_preview: note.content.slice(0, 1800),
+      }
+    : null;
   return {
     identity: { name: "DAN Workspace", role: "chunk_workspace" },
     workspace_root: workspaceRoot,
     workspace_id: workspaceId || workspaceRoot,
     notes_root: notesRoot,
+    workspace_mode: workspaceMode,
     workspace_source: "chunk_workspace",
     ui_surface: "chunk_workspace",
     surface_profile: SUPER_TUI_PROFILE,
@@ -5453,7 +6035,10 @@ function buildSurfaceContext(args: {
       id: selectedAgent.id,
       label: selectedAgent.label,
       backend: selectedAgent.backend,
-      ...(selectedAgent.model ? { model: selectedAgent.model } : {}),
+      model_option: selectedModel.id,
+      model_label: selectedModel.label,
+      ...(selectedModel.model ? { model: selectedModel.model } : {}),
+      ...(selectedModel.reasoningEffort ? { reasoning_effort: selectedModel.reasoningEffort } : {}),
     },
     gui_for: selectedAgent.backend === CODEX_BACKEND ? "codex exec" : "dan super-tui",
     capabilities: [
@@ -5464,6 +6049,16 @@ function buildSurfaceContext(args: {
       "checkpoint_commands",
       "read_only_wireguard_status",
     ],
+    notes_workspace: {
+      kind: "hugo_notes",
+      role: workspaceMode === "notes" ? "primary_workspace" : "context_workspace",
+      active: workspaceMode === "notes",
+      root: notesRoot,
+      content_tree: true,
+      active_note: activeNoteContext,
+      rules: NOTES_WORKSPACE_RULES,
+      write_policy: NOTES_WORKSPACE_WRITE_POLICY,
+    },
     wireguard_service: wireGuardStatus
       ? {
           service: wireGuardStatus.service,
@@ -5476,15 +6071,7 @@ function buildSurfaceContext(args: {
           conflictPolicy: wireGuardStatus.conflict_policy,
         }
       : null,
-    active_note: note
-      ? {
-          id: note.id,
-          title: note.title,
-          path: note.path ?? null,
-          source: note.source,
-          dirty: note.status === "dirty",
-        }
-      : null,
+    active_note: activeNoteContext,
     selected_chunk: selectedChunk
       ? {
           id: selectedChunk.id,
@@ -6851,7 +7438,7 @@ function blueprintLiveStatus(
     [...relatedTasks]
       .reverse()
       .map(taskProgressLabel)
-      .find((line) => line && !/^Super DAN completed$/i.test(line)) || "";
+      .find((line) => line && !isGenericAgentStatusText(line)) || "";
   const recentUpdates = uniqueStringList(
     eventScope
       .slice(-6)
@@ -6870,6 +7457,120 @@ function blueprintLiveStatus(
     recentUpdates,
     results,
   };
+}
+
+function isUsefulCardProgressLine(line: string) {
+  const text = normalizeSummaryLine(line);
+  if (!text) return false;
+  if (/^This step is complete\.?$/i.test(text)) return false;
+  if (/^Waiting for earlier steps\.?$/i.test(text)) return false;
+  if (/^Ready to run when reached\.?$/i.test(text)) return false;
+  if (/^Waiting in the queue\.?$/i.test(text)) return false;
+  if (/^Checking changes\.?$/i.test(text)) return false;
+  if (isGenericAgentStatusText(text) && !/\bis working\b/i.test(text)) return false;
+  if (isMachineProgressText(text)) return false;
+  return true;
+}
+
+function eventParallelLabel(event: ChatV2AgentRunEvent, fallbackBranchId?: string | null) {
+  const payload = eventPayload(event);
+  return (
+    scalarDetailText(payload.branch_id) ||
+    scalarDetailText(payload.branchId) ||
+    scalarDetailText(payload.branch) ||
+    scalarDetailText(payload.parallel_group) ||
+    scalarDetailText(payload.parallelGroup) ||
+    scalarDetailText(payload.task_graph_branch) ||
+    fallbackBranchId ||
+    scalarDetailText(event.task_id) ||
+    scalarDetailText(event.run_id) ||
+    "main"
+  );
+}
+
+function relatedNodeEvents(node: BlueprintNode, events: ChatV2AgentRunEvent[]) {
+  const matches = events.filter((event) => eventMatchesNode(event, node));
+  return matches.length > 0 ? matches : events;
+}
+
+function workCardAgentTask(
+  node: BlueprintNode,
+  tasks: ChatV2TaskSnapshot[],
+  activeTask: ChatV2TaskSnapshot | null,
+) {
+  if (activeTask && taskMatchesNode(activeTask, node)) return activeTask;
+  return tasks.find((task) => taskMatchesNode(task, node)) ?? activeTask;
+}
+
+function activeCardParagraphs(
+  node: BlueprintNode,
+  tasks: ChatV2TaskSnapshot[],
+  events: ChatV2AgentRunEvent[],
+  activeTask: ChatV2TaskSnapshot | null,
+) {
+  const agentTask = workCardAgentTask(node, tasks, activeTask);
+  const scopedEvents = relatedNodeEvents(node, events).slice(-10);
+  const grouped = new Map<string, string[]>();
+  for (const event of scopedEvents) {
+    const line = eventActivityLine(event);
+    if (!isUsefulCardProgressLine(line)) continue;
+    const key = eventParallelLabel(event, node.branchId);
+    const lines = grouped.get(key) ?? [];
+    lines.push(normalizeSummaryLine(line));
+    grouped.set(key, lines);
+  }
+  const groups = [...grouped.entries()]
+    .map(([label, lines]) => [label, uniqueStringList(lines).slice(-2)] as const)
+    .filter(([, lines]) => lines.length > 0);
+  if (groups.length > 1) {
+    return groups.map(
+      ([label, lines]) => `**${label}:** ${highlightWorkAgentText(lines.join(" "), agentTask)}`,
+    );
+  }
+  const liveStatus = blueprintLiveStatus(node, tasks, events, activeTask);
+  return uniqueStringList([
+    liveStatus.now,
+    liveStatus.latestUpdate,
+    ...liveStatus.recentUpdates.slice(-2),
+  ])
+    .filter(isUsefulCardProgressLine)
+    .map((line) => highlightWorkAgentText(line, agentTask))
+    .slice(0, 3);
+}
+
+function fallbackCardContent(node: BlueprintNode) {
+  if (node.body && !isGenericCompletionText(node.body)) return node.body;
+  if (node.detail && !isGenericCompletionText(node.detail)) return node.detail;
+  return "";
+}
+
+function blueprintCardContent(
+  node: BlueprintNode,
+  tasks: ChatV2TaskSnapshot[],
+  events: ChatV2AgentRunEvent[],
+  activeTask: ChatV2TaskSnapshot | null,
+) {
+  if (node.status === "active") {
+    const paragraphs = activeCardParagraphs(node, tasks, events, activeTask);
+    if (paragraphs.length > 0) return paragraphs.join("\n\n");
+    return fallbackCardContent(node) || "Working on this step.";
+  }
+  if (node.status === "done") {
+    return fallbackCardContent(node) || `${strippedStepTitle(node.title)} is complete.`;
+  }
+  if (node.status === "blocked") {
+    return fallbackCardContent(node) || "This step needs attention before DAN can continue.";
+  }
+  if (node.status === "future") {
+    return fallbackCardContent(node) || "This planned step will run after earlier work is complete.";
+  }
+  if (node.status === "ready") {
+    return fallbackCardContent(node) || "This step is ready to run when DAN reaches it.";
+  }
+  if (node.status === "queued") {
+    return fallbackCardContent(node) || "This step is waiting in the queue.";
+  }
+  return fallbackCardContent(node) || "Waiting for output.";
 }
 
 const STATUS_TOOL_LABELS = [
@@ -7131,6 +7832,9 @@ function ConversationTimelineCard({
 function BlueprintView({
   nodes,
   conversationChunks,
+  tasks,
+  agentEvents,
+  activeTask,
   activeNodeId,
   selectedNodeId,
   selectedChunkId,
@@ -7141,6 +7845,9 @@ function BlueprintView({
 }: {
   nodes: BlueprintNode[];
   conversationChunks: WorkspaceChunk[];
+  tasks: ChatV2TaskSnapshot[];
+  agentEvents: ChatV2AgentRunEvent[];
+  activeTask: ChatV2TaskSnapshot | null;
   activeNodeId: string | null;
   selectedNodeId: string | null;
   selectedChunkId: string | null;
@@ -7256,6 +7963,7 @@ function BlueprintView({
           const active = node.id === activeNodeId;
           const selected = node.id === selectedNodeId;
           const leftOffset = Math.min(node.depth ?? 0, 2) * 22;
+          const cardContent = blueprintCardContent(node, tasks, agentEvents, activeTask);
           const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
             if (event.key !== "Enter" && event.key !== " ") return;
             event.preventDefault();
@@ -7312,9 +8020,6 @@ function BlueprintView({
                     >
                       {node.title}
                     </div>
-                    <div className="mt-0.5 line-clamp-2 break-words text-[11px] leading-4 text-slate-500 [overflow-wrap:anywhere] dark:text-slate-400">
-                      {node.detail}
-                    </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
                     <span
@@ -7331,19 +8036,23 @@ function BlueprintView({
                     </span>
                   </div>
                 </div>
-                {!node.compact && (
-                  <div
-                    className={cx(
-                      "mt-2 max-w-full overflow-hidden text-sm leading-6 text-slate-700 [overflow-wrap:anywhere] dark:text-slate-300",
-                      node.kind === "answer" ? "max-h-56" : "max-h-28",
-                    )}
-                  >
-                    <MarkdownRenderer
-                      content={node.body || "Waiting for output..."}
-                      className="max-w-full overflow-hidden [&_code]:break-words [&_h3]:mb-1 [&_h3]:mt-0 [&_h3]:text-[11px] [&_h3]:uppercase [&_h3]:tracking-[0.12em] [&_li]:break-words [&_li]:leading-6 [&_ol]:my-1 [&_p]:my-0 [&_p]:break-words [&_p]:leading-6 [&_ul]:my-1.5"
-                    />
-                  </div>
-                )}
+                <div
+                  className={cx(
+                    "mt-2 max-w-full overflow-hidden text-sm leading-6 text-slate-700 [overflow-wrap:anywhere] dark:text-slate-300",
+                    node.kind === "answer"
+                      ? "max-h-80"
+                      : node.status === "active"
+                        ? "max-h-72"
+                        : node.compact
+                          ? "max-h-32"
+                          : "max-h-48",
+                  )}
+                >
+                  <MarkdownRenderer
+                    content={cardContent || "Waiting for output..."}
+                    className="max-w-full overflow-hidden [&_code]:break-words [&_h3]:mb-1 [&_h3]:mt-0 [&_h3]:text-[11px] [&_h3]:uppercase [&_h3]:tracking-[0.12em] [&_li]:break-words [&_li]:leading-6 [&_ol]:my-1 [&_p]:my-0 [&_p]:break-words [&_p]:leading-6 [&_ul]:my-1.5"
+                  />
+                </div>
                 {node.dependencyIds && node.dependencyIds.length > 0 && (
                   <div className="mt-1 flex flex-wrap gap-1 text-[10px] text-slate-400">
                     {node.dependencyIds.slice(0, 4).map((dependency) => (
@@ -8637,6 +9346,19 @@ export default function ChunkWorkspaceApp() {
         .includes(query);
     });
   }, [noteFacet, noteQuery, notes, notesRoot]);
+  const recentModifiedNoteItems = useMemo(
+    () => recentModifiedNotes(notes, notesRoot, RECENT_MODIFIED_LIMIT),
+    [notes, notesRoot],
+  );
+  const noteWorkingCards = useMemo(
+    () =>
+      workingNoteCards(
+        activeNote,
+        notesRoot,
+        activePane === "notes" ? activeRunningTask : null,
+      ),
+    [activeNote, activePane, activeRunningTask, notesRoot],
+  );
   const noteTree = useMemo(
     () => buildNoteTree(visibleNotes, notesRoot),
     [notesRoot, visibleNotes],
@@ -8735,18 +9457,50 @@ export default function ChunkWorkspaceApp() {
   const rootParentPath = parentRootPath(rootBrowsePath);
   const hasActiveRun = Boolean(activeRunId && activeRunningTask);
   const [selectedAgentId, setSelectedAgentId] = useState<WorkspaceAgentSelectionId>(() => {
-    if (typeof window === "undefined") return DEFAULT_AGENT_SELECTION_ID;
-    const stored = window.localStorage.getItem(AGENT_SELECTION_STORAGE_KEY);
-    return isWorkspaceAgentSelectionId(stored) ? stored : DEFAULT_AGENT_SELECTION_ID;
+    return readStoredWorkspaceSelection().agentId;
+  });
+  const [modelSelectionsByAgent, setModelSelectionsByAgent] = useState<WorkspaceModelSelectionByAgent>(() => {
+    return readStoredWorkspaceSelection().modelSelectionsByAgent;
   });
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const selectedAgentOption = useMemo(
     () => workspaceAgentOptionForId(selectedAgentId),
+    [selectedAgentId],
+  );
+  const selectedModelId = workspaceModelOptionForId(
+    modelSelectionsByAgent[selectedAgentId],
+    selectedAgentId,
+  ).id;
+  const selectedModelOption = useMemo(
+    () => workspaceModelOptionForId(selectedModelId, selectedAgentId),
+    [selectedAgentId, selectedModelId],
+  );
+  const persistedModelSelectionsByAgent = useMemo(() => {
+    const next = defaultWorkspaceModelSelectionsByAgent();
+    for (const agentOption of WORKSPACE_AGENT_OPTIONS) {
+      next[agentOption.id] = workspaceModelOptionForId(
+        modelSelectionsByAgent[agentOption.id],
+        agentOption.id,
+      ).id;
+    }
+    next[selectedAgentId] = selectedModelOption.id;
+    return next;
+  }, [modelSelectionsByAgent, selectedAgentId, selectedModelOption.id]);
+  const selectableModelOptions = useMemo(
+    () => workspaceModelOptionsForAgent(selectedAgentId),
     [selectedAgentId],
   );
   useEffect(() => {
     window.localStorage.setItem(AGENT_SELECTION_STORAGE_KEY, selectedAgentId);
   }, [selectedAgentId]);
+  useEffect(() => {
+    window.localStorage.setItem(MODEL_SELECTION_STORAGE_KEY, selectedModelOption.id);
+    window.localStorage.setItem(
+      MODEL_SELECTIONS_BY_AGENT_STORAGE_KEY,
+      JSON.stringify(persistedModelSelectionsByAgent),
+    );
+  }, [persistedModelSelectionsByAgent, selectedModelOption.id]);
   const [elapsedCounterNow, setElapsedCounterNow] = useState(() => Date.now());
   useEffect(() => {
     if (!activeRunningTask) return undefined;
@@ -8782,9 +9536,12 @@ export default function ChunkWorkspaceApp() {
   const composerPlaceholder = workspaceComposerPlaceholder({
     hasActiveRun,
     placement: activeRunPlacement,
+    workspaceMode: activePane,
     selectedBlueprintTitle: selectedBlueprintNode?.title,
     selectedChunkTitle: selectedChunk?.title,
     activeFilePath: activeFileEntry?.relative_path,
+    activeNoteTitle: activeNote?.title,
+    activeNotePath: activeNote ? noteRelativePath(activeNote, notesRoot) : null,
   });
 
   useEffect(() => {
@@ -9468,6 +10225,10 @@ export default function ChunkWorkspaceApp() {
         setStatus("Restore session to view it");
         return;
       }
+      if (workspaceId) {
+        setActiveWorkspace(workspaceId);
+        setActiveFilePath(null);
+      }
       const selectionSeq = ++sessionSelectionSeqRef.current;
       streamRef.current?.close();
       streamRef.current = null;
@@ -9873,6 +10634,12 @@ export default function ChunkWorkspaceApp() {
             }, delay);
           };
           if (event.task_id) refreshThreadTasks();
+          if (agentRunEventIsTerminal(event)) {
+            setBackgroundTasks((previous) => applyRunEventToTaskSnapshots(previous, event));
+            if (activeThreadRef.current?.id === thread.id) {
+              setTasks((previous) => applyRunEventToTaskSnapshots(previous, event));
+            }
+          }
           if (activeThreadRef.current?.id !== thread.id) return;
           setAgentEvents((previous) => [...previous, event].slice(-80));
           attachRunEventToAssistant(assistantId, runEventPayloadFromAgentEvent(event));
@@ -9952,7 +10719,7 @@ export default function ChunkWorkspaceApp() {
         setPendingAssistantIds((previous) => ({ ...previous, [assistant.id]: true }));
       }
       const initialPersist = persistMessages(thread, nextMessages, "agent");
-      setStatus(`Starting ${selectedAgentOption.shortLabel}`);
+      setStatus(`Starting ${selectedAgentOption.shortLabel} · ${selectedModelOption.shortLabel}`);
 
       if (activeRunId && activeRunningTask) {
         const response = await postChatV2AgentRunCommand(activeRunId, {
@@ -9968,7 +10735,9 @@ export default function ChunkWorkspaceApp() {
               workspaceRoot: developmentRoot,
               workspaceId: workspace?.id ?? activeWorkspaceId ?? "",
               notesRoot,
+              workspaceMode: activePane,
               agentSelection: selectedAgentOption,
+              modelSelection: selectedModelOption,
               activeFile: activeFileEntry,
               activeFileContent,
               wireGuardStatus,
@@ -10022,7 +10791,9 @@ export default function ChunkWorkspaceApp() {
           workspaceRoot: developmentRoot,
           workspaceId: workspace?.id ?? activeWorkspaceId ?? "",
           notesRoot,
+          workspaceMode: activePane,
           agentSelection: selectedAgentOption,
+          modelSelection: selectedModelOption,
           activeFile: activeFileEntry,
           activeFileContent,
           wireGuardStatus,
@@ -10083,7 +10854,9 @@ export default function ChunkWorkspaceApp() {
       await initialPersist;
       if (!runId) {
         await persistMessages(thread, linkedMessages, "agent");
-        if (isStillSelectedThread()) setStatus(`${selectedAgentOption.shortLabel} queued`);
+        if (isStillSelectedThread()) {
+          setStatus(`${selectedAgentOption.shortLabel} · ${selectedModelOption.shortLabel} queued`);
+        }
         return;
       }
       if (isStillSelectedThread()) {
@@ -10091,7 +10864,7 @@ export default function ChunkWorkspaceApp() {
       }
       const executed = await executeChatV2AgentRun(
         runId,
-        buildWorkspaceAgentExecutePayload(selectedAgentOption),
+        buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption),
       );
       if (executed.task) {
         mergeBackgroundTasks([executed.task]);
@@ -10099,13 +10872,16 @@ export default function ChunkWorkspaceApp() {
           setTasks((previous) => [executed.task!, ...previous]);
         }
       }
-      if (isStillSelectedThread()) setStatus(`${selectedAgentOption.shortLabel} running`);
+      if (isStillSelectedThread()) {
+        setStatus(`${selectedAgentOption.shortLabel} · ${selectedModelOption.shortLabel} running`);
+      }
       await persistMessages(thread, linkedMessages, "agent");
     },
     [
       activeNote,
       activeFileContent,
       activeFileEntry,
+      activePane,
       activeWorkspaceId,
       activeRunId,
       activeRunningTask,
@@ -10119,6 +10895,7 @@ export default function ChunkWorkspaceApp() {
       persistMessages,
       selectedChunk,
       selectedAgentOption,
+      selectedModelOption,
       selectedBlueprintNode,
       wireGuardStatus,
       workspaces,
@@ -10156,6 +10933,225 @@ export default function ChunkWorkspaceApp() {
       void submit();
     },
     [hasActiveRun, submit],
+  );
+
+  const renderWorkspaceComposer = () => (
+    <div className="shrink-0 border-t border-slate-200/80 bg-white/95 p-3 shadow-[0_-1px_0_rgba(15,23,42,0.02)] dark:border-slate-800 dark:bg-slate-950">
+      <div className="flex flex-col gap-2">
+        <textarea
+          ref={composerRef}
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          onKeyDown={handleComposerKeyDown}
+          placeholder={composerPlaceholder}
+          rows={1}
+          className="max-h-32 min-h-11 w-full resize-none rounded-lg border border-slate-200 bg-slate-50/90 px-3 py-2.5 text-sm leading-6 outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:bg-white focus:shadow-sm dark:border-slate-800 dark:bg-slate-900"
+        />
+        <div className="flex items-center gap-2">
+          <div className="flex h-7 shrink-0 items-center gap-0.5 rounded-md border border-slate-200 bg-slate-100/70 p-0.5 shadow-inner dark:border-slate-800 dark:bg-slate-900">
+            {(["steer", "queue"] as const).map((mode) => {
+              const queueUnavailable = mode === "queue" && !hasActiveRun;
+              const active =
+                mode === "steer"
+                  ? activeRunPlacement === "steer" || !hasActiveRun
+                  : hasActiveRun && activeRunPlacement === "queue";
+              return (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setActiveRunPlacement(mode)}
+                  disabled={queueUnavailable}
+                  title={
+                    mode === "queue"
+                      ? hasActiveRun
+                        ? "Queue this message after the current run (Option+Enter)"
+                        : "Next is available while a run is active"
+                      : hasActiveRun
+                        ? "Steer the active run now (Enter)"
+                        : "Start work with this message"
+                  }
+                  className={cx(
+                    "inline-flex h-6 items-center gap-1 rounded px-1.5 text-[11px] font-semibold capitalize transition disabled:cursor-not-allowed disabled:opacity-40 sm:px-2",
+                    active
+                      ? "bg-white text-slate-950 shadow-sm dark:bg-slate-100 dark:text-slate-950"
+                      : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200",
+                  )}
+                >
+                  {mode === "queue" ? <Clock3 size={11} /> : <WandSparkles size={11} />}
+                  {mode === "queue" ? "Next" : "Steer"}
+                </button>
+              );
+            })}
+          </div>
+          <div className="min-w-0 flex-1" />
+          <div
+            className="relative shrink-0"
+            onBlur={(event) => {
+              const nextFocus = event.relatedTarget;
+              if (nextFocus instanceof Node && event.currentTarget.contains(nextFocus)) {
+                return;
+              }
+              setAgentMenuOpen(false);
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setAgentMenuOpen((open) => !open)}
+              className="inline-flex h-7 min-w-20 max-w-[7rem] items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50/95 px-2 text-[11px] font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-white dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-slate-700 sm:min-w-24 sm:max-w-[8rem] sm:px-2.5"
+              title="Choose agent"
+              aria-expanded={agentMenuOpen}
+            >
+              {selectedAgentOption.backend === CODEX_BACKEND ? (
+                <Bot size={12} />
+              ) : (
+                <TerminalSquare size={12} />
+              )}
+              <span className="truncate">{selectedAgentOption.shortLabel}</span>
+              <ChevronDown size={12} className={cx("transition", agentMenuOpen && "rotate-180")} />
+            </button>
+            {agentMenuOpen && (
+              <div className="absolute bottom-full right-0 z-50 mb-2 w-36 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-xl shadow-slate-950/10 dark:border-slate-800 dark:bg-slate-950">
+                {WORKSPACE_AGENT_OPTIONS.map((option) => {
+                  const selected = option.id === selectedAgentOption.id;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => {
+                        setSelectedAgentId(option.id);
+                        setAgentMenuOpen(false);
+                      }}
+                      className={cx(
+                        "flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition",
+                        selected
+                          ? "bg-slate-100 text-slate-950 dark:bg-slate-800 dark:text-white"
+                          : "text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-900 dark:hover:text-white",
+                      )}
+                    >
+                      {option.backend === CODEX_BACKEND ? (
+                        <Bot size={13} className="shrink-0" />
+                      ) : (
+                        <TerminalSquare size={13} className="shrink-0" />
+                      )}
+                      <span className="min-w-0 flex-1 truncate text-xs font-semibold">
+                        {option.label}
+                      </span>
+                      {selected && <Check size={13} className="shrink-0" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <div
+            className="relative shrink-0"
+            onBlur={(event) => {
+              const nextFocus = event.relatedTarget;
+              if (nextFocus instanceof Node && event.currentTarget.contains(nextFocus)) {
+                return;
+              }
+              setModelMenuOpen(false);
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setModelMenuOpen((open) => !open)}
+              className="inline-flex h-7 min-w-24 max-w-[8rem] items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50/95 px-2 text-[11px] font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-white dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-slate-700 sm:min-w-28 sm:max-w-[12rem] sm:px-2.5"
+              title="Choose model and reasoning"
+              aria-expanded={modelMenuOpen}
+            >
+              {selectedAgentOption.backend === CODEX_BACKEND ? (
+                <Bot size={12} />
+              ) : (
+                <TerminalSquare size={12} />
+              )}
+              <span className="truncate">{selectedModelOption.shortLabel}</span>
+              <ChevronDown size={12} className={cx("transition", modelMenuOpen && "rotate-180")} />
+            </button>
+            {modelMenuOpen && (
+              <div className="absolute bottom-full right-0 z-50 mb-2 max-h-72 w-64 overflow-auto rounded-lg border border-slate-200 bg-white py-1 shadow-xl shadow-slate-950/10 dark:border-slate-800 dark:bg-slate-950">
+                {selectableModelOptions.map((option) => {
+                  const selected = option.id === selectedModelOption.id;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => {
+                        setModelSelectionsByAgent((current) => ({
+                          ...current,
+                          [selectedAgentId]: option.id,
+                        }));
+                        setModelMenuOpen(false);
+                      }}
+                      className={cx(
+                        "flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition",
+                        selected
+                          ? "bg-slate-100 text-slate-950 dark:bg-slate-800 dark:text-white"
+                          : "text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-900 dark:hover:text-white",
+                      )}
+                    >
+                      {selectedAgentOption.backend === CODEX_BACKEND ? (
+                        <Bot size={13} className="shrink-0" />
+                      ) : (
+                        <TerminalSquare size={13} className="shrink-0" />
+                      )}
+                      <span className="min-w-0 flex-1 truncate text-xs font-semibold">
+                        {option.label}
+                      </span>
+                      {selected && <Check size={13} className="shrink-0" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (composerActionIsStop && activeThread && activeRunningTask) {
+                void stopSessionRun(
+                  {
+                    id: activeThread.id,
+                    workflow_id: activeThread.workflowId,
+                    title: activeThread.title || "Active session",
+                    message_count: messages.length,
+                    created_at: "",
+                    updated_at: "",
+                  },
+                  activeRunningTask,
+                );
+                return;
+              }
+              void submit();
+            }}
+            disabled={sending || (!composerActionIsStop && !composerText)}
+            className={cx(
+              "inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2.5 text-[11px] font-semibold shadow-sm transition disabled:cursor-not-allowed disabled:opacity-40",
+              composerActionIsStop
+                ? "dan-composer-stop-button border border-red-200 bg-red-50 text-red-700 hover:border-red-300 hover:bg-white dark:border-red-900 dark:bg-red-950/35 dark:text-red-200 dark:hover:bg-red-950/55"
+                : "bg-slate-950 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-950 dark:hover:bg-white",
+            )}
+            title={composerActionIsStop ? "Stop running session" : undefined}
+            aria-label={composerActionIsStop ? "Stop running session" : undefined}
+          >
+            {composerActionIsStop ? (
+              <Square size={12} />
+            ) : sending ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Send size={12} />
+            )}
+            {composerActionIsStop
+              ? "Stop"
+              : hasActiveRun && activeRunPlacement === "queue"
+                ? "Next"
+                : "Steer"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 
   const openActiveFile = useCallback(() => {
@@ -10426,8 +11422,8 @@ export default function ChunkWorkspaceApp() {
       )}
     >
       <header className="dan-workspace-header relative z-40 flex h-14 shrink-0 items-center justify-between border-b border-slate-200/80 bg-white/95 px-4 shadow-[0_1px_0_rgba(15,23,42,0.03)] backdrop-blur dark:border-slate-800 dark:bg-slate-950/95">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100/70 p-0.5 shadow-inner dark:border-slate-800 dark:bg-slate-900">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          <div className="inline-flex shrink-0 rounded-lg border border-slate-200 bg-slate-100/70 p-0.5 shadow-inner dark:border-slate-800 dark:bg-slate-900">
             <button
               type="button"
               onClick={() => {
@@ -10493,7 +11489,7 @@ export default function ChunkWorkspaceApp() {
                   className="relative mt-0.5 min-w-0"
                   style={{
                     width: rootPickerWidth,
-                    maxWidth: "min(760px, calc(100vw - 260px))",
+                    maxWidth: "100%",
                   }}
                 >
                   <label className="flex h-5 min-w-0 items-center gap-1.5 rounded-md border border-transparent pr-1 text-[11px] leading-4 text-slate-500 transition hover:border-slate-200 hover:bg-slate-50 focus-within:border-slate-300 focus-within:bg-white dark:hover:border-slate-800 dark:hover:bg-slate-900 dark:focus-within:bg-slate-950">
@@ -10671,23 +11667,9 @@ export default function ChunkWorkspaceApp() {
             )}
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           {activePane === "work" && (
             <div className="hidden items-center gap-1 md:flex">
-              <button
-                type="button"
-                onClick={() => setShowFileExplorer((visible) => !visible)}
-                title="Toggle files (⌥⇧F)"
-                aria-label="Toggle files"
-                className={cx(
-                  "grid h-8 w-8 place-items-center rounded-lg border transition",
-                  showFileExplorer
-                    ? "border-slate-300 bg-slate-100 text-slate-800 shadow-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-                    : "border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950",
-                )}
-              >
-                <Folder size={14} />
-              </button>
               <button
                 type="button"
                 onClick={() => setShowSessionRail((visible) => !visible)}
@@ -10701,6 +11683,20 @@ export default function ChunkWorkspaceApp() {
                 )}
               >
                 <PanelLeft size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowFileExplorer((visible) => !visible)}
+                title="Toggle files (⌥⇧F)"
+                aria-label="Toggle files"
+                className={cx(
+                  "grid h-8 w-8 place-items-center rounded-lg border transition",
+                  showFileExplorer
+                    ? "border-slate-300 bg-slate-100 text-slate-800 shadow-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                    : "border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950",
+                )}
+              >
+                <Folder size={14} />
               </button>
               <button
                 type="button"
@@ -10939,6 +11935,109 @@ export default function ChunkWorkspaceApp() {
                 ))}
               </div>
             </div>
+            <div className="shrink-0 border-b border-slate-200/80 px-3 py-2.5 dark:border-slate-800">
+              <div className="mb-2 flex items-center justify-between gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">
+                <span>Recent</span>
+                <span className="rounded-full border border-slate-200 bg-white/70 px-1.5 py-0.5 font-mono text-[9px] tabular-nums dark:border-slate-800 dark:bg-slate-950">
+                  {recentModifiedNoteItems.length}
+                </span>
+              </div>
+              <div className="max-h-56 space-y-2 overflow-y-auto pr-1">
+                <section className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2 text-[11px] font-semibold text-slate-500 dark:text-slate-300">
+                    <span>Working Now</span>
+                    <span className="font-mono text-[10px] tabular-nums text-slate-400">
+                      {noteWorkingCards.length}
+                    </span>
+                  </div>
+                  {noteWorkingCards.map((card) => (
+                    <button
+                      key={card.id}
+                      type="button"
+                      onClick={() => selectNote(card.note)}
+                      className={cx(
+                        "dan-rail-card-row dan-note-tree-row w-full rounded-lg border px-2 py-2 text-left transition",
+                        railCardTone(card.note.id === activeNoteId),
+                      )}
+                      title={card.path}
+                    >
+                      <div className="flex min-w-0 items-center justify-between gap-2">
+                        <span className="inline-flex min-w-0 items-center gap-1.5 text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                          <span
+                            className={cx(
+                              "h-2 w-2 shrink-0 rounded-full",
+                              card.status === "error"
+                                ? "bg-red-500"
+                                : card.status === "saving" || card.status === "agent"
+                                  ? "bg-amber-500"
+                                  : card.status === "loading"
+                                    ? "bg-sky-500"
+                                    : "bg-emerald-500",
+                            )}
+                          />
+                          <span className="truncate">{card.state}</span>
+                        </span>
+                        <span className="shrink-0 rounded-full border border-slate-200 bg-white/60 px-1.5 py-0.5 text-[10px] text-slate-400 dark:border-slate-800 dark:bg-slate-950">
+                          {card.target}
+                        </span>
+                      </div>
+                      <div className="mt-1 truncate text-[12px] font-semibold text-slate-800 dark:text-slate-100">
+                        {card.title}
+                      </div>
+                      <div className="mt-0.5 max-h-8 overflow-hidden text-[11px] leading-4 text-slate-500 [overflow-wrap:anywhere] dark:text-slate-400">
+                        {card.snippet}
+                      </div>
+                      <div className="mt-1 truncate font-mono text-[10px] text-slate-400">
+                        Target · {card.path}
+                      </div>
+                    </button>
+                  ))}
+                </section>
+                <section className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2 text-[11px] font-semibold text-slate-500 dark:text-slate-300">
+                    <span>Modified Pages</span>
+                    <span className="font-mono text-[10px] tabular-nums text-slate-400">
+                      {recentModifiedNoteItems.length}/{RECENT_MODIFIED_LIMIT}
+                    </span>
+                  </div>
+                  {recentModifiedNoteItems.length > 0 ? (
+                    <div className="space-y-1">
+                      {recentModifiedNoteItems.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => selectNote(item.note)}
+                          className={cx(
+                            "dan-rail-card-row dan-note-tree-row flex w-full min-w-0 items-start gap-1.5 rounded-lg border px-1.5 py-2 text-left transition",
+                            railCardTone(item.note.id === activeNoteId),
+                          )}
+                          title={item.path}
+                        >
+                          <span className="dan-rail-card-kind mt-0.5">
+                            <Clock3 size={12} />
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="dan-rail-card-title block truncate">
+                              {item.title}
+                            </span>
+                            <span className="dan-rail-card-meta">
+                              {item.updatedLabel} · {item.section}
+                            </span>
+                            <span className="mt-0.5 block truncate font-mono text-[10px] text-slate-400">
+                              {item.path}
+                            </span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="rounded-lg border border-dashed border-slate-200 px-2 py-2 text-[11px] text-slate-400 dark:border-slate-800">
+                      No modified pages.
+                    </div>
+                  )}
+                </section>
+              </div>
+            </div>
             <div className="min-h-0 flex-1 overflow-auto p-3">
               {noteRailView === "pages" && (
                 <>
@@ -11115,6 +12214,7 @@ export default function ChunkWorkspaceApp() {
                 </div>
               </div>
             )}
+            {renderWorkspaceComposer()}
           </div>
           )}
 
@@ -11298,14 +12398,14 @@ export default function ChunkWorkspaceApp() {
               label="Sessions"
               title="Show sessions pane"
               onClick={() => setShowSessionRail(true)}
-              className="md:order-2"
+              className="md:order-1"
             >
               <PanelLeft size={14} />
             </CollapsedPaneRail>
           )}
           {renderSessionRail && (
             <aside
-              className="dan-phone-page dan-session-page relative flex min-h-0 shrink-0 flex-col border-r border-slate-200/80 bg-white/85 shadow-[1px_0_0_rgba(15,23,42,0.02)] dark:border-slate-800 dark:bg-slate-950 md:order-2"
+              className="dan-phone-page dan-session-page relative flex min-h-0 shrink-0 flex-col border-r border-slate-200/80 bg-white/85 shadow-[1px_0_0_rgba(15,23,42,0.02)] dark:border-slate-800 dark:bg-slate-950 md:order-1"
               style={isPhoneViewport ? undefined : { width: leftRailWidth }}
             >
               <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/80 px-3 dark:border-slate-800">
@@ -11617,13 +12717,13 @@ export default function ChunkWorkspaceApp() {
               label="Files"
               title="Show files pane"
               onClick={() => setShowFileExplorer(true)}
-              className="md:order-1"
+              className="md:order-2"
             >
               <Folder size={14} />
             </CollapsedPaneRail>
           )}
           {renderFileExplorer && (
-            <aside className="dan-phone-page dan-files-page flex min-h-0 w-[270px] shrink-0 flex-col border-r border-slate-200/80 bg-white/85 dark:border-slate-800 dark:bg-slate-950 md:order-1">
+            <aside className="dan-phone-page dan-files-page flex min-h-0 w-[270px] shrink-0 flex-col border-r border-slate-200/80 bg-white/85 dark:border-slate-800 dark:bg-slate-950 md:order-2">
               <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/80 px-3 dark:border-slate-800">
                 <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
                   Files
@@ -11846,6 +12946,9 @@ export default function ChunkWorkspaceApp() {
                   <BlueprintView
                     nodes={blueprintNodes}
                     conversationChunks={userConversationChunks}
+                    tasks={tasks}
+                    agentEvents={agentEvents}
+                    activeTask={activeRunningTask}
                     activeNodeId={activeBlueprintNode?.id ?? null}
                     selectedNodeId={selectedBlueprintNode?.id ?? null}
                     selectedChunkId={selectedChunk?.id ?? null}
@@ -11885,162 +12988,7 @@ export default function ChunkWorkspaceApp() {
                 </div>
               )}
 
-              <div className="shrink-0 border-t border-slate-200/80 bg-white/95 p-3 shadow-[0_-1px_0_rgba(15,23,42,0.02)] dark:border-slate-800 dark:bg-slate-950">
-                <div className="flex flex-col gap-2">
-                  <textarea
-                    ref={composerRef}
-                    value={input}
-                    onChange={(event) => setInput(event.target.value)}
-                    onKeyDown={handleComposerKeyDown}
-                    placeholder={composerPlaceholder}
-                    rows={1}
-                    className="max-h-32 min-h-11 w-full resize-none rounded-lg border border-slate-200 bg-slate-50/90 px-3 py-2.5 text-sm leading-6 outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:bg-white focus:shadow-sm dark:border-slate-800 dark:bg-slate-900"
-                  />
-                  <div className="flex items-center gap-2">
-                    <div className="flex h-7 shrink-0 items-center gap-0.5 rounded-md border border-slate-200 bg-slate-100/70 p-0.5 shadow-inner dark:border-slate-800 dark:bg-slate-900">
-                      {(["steer", "queue"] as const).map((mode) => {
-                        const queueUnavailable = mode === "queue" && !hasActiveRun;
-                        const active =
-                          mode === "steer"
-                            ? activeRunPlacement === "steer" || !hasActiveRun
-                            : hasActiveRun && activeRunPlacement === "queue";
-                        return (
-                          <button
-                            key={mode}
-                            type="button"
-                            onClick={() => setActiveRunPlacement(mode)}
-                            disabled={queueUnavailable}
-                            title={
-                              mode === "queue"
-                                ? hasActiveRun
-                                  ? "Queue this message after the current run (Option+Enter)"
-                                  : "Next is available while a run is active"
-                                : hasActiveRun
-                                  ? "Steer the active run now (Enter)"
-                                  : "Start work with this message"
-                            }
-                            className={cx(
-                              "inline-flex h-6 items-center gap-1 rounded px-1.5 text-[11px] font-semibold capitalize transition disabled:cursor-not-allowed disabled:opacity-40 sm:px-2",
-                              active
-                                ? "bg-white text-slate-950 shadow-sm dark:bg-slate-100 dark:text-slate-950"
-                                : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200",
-                            )}
-                          >
-                            {mode === "queue" ? <Clock3 size={11} /> : <WandSparkles size={11} />}
-                            {mode === "queue" ? "Next" : "Steer"}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <div className="min-w-0 flex-1" />
-                    <div
-                      className="relative shrink-0"
-                      onBlur={(event) => {
-                        const nextFocus = event.relatedTarget;
-                        if (nextFocus instanceof Node && event.currentTarget.contains(nextFocus)) {
-                          return;
-                        }
-                        setAgentMenuOpen(false);
-                      }}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => setAgentMenuOpen((open) => !open)}
-                        className="inline-flex h-7 min-w-24 max-w-[9rem] items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50/95 px-2 text-[11px] font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-white dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-slate-700 sm:min-w-28 sm:max-w-[11rem] sm:px-2.5"
-                        title="Choose model or agent"
-                        aria-expanded={agentMenuOpen}
-                      >
-                        {selectedAgentOption.backend === CODEX_BACKEND ? (
-                          <Bot size={12} />
-                        ) : (
-                          <TerminalSquare size={12} />
-                        )}
-                        <span className="truncate">{selectedAgentOption.shortLabel}</span>
-                        <ChevronDown
-                          size={12}
-                          className={cx("transition", agentMenuOpen && "rotate-180")}
-                        />
-                      </button>
-                      {agentMenuOpen && (
-                        <div className="absolute bottom-full right-0 z-50 mb-2 w-44 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-xl shadow-slate-950/10 dark:border-slate-800 dark:bg-slate-950">
-                          {WORKSPACE_AGENT_OPTIONS.map((option) => {
-                            const selected = option.id === selectedAgentOption.id;
-                            return (
-                              <button
-                                key={option.id}
-                                type="button"
-                                onMouseDown={(event) => event.preventDefault()}
-                                onClick={() => {
-                                  setSelectedAgentId(option.id);
-                                  setAgentMenuOpen(false);
-                                }}
-                                className={cx(
-                                  "flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition",
-                                  selected
-                                    ? "bg-slate-100 text-slate-950 dark:bg-slate-800 dark:text-white"
-                                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-900 dark:hover:text-white",
-                                )}
-                              >
-                                {option.backend === CODEX_BACKEND ? (
-                                  <Bot size={13} className="shrink-0" />
-                                ) : (
-                                  <TerminalSquare size={13} className="shrink-0" />
-                                )}
-                                <span className="min-w-0 flex-1 truncate text-xs font-semibold">
-                                  {option.label}
-                                </span>
-                                {selected && <Check size={13} className="shrink-0" />}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (composerActionIsStop && activeThread && activeRunningTask) {
-                          void stopSessionRun(
-                            {
-                              id: activeThread.id,
-                              workflow_id: activeThread.workflowId,
-                              title: activeThread.title || "Active session",
-                              message_count: messages.length,
-                              created_at: "",
-                              updated_at: "",
-                            },
-                            activeRunningTask,
-                          );
-                          return;
-                        }
-                        void submit();
-                      }}
-                      disabled={sending || (!composerActionIsStop && !composerText)}
-                      className={cx(
-                        "inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2.5 text-[11px] font-semibold shadow-sm transition disabled:cursor-not-allowed disabled:opacity-40",
-                        composerActionIsStop
-                          ? "dan-composer-stop-button border border-red-200 bg-red-50 text-red-700 hover:border-red-300 hover:bg-white dark:border-red-900 dark:bg-red-950/35 dark:text-red-200 dark:hover:bg-red-950/55"
-                          : "bg-slate-950 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-950 dark:hover:bg-white",
-                      )}
-                      title={composerActionIsStop ? "Stop running session" : undefined}
-                      aria-label={composerActionIsStop ? "Stop running session" : undefined}
-                    >
-                      {composerActionIsStop ? (
-                        <Square size={12} />
-                      ) : sending ? (
-                        <Loader2 size={12} className="animate-spin" />
-                      ) : (
-                        <Send size={12} />
-                      )}
-                      {composerActionIsStop
-                        ? "Stop"
-                        : hasActiveRun && activeRunPlacement === "queue"
-                          ? "Next"
-                          : "Steer"}
-                    </button>
-                  </div>
-                </div>
-              </div>
+              {renderWorkspaceComposer()}
             </div>
 
             {renderSidecarPreview && (
