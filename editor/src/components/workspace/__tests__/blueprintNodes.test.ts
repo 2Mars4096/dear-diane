@@ -1,11 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   activeThreadArchivedSummaryForTest,
   buildSessionGroupsForTest,
+  blueprintTimelineItemsForTest,
   blueprintLiveStatusForTest,
   buildBlueprintNodesForTest,
   conversationUserChunksForTest,
+  liveTaskGraphRevisionsForTest,
+  liveTaskTreeForTest,
   noteRailViewForFacetForTest,
+  normalizeStructuredMarkdownForTest,
   queueRowsFromTasksForTest,
   restorableThreadTargetForTest,
   sessionCardDisplayForTest,
@@ -33,6 +37,19 @@ const baseArgs = {
   queueRows: [],
   activeThreadTitle: "",
 };
+
+function findTreeParentId(
+  nodes: ReturnType<typeof liveTaskTreeForTest>,
+  targetId: string,
+  parentId: string | null = null,
+): string | null {
+  for (const node of nodes) {
+    if (node.id === targetId) return parentId;
+    const found = findTreeParentId(node.children, targetId, node.id);
+    if (found !== null) return found;
+  }
+  return null;
+}
 
 function task(overrides: Partial<ChatV2TaskSnapshot>): ChatV2TaskSnapshot {
   const { metadata, ...rest } = overrides;
@@ -210,6 +227,47 @@ describe("workspace blueprint nodes", () => {
     });
   });
 
+  it("shows elapsed work time on session card labels", () => {
+    const completed = task({
+      thread_id: "thread-1",
+      status: "completed",
+      metadata: {
+        run_created_at: "2026-06-25T12:00:00.000Z",
+        run_updated_at: "2026-06-25T12:07:20.000Z",
+      },
+    });
+
+    expect(sessionCardDisplayForTest(thread({}), [completed]).detail).toContain("worked 7m");
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-25T12:03:30.000Z"));
+    try {
+      const running = task({
+        thread_id: "thread-1",
+        status: "running",
+        metadata: {
+          run_created_at: "2026-06-25T12:00:00.000Z",
+          run_updated_at: "2026-06-25T12:02:00.000Z",
+        },
+      });
+
+      expect(sessionCardDisplayForTest(thread({}), [running]).detail).toContain("working 4m");
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const queued = task({
+      thread_id: "thread-1",
+      status: "queued",
+      metadata: {
+        run_created_at: "2026-06-25T12:00:00.000Z",
+        run_updated_at: "2026-06-25T12:01:00.000Z",
+      },
+    });
+
+    expect(sessionCardDisplayForTest(thread({}), [queued]).detail).not.toContain("worked");
+  });
+
   it("marks a session response as new only until that ready response has been seen", () => {
     const completed = task({
       thread_id: "thread-1",
@@ -228,6 +286,20 @@ describe("workspace blueprint nodes", () => {
     expect(
       sessionHasNewReadyResponseForTest([completed], "2026-06-25T12:06:00.000Z"),
     ).toBe(false);
+  });
+
+  it("uses task update timestamps for ready response freshness", () => {
+    const completed = task({
+      thread_id: "thread-1",
+      status: "completed",
+      latest_progress: "Here is the project summary.",
+      metadata: {
+        updated_at: "2026-06-25T12:05:00.000Z",
+      },
+    });
+
+    expect(sessionReadyResponseAtForTest([completed])).toBe("2026-06-25T12:05:00.000Z");
+    expect(sessionHasNewReadyResponseForTest([completed])).toBe(true);
   });
 
   it("does not use the session response dot for running work or generic completion receipts", () => {
@@ -366,6 +438,34 @@ describe("workspace blueprint nodes", () => {
     expect(status.now).toContain("Thinking with kimi-k2.6");
     expect(status.latestUpdate).toContain("Changed `README.md`");
     expect(status.results).toContain("- Changed: `README.md`");
+  });
+
+  it("restores section and list structure in flattened final-answer markdown", () => {
+    const flattened =
+      "This is **ra-neo**, a tactical command game. ### What it is right now The project is in early prototyping: 1. **Three.js browser prototype** (`src/`) - A minimal ECS core. 2. **Godot 4.x desktop client** (`godot/`) - A native prototype. ### Core design pillars - **Visibility:** every entity is visible. - **Momentum:** formations move together.";
+
+    const normalized = normalizeStructuredMarkdownForTest(flattened);
+
+    expect(normalized).toContain(
+      "This is **ra-neo**, a tactical command game.\n\n### What it is right now\n\nThe project",
+    );
+    expect(normalized).toContain("\n1. **Three.js browser prototype**");
+    expect(normalized).toContain("\n- A minimal ECS core.");
+    expect(normalized).toContain("\n\n### Core design pillars\n\n- **Visibility:** every entity is visible.");
+  });
+
+  it("restores flattened pipe tables in final-answer markdown", () => {
+    const flattened =
+      "### Current state (evidence-backed) | Area | Status | Evidence ||------|--------|----------|| Godot core scripts | Implemented | `godot/src/core/*.gd` || Browser ECS | Implemented | `src/ecs/World.js`";
+
+    const normalized = normalizeStructuredMarkdownForTest(flattened);
+
+    expect(normalized).toContain(
+      "### Current state (evidence-backed)\n\n| Area | Status | Evidence |\n| ------ | -------- | ---------- |",
+    );
+    expect(normalized).toContain(
+      "| Godot core scripts | Implemented | `godot/src/core/*.gd` |\n| Browser ECS | Implemented | `src/ecs/World.js` |",
+    );
   });
 
   it("explains denied tool calls with the policy reason", () => {
@@ -803,6 +903,38 @@ describe("workspace blueprint nodes", () => {
         {
           type: "worker_started",
           source_event_type: "live.task_graph.updated",
+          summary: "Initial task graph emitted.",
+          payload: {
+            task_graph_state: {
+              schema: "super_dan_task_graph_v1",
+              revision: 4,
+              version_id: "v2.b1.2",
+              root_version_id: "v2",
+              source: "planner",
+              update_scope: "initial",
+              update_reason: "Planner emitted the first task graph.",
+              changed_task_ids: ["1-1"],
+              changed_branch_ids: ["1"],
+              tasks: [
+                {
+                  task_id: "1-1",
+                  branch_id: "1",
+                  goal: "Create app shell",
+                  depends_on: [],
+                  owned_paths: ["index.html"],
+                  deliverables: ["index.html"],
+                  validation: ["open the page"],
+                  state: "ready",
+                  parallel_safe: true,
+                },
+              ],
+              ready_task_ids: ["1-1"],
+            },
+          },
+        },
+        {
+          type: "worker_started",
+          source_event_type: "live.task_graph.updated",
           summary: "Task graph updated.",
           payload: {
             task_graph_state: {
@@ -913,6 +1045,78 @@ describe("workspace blueprint nodes", () => {
     expect(readyNode?.status).toBe("ready");
     expect(readyNode?.meta).toContain("branch 1");
     expect(nodes.find((node) => node.id === "blueprint:task:2-1")?.status).toBe("future");
+
+    const tree = liveTaskTreeForTest(nodes);
+    expect(tree.map((node) => node.id)).toEqual([
+      "blueprint:task:1-1",
+      "blueprint:task:1-2",
+      "blueprint:task:2-1",
+    ]);
+    expect(findTreeParentId(tree, "blueprint:task:1-1")).toBeNull();
+    expect(findTreeParentId(tree, "blueprint:task:1-2")).toBeNull();
+    expect(findTreeParentId(tree, "blueprint:task:2-1")).toBeNull();
+
+    const graphRevisions = liveTaskGraphRevisionsForTest(nodes);
+    expect(graphRevisions.map((revision) => revision.label)).toEqual([
+      "v2.b1.2",
+      "v2.b1.3+b2.1",
+    ]);
+    expect(graphRevisions[1]).toMatchObject({
+      id: "v2.b1.3+b2.1",
+      label: "v2.b1.3+b2.1",
+      meta: expect.stringContaining("validator"),
+      reason: "Validator advanced the ready frontier.",
+    });
+    expect(graphRevisions[0]?.branches[0]?.nodes.map((node) => node.status)).toEqual([
+      "ready",
+    ]);
+    expect(graphRevisions[1]?.branches.map((branch) => branch.label)).toEqual([
+      "Branch 1",
+      "Branch 2",
+    ]);
+    expect(graphRevisions[1]?.branches[0]?.nodes.map((node) => node.id)).toEqual([
+      "blueprint:task:1-1",
+      "blueprint:task:1-2",
+    ]);
+  });
+
+  it("keeps sequential run phases at the same tree level without emitted tasks", () => {
+    const activeTask = task({
+      task_id: "active-no-dag",
+      status: "running",
+      latest_progress: "Thinking with kimi-k2.6.",
+      metadata: { active_run_id: "run-no-dag" },
+    });
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "run-no-dag",
+      activeRunningTask: activeTask,
+      tasks: [activeTask],
+      chunks: [
+        {
+          id: "message:user-no-dag",
+          kind: "chat",
+          title: "You · Request",
+          body: "Help me understand this project",
+          status: "clean",
+          meta: "user",
+          role: "user",
+        },
+      ],
+      agentEvents: [
+        {
+          type: "worker_started",
+          source_event_type: "live.generic_build.started",
+          summary: "Working in this workspace.",
+          task_id: "active-no-dag",
+          run_id: "run-no-dag",
+        },
+      ],
+    });
+
+    const tree = liveTaskTreeForTest(nodes);
+    expect(tree).toEqual([]);
+    expect(liveTaskGraphRevisionsForTest(nodes)).toEqual([]);
   });
 
   it("derives generic target blueprint steps before the backend emits a planning DAG", () => {
@@ -1217,6 +1421,107 @@ describe("workspace blueprint nodes", () => {
       title: "Follow-up response",
       status: "future",
     });
+  });
+
+  it("appends an active follow-up without refreshing the completed base plan", () => {
+    const runningFollowUp = task({
+      task_id: "followup-task",
+      status: "running",
+      latest_progress: "Thinking with kimi-k2.6.",
+      metadata: { active_run_id: "followup-run" },
+    });
+    const rows = queueRowsFromTasksForTest([runningFollowUp]);
+    const chunks = [
+      {
+        id: "message:user-base",
+        kind: "chat" as const,
+        title: "You · Request",
+        body: "what is this project",
+        status: "clean" as const,
+        meta: "user",
+        role: "user" as const,
+        runId: "base-run",
+      },
+      {
+        id: "agent-answer:base-run",
+        kind: "agent" as const,
+        title: "DAN · Answer",
+        body: "This project is a tactical command game.",
+        status: "clean" as const,
+        meta: "run.log.completed",
+        runId: "base-run",
+      },
+      {
+        id: "message:user-followup",
+        kind: "chat" as const,
+        title: "You · Request",
+        body: "good please keep working",
+        status: "clean" as const,
+        meta: "user",
+        role: "user" as const,
+        runId: "followup-run",
+      },
+    ];
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "followup-run",
+      activeRunningTask: runningFollowUp,
+      tasks: [runningFollowUp],
+      queueRows: rows,
+      chunks,
+      agentEvents: [
+        {
+          type: "completed",
+          source_event_type: "run.log.completed",
+          summary: "This project is a tactical command game.",
+          run_id: "base-run",
+          task_id: "base-task",
+        },
+        {
+          type: "worker_started",
+          source_event_type: "live.generic_build.started",
+          summary: "Thinking with kimi-k2.6.",
+          run_id: "followup-run",
+          task_id: "followup-task",
+        },
+      ],
+    });
+
+    expect(nodes.find((node) => node.kind === "request")).toMatchObject({
+      title: "Operator request",
+      rawRequest: "what is this project",
+      status: "done",
+    });
+    expect(nodes.find((node) => node.kind === "answer" && node.runId === "base-run")).toMatchObject({
+      title: "Final response",
+      body: "This project is a tactical command game.",
+      status: "done",
+    });
+    expect(nodes.find((node) => node.kind === "request" && node.runId === "followup-run")).toMatchObject({
+      title: "Operator request",
+      rawRequest: "good please keep working",
+      status: "done",
+    });
+    expect(nodes.find((node) => node.kind === "build" && node.runId === "followup-run")).toMatchObject({
+      status: "active",
+    });
+    expect(nodes.map((node) => node.title)).not.toContain("Active run");
+
+    const timeline = blueprintTimelineItemsForTest(nodes, conversationUserChunksForTest(chunks));
+    expect(timeline.map((item) => item.id)).toEqual([
+      "conversation:message:user-base:before:blueprint:run:base-run:message:user-base",
+      "node:blueprint:run:base-run:message:user-base",
+      "node:blueprint:run:base-run:understanding",
+      "node:blueprint:run:base-run:build",
+      "node:blueprint:run:base-run:agent-answer:base-run",
+      "conversation:message:user-followup:before:blueprint:run:followup-run:message:user-followup",
+      "node:blueprint:run:followup-run:message:user-followup",
+      "node:blueprint:run:followup-run:understanding",
+      "node:blueprint:run:followup-run:planning",
+      "node:blueprint:run:followup-run:build",
+      "node:blueprint:run:followup-run:validation",
+      "node:blueprint:run:followup-run:answer",
+    ]);
   });
 
   it("recovers old phone-session requests from task metadata and shows stop requests", () => {
@@ -1622,6 +1927,54 @@ describe("workspace blueprint nodes", () => {
     expect(answer?.previewBody).not.toContain("candidate_id");
   });
 
+  it("unwraps one-line fenced structured final progress before rendering the final response", () => {
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      chunks: [
+        {
+          id: "message:user-one-line-json",
+          kind: "chat",
+          title: "You · Request",
+          body: "What is this game?",
+          status: "clean",
+          meta: "user",
+          role: "user",
+        },
+      ],
+      tasks: [
+        task({
+          task_id: "one-line-json-task",
+          status: "completed",
+          latest_progress: `\`\`\`json ${JSON.stringify({
+            answer:
+              "**ra-neo** is a real-time strategy prototype about large visible swarms.",
+            candidate_id: "super-dan-live-review-001",
+            summary: [
+              "Browser-first ECS and flowfield project with a Godot validation layer.",
+            ],
+            remaining_work: ["Validate the 1,000-agent frame budget."],
+          })} \`\`\``,
+          metadata: { active_run_id: "one-line-json-run" },
+        }),
+      ],
+    });
+
+    const answer = nodes.find((node) => node.id === "blueprint:answer");
+    expect(answer).toMatchObject({
+      title: "Final response",
+      status: "done",
+      body: "**ra-neo** is a real-time strategy prototype about large visible swarms.",
+    });
+    expect(answer?.body).not.toContain("```");
+    expect(answer?.body).not.toContain("candidate_id");
+    expect(answer?.body).not.toContain("{");
+    expect(answer?.previewBody).toContain("### Summary");
+    expect(answer?.previewBody).toContain("### What Changed");
+    expect(answer?.previewBody).toContain("### Needs Attention");
+    expect(answer?.previewBody).not.toContain("```");
+    expect(answer?.previewBody).not.toContain("candidate_id");
+  });
+
   it("does not fall back to raw JSON when structured final progress has only internal fields", () => {
     const nodes = buildBlueprintNodesForTest({
       ...baseArgs,
@@ -1879,19 +2232,22 @@ describe("workspace blueprint nodes", () => {
       ],
     });
 
-    expect(nodes.find((node) => node.id === "blueprint:build")).toMatchObject({
+    expect(nodes.find((node) => node.kind === "answer" && node.runId === "old-run")).toMatchObject({
+      status: "done",
+      body: "blueprint smoke test ok",
+    });
+    expect(nodes.find((node) => node.kind === "build" && node.runId === "active-run")).toMatchObject({
       status: "active",
       runId: "active-run",
       taskId: "active-task",
     });
-    expect(nodes.find((node) => node.id === "blueprint:answer")).toMatchObject({
+    const activeAnswer = nodes.find((node) => node.kind === "answer" && node.runId === "active-run");
+    expect(activeAnswer).toMatchObject({
       status: "future",
       runId: "active-run",
       taskId: "active-task",
     });
-    expect(nodes.find((node) => node.id === "blueprint:answer")?.body).not.toContain(
-      "blueprint smoke test ok",
-    );
+    expect(activeAnswer?.body).not.toContain("blueprint smoke test ok");
   });
 
   it("keeps timeout events out of the final answer while retry is active", () => {

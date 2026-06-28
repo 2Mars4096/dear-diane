@@ -118,6 +118,14 @@ export interface ChatV2ThreadPayload {
   branch_type?: "edit" | "regenerate" | "explore" | null;
 }
 
+export interface ChatV2PromptLogPayload {
+  thread_id: string;
+  path: string;
+  content: string;
+  entry_count: number;
+  run_ids: string[];
+}
+
 export interface ChatV2MessageResponse {
   message_id: string;
   stream_channel_id?: string;
@@ -157,6 +165,7 @@ export const CHAT_V2_ENDPOINTS = {
   listTasks: "/api/v2/tasks",
   getTask: (taskId: string) => `/api/v2/tasks/${taskId}`,
   listThreadTasks: (threadId: string) => `/api/v2/threads/${threadId}/tasks`,
+  threadPromptLog: (threadId: string) => `/api/v2/threads/${threadId}/prompt-log`,
   getAgentRun: (runId: string) => `/api/v2/agent-runs/${runId}`,
   executeAgentRun: (runId: string) => `/api/v2/agent-runs/${runId}/execute`,
   agentRunEvents: (runId: string) => `/api/v2/agent-runs/${runId}/events`,
@@ -413,6 +422,14 @@ export async function listChatV2ThreadTasks(
     await fetch(CHAT_V2_ENDPOINTS.listThreadTasks(threadId)),
   );
   return Array.isArray(payload.tasks) ? payload.tasks : [];
+}
+
+export async function getChatV2ThreadPromptLog(
+  threadId: string,
+): Promise<ChatV2PromptLogPayload> {
+  return readJson<ChatV2PromptLogPayload>(
+    await fetch(CHAT_V2_ENDPOINTS.threadPromptLog(threadId)),
+  );
 }
 
 export async function getChatV2AgentRun(

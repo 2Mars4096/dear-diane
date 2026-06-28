@@ -10,6 +10,7 @@ import {
   type MouseEvent,
   type PointerEvent,
   type ReactNode,
+  type WheelEvent,
 } from "react";
 import {
   Activity,
@@ -27,15 +28,20 @@ import {
   Folder,
   FolderPlus,
   FolderOpen,
+  GitBranch as GitBranchIcon,
   GripVertical,
   Link as LinkIcon,
   Lightbulb,
   Loader2,
+  Maximize2,
   MessageSquareText,
+  Minus,
   NotebookPen,
   PanelLeft,
   PanelRight,
   Plus,
+  RotateCcw,
+  ScrollText,
   Search,
   Send,
   Shield,
@@ -70,6 +76,7 @@ import {
   executeChatV2AgentRun,
   getChatV2AgentRun,
   getChatV2AgentRunEvents,
+  getChatV2ThreadPromptLog,
   getChatV2Thread,
   listChatV2Tasks,
   listChatV2ThreadTasks,
@@ -107,6 +114,7 @@ const SESSION_RESPONSE_SEEN_STORAGE_KEY = "dan.chunkWorkspace.sessionResponseSee
 const LAYOUT_STORAGE_KEY = "dan.chunkWorkspace.layout.v1";
 const UI_STATE_STORAGE_KEY = "dan.chunkWorkspace.uiState.v1";
 const WORKSPACE_DRAG_MIME = "application/x-dan-workspace-id";
+type WorkspaceDropPlacement = "before" | "after";
 const WORKSPACE_SURFACE_TYPE = "frontend";
 const WORKSPACE_SURFACE_ID = "chunk-workspace";
 const WORKSPACE_SURFACE = `${WORKSPACE_SURFACE_TYPE}:${WORKSPACE_SURFACE_ID}`;
@@ -226,6 +234,15 @@ interface WorkspaceChunk {
   runId?: string | null;
 }
 
+interface PromptLogPreview {
+  threadId: string;
+  title: string;
+  body: string;
+  path: string;
+  entryCount: number;
+  status: "idle" | "loading" | "error";
+}
+
 interface BlueprintPlanTask {
   taskId: string;
   parentId?: string;
@@ -279,9 +296,40 @@ interface BlueprintNode {
   compact?: boolean;
   depth?: number;
   dependencyIds?: string[];
+  graphTaskId?: string;
+  parentGraphTaskId?: string;
+  branchId?: string;
+  graphContext?: BlueprintPlanContext;
+  graphHistory?: BlueprintPlanContext[];
   sourceChunkId?: string;
   taskId?: string | null;
   runId?: string | null;
+}
+
+interface LiveTaskTreeItem {
+  node: BlueprintNode;
+  children: LiveTaskTreeItem[];
+}
+
+interface LiveTaskTreeSnapshot {
+  id: string;
+  title: string;
+  status: BlueprintNodeStatus;
+  children: LiveTaskTreeSnapshot[];
+}
+
+interface LiveTaskGraphBranch {
+  id: string;
+  label: string;
+  nodes: BlueprintNode[];
+}
+
+interface LiveTaskGraphRevision {
+  id: string;
+  label: string;
+  meta: string;
+  reason: string;
+  branches: LiveTaskGraphBranch[];
 }
 
 interface SessionGroup {
@@ -305,7 +353,22 @@ interface QueueRow {
   lane: "task" | "append" | "continue_after_current";
   taskId?: string | null;
   runId?: string | null;
+  sourceChunkId?: string;
 }
+
+interface BlueprintTimelineNodeItem {
+  kind: "node";
+  id: string;
+  node: BlueprintNode;
+}
+
+interface BlueprintTimelineConversationItem {
+  kind: "conversation";
+  id: string;
+  chunk: WorkspaceChunk;
+}
+
+type BlueprintTimelineItem = BlueprintTimelineNodeItem | BlueprintTimelineConversationItem;
 
 interface SessionSwipeState {
   key: string;
@@ -414,12 +477,14 @@ function CollapsedPaneRail({
   onClick,
   children,
   edge = "right",
+  className,
 }: {
   label: string;
   title: string;
   onClick: () => void;
   children: ReactNode;
   edge?: "left" | "right";
+  className?: string;
 }) {
   return (
     <button
@@ -432,6 +497,7 @@ function CollapsedPaneRail({
         edge === "right"
           ? "border-r border-slate-200/80 dark:border-slate-800"
           : "border-l border-slate-200/80 dark:border-slate-800",
+        className,
       )}
       style={{ width: COLLAPSED_PANE_WIDTH }}
     >
@@ -1225,6 +1291,17 @@ function compactThreadTime(value: string) {
   return `${Math.round(ageMinutes / 1440)}d`;
 }
 
+function compactElapsedDuration(milliseconds: number) {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "";
+  const seconds = Math.max(1, Math.round(milliseconds / 1000));
+  if (seconds < 60) return "<1m";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+
 function compactFileSize(bytes: number) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "";
   if (bytes < 1024) return `${bytes} B`;
@@ -1540,6 +1617,10 @@ function runEventPayloadFromAgentEvent(event: ChatV2AgentRunEvent): RunEventPayl
   };
 }
 
+function agentRunEventIsTerminal(event: ChatV2AgentRunEvent) {
+  return terminalTaskStatuses.has(event.type);
+}
+
 function taskRunId(task: ChatV2TaskSnapshot) {
   const runId = task.metadata?.active_run_id;
   return typeof runId === "string" ? runId : "";
@@ -1560,6 +1641,26 @@ function taskRunUpdatedAt(task: ChatV2TaskSnapshot) {
     textValue(task.metadata?.thread_updated_at) ||
     textValue(task.metadata?.["_thread_updated_at"])
   );
+}
+
+function taskRunStartedAt(task: ChatV2TaskSnapshot) {
+  return (
+    textValue(task.metadata?.run_created_at) ||
+    textValue(task.metadata?.["_run_created_at"]) ||
+    textValue(task.metadata?.created_at) ||
+    textValue(task.metadata?.thread_created_at) ||
+    textValue(task.metadata?.["_thread_created_at"])
+  );
+}
+
+function taskElapsedMilliseconds(task: ChatV2TaskSnapshot, now = Date.now()) {
+  const startedAt = taskRunStartedAt(task);
+  if (!startedAt) return 0;
+  const start = timestampValue(startedAt, Number.NaN);
+  if (!Number.isFinite(start)) return 0;
+  const end = isTaskRunning(task) ? now : timestampValue(taskRunUpdatedAt(task), Number.NaN);
+  if (!Number.isFinite(end) || end < start) return 0;
+  return end - start;
 }
 
 function taskLastUpdateAge(task: ChatV2TaskSnapshot) {
@@ -1647,6 +1748,13 @@ function sessionTaskStatusLabel(task?: ChatV2TaskSnapshot | null) {
   return task.status.replace(/_/g, " ");
 }
 
+function sessionElapsedWorkLabel(task: ChatV2TaskSnapshot | null | undefined, elapsedLabel: string) {
+  if (!task || !elapsedLabel) return "";
+  if (isTaskRunning(task)) return `working ${elapsedLabel}`;
+  if (task.status === "queued" || task.status === "waiting_dependency") return "";
+  return `worked ${elapsedLabel}`;
+}
+
 function sessionCardDisplay(thread: ChatV2ThreadSummary, tasks: ChatV2TaskSnapshot[]) {
   const latestTask = newestSessionTask(tasks);
   const title = thread.title?.trim() || "Untitled";
@@ -1659,9 +1767,12 @@ function sessionCardDisplay(thread: ChatV2ThreadSummary, tasks: ChatV2TaskSnapsh
   if (tasks.length > 0) {
     const runLabel = `${tasks.length} ${tasks.length === 1 ? "run" : "runs"}`;
     const status = sessionTaskStatusLabel(latestTask);
+    const elapsed = tasks.reduce((total, task) => total + taskElapsedMilliseconds(task), 0);
+    const elapsedLabel = compactElapsedDuration(elapsed);
+    const workTime = sessionElapsedWorkLabel(latestTask, elapsedLabel);
     return {
       title: displayTitle,
-      detail: `${kind} · ${runLabel}${status ? ` · ${status}` : ""}${timeSuffix}`,
+      detail: `${kind} · ${runLabel}${status ? ` · ${status}` : ""}${workTime ? ` · ${workTime}` : ""}${timeSuffix}`,
     };
   }
   if (thread.mode === "agent" && thread.message_count === 0) {
@@ -1962,7 +2073,9 @@ function stringList(value: unknown) {
 
 function parseJsonObject(text: string): Record<string, unknown> | null {
   let trimmed = text.trim();
-  const fencedJson = trimmed.match(/^```[ \t]*(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*$/i);
+  const fencedJson = trimmed.match(
+    /^```[ \t]*(?:json)?[ \t]*(?:\r?\n)?([\s\S]*?)(?:\r?\n)?```[ \t]*$/i,
+  );
   if (fencedJson) trimmed = fencedJson[1]?.trim() ?? "";
   if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null;
   try {
@@ -1979,13 +2092,105 @@ function normalizeSummaryLine(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
 
+const FLATTENED_PIPE_TABLE_SEPARATOR_RE = /\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?/;
+
+function hasFlattenedPipeTable(value: string) {
+  return FLATTENED_PIPE_TABLE_SEPARATOR_RE.test(value);
+}
+
+function normalizePipeTableLine(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const framed = `${trimmed.startsWith("|") ? "" : "| "}${trimmed}${trimmed.endsWith("|") ? "" : " |"}`;
+  return framed
+    .replace(/\s*\|\s*/g, " | ")
+    .replace(/^\s*\|\s*/, "| ")
+    .replace(/\s*\|\s*$/, " |")
+    .trim();
+}
+
+function normalizeFlattenedPipeTables(value: string) {
+  if (!hasFlattenedPipeTable(value)) return value;
+
+  const withRowBreaks = value
+    .replace(/\|\|\s*(?=:?-{3,}:?\s*(?:\||$))/g, "|\n|")
+    .replace(/\|\|\s*(?=\S)/g, "|\n| ")
+    .replace(/[ \t]+(\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)/g, "\n$1")
+    .replace(/(\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)[ \t]+(?=\|)/g, "$1\n")
+    .replace(/\n{3,}/g, "\n\n");
+
+  return withRowBreaks
+    .split("\n")
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed.includes("|")) return line;
+      if (!hasFlattenedPipeTable(withRowBreaks)) return line;
+      if (
+        FLATTENED_PIPE_TABLE_SEPARATOR_RE.test(trimmed) ||
+        trimmed.startsWith("|") ||
+        trimmed.split("|").length >= 3
+      ) {
+        return normalizePipeTableLine(trimmed);
+      }
+      return line;
+    })
+    .filter((line) => line.trim() !== "|")
+    .join("\n");
+}
+
+function splitFlattenedMarkdownHeading(line: string) {
+  const match = /^(#{2,6})\s+(.+)$/.exec(line.trim());
+  if (!match) return line;
+  const marker = match[1];
+  const body = match[2].trim();
+  if (!body || body.length < 48) return line;
+
+  const tablePipeIndex = body.indexOf("|");
+  if (tablePipeIndex > 8 && hasFlattenedPipeTable(body.slice(tablePipeIndex))) {
+    const title = body.slice(0, tablePipeIndex).trim().replace(/[:;,.\s]+$/, "");
+    const table = normalizeFlattenedPipeTables(body.slice(tablePipeIndex));
+    if (title && table.trim()) return `${marker} ${title}\n\n${table}`;
+  }
+
+  const splitCandidates = [
+    body.search(/\s+(?=[-*]\s+(?:\*\*)?(?:[A-Z]|`))/),
+    body.search(/\s+(?=\d+\.\s+(?:\*\*)?(?:[A-Z]|`))/),
+    body.search(
+      /\s+(?=(?:This|That|The|It|They|There|DAN|Super DAN|Project|User|You|We|I)\b(?:\s+[a-z][a-z0-9-]*){0,3}\s+(?:is|are|was|were|has|have|will|can|should|needs|uses|includes|contains|remains|currently|now)\b)/,
+    ),
+  ].filter((index) => index > 8 && index < 96);
+
+  const splitAt =
+    splitCandidates.length > 0
+      ? Math.min(...splitCandidates)
+      : body.split(/\s+/).length > 12
+        ? body.split(/\s+/).slice(0, 7).join(" ").length
+        : -1;
+  if (splitAt < 0) return line;
+
+  const title = body.slice(0, splitAt).trim().replace(/[:;,.\s]+$/, "");
+  const rest = body.slice(splitAt).trim();
+  if (!title || !rest) return line;
+  return `${marker} ${title}\n\n${rest}`;
+}
+
 function normalizeStructuredMarkdown(content: string) {
-  if (!/\*\*(Files|Risks|Checks):\*\*/.test(content)) return content;
-  return content
+  const normalized = content
+    .replace(/\r\n/g, "\n")
     .replace(/\s*\*\*(Files|Risks|Checks):\*\*\s*/g, "\n\n### $1\n\n")
-    .replace(/\s+-\s+/g, "\n- ")
+    .replace(/([^\n])\s+(#{2,6}\s+\S)/g, "$1\n\n$2")
+    .split("\n")
+    .map(splitFlattenedMarkdownHeading)
+    .join("\n")
+    .split("\n")
+    .map(normalizeFlattenedPipeTables)
+    .join("\n")
+    .replace(/([^\n])\s+(\d+\.\s+(?=(?:\*\*)?(?:[A-Z]|`)))/g, "$1\n$2")
+    .replace(/([^\n])\s+-\s+(?=(?:\*\*)?(?:[A-Z]|`))/g, "$1\n- ")
+    .replace(/^(#{2,6}\s+[^\n]+)\n(?!\n)/gm, "$1\n\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+  return normalized || content;
 }
 
 function isGenericCompletionText(value: string) {
@@ -3052,6 +3257,62 @@ function extractBlueprintPlanContext(events: ChatV2AgentRunEvent[]) {
   return found ? merged : null;
 }
 
+function graphContextIdentity(context: BlueprintPlanContext, fallbackIndex: number) {
+  const version =
+    context.graphVersionId ||
+    (context.graphRevision !== null ? `r${context.graphRevision}` : "");
+  if (version) return version;
+  return `snapshot-${fallbackIndex + 1}`;
+}
+
+function graphContextDedupKey(context: BlueprintPlanContext) {
+  const version =
+    context.graphVersionId ||
+    (context.graphRevision !== null ? `r${context.graphRevision}` : "");
+  if (version) return version;
+  const taskSignature = context.taskGraph
+    .map((task) => `${task.taskId}:${task.branchId || ""}:${task.state || task.status}`)
+    .join("|");
+  return [
+    taskSignature,
+    context.readyTaskIds.join(","),
+    context.activeTaskIds.join(","),
+    context.completedTaskIds.join(","),
+    context.deferredTaskIds.join(","),
+  ].join(";");
+}
+
+function extractBlueprintPlanContextHistory(events: ChatV2AgentRunEvent[]) {
+  const contexts: BlueprintPlanContext[] = [];
+  const seen = new Set<string>();
+  for (const event of events) {
+    const candidates: Record<string, unknown>[] = [];
+    collectPlanContextCandidates(eventPayload(event), candidates);
+    for (const candidate of candidates) {
+      const context = normalizePlanContext(candidate);
+      if (!context || context.taskGraph.length === 0) continue;
+      const key = graphContextDedupKey(context);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      contexts.push(context);
+    }
+  }
+  return contexts;
+}
+
+function graphHistoryWithLatest(
+  history: BlueprintPlanContext[],
+  latest: BlueprintPlanContext | null,
+) {
+  if (!latest || latest.taskGraph.length === 0) return history;
+  const latestKey = graphContextDedupKey(latest);
+  const existingIndex = history.findIndex((context) => graphContextDedupKey(context) === latestKey);
+  if (existingIndex >= 0) {
+    return history.map((context, index) => (index === existingIndex ? latest : context));
+  }
+  return [...history, latest];
+}
+
 function hasEventSource(events: ChatV2AgentRunEvent[], match: string | ((source: string) => boolean)) {
   return events.some((event) => {
     const source = eventSource(event);
@@ -3633,7 +3894,7 @@ function markdownListItems(content: string) {
   );
 }
 
-function buildBlueprintNodes(args: {
+function buildBlueprintNodesForRunScope(args: {
   tasks: ChatV2TaskSnapshot[];
   agentEvents: ChatV2AgentRunEvent[];
   chunks: WorkspaceChunk[];
@@ -3646,22 +3907,63 @@ function buildBlueprintNodes(args: {
     tasks,
     agentEvents,
     chunks,
-    activeRunId,
-    activeRunningTask,
+    activeRunId: liveActiveRunId,
+    activeRunningTask: liveActiveRunningTask,
     queueRows,
     activeThreadTitle,
   } = args;
+  const latestUserIndex = (() => {
+    for (let index = chunks.length - 1; index >= 0; index -= 1) {
+      if (chunks[index]?.role === "user") return index;
+    }
+    return -1;
+  })();
+  const latestUserChunk = latestUserIndex >= 0 ? chunks[latestUserIndex] : undefined;
+  const priorAnswerIndex = (() => {
+    if (latestUserIndex < 0) return -1;
+    for (let index = latestUserIndex - 1; index >= 0; index -= 1) {
+      const chunk = chunks[index];
+      if (chunk && isFinalAnswerChunk(chunk)) return index;
+    }
+    return -1;
+  })();
+  const priorAnswerChunk = priorAnswerIndex >= 0 ? chunks[priorAnswerIndex] : undefined;
+  const primaryUserIndex = (() => {
+    if (priorAnswerIndex < 0) return -1;
+    for (let index = priorAnswerIndex - 1; index >= 0; index -= 1) {
+      if (chunks[index]?.role === "user") return index;
+    }
+    return -1;
+  })();
+  const appendingActiveFollowUp = Boolean(
+    liveActiveRunId &&
+      liveActiveRunningTask &&
+      latestUserChunk &&
+      priorAnswerChunk?.runId &&
+      priorAnswerChunk.runId !== liveActiveRunId,
+  );
+  const primaryUserChunk =
+    appendingActiveFollowUp && primaryUserIndex >= 0
+      ? chunks[primaryUserIndex]
+      : latestUserChunk;
+  const activeRunId = appendingActiveFollowUp ? priorAnswerChunk?.runId || "" : liveActiveRunId;
+  const activeRunningTask = appendingActiveFollowUp ? null : liveActiveRunningTask;
   const hasActiveRun = Boolean(activeRunId && activeRunningTask);
+  const shouldScopeToRun = Boolean(
+    activeRunId &&
+      (appendingActiveFollowUp ||
+        agentEvents.some((event) => event.run_id === activeRunId) ||
+        tasks.some((task) => taskRunId(task) === activeRunId)),
+  );
   const activeRunEvents =
-    activeRunId && agentEvents.some((event) => event.run_id === activeRunId)
+    shouldScopeToRun
       ? agentEvents.filter((event) => event.run_id === activeRunId)
       : agentEvents;
   const activeRunTasks =
-    activeRunId && tasks.some((task) => taskRunId(task) === activeRunId)
+    shouldScopeToRun
       ? tasks.filter((task) => taskRunId(task) === activeRunId)
       : tasks;
   const emittedPlanContext = extractBlueprintPlanContext(activeRunEvents);
-  const latestUserChunk = [...chunks].reverse().find((chunk) => chunk.role === "user");
   const latestAnswerChunk = latestMatchingChunk(chunks, activeRunId, isFinalAnswerChunk);
   const latestOutcomeChunk = latestMatchingChunk(chunks, activeRunId, isOutcomeChunk);
   const latestOutcomeItems = latestOutcomeChunk ? markdownListItems(latestOutcomeChunk.body) : [];
@@ -3689,12 +3991,13 @@ function buildBlueprintNodes(args: {
   const attentionRunId = attentionTask ? taskRunId(attentionTask) : "";
   const attentionDetail = attentionTask ? taskAttentionDetail(attentionTask) : "";
   const hasRunEvidence = activeRunTasks.length > 0 || activeRunEvents.length > 0 || hasActiveRun;
-  const taskRequestLabel = tasks
+  const taskRequestSources = activeRunTasks.length > 0 ? activeRunTasks : appendingActiveFollowUp ? [] : tasks;
+  const taskRequestLabel = taskRequestSources
     .map(taskMessageLabel)
     .find((label) => label && !/^super dan (is |completed|needs attention)/i.test(label));
   const fallbackThreadTitle =
     hasRunEvidence && !threadTitleLooksPlaceholder(activeThreadTitle) ? activeThreadTitle.trim() : "";
-  const requestBody = latestUserChunk?.body || taskRequestLabel || fallbackThreadTitle;
+  const requestBody = primaryUserChunk?.body || taskRequestLabel || fallbackThreadTitle;
   const validationSaysNoMutation = activeRunEvents.some((event) => {
     if (eventSource(event) !== "live.validation.completed") return false;
     const comparison = textValue(eventPayload(event).comparison_note).toLowerCase();
@@ -3708,6 +4011,11 @@ function buildBlueprintNodes(args: {
   const operatorContexts = operatorContextRecords(activeRunEvents, activeRunTasks);
   const requestPlanContext = readOnlyRun ? null : deriveRequestPlanContext(requestBody);
   const planContext = emittedPlanContext ?? requestPlanContext;
+  const emittedGraphHistory = extractBlueprintPlanContextHistory(activeRunEvents);
+  const graphHistory = graphHistoryWithLatest(
+    emittedGraphHistory.length > 0 ? emittedGraphHistory : requestPlanContext ? [requestPlanContext] : [],
+    emittedPlanContext,
+  );
   const completedTaskIds = completedPlanTaskIdsFromEvents(activeRunEvents, planContext);
   const activeTaskIds = activePlanTaskIdsFromEvents(activeRunEvents, planContext, hasActiveRun);
   const readyTaskIds = new Set(planContext?.readyTaskIds ?? []);
@@ -3727,9 +4035,9 @@ function buildBlueprintNodes(args: {
       ? "Request constraints captured"
       : "Request captured";
 
-  if (latestUserChunk || requestBody) {
+  if (primaryUserChunk || requestBody) {
     nodes.push({
-      id: latestUserChunk?.id ? `blueprint:${latestUserChunk.id}` : "blueprint:request",
+      id: primaryUserChunk?.id ? `blueprint:${primaryUserChunk.id}` : "blueprint:request",
       title: "Operator request",
       detail: requestNodeDetail,
       meta: "input",
@@ -3745,9 +4053,9 @@ function buildBlueprintNodes(args: {
       rawRequest: requestBody,
       status: "done",
       kind: "request",
-      sourceChunkId: latestUserChunk?.id,
-      taskId: latestUserChunk?.taskId ?? firstTask?.task_id,
-      runId: latestUserChunk?.runId ?? (firstTask ? taskRunId(firstTask) : null),
+      sourceChunkId: primaryUserChunk?.id,
+      taskId: primaryUserChunk?.taskId ?? firstTask?.task_id,
+      runId: primaryUserChunk?.runId ?? (firstTask ? taskRunId(firstTask) : null),
     });
   }
 
@@ -3851,6 +4159,8 @@ function buildBlueprintNodes(args: {
       }),
       kind: "plan",
       compact: !planningCompleted,
+      graphContext: planContext ?? undefined,
+      graphHistory,
       runId: activeRunId,
       taskId: activeRunningTask?.task_id,
     });
@@ -3884,8 +4194,11 @@ function buildBlueprintNodes(args: {
         status: done ? "done" : active ? "active" : ready ? "ready" : future ? "future" : "queued",
         kind,
         compact: future,
-        depth: Math.min(task.dependsOn.length, 2),
+        depth: task.parentId ? 1 : 0,
         dependencyIds: task.dependsOn,
+        graphTaskId: task.taskId,
+        parentGraphTaskId: task.parentId,
+        branchId: task.branchId,
         runId: activeRunId,
         taskId: activeRunningTask?.task_id,
       });
@@ -4099,7 +4412,47 @@ function buildBlueprintNodes(args: {
     });
   }
 
-  queueRows.forEach((row, index) => {
+  const activeFollowUpRow: QueueRow | null =
+    appendingActiveFollowUp && liveActiveRunningTask
+      ? {
+          id: `active-followup:${liveActiveRunningTask.task_id}:${liveActiveRunId}`,
+          label: "Active follow-up",
+          detail: latestUserChunk?.body || taskMessageLabel(liveActiveRunningTask),
+          status: liveActiveRunningTask.status || "running",
+          active: true,
+          kind: "followup",
+          lane: "append",
+          taskId: liveActiveRunningTask.task_id,
+          runId: liveActiveRunId,
+          sourceChunkId: latestUserChunk?.id,
+        }
+      : null;
+  const visibleQueueRows = (
+    activeFollowUpRow
+      ? [
+          activeFollowUpRow,
+          ...queueRows.filter(
+            (row) =>
+              !(
+                row.kind === "task" &&
+                row.taskId === liveActiveRunningTask?.task_id &&
+                row.runId === liveActiveRunId
+              ),
+          ),
+        ]
+      : queueRows
+  ).filter(
+    (row) =>
+      !(
+        row.kind === "task" &&
+        activeRunId &&
+        activeRunningTask &&
+        row.taskId === activeRunningTask.task_id &&
+        row.runId === activeRunId
+      ),
+  );
+
+  visibleQueueRows.forEach((row, index) => {
     if (row.kind === "followup") {
       nodes.push(...followUpBlueprintNodes(row, index));
       return;
@@ -4113,17 +4466,174 @@ function buildBlueprintNodes(args: {
       status: queueBlueprintStatus(row.status),
       kind: "queue",
       compact: true,
-      depth: Math.min(index + 1, 2),
+      depth: 0,
       runId: row.runId,
       taskId: row.taskId,
+      sourceChunkId: row.sourceChunkId,
     });
   });
 
   return nodes;
 }
 
+function taskRunCreatedAt(task: ChatV2TaskSnapshot) {
+  return (
+    taskRunStartedAt(task) ||
+    taskRunUpdatedAt(task)
+  );
+}
+
+function runSortTimeForTask(task: ChatV2TaskSnapshot) {
+  return timestampValue(taskRunCreatedAt(task), Number.NaN);
+}
+
+function runScopedNodeId(runId: string, nodeId: string) {
+  const safeRunId = runId.replace(/[^a-z0-9_-]+/gi, "-") || "run";
+  return nodeId.startsWith(`blueprint:run:${safeRunId}:`)
+    ? nodeId
+    : `blueprint:run:${safeRunId}:${nodeId.replace(/^blueprint:/, "")}`;
+}
+
+function namespaceBlueprintRunNodes(nodes: BlueprintNode[], runId: string, shouldNamespace: boolean) {
+  if (!shouldNamespace || !runId) return nodes;
+  return nodes.map((node) => ({
+    ...node,
+    id: runScopedNodeId(runId, node.id),
+  }));
+}
+
+function blueprintRunTimelineIds(args: {
+  tasks: ChatV2TaskSnapshot[];
+  agentEvents: ChatV2AgentRunEvent[];
+  chunks: WorkspaceChunk[];
+  queueRows: QueueRow[];
+  activeRunId: string;
+}) {
+  const runOrder = new Map<string, { firstSeen: number; sortTime: number }>();
+  const addRun = (runId: string | null | undefined, firstSeen: number, sortTime = Number.NaN) => {
+    const id = textValue(runId);
+    if (!id) return;
+    const previous = runOrder.get(id);
+    const nextSortTime = Number.isFinite(sortTime) ? sortTime : previous?.sortTime ?? Number.NaN;
+    if (!previous) {
+      runOrder.set(id, { firstSeen, sortTime: nextSortTime });
+      return;
+    }
+    previous.firstSeen = Math.min(previous.firstSeen, firstSeen);
+    if (Number.isFinite(nextSortTime)) previous.sortTime = nextSortTime;
+  };
+
+  args.chunks.forEach((chunk, index) => {
+    addRun(chunk.runId, index);
+  });
+  args.tasks.forEach((task, index) => {
+    addRun(taskRunId(task), 10_000 + index, runSortTimeForTask(task));
+  });
+  args.agentEvents.forEach((event, index) => {
+    addRun(event.run_id, 20_000 + index);
+  });
+  args.queueRows.forEach((row, index) => {
+    addRun(row.runId, 30_000 + index);
+  });
+  addRun(args.activeRunId, 40_000);
+
+  return [...runOrder.entries()]
+    .sort(([, a], [, b]) => {
+      const aHasTime = Number.isFinite(a.sortTime);
+      const bHasTime = Number.isFinite(b.sortTime);
+      if (aHasTime && bHasTime && a.sortTime !== b.sortTime) return a.sortTime - b.sortTime;
+      if (aHasTime !== bHasTime) return aHasTime ? -1 : 1;
+      return a.firstSeen - b.firstSeen;
+    })
+    .map(([runId]) => runId);
+}
+
+function buildBlueprintNodes(args: {
+  tasks: ChatV2TaskSnapshot[];
+  agentEvents: ChatV2AgentRunEvent[];
+  chunks: WorkspaceChunk[];
+  activeRunId: string;
+  activeRunningTask: ChatV2TaskSnapshot | null;
+  queueRows: QueueRow[];
+  activeThreadTitle: string;
+}) {
+  const runIds = blueprintRunTimelineIds(args);
+  if (runIds.length <= 1) return buildBlueprintNodesForRunScope(args);
+
+  const shouldNamespace = true;
+  const nodes = runIds.flatMap((runId) => {
+    const scopedTasks = args.tasks.filter((task) => taskRunId(task) === runId);
+    const scopedEvents = args.agentEvents.filter((event) => event.run_id === runId);
+    const scopedChunks = args.chunks.filter((chunk) => chunk.runId === runId);
+    const scopedQueueRows = args.queueRows.filter((row) => row.runId === runId);
+    const scopedActiveTask =
+      args.activeRunningTask && taskRunId(args.activeRunningTask) === runId
+        ? args.activeRunningTask
+        : null;
+    const scopedActiveRunId = args.activeRunId === runId ? runId : "";
+    if (
+      scopedTasks.length === 0 &&
+      scopedEvents.length === 0 &&
+      scopedChunks.length === 0 &&
+      scopedQueueRows.length === 0
+    ) {
+      return [];
+    }
+    return namespaceBlueprintRunNodes(
+      buildBlueprintNodesForRunScope({
+        ...args,
+        tasks: scopedTasks,
+        agentEvents: scopedEvents,
+        chunks: scopedChunks,
+        activeRunId: scopedActiveRunId,
+        activeRunningTask: scopedActiveTask,
+        queueRows: scopedQueueRows,
+        activeThreadTitle: "",
+      }),
+      runId,
+      shouldNamespace,
+    );
+  });
+
+  return nodes.length > 0 ? nodes : buildBlueprintNodesForRunScope(args);
+}
+
 export function buildBlueprintNodesForTest(args: Parameters<typeof buildBlueprintNodes>[0]) {
   return buildBlueprintNodes(args);
+}
+
+export function liveTaskTreeForTest(nodes: BlueprintNode[]) {
+  return liveTaskTreeSnapshot(buildLiveTaskTree(nodes));
+}
+
+export function liveTaskGraphRevisionsForTest(nodes: BlueprintNode[]) {
+  return buildLiveTaskGraphRevisions(nodes).map((revision) => ({
+    id: revision.id,
+    label: revision.label,
+    meta: revision.meta,
+    reason: revision.reason,
+    branches: revision.branches.map((branch) => ({
+      id: branch.id,
+      label: branch.label,
+      nodes: branch.nodes.map((node) => ({
+        id: node.id,
+        title: treeDisplayTitle(node),
+        status: node.status,
+        meta: treeNodeMeta(node),
+      })),
+    })),
+  }));
+}
+
+export function blueprintTimelineItemsForTest(
+  nodes: BlueprintNode[],
+  conversationChunks: WorkspaceChunk[],
+) {
+  return blueprintTimelineItems(nodes, conversationChunks).map((item) =>
+    item.kind === "conversation"
+      ? { kind: item.kind, id: item.id, chunkId: item.chunk.id, body: item.chunk.body }
+      : { kind: item.kind, id: item.id, nodeId: item.node.id, title: item.node.title },
+  );
 }
 
 export function conversationUserChunksForTest(chunks: WorkspaceChunk[], limit?: number) {
@@ -4203,6 +4713,10 @@ export function noteRailViewForFacetForTest(facet: string) {
 
 export function workPlanHeaderSubtitleForTest(node: BlueprintNode | null, fallbackTitle?: string | null) {
   return workPlanHeaderSubtitle(node, fallbackTitle);
+}
+
+export function normalizeStructuredMarkdownForTest(content: string) {
+  return normalizeStructuredMarkdown(content);
 }
 
 export function blueprintLiveStatusForTest(
@@ -4365,10 +4879,10 @@ function followUpPlanBody(row: QueueRow) {
   ]);
 }
 
-function followUpBlueprintNodes(row: QueueRow, index: number): BlueprintNode[] {
+function followUpBlueprintNodes(row: QueueRow, _index: number): BlueprintNode[] {
   const status = followUpPhaseStatuses(row);
-  const baseDepth = Math.min(index + 1, 2);
-  const childDepth = Math.min(baseDepth + 1, 2);
+  const baseDepth = 0;
+  const childDepth = 0;
   const runId = row.runId ?? null;
   const taskId = row.taskId ?? null;
   const timing = followUpTimingLabel(row);
@@ -4387,6 +4901,7 @@ function followUpBlueprintNodes(row: QueueRow, index: number): BlueprintNode[] {
       depth: baseDepth,
       runId,
       taskId,
+      sourceChunkId: row.sourceChunkId,
     },
     {
       id: `blueprint:${row.id}:plan`,
@@ -4926,10 +5441,30 @@ const KNOWLEDGE_GRAPH_COLORS: Record<string, string> = {
   root: "#64748b",
 };
 
+const KNOWLEDGE_GRAPH_MIN_WIDTH = 920;
+const KNOWLEDGE_GRAPH_MIN_HEIGHT = 560;
+const KNOWLEDGE_GRAPH_MIN_WORLD_WIDTH = 1800;
+const KNOWLEDGE_GRAPH_MIN_WORLD_HEIGHT = 1100;
+const KNOWLEDGE_GRAPH_MIN_ZOOM = 0.32;
+const KNOWLEDGE_GRAPH_MAX_ZOOM = 2.8;
+
+function clampKnowledgeGraphZoom(value: number) {
+  return Math.max(KNOWLEDGE_GRAPH_MIN_ZOOM, Math.min(KNOWLEDGE_GRAPH_MAX_ZOOM, value));
+}
+
 function buildKnowledgeGraph(
   notes: WorkspaceNote[],
   root: string,
-): { nodes: KnowledgeGraphNode[]; links: KnowledgeGraphLink[]; sections: string[] } {
+  viewSize?: { width: number; height: number },
+): {
+  nodes: KnowledgeGraphNode[];
+  links: KnowledgeGraphLink[];
+  sections: string[];
+  viewWidth: number;
+  viewHeight: number;
+  worldWidth: number;
+  worldHeight: number;
+} {
   const pageNodes = notes.filter((note) => pageIdFromNote(note));
   const nodeById = new Map(pageNodes.map((note) => [pageIdFromNote(note), note]));
   const edgeSeen = new Set<string>();
@@ -4952,11 +5487,14 @@ function buildKnowledgeGraph(
   const sections = [...new Set(pageNodes.map((note) => noteSection(note, root)))].sort();
   const sectionIndex = new Map(sections.map((section, index) => [section, index]));
   const sectionCounts = new Map<string, number>();
-  const viewWidth = 920;
-  const viewHeight = 560;
-  const centerX = viewWidth / 2;
-  const centerY = viewHeight / 2;
-  const sectionRadius = Math.min(viewWidth, viewHeight) * 0.31;
+  const viewWidth = Math.max(KNOWLEDGE_GRAPH_MIN_WIDTH, Math.round(viewSize?.width ?? 0));
+  const viewHeight = Math.max(KNOWLEDGE_GRAPH_MIN_HEIGHT, Math.round(viewSize?.height ?? 0));
+  const worldWidth = Math.max(KNOWLEDGE_GRAPH_MIN_WORLD_WIDTH, Math.round(viewWidth * 1.42));
+  const worldHeight = Math.max(KNOWLEDGE_GRAPH_MIN_WORLD_HEIGHT, Math.round(viewHeight * 1.48));
+  const centerX = worldWidth / 2;
+  const centerY = worldHeight / 2;
+  const sectionRadiusX = worldWidth * 0.30;
+  const sectionRadiusY = worldHeight * 0.29;
   const nodes = pageNodes.map((note, index) => {
     const id = pageIdFromNote(note);
     const section = noteSection(note, root);
@@ -4965,9 +5503,9 @@ function buildKnowledgeGraph(
     sectionCounts.set(section, groupCount + 1);
     const groupAngle = (Math.PI * 2 * groupIndex) / Math.max(1, sections.length) - Math.PI / 2;
     const localAngle = (index * 2.399963229728653) % (Math.PI * 2);
-    const localRadius = 24 + (groupCount % 9) * 16;
-    const groupX = centerX + Math.cos(groupAngle) * sectionRadius;
-    const groupY = centerY + Math.sin(groupAngle) * sectionRadius * 0.72;
+    const localRadius = 34 + (groupCount % 11) * Math.max(18, Math.min(30, worldWidth / 88));
+    const groupX = centerX + Math.cos(groupAngle) * sectionRadiusX;
+    const groupY = centerY + Math.sin(groupAngle) * sectionRadiusY;
     const nodeDegree = degree[id] ?? 0;
     return {
       id,
@@ -4975,13 +5513,13 @@ function buildKnowledgeGraph(
       section,
       degree: nodeDegree,
       note,
-      x: Math.max(28, Math.min(viewWidth - 28, groupX + Math.cos(localAngle) * localRadius)),
-      y: Math.max(28, Math.min(viewHeight - 28, groupY + Math.sin(localAngle) * localRadius)),
+      x: Math.max(42, Math.min(worldWidth - 42, groupX + Math.cos(localAngle) * localRadius)),
+      y: Math.max(42, Math.min(worldHeight - 42, groupY + Math.sin(localAngle) * localRadius)),
       radius: Math.max(4.5, Math.min(15, 5 + nodeDegree * 1.4)),
     };
   });
 
-  return { nodes, links, sections };
+  return { nodes, links, sections, viewWidth, viewHeight, worldWidth, worldHeight };
 }
 
 function KnowledgeGraphView({
@@ -4998,7 +5536,47 @@ function KnowledgeGraphView({
   const [showLabels, setShowLabels] = useState(true);
   const [showOrphans, setShowOrphans] = useState(true);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const graph = useMemo(() => buildKnowledgeGraph(notes, root), [notes, root]);
+  const graphFrameRef = useRef<HTMLDivElement | null>(null);
+  const graphContentKeyRef = useRef("");
+  const graphCanvasInteractedRef = useRef(false);
+  const panGestureRef = useRef({
+    pointerId: -1,
+    startClientX: 0,
+    startClientY: 0,
+    startX: 0,
+    startY: 0,
+  });
+  const [graphSize, setGraphSize] = useState({
+    width: KNOWLEDGE_GRAPH_MIN_WIDTH,
+    height: KNOWLEDGE_GRAPH_MIN_HEIGHT,
+  });
+  const [canvasTransform, setCanvasTransform] = useState({
+    x: 0,
+    y: 0,
+    scale: 1,
+  });
+  const [isPanning, setIsPanning] = useState(false);
+  useEffect(() => {
+    const frame = graphFrameRef.current;
+    if (!frame) return;
+    const updateSize = () => {
+      const rect = frame.getBoundingClientRect();
+      const width = Math.max(KNOWLEDGE_GRAPH_MIN_WIDTH, Math.round(rect.width));
+      const height = Math.max(KNOWLEDGE_GRAPH_MIN_HEIGHT, Math.round(rect.height));
+      setGraphSize((previous) =>
+        previous.width === width && previous.height === height ? previous : { width, height },
+      );
+    };
+    updateSize();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateSize);
+      return () => window.removeEventListener("resize", updateSize);
+    }
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(frame);
+    return () => observer.disconnect();
+  }, []);
+  const graph = useMemo(() => buildKnowledgeGraph(notes, root, graphSize), [notes, root, graphSize]);
   const visible = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     const nodes = graph.nodes.filter((node) => {
@@ -5019,6 +5597,31 @@ function KnowledgeGraphView({
       ids,
     };
   }, [graph, query, section, showOrphans]);
+  const visibleBounds = useMemo(() => {
+    if (visible.nodes.length === 0) {
+      return {
+        minX: 0,
+        minY: 0,
+        maxX: graph.worldWidth,
+        maxY: graph.worldHeight,
+      };
+    }
+    const margin = 120;
+    return visible.nodes.reduce(
+      (bounds, node) => ({
+        minX: Math.min(bounds.minX, node.x - node.radius - margin),
+        minY: Math.min(bounds.minY, node.y - node.radius - margin),
+        maxX: Math.max(bounds.maxX, node.x + node.radius + margin),
+        maxY: Math.max(bounds.maxY, node.y + node.radius + margin),
+      }),
+      {
+        minX: Number.POSITIVE_INFINITY,
+        minY: Number.POSITIVE_INFINITY,
+        maxX: Number.NEGATIVE_INFINITY,
+        maxY: Number.NEGATIVE_INFINITY,
+      },
+    );
+  }, [graph.worldHeight, graph.worldWidth, visible.nodes]);
   const nodeById = useMemo(
     () => new Map(visible.nodes.map((node) => [node.id, node])),
     [visible.nodes],
@@ -5033,11 +5636,135 @@ function KnowledgeGraphView({
     return ids;
   }, [hoveredId, visible.links]);
   const selectedNode = hoveredId ? nodeById.get(hoveredId) ?? null : null;
+  const sectionCounts = useMemo(
+    () =>
+      new Map(
+        graph.sections.map((item) => [
+          item,
+          graph.nodes.filter((node) => node.section === item).length,
+        ]),
+      ),
+    [graph],
+  );
+  const graphContentKey = useMemo(
+    () =>
+      [
+        root,
+        ...notes
+          .map((note) => {
+            const pageId = pageIdFromNote(note) || note.id;
+            const citations = [...(note.citations ?? [])].sort().join(",");
+            return `${pageId}:${noteSection(note, root)}:${citations}`;
+          })
+          .sort(),
+      ].join("|"),
+    [notes, root],
+  );
+  const centerCanvasTransform = useCallback(
+    () => ({
+      scale: 1,
+      x: graph.viewWidth / 2 - graph.worldWidth / 2,
+      y: graph.viewHeight / 2 - graph.worldHeight / 2,
+    }),
+    [graph.viewHeight, graph.viewWidth, graph.worldHeight, graph.worldWidth],
+  );
+  const fitCanvas = useCallback(() => {
+    graphCanvasInteractedRef.current = true;
+    const boundsWidth = Math.max(1, visibleBounds.maxX - visibleBounds.minX);
+    const boundsHeight = Math.max(1, visibleBounds.maxY - visibleBounds.minY);
+    const padding = 72;
+    const availableWidth = Math.max(1, graph.viewWidth - padding * 2);
+    const availableHeight = Math.max(1, graph.viewHeight - padding * 2);
+    const scale = clampKnowledgeGraphZoom(
+      Math.min(availableWidth / boundsWidth, availableHeight / boundsHeight),
+    );
+    setCanvasTransform({
+      scale,
+      x: (graph.viewWidth - boundsWidth * scale) / 2 - visibleBounds.minX * scale,
+      y: (graph.viewHeight - boundsHeight * scale) / 2 - visibleBounds.minY * scale,
+    });
+  }, [graph.viewHeight, graph.viewWidth, visibleBounds]);
+  const resetCanvas = useCallback((markInteracted = true) => {
+    graphCanvasInteractedRef.current = markInteracted;
+    setCanvasTransform(centerCanvasTransform());
+  }, [centerCanvasTransform]);
+  const zoomCanvasAt = useCallback(
+    (factor: number, anchor?: { x: number; y: number }) => {
+      graphCanvasInteractedRef.current = true;
+      const anchorPoint = anchor ?? { x: graph.viewWidth / 2, y: graph.viewHeight / 2 };
+      setCanvasTransform((previous) => {
+        const scale = clampKnowledgeGraphZoom(previous.scale * factor);
+        const worldX = (anchorPoint.x - previous.x) / previous.scale;
+        const worldY = (anchorPoint.y - previous.y) / previous.scale;
+        return {
+          scale,
+          x: anchorPoint.x - worldX * scale,
+          y: anchorPoint.y - worldY * scale,
+        };
+      });
+    },
+    [graph.viewHeight, graph.viewWidth],
+  );
+  const handleCanvasWheel = useCallback(
+    (event: WheelEvent<SVGSVGElement>) => {
+      event.preventDefault();
+      const rect = event.currentTarget.getBoundingClientRect();
+      zoomCanvasAt(Math.exp(-event.deltaY * 0.001), {
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top,
+      });
+    },
+    [zoomCanvasAt],
+  );
+  const handleCanvasPointerDown = useCallback((event: PointerEvent<SVGSVGElement>) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest("[data-knowledge-graph-node]")) return;
+    event.preventDefault();
+    graphCanvasInteractedRef.current = true;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    panGestureRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: canvasTransform.x,
+      startY: canvasTransform.y,
+    };
+    setIsPanning(true);
+  }, [canvasTransform.x, canvasTransform.y]);
+  const handleCanvasPointerMove = useCallback((event: PointerEvent<SVGSVGElement>) => {
+    const gesture = panGestureRef.current;
+    if (gesture.pointerId !== event.pointerId) return;
+    const nextX = gesture.startX + event.clientX - gesture.startClientX;
+    const nextY = gesture.startY + event.clientY - gesture.startClientY;
+    setCanvasTransform((previous) => ({ ...previous, x: nextX, y: nextY }));
+  }, []);
+  const finishCanvasPan = useCallback((event: PointerEvent<SVGSVGElement>) => {
+    if (panGestureRef.current.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    panGestureRef.current.pointerId = -1;
+    setIsPanning(false);
+  }, []);
+  useEffect(() => {
+    if (graphContentKeyRef.current === graphContentKey) return;
+    graphContentKeyRef.current = graphContentKey;
+    graphCanvasInteractedRef.current = false;
+    setCanvasTransform(centerCanvasTransform());
+  }, [centerCanvasTransform, graphContentKey]);
+  useEffect(() => {
+    if (graphCanvasInteractedRef.current) return;
+    setCanvasTransform(centerCanvasTransform());
+  }, [centerCanvasTransform]);
+  const safeCanvasScale = Math.max(canvasTransform.scale, 0.001);
+  const labelFontSize = 12 / safeCanvasScale;
+  const labelStrokeWidth = 2.4 / safeCanvasScale;
+  const labelMaxChars = canvasTransform.scale < 0.75 ? 44 : 35;
 
   return (
-    <div className="mx-auto flex h-full min-h-[520px] max-w-6xl flex-col">
-      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-        <div>
+    <div className="flex h-full min-h-[520px] w-full max-w-none flex-col">
+      <div className="mb-4 space-y-3">
+        <div className="min-w-0">
           <div className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-400">
             Knowledge Graph
           </div>
@@ -5048,64 +5775,172 @@ function KnowledgeGraphView({
             {visible.nodes.length} nodes · {visible.links.length} edges
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={section}
-            onChange={(event) => setSection(event.target.value)}
-            className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs outline-none transition focus:border-slate-400 dark:border-slate-800 dark:bg-slate-950"
-          >
-            <option value="">All categories</option>
-            {graph.sections.map((item) => (
-              <option key={item} value={item}>
-                {item}
-              </option>
-            ))}
-          </select>
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Filter nodes..."
-            className="h-9 w-44 rounded-lg border border-slate-200 bg-white px-2.5 text-xs outline-none transition placeholder:text-slate-400 focus:border-slate-400 dark:border-slate-800 dark:bg-slate-950"
-          />
-          <label className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-600 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">
-            <input
-              type="checkbox"
-              checked={showLabels}
-              onChange={(event) => setShowLabels(event.target.checked)}
-            />
-            Labels
-          </label>
-          <label className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-600 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">
-            <input
-              type="checkbox"
-              checked={showOrphans}
-              onChange={(event) => setShowOrphans(event.target.checked)}
-            />
-            Orphans
-          </label>
+        <div className="flex flex-wrap items-start gap-3">
+          <div className="max-w-full shrink-0 overflow-x-auto pb-1">
+            <div className="flex w-max flex-nowrap items-center justify-start gap-2">
+              <select
+                value={section}
+                onChange={(event) => setSection(event.target.value)}
+                className="h-9 shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 text-xs outline-none transition focus:border-slate-400 dark:border-slate-800 dark:bg-slate-950"
+              >
+                <option value="">All categories</option>
+                {graph.sections.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Filter nodes..."
+                className="h-9 w-48 shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 text-xs outline-none transition placeholder:text-slate-400 focus:border-slate-400 dark:border-slate-800 dark:bg-slate-950"
+              />
+              <label className="inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-600 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={showLabels}
+                  onChange={(event) => setShowLabels(event.target.checked)}
+                />
+                Labels
+              </label>
+              <label className="inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-600 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={showOrphans}
+                  onChange={(event) => setShowOrphans(event.target.checked)}
+                />
+                Orphans
+              </label>
+            </div>
+          </div>
+          <div className="ml-auto min-w-[min(100%,34rem)] flex-1 rounded-xl border border-slate-200 bg-white p-2.5 text-xs dark:border-slate-800 dark:bg-slate-950">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
+              <div className="min-w-[180px] shrink-0">
+                <div className="text-xs font-semibold text-slate-500 dark:text-slate-300">Details</div>
+                {selectedNode ? (
+                  <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="max-w-[22rem] truncate font-semibold text-slate-900 dark:text-slate-100">
+                      {selectedNode.title}
+                    </span>
+                    <span className="text-slate-500">
+                      {selectedNode.section} · {selectedNode.degree} connections
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onSelect(selectedNode.note)}
+                      className="h-7 rounded-lg bg-slate-950 px-2.5 text-xs font-semibold text-white dark:bg-slate-100 dark:text-slate-950"
+                    >
+                      Open page
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mt-1 text-slate-500">
+                    {visible.nodes.length} visible · {visible.links.length} linked
+                  </div>
+                )}
+              </div>
+              <div className="min-w-0 flex-1 overflow-x-auto">
+                <div className="flex w-max min-w-full flex-nowrap items-center justify-start gap-4">
+                  {graph.sections.map((item) => (
+                    <div key={item} className="flex shrink-0 items-center gap-2 whitespace-nowrap">
+                      <span
+                        className="h-2.5 w-2.5 shrink-0 rounded-full"
+                        style={{ background: KNOWLEDGE_GRAPH_COLORS[item] || "#78716c" }}
+                      />
+                      <span className="text-slate-600 dark:text-slate-300">{item}</span>
+                      <span
+                        title={`${sectionCounts.get(item) ?? 0} ${item} notes`}
+                        aria-label={`${sectionCounts.get(item) ?? 0} ${item} notes`}
+                        className="dan-session-count-flap"
+                      >
+                        {sectionCounts.get(item) ?? 0}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
-      <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
-        <div className="min-h-[420px] overflow-hidden rounded-xl border border-slate-200 bg-[#fbfaf7] shadow-inner dark:border-slate-800 dark:bg-slate-950">
-          {visible.nodes.length === 0 ? (
-            <div className="grid h-full place-items-center text-sm text-slate-400">
-              No matching nodes
-            </div>
-          ) : (
-            <svg viewBox="0 0 920 560" role="img" className="h-full min-h-[420px] w-full">
-              <defs>
-                <marker
-                  id="dan-graph-arrow"
-                  viewBox="0 -4 8 8"
-                  refX="18"
-                  refY="0"
-                  markerWidth="5"
-                  markerHeight="5"
-                  orient="auto"
-                >
-                  <path d="M0,-3L7,0L0,3" fill="#c8c5c0" />
-                </marker>
-              </defs>
+      <div
+        ref={graphFrameRef}
+        className="relative min-h-[520px] flex-1 overflow-hidden rounded-xl border border-slate-200 bg-[#fbfaf7] shadow-inner dark:border-slate-800 dark:bg-slate-950"
+      >
+        <div className="absolute right-3 top-3 z-10 flex items-center gap-1 rounded-lg border border-slate-200 bg-white/90 p-1 shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-950/90">
+          <button
+            type="button"
+            onClick={() => zoomCanvasAt(0.84)}
+            title="Zoom out"
+            aria-label="Zoom out"
+            className="grid h-7 w-7 place-items-center rounded-md text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-900"
+          >
+            <Minus size={13} />
+          </button>
+          <div className="min-w-10 text-center font-mono text-[10px] text-slate-500">
+            {Math.round(canvasTransform.scale * 100)}%
+          </div>
+          <button
+            type="button"
+            onClick={() => zoomCanvasAt(1.19)}
+            title="Zoom in"
+            aria-label="Zoom in"
+            className="grid h-7 w-7 place-items-center rounded-md text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-900"
+          >
+            <Plus size={13} />
+          </button>
+          <button
+            type="button"
+            onClick={fitCanvas}
+            title="Fit graph"
+            aria-label="Fit graph"
+            className="grid h-7 w-7 place-items-center rounded-md text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-900"
+          >
+            <Maximize2 size={13} />
+          </button>
+          <button
+            type="button"
+            onClick={() => resetCanvas()}
+            title="Reset canvas"
+            aria-label="Reset canvas"
+            className="grid h-7 w-7 place-items-center rounded-md text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-900"
+          >
+            <RotateCcw size={13} />
+          </button>
+        </div>
+        {visible.nodes.length === 0 ? (
+          <div className="grid h-full place-items-center text-sm text-slate-400">
+            No matching nodes
+          </div>
+        ) : (
+          <svg
+            viewBox={`0 0 ${graph.viewWidth} ${graph.viewHeight}`}
+            role="img"
+            className={cx(
+              "h-full min-h-[520px] w-full touch-none",
+              isPanning ? "cursor-grabbing" : "cursor-grab",
+            )}
+            onWheel={handleCanvasWheel}
+            onPointerDown={handleCanvasPointerDown}
+            onPointerMove={handleCanvasPointerMove}
+            onPointerUp={finishCanvasPan}
+            onPointerCancel={finishCanvasPan}
+          >
+            <defs>
+              <marker
+                id="dan-graph-arrow"
+                viewBox="0 -4 8 8"
+                refX="18"
+                refY="0"
+                markerWidth="5"
+                markerHeight="5"
+                orient="auto"
+              >
+                <path d="M0,-3L7,0L0,3" fill="#c8c5c0" />
+              </marker>
+            </defs>
+            <g transform={`translate(${canvasTransform.x} ${canvasTransform.y}) scale(${canvasTransform.scale})`}>
               <g>
                 {visible.links.map((link) => {
                   const source = nodeById.get(link.source);
@@ -5135,6 +5970,7 @@ function KnowledgeGraphView({
                   return (
                     <g
                       key={node.id}
+                      data-knowledge-graph-node="true"
                       transform={`translate(${node.x} ${node.y})`}
                       opacity={active ? 1 : 0.14}
                       className="cursor-pointer"
@@ -5142,72 +5978,32 @@ function KnowledgeGraphView({
                       onMouseLeave={() => setHoveredId(null)}
                       onClick={() => onSelect(node.note)}
                     >
-                      <circle
-                        r={node.radius}
-                        fill={color}
-                        stroke="#ffffff"
-                        strokeWidth={1.6}
-                      />
+                      <circle r={node.radius} fill={color} stroke="#ffffff" strokeWidth={1.6} />
                       {showLabels && (
                         <text
                           x={node.radius + 5}
-                          y={4}
-                          fontSize="9"
+                          y={labelFontSize * 0.34}
+                          fontSize={labelFontSize}
                           fill="#44403c"
+                          stroke="#fbfaf7"
+                          strokeLinejoin="round"
+                          strokeWidth={labelStrokeWidth}
+                          paintOrder="stroke"
+                          fontWeight={500}
                           className="select-none"
                         >
-                          {node.title.length > 35 ? `${node.title.slice(0, 32)}...` : node.title}
+                          {node.title.length > labelMaxChars
+                            ? `${node.title.slice(0, labelMaxChars - 3)}...`
+                            : node.title}
                         </text>
                       )}
                     </g>
                   );
                 })}
               </g>
-            </svg>
-          )}
-        </div>
-        <aside className="rounded-xl border border-slate-200 bg-white p-3 text-xs dark:border-slate-800 dark:bg-slate-950">
-          {selectedNode ? (
-            <div>
-              <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">
-                Selected
-              </div>
-              <div className="mt-2 font-semibold text-slate-900 dark:text-slate-100">
-                {selectedNode.title}
-              </div>
-              <div className="mt-1 text-slate-500">
-                {selectedNode.section} · {selectedNode.degree} connections
-              </div>
-              <button
-                type="button"
-                onClick={() => onSelect(selectedNode.note)}
-                className="mt-3 h-8 rounded-lg bg-slate-950 px-3 text-xs font-semibold text-white dark:bg-slate-100 dark:text-slate-950"
-              >
-                Open page
-              </button>
-            </div>
-          ) : (
-            <div className="text-slate-500">
-              Hover a node to inspect its category and connection count. Click a node to open the page.
-            </div>
-          )}
-          <div className="mt-4 space-y-1.5">
-            {graph.sections.map((item) => (
-              <div key={item} className="flex items-center justify-between gap-2">
-                <span className="flex min-w-0 items-center gap-2 truncate">
-                  <span
-                    className="h-2.5 w-2.5 shrink-0 rounded-full"
-                    style={{ background: KNOWLEDGE_GRAPH_COLORS[item] || "#78716c" }}
-                  />
-                  <span className="truncate">{item}</span>
-                </span>
-                <span className="text-slate-400">
-                  {graph.nodes.filter((node) => node.section === item).length}
-                </span>
-              </div>
-            ))}
-          </div>
-        </aside>
+            </g>
+          </svg>
+        )}
       </div>
     </div>
   );
@@ -5282,6 +6078,374 @@ function workPlanHeaderSubtitle(node: BlueprintNode | null, fallbackTitle?: stri
     return `${node.status === "active" ? "Current" : "Selected"} step: ${strippedStepTitle(node.title)}`;
   }
   return strippedStepTitle(node.title) || "Work step selected";
+}
+
+function treeDisplayTitle(node: BlueprintNode) {
+  if (node.kind === "plan") return "Plan";
+  if (node.kind === "validation") return "Validation";
+  if (node.kind === "repair") return "Repair / retry";
+  if (node.kind === "answer") return "Final response";
+  return strippedStepTitle(node.title) || node.title;
+}
+
+function primaryNodeByKind(nodes: BlueprintNode[], kind: BlueprintNodeKind) {
+  const matching = nodes.filter((node) => node.kind === kind);
+  return (
+    matching.find((node) => node.status === "active" || node.status === "ready") ??
+    [...matching].reverse().find((node) => node.status === "done") ??
+    matching[0] ??
+    null
+  );
+}
+
+function attachTreeParent(
+  parents: Map<string, string>,
+  child: BlueprintNode | null,
+  parent: BlueprintNode | null,
+) {
+  if (!child || !parent || child.id === parent.id || parents.has(child.id)) return;
+  let cursor = parent.id;
+  while (cursor) {
+    if (cursor === child.id) return;
+    cursor = parents.get(cursor) || "";
+  }
+  parents.set(child.id, parent.id);
+}
+
+function buildLiveTaskTree(nodes: BlueprintNode[]): LiveTaskTreeItem[] {
+  const byGraphTaskId = new Map<string, BlueprintNode>();
+  for (const node of nodes) {
+    if ((node.kind === "task" || node.kind === "worktree") && node.graphTaskId) {
+      byGraphTaskId.set(node.graphTaskId, node);
+    }
+  }
+
+  const parents = new Map<string, string>();
+  const taskNodes = nodes.filter((node) => node.kind === "task" || node.kind === "worktree");
+
+  for (const node of taskNodes) {
+    const explicitParent = node.parentGraphTaskId
+      ? byGraphTaskId.get(node.parentGraphTaskId) ?? null
+      : null;
+    attachTreeParent(parents, node, explicitParent);
+  }
+
+  const nodeById = new Map(taskNodes.map((node) => [node.id, node]));
+  const childrenByParent = new Map<string, BlueprintNode[]>();
+  const roots: BlueprintNode[] = [];
+  for (const node of taskNodes) {
+    const parentId = parents.get(node.id);
+    if (parentId && nodeById.has(parentId)) {
+      const children = childrenByParent.get(parentId) ?? [];
+      children.push(node);
+      childrenByParent.set(parentId, children);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  const indexById = new Map(nodes.map((node, index) => [node.id, index]));
+  const sortByOriginalOrder = (items: BlueprintNode[]) =>
+    [...items].sort((a, b) => (indexById.get(a.id) ?? 0) - (indexById.get(b.id) ?? 0));
+  const buildItem = (node: BlueprintNode): LiveTaskTreeItem => ({
+    node,
+    children: sortByOriginalOrder(childrenByParent.get(node.id) ?? []).map(buildItem),
+  });
+  return sortByOriginalOrder(roots).map(buildItem);
+}
+
+function statusForPlanTask(task: BlueprintPlanTask, context: BlueprintPlanContext): BlueprintNodeStatus {
+  const state = (task.state || task.status || "").toLowerCase();
+  if (["failed", "blocked", "stopped"].includes(state)) return "blocked";
+  if (
+    context.completedTaskIds.includes(task.taskId) ||
+    ["done", "complete", "completed", "x"].includes(state)
+  ) {
+    return "done";
+  }
+  if (context.activeTaskIds.includes(task.taskId) || state === "active") return "active";
+  if (context.readyTaskIds.includes(task.taskId) || state === "ready") return "ready";
+  if (
+    context.deferredTaskIds.includes(task.taskId) ||
+    ["deferred", "future", "planned", "projected"].includes(state)
+  ) {
+    return "future";
+  }
+  return "queued";
+}
+
+function blueprintNodeFromPlanTask(
+  task: BlueprintPlanTask,
+  context: BlueprintPlanContext,
+): BlueprintNode {
+  const kind: BlueprintNodeKind = context.parallelWorktreeTaskIds.includes(task.taskId)
+    ? "worktree"
+    : "task";
+  const meta = uniqueStringList([
+    task.branchId ? `branch ${task.branchId}` : "",
+    task.dependsOn.length > 0 ? `after ${task.dependsOn.join(", ")}` : "",
+    kind === "worktree" ? "parallel lane" : "",
+  ]).join(" · ");
+  return {
+    id: `blueprint:task:${task.taskId}`,
+    title: `${task.taskId}. ${task.goal}`,
+    detail: compactTaskDetail(task),
+    meta,
+    body: taskBody(task, context),
+    previewBody: taskBody(task, context),
+    status: statusForPlanTask(task, context),
+    kind,
+    compact: context.deferredTaskIds.includes(task.taskId),
+    depth: task.parentId ? 1 : 0,
+    dependencyIds: task.dependsOn,
+    graphTaskId: task.taskId,
+    parentGraphTaskId: task.parentId,
+    branchId: task.branchId,
+  };
+}
+
+function liveTaskBranchesForNodes(nodes: BlueprintNode[]) {
+  const groups = new Map<string, BlueprintNode[]>();
+  for (const node of nodes) {
+    const branchId = node.branchId || "main";
+    const group = groups.get(branchId) ?? [];
+    group.push(node);
+    groups.set(branchId, group);
+  }
+  return [...groups.entries()].map(([branchId, branchNodes]) => ({
+    id: branchId,
+    label: branchId === "main" ? "Main path" : `Branch ${branchId}`,
+    nodes: branchNodes,
+  }));
+}
+
+function graphRevisionLabel(context: BlueprintPlanContext, index: number) {
+  return (
+    context.graphVersionId ||
+    (context.graphRevision !== null ? `r${context.graphRevision}` : `Graph ${index + 1}`)
+  );
+}
+
+function graphRevisionMeta(context: BlueprintPlanContext) {
+  return uniqueStringList([
+    context.graphSource,
+    context.graphUpdateScope,
+    context.graphChangedBranchIds.length
+      ? `branches ${context.graphChangedBranchIds.join(", ")}`
+      : "",
+    context.graphChangedTaskIds.length ? `changed ${context.graphChangedTaskIds.join(", ")}` : "",
+  ]).join(" · ");
+}
+
+function buildLiveTaskGraphRevisions(nodes: BlueprintNode[]): LiveTaskGraphRevision[] {
+  const planNode = primaryNodeByKind(nodes, "plan");
+  const history = planNode?.graphHistory?.filter((context) => context.taskGraph.length > 0) ?? [];
+  if (history.length > 0) {
+    return history.map((context, index) => {
+      const revisionNodes = context.taskGraph.map((task) => blueprintNodeFromPlanTask(task, context));
+      return {
+        id: graphContextIdentity(context, index),
+        label: graphRevisionLabel(context, index),
+        meta: graphRevisionMeta(context),
+        reason: context.graphUpdateReason || context.planRootRelative || "",
+        branches: liveTaskBranchesForNodes(revisionNodes),
+      };
+    });
+  }
+  const taskNodes = nodes.filter(
+    (node) => (node.kind === "task" || node.kind === "worktree") && node.graphTaskId,
+  );
+  if (taskNodes.length === 0) return [];
+  return [
+    {
+      id: "current",
+      label: "Current",
+      meta: "",
+      reason: "",
+      branches: liveTaskBranchesForNodes(taskNodes),
+    },
+  ];
+}
+
+function liveTaskTreeSnapshot(items: LiveTaskTreeItem[]): LiveTaskTreeSnapshot[] {
+  return items.map((item) => ({
+    id: item.node.id,
+    title: treeDisplayTitle(item.node),
+    status: item.node.status,
+    children: liveTaskTreeSnapshot(item.children),
+  }));
+}
+
+function treeNodeMeta(node: BlueprintNode) {
+  const bits = uniqueStringList([
+    node.branchId ? `branch ${node.branchId}` : "",
+    node.dependencyIds?.length ? `after ${node.dependencyIds.join(", ")}` : "",
+    node.kind === "worktree" ? "parallel lane" : "",
+    node.status,
+  ]);
+  return bits.join(" · ");
+}
+
+function BlueprintTreeOverview({
+  nodes,
+  activeNodeId,
+  selectedNodeId,
+  onSelect,
+}: {
+  nodes: BlueprintNode[];
+  activeNodeId: string | null;
+  selectedNodeId: string | null;
+  onSelect: (node: BlueprintNode) => void;
+}) {
+  const revisions = useMemo(() => buildLiveTaskGraphRevisions(nodes), [nodes]);
+  const [selectedRevisionId, setSelectedRevisionId] = useState<string>("");
+  const latestRevision = revisions[revisions.length - 1] ?? null;
+  const selectedRevision =
+    revisions.find((revision) => revision.id === selectedRevisionId) ?? latestRevision;
+
+  useEffect(() => {
+    if (revisions.length === 0) {
+      if (selectedRevisionId) setSelectedRevisionId("");
+      return;
+    }
+    if (!selectedRevisionId || !revisions.some((revision) => revision.id === selectedRevisionId)) {
+      setSelectedRevisionId(revisions[revisions.length - 1]?.id ?? "");
+    }
+  }, [revisions, selectedRevisionId]);
+
+  const renderGraphNode = (node: BlueprintNode) => {
+    const tone = blueprintStatusTone(node.status);
+    const Icon = blueprintKindIcon(node.kind);
+    const active = node.id === activeNodeId;
+    const selected = node.id === selectedNodeId;
+    const showingLatestRevision = selectedRevision?.id === latestRevision?.id;
+    const canSelect =
+      Boolean(showingLatestRevision) && nodes.some((candidate) => candidate.id === node.id);
+    const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      if (!canSelect) return;
+      onSelect(node);
+    };
+
+    return (
+      <li key={node.id} className="min-w-0">
+        <button
+          type="button"
+          data-status={node.status}
+          data-current={active ? "true" : undefined}
+          aria-current={active ? "step" : undefined}
+          onClick={() => {
+            if (canSelect) onSelect(node);
+          }}
+          onKeyDown={handleKeyDown}
+          disabled={!canSelect}
+          className={cx(
+            "dan-live-task-tree-node flex w-full min-w-0 items-center gap-2 rounded-md border px-2.5 py-2 text-left text-xs outline-none transition focus-visible:ring-2 focus-visible:ring-slate-300 dark:focus-visible:ring-slate-600",
+            tone.node,
+            active &&
+              "ring-2 ring-cyan-300 ring-offset-1 ring-offset-white dark:ring-cyan-500 dark:ring-offset-slate-950",
+            selected && !active && "ring-1 ring-slate-300 dark:ring-slate-600",
+            !canSelect && "cursor-default opacity-85",
+          )}
+        >
+          <span
+            className={cx(
+              "grid h-6 w-6 shrink-0 place-items-center rounded-full border",
+              tone.marker,
+            )}
+          >
+            {node.status === "active" ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : node.status === "future" ? (
+              <Circle size={9} />
+            ) : (
+              <Icon size={12} />
+            )}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate font-semibold leading-4 text-slate-800 dark:text-slate-100">
+              {treeDisplayTitle(node)}
+            </span>
+            <span className="mt-0.5 block truncate text-[10px] leading-3 text-slate-500 dark:text-slate-400">
+              {treeNodeMeta(node)}
+            </span>
+          </span>
+        </button>
+      </li>
+    );
+  };
+
+  return (
+    <section className="mb-4" aria-label="Live task graph">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+          <Cable size={13} />
+          Live Task Graph
+        </div>
+        {revisions.length > 1 && (
+          <div className="flex max-w-full flex-wrap items-center gap-1 text-[10px]">
+            {revisions.map((revision) => {
+              const active = revision.id === selectedRevision?.id;
+              return (
+                <button
+                  type="button"
+                  key={revision.id}
+                  onClick={() => setSelectedRevisionId(revision.id)}
+                  className={cx(
+                    "rounded-full border px-2 py-0.5 font-semibold transition",
+                    active
+                      ? "border-amber-400 bg-amber-100 text-amber-950 dark:border-amber-500/80 dark:bg-amber-950/40 dark:text-amber-100"
+                      : "border-slate-200 bg-white/70 text-slate-500 hover:border-slate-300 dark:border-slate-800 dark:bg-slate-950/50 dark:text-slate-400",
+                  )}
+                >
+                  {revision.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      <div className="overflow-x-auto rounded-md border border-slate-200/80 bg-white/55 p-3 dark:border-slate-800 dark:bg-slate-950/45">
+        {selectedRevision ? (
+          <div className="min-w-[360px] space-y-3">
+            {(selectedRevision.meta || selectedRevision.reason) && (
+              <div className="rounded border border-slate-200/70 bg-white/55 px-2.5 py-2 text-xs text-slate-600 dark:border-slate-800 dark:bg-slate-950/35 dark:text-slate-300">
+                {selectedRevision.meta && (
+                  <div className="font-medium">{selectedRevision.meta}</div>
+                )}
+                {selectedRevision.reason && (
+                  <div className={cx("leading-5", selectedRevision.meta && "mt-1")}>
+                    {selectedRevision.reason}
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="grid gap-2">
+              {selectedRevision.branches.map((branch) => (
+                <div key={branch.id} className="min-w-0">
+                  <div className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+                    <GitBranchIcon />
+                    <span className="truncate">{branch.label}</span>
+                    <span className="rounded-full border border-slate-200 px-1.5 py-0.5 text-[9px] normal-case tracking-normal text-slate-500 dark:border-slate-800 dark:text-slate-400">
+                      {branch.nodes.length} task{branch.nodes.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                  <ul className="grid min-w-0 gap-1.5">
+                    {branch.nodes.map(renderGraphNode)}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="min-w-[360px] rounded border border-dashed border-slate-200/80 bg-white/45 p-3 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-950/30 dark:text-slate-400">
+            Waiting for DAN to emit actual task nodes or branches. Run Steps below show the broad workflow meanwhile.
+          </div>
+        )}
+      </div>
+    </section>
+  );
 }
 
 interface BlueprintLiveStatus {
@@ -5416,7 +6580,7 @@ function statusTokenChip(
         href={text}
         target="_blank"
         rel="noreferrer"
-        className="mx-0.5 inline-flex max-w-full items-center gap-1 rounded border border-sky-300/60 bg-sky-50/70 px-1.5 py-0.5 align-baseline text-[0.86em] font-medium text-sky-800 no-underline hover:border-sky-400 hover:bg-sky-100 dark:border-sky-700/70 dark:bg-sky-950/40 dark:text-sky-200"
+        className="dan-status-token dan-status-token-link mx-0.5 inline-flex max-w-full items-center gap-1 rounded border border-sky-300/60 bg-sky-50/70 px-1.5 py-0.5 align-baseline text-[0.86em] font-medium text-sky-800 no-underline hover:border-sky-400 hover:bg-sky-100 dark:border-sky-700/70 dark:bg-sky-950/40 dark:text-sky-200"
       >
         <LinkIcon size={11} />
         <span className="truncate">{text}</span>
@@ -5436,6 +6600,7 @@ function statusTokenChip(
     <span
       key={key}
       className={cx(
+        `dan-status-token dan-status-token-${kind}`,
         "mx-0.5 inline-flex max-w-full items-center gap-1 rounded px-1.5 py-0.5 align-baseline text-[0.86em] font-medium",
         "border",
         classes,
@@ -5535,6 +6700,92 @@ function LiveStatusCard({ status }: { status: BlueprintLiveStatus }) {
   );
 }
 
+function userConversationChunks(chunks: WorkspaceChunk[]) {
+  return chunks.filter(
+    (chunk) =>
+      chunk.kind === "chat" &&
+      chunk.role === "user" &&
+      Boolean(chunk.body.trim()),
+  );
+}
+
+function nodeConversationChunk(
+  node: BlueprintNode,
+  chunks: WorkspaceChunk[],
+  assignedChunkIds: Set<string>,
+) {
+  const byId = new Map(chunks.map((chunk) => [chunk.id, chunk]));
+  const explicit = node.sourceChunkId ? byId.get(node.sourceChunkId) : undefined;
+  if (explicit && !assignedChunkIds.has(explicit.id)) return explicit;
+  if (node.kind !== "request" || !node.rawRequest?.trim()) return null;
+  const rawRequest = node.rawRequest.trim();
+  return (
+    chunks.find((chunk) => !assignedChunkIds.has(chunk.id) && chunk.body.trim() === rawRequest) ??
+    null
+  );
+}
+
+function blueprintTimelineItems(
+  nodes: BlueprintNode[],
+  conversationChunks: WorkspaceChunk[],
+): BlueprintTimelineItem[] {
+  const chunks = userConversationChunks(conversationChunks);
+  const assignedChunkIds = new Set<string>();
+  const items: BlueprintTimelineItem[] = [];
+  for (const node of nodes) {
+    const chunk = nodeConversationChunk(node, chunks, assignedChunkIds);
+    if (chunk) {
+      assignedChunkIds.add(chunk.id);
+      items.push({
+        kind: "conversation",
+        id: `conversation:${chunk.id}:before:${node.id}`,
+        chunk,
+      });
+    }
+    items.push({ kind: "node", id: `node:${node.id}`, node });
+  }
+  return items;
+}
+
+function ConversationTimelineCard({
+  chunk,
+  selected,
+  onSelect,
+}: {
+  chunk: WorkspaceChunk;
+  selected: boolean;
+  onSelect: (chunk: WorkspaceChunk) => void;
+}) {
+  const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    onSelect(chunk);
+  };
+  return (
+    <article
+      role="button"
+      tabIndex={0}
+      onClick={() => onSelect(chunk)}
+      onKeyDown={handleKeyDown}
+      data-selected={selected ? "true" : undefined}
+      className={cx(
+        "dan-user-chat-box block w-full cursor-pointer rounded-md border px-3 py-2.5 text-left text-sm outline-none transition focus-visible:ring-2 focus-visible:ring-cyan-300",
+        selected
+          ? "border-cyan-300 bg-cyan-50/70 text-slate-950 ring-1 ring-cyan-200 dark:border-cyan-500 dark:bg-cyan-950/20 dark:text-cyan-50 dark:ring-cyan-800"
+          : "border-slate-200 bg-white/75 text-slate-700 hover:border-slate-300 dark:border-slate-800 dark:bg-slate-950/45 dark:text-slate-300 dark:hover:border-slate-700",
+      )}
+    >
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+        You
+      </div>
+      <MarkdownRenderer
+        content={chunk.body}
+        className="max-h-32 overflow-hidden text-sm leading-6 [overflow-wrap:anywhere] [&_code]:break-words [&_p]:my-0 [&_p]:break-words [&_p]:leading-6"
+      />
+    </article>
+  );
+}
+
 function BlueprintView({
   nodes,
   conversationChunks,
@@ -5577,11 +6828,15 @@ function BlueprintView({
       blocked: 0,
     } satisfies Record<BlueprintNodeStatus, number>,
   );
+  const timelineItems = useMemo(
+    () => blueprintTimelineItems(nodes, conversationChunks),
+    [nodes, conversationChunks],
+  );
 
   if (nodes.length === 0) {
     return (
       <div className="dan-blueprint-board grid min-h-52 place-items-center rounded-md border border-dashed border-slate-200 bg-white/70 p-5 text-center text-sm text-slate-400 dark:border-slate-800 dark:bg-slate-950/70">
-        {loading ? "Loading work plan..." : "No work plan has been emitted yet."}
+        {loading ? "Loading work..." : "No active work yet."}
       </div>
     );
   }
@@ -5614,52 +6869,30 @@ function BlueprintView({
         </div>
       </div>
 
-      {conversationChunks.length > 0 && (
-        <section className="mb-4 space-y-2" aria-label="Recent user messages">
-          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">
-            <MessageSquareText size={13} />
-            Conversation
-          </div>
-          <div className="space-y-2">
-            {conversationChunks.map((chunk) => {
-              const selected = chunk.id === selectedChunkId;
-              const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
-                if (event.key !== "Enter" && event.key !== " ") return;
-                event.preventDefault();
-                onSelectConversationChunk(chunk);
-              };
-              return (
-                <article
-                  key={chunk.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => onSelectConversationChunk(chunk)}
-                  onKeyDown={handleKeyDown}
-                  data-selected={selected ? "true" : undefined}
-                  className={cx(
-                    "dan-user-chat-box block w-full cursor-pointer rounded-md border px-3 py-2.5 text-left text-sm outline-none transition focus-visible:ring-2 focus-visible:ring-cyan-300",
-                    selected
-                      ? "border-cyan-300 bg-cyan-50/70 text-slate-950 ring-1 ring-cyan-200 dark:border-cyan-500 dark:bg-cyan-950/20 dark:text-cyan-50 dark:ring-cyan-800"
-                      : "border-slate-200 bg-white/75 text-slate-700 hover:border-slate-300 dark:border-slate-800 dark:bg-slate-950/45 dark:text-slate-300 dark:hover:border-slate-700",
-                  )}
-                >
-                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">
-                    You
-                  </div>
-                  <MarkdownRenderer
-                    content={chunk.body}
-                    className="max-h-32 overflow-hidden text-sm leading-6 [overflow-wrap:anywhere] [&_code]:break-words [&_p]:my-0 [&_p]:break-words [&_p]:leading-6"
-                  />
-                </article>
-              );
-            })}
-          </div>
-        </section>
-      )}
+      <BlueprintTreeOverview
+        nodes={nodes}
+        activeNodeId={activeNodeId}
+        selectedNodeId={selectedNodeId}
+        onSelect={onSelect}
+      />
 
       <ol className="relative space-y-2.5">
         <div className="dan-blueprint-rail-line absolute bottom-4 left-[18px] top-4 w-px bg-slate-200 dark:bg-slate-800" />
-        {nodes.map((node, index) => {
+        {timelineItems.map((item) => {
+          if (item.kind === "conversation") {
+            const selected = item.chunk.id === selectedChunkId;
+            return (
+              <li key={item.id} className="relative">
+                <ConversationTimelineCard
+                  chunk={item.chunk}
+                  selected={selected}
+                  onSelect={onSelectConversationChunk}
+                />
+              </li>
+            );
+          }
+          const { node } = item;
+          const index = nodes.findIndex((candidate) => candidate.id === node.id);
           const tone = blueprintStatusTone(node.status);
           const Icon = blueprintKindIcon(node.kind);
           const active = node.id === activeNodeId;
@@ -6082,6 +7315,7 @@ export default function ChunkWorkspaceApp() {
   );
   const [activeFileContent, setActiveFileContent] = useState("");
   const [activeFileStatus, setActiveFileStatus] = useState<DevFileStatus>("idle");
+  const [promptLogPreview, setPromptLogPreview] = useState<PromptLogPreview | null>(null);
   const [rootEditing, setRootEditing] = useState(false);
   const [rootInput, setRootInput] = useState("");
   const [rootSuggestions, setRootSuggestions] = useState<WorkspaceRootSuggestion[]>([]);
@@ -6111,6 +7345,8 @@ export default function ChunkWorkspaceApp() {
   const [sessionSwipeOffsets, setSessionSwipeOffsets] = useState<Record<string, number>>({});
   const [draggingWorkspaceId, setDraggingWorkspaceId] = useState<string | null>(null);
   const [dragOverWorkspaceId, setDragOverWorkspaceId] = useState<string | null>(null);
+  const [dragOverWorkspacePlacement, setDragOverWorkspacePlacement] =
+    useState<WorkspaceDropPlacement>("before");
 
   const workspaces = useWorkspaceStore((state) => state.workspaces);
   const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
@@ -6120,7 +7356,11 @@ export default function ChunkWorkspaceApp() {
   const updateWorkspace = useWorkspaceStore((state) => state.updateWorkspace);
   const reorderWorkspace = useWorkspaceStore((state) => state.reorderWorkspace);
   const workspaceSurfaceTheme = useSettingsStore((state) => state.workspaceSurfaceTheme);
-  const workspaceSurfaceThemeClass = workspaceSurfaceThemeClassName(workspaceSurfaceTheme);
+  const workspaceSurfaceTone = useSettingsStore((state) => state.workspaceSurfaceTone);
+  const workspaceSurfaceThemeClass = workspaceSurfaceThemeClassName(
+    workspaceSurfaceTheme,
+    workspaceSurfaceTone,
+  );
   const workspace = useMemo(
     () => workspaces.find((item) => item.id === activeWorkspaceId),
     [activeWorkspaceId, workspaces],
@@ -6202,6 +7442,7 @@ export default function ChunkWorkspaceApp() {
   const selectNote = useCallback((note: WorkspaceNote) => {
     setActiveNoteId(note.id);
     setSelectedChunkId(null);
+    setPromptLogPreview(null);
     if (note.status === "error" && note.path) {
       setNotes((previous) =>
         previous.map((item) =>
@@ -6888,9 +8129,24 @@ export default function ChunkWorkspaceApp() {
     return () => window.clearTimeout(timer);
   }, [activeNote, saveNoteNow]);
 
-  const messageChunks = useMemo<WorkspaceChunk[]>(
-    () =>
-      messages.slice(-16).map((message) => ({
+  const messageChunks = useMemo<WorkspaceChunk[]>(() => {
+    const visibleMessages = messages.slice(-16);
+    const inferredRunRefForMessage = (index: number) => {
+      const message = visibleMessages[index];
+      if (!message || message.role !== "user" || message.taskRunRef?.runId) {
+        return message?.taskRunRef ?? null;
+      }
+      for (let cursor = index + 1; cursor < visibleMessages.length; cursor += 1) {
+        const candidate = visibleMessages[cursor];
+        if (!candidate) continue;
+        if (candidate.role === "user") break;
+        if (candidate.taskRunRef?.runId || candidate.taskRunRef?.taskId) return candidate.taskRunRef ?? null;
+      }
+      return message.taskRunRef ?? null;
+    };
+    return visibleMessages.map((message, index) => {
+      const runRef = inferredRunRefForMessage(index);
+      return {
         id: `message:${message.id}`,
         kind: "chat",
         title:
@@ -6912,11 +8168,11 @@ export default function ChunkWorkspaceApp() {
             : "clean",
         meta: message.role,
         role: message.role,
-        taskId: message.taskRunRef?.taskId,
-        runId: message.taskRunRef?.runId,
-      })),
-    [messages, pendingAssistantIds],
-  );
+        taskId: runRef?.taskId,
+        runId: runRef?.runId,
+      };
+    });
+  }, [messages, pendingAssistantIds]);
 
   const eventChunks = useMemo<WorkspaceChunk[]>(
     () => compactAgentRunChunks(agentEvents),
@@ -7080,13 +8336,25 @@ export default function ChunkWorkspaceApp() {
       draggingWorkspaceId,
     [draggingWorkspaceId],
   );
+  const workspaceDropPlacementFromEvent = useCallback((event: DragEvent<HTMLElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    return event.clientY - bounds.top > bounds.height / 2 ? "after" : "before";
+  }, []);
   const reorderWorkspaceById = useCallback(
-    (sourceWorkspaceId: string, targetWorkspaceId: string) => {
+    (
+      sourceWorkspaceId: string,
+      targetWorkspaceId: string,
+      placement: WorkspaceDropPlacement = "before",
+    ) => {
       if (sourceWorkspaceId === targetWorkspaceId) return;
       const fromIndex = workspaces.findIndex((item) => item.id === sourceWorkspaceId);
       const toIndex = workspaces.findIndex((item) => item.id === targetWorkspaceId);
       if (fromIndex < 0 || toIndex < 0) return;
-      reorderWorkspace(fromIndex, toIndex);
+      const adjustedTargetIndex = placement === "after" ? toIndex + 1 : toIndex;
+      const nextIndex =
+        fromIndex < adjustedTargetIndex ? adjustedTargetIndex - 1 : adjustedTargetIndex;
+      if (fromIndex === nextIndex) return;
+      reorderWorkspace(fromIndex, nextIndex);
     },
     [reorderWorkspace, workspaces],
   );
@@ -7108,6 +8376,8 @@ export default function ChunkWorkspaceApp() {
   const rootBrowsePath = normalizeRootPath(rootInput || developmentRoot || devRoot);
   const rootParentPath = parentRootPath(rootBrowsePath);
   const hasActiveRun = Boolean(activeRunId && activeRunningTask);
+  const composerText = input.trim();
+  const composerActionIsStop = Boolean(activeThread && activeRunningTask && !composerText);
   const queueRows = useMemo(() => queueRowsFromTasks(tasks), [tasks]);
   const showAgentQueuePanel = queueRows.length > 0;
   const blueprintNodes = useMemo(
@@ -7825,6 +9095,8 @@ export default function ChunkWorkspaceApp() {
       setTasks([]);
       setAgentEvents([]);
       setSelectedChunkId(null);
+      setSelectedBlueprintNodeId(null);
+      setPromptLogPreview(null);
       setShowConversationChunks(true);
       setActivePane("work");
       setLoadingThreadId(summary.id);
@@ -7846,6 +9118,8 @@ export default function ChunkWorkspaceApp() {
         markSessionResponseSeen(thread, history.tasks);
         setActivePane("work");
         setSelectedChunkId(null);
+        setSelectedBlueprintNodeId(null);
+        setPromptLogPreview(null);
         setActiveThread({
           id: thread.id,
           workflowId: thread.workflow_id,
@@ -7911,6 +9185,50 @@ export default function ChunkWorkspaceApp() {
     },
     [activeThread?.id, openSession],
   );
+
+  const openSessionPromptLog = useCallback(async (thread: ChatV2ThreadSummary) => {
+    if (thread.archived) {
+      setStatus("Restore session to view its prompt log");
+      return;
+    }
+    setActivePane("work");
+    setPhonePage("preview");
+    setShowSidecarPreview(true);
+    setSelectedChunkId(null);
+    setSelectedBlueprintNodeId(null);
+    setActiveFilePath(null);
+    setPromptLogPreview({
+      threadId: thread.id,
+      title: thread.title || "Session prompt log",
+      body: "_Loading prompt log..._",
+      path: "",
+      entryCount: 0,
+      status: "loading",
+    });
+    setStatus("Opening prompt log");
+    try {
+      const log = await getChatV2ThreadPromptLog(thread.id);
+      setPromptLogPreview({
+        threadId: thread.id,
+        title: thread.title || "Session prompt log",
+        body: log.content || "_No prompt log content was returned._",
+        path: log.path || "",
+        entryCount: log.entry_count ?? 0,
+        status: "idle",
+      });
+      setStatus(log.entry_count > 0 ? "Prompt log ready" : "Prompt log has no model calls yet");
+    } catch (error) {
+      setPromptLogPreview({
+        threadId: thread.id,
+        title: thread.title || "Session prompt log",
+        body: error instanceof Error ? error.message : "Prompt log failed to load.",
+        path: "",
+        entryCount: 0,
+        status: "error",
+      });
+      setStatus("Prompt log failed");
+    }
+  }, []);
 
   const stopSessionRun = useCallback(
     async (thread: ChatV2ThreadSummary, task?: ChatV2TaskSnapshot | null) => {
@@ -8153,11 +9471,24 @@ export default function ChunkWorkspaceApp() {
       agentStreamRef.current = connectChatV2AgentRunEvents(
         runId,
         (event) => {
-          if (event.task_id) void refreshTasks(thread.id);
+          const refreshThreadTasks = (delay = 0) => {
+            if (delay <= 0) {
+              void refreshTasks(thread.id);
+              void refreshBackgroundTasks();
+              return;
+            }
+            window.setTimeout(() => {
+              void refreshTasks(thread.id);
+              void refreshBackgroundTasks();
+            }, delay);
+          };
+          if (event.task_id) refreshThreadTasks();
           if (activeThreadRef.current?.id !== thread.id) return;
           setAgentEvents((previous) => [...previous, event].slice(-80));
           attachRunEventToAssistant(assistantId, runEventPayloadFromAgentEvent(event));
-          if (event.type === "completed" || event.type === "failed" || event.type === "blocked") {
+          if (agentRunEventIsTerminal(event)) {
+            refreshThreadTasks(300);
+            refreshThreadTasks(1200);
             const finalText =
               humanEventSummary(event) || (event.type === "completed" ? "Completed." : eventSummary(event));
             const next = applyMessages((previous) =>
@@ -8198,9 +9529,10 @@ export default function ChunkWorkspaceApp() {
       applyMessages,
       attachRunEventToAssistant,
       persistMessages,
+      refreshBackgroundTasks,
       refreshTasks,
       workspace?.id,
-        developmentRoot,
+      developmentRoot,
     ],
   );
 
@@ -8421,6 +9753,7 @@ export default function ChunkWorkspaceApp() {
     const mode = modeOverride ?? (hasActiveRun ? activeRunPlacement : "steer");
     setInput("");
     setSelectedBlueprintNodeId(null);
+    setPromptLogPreview(null);
     setSending(true);
     try {
       if (mode === "queue") await sendAgent(prompt, "continue_after_current");
@@ -8447,8 +9780,12 @@ export default function ChunkWorkspaceApp() {
   );
 
   const openActiveFile = useCallback(() => {
+    if (promptLogPreview?.path) {
+      void nativeShell.openPath(promptLogPreview.path);
+      return;
+    }
     if (activeFileEntry?.path) void nativeShell.openPath(activeFileEntry.path);
-  }, [activeFileEntry?.path]);
+  }, [activeFileEntry?.path, promptLogPreview?.path]);
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
@@ -8638,6 +9975,18 @@ export default function ChunkWorkspaceApp() {
               </span>
             </button>
             <div className="flex shrink-0 items-center gap-0.5 py-1 pr-1">
+              {!archived && (
+                <button
+                  type="button"
+                  data-session-action
+                  onClick={() => void openSessionPromptLog(thread)}
+                  title="View prompt log"
+                  aria-label="View prompt log"
+                  className="grid h-6 w-6 place-items-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                >
+                  <ScrollText size={12} />
+                </button>
+              )}
               {threadIsRunning && (
                 <>
                   <button
@@ -8948,20 +10297,6 @@ export default function ChunkWorkspaceApp() {
             <div className="hidden items-center gap-1 md:flex">
               <button
                 type="button"
-                onClick={() => setShowSessionRail((visible) => !visible)}
-                title="Toggle sessions (⌥⇧S)"
-                aria-label="Toggle sessions"
-                className={cx(
-                  "grid h-8 w-8 place-items-center rounded-lg border transition",
-                  showSessionRail
-                    ? "border-slate-300 bg-slate-100 text-slate-800 shadow-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-                    : "border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950",
-                )}
-              >
-                <PanelLeft size={14} />
-              </button>
-              <button
-                type="button"
                 onClick={() => setShowFileExplorer((visible) => !visible)}
                 title="Toggle files (⌥⇧F)"
                 aria-label="Toggle files"
@@ -8976,9 +10311,23 @@ export default function ChunkWorkspaceApp() {
               </button>
               <button
                 type="button"
+                onClick={() => setShowSessionRail((visible) => !visible)}
+                title="Toggle sessions (⌥⇧S)"
+                aria-label="Toggle sessions"
+                className={cx(
+                  "grid h-8 w-8 place-items-center rounded-lg border transition",
+                  showSessionRail
+                    ? "border-slate-300 bg-slate-100 text-slate-800 shadow-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                    : "border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950",
+                )}
+              >
+                <PanelLeft size={14} />
+              </button>
+              <button
+                type="button"
                 onClick={() => setShowConversationChunks((visible) => !visible)}
-                title="Toggle blueprint view (⌥⇧C)"
-                aria-label="Toggle blueprint view"
+                title="Toggle work panel (⌥⇧C)"
+                aria-label="Toggle work panel"
                 className={cx(
                   "grid h-8 w-8 place-items-center rounded-lg border transition",
                   showConversationChunks
@@ -9570,13 +10919,14 @@ export default function ChunkWorkspaceApp() {
               label="Sessions"
               title="Show sessions pane"
               onClick={() => setShowSessionRail(true)}
+              className="md:order-2"
             >
               <PanelLeft size={14} />
             </CollapsedPaneRail>
           )}
           {renderSessionRail && (
             <aside
-              className="dan-phone-page dan-session-page relative flex min-h-0 shrink-0 flex-col border-r border-slate-200/80 bg-white/85 shadow-[1px_0_0_rgba(15,23,42,0.02)] dark:border-slate-800 dark:bg-slate-950"
+              className="dan-phone-page dan-session-page relative flex min-h-0 shrink-0 flex-col border-r border-slate-200/80 bg-white/85 shadow-[1px_0_0_rgba(15,23,42,0.02)] dark:border-slate-800 dark:bg-slate-950 md:order-2"
               style={isPhoneViewport ? undefined : { width: leftRailWidth }}
             >
               <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/80 px-3 dark:border-slate-800">
@@ -9648,9 +10998,13 @@ export default function ChunkWorkspaceApp() {
                       workspaceGroupDraggable &&
                       dragOverWorkspaceId === group.workspaceId &&
                       draggingWorkspaceId !== group.workspaceId;
+                    const workspaceGroupDropPlacement = workspaceGroupDropTarget
+                      ? dragOverWorkspacePlacement
+                      : null;
                     return (
                       <div key={group.id} className="group/workspace">
                         <div
+                          data-drop-placement={workspaceGroupDropPlacement ?? undefined}
                           draggable={workspaceGroupDraggable}
                           onDragStart={(event) => {
                             if (!group.workspaceId || group.archived) return;
@@ -9673,6 +11027,7 @@ export default function ChunkWorkspaceApp() {
                               return;
                             }
                             setDragOverWorkspaceId(group.workspaceId);
+                            setDragOverWorkspacePlacement(workspaceDropPlacementFromEvent(event));
                           }}
                           onDragOver={(event) => {
                             if (!group.workspaceId || group.archived) return;
@@ -9683,6 +11038,7 @@ export default function ChunkWorkspaceApp() {
                             event.preventDefault();
                             event.dataTransfer.dropEffect = "move";
                             setDragOverWorkspaceId(group.workspaceId);
+                            setDragOverWorkspacePlacement(workspaceDropPlacementFromEvent(event));
                           }}
                           onDragLeave={(event) => {
                             if (!group.workspaceId) return;
@@ -9703,13 +11059,19 @@ export default function ChunkWorkspaceApp() {
                               return;
                             }
                             event.preventDefault();
-                            reorderWorkspaceById(sourceWorkspaceId, group.workspaceId);
+                            reorderWorkspaceById(
+                              sourceWorkspaceId,
+                              group.workspaceId,
+                              workspaceDropPlacementFromEvent(event),
+                            );
                             setDraggingWorkspaceId(null);
                             setDragOverWorkspaceId(null);
+                            setDragOverWorkspacePlacement("before");
                           }}
                           onDragEnd={() => {
                             setDraggingWorkspaceId(null);
                             setDragOverWorkspaceId(null);
+                            setDragOverWorkspacePlacement("before");
                           }}
                           className={cx(
                             "flex items-start gap-1 rounded-lg transition",
@@ -9717,6 +11079,8 @@ export default function ChunkWorkspaceApp() {
                             workspaceGroupDragging && "opacity-60",
                             workspaceGroupDropTarget &&
                               "ring-1 ring-amber-300/80 ring-offset-1 ring-offset-white dark:ring-amber-500/60 dark:ring-offset-slate-950",
+                            workspaceGroupDropPlacement === "after" && "translate-y-0.5",
+                            workspaceGroupDropPlacement === "before" && "-translate-y-0.5",
                             workspaceGroupActive
                               ? "bg-slate-100/90 shadow-sm dark:bg-slate-900"
                               : "hover:bg-slate-50 dark:hover:bg-slate-900/70",
@@ -9733,18 +11097,20 @@ export default function ChunkWorkspaceApp() {
                             }}
                             className="flex min-w-0 flex-1 items-start gap-1.5 px-1.5 py-2 text-left"
                           >
-                            <span className="flex w-4 shrink-0 flex-col items-center gap-0.5 pt-0.5">
+                            <span className="flex w-5 shrink-0 flex-col items-center gap-1 pt-0.5">
                               {collapsed ? (
                                 <ChevronRight size={14} className="shrink-0 text-slate-400" />
                               ) : (
                                 <ChevronDown size={14} className="shrink-0 text-slate-400" />
                               )}
                               {workspaceGroupDraggable && (
-                                <GripVertical
-                                  size={12}
-                                  className="shrink-0 text-slate-300 opacity-0 transition group-hover/workspace:opacity-100 dark:text-slate-600"
+                                <span
+                                  className="dan-workspace-drag-handle grid h-5 w-4 place-items-center text-slate-400 transition group-hover/workspace:text-slate-600 dark:text-slate-500 dark:group-hover/workspace:text-slate-300"
+                                  title="Drag workspace"
                                   aria-hidden="true"
-                                />
+                                >
+                                  <GripVertical size={15} strokeWidth={2.3} />
+                                </span>
                               )}
                             </span>
                             <span className="min-w-0 flex-1">
@@ -9872,12 +11238,13 @@ export default function ChunkWorkspaceApp() {
               label="Files"
               title="Show files pane"
               onClick={() => setShowFileExplorer(true)}
+              className="md:order-1"
             >
               <Folder size={14} />
             </CollapsedPaneRail>
           )}
           {renderFileExplorer && (
-            <aside className="dan-phone-page dan-files-page flex min-h-0 w-[270px] shrink-0 flex-col border-r border-slate-200/80 bg-white/85 dark:border-slate-800 dark:bg-slate-950">
+            <aside className="dan-phone-page dan-files-page flex min-h-0 w-[270px] shrink-0 flex-col border-r border-slate-200/80 bg-white/85 dark:border-slate-800 dark:bg-slate-950 md:order-1">
               <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/80 px-3 dark:border-slate-800">
                 <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
                   Files
@@ -10043,7 +11410,10 @@ export default function ChunkWorkspaceApp() {
                     query={devFileQuery}
                     expanded={expandedFileDirs}
                     onToggle={toggleFileDir}
-                    onSelect={(entry) => setActiveFilePath(entry.path)}
+                    onSelect={(entry) => {
+                      setActiveFilePath(entry.path);
+                      setPromptLogPreview(null);
+                    }}
                     onMove={moveDevelopmentEntry}
                   />
                 ) : (
@@ -10055,9 +11425,10 @@ export default function ChunkWorkspaceApp() {
 
           {!isPhoneViewport && !renderWorkMain && (
             <CollapsedPaneRail
-              label="Plan"
-              title="Show work plan"
+              label="Work"
+              title="Show work panel"
               onClick={() => setShowConversationChunks(true)}
+              className="md:order-3"
             >
               <Cable size={14} />
             </CollapsedPaneRail>
@@ -10065,7 +11436,7 @@ export default function ChunkWorkspaceApp() {
           {renderWorkMain && (
           <div
             className={cx(
-              "dan-phone-page grid min-h-0 min-w-0 flex-1",
+              "dan-phone-page grid min-h-0 min-w-0 flex-1 md:order-3",
               renderSidecarPreview
                 ? "grid-cols-[minmax(280px,0.95fr)_minmax(300px,1.05fr)]"
                 : "grid-cols-[minmax(0,1fr)]",
@@ -10074,41 +11445,17 @@ export default function ChunkWorkspaceApp() {
             <div className="flex min-h-0 min-w-0 flex-col bg-white/90 dark:bg-slate-950">
               <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/80 bg-white/80 px-4 backdrop-blur dark:border-slate-800 dark:bg-slate-950/80">
                 <div className="min-w-0">
-                  <div className="truncate text-[15px] font-semibold leading-5">Work Plan</div>
-                  <div className="truncate text-[11px] leading-4 text-slate-500">
-                    {workPlanHeaderSubtitle(selectedBlueprintNode ?? activeBlueprintNode, activeThread?.title)}
+                  <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
+                    Work
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
-                  {activeThread && activeRunningTask && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void stopSessionRun(
-                          {
-                            id: activeThread.id,
-                            workflow_id: activeThread.workflowId,
-                            title: activeThread.title || "Active session",
-                            message_count: messages.length,
-                            created_at: "",
-                            updated_at: "",
-                          },
-                          activeRunningTask,
-                        )
-                      }
-                      className="inline-flex h-8 items-center gap-1 rounded-lg border border-red-200 bg-red-50 px-2 text-xs font-semibold text-red-700 shadow-sm transition hover:border-red-300 hover:bg-white dark:border-red-900 dark:bg-red-950/35 dark:text-red-200"
-                      title="Stop running session"
-                    >
-                      <Square size={11} />
-                      Stop
-                    </button>
-                  )}
                   <button
                     type="button"
                     onClick={() => setShowConversationChunks(false)}
                     className="grid h-8 w-8 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
-                    title="Collapse work plan"
-                    aria-label="Collapse work plan"
+                    title="Collapse work panel"
+                    aria-label="Collapse work panel"
                   >
                     <ChevronRight size={14} className="rotate-180" />
                   </button>
@@ -10126,17 +11473,19 @@ export default function ChunkWorkspaceApp() {
                     loading={loadingThreadId === activeThread?.id}
                     onSelect={(node) => {
                       setSelectedBlueprintNodeId(node.id);
+                      setPromptLogPreview(null);
                       if (node.sourceChunkId) setSelectedChunkId(node.sourceChunkId);
                       else setSelectedChunkId(null);
                     }}
                     onSelectConversationChunk={(chunk) => {
                       setSelectedBlueprintNodeId(null);
                       setSelectedChunkId(chunk.id);
+                      setPromptLogPreview(null);
                     }}
                   />
                 ) : (
                   <div className="rounded-md border border-dashed border-slate-200 bg-white p-3 text-sm text-slate-400 dark:border-slate-800 dark:bg-slate-950">
-                    Work plan hidden.
+                    Work panel hidden.
                   </div>
                 )}
               </div>
@@ -10212,12 +11561,45 @@ export default function ChunkWorkspaceApp() {
                   />
                   <button
                     type="button"
-                    onClick={() => void submit()}
-                    disabled={sending || !input.trim()}
-                    className="inline-flex h-11 items-center gap-1.5 rounded-lg bg-slate-950 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-slate-100 dark:text-slate-950 dark:hover:bg-white"
+                    onClick={() => {
+                      if (composerActionIsStop && activeThread && activeRunningTask) {
+                        void stopSessionRun(
+                          {
+                            id: activeThread.id,
+                            workflow_id: activeThread.workflowId,
+                            title: activeThread.title || "Active session",
+                            message_count: messages.length,
+                            created_at: "",
+                            updated_at: "",
+                          },
+                          activeRunningTask,
+                        );
+                        return;
+                      }
+                      void submit();
+                    }}
+                    disabled={sending || (!composerActionIsStop && !composerText)}
+                    className={cx(
+                      "inline-flex h-11 items-center gap-1.5 rounded-lg px-4 text-sm font-semibold shadow-sm transition disabled:cursor-not-allowed disabled:opacity-40",
+                      composerActionIsStop
+                        ? "dan-composer-stop-button border border-red-200 bg-red-50 text-red-700 hover:border-red-300 hover:bg-white dark:border-red-900 dark:bg-red-950/35 dark:text-red-200 dark:hover:bg-red-950/55"
+                        : "bg-slate-950 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-950 dark:hover:bg-white",
+                    )}
+                    title={composerActionIsStop ? "Stop running session" : undefined}
+                    aria-label={composerActionIsStop ? "Stop running session" : undefined}
                   >
-                    {sending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-                    {hasActiveRun && activeRunPlacement === "queue" ? "Next" : "Steer"}
+                    {composerActionIsStop ? (
+                      <Square size={15} />
+                    ) : sending ? (
+                      <Loader2 size={15} className="animate-spin" />
+                    ) : (
+                      <Send size={15} />
+                    )}
+                    {composerActionIsStop
+                      ? "Stop"
+                      : hasActiveRun && activeRunPlacement === "queue"
+                        ? "Next"
+                        : "Steer"}
                   </button>
                 </div>
                 {(activeFileEntry || selectedBlueprintNode || selectedChunk || hasActiveRun) && (
@@ -10241,26 +11623,15 @@ export default function ChunkWorkspaceApp() {
               <aside className="flex min-h-0 min-w-0 flex-col border-l border-slate-200/80 bg-white dark:border-slate-800 dark:bg-slate-950">
                 <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/80 px-4 dark:border-slate-800">
                   <div className="min-w-0">
-                    <div className="truncate text-[15px] font-semibold leading-5">
-                      {selectedBlueprintNode
-                        ? selectedBlueprintNode.title
-                        : selectedChunk
-                          ? selectedChunk.title
-                          : activeFileEntry?.name || "Preview"}
-                    </div>
-                    <div className="truncate text-[11px] leading-4 text-slate-500">
-                      {selectedBlueprintNode?.meta ||
-                        selectedBlueprintNode?.detail ||
-                        selectedChunk?.meta ||
-                        activeFileEntry?.relative_path ||
-                      "Select a step or file"}
+                    <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
+                      Preview
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
                     <button
                       type="button"
                       onClick={openActiveFile}
-                      disabled={!activeFileEntry}
+                      disabled={!activeFileEntry && !promptLogPreview?.path}
                       className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
                     >
                       Open
@@ -10276,7 +11647,31 @@ export default function ChunkWorkspaceApp() {
                   </div>
                 </div>
                 <div className="min-h-0 flex-1 overflow-auto p-4">
-                  {selectedBlueprintNode ? (
+                  {promptLogPreview ? (
+                    <div className="space-y-3">
+                      <div className="rounded-md border border-slate-200 bg-slate-50/80 p-3 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-900/50 dark:text-slate-400">
+                        <div className="font-semibold text-slate-700 dark:text-slate-200">
+                          {promptLogPreview.title}
+                        </div>
+                        <div className="mt-1">
+                          {promptLogPreview.status === "loading"
+                            ? "Loading prompt log"
+                            : `${promptLogPreview.entryCount} model ${promptLogPreview.entryCount === 1 ? "call" : "calls"} recorded`}
+                        </div>
+                        {promptLogPreview.path && (
+                          <div className="mt-1 break-all font-mono">{promptLogPreview.path}</div>
+                        )}
+                      </div>
+                      {promptLogPreview.status === "loading" ? (
+                        <div className="flex items-center gap-2 text-sm text-slate-400">
+                          <Loader2 size={14} className="animate-spin" />
+                          Loading prompt log
+                        </div>
+                      ) : (
+                        <MarkdownRenderer content={promptLogPreview.body || "_No prompt log content._"} />
+                      )}
+                    </div>
+                  ) : selectedBlueprintNode ? (
                     <BlueprintNodePreview
                       node={selectedBlueprintNode}
                       tasks={tasks}
@@ -10309,32 +11704,21 @@ export default function ChunkWorkspaceApp() {
           </div>
           )}
           {!renderWorkMain && renderSidecarPreview && (
-            <aside className="dan-phone-page flex min-h-0 min-w-0 flex-1 flex-col border-l border-slate-200/80 bg-white dark:border-slate-800 dark:bg-slate-950">
+            <aside className="dan-phone-page flex min-h-0 min-w-0 flex-1 flex-col border-l border-slate-200/80 bg-white dark:border-slate-800 dark:bg-slate-950 md:order-4">
               <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/80 px-4 dark:border-slate-800">
                 <div className="min-w-0">
-                  <div className="truncate text-[15px] font-semibold leading-5">
-                    {selectedBlueprintNode
-                      ? selectedBlueprintNode.title
-                      : selectedChunk
-                        ? selectedChunk.title
-                        : activeFileEntry?.name || "Preview"}
-                  </div>
-                  <div className="truncate text-[11px] leading-4 text-slate-500">
-                    {selectedBlueprintNode?.meta ||
-                      selectedBlueprintNode?.detail ||
-                      selectedChunk?.meta ||
-                      activeFileEntry?.relative_path ||
-                    "Select a step or file"}
+                  <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
+                    Preview
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={openActiveFile}
-                    disabled={!activeFileEntry}
-                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
-                  >
-                    Open
+                    <button
+                      type="button"
+                      onClick={openActiveFile}
+                      disabled={!activeFileEntry && !promptLogPreview?.path}
+                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
+                    >
+                      Open
                   </button>
                   {!isPhoneViewport && (
                     <PaneHeaderButton
@@ -10347,7 +11731,31 @@ export default function ChunkWorkspaceApp() {
                 </div>
               </div>
               <div className="min-h-0 flex-1 overflow-auto p-4">
-                {selectedBlueprintNode ? (
+                {promptLogPreview ? (
+                  <div className="space-y-3">
+                    <div className="rounded-md border border-slate-200 bg-slate-50/80 p-3 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-900/50 dark:text-slate-400">
+                      <div className="font-semibold text-slate-700 dark:text-slate-200">
+                        {promptLogPreview.title}
+                      </div>
+                      <div className="mt-1">
+                        {promptLogPreview.status === "loading"
+                          ? "Loading prompt log"
+                          : `${promptLogPreview.entryCount} model ${promptLogPreview.entryCount === 1 ? "call" : "calls"} recorded`}
+                      </div>
+                      {promptLogPreview.path && (
+                        <div className="mt-1 break-all font-mono">{promptLogPreview.path}</div>
+                      )}
+                    </div>
+                    {promptLogPreview.status === "loading" ? (
+                      <div className="flex items-center gap-2 text-sm text-slate-400">
+                        <Loader2 size={14} className="animate-spin" />
+                        Loading prompt log
+                      </div>
+                    ) : (
+                      <MarkdownRenderer content={promptLogPreview.body || "_No prompt log content._"} />
+                    )}
+                  </div>
+                ) : selectedBlueprintNode ? (
                   <BlueprintNodePreview
                     node={selectedBlueprintNode}
                     tasks={tasks}
@@ -10377,6 +11785,7 @@ export default function ChunkWorkspaceApp() {
               title="Show preview pane"
               onClick={() => setShowSidecarPreview(true)}
               edge="left"
+              className="md:order-4"
             >
               <PanelRight size={14} />
             </CollapsedPaneRail>
