@@ -16,7 +16,7 @@ describe("MarkdownRenderer", () => {
     expect(html).toContain(">AgentNeighborSystem</code>");
     expect(html).toContain(">_ready()</code>");
     expect(html).toContain(">_ecs.positions_x</code>");
-    expect(html).toContain(">query_2d</code>");
+    expect(html).not.toContain(">query_2d</code>");
   });
 
   it("leaves explicit code spans and math placeholders on their own paths", () => {
@@ -47,5 +47,19 @@ describe("MarkdownRenderer", () => {
     expect(html).toContain(">M1.5</strong>");
     expect(html).not.toContain("**Browser prototype**");
     expect(html).not.toContain("**M1.5**");
+  });
+
+  it("does not over-highlight dense unbackticked code fragments", () => {
+    const html = renderMarkdownToHtml(
+      "Fix _process_agents(delta: float) -> void: var alive := ecs.alive_slots() # Array[int]. " +
+        "Then route process_agent_batch_counter through range(start, end) and mm.set_instance_transform(ecs.mm_index[slot], t).",
+    );
+
+    expect(html).not.toContain(">_process_agents(delta: float)</code>");
+    expect(html).not.toContain(">process_agent_batch_counter</code>");
+    expect(html).not.toContain(">range(start, end)</code>");
+    expect(html).not.toContain(">mm.set_instance_transform</code>(ecs");
+    expect(html).not.toContain(">ecs.mm_index</code>[slot]");
+    expect(autoCodeCount(html)).toBeLessThanOrEqual(1);
   });
 });

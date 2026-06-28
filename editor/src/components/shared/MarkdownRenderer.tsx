@@ -18,7 +18,17 @@ const AUTO_CODE_CLASS = `dan-markdown-auto-code ${INLINE_CODE_CLASS}`;
 const MATH_PLACEHOLDER_RE = /(\u0000DAN_MD_\d+\u0000)/g;
 const MATH_PLACEHOLDER_PART_RE = /^\u0000DAN_MD_\d+\u0000$/;
 const AUTO_CODE_TOKEN_RE =
-  /(^|[^\w./$-])((?:[\w.-]+\/)*[\w.-]+\.(?:c|cc|cpp|css|csv|gd|go|h|hpp|html|ini|java|json|jsx|log|md|mdx|py|rs|sh|sql|toml|ts|tsx|txt|xml|ya?ml)\b|_?[A-Za-z][A-Za-z0-9_]*(?:\._?[A-Za-z][A-Za-z0-9_]*)+(?:\([^()\n]{0,96}\))?|_?[A-Za-z][A-Za-z0-9_]*\([^()\n]{0,96}\)|_?[a-z][A-Za-z0-9]*_[A-Za-z0-9_]*\b|[A-Z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*\b)(?=$|[^\w/])/g;
+  /(^|[^\w./$-])((?:[\w.-]+\/)*[\w.-]+\.(?:c|cc|cpp|css|csv|gd|go|h|hpp|html|ini|java|json|jsx|log|md|mdx|py|rs|sh|sql|toml|ts|tsx|txt|xml|ya?ml)\b|_?[A-Za-z][A-Za-z0-9_]*(?:\._?[A-Za-z][A-Za-z0-9_]*)+(?:\(\))?|_[A-Za-z][A-Za-z0-9_]*(?:\(\))?|[A-Z][A-Z0-9]+(?:_[A-Z0-9]+)+\b|[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+\b)(?=$|[^\w/])/g;
+
+function shouldAutoHighlightCodeToken(source: string, tokenStart: number, token: string): boolean {
+  if (token.length > 72) return false;
+
+  const tokenEnd = tokenStart + token.length;
+  const nextCharacter = source[tokenEnd] ?? "";
+  if ((nextCharacter === "(" || nextCharacter === "[") && !token.endsWith("()")) return false;
+
+  return true;
+}
 
 function renderAutoCodeText(value: string): string {
   return value
@@ -26,7 +36,11 @@ function renderAutoCodeText(value: string): string {
     .map((part) => {
       if (!part) return "";
       if (MATH_PLACEHOLDER_PART_RE.test(part)) return part;
-      return escapeHtml(part).replace(AUTO_CODE_TOKEN_RE, (_match, prefix, token) => {
+      return escapeHtml(part).replace(AUTO_CODE_TOKEN_RE, (match, prefix, token, offset, source) => {
+        const tokenStart = offset + prefix.length;
+        if (!shouldAutoHighlightCodeToken(source, tokenStart, token)) {
+          return match;
+        }
         return `${prefix}<code class="${AUTO_CODE_CLASS}">${token}</code>`;
       });
     })
