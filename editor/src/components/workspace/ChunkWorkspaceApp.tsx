@@ -104,6 +104,7 @@ import MarkdownRenderer from "../shared/MarkdownRenderer";
 
 const DEFAULT_WORKFLOW_ID = "_scratch";
 const SUPER_DAN_BACKEND = "super_dan";
+const CODEX_BACKEND = "codex";
 const SUPER_TUI_PROFILE = "super_tui";
 const NOTES_STORAGE_KEY = "dan.chunkWorkspace.notes.v1";
 const NOTE_CONTENT_CACHE_STORAGE_KEY = "dan.chunkWorkspace.noteContentCache.v1";
@@ -113,11 +114,86 @@ const THREAD_WORKSPACE_STORAGE_KEY = "dan.chunkWorkspace.threadWorkspaces.v1";
 const SESSION_RESPONSE_SEEN_STORAGE_KEY = "dan.chunkWorkspace.sessionResponseSeen.v1";
 const LAYOUT_STORAGE_KEY = "dan.chunkWorkspace.layout.v1";
 const UI_STATE_STORAGE_KEY = "dan.chunkWorkspace.uiState.v1";
+const AGENT_SELECTION_STORAGE_KEY = "dan.chunkWorkspace.agentSelection.v1";
 const WORKSPACE_DRAG_MIME = "application/x-dan-workspace-id";
 type WorkspaceDropPlacement = "before" | "after";
 const WORKSPACE_SURFACE_TYPE = "frontend";
 const WORKSPACE_SURFACE_ID = "chunk-workspace";
 const WORKSPACE_SURFACE = `${WORKSPACE_SURFACE_TYPE}:${WORKSPACE_SURFACE_ID}`;
+type WorkspaceAgentSelectionId = "super_dan_default" | "super_dan_kimi_k26" | "codex";
+type WorkspaceAgentOption = {
+  id: WorkspaceAgentSelectionId;
+  label: string;
+  shortLabel: string;
+  description: string;
+  backend: typeof SUPER_DAN_BACKEND | typeof CODEX_BACKEND;
+  model?: string;
+};
+const DEFAULT_AGENT_SELECTION_ID: WorkspaceAgentSelectionId = "super_dan_default";
+const WORKSPACE_AGENT_OPTIONS: WorkspaceAgentOption[] = [
+  {
+    id: "super_dan_default",
+    label: "Super DAN",
+    shortLabel: "Super DAN",
+    description: "Use the existing Super DAN backend and configured model.",
+    backend: SUPER_DAN_BACKEND,
+  },
+  {
+    id: "super_dan_kimi_k26",
+    label: "Super DAN · Kimi K2.6",
+    shortLabel: "Kimi K2.6",
+    description: "Use Super DAN with the existing Kimi K2.6 model path.",
+    backend: SUPER_DAN_BACKEND,
+    model: "kimi-k2.6",
+  },
+  {
+    id: "codex",
+    label: "Codex",
+    shortLabel: "Codex",
+    description: "Run the workspace task through the Codex CLI agent.",
+    backend: CODEX_BACKEND,
+  },
+];
+
+function isWorkspaceAgentSelectionId(value: string | null | undefined): value is WorkspaceAgentSelectionId {
+  return WORKSPACE_AGENT_OPTIONS.some((option) => option.id === value);
+}
+
+function workspaceAgentOptionForId(id: string | null | undefined): WorkspaceAgentOption {
+  return (
+    WORKSPACE_AGENT_OPTIONS.find((option) => option.id === id) ??
+    WORKSPACE_AGENT_OPTIONS.find((option) => option.id === DEFAULT_AGENT_SELECTION_ID) ??
+    WORKSPACE_AGENT_OPTIONS[0]
+  );
+}
+
+function buildWorkspaceAgentExecutePayload(option: WorkspaceAgentOption) {
+  const profilePolicy: Record<string, unknown> = {
+    backend: option.backend,
+    surface_profile: SUPER_TUI_PROFILE,
+  };
+  if (option.model) {
+    profilePolicy.model = option.model;
+  }
+  return {
+    backend: option.backend,
+    surface_profile: SUPER_TUI_PROFILE,
+    background: true,
+    profile_policy: profilePolicy,
+    metadata: {
+      backend: option.backend,
+      surface_profile: SUPER_TUI_PROFILE,
+      compatibility_profile: SUPER_TUI_PROFILE,
+      surface: "gui:chunk-workspace",
+      requested_from: "chunk_workspace",
+      gui_for: option.backend === CODEX_BACKEND ? "codex exec" : "dan super-tui",
+      selected_backend: option.backend,
+      selected_agent: option.id,
+      selected_agent_label: option.label,
+      ...(option.model ? { selected_model: option.model } : {}),
+    },
+  };
+}
 const LEFT_RAIL_DEFAULT_WIDTH = 292;
 const LEFT_RAIL_MIN_WIDTH = 220;
 const LEFT_RAIL_MAX_WIDTH = 420;
@@ -1302,6 +1378,19 @@ function compactElapsedDuration(milliseconds: number) {
   return `${Math.round(hours / 24)}d`;
 }
 
+function formatElapsedCounter(milliseconds: number) {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "";
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const paddedSeconds = String(seconds).padStart(2, "0");
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${paddedSeconds}`;
+  }
+  return `${minutes}:${paddedSeconds}`;
+}
+
 function compactFileSize(bytes: number) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "";
   if (bytes < 1024) return `${bytes} B`;
@@ -1755,6 +1844,30 @@ function sessionElapsedWorkLabel(task: ChatV2TaskSnapshot | null | undefined, el
   return `worked ${elapsedLabel}`;
 }
 
+function taskGroupElapsedMilliseconds(tasks: ChatV2TaskSnapshot[], now = Date.now()) {
+  return tasks.reduce((total, task) => total + taskElapsedMilliseconds(task, now), 0);
+}
+
+function taskGroupElapsedWorkLabel(tasks: ChatV2TaskSnapshot[]) {
+  const statusTask = selectActiveRunningTask(tasks) ?? newestSessionTask(tasks);
+  if (!statusTask) return "";
+  const elapsed = taskGroupElapsedMilliseconds(tasks);
+  return sessionElapsedWorkLabel(statusTask, compactElapsedDuration(elapsed));
+}
+
+function taskGroupElapsedCounter(tasks: ChatV2TaskSnapshot[], now = Date.now()): WorkElapsedCounter | null {
+  const statusTask = selectActiveRunningTask(tasks) ?? newestSessionTask(tasks);
+  if (!statusTask || statusTask.status === "queued" || statusTask.status === "waiting_dependency") {
+    return null;
+  }
+  const value = formatElapsedCounter(taskGroupElapsedMilliseconds(tasks, now));
+  if (!value) return null;
+  return {
+    value,
+    active: isTaskRunning(statusTask),
+  };
+}
+
 function sessionCardDisplay(thread: ChatV2ThreadSummary, tasks: ChatV2TaskSnapshot[]) {
   const latestTask = newestSessionTask(tasks);
   const title = thread.title?.trim() || "Untitled";
@@ -1767,12 +1880,10 @@ function sessionCardDisplay(thread: ChatV2ThreadSummary, tasks: ChatV2TaskSnapsh
   if (tasks.length > 0) {
     const runLabel = `${tasks.length} ${tasks.length === 1 ? "run" : "runs"}`;
     const status = sessionTaskStatusLabel(latestTask);
-    const elapsed = tasks.reduce((total, task) => total + taskElapsedMilliseconds(task), 0);
-    const elapsedLabel = compactElapsedDuration(elapsed);
-    const workTime = sessionElapsedWorkLabel(latestTask, elapsedLabel);
+    const workTime = taskGroupElapsedWorkLabel(tasks);
     return {
       title: displayTitle,
-      detail: `${kind} · ${runLabel}${status ? ` · ${status}` : ""}${workTime ? ` · ${workTime}` : ""}${timeSuffix}`,
+      detail: `${kind} · ${runLabel}${status ? ` · ${status}` : ""}${workTime ? ` · total ${workTime}` : ""}${timeSuffix}`,
     };
   }
   if (thread.mode === "agent" && thread.message_count === 0) {
@@ -2199,6 +2310,12 @@ function isGenericCompletionText(value: string) {
   );
 }
 
+function isGenericNeedsAttentionText(value: string) {
+  return /^(?:super\s+)?dan\s+needs attention\.?$|^(?:work|execution|run|this step)\s+needs attention\.?$|^needs attention\.?$/i.test(
+    value.trim(),
+  );
+}
+
 function pathBullets(paths: string[], verb: string) {
   return paths.map((path) => `${verb}: \`${path}\``);
 }
@@ -2213,7 +2330,7 @@ function detailItemsForKeys(record: Record<string, unknown>, keys: string[]) {
     keys.flatMap((key) =>
       detailItemsFromValue(record[key])
         .map(normalizeSummaryLine)
-        .filter((item) => item && !isGenericCompletionText(item)),
+        .filter((item) => item && !isGenericCompletionText(item) && !isGenericNeedsAttentionText(item)),
     ),
   );
 }
@@ -2450,7 +2567,7 @@ function isUsableFinalResponseSource(
   options: { requireDirectAnswer?: boolean } = {},
 ) {
   const normalized = content.trim();
-  if (!normalized || isGenericCompletionText(normalized)) return false;
+  if (!normalized || isGenericCompletionText(normalized) || isGenericNeedsAttentionText(normalized)) return false;
   if (options.requireDirectAnswer && looksLikeFileReceiptOnly(normalized)) return false;
   const parsed = parseJsonObject(normalized);
   if (!parsed) return true;
@@ -2538,6 +2655,7 @@ function isMachineSummary(summary: string, event: ChatV2AgentRunEvent) {
   if (/^Token usage\b/i.test(text)) return true;
   if (
     isGenericCompletionText(text) ||
+    isGenericNeedsAttentionText(text) ||
     [
       "completed",
       "run completed",
@@ -2664,6 +2782,24 @@ function eventActivityLine(event: ChatV2AgentRunEvent) {
     if (changed && path) return `Changed \`${path}\`.`;
     return toolId ? `Finished ${toolLabel(toolId)}.` : "Finished a workspace tool.";
   }
+  if (event.type === "failed" || event.type === "blocked") {
+    const reason = attentionReasonFromValues([
+      payload.blocker,
+      payload.blocked_on,
+      payload.blockers,
+      payload.attention_reason,
+      payload.failure_reason,
+      payload.status_reason,
+      payload.reason,
+      payload.error,
+      payload.errors,
+      payload.exception,
+      eventSummary(event),
+    ]);
+    return reason
+      ? `Needs attention: ${reason}${/[.!?]$/.test(reason) ? "" : "."}`
+      : "DAN needs attention, but did not emit a specific reason.";
+  }
   const human = humanEventSummary(event);
   if (human && event.type !== "token_usage_recorded") return human;
 
@@ -2675,7 +2811,6 @@ function eventActivityLine(event: ChatV2AgentRunEvent) {
   if (source === "worker.started" || source === "live.generic_build.started") {
     return "Working in this workspace.";
   }
-  if (event.type === "failed" || event.type === "blocked") return human || "Super DAN needs attention.";
   if (event.type === "completed") return human || "";
   return "";
 }
@@ -2826,6 +2961,9 @@ function isLowValueDetailText(value: string) {
 
 function recordDetailLine(record: Record<string, unknown>) {
   for (const pair of [
+    ["check", "status"],
+    ["branch_id", "status"],
+    ["task_id", "status"],
     ["aspect", "request_comment"],
     ["criterion", "action"],
     ["question", "request_comment"],
@@ -3441,6 +3579,36 @@ function phaseStatus(args: {
   return args.planned ? "future" : "queued";
 }
 
+function eventStartsExecutionPhase(source: string) {
+  return [
+    "live.generic_execution.started",
+    "live.generic_build.started",
+    "live.website_build.started",
+    "live.builder_retry.started",
+    "live.answer_recovery.started",
+  ].includes(source);
+}
+
+function eventCompletesExecutionPhase(source: string) {
+  return (
+    source.includes("generic_execution.completed") ||
+    source.includes("generic_build.completed") ||
+    source.includes("website_build.completed") ||
+    source.includes("builder_retry.completed") ||
+    source.includes("answer_recovery.completed")
+  );
+}
+
+function eventStartsToolWork(source: string) {
+  return [
+    "tool.started",
+    "tool.completed",
+    "tool.failed",
+    "tool.denied",
+    "tool.policy_denied",
+  ].includes(source);
+}
+
 function threadTitleLooksPlaceholder(title: string) {
   const normalized = title.trim().toLowerCase();
   return Boolean(
@@ -3823,6 +3991,29 @@ function validationPreviewBody(args: {
       "status",
     ]),
   ]);
+  const scopeItems = uniqueStringList([
+    ...collectFieldItems([payload], ["validation_scope", "completion_scope"]),
+    ...collectFieldItems([payload], ["validated_branch_ids"]).map((item) => `Branches: ${item}`),
+    ...collectFieldItems([payload], ["validated_task_ids"]).map((item) => `Tasks: ${item}`),
+  ]);
+  const deterministicItems = uniqueStringList([
+    ...collectFieldItems([payload], ["deterministic_checks"]),
+    ...collectFieldItems([payload], ["deterministic_failures"]).map((item) => `Failed: ${item}`),
+    ...collectFieldItems([payload], ["changed_required_files"]).map((item) => `Checked change: ${item}`),
+  ]);
+  const semanticItems = collectFieldItems([payload], ["llm_semantic_checks"]);
+  const branchItems = collectFieldItems([payload], [
+    "branch_results",
+    "blocking_current_task_failures",
+    "deferred_task_gaps",
+    "ready_next_task_ids",
+    "remaining_work",
+  ]);
+  const graphItems = collectFieldItems([payload], [
+    "graph_level_validation",
+    "task_graph_update",
+    "dependency_revisions",
+  ]);
   const acceptanceItems = collectFieldItems([args.understanding], ["confidence_scoped_acceptance"]);
   const rulesBriefItems = collectFieldItems([args.understanding], ["rule_generation_brief"]);
   return detailMarkdown(
@@ -3833,6 +4024,26 @@ function validationPreviewBody(args: {
       {
         title: "Validation Result",
         items: validationResultItems,
+      },
+      {
+        title: "Validated Scope",
+        items: scopeItems,
+      },
+      {
+        title: "Deterministic Checks",
+        items: deterministicItems,
+      },
+      {
+        title: "LLM Semantic Checks",
+        items: semanticItems,
+      },
+      {
+        title: "Branch Results",
+        items: branchItems,
+      },
+      {
+        title: "Graph Validation",
+        items: graphItems,
       },
       {
         title: "Aspect Coverage",
@@ -4021,6 +4232,42 @@ function buildBlueprintNodesForRunScope(args: {
   const readyTaskIds = new Set(planContext?.readyTaskIds ?? []);
   const deferredTaskIds = new Set(planContext?.deferredTaskIds ?? []);
   const worktreeTaskIds = new Set(planContext?.parallelWorktreeTaskIds ?? []);
+  const hasPlannedTaskGraph = Boolean(planContext?.taskGraph.length);
+  const planningStarted = hasEventSource(activeRunEvents, (source) => source.startsWith("live.planning"));
+  const executionPhaseStarted = hasEventSource(activeRunEvents, eventStartsExecutionPhase);
+  const executionPhaseCompleted = hasEventSource(activeRunEvents, eventCompletesExecutionPhase);
+  const buildStarted =
+    executionPhaseStarted || hasEventSource(activeRunEvents, eventStartsToolWork);
+  const buildCompleted =
+    executionPhaseCompleted ||
+    Boolean((latestAnswerChunk || latestAnswerEvent || latestOutcomeChunk || runCompleted) && !hasActiveRun);
+  const validationStarted = hasEventSource(activeRunEvents, (source) => source.startsWith("live.validation"));
+  const validationCompleted = hasEventSource(activeRunEvents, "live.validation.completed");
+  const latestValidation = [...activeRunEvents]
+    .reverse()
+    .find((event) => eventSource(event).startsWith("live.validation"));
+  const validationFailed = Boolean(
+    latestValidation &&
+      (latestValidation.type === "failed" ||
+        latestValidation.type === "blocked" ||
+        eventPayload(latestValidation).passed === false),
+  );
+  const laterThanPlanning = Boolean(
+    executionPhaseStarted ||
+      executionPhaseCompleted ||
+      validationStarted ||
+      validationCompleted ||
+      latestAnswerChunk ||
+      latestOutcomeChunk ||
+      (!hasActiveRun && runCompleted),
+  );
+  const planningCompletedExplicit = Boolean(
+    planContext?.taskGraph.length ||
+      hasEventSource(activeRunEvents, "live.plan_validation.completed") ||
+      hasEventSource(activeRunEvents, "live.planning.completed"),
+  );
+  const planningCompleted = planningCompletedExplicit || laterThanPlanning;
+  const laterThanUnderstanding = planningStarted || planningCompleted || laterThanPlanning;
   const directResponseDetail = assessmentOnlyRun
     ? projectAnswerRun
       ? "Project answer; no file edits expected"
@@ -4064,10 +4311,13 @@ function buildBlueprintNodesForRunScope(args: {
     const understandingModelAuthored = scalarDetailText(requestUnderstanding?.source) === "model_authored";
     const understandingRuleBrief =
       scalarDetailText(requestUnderstanding?.source) === "rule_generation_brief";
+    const understandingSettled = understandingModelAuthored || laterThanUnderstanding;
     nodes.push({
       id: "blueprint:understanding",
       title: "Understand request",
-      detail: understandingDone
+      detail: understandingSettled && !understandingModelAuthored
+        ? "Request context handed into later work"
+        : understandingDone
         ? understandingModelAuthored
           ? "Scope, constraints, targets, and acceptance gates tailored"
           : understandingRuleBrief
@@ -4075,7 +4325,9 @@ function buildBlueprintNodesForRunScope(args: {
             : "Scope, constraints, targets, and acceptance gates scaffolded"
         : "Extracting scope, constraints, targets, and evidence gates",
       meta: scalarDetailText(requestUnderstanding?.request_kind) || "request contract",
-      body: understandingDone
+      body: understandingSettled && !understandingModelAuthored
+        ? "DAN moved from request understanding into planning or execution."
+        : understandingDone
         ? understandingModelAuthored
           ? "DAN tailored the request-understanding rules for this run."
           : understandingRuleBrief
@@ -4087,21 +4339,16 @@ function buildBlueprintNodesForRunScope(args: {
         understanding: requestUnderstanding,
         operatorContexts,
       }),
-      status: understandingModelAuthored ? "done" : hasActiveRun ? "active" : "ready",
+      status: understandingSettled ? "done" : hasActiveRun ? "active" : "ready",
       kind: "understanding",
       runId: activeRunId || (firstTask ? taskRunId(firstTask) : null),
       taskId: activeRunningTask?.task_id ?? firstTask?.task_id,
     });
   }
 
-  const planningStarted = hasEventSource(activeRunEvents, (source) => source.startsWith("live.planning"));
-  const planningCompleted = Boolean(
-    planContext?.taskGraph.length ||
-      hasEventSource(activeRunEvents, "live.plan_validation.completed") ||
-      hasEventSource(activeRunEvents, "live.planning.completed"),
-  );
-  const planningFallbackActive = hasActiveRun && !planningStarted && !planningCompleted && !planContext;
-  if (hasActiveRun || planningStarted || planningCompleted || planContext) {
+  const planningFallbackActive =
+    hasActiveRun && laterThanUnderstanding && !planningStarted && !planningCompleted && !planContext;
+  if (planningStarted || planningCompletedExplicit || planContext) {
     const graphVersionLabel =
       planContext?.graphVersionId ||
       (planContext?.graphRevision !== null && planContext?.graphRevision !== undefined
@@ -4115,6 +4362,8 @@ function buildBlueprintNodesForRunScope(args: {
           ? `${graphVersionLabel ? `${graphVersionLabel} · ` : ""}${planContext.taskGraph.length} projected tasks · ${planContext.readyTaskIds.length || 0} ready now`
           : planContext?.planFiles.length
             ? `${planContext.planFiles.length} plan files emitted`
+            : planningCompleted && !planningCompletedExplicit
+              ? "No task graph emitted; later work continued"
             : "Predicting the task graph and ready frontier",
       meta:
         planContext && planContext.graphRevision !== null && planContext.graphSource
@@ -4147,7 +4396,9 @@ function buildBlueprintNodesForRunScope(args: {
       ]
         .filter(Boolean)
         .join("\n\n") ||
-        (planningFallbackActive
+        (planningCompleted && !planningCompletedExplicit
+          ? "No separate task graph was emitted; the run continued through later work using broad phases."
+          : planningFallbackActive
           ? "No separate task graph has been emitted yet; following the current run phases."
           : "Waiting for the planner to emit a task graph."),
       previewBody: planPreviewBody(planContext),
@@ -4203,25 +4454,11 @@ function buildBlueprintNodesForRunScope(args: {
         taskId: activeRunningTask?.task_id,
       });
     }
-  } else if (hasActiveRun || activeRunEvents.length > 0 || attentionTask) {
-    const buildStarted = hasEventSource(activeRunEvents, (source) =>
-      [
-        "live.generic_execution.started",
-        "live.generic_build.started",
-        "live.website_build.started",
-        "tool.started",
-        "tool.completed",
-        "tool.failed",
-        "tool.denied",
-        "tool.policy_denied",
-      ].includes(source),
-    );
-    const buildCompleted =
-      hasEventSource(activeRunEvents, (source) => source.includes("generic_build.completed")) ||
-      Boolean((latestAnswerChunk || latestAnswerEvent || latestOutcomeChunk || runCompleted) && !hasActiveRun);
+  } else if (buildStarted || buildCompleted || attentionTask) {
+    const buildProgressBody = buildStarted ? latestWorkingChunk?.body || "" : "";
     const buildIntro =
       attentionDetail ||
-      latestWorkingChunk?.body ||
+      buildProgressBody ||
       (readOnlyRun ? directResponseDetail : "Execution details will appear as Super DAN emits events.");
     nodes.push({
       id: "blueprint:build",
@@ -4251,7 +4488,7 @@ function buildBlueprintNodesForRunScope(args: {
       status: attentionTask
         ? "blocked"
         : phaseStatus({
-            started: buildStarted || hasActiveRun,
+            started: buildStarted,
             completed: buildCompleted,
             active: hasActiveRun,
             planned: true,
@@ -4263,18 +4500,7 @@ function buildBlueprintNodesForRunScope(args: {
     });
   }
 
-  const validationStarted = hasEventSource(activeRunEvents, (source) => source.startsWith("live.validation"));
-  const validationCompleted = hasEventSource(activeRunEvents, "live.validation.completed");
-  const latestValidation = [...activeRunEvents]
-    .reverse()
-    .find((event) => eventSource(event).startsWith("live.validation"));
-  const validationFailed = Boolean(
-    latestValidation &&
-      (latestValidation.type === "failed" ||
-        latestValidation.type === "blocked" ||
-        eventPayload(latestValidation).passed === false),
-  );
-  if (hasActiveRun || validationStarted || validationCompleted || planContext?.taskGraph.length) {
+  if (validationStarted || validationCompleted || hasPlannedTaskGraph) {
     nodes.push({
       id: "blueprint:validation",
       title: "Validate current frontier",
@@ -4325,7 +4551,13 @@ function buildBlueprintNodesForRunScope(args: {
     });
   }
 
-  if (latestAnswerChunk || latestOutcomeChunk || hasActiveRun || (nodes.length > 0 && hasRunEvidence)) {
+  if (
+    latestAnswerChunk ||
+    latestOutcomeChunk ||
+    latestAnswerEvent ||
+    latestTerminalTaskWithProgress ||
+    (!hasActiveRun && nodes.length > 0 && hasRunEvidence)
+  ) {
     const latestAnswerEventRaw = latestAnswerEvent ? eventSummary(latestAnswerEvent).trim() : "";
     const latestAnswerEventSourceBody =
       latestAnswerEventRaw && formatStructuredAgentDisplay(latestAnswerEventRaw)
@@ -4558,7 +4790,14 @@ function buildBlueprintNodes(args: {
   activeThreadTitle: string;
 }) {
   const runIds = blueprintRunTimelineIds(args);
-  if (runIds.length <= 1) return buildBlueprintNodesForRunScope(args);
+  if (runIds.length <= 1) {
+    const runId = runIds[0] || args.activeRunId || (args.tasks[0] ? taskRunId(args.tasks[0]) : "");
+    return namespaceBlueprintRunNodes(
+      buildBlueprintNodesForRunScope(args),
+      runId,
+      false,
+    );
+  }
 
   const shouldNamespace = true;
   const nodes = runIds.flatMap((runId) => {
@@ -4600,6 +4839,38 @@ function buildBlueprintNodes(args: {
 
 export function buildBlueprintNodesForTest(args: Parameters<typeof buildBlueprintNodes>[0]) {
   return buildBlueprintNodes(args);
+}
+
+function workspaceComposerPlaceholder(args: {
+  hasActiveRun: boolean;
+  placement: ActiveRunPlacement;
+  selectedBlueprintTitle?: string | null;
+  selectedChunkTitle?: string | null;
+  activeFilePath?: string | null;
+}) {
+  if (args.hasActiveRun) {
+    return args.placement === "queue"
+      ? "Type the next message to run after the current one."
+      : "Type to steer the active run. Leave empty to stop.";
+  }
+  if (args.selectedBlueprintTitle) return `Ask Super DAN about ${args.selectedBlueprintTitle}`;
+  if (args.selectedChunkTitle) return `Ask Super DAN about ${args.selectedChunkTitle}`;
+  if (args.activeFilePath) return `Ask Super DAN about ${args.activeFilePath}`;
+  return "Ask Super DAN to work in this workspace";
+}
+
+export function workspaceComposerPlaceholderForTest(
+  args: Parameters<typeof workspaceComposerPlaceholder>[0],
+) {
+  return workspaceComposerPlaceholder(args);
+}
+
+export function workspaceAgentOptionsForTest() {
+  return WORKSPACE_AGENT_OPTIONS.map((option) => ({ ...option }));
+}
+
+export function workspaceAgentExecutePayloadForTest(id: string) {
+  return buildWorkspaceAgentExecutePayload(workspaceAgentOptionForId(id));
 }
 
 export function liveTaskTreeForTest(nodes: BlueprintNode[]) {
@@ -4677,6 +4948,10 @@ export function sessionCardDisplayForTest(
   return sessionCardDisplay(thread, tasks);
 }
 
+export function taskGroupElapsedCounterForTest(tasks: ChatV2TaskSnapshot[], now?: number) {
+  return taskGroupElapsedCounter(tasks, now);
+}
+
 export function shouldAutoRestoreSessionForTest(args: Parameters<typeof shouldAutoRestoreSession>[0]) {
   return shouldAutoRestoreSession(args);
 }
@@ -4742,6 +5017,7 @@ function isMachineProgressText(text: string) {
   return Boolean(
     !text ||
       ["model.requested", "tool.started", "completed"].includes(text) ||
+      isGenericNeedsAttentionText(text) ||
       (/^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/i.test(text) && !/\s/.test(text)) ||
       /^Token usage\b/i.test(text),
   );
@@ -4783,21 +5059,73 @@ function taskMessageLabel(task: ChatV2TaskSnapshot) {
   );
 }
 
+function normalizeComparableText(value: string) {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function isUsableAttentionReason(text: string, requestText = "") {
+  const normalized = text.trim();
+  if (!normalized) return false;
+  if (isGenericCompletionText(normalized) || isGenericNeedsAttentionText(normalized)) return false;
+  if (["blocked", "failed", "denied", "stopped"].includes(normalized.toLowerCase())) return false;
+  if (/^Super DAN (?:is |completed|needs attention)/i.test(normalized)) return false;
+  if (isMachineProgressText(normalized)) return false;
+  return !requestText || normalizeComparableText(normalized) !== normalizeComparableText(requestText);
+}
+
+function attentionReasonFromValues(values: unknown[], requestText = "") {
+  for (const value of values) {
+    const items = detailItemsFromValue(value).map(normalizeSummaryLine);
+    for (const item of items) {
+      if (isUsableAttentionReason(item, requestText)) return item;
+    }
+  }
+  return "";
+}
+
+function taskAttentionReason(task: ChatV2TaskSnapshot) {
+  const metadata = task.metadata ?? {};
+  const requestText = taskRequestText(task);
+  return attentionReasonFromValues(
+    [
+      task.blocker,
+      metadata.blocker,
+      metadata.blocked_on,
+      metadata.blockers,
+      metadata.attention_reason,
+      metadata.failure_reason,
+      metadata.status_reason,
+      metadata.reason,
+      metadata.error,
+      metadata.errors,
+      metadata.latest_error,
+      metadata.exception,
+      task.latest_progress,
+      taskProgressLabel(task),
+    ],
+    requestText,
+  );
+}
+
 function taskAttentionDetail(task: ChatV2TaskSnapshot) {
-  const message = taskMessageLabel(task);
+  const reason = taskAttentionReason(task);
   if (taskIsStaleRunning(task)) {
     const age = taskLastUpdateAge(task);
-    return [
-      `Saved run still says running${age ? `, but last updated ${age} ago` : ""}.`,
-      message,
-    ]
-      .filter(Boolean)
-      .join(" ");
+    return `Saved run still says running${age ? `, but last updated ${age} ago` : ""}.`;
   }
   if (taskStopRequested(task)) {
-    return taskProgressLabel(task) || message || "Stop was requested for this run.";
+    return reason || "Stop was requested for this run.";
   }
-  return message;
+  if (task.status === "failed") {
+    return reason || "DAN failed this step but did not emit an error reason.";
+  }
+  if (task.status === "blocked") {
+    return reason || "DAN blocked this step but did not emit a specific reason.";
+  }
+  if (task.status === "stopped") {
+    return reason || "DAN stopped before this step completed.";
+  }
+  return reason || taskMessageLabel(task);
 }
 
 function humanTerminalTaskProgress(task: ChatV2TaskSnapshot) {
@@ -5093,6 +5421,7 @@ function buildSurfaceContext(args: {
   workspaceRoot: string;
   workspaceId?: string;
   notesRoot: string;
+  agentSelection?: WorkspaceAgentOption;
   activeFile: WorkspaceFileEntry | null;
   activeFileContent: string;
   wireGuardStatus: WorkspaceWireGuardStatus | null;
@@ -5104,10 +5433,12 @@ function buildSurfaceContext(args: {
     workspaceRoot,
     workspaceId,
     notesRoot,
+    agentSelection,
     activeFile,
     activeFileContent,
     wireGuardStatus,
   } = args;
+  const selectedAgent = agentSelection ?? workspaceAgentOptionForId(DEFAULT_AGENT_SELECTION_ID);
   return {
     identity: { name: "DAN Workspace", role: "chunk_workspace" },
     workspace_root: workspaceRoot,
@@ -5117,8 +5448,14 @@ function buildSurfaceContext(args: {
     ui_surface: "chunk_workspace",
     surface_profile: SUPER_TUI_PROFILE,
     agent_profile: SUPER_TUI_PROFILE,
-    agent_backend: SUPER_DAN_BACKEND,
-    gui_for: "dan super-tui",
+    agent_backend: selectedAgent.backend,
+    agent_selection: {
+      id: selectedAgent.id,
+      label: selectedAgent.label,
+      backend: selectedAgent.backend,
+      ...(selectedAgent.model ? { model: selectedAgent.model } : {}),
+    },
+    gui_for: selectedAgent.backend === CODEX_BACKEND ? "codex exec" : "dan super-tui",
     capabilities: [
       "notes",
       "markdown_preview",
@@ -6456,6 +6793,11 @@ interface BlueprintLiveStatus {
   results: string[];
 }
 
+interface WorkElapsedCounter {
+  value: string;
+  active: boolean;
+}
+
 function displayStatusLabel(status: BlueprintNodeStatus) {
   if (status === "active") return "In progress";
   if (status === "done") return "Done";
@@ -6792,6 +7134,7 @@ function BlueprintView({
   activeNodeId,
   selectedNodeId,
   selectedChunkId,
+  elapsedCounter,
   loading,
   onSelect,
   onSelectConversationChunk,
@@ -6801,6 +7144,7 @@ function BlueprintView({
   activeNodeId: string | null;
   selectedNodeId: string | null;
   selectedChunkId: string | null;
+  elapsedCounter: WorkElapsedCounter | null;
   loading: boolean;
   onSelect: (node: BlueprintNode) => void;
   onSelectConversationChunk: (chunk: WorkspaceChunk) => void;
@@ -6849,6 +7193,20 @@ function BlueprintView({
           Run Steps
         </div>
         <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+          {elapsedCounter && (
+            <span
+              className="dan-work-elapsed-counter inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white/60 px-2.5 py-0.5 font-semibold text-slate-500 dark:border-slate-800 dark:bg-slate-950"
+              aria-label={`Total work time ${elapsedCounter.value}`}
+            >
+              {elapsedCounter.active ? (
+                <Loader2 size={11} className="animate-spin" />
+              ) : (
+                <Clock3 size={11} />
+              )}
+              <span className="uppercase tracking-[0.12em]">Total</span>
+              <span className="font-mono tabular-nums tracking-normal">{elapsedCounter.value}</span>
+            </span>
+          )}
           {(["active", "ready", "done", "future", "queued", "blocked"] as const).map((status) => {
             if (counts[status] === 0) return null;
             const tone = blueprintStatusTone(status);
@@ -8376,10 +8734,35 @@ export default function ChunkWorkspaceApp() {
   const rootBrowsePath = normalizeRootPath(rootInput || developmentRoot || devRoot);
   const rootParentPath = parentRootPath(rootBrowsePath);
   const hasActiveRun = Boolean(activeRunId && activeRunningTask);
+  const [selectedAgentId, setSelectedAgentId] = useState<WorkspaceAgentSelectionId>(() => {
+    if (typeof window === "undefined") return DEFAULT_AGENT_SELECTION_ID;
+    const stored = window.localStorage.getItem(AGENT_SELECTION_STORAGE_KEY);
+    return isWorkspaceAgentSelectionId(stored) ? stored : DEFAULT_AGENT_SELECTION_ID;
+  });
+  const [agentMenuOpen, setAgentMenuOpen] = useState(false);
+  const selectedAgentOption = useMemo(
+    () => workspaceAgentOptionForId(selectedAgentId),
+    [selectedAgentId],
+  );
+  useEffect(() => {
+    window.localStorage.setItem(AGENT_SELECTION_STORAGE_KEY, selectedAgentId);
+  }, [selectedAgentId]);
+  const [elapsedCounterNow, setElapsedCounterNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!activeRunningTask) return undefined;
+    const tick = () => setElapsedCounterNow(Date.now());
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [activeRunId, activeRunningTask?.task_id]);
   const composerText = input.trim();
   const composerActionIsStop = Boolean(activeThread && activeRunningTask && !composerText);
   const queueRows = useMemo(() => queueRowsFromTasks(tasks), [tasks]);
   const showAgentQueuePanel = queueRows.length > 0;
+  const elapsedCounter = useMemo(
+    () => taskGroupElapsedCounter(tasks, elapsedCounterNow),
+    [elapsedCounterNow, tasks],
+  );
   const blueprintNodes = useMemo(
     () =>
       buildBlueprintNodes({
@@ -8396,6 +8779,13 @@ export default function ChunkWorkspaceApp() {
   const activeBlueprintNode = useMemo(() => blueprintAnchorNode(blueprintNodes), [blueprintNodes]);
   const selectedBlueprintNode =
     blueprintNodes.find((node) => node.id === selectedBlueprintNodeId) ?? null;
+  const composerPlaceholder = workspaceComposerPlaceholder({
+    hasActiveRun,
+    placement: activeRunPlacement,
+    selectedBlueprintTitle: selectedBlueprintNode?.title,
+    selectedChunkTitle: selectedChunk?.title,
+    activeFilePath: activeFileEntry?.relative_path,
+  });
 
   useEffect(() => {
     if (!selectedBlueprintNodeId) return;
@@ -9562,7 +9952,7 @@ export default function ChunkWorkspaceApp() {
         setPendingAssistantIds((previous) => ({ ...previous, [assistant.id]: true }));
       }
       const initialPersist = persistMessages(thread, nextMessages, "agent");
-      setStatus("Starting Super DAN");
+      setStatus(`Starting ${selectedAgentOption.shortLabel}`);
 
       if (activeRunId && activeRunningTask) {
         const response = await postChatV2AgentRunCommand(activeRunId, {
@@ -9578,6 +9968,7 @@ export default function ChunkWorkspaceApp() {
               workspaceRoot: developmentRoot,
               workspaceId: workspace?.id ?? activeWorkspaceId ?? "",
               notesRoot,
+              agentSelection: selectedAgentOption,
               activeFile: activeFileEntry,
               activeFileContent,
               wireGuardStatus,
@@ -9631,6 +10022,7 @@ export default function ChunkWorkspaceApp() {
           workspaceRoot: developmentRoot,
           workspaceId: workspace?.id ?? activeWorkspaceId ?? "",
           notesRoot,
+          agentSelection: selectedAgentOption,
           activeFile: activeFileEntry,
           activeFileContent,
           wireGuardStatus,
@@ -9691,37 +10083,23 @@ export default function ChunkWorkspaceApp() {
       await initialPersist;
       if (!runId) {
         await persistMessages(thread, linkedMessages, "agent");
-        if (isStillSelectedThread()) setStatus("Super DAN queued");
+        if (isStillSelectedThread()) setStatus(`${selectedAgentOption.shortLabel} queued`);
         return;
       }
       if (isStillSelectedThread()) {
         connectAgentStream(runId, thread, assistant.id);
       }
-      const executed = await executeChatV2AgentRun(runId, {
-        backend: SUPER_DAN_BACKEND,
-        surface_profile: SUPER_TUI_PROFILE,
-        background: true,
-        profile_policy: {
-          backend: SUPER_DAN_BACKEND,
-          surface_profile: SUPER_TUI_PROFILE,
-        },
-        metadata: {
-          backend: SUPER_DAN_BACKEND,
-          surface_profile: SUPER_TUI_PROFILE,
-          compatibility_profile: SUPER_TUI_PROFILE,
-          surface: "gui:chunk-workspace",
-          requested_from: "chunk_workspace",
-          gui_for: "dan super-tui",
-          selected_backend: SUPER_DAN_BACKEND,
-        },
-      });
+      const executed = await executeChatV2AgentRun(
+        runId,
+        buildWorkspaceAgentExecutePayload(selectedAgentOption),
+      );
       if (executed.task) {
         mergeBackgroundTasks([executed.task]);
         if (isStillSelectedThread()) {
           setTasks((previous) => [executed.task!, ...previous]);
         }
       }
-      if (isStillSelectedThread()) setStatus("Super DAN running");
+      if (isStillSelectedThread()) setStatus(`${selectedAgentOption.shortLabel} running`);
       await persistMessages(thread, linkedMessages, "agent");
     },
     [
@@ -9740,6 +10118,7 @@ export default function ChunkWorkspaceApp() {
       notesRoot,
       persistMessages,
       selectedChunk,
+      selectedAgentOption,
       selectedBlueprintNode,
       wireGuardStatus,
       workspaces,
@@ -11470,6 +11849,7 @@ export default function ChunkWorkspaceApp() {
                     activeNodeId={activeBlueprintNode?.id ?? null}
                     selectedNodeId={selectedBlueprintNode?.id ?? null}
                     selectedChunkId={selectedChunk?.id ?? null}
+                    elapsedCounter={elapsedCounter}
                     loading={loadingThreadId === activeThread?.id}
                     onSelect={(node) => {
                       setSelectedBlueprintNodeId(node.id);
@@ -11506,116 +11886,160 @@ export default function ChunkWorkspaceApp() {
               )}
 
               <div className="shrink-0 border-t border-slate-200/80 bg-white/95 p-3 shadow-[0_-1px_0_rgba(15,23,42,0.02)] dark:border-slate-800 dark:bg-slate-950">
-                <div className="flex gap-2">
-                  <div className="hidden h-11 shrink-0 items-center gap-1 rounded-lg border border-slate-200 bg-slate-100/70 p-0.5 shadow-inner dark:border-slate-800 dark:bg-slate-900 sm:flex">
-                    {(["steer", "queue"] as const).map((mode) => {
-                      const queueUnavailable = mode === "queue" && !hasActiveRun;
-                      const active =
-                        mode === "steer"
-                          ? activeRunPlacement === "steer" || !hasActiveRun
-                          : hasActiveRun && activeRunPlacement === "queue";
-                      return (
-                        <button
-                          key={mode}
-                          type="button"
-                          onClick={() => setActiveRunPlacement(mode)}
-                          disabled={queueUnavailable}
-                          title={
-                            mode === "queue"
-                              ? hasActiveRun
-                                ? "Queue this message after the current run (Option+Enter)"
-                                : "Next is available while a run is active"
-                              : hasActiveRun
-                                ? "Steer the active run now (Enter)"
-                                : "Start work with this message"
-                          }
-                          className={cx(
-                            "inline-flex h-9 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold capitalize transition disabled:cursor-not-allowed disabled:opacity-40",
-                            active
-                              ? "bg-white text-slate-950 shadow-sm dark:bg-slate-100 dark:text-slate-950"
-                              : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200",
-                          )}
-                        >
-                          {mode === "queue" ? <Clock3 size={13} /> : <WandSparkles size={13} />}
-                          {mode === "queue" ? "Next" : "Steer"}
-                        </button>
-                      );
-                    })}
-                  </div>
+                <div className="flex flex-col gap-2">
                   <textarea
                     ref={composerRef}
                     value={input}
                     onChange={(event) => setInput(event.target.value)}
                     onKeyDown={handleComposerKeyDown}
-                    placeholder={
-                      selectedBlueprintNode
-                        ? `Ask Super DAN about ${selectedBlueprintNode.title}`
-                        : selectedChunk
-                          ? `Ask Super DAN about ${selectedChunk.title}`
-                          : activeFileEntry
-                            ? `Ask Super DAN about ${activeFileEntry.relative_path}`
-                            : "Ask Super DAN to work in this workspace"
-                    }
+                    placeholder={composerPlaceholder}
                     rows={1}
-                    className="max-h-32 min-h-11 flex-1 resize-none rounded-lg border border-slate-200 bg-slate-50/90 px-3 py-2.5 text-sm leading-6 outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:bg-white focus:shadow-sm dark:border-slate-800 dark:bg-slate-900"
+                    className="max-h-32 min-h-11 w-full resize-none rounded-lg border border-slate-200 bg-slate-50/90 px-3 py-2.5 text-sm leading-6 outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:bg-white focus:shadow-sm dark:border-slate-800 dark:bg-slate-900"
                   />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (composerActionIsStop && activeThread && activeRunningTask) {
-                        void stopSessionRun(
-                          {
-                            id: activeThread.id,
-                            workflow_id: activeThread.workflowId,
-                            title: activeThread.title || "Active session",
-                            message_count: messages.length,
-                            created_at: "",
-                            updated_at: "",
-                          },
-                          activeRunningTask,
+                  <div className="flex items-center gap-2">
+                    <div className="flex h-7 shrink-0 items-center gap-0.5 rounded-md border border-slate-200 bg-slate-100/70 p-0.5 shadow-inner dark:border-slate-800 dark:bg-slate-900">
+                      {(["steer", "queue"] as const).map((mode) => {
+                        const queueUnavailable = mode === "queue" && !hasActiveRun;
+                        const active =
+                          mode === "steer"
+                            ? activeRunPlacement === "steer" || !hasActiveRun
+                            : hasActiveRun && activeRunPlacement === "queue";
+                        return (
+                          <button
+                            key={mode}
+                            type="button"
+                            onClick={() => setActiveRunPlacement(mode)}
+                            disabled={queueUnavailable}
+                            title={
+                              mode === "queue"
+                                ? hasActiveRun
+                                  ? "Queue this message after the current run (Option+Enter)"
+                                  : "Next is available while a run is active"
+                                : hasActiveRun
+                                  ? "Steer the active run now (Enter)"
+                                  : "Start work with this message"
+                            }
+                            className={cx(
+                              "inline-flex h-6 items-center gap-1 rounded px-1.5 text-[11px] font-semibold capitalize transition disabled:cursor-not-allowed disabled:opacity-40 sm:px-2",
+                              active
+                                ? "bg-white text-slate-950 shadow-sm dark:bg-slate-100 dark:text-slate-950"
+                                : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200",
+                            )}
+                          >
+                            {mode === "queue" ? <Clock3 size={11} /> : <WandSparkles size={11} />}
+                            {mode === "queue" ? "Next" : "Steer"}
+                          </button>
                         );
-                        return;
-                      }
-                      void submit();
-                    }}
-                    disabled={sending || (!composerActionIsStop && !composerText)}
-                    className={cx(
-                      "inline-flex h-11 items-center gap-1.5 rounded-lg px-4 text-sm font-semibold shadow-sm transition disabled:cursor-not-allowed disabled:opacity-40",
-                      composerActionIsStop
-                        ? "dan-composer-stop-button border border-red-200 bg-red-50 text-red-700 hover:border-red-300 hover:bg-white dark:border-red-900 dark:bg-red-950/35 dark:text-red-200 dark:hover:bg-red-950/55"
-                        : "bg-slate-950 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-950 dark:hover:bg-white",
-                    )}
-                    title={composerActionIsStop ? "Stop running session" : undefined}
-                    aria-label={composerActionIsStop ? "Stop running session" : undefined}
-                  >
-                    {composerActionIsStop ? (
-                      <Square size={15} />
-                    ) : sending ? (
-                      <Loader2 size={15} className="animate-spin" />
-                    ) : (
-                      <Send size={15} />
-                    )}
-                    {composerActionIsStop
-                      ? "Stop"
-                      : hasActiveRun && activeRunPlacement === "queue"
-                        ? "Next"
-                        : "Steer"}
-                  </button>
-                </div>
-                {(activeFileEntry || selectedBlueprintNode || selectedChunk || hasActiveRun) && (
-                  <div className="mt-1 flex items-center gap-3 text-[11px] text-slate-400">
-                    {activeFileEntry && (
-                      <span className="truncate">File: {activeFileEntry.relative_path}</span>
-                    )}
-                    {selectedBlueprintNode && (
-                      <span className="truncate">Step: {selectedBlueprintNode.title}</span>
-                    )}
-                    {!selectedBlueprintNode && selectedChunk && (
-                      <span className="truncate">Chunk: {selectedChunk.title}</span>
-                    )}
-                    {hasActiveRun && <span className="truncate">Run: {activeRunId}</span>}
+                      })}
+                    </div>
+                    <div className="min-w-0 flex-1" />
+                    <div
+                      className="relative shrink-0"
+                      onBlur={(event) => {
+                        const nextFocus = event.relatedTarget;
+                        if (nextFocus instanceof Node && event.currentTarget.contains(nextFocus)) {
+                          return;
+                        }
+                        setAgentMenuOpen(false);
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setAgentMenuOpen((open) => !open)}
+                        className="inline-flex h-7 min-w-24 max-w-[9rem] items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50/95 px-2 text-[11px] font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-white dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-slate-700 sm:min-w-28 sm:max-w-[11rem] sm:px-2.5"
+                        title="Choose model or agent"
+                        aria-expanded={agentMenuOpen}
+                      >
+                        {selectedAgentOption.backend === CODEX_BACKEND ? (
+                          <Bot size={12} />
+                        ) : (
+                          <TerminalSquare size={12} />
+                        )}
+                        <span className="truncate">{selectedAgentOption.shortLabel}</span>
+                        <ChevronDown
+                          size={12}
+                          className={cx("transition", agentMenuOpen && "rotate-180")}
+                        />
+                      </button>
+                      {agentMenuOpen && (
+                        <div className="absolute bottom-full right-0 z-50 mb-2 w-44 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-xl shadow-slate-950/10 dark:border-slate-800 dark:bg-slate-950">
+                          {WORKSPACE_AGENT_OPTIONS.map((option) => {
+                            const selected = option.id === selectedAgentOption.id;
+                            return (
+                              <button
+                                key={option.id}
+                                type="button"
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={() => {
+                                  setSelectedAgentId(option.id);
+                                  setAgentMenuOpen(false);
+                                }}
+                                className={cx(
+                                  "flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition",
+                                  selected
+                                    ? "bg-slate-100 text-slate-950 dark:bg-slate-800 dark:text-white"
+                                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-900 dark:hover:text-white",
+                                )}
+                              >
+                                {option.backend === CODEX_BACKEND ? (
+                                  <Bot size={13} className="shrink-0" />
+                                ) : (
+                                  <TerminalSquare size={13} className="shrink-0" />
+                                )}
+                                <span className="min-w-0 flex-1 truncate text-xs font-semibold">
+                                  {option.label}
+                                </span>
+                                {selected && <Check size={13} className="shrink-0" />}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (composerActionIsStop && activeThread && activeRunningTask) {
+                          void stopSessionRun(
+                            {
+                              id: activeThread.id,
+                              workflow_id: activeThread.workflowId,
+                              title: activeThread.title || "Active session",
+                              message_count: messages.length,
+                              created_at: "",
+                              updated_at: "",
+                            },
+                            activeRunningTask,
+                          );
+                          return;
+                        }
+                        void submit();
+                      }}
+                      disabled={sending || (!composerActionIsStop && !composerText)}
+                      className={cx(
+                        "inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2.5 text-[11px] font-semibold shadow-sm transition disabled:cursor-not-allowed disabled:opacity-40",
+                        composerActionIsStop
+                          ? "dan-composer-stop-button border border-red-200 bg-red-50 text-red-700 hover:border-red-300 hover:bg-white dark:border-red-900 dark:bg-red-950/35 dark:text-red-200 dark:hover:bg-red-950/55"
+                          : "bg-slate-950 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-950 dark:hover:bg-white",
+                      )}
+                      title={composerActionIsStop ? "Stop running session" : undefined}
+                      aria-label={composerActionIsStop ? "Stop running session" : undefined}
+                    >
+                      {composerActionIsStop ? (
+                        <Square size={12} />
+                      ) : sending ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : (
+                        <Send size={12} />
+                      )}
+                      {composerActionIsStop
+                        ? "Stop"
+                        : hasActiveRun && activeRunPlacement === "queue"
+                          ? "Next"
+                          : "Steer"}
+                    </button>
                   </div>
-                )}
+                </div>
               </div>
             </div>
 

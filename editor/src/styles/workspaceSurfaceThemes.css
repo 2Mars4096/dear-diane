@@ -123,7 +123,7 @@
 
 :root[data-resolved-surface-appearance="light"]
   .dan-machine-theme:not(.dan-factory-worn-theme)
-  :where(.dan-blueprint-marker, .dan-blueprint-badge, .dan-blueprint-status-count) {
+  :where(.dan-blueprint-marker, .dan-blueprint-badge, .dan-blueprint-status-count, .dan-work-elapsed-counter) {
   background: linear-gradient(180deg, var(--machine-panel-hi), var(--machine-panel-low)) !important;
   color: var(--machine-muted) !important;
   border-color: var(--machine-border) !important;
@@ -614,7 +614,7 @@
 }
 
 :root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme
-  :where(.dan-blueprint-marker, .dan-blueprint-badge, .dan-blueprint-status-count) {
+  :where(.dan-blueprint-marker, .dan-blueprint-badge, .dan-blueprint-status-count, .dan-work-elapsed-counter) {
   background:
     linear-gradient(180deg, oklch(0.965 0.006 86), oklch(0.865 0.008 88)) !important;
   color: var(--machine-muted) !important;

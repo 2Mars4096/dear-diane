@@ -19,7 +19,11 @@ import {
   selectActiveRunningTaskForTest,
   sessionStatusTasksForTest,
   shouldAutoRestoreSessionForTest,
+  taskGroupElapsedCounterForTest,
   workPlanHeaderSubtitleForTest,
+  workspaceComposerPlaceholderForTest,
+  workspaceAgentExecutePayloadForTest,
+  workspaceAgentOptionsForTest,
   workspaceIdForTasksForTest,
 } from "../ChunkWorkspaceApp";
 import type {
@@ -83,6 +87,89 @@ function thread(overrides: Partial<ChatV2ThreadSummary>): ChatV2ThreadSummary {
 }
 
 describe("workspace blueprint nodes", () => {
+  it("keeps Super DAN as the default agent selection", () => {
+    const options = workspaceAgentOptionsForTest();
+    const payload = workspaceAgentExecutePayloadForTest("super_dan_default");
+
+    expect(options.map((option) => option.id)).toEqual([
+      "super_dan_default",
+      "super_dan_kimi_k26",
+      "codex",
+    ]);
+    expect(payload.backend).toBe("super_dan");
+    expect(payload.profile_policy).toMatchObject({
+      backend: "super_dan",
+      surface_profile: "super_tui",
+    });
+    expect(payload.profile_policy).not.toHaveProperty("model");
+    expect(payload.metadata).toMatchObject({
+      selected_agent: "super_dan_default",
+      gui_for: "dan super-tui",
+    });
+  });
+
+  it("routes the Kimi option through the existing Super DAN backend", () => {
+    const payload = workspaceAgentExecutePayloadForTest("super_dan_kimi_k26");
+
+    expect(payload.backend).toBe("super_dan");
+    expect(payload.profile_policy).toMatchObject({
+      backend: "super_dan",
+      model: "kimi-k2.6",
+    });
+    expect(payload.metadata).toMatchObject({
+      selected_agent: "super_dan_kimi_k26",
+      selected_model: "kimi-k2.6",
+      gui_for: "dan super-tui",
+    });
+  });
+
+  it("routes the Codex option through the Codex backend without a model override", () => {
+    const payload = workspaceAgentExecutePayloadForTest("codex");
+
+    expect(payload.backend).toBe("codex");
+    expect(payload.profile_policy).toMatchObject({
+      backend: "codex",
+      surface_profile: "super_tui",
+    });
+    expect(payload.profile_policy).not.toHaveProperty("model");
+    expect(payload.metadata).toMatchObject({
+      selected_agent: "codex",
+      selected_backend: "codex",
+      gui_for: "codex exec",
+    });
+  });
+
+  it("keeps active-run composer placeholders short and steerable", () => {
+    const longStepTitle =
+      "1: Understand the M1.5 milestone scope and current integration state";
+
+    expect(
+      workspaceComposerPlaceholderForTest({
+        hasActiveRun: true,
+        placement: "steer",
+        selectedBlueprintTitle: longStepTitle,
+      }),
+    ).toBe("Type to steer the active run. Leave empty to stop.");
+
+    expect(
+      workspaceComposerPlaceholderForTest({
+        hasActiveRun: true,
+        placement: "queue",
+        selectedBlueprintTitle: longStepTitle,
+      }),
+    ).toBe("Type the next message to run after the current one.");
+  });
+
+  it("uses selected context in the composer only when no run is active", () => {
+    expect(
+      workspaceComposerPlaceholderForTest({
+        hasActiveRun: false,
+        placement: "steer",
+        selectedBlueprintTitle: "Final response",
+      }),
+    ).toBe("Ask Super DAN about Final response");
+  });
+
   it("keeps Notes taxonomy selections inside their taxonomy rails", () => {
     expect(noteRailViewForFacetForTest("tag:italy")).toBe("tags");
     expect(noteRailViewForFacetForTest("section:blogs")).toBe("sections");
@@ -237,7 +324,7 @@ describe("workspace blueprint nodes", () => {
       },
     });
 
-    expect(sessionCardDisplayForTest(thread({}), [completed]).detail).toContain("worked 7m");
+    expect(sessionCardDisplayForTest(thread({}), [completed]).detail).toContain("total worked 7m");
 
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-25T12:03:30.000Z"));
@@ -251,7 +338,7 @@ describe("workspace blueprint nodes", () => {
         },
       });
 
-      expect(sessionCardDisplayForTest(thread({}), [running]).detail).toContain("working 4m");
+      expect(sessionCardDisplayForTest(thread({}), [running]).detail).toContain("total working 4m");
     } finally {
       vi.useRealTimers();
     }
@@ -266,6 +353,56 @@ describe("workspace blueprint nodes", () => {
     });
 
     expect(sessionCardDisplayForTest(thread({}), [queued]).detail).not.toContain("worked");
+  });
+
+  it("formats one aggregate live Work Panel duration counter", () => {
+    const completed = task({
+      task_id: "done-task",
+      status: "completed",
+      metadata: {
+        active_run_id: "done-run",
+        run_created_at: "2026-06-25T12:00:00.000Z",
+        run_updated_at: "2026-06-25T12:07:20.000Z",
+      },
+    });
+
+    expect(taskGroupElapsedCounterForTest([completed])).toEqual({
+      value: "7:20",
+      active: false,
+    });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-25T12:03:30.000Z"));
+    try {
+      const running = task({
+        task_id: "running-task",
+        status: "running",
+        metadata: {
+          active_run_id: "active-run",
+          run_created_at: "2026-06-25T12:00:00.000Z",
+          run_updated_at: "2026-06-25T12:02:00.000Z",
+        },
+      });
+
+      expect(taskGroupElapsedCounterForTest([completed, running])).toEqual({
+        value: "10:50",
+        active: true,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const queued = task({
+      task_id: "queued-task",
+      status: "queued",
+      metadata: {
+        active_run_id: "queued-run",
+        run_created_at: "2026-06-25T12:00:00.000Z",
+        run_updated_at: "2026-06-25T12:01:00.000Z",
+      },
+    });
+
+    expect(taskGroupElapsedCounterForTest([queued])).toBeNull();
   });
 
   it("marks a session response as new only until that ready response has been seen", () => {
@@ -383,15 +520,76 @@ describe("workspace blueprint nodes", () => {
           metadata: { active_run_id: "planning-run" },
         }),
       ],
+      agentEvents: [
+        {
+          type: "worker_started",
+          source_event_type: "live.planning.started",
+          run_id: "planning-run",
+          task_id: "planning-task",
+          summary: "Planning next steps.",
+        },
+      ],
     });
 
     const planning = nodes.find((node) => node.kind === "plan") ?? null;
     expect(planning?.title).toBe("Blueprint planning");
     expect(planning).toMatchObject({
       status: "active",
-      body: "No separate task graph has been emitted yet; following the current run phases.",
+      body: "Waiting for the planner to emit a task graph.",
     });
     expect(workPlanHeaderSubtitleForTest(planning)).toBe("Planning next steps");
+  });
+
+  it("hides unplanned future phases while DAN is still understanding the request", () => {
+    const activeTask = task({
+      task_id: "understanding-first-task",
+      status: "running",
+      latest_progress: "Thinking with kimi-k2.6.",
+      metadata: { active_run_id: "understanding-first-run" },
+    });
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "understanding-first-run",
+      activeRunningTask: activeTask,
+      tasks: [activeTask],
+      chunks: [
+        {
+          id: "message:user-understanding-first",
+          kind: "chat",
+          title: "You · Request",
+          body: "Update README with the current project status",
+          status: "clean",
+          meta: "user",
+          role: "user",
+        },
+      ],
+      agentEvents: [
+        {
+          type: "completed",
+          source_event_type: "live.request_understanding.briefed",
+          task_id: "understanding-first-task",
+          run_id: "understanding-first-run",
+          payload: {
+            request_understanding_schema: "super_dan_request_understanding_v1",
+            source: "rule_generation_brief",
+            request_kind: "general",
+            original_request: "Update README with the current project status",
+            rule_generation_brief: [
+              "Generate request-specific criteria before treating execution as complete.",
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(nodes.find((node) => node.id === "blueprint:understanding")).toMatchObject({
+      status: "active",
+      detail: "Rule-generation brief sent to DAN",
+    });
+    expect(nodes.find((node) => node.id === "blueprint:planning")).toBeUndefined();
+    expect(nodes.find((node) => node.kind === "build")).toBeUndefined();
+    expect(nodes.find((node) => node.kind === "validation")).toBeUndefined();
+    expect(nodes.find((node) => node.kind === "answer")).toBeUndefined();
   });
 
   it("builds live preview status from current task progress and new event results", () => {
@@ -438,6 +636,75 @@ describe("workspace blueprint nodes", () => {
     expect(status.now).toContain("Thinking with kimi-k2.6");
     expect(status.latestUpdate).toContain("Changed `README.md`");
     expect(status.results).toContain("- Changed: `README.md`");
+  });
+
+  it("shows validation scope, deterministic checks, semantic checks, and branch results", () => {
+    const validationTask = task({
+      task_id: "validation-task",
+      status: "completed",
+      metadata: { active_run_id: "validation-run" },
+    });
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "validation-run",
+      tasks: [validationTask],
+      agentEvents: [
+        {
+          type: "worker_completed",
+          source_event_type: "live.validation.completed",
+          run_id: "validation-run",
+          task_id: "validation-task",
+          summary: "Validation passed.",
+          payload: {
+            passed: true,
+            validation_scope: "branch_frontier",
+            completion_scope: "current_frontier",
+            validated_branch_ids: ["b1"],
+            validated_task_ids: ["1-1"],
+            branch_results: [
+              {
+                branch_id: "b1",
+                task_ids: ["1-1"],
+                status: "passed",
+                evidence: ["README.md inspected"],
+              },
+            ],
+            deterministic_checks: [
+              {
+                check: "npm test -- blueprintNodes",
+                source: "command",
+                status: "passed",
+                evidence: "60 tests passed",
+              },
+            ],
+            llm_semantic_checks: [
+              {
+                check: "Compared delivery against the project-summary request.",
+                status: "passed",
+                evidence: "Final answer directly explains the project.",
+              },
+            ],
+            graph_level_validation: {
+              all_ready_branches_passed: true,
+              remaining_deferred_task_ids: ["2-1"],
+            },
+          },
+        },
+      ],
+    });
+
+    const validation = nodes.find((node) => node.kind === "validation");
+    expect(validation?.previewBody).toContain("### Validated Scope");
+    expect(validation?.previewBody).toContain("branch_frontier");
+    expect(validation?.previewBody).toContain("Branches: b1");
+    expect(validation?.previewBody).toContain("### Deterministic Checks");
+    expect(validation?.previewBody).toContain("npm test -- blueprintNodes");
+    expect(validation?.previewBody).toContain("### LLM Semantic Checks");
+    expect(validation?.previewBody).toContain("Compared delivery against the project-summary request.");
+    expect(validation?.previewBody).toContain("### Branch Results");
+    expect(validation?.previewBody).toContain("b1");
+    expect(validation?.previewBody).toContain("### Graph Validation");
+    expect(validation?.previewBody).toContain("all ready branches passed: true");
   });
 
   it("restores section and list structure in flattened final-answer markdown", () => {
@@ -570,7 +837,7 @@ describe("workspace blueprint nodes", () => {
     expect(request?.previewBody).toContain(
       "Review response expected; file edits are not expected unless requested.",
     );
-    expect(nodes.find((node) => node.id === "blueprint:planning")).toBeTruthy();
+    expect(nodes.find((node) => node.id === "blueprint:planning")).toBeUndefined();
     expect(nodes.find((node) => node.id === "blueprint:build")).toMatchObject({
       title: "Prepare review response",
       detail: "Review response; no file edits expected",
@@ -1119,6 +1386,71 @@ describe("workspace blueprint nodes", () => {
     expect(liveTaskGraphRevisionsForTest(nodes)).toEqual([]);
   });
 
+  it("settles earlier broad phases when execution has already completed without a graph", () => {
+    const activeTask = task({
+      task_id: "stale-phase-task",
+      status: "running",
+      latest_progress: "Thinking with kimi-k2.6.",
+      metadata: { active_run_id: "stale-phase-run" },
+    });
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "stale-phase-run",
+      activeRunningTask: activeTask,
+      tasks: [activeTask],
+      chunks: [
+        {
+          id: "message:user-stale-phase",
+          kind: "chat",
+          title: "You · Request",
+          body: "what is this project about",
+          status: "clean",
+          meta: "user",
+          role: "user",
+        },
+      ],
+      agentEvents: [
+        {
+          type: "completed",
+          source_event_type: "live.request_understanding.briefed",
+          task_id: "stale-phase-task",
+          run_id: "stale-phase-run",
+          payload: {
+            request_understanding_schema: "super_dan_request_understanding_v1",
+            source: "rule_generation_brief",
+            request_kind: "general",
+            original_request: "what is this project about",
+            rule_generation_brief: [
+              "Answer in-session unless the operator explicitly asks for a saved artifact.",
+            ],
+          },
+        },
+        {
+          type: "completed",
+          source_event_type: "live.generic_build.completed",
+          summary: "Execution completed.",
+          task_id: "stale-phase-task",
+          run_id: "stale-phase-run",
+        },
+      ],
+    });
+
+    const understanding = nodes.find((node) => node.id === "blueprint:understanding");
+    const planning = nodes.find((node) => node.id === "blueprint:planning");
+    const build = nodes.find((node) => node.kind === "build");
+
+    expect(understanding).toMatchObject({
+      status: "done",
+      detail: "Request context handed into later work",
+    });
+    expect(planning).toBeUndefined();
+    expect(build).toMatchObject({
+      status: "done",
+      title: "Prepare answer",
+    });
+    expect(liveTaskGraphRevisionsForTest(nodes)).toEqual([]);
+  });
+
   it("derives generic target blueprint steps before the backend emits a planning DAG", () => {
     const activeTask = task({
       task_id: "seminar-active",
@@ -1174,7 +1506,8 @@ describe("workspace blueprint nodes", () => {
     expect(taskTitles.join(" ")).not.toContain("budget table");
     expect(nodes.find((node) => node.id === "blueprint:understanding")).toMatchObject({
       title: "Understand request",
-      status: "active",
+      status: "done",
+      detail: "Request context handed into later work",
     });
     expect(nodes.find((node) => node.id === "blueprint:task:1")).toMatchObject({
       status: "active",
@@ -1517,10 +1850,7 @@ describe("workspace blueprint nodes", () => {
       "conversation:message:user-followup:before:blueprint:run:followup-run:message:user-followup",
       "node:blueprint:run:followup-run:message:user-followup",
       "node:blueprint:run:followup-run:understanding",
-      "node:blueprint:run:followup-run:planning",
       "node:blueprint:run:followup-run:build",
-      "node:blueprint:run:followup-run:validation",
-      "node:blueprint:run:followup-run:answer",
     ]);
   });
 
@@ -1634,6 +1964,77 @@ describe("workspace blueprint nodes", () => {
       status: "blocked",
       detail: "Stopped before final response",
     });
+  });
+
+  it("does not use the user request as the needs-attention reason", () => {
+    const blockedTask = task({
+      task_id: "blocked-task",
+      status: "blocked",
+      latest_progress: "Super DAN needs attention.",
+      metadata: {
+        active_run_id: "blocked-run",
+        last_surface_turn: {
+          text: "is it fully implemented?",
+        },
+      },
+    });
+    const blockedEvent: ChatV2AgentRunEvent = {
+      type: "blocked",
+      source_event_type: "run.log.blocked",
+      summary: "Super DAN needs attention.",
+      task_id: "blocked-task",
+      run_id: "blocked-run",
+    };
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      chunks: [
+        {
+          id: "message:user-blocked",
+          kind: "chat",
+          title: "You · Request",
+          body: "is it fully implemented?",
+          status: "clean",
+          meta: "user",
+          role: "user",
+        },
+        {
+          id: "agent-terminal:blocked-run",
+          kind: "agent",
+          title: "Super DAN · needs attention",
+          body: "Super DAN needs attention.",
+          status: "error",
+          meta: "run.log.blocked",
+          runId: "blocked-run",
+          taskId: "blocked-task",
+        },
+      ],
+      tasks: [blockedTask],
+      agentEvents: [blockedEvent],
+    });
+
+    const build = nodes.find((node) => node.id === "blueprint:build");
+    expect(build).toMatchObject({
+      title: "Execution needs attention",
+      status: "blocked",
+      detail: "DAN blocked this step but did not emit a specific reason.",
+      body: "DAN blocked this step but did not emit a specific reason.",
+    });
+    expect(build?.body).not.toContain("is it fully implemented?");
+
+    const answer = nodes.find((node) => node.kind === "answer");
+    expect(answer).toMatchObject({
+      title: "Final response",
+      status: "blocked",
+      body: "DAN blocked this step but did not emit a specific reason.",
+    });
+    expect(answer?.body).not.toContain("Super DAN needs attention");
+    expect(answer?.previewBody).toContain("DAN blocked this step but did not emit a specific reason.");
+    expect(answer?.previewBody).not.toContain("is it fully implemented?");
+
+    const liveStatus = blueprintLiveStatusForTest(build!, [blockedTask], [blockedEvent], null);
+    expect(liveStatus.latestUpdate).toBe(
+      "DAN needs attention, but did not emit a specific reason.",
+    );
   });
 
   it("renders completed read-only exact-answer runs without edit-file wording", () => {
@@ -2242,12 +2643,7 @@ describe("workspace blueprint nodes", () => {
       taskId: "active-task",
     });
     const activeAnswer = nodes.find((node) => node.kind === "answer" && node.runId === "active-run");
-    expect(activeAnswer).toMatchObject({
-      status: "future",
-      runId: "active-run",
-      taskId: "active-task",
-    });
-    expect(activeAnswer?.body).not.toContain("blueprint smoke test ok");
+    expect(activeAnswer).toBeUndefined();
   });
 
   it("keeps timeout events out of the final answer while retry is active", () => {
@@ -2297,11 +2693,6 @@ describe("workspace blueprint nodes", () => {
       runId: "retry-run",
       taskId: "retry-task",
     });
-    expect(nodes.find((node) => node.id === "blueprint:answer")).toMatchObject({
-      status: "future",
-      runId: "retry-run",
-      taskId: "retry-task",
-    });
-    expect(nodes.find((node) => node.id === "blueprint:answer")?.body).not.toContain("timeout");
+    expect(nodes.find((node) => node.id === "blueprint:answer")).toBeUndefined();
   });
 });

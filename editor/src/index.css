@@ -422,7 +422,8 @@ html, body {
 }
 
 .dan-machine-theme .dan-blueprint-marker,
-.dan-machine-theme .dan-blueprint-badge {
+.dan-machine-theme .dan-blueprint-badge,
+.dan-machine-theme .dan-work-elapsed-counter {
   border-color: color-mix(in oklch, currentColor 42%, var(--machine-border));
   background:
     linear-gradient(180deg, oklch(0.43 0.010 218), oklch(0.32 0.010 225)) !important;
@@ -830,7 +831,8 @@ html, body {
 }
 
 .dan-factory-worn-theme .dan-blueprint-marker,
-.dan-factory-worn-theme .dan-blueprint-badge {
+.dan-factory-worn-theme .dan-blueprint-badge,
+.dan-factory-worn-theme .dan-work-elapsed-counter {
   background:
     radial-gradient(circle at 65% 55%, oklch(0.060 0.005 90 / 0.24), transparent 68%),
     linear-gradient(180deg, oklch(0.252 0.008 84), oklch(0.212 0.007 88)) !important;
