@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -224,30 +225,6 @@ class SuperDanBackendAdapter:
         emit_event: AgentEventSink,
         runtime: AgentBackendRuntime | None = None,
     ) -> AgentBackendRunResult:
-        mutation_mode = str(
-            request.mutation_policy.get("mode")
-            or request.mutation_policy.get("permission")
-            or "workspace_mutation"
-        ).strip()
-        if mutation_mode in {"read_only", "readonly", "none", "deny"}:
-            event = AgentRunEvent(
-                type="blocked",
-                run_id=request.run_id,
-                task_id=request.task_id,
-                summary="Super DAN backend requires workspace mutation permission.",
-                source_event_type="chat_v2.backend.super_dan.blocked",
-                payload={
-                    "backend": self.backend_name,
-                    "mutation_policy": dict(request.mutation_policy),
-                },
-            )
-            emit_event(event)
-            return AgentBackendRunResult(
-                status="blocked",
-                backend=self.backend_name,
-                summary=event.summary,
-            )
-
         super_cli = _load_super_dan_cli()
         workspace_root = super_cli.normalize_workspace_root(request.workspace_root or "~")
         effective_objective = _objective_with_surface_context(request)
@@ -700,6 +677,41 @@ def build_agent_backend_request(
         dict(payload.get("surface_context") or {}),
         workspace_root=workspace_root,
     )
+    metadata = {
+        "queue_key": run.metadata.get("queue_key", ""),
+        "topic_key": payload.get("topic_key", ""),
+        "history_turn_count": len(history),
+        "operator_context": dict(payload.get("operator_context") or {}),
+        "original_request": _first_compact_text(
+            payload.get("original_request"),
+            run.metadata.get("original_request"),
+            _goal_context_value(payload, "original_request"),
+            _goal_context_value(run.metadata, "original_request"),
+        ),
+        "follow_up_request": _first_compact_text(payload.get("follow_up_request")),
+        "satisfaction_gap": _first_compact_text(
+            payload.get("satisfaction_gap"),
+            run.metadata.get("satisfaction_gap"),
+            _goal_context_value(payload, "satisfaction_gap"),
+            _goal_context_value(run.metadata, "satisfaction_gap"),
+        ),
+        "continued_from_run_id": _first_compact_text(
+            payload.get("continued_from_run_id"),
+            run.metadata.get("continued_from_run_id"),
+        ),
+        "goal_context": _merged_dict(
+            payload.get("goal_context"),
+            run.metadata.get("goal_context"),
+        ),
+        "retry_payload": dict(run.metadata.get("retry_payload") or {}),
+        "retry_policy": run.metadata.get("retry_policy", ""),
+        "retry_history": [
+            dict(item)
+            for item in run.metadata.get("retry_history", [])
+            if isinstance(item, dict)
+        ],
+        **dict(overrides.get("metadata") or {}),
+    }
     return AgentBackendRunRequest(
         task_id=run.task_id,
         run_id=run.run_id,
@@ -716,12 +728,7 @@ def build_agent_backend_request(
         mutation_policy=mutation_policy,
         approval_policy=approval_policy,
         tool_policy=tool_policy,
-        metadata={
-            "queue_key": run.metadata.get("queue_key", ""),
-            "topic_key": payload.get("topic_key", ""),
-            "history_turn_count": len(history),
-            **dict(overrides.get("metadata") or {}),
-        },
+        metadata=metadata,
     )
 
 
@@ -853,6 +860,21 @@ def _merged_dict(*values: Any) -> dict[str, Any]:
     return merged
 
 
+def _goal_context_value(source: dict[str, Any], key: str) -> Any:
+    goal_context = source.get("goal_context") if isinstance(source, dict) else None
+    if not isinstance(goal_context, dict):
+        return ""
+    return goal_context.get(key)
+
+
+def _first_compact_text(*values: Any, limit: int = 2000) -> str:
+    for value in values:
+        text = _compact_context_text(value, limit=limit)
+        if text:
+            return text
+    return ""
+
+
 def _normalize_history(raw_history: Any) -> list[dict[str, str]]:
     if not isinstance(raw_history, list):
         return []
@@ -872,6 +894,10 @@ def _normalize_history(raw_history: Any) -> list[dict[str, str]]:
 def _objective_with_surface_context(request: AgentBackendRunRequest) -> str:
     objective = " ".join(str(request.objective or "").split())
     context_lines: list[str] = []
+    goal_context = _resolved_goal_context(request, objective)
+    original_request = str(goal_context.get("original_request") or "").strip()
+    satisfaction_gap = str(goal_context.get("satisfaction_gap") or "").strip()
+    is_continuation = bool(goal_context.get("is_continuation"))
     admitted_messages = _admitted_operator_messages(request.metadata)
     if admitted_messages:
         context_lines.append("Operator updates admitted from the active-run queue:")
@@ -896,6 +922,15 @@ def _objective_with_surface_context(request: AgentBackendRunRequest) -> str:
                 context_lines.append("  includes validation requirement")
             if operator_context.get("hard_constraints"):
                 context_lines.append("  includes hard constraint")
+
+    if satisfaction_gap and (is_continuation or satisfaction_gap != objective):
+        context_lines.append(f"Current follow-up / satisfaction gap: {satisfaction_gap}")
+    previous_summary = _compact_context_text(
+        goal_context.get("previous_summary"),
+        limit=1200,
+    )
+    if previous_summary:
+        context_lines.append(f"Previous run result summary: {previous_summary}")
 
     reply_text = _compact_context_text(
         request.reply_context.get("reply_to_text"),
@@ -931,6 +966,18 @@ def _objective_with_surface_context(request: AgentBackendRunRequest) -> str:
 
     if not context_lines:
         return objective
+    if is_continuation and original_request:
+        return (
+            f"Original operator request: {original_request}\n\n"
+            f"Current follow-up / satisfaction gap: {satisfaction_gap or objective}\n\n"
+            "Continuation contract:\n"
+            "- Continue toward the same user-visible goal instead of completing an internal run ticket.\n"
+            "- Use the follow-up as the missing answer, correction, or steering note for that goal.\n"
+            "- Resolve the work mode from the original operator request; answer in-session for explanation, summary, review, diagnosis, or status requests unless the user explicitly asks for project edits or a saved deliverable.\n\n"
+            "Additional surface context for resolving references and active-run updates:\n"
+            + "\n".join(context_lines)
+            + "\n\nSatisfy the original request plus the current gap; do not treat older chat context as extra tasks."
+        )
     return (
         f"Operator request: {objective}\n\n"
         "Additional surface context for resolving references and active-run updates:\n"
@@ -950,6 +997,72 @@ def _history_without_current_objective(
         if last == normalized_objective:
             trimmed = trimmed[:-1]
     return trimmed
+
+
+def _resolved_goal_context(
+    request: AgentBackendRunRequest,
+    objective: str,
+) -> dict[str, Any]:
+    metadata = dict(request.metadata or {})
+    goal_context = dict(metadata.get("goal_context") or {})
+    original_request = _first_compact_text(
+        metadata.get("original_request"),
+        goal_context.get("original_request"),
+    )
+    satisfaction_gap = _first_compact_text(
+        metadata.get("satisfaction_gap"),
+        metadata.get("follow_up_request"),
+        goal_context.get("satisfaction_gap"),
+        goal_context.get("current_request"),
+    )
+    previous_summary = _first_compact_text(goal_context.get("previous_summary"))
+    continued_from_run_id = _first_compact_text(metadata.get("continued_from_run_id"))
+    retry_policy = _first_compact_text(metadata.get("retry_policy"))
+    if not satisfaction_gap and (continued_from_run_id or retry_policy):
+        satisfaction_gap = objective
+
+    history = _history_without_current_objective(request.history, objective)
+    if not original_request and _looks_like_continuation_gap(objective):
+        for turn in reversed(history):
+            if turn.get("role") != "user":
+                continue
+            candidate = _compact_context_text(turn.get("content"), limit=2000)
+            if candidate and not _looks_like_continuation_gap(candidate):
+                original_request = candidate
+                break
+    is_continuation = bool(
+        original_request
+        and (
+            original_request != objective
+            or satisfaction_gap
+            or continued_from_run_id
+            or retry_policy
+            or _looks_like_continuation_gap(objective)
+        )
+    )
+    if is_continuation and not satisfaction_gap:
+        satisfaction_gap = objective
+    return {
+        "original_request": original_request,
+        "satisfaction_gap": satisfaction_gap,
+        "previous_summary": previous_summary,
+        "continued_from_run_id": continued_from_run_id,
+        "retry_policy": retry_policy,
+        "is_continuation": is_continuation,
+    }
+
+
+def _looks_like_continuation_gap(text: str) -> bool:
+    lowered = " ".join(str(text or "").lower().split())
+    if not lowered:
+        return False
+    patterns = (
+        r"^(?:yes|yep|yeah|ok|okay|sure|please)\b.*\b(?:proceed|continue|go ahead|keep going|keep working|try again|retry)\b",
+        r"^(?:continue|proceed|go ahead|keep going|keep working|retry|try again)\b",
+        r"\b(?:not good|not enough|not satisfactory|not satisfied|still missing|still don['’]?t get|still dont get|where is the answer|where is the response)\b",
+        r"\b(?:same request|same goal|finish it|complete it|keep improving)\b",
+    )
+    return any(re.search(pattern, lowered) for pattern in patterns)
 
 
 def _compact_context_text(value: Any, *, limit: int) -> str:

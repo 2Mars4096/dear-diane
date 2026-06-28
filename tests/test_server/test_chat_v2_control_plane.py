@@ -32,6 +32,7 @@ from dan.server.chat_v2_backend import (
     _build_super_dan_args,
     _is_safe_backend_checkpoint,
     _load_super_dan_cli,
+    _objective_with_surface_context,
     build_agent_backend_request,
 )
 from dan.server.chat_v2_store import ChatV2Store, structured_operator_context
@@ -608,7 +609,77 @@ def test_v2_store_persists_tasks_runs_and_explicit_queue_lanes(tmp_path) -> None
     assert snapshot is not None
     assert snapshot.metadata["append_queue_length"] == 1
     assert snapshot.metadata["continue_queue_length"] == 1
-    assert reloaded.list_thread_tasks("thread-1")[0].task_id == accepted.task_id
+    assert snapshot.metadata["created_at"]
+    assert snapshot.metadata["updated_at"]
+    listed = reloaded.list_thread_tasks("thread-1")[0]
+    assert listed.task_id == accepted.task_id
+    assert listed.metadata["updated_at"] == snapshot.metadata["updated_at"]
+
+
+def test_v2_thread_prompt_log_renders_model_prompt_and_response(tmp_path) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    accepted = store.accept_bridge_context(
+        build_v2_bridge_context(
+            ChatMessageRequest(
+                workflow_id="_scratch",
+                message="what is this project?",
+                mode="agent",
+                surface_type="cli",
+                surface_id="super-tui",
+                thread_id="thread-debug",
+            )
+        ),
+        stream_channel_id="chat-stream-1",
+    )
+    assert accepted.run_id is not None
+    assert accepted.task_id is not None
+
+    store.record_agent_event(
+        AgentRunEvent(
+            type="model_text_delta",
+            run_id=accepted.run_id,
+            task_id=accepted.task_id,
+            summary="Model request recorded.",
+            source_event_type="model.requested",
+            payload={
+                "event": "model.requested",
+                "model_call_id": "model-call:0001",
+                "model": "kimi-k2.6",
+                "round": 1,
+                "tool_ids": ["file_read"],
+                "prompt_messages": [
+                    {"role": "system", "content": "You are DAN."},
+                    {"role": "user", "content": "Explain the project."},
+                ],
+            },
+        )
+    )
+    store.record_agent_event(
+        AgentRunEvent(
+            type="token_usage_recorded",
+            run_id=accepted.run_id,
+            task_id=accepted.task_id,
+            summary="Model response recorded.",
+            source_event_type="model.responded",
+            payload={
+                "event": "model.responded",
+                "model_call_id": "model-call:0001",
+                "model": "kimi-k2.6",
+                "finish_reason": "stop",
+                "response_text": "This project is a DAN workspace.",
+            },
+        )
+    )
+
+    log = store.thread_prompt_log("thread-debug")
+
+    assert Path(log["path"]).exists()
+    assert log["entry_count"] == 1
+    assert accepted.run_id in log["run_ids"]
+    assert "You are DAN." in log["content"]
+    assert "Explain the project." in log["content"]
+    assert "`file_read`" in log["content"]
+    assert "This project is a DAN workspace." in log["content"]
 
 
 def test_v2_store_inherits_active_task_workspace_for_followups(tmp_path) -> None:
@@ -1355,6 +1426,57 @@ async def test_v2_continue_after_current_command_promotes_next_run_after_termina
 
 
 @pytest.mark.asyncio
+async def test_v2_continue_after_current_preserves_original_goal_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    monkeypatch.setattr(chat_v2_router, "get_chat_v2_store", lambda request=None: store)
+    created = await chat_v2_router.create_agent_run(
+        req=ChatMessageRequest(
+            workflow_id="_scratch",
+            message="what is this project?",
+            mode="agent",
+            surface_type="web",
+            surface_id="v2",
+            thread_id="thread-web",
+        )
+    )
+    run_id = created["v2_control_plane"]["run_id"]
+
+    await chat_v2_router.append_agent_run_command(
+        run_id,
+        AgentRunCommand(
+            command="continue_after_current",
+            surface_turn_id="turn-followup-goal",
+            idempotency_key="followup-goal",
+            payload={"text": "yes please proceed"},
+        ),
+    )
+    executed = await chat_v2_router.execute_agent_run(
+        run_id,
+        execute=chat_v2_router.AgentRunExecuteRequest(backend="deterministic"),
+    )
+
+    next_run_id = executed["task"]["metadata"]["active_run_id"]
+    next_run = store.get_run(next_run_id)
+    assert next_run is not None
+    assert next_run.command.payload["text"] == "yes please proceed"
+    assert next_run.command.payload["original_request"] == "what is this project?"
+    assert next_run.command.payload["satisfaction_gap"] == "yes please proceed"
+    assert next_run.command.payload["goal_context"]["previous_run_id"] == run_id
+    assert next_run.metadata["original_request"] == "what is this project?"
+    assert next_run.metadata["satisfaction_gap"] == "yes please proceed"
+
+    backend_request = build_agent_backend_request(next_run, store.get_task(next_run.task_id))
+    effective = _objective_with_surface_context(backend_request)
+    assert "Original operator request: what is this project?" in effective
+    assert "Current follow-up / satisfaction gap: yes please proceed" in effective
+    assert "Continue toward the same user-visible goal" in effective
+    assert not effective.startswith("Operator request: yes please proceed")
+
+
+@pytest.mark.asyncio
 async def test_v2_background_execution_auto_runs_promoted_continue(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -1659,6 +1781,9 @@ async def test_v2_retry_command_requeues_stopped_run_and_clears_stop_flags(
     assert run.status == "queued"
     assert run.metadata["retry_count"] == 1
     assert run.metadata["retry_policy"] == "restart_backend_run_from_original_request"
+    assert run.metadata["original_request"] == "build the landing page"
+    assert run.metadata["satisfaction_gap"] == "operator wants another attempt"
+    assert run.metadata["goal_context"]["original_request"] == "build the landing page"
     assert run.metadata["retry_history"][0]["status"] == "stopped"
     assert "stop_requested" not in run.metadata
     assert "stop_checkpoint" not in run.metadata

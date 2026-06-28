@@ -154,6 +154,8 @@ class V2TaskRecord(BaseModel):
                     for item in self.queue_items
                     if item.status == "queued"
                 ],
+                "created_at": self.created_at,
+                "updated_at": self.updated_at,
             },
         )
 
@@ -190,6 +192,10 @@ class ChatV2Store:
     @property
     def _runs_dir(self) -> Path:
         return self.base_dir / "runs"
+
+    @property
+    def _prompt_logs_dir(self) -> Path:
+        return self.base_dir / "prompt_logs"
 
     def accept_bridge_context(
         self,
@@ -565,6 +571,122 @@ class ChatV2Store:
             except json.JSONDecodeError:
                 continue
         return events
+
+    def thread_prompt_log(self, thread_id: str) -> dict[str, Any]:
+        """Render and persist a human-readable prompt/response log for a session."""
+
+        runs = self.list_run_records(thread_id=thread_id, limit=500)
+        runs.sort(key=lambda run: run.created_at)
+        path = self._thread_prompt_log_path(thread_id)
+        lines: list[str] = [
+            "# Session Prompt Log",
+            "",
+            f"- Session: `{thread_id}`",
+            f"- Generated: {_now()}",
+            f"- Runs: {len(runs)}",
+            "",
+        ]
+        entry_count = 0
+        if not runs:
+            lines.extend(
+                [
+                    "No Agent runs were found for this session yet.",
+                    "",
+                ]
+            )
+        for run_index, run in enumerate(runs, start=1):
+            events = self.load_run_events(run.run_id)
+            model_events = [
+                event
+                for event in events
+                if _model_event_name(event) in {"model.requested", "model.responded"}
+            ]
+            lines.extend(
+                [
+                    f"## Run {run_index}: `{run.run_id}`",
+                    "",
+                    f"- Task: `{run.task_id}`",
+                    f"- Status: {run.status}",
+                    f"- Workspace: `{run.workspace_root}`" if run.workspace_root else "- Workspace: not recorded",
+                    "",
+                ]
+            )
+            if not model_events:
+                lines.extend(["No model prompt/response events were recorded for this run.", ""])
+                continue
+
+            responses_by_call: dict[str, list[dict[str, Any]]] = {}
+            requested_events: list[dict[str, Any]] = []
+            loose_responses: list[dict[str, Any]] = []
+            for event in model_events:
+                payload = _agent_event_payload(event)
+                call_id = str(payload.get("model_call_id") or event.get("source_event_id") or "").strip()
+                if _model_event_name(event) == "model.requested":
+                    requested_events.append(event)
+                elif call_id:
+                    responses_by_call.setdefault(call_id, []).append(event)
+                else:
+                    loose_responses.append(event)
+
+            for call_index, request_event in enumerate(requested_events, start=1):
+                entry_count += 1
+                payload = _agent_event_payload(request_event)
+                call_id = str(payload.get("model_call_id") or request_event.get("source_event_id") or "").strip()
+                round_number = str(payload.get("round") or "?")
+                model = str(payload.get("model") or "(unknown model)")
+                tool_ids = [str(item) for item in payload.get("tool_ids") or [] if str(item).strip()]
+                prompt_messages = payload.get("prompt_messages")
+                lines.extend(
+                    [
+                        f"### Model Call {call_index}",
+                        "",
+                        f"- Model: `{model}`",
+                        f"- Round: {round_number}",
+                        f"- Call ID: `{call_id or 'not recorded'}`",
+                        f"- Tools enabled: {', '.join(f'`{tool}`' for tool in tool_ids) if tool_ids else 'none'}",
+                        "",
+                        "#### Prompt Sent",
+                        "",
+                    ]
+                )
+                if isinstance(prompt_messages, list) and prompt_messages:
+                    for message_index, message in enumerate(prompt_messages, start=1):
+                        if not isinstance(message, dict):
+                            continue
+                        role = str(message.get("role") or f"message-{message_index}")
+                        lines.append(f"##### {message_index}. {role}")
+                        lines.append("")
+                        lines.append(_fenced_text(_message_debug_text(message)))
+                        lines.append("")
+                else:
+                    lines.extend(
+                        [
+                            "_Prompt messages were not captured for this older run._",
+                            "",
+                        ]
+                    )
+                responses = responses_by_call.pop(call_id, []) if call_id else []
+                for response_index, response_event in enumerate(responses, start=1):
+                    lines.extend(_response_log_lines(response_event, response_index=response_index))
+
+            for response_events in responses_by_call.values():
+                for response_event in response_events:
+                    entry_count += 1
+                    lines.extend(_response_log_lines(response_event, response_index=1))
+            for response_event in loose_responses:
+                entry_count += 1
+                lines.extend(_response_log_lines(response_event, response_index=1))
+
+        content = "\n".join(lines).rstrip() + "\n"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return {
+            "thread_id": thread_id,
+            "path": str(path),
+            "content": content,
+            "entry_count": entry_count,
+            "run_ids": [run.run_id for run in runs],
+        }
 
     def record_agent_event(self, event: AgentRunEvent) -> TaskSnapshot | None:
         """Append a normalized Agent event and update the task projection."""
@@ -1033,6 +1155,24 @@ class ChatV2Store:
             run.metadata["retry_surface_turn_id"] = command.surface_turn_id or ""
             run.metadata["retry_policy"] = "restart_backend_run_from_original_request"
             run.metadata["retry_history"] = retry_history[-20:]
+            retry_gap = (
+                _queue_text_from_command(command)
+                or str(dict(command.payload or {}).get("reason") or "").strip()
+                or "Retry requested; continue toward the original user-visible goal."
+            )
+            original_request = _original_request_from_run(run)
+            if original_request:
+                run.metadata["original_request"] = original_request
+            run.metadata["satisfaction_gap"] = retry_gap
+            run.metadata["goal_context"] = {
+                "original_request": original_request,
+                "current_request": retry_gap,
+                "satisfaction_gap": retry_gap,
+                "previous_run_id": run.run_id,
+                "previous_status": previous_attempt["status"],
+                "previous_summary": previous_attempt["latest_summary"],
+                "source": "retry",
+            }
             run.status = "queued"
             run.latest_event_type = "queued"
             run.latest_summary = "Retry queued for Agent run."
@@ -1046,6 +1186,10 @@ class ChatV2Store:
             task.metadata["retry_count"] = retry_count
             task.metadata["retry_policy"] = run.metadata["retry_policy"]
             task.metadata["retry_history"] = list(run.metadata["retry_history"])
+            if original_request:
+                task.metadata["original_request"] = original_request
+            task.metadata["satisfaction_gap"] = retry_gap
+            task.metadata["goal_context"] = dict(run.metadata["goal_context"])
             task.updated_at = now
             self._save_run(run)
             self._save_task(task)
@@ -1491,8 +1635,14 @@ class ChatV2Store:
                 run_id=next_run_id,
                 surface_turn_id=item.surface_turn_id,
                 idempotency_key=_stable_id("continue-start", task.task_id, item.id),
-                payload=_start_payload_from_queue_item(task, item, previous_run_id=run_id),
+                payload=_start_payload_from_queue_item(
+                    task,
+                    item,
+                    previous_run=run,
+                    previous_run_id=run_id,
+                ),
             )
+            start_payload = dict(command.payload or {})
             next_run = AgentRunRecord(
                 run_id=next_run_id,
                 task_id=task.task_id,
@@ -1508,6 +1658,9 @@ class ChatV2Store:
                     "workspace_id": task.workspace_id,
                     "continued_from_run_id": run_id,
                     "queue_item_id": item.id,
+                    "original_request": str(start_payload.get("original_request") or ""),
+                    "satisfaction_gap": str(start_payload.get("satisfaction_gap") or ""),
+                    "goal_context": dict(start_payload.get("goal_context") or {}),
                 },
             )
             task.active_run_id = next_run_id
@@ -1605,6 +1758,7 @@ class ChatV2Store:
             idempotency_key=_stable_id("start", task.task_id, turn.id),
             payload={
                 "text": turn.text,
+                "original_request": turn.text,
                 "attachments": [
                     item.model_dump(mode="json")
                     for item in turn.attachments
@@ -1623,6 +1777,11 @@ class ChatV2Store:
                         for ref in turn.attachments
                     ],
                 ),
+                "goal_context": {
+                    "original_request": turn.text,
+                    "current_request": turn.text,
+                    "source": "initial_surface_turn",
+                },
             },
         )
         run = AgentRunRecord(
@@ -1640,6 +1799,7 @@ class ChatV2Store:
                 "queue_key": decision.queue_key,
                 "workspace_root": task.workspace_root,
                 "workspace_id": task.workspace_id,
+                "original_request": turn.text,
             },
         )
         task.status = run.status
@@ -1748,6 +1908,8 @@ class ChatV2Store:
                         for ref in turn.attachments
                     ],
                 ),
+                "original_request": _original_request_from_task(task),
+                "satisfaction_gap": turn.text,
             },
         )
         task.queue_items.append(item)
@@ -1879,6 +2041,9 @@ class ChatV2Store:
     def _run_events_path(self, run_id: str) -> Path:
         return self._runs_dir / f"{_safe_id(run_id)}.events.jsonl"
 
+    def _thread_prompt_log_path(self, thread_id: str) -> Path:
+        return self._prompt_logs_dir / f"{_safe_id(thread_id)}.md"
+
     def _save_task(self, task: V2TaskRecord) -> None:
         path = self._task_path(task.task_id)
         _write_json(path, task.model_dump(mode="json"))
@@ -1910,6 +2075,90 @@ class ChatV2Store:
 
 def _safe_id(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in value)
+
+
+def _agent_event_payload(event: dict[str, Any]) -> dict[str, Any]:
+    payload = event.get("payload")
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _model_event_name(event: dict[str, Any]) -> str:
+    payload = _agent_event_payload(event)
+    for key in ("source_event_type", "event", "event_type", "type", "kind", "name"):
+        value = event.get(key) if key == "source_event_type" else payload.get(key)
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _debug_value_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+
+
+def _message_debug_text(message: dict[str, Any]) -> str:
+    content = _debug_value_text(message.get("content")).strip()
+    extras = {
+        key: value
+        for key, value in message.items()
+        if key not in {"role", "content"} and value not in (None, "", [], {})
+    }
+    if not extras:
+        return content or json.dumps(message, ensure_ascii=False, indent=2, default=str)
+    sections: list[str] = []
+    if content:
+        sections.append(content)
+    sections.append("Extra message fields:")
+    sections.append(json.dumps(extras, ensure_ascii=False, indent=2, default=str))
+    return "\n\n".join(sections)
+
+
+def _fenced_text(value: str) -> str:
+    text = str(value or "")
+    fence = "````" if "```" in text else "```"
+    return f"{fence}text\n{text}\n{fence}"
+
+
+def _response_log_lines(
+    event: dict[str, Any],
+    *,
+    response_index: int,
+) -> list[str]:
+    payload = _agent_event_payload(event)
+    model = str(payload.get("model") or "(unknown model)")
+    finish = str(payload.get("finish_reason") or "").strip() or "not recorded"
+    tool_calls = [
+        str(item)
+        for item in payload.get("tool_calls") or []
+        if str(item).strip()
+    ]
+    response_text = str(
+        payload.get("response_text")
+        or payload.get("text")
+        or event.get("summary")
+        or ""
+    )
+    assistant_message = payload.get("assistant_message")
+    if not response_text and isinstance(assistant_message, dict):
+        response_text = _message_debug_text(assistant_message)
+    lines = [
+        f"#### Response {response_index}",
+        "",
+        f"- Model: `{model}`",
+        f"- Finish reason: {finish}",
+        f"- Tool calls requested: {', '.join(f'`{tool}`' for tool in tool_calls) if tool_calls else 'none'}",
+        "",
+    ]
+    if response_text:
+        lines.append(_fenced_text(response_text))
+    else:
+        lines.append("_No assistant response text was recorded._")
+    lines.append("")
+    return lines
 
 
 def _stable_id(*parts: str) -> str:
@@ -2119,6 +2368,42 @@ def _queue_text_from_command(command: AgentRunCommand) -> str:
     return ""
 
 
+def _compact_user_text(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _original_request_from_run(run: AgentRunRecord | None) -> str:
+    if run is None:
+        return ""
+    payload = dict(run.command.payload or {})
+    metadata = dict(run.metadata or {})
+    for source in (payload, metadata):
+        text = _compact_user_text(source.get("original_request"))
+        if text:
+            return text
+        goal_context = source.get("goal_context")
+        if isinstance(goal_context, dict):
+            text = _compact_user_text(goal_context.get("original_request"))
+            if text:
+                return text
+    return _compact_user_text(payload.get("text"))
+
+
+def _original_request_from_task(task: V2TaskRecord | None) -> str:
+    if task is None:
+        return ""
+    metadata = dict(task.metadata or {})
+    text = _compact_user_text(metadata.get("original_request"))
+    if text:
+        return text
+    goal_context = metadata.get("goal_context")
+    if isinstance(goal_context, dict):
+        text = _compact_user_text(goal_context.get("original_request"))
+        if text:
+            return text
+    return ""
+
+
 def _queue_injected_summary(item: QueueItemRecord, *, checkpoint: str = "") -> str:
     lane = "checkpoint append" if item.lane == "append" else "after-current follow-up"
     text = " ".join(str(item.text or "").split())
@@ -2134,11 +2419,38 @@ def _start_payload_from_queue_item(
     task: V2TaskRecord,
     item: QueueItemRecord,
     *,
+    previous_run: AgentRunRecord | None = None,
     previous_run_id: str,
 ) -> dict[str, Any]:
     metadata = dict(item.metadata or {})
+    original_request = (
+        _compact_user_text(metadata.get("original_request"))
+        or _original_request_from_run(previous_run)
+        or _original_request_from_task(task)
+        or item.text
+    )
+    satisfaction_gap = _compact_user_text(metadata.get("satisfaction_gap")) or item.text
+    previous_result = dict(previous_run.metadata.get("backend_result") or {}) if previous_run is not None else {}
+    previous_summary = (
+        _compact_user_text(previous_result.get("summary"))
+        or _compact_user_text(previous_run.latest_summary if previous_run is not None else "")
+    )
+    goal_context = {
+        "original_request": original_request,
+        "current_request": item.text,
+        "satisfaction_gap": satisfaction_gap,
+        "previous_run_id": previous_run_id,
+        "previous_status": str(previous_run.status) if previous_run is not None else "",
+        "previous_summary": previous_summary,
+        "queue_item_id": item.id,
+        "source": "continue_after_current",
+    }
     return {
         "text": item.text,
+        "original_request": original_request,
+        "follow_up_request": item.text,
+        "satisfaction_gap": satisfaction_gap,
+        "goal_context": goal_context,
         "attachments": list(metadata.get("attachments") or []),
         "workspace_root": task.workspace_root,
         "workspace_id": task.workspace_id,

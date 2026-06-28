@@ -273,6 +273,15 @@ async def list_thread_tasks(
     }
 
 
+@router.get("/api/v2/threads/{thread_id}/prompt-log")
+async def get_thread_prompt_log(
+    thread_id: str,
+    request: Request = None,
+) -> dict[str, Any]:
+    store = _require_chat_v2_store(request)
+    return store.thread_prompt_log(thread_id)
+
+
 @router.get("/api/v2/agent-runs/{run_id}")
 async def get_agent_run(
     run_id: str,
