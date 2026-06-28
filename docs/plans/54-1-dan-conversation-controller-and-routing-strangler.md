@@ -26,6 +26,7 @@
   - [x] 4-2. Preserve a fallback path while the new route is still incomplete
   - [x] 4-3. Add one controller-selection seam so supported surfaces can target DAN-v1 or DAN-v2 without forking the downstream substrate
   - [x] 4-4. Start with one temporary `.env` / config selector for testing (for example `DAN_CONTROL_PLANE=v1|v2`) before deciding whether a visible frontend toggle is still useful later
+  - [x] 4-5. Add the first external Agent backend option, Codex, behind the Chat V2 backend-selection seam without changing the Super DAN default
 - [ ] 5. Prove the new controller on a small exact benchmark set
   - [x] 5-1. Chat/meta/status turn
   - [x] 5-2. Research delegation turn
@@ -56,4 +57,5 @@
 - Landed third slice: the top-level controller now accepts `selected_lane=incident`, routes operational-failure cues into a durable Incident Commander controller, and persists incident session payloads alongside controller/code/research sessions.
 - Landed fourth slice: the shared DAN-v2 membrane is now richer and closer to the target recurrent contract. `DANConversationFacts` now carries workspace root, platform, approval mode, and surfaced adapter/tool-family availability, while `WorkerReport` / `ReviewDecision` now persist structured `what_changed`, `evidence`, `artifacts`, `confidence`, `best_next_question`, and `next_delta` fields through `src/dan/server/control_plane.py` instead of only terse summary/status strings.
 - Landed Telegram Super surface slice: Telegram Agent turns now use the shared Super TUI/Super DAN execution payload, preserve richer surface metadata through Chat V2, expose `/workspace` and `/session` inline menus, accept `/workspace <path>` manual browsing roots, group session cards by workspace with objective-first labels, and route selected active-session follow-ups through `/api/v2/agent-runs/{run_id}/commands` so background runs keep moving while Telegram switches context. `dan-up` now starts the backend-owned single Telegram adapter by default; the standalone fleet remains available through explicit `dan-up --telegram fleet`.
+- Landed workspace GUI Agent selector slice: `#workspace` keeps Super DAN as the default, exposes Kimi K2.6 through the existing Super DAN model override path, and adds a Codex option through a new Chat V2 `CodexAgentBackendAdapter` that shells out to `codex exec`; the composer keeps Steer/Next below the chatbox on the left and the model/agent picker below the chatbox on the right beside Send/Stop.
 - Current limitation: delegated execution still falls through to the shared legacy runtime after DAN-v2 and the specialist controller shape the handoff, and not every external surface has been migrated yet.

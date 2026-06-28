@@ -178,9 +178,21 @@
   - [x] 6-142. Add a separate Day/Night surface-tone setting for workspace themes
   - [x] 6-143. Preserve repeated runs in one Work Panel session as chronological run-scoped cards instead of overwriting older runs
   - [x] 6-144. Anchor follow-up and retry Super DAN runs to the original user-visible request plus the current satisfaction gap
+  - [x] 6-145. Surface branch/frontier, graph-level, deterministic, and semantic validation evidence in Super DAN validation payloads and Work Panel previews
   - [x] 6-145. Restore flattened Markdown pipe tables before Work Panel Preview rendering
   - [x] 6-146. Refresh selected Work Panel task status again after terminal Agent events settle
   - [x] 6-147. Show per-session worked/working elapsed time in the Sessions rail
+  - [x] 6-148. Auto-highlight code-like files, objects, fields, and calls in Markdown prose
+  - [x] 6-149. Settle stale active broad Work Panel phases when later execution evidence arrives
+  - [x] 6-150. Hide broad future Work Panel cards unless actual task-graph nodes planned future/deferred work
+  - [x] 6-150. Show one aggregate live work-duration counter in the Work Panel
+  - [x] 6-151. Keep broad Work Panel phases sequential until stage-specific evidence arrives
+  - [x] 6-152. Explain Work Panel needs-attention states without echoing the user request
+  - [x] 6-153. Seed the Live Task Graph from model-authored request understanding so no-planner runs still emit real task nodes
+  - [x] 6-153. Require a model-authored request-understanding preflight before planning or execution
+  - [x] 6-154. Preserve Markdown bold and explicit code spans inside list items while auto-highlighting code-like prose
+  - [x] 6-155. Keep active-run Work composer placeholders short so Steer/Next remains visibly typable
+  - [x] 6-156. Prevent the active-run composer placeholder from reading selected Work nodes before initialization
 
 ## Decisions
 - The workspace route is a surface, not another product mode.
@@ -213,6 +225,8 @@
 - Final response display and workspace outcome evidence are distinct channels. `DAN · Answer` / terminal summaries own the final response; `DAN · Outcome` / changed-file evidence can appear as supporting preview detail but must not rename or replace the final response. If a terminal event summary is generic but its payload carries a structured result, the preview recovers the useful user-facing summary from that payload.
 - Final answer prose may arrive with Markdown-like headings and bullets flattened into one line. The Work Panel normalizes those section/list markers before passing content to the shared Markdown renderer, so readable answer structure does not depend on the model inserting perfect line breaks.
 - Final answer Markdown tables can arrive flattened as heading text, header cells, separator rows, and body rows in one paragraph. The Work Panel recovers the pipe-table row breaks before rendering, so Preview can use the normal Markdown table renderer instead of showing the table source as prose.
+- Shared Markdown prose should highlight obvious code-shaped terms even when the model forgets backticks. File paths, CamelCase objects, snake_case fields, dotted members, and function calls get the same inline code treatment, while explicit code spans, fenced code, links, and math keep their own renderer paths.
+- Session timing should read as one aggregate clock. Session cards keep a compact total worked/working label, while the Work Panel header shows a single live `Total m:ss` / `Total h:mm:ss` counter instead of repeating duration chips on every run card.
 - Review, audit, inspect, check, summarize, and explain requests are answer work by default. The Work Plan labels them as review responses, final details lead with Summary, and file edits are not expected unless the operator explicitly asks for a saved artifact or workspace change.
 - Project/about/repo summary requests are a stronger answer-intent subset. The backend and Work Plan treat phrasings like "what is this project about", "help me summary this project", and "write me a project summary" as in-session answers unless the operator names an explicit file, markdown artifact, README update, or saved/exported target. For answer-style runs, changed-file receipts are supporting evidence only and cannot satisfy the final response by themselves.
 - The workspace visual skin can be product-specific without changing structure. `workspaceSurfaceTheme` in the settings store chooses Original, Industrial Steel, or Factory Worn, while `workspaceSurfaceTone` independently chooses System, Day, or Night for that surface. Original applies no workspace-skin class, `dan-machine-theme` owns the graphite/steel industrial treatment, and `dan-factory-worn-theme` layers a warmer oxidized metal, rivet/scratch, and durable machine-floor treatment over the same pane layout and component hierarchy.
@@ -298,6 +312,7 @@
 - The deterministic request-understanding packet is only a rule-generation brief. It may carry meta-rules such as chat-first handling for explanation/review/status requests and artifact-only-when-explicit handling, but it must not carry concrete fallback acceptance criteria. Planner/builder model outputs return a structured `request_understanding` packet with request-specific aspect rules, acceptance criteria, and stop rules; the Work Plan labels the brief as generating rules until model-authored criteria arrive.
 - The Work Plan consumes git-like `task_graph_state` snapshots rather than treating the first plan DAG as static. Planning emits a shared root version, later stages publish branch-local refs from that root, simultaneous sibling updates use one composite label, and task cards derive active/done/ready/future state from the latest graph version while still showing parallel groups and branch summaries compactly.
 - The Live Task Graph overview is not the same thing as Run Steps. It should render actual structured task-graph snapshots from `task_graph_state` / `plan_context.task_graph`, expose available revisions or version ids, group tasks by branch, and show dependencies as metadata. If no task graph exists yet, the graph area should wait for graph nodes rather than duplicating the fixed request/understand/execute/validate/final phase scaffold below.
+- Request understanding should usually emit the first graph snapshot. The preflight model output may return a compact `task_graph`, ready/deferred ids, and a graph-update reason before the optional planner runs; later planner/execution/validation stages can replace or revise that graph with richer versions.
 - Flutter Phone VPN controls use explicit `Force start` / `Force off` wording because they operate on the app-managed Android `dan-phone` tunnel, while the browser/backend WireGuard endpoint remains read-only host status.
 - Flutter Settings treats routing and authorization as separate concerns. Phone VPN controls manage Android routing to the DAN host; the Access token field is saved separately and sent as `Authorization: Bearer ...` on API probes and Notes calls when populated.
 - Force start is only enabled when a phone WireGuard peer config is saved. Without that config Android cannot show the VPN icon because no app-managed `VpnService` tunnel can be created.
@@ -307,6 +322,12 @@
 - Notes taxonomy clicks should drill into article lists without switching users back to the Pages folder tree. Tags and Categories remain their own rail contexts; Pages stays the folder hierarchy.
 
 ## Notes
+- 2026-06-28: Fixed shared Markdown inline parsing inside list items. Bullet and numbered items now preserve `**bold**` and explicit backtick code spans before the automatic code-like prose highlighter runs.
+- 2026-06-28: Required model-authored request understanding. Generic Super DAN runs now execute a dedicated no-mutation understanding pass before planning or execution; if the model does not return tailored aspect reviews, acceptance criteria, and a stop rule, the run blocks instead of relying on the deterministic brief alone.
+- 2026-06-28: Clarified Work Panel attention states. Blocked/failed cards now use explicit blocker/error/reason fields when available, and generic "needs attention" text no longer counts as a final response or falls back to the user's request.
+- 2026-06-28: Kept broad Work Panel phases sequential. Active run alone no longer makes Planning or Execute active; Understand Request is active first, Planning needs planning evidence, and Execute/Prepare needs build/tool/execution evidence.
+- 2026-06-28: Switched Work Panel duration to one aggregate live counter. Session cards still show a compact total worked/working label, and the Run Steps header now shows a single clock-style total that ticks while the session is active.
+- 2026-06-28: Settled stale active Work Panel phases. Broad Understand and Plan cards now infer a handoff/done state from later execution, validation, or final evidence, while the Live Task Graph stays empty until actual `task_graph_state` snapshots arrive.
 - 2026-06-28: Compactified Super DAN provider-facing prompt logs. Live prompts now lead with the user request and work contract, keep tools/context/evidence/return format visible, and retain motivated hooks for using recent chats, files, links, and web search only when they help the current answer or validation.
 - 2026-06-26: Limited the Sessions rail title dot to unread ready responses. Running and selected sessions no longer get a leading dot by default; completed sessions show the blue marker only when a user-facing answer or structured summary is ready and newer than the local seen timestamp.
 - 2026-06-26: Aligned Archived inner bucket rows with the rest of the Sessions rail. Nested workspace/project buckets now use the same rounded rail-card spacing, title treatment, hover tone, and count badge pattern as regular workspace rows.
