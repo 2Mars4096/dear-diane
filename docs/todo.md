@@ -1,6 +1,18 @@
 # Todo
 
 ## Current Backlog
+- [x] 2026-06-29 More generous Work card body height — fixed: Run Step cards now give active progress, final answers, and ordinary summaries more vertical room before clipping.
+- [x] 2026-06-29 Active Work card agent identity — fixed: active Work cards now highlight the selected Agent as a compact Markdown token, showing `Codex` for Codex runs and `DAN` for Native runs.
+- [x] 2026-06-29 Work pane Sessions-first order — fixed: the desktop Work layout and header controls now order panes as Sessions, Files, Work, then Preview, and opening a session card switches the active workspace before loading history so the Files rail follows the selected workspace root immediately.
+- [x] 2026-06-29 Remember Agent/model selections — fixed: the Work composer now persists the selected Agent plus each Agent's own last Model/config choice, so switching between Native and Codex restores the last setting for that Agent across sessions.
+- [x] 2026-06-29 Split Agent/model selectors — fixed: the Work composer now has separate Agent and Model/config drop-ups, keeps Native as the default, preserves Kimi K2.6 through the Super DAN backend, and routes Codex model plus low/medium/high/xhigh reasoning config into `codex exec`.
+- [x] 2026-06-29 Notes Recent activity shelf — fixed: the Notes content rail now shows a bounded Recent shelf with a Working Now card for active edits/Notes runs and the five most recently modified pages.
+- [x] 2026-06-29 Session running-status freshness — fixed: session cards now clear stale running state when terminal Agent events or fresher background task snapshots show the run has completed.
+- [x] 2026-06-29 Flexible Work header root path — fixed: the desktop Work header now lets the root path shrink/truncate inside the available space instead of using the saved picker width as a fixed top-bar width.
+- [x] 2026-06-28 Work card progress layout — fixed: Run Step cards now keep titles, drop subtitles, and render state-specific content for live active work, completed summaries, and planned future work.
+- [x] 2026-06-28 Notes Last Update chip — fixed: Hugo page metadata now shows a `Last Update` chip from `lastmod` when present, falling back to the note file timestamp when frontmatter lacks `lastmod`.
+- [x] 2026-06-28 Notes Source composer — fixed: the Notes Source panel now stacks the shared Super DAN Steer/Next composer under the Markdown editor, with Notes-pane runs carrying Hugo content-tree rules and active-note metadata through Chat V2.
+- [x] 2026-06-28 Markdown response over-highlighting — fixed: auto-highlight now favors obvious code identifiers and skips dense signatures, argument-heavy calls, indexed expressions, and ordinary snake_case fragments unless they are explicitly backticked.
 - [x] 2026-06-28 Workspace blank-page render crash — fixed: active-run composer placeholder logic now runs after the selected Work node exists, preventing the `selectedBlueprintNode` initialization crash.
 - [x] 2026-06-28 Active-run composer placeholder clarity — fixed: the Work composer no longer copies long selected step titles into the empty input while a run is active, so Steer/Next stays visibly typable.
 - [x] 2026-06-28 Composer routing control placement — fixed: Steer/Next remains below the chatbox on the left, and the model/agent picker is right-aligned beside Send/Stop with an upward name-only menu.
@@ -40,7 +52,7 @@
 - [x] 2026-06-27 Notes graph zoom stability — fixed: after using the zoom buttons, wheel zoom, pan, or fit in the Notes Knowledge Graph, resize/refresh noise no longer snaps the canvas back to center.
 - [x] 2026-06-27 Work Panel wording — fixed: the center Work surface now reads as a broader Work Panel, with the empty state and toggle/collapse labels updated away from narrow Work Plan wording.
 - [x] 2026-06-27 Live task graph overview — fixed: the Work Plan now shows a compact Live Task Graph above Run Steps, keeps ordinary step-by-step phases at the same level, groups emitted tasks under Plan, and reserves indentation for true subtasks/repair children.
-- [x] 2026-06-27 Work pane Files-first order — fixed: the desktop Work layout and header toggles now order panes as Files, Sessions, then Work Plan, including collapsed restore rails.
+- [x] 2026-06-27 Work pane Files-first order experiment — superseded 2026-06-29 by the Sessions, Files, Work, Preview order; the earlier pass had aligned panes/toggles/restore rails around Files first.
 - [x] 2026-06-27 Work Plan follow-up append continuity — fixed: when a new follow-up starts after a completed answer, the prior completed plan stays visible and the active follow-up is appended as continuation steps instead of refreshing the whole board around the newest message.
 - [x] 2026-06-27 Empty-composer Stop action — fixed: during an active run, the send button becomes Stop only when the chat box is empty; typing restores the normal Steer/Next send action without adding another button.
 - [x] 2026-06-27 Factory Worn light response highlights — fixed: inline file/code pills, Markdown links, and live-status tool/file/link/state tokens now use stronger light-mode machined-metal and brass highlight treatments instead of fading into the worn paper card texture.

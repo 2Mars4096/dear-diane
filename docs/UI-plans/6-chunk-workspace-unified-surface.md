@@ -159,7 +159,7 @@
   - [x] 6-124. Strengthen Factory Worn light response highlights for file paths, links, code, and live-status tokens
   - [x] 6-125. Replace the empty-composer send action with Stop during active runs
   - [x] 6-126. Keep completed Work Plan context visible while appending active follow-up runs
-  - [x] 6-127. Reorder desktop Work panes and header toggles to Files, Sessions, then Work Plan
+  - [x] 6-127. Reorder desktop Work panes and header toggles to Files, Sessions, then Work Plan (superseded by 6-165)
   - [x] 6-128. Add a same-level Live Task Graph overview above detailed Run Steps
   - [x] 6-129. Rename the center work surface from Work Plan to Work Panel
   - [x] 6-130. Keep Notes knowledge-graph zoom/pan stable after user interaction
@@ -193,6 +193,17 @@
   - [x] 6-154. Preserve Markdown bold and explicit code spans inside list items while auto-highlighting code-like prose
   - [x] 6-155. Keep active-run Work composer placeholders short so Steer/Next remains visibly typable
   - [x] 6-156. Prevent the active-run composer placeholder from reading selected Work nodes before initialization
+  - [x] 6-157. Tighten Markdown auto-highlighting so dense unbackticked code fragments do not turn into walls of chips
+  - [x] 6-158. Stack the shared Super DAN composer under the Notes Source panel and send Notes-specific Hugo workspace rules with those runs
+  - [x] 6-159. Show a Notes preview `Last Update` chip from Hugo `lastmod` or the note file timestamp
+  - [x] 6-160. Rework Run Step cards so active, done, and future states use the body for live progress or summaries instead of subtitles
+  - [x] 6-161. Make the Work header root path shrink within the available header space on narrow desktop widths
+  - [x] 6-162. Let terminal Agent events and fresher background snapshots clear stale running session-card state without requiring a click or refresh
+  - [x] 6-163. Add a bounded Notes Recent shelf with Working Now edit/agent cards and the five most recently modified pages
+  - [x] 6-164. Persist the Work composer Agent selection and each Agent's last Model/config choice across browser sessions
+  - [x] 6-165. Reorder desktop Work panes to Sessions, Files, Work, Preview and make session selection switch the active file root immediately
+  - [x] 6-166. Highlight active Work card Agent identity as `Codex` or `DAN` without printing the full model/config stack
+  - [x] 6-167. Increase Run Step card body height caps so live progress and summaries are less likely to clip
 
 ## Decisions
 - The workspace route is a surface, not another product mode.
@@ -202,7 +213,12 @@
 - The fast path is route-level code splitting plus textarea-based note editing; Monaco remains in Development mode.
 - The GUI should reuse Super TUI Agent contracts through `surface_profile=super_tui`; React should not fork backend execution/mutation policy.
 - The `#workspace` composer is Super DAN-only. It does not call `/api/v2/chat/message`; it creates Agent runs, executes them with `backend=super_dan` plus `surface_profile=super_tui`, and uses Agent-run commands for active-run steer/queue behavior.
+- Active Work card prose should expose who is working without becoming a model dump. Codex runs highlight `Codex`; Native runs highlight `DAN`; model/config details stay in the composer controls and task metadata unless the progress text itself mentions them.
 - Active-run Stop belongs in the composer action slot, not as a separate button. When a run is active and the composer is empty, the send button becomes Stop; once the user types, the same slot returns to Steer or Next.
+- Notes Source uses the same composer controls as the Work Panel, but Notes-pane submissions carry `workspace_mode=notes` plus a `notes_workspace` packet with Hugo content-tree, frontmatter, bundle, pageID, and root-containment rules.
+- The Work header treats the root path as flexible context, not fixed chrome. The mode switcher and status/action controls keep their natural sizes, while the root field truncates inside the remaining header space.
+- Notes preview metadata should show Last Update even when the page has not declared Hugo `lastmod`; frontmatter wins, otherwise the file timestamp is the best available freshness signal.
+- Notes content navigation exposes activity without replacing the tree. The rail keeps a compact Recent shelf between search/tabs and the Pages/Tags/Categories body, with a bounded internal scroller, a Working Now count/card for active edits or Notes Agent runs, and a five-page modified list from note mtimes.
 - Super DAN chunks should follow the TUI presentation shape: request, working status, answer, and outcome/checks. Raw provider/tool/model JSON stays below the event ledger, not as primary conversation cards.
 - The Work middle column is now blueprint-first, not card-first. It projects Super DAN task snapshots, organism-log events, and any emitted `plan_context.task_graph` into a live task rail where the current executable task is the anchor, completed nodes are solid, ready nodes are emphasized, and future/deferred nodes are thinner dashed placeholders. Blank new sessions remain empty until an actual user request, task snapshot, or run event exists.
 - Blueprint `active` now means a task is actually `running`. Queued, dependency-waiting, input-needed, paused, failed, blocked, and stopped task states remain visible without borrowing the active-run anchor; terminal failed/blocked/stopped work renders blocked execution/final nodes with the backend detail.
@@ -216,7 +232,7 @@
 - Blueprint node detail has two levels. The canvas shows phase/state boundaries such as request, understanding, planning, execution/current slice, validation, repair, final response, and independently stateful emitted tasks. The selected-node preview carries specifics such as targets, constraints, aspect reviews, acceptance criteria, plan frontier, recent activity, task state, artifacts, validation coverage, blockers, and completion evidence.
 - The visible surface should say what the user is doing, not how the implementation stores it. Internal blueprint/node language can remain in code and docs, but the broad center pane is Work Panel, while the execution graph inside it can still use Run Steps, Step, and status subtitles such as Planning next steps.
 - Selected-step previews are live status pages, not static explanations. They should show what the step is about plus current state, what is happening now, latest update, recent updates, and results so far from the selected session's task/event stream.
-- Live-status rows should stay readable prose, but tool names, paths, links, and blocked/denied states deserve compact scan tokens. A denied tool call must show the relevant tool, target path when present, and policy reason rather than a raw `denied` event row.
+- Live-status rows should stay readable prose, but tool names, paths, links, and blocked/denied states deserve compact scan tokens. A denied tool call must show the relevant tool, target path when present, and policy reason rather than a raw `denied` event row. Markdown prose auto-highlighting stays conservative: obvious filenames, class/object names, dotted references, leading-underscore callbacks, and constants can become scan tokens, but dense signatures, argument-heavy calls, indexed expressions, and ordinary snake_case variables stay plain unless the model explicitly uses backticks.
 - Structured final-response payloads may arrive as plain JSON or as a full Markdown `json` code fence. Both forms are machine payloads, so the Work Plan must unwrap and format them into readable answer/summary sections before they reach canvas cards or selected-step previews.
 - Operational completion phrases such as `completed`, `finished`, and `Run finished` are not answer content. They can appear as status evidence, but they must not mark the Final response card done for answer-style requests.
 - The Work Panel is still a conversation surface, but chat turns belong in the chronological work timeline. A user message renders inline immediately before the request step it created, so follow-up chats appear after the previous final response and before their own follow-up planning/work nodes instead of stacking in a separate Conversation block.
@@ -267,7 +283,7 @@
 - Conversation chunks represent chat history plus narrator/Agent events, not note headings.
 - Browser-hosted workspace shortcuts avoid Chrome-native `Cmd/Ctrl` combinations. The local route uses `Option+Shift` for workspace slots and Work panel toggles.
 - Session creation and workspace creation are separate controls: the Sessions header manages workspaces with add/open/close actions, while workspace-row `+` buttons create sessions inside that workspace.
-- Desktop Work panes and header toggles read left-to-right as Files, Sessions, then Work Plan. Collapsed restore rails use the same order so hiding Files does not leave the Files handle between Sessions and the plan.
+- Desktop Work panes and header toggles read left-to-right as Sessions, Files, Work, then Preview. Collapsed restore rails use the same order, and opening a session card moves the active workspace before history loading so the Files rail follows the selected workspace root immediately.
 - Desktop Work pane headers should use one-word titles only: Files, Sessions, Work, and Preview. State, selected file names, and step details belong inside the pane body or composer context rather than as subtitles in the pane chrome.
 - Factory Worn rail columns should share a single rail-surface role. Files and Sessions use the same background token, while cards and controls carry the local file/session differences.
 - Factory Worn rail cards should not inherit generic button metal. File rows, note rows, and session cards use the shared rail-card surface role, with active/drop states changing only border and lift.
