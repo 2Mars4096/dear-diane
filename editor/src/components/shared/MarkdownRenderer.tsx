@@ -12,6 +12,27 @@ function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;");
 }
 
+const INLINE_CODE_CLASS =
+  "rounded bg-slate-100 px-1 py-0.5 text-[0.88em] text-slate-900 dark:bg-slate-800 dark:text-slate-100";
+const AUTO_CODE_CLASS = `dan-markdown-auto-code ${INLINE_CODE_CLASS}`;
+const MATH_PLACEHOLDER_RE = /(\u0000DAN_MD_\d+\u0000)/g;
+const MATH_PLACEHOLDER_PART_RE = /^\u0000DAN_MD_\d+\u0000$/;
+const AUTO_CODE_TOKEN_RE =
+  /(^|[^\w./$-])((?:[\w.-]+\/)*[\w.-]+\.(?:c|cc|cpp|css|csv|gd|go|h|hpp|html|ini|java|json|jsx|log|md|mdx|py|rs|sh|sql|toml|ts|tsx|txt|xml|ya?ml)\b|_?[A-Za-z][A-Za-z0-9_]*(?:\._?[A-Za-z][A-Za-z0-9_]*)+(?:\([^()\n]{0,96}\))?|_?[A-Za-z][A-Za-z0-9_]*\([^()\n]{0,96}\)|_?[a-z][A-Za-z0-9]*_[A-Za-z0-9_]*\b|[A-Z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*\b)(?=$|[^\w/])/g;
+
+function renderAutoCodeText(value: string): string {
+  return value
+    .split(MATH_PLACEHOLDER_RE)
+    .map((part) => {
+      if (!part) return "";
+      if (MATH_PLACEHOLDER_PART_RE.test(part)) return part;
+      return escapeHtml(part).replace(AUTO_CODE_TOKEN_RE, (_match, prefix, token) => {
+        return `${prefix}<code class="${AUTO_CODE_CLASS}">${token}</code>`;
+      });
+    })
+    .join("");
+}
+
 function renderKatex(source: string, displayMode: boolean): string {
   try {
     return katex.renderToString(source.trim(), {
@@ -26,6 +47,13 @@ function renderKatex(source: string, displayMode: boolean): string {
 
 function createRenderer(): Marked {
   const renderer = new Renderer();
+
+  renderer.text = function text(token: any) {
+    if (Array.isArray(token.tokens) && token.tokens.length > 0) {
+      return this.parser.parseInline(token.tokens);
+    }
+    return renderAutoCodeText(String(token.text ?? token.raw ?? ""));
+  };
 
   renderer.heading = function heading(token: any) {
     const text = this.parser.parseInline(token.tokens);
@@ -68,7 +96,7 @@ function createRenderer(): Marked {
   };
 
   renderer.codespan = ({ text }: { text: string }) =>
-    `<code class="rounded bg-slate-100 px-1 py-0.5 text-[0.88em] text-slate-900 dark:bg-slate-800 dark:text-slate-100">${escapeHtml(text)}</code>`;
+    `<code class="${INLINE_CODE_CLASS}">${escapeHtml(text)}</code>`;
 
   renderer.blockquote = function blockquote(token: any) {
     const body = this.parser.parse(token.tokens);

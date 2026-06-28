@@ -1,0 +1,51 @@
+import { describe, expect, it } from "vitest";
+import { renderMarkdownToHtml } from "../MarkdownRenderer";
+
+function autoCodeCount(html: string) {
+  return html.match(/dan-markdown-auto-code/g)?.length ?? 0;
+}
+
+describe("MarkdownRenderer", () => {
+  it("auto-highlights code-like files, objects, fields, and calls in prose", () => {
+    const html = renderMarkdownToHtml(
+      "GameLoop.gd calls AgentNeighborSystem from _ready() and reads _ecs.positions_x before query_2d.",
+    );
+
+    expect(html).toContain("dan-markdown-auto-code");
+    expect(html).toContain(">GameLoop.gd</code>");
+    expect(html).toContain(">AgentNeighborSystem</code>");
+    expect(html).toContain(">_ready()</code>");
+    expect(html).toContain(">_ecs.positions_x</code>");
+    expect(html).toContain(">query_2d</code>");
+  });
+
+  it("leaves explicit code spans and math placeholders on their own paths", () => {
+    const html = renderMarkdownToHtml(
+      "Use `GameLoop.gd`, then inspect GameLoop.gd with cost $O(k)$.",
+    );
+
+    expect(autoCodeCount(html)).toBe(1);
+    expect(html).toContain(">GameLoop.gd</code>");
+    expect(html).toContain("katex");
+    expect(html).not.toContain("DAN_MD_");
+  });
+
+  it("does not highlight ordinary prose headings", () => {
+    const html = renderMarkdownToHtml("What Changed and Checks are normal words.");
+
+    expect(autoCodeCount(html)).toBe(0);
+  });
+
+  it("keeps bold markers working inside lists with auto-highlighted code", () => {
+    const html = renderMarkdownToHtml(
+      "- **Browser prototype** (`src/`, `index.html`) — TypeScript/JS ECS.\n" +
+        "1. **M1.5** — Wire `AgentNeighborSystem.gd` into `GameLoop.gd`.",
+    );
+
+    expect(html).toContain("<strong");
+    expect(html).toContain(">Browser prototype</strong>");
+    expect(html).toContain(">M1.5</strong>");
+    expect(html).not.toContain("**Browser prototype**");
+    expect(html).not.toContain("**M1.5**");
+  });
+});
