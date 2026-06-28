@@ -559,7 +559,7 @@ Workflow-generation rollout note:
 
 ### 3q. Universal Cell Briefs
 
-For new bounded worker/organism paths, prefer the Plan 56 brief surface over hand-built `WorkerDefinition` variants. `build_cell(...)` creates the invariant execution cell; task rules, tools, constraints, sampling, validation, and output shape live in `WorkerBrief` and are rendered into the user prompt by `request_from_brief(...)`.
+For new bounded worker/organism paths, prefer the Plan 56 brief surface over hand-built `WorkerDefinition` variants. `build_cell(...)` creates the invariant bounded worker; task rules, tools, constraints, sampling, validation, and output shape live in `WorkerBrief` and are rendered into the user prompt by `request_from_brief(...)`.
 
 ```python
 from dan.worker import (
@@ -593,8 +593,9 @@ request = request_from_brief(brief)
 ```
 
 Runtime notes:
-- `UNIVERSAL_CELL_SYSTEM_PROMPT` must stay domain-agnostic. Do not put product rules, file lists, thresholds, or validator wording into the cell system prompt.
+- `UNIVERSAL_CELL_SYSTEM_PROMPT` must stay domain-agnostic and should describe only a bounded worker for the current run. Do not put product rules, file lists, thresholds, architecture labels, or validator wording into the cell system prompt.
 - Put task-specific behavior in `WorkerBrief`: `tool_policy`, `runtime_policy`, `validation_policy`, `prompt_slots`, `contract_snippets`, `fail_predicates`, `recovery_hints`, `output_contract`, `sampling_policy`, `evidence`, `context_packet`, and `input_payload`.
+- Use `metadata["prompt_render_style"] = "super_dan_live_compact"` for Super DAN-style live briefs that should show the model a concise run contract instead of the full raw brief dump. The compact renderer leads with user request, work contract, current step, tools, context hooks, known context, constraints, guidance, evidence, and return format while leaving detailed metadata available to the caller.
 - Use `src/dan/worker/contracts/templates.py` for common profiles (`role_brief`, `coding_brief`, `review_brief`, `research_brief`, `scheduler_brief`) instead of concatenating bespoke prompt strings.
 - `role_brief(...)` and the task-family templates accept `evidence=...`, `context_packet=...`, and `input_payload=...` directly, so callers should pass structured refs/payloads into the brief instead of appending them as free-form prompt text.
 - `PromptContext.stable_fingerprint()` excludes routine dynamic refs; `slot_fingerprint()` includes slot values; `full_fingerprint()` includes dynamic snapshot/provenance refs for trace/debug use.
