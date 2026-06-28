@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -211,6 +214,211 @@ class DeterministicAgentBackendAdapter:
             artifact_refs=events[-1].artifact_refs,
             token_usage=usage_delta,
             token_usage_rounds=[events[2].token_usage_round],
+        )
+
+
+class CodexAgentBackendAdapter:
+    """Subprocess-backed adapter for Codex CLI agent runs."""
+
+    backend_name = "codex"
+
+    async def run(
+        self,
+        request: AgentBackendRunRequest,
+        emit_event: AgentEventSink,
+        runtime: AgentBackendRuntime | None = None,
+    ) -> AgentBackendRunResult:
+        if runtime is not None:
+            runtime.raise_if_interrupted("codex.start")
+
+        workspace_root = Path(request.workspace_root or "~").expanduser().resolve(strict=False)
+        objective = _objective_with_surface_context(request)
+        codex_bin = _resolve_codex_binary(request)
+        if not codex_bin:
+            event = AgentRunEvent(
+                type="blocked",
+                run_id=request.run_id,
+                task_id=request.task_id,
+                summary="Codex CLI was not found on PATH.",
+                source_event_type="chat_v2.backend.codex.missing_cli",
+                payload={"backend": self.backend_name},
+            )
+            emit_event(event)
+            return AgentBackendRunResult(
+                status="blocked",
+                backend=self.backend_name,
+                summary=event.summary,
+            )
+
+        command = _build_codex_exec_command(
+            codex_bin,
+            request,
+            workspace_root=workspace_root,
+            objective=objective,
+        )
+        emit_event(
+            AgentRunEvent(
+                type="planned",
+                run_id=request.run_id,
+                task_id=request.task_id,
+                summary="Prepared Codex Agent run.",
+                source_event_type="chat_v2.backend.codex.planned",
+                payload={
+                    "backend": self.backend_name,
+                    "workspace_root": str(workspace_root),
+                    "model": _codex_model(request),
+                    "sandbox": _codex_sandbox(request),
+                },
+            )
+        )
+        emit_event(
+            AgentRunEvent(
+                type="worker_started",
+                run_id=request.run_id,
+                task_id=request.task_id,
+                summary="Started Codex CLI Agent worker.",
+                source_event_type="chat_v2.backend.codex.worker_started",
+                payload={
+                    "backend": self.backend_name,
+                    "command": _redacted_command_for_event(command),
+                },
+            )
+        )
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=str(workspace_root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            event = AgentRunEvent(
+                type="blocked",
+                run_id=request.run_id,
+                task_id=request.task_id,
+                summary=f"Codex CLI executable was not found: {codex_bin}",
+                source_event_type="chat_v2.backend.codex.missing_cli",
+                payload={"backend": self.backend_name},
+            )
+            emit_event(event)
+            return AgentBackendRunResult(
+                status="blocked",
+                backend=self.backend_name,
+                summary=event.summary,
+            )
+
+        stderr_task = asyncio.create_task(_read_stream_text(process.stderr))
+        final_summary = ""
+        token_usage: dict[str, int] = {}
+        token_usage_rounds: list[dict[str, Any]] = []
+        artifact_refs: list[dict[str, Any]] = []
+        raw_events: list[dict[str, Any]] = []
+
+        assert process.stdout is not None
+        async for raw_line in process.stdout:
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                emit_event(
+                    AgentRunEvent(
+                        type="model_text_delta",
+                        run_id=request.run_id,
+                        task_id=request.task_id,
+                        summary=line[:300],
+                        source_event_type="chat_v2.backend.codex.stdout",
+                        payload={"backend": self.backend_name, "text": line},
+                    )
+                )
+                continue
+            if isinstance(row, dict):
+                raw_events.append(row)
+                for event in _codex_events_from_json_row(
+                    row,
+                    request=request,
+                    backend_name=self.backend_name,
+                ):
+                    if event.type == "completed" and event.summary:
+                        final_summary = event.summary
+                    elif event.type == "model_text_delta" and event.summary:
+                        final_summary = _first_compact_text(
+                            event.payload.get("text"),
+                            event.summary,
+                        )
+                    if event.token_usage_round:
+                        token_usage_rounds.append(dict(event.token_usage_round))
+                    if event.token_usage_total:
+                        token_usage = normalize_token_usage(event.token_usage_total)
+                    if event.artifact_refs:
+                        artifact_refs = _dedupe_artifact_refs(
+                            [*artifact_refs, *event.artifact_refs]
+                        )
+                    emit_event(event)
+
+        return_code = await process.wait()
+        stderr_text = await stderr_task
+        if return_code != 0:
+            summary = _first_compact_text(
+                final_summary,
+                stderr_text,
+                f"Codex exited with status {return_code}.",
+            )
+            emit_event(
+                AgentRunEvent(
+                    type="failed",
+                    run_id=request.run_id,
+                    task_id=request.task_id,
+                    summary=summary,
+                    source_event_type="chat_v2.backend.codex.failed",
+                    payload={
+                        "backend": self.backend_name,
+                        "return_code": return_code,
+                        "stderr": stderr_text[-4000:],
+                    },
+                )
+            )
+            return AgentBackendRunResult(
+                status="failed",
+                backend=self.backend_name,
+                summary=summary,
+                artifact_refs=artifact_refs,
+                token_usage=token_usage,
+                token_usage_rounds=token_usage_rounds,
+                raw_result={
+                    "return_code": return_code,
+                    "stderr": stderr_text,
+                    "events": raw_events[-100:],
+                },
+            )
+
+        summary = _first_compact_text(final_summary, "Codex completed.")
+        if not any(row.get("type") == "turn.completed" for row in raw_events):
+            emit_event(
+                AgentRunEvent(
+                    type="completed",
+                    run_id=request.run_id,
+                    task_id=request.task_id,
+                    summary=summary,
+                    artifact_refs=artifact_refs,
+                    source_event_type="chat_v2.backend.codex.completed",
+                    payload={"backend": self.backend_name, "return_code": return_code},
+                )
+            )
+        return AgentBackendRunResult(
+            status="completed",
+            backend=self.backend_name,
+            summary=summary,
+            artifact_refs=artifact_refs,
+            token_usage=token_usage,
+            token_usage_rounds=token_usage_rounds,
+            raw_result={
+                "return_code": return_code,
+                "stderr": stderr_text,
+                "events": raw_events[-100:],
+            },
         )
 
 
@@ -747,6 +955,8 @@ def select_agent_backend_adapter(
     normalized = str(requested or "").strip().lower().replace("-", "_")
     if normalized in {"deterministic", "fake", "test"}:
         return DeterministicAgentBackendAdapter()
+    if normalized in {"codex", "codex_cli", "openai_codex"}:
+        return CodexAgentBackendAdapter()
     if normalized in {"super_dan", "superdan", "super_organism"}:
         return SuperDanBackendAdapter()
     raise ValueError(f"Unsupported Agent backend: {requested}")
@@ -757,6 +967,300 @@ def _load_super_dan_cli():
 
     super_cli.load_env()
     return super_cli
+
+
+def _resolve_codex_binary(request: AgentBackendRunRequest) -> str:
+    configured = _first_compact_text(
+        request.profile_policy.get("codex_bin"),
+        request.metadata.get("codex_bin"),
+        os.environ.get("DAN_CODEX_BIN"),
+        "codex",
+        limit=400,
+    )
+    if os.path.sep in configured or (os.path.altsep and os.path.altsep in configured):
+        return configured
+    resolved = shutil.which(configured)
+    return resolved or ""
+
+
+def _codex_model(request: AgentBackendRunRequest) -> str:
+    return _first_compact_text(
+        request.profile_policy.get("codex_model"),
+        request.profile_policy.get("model"),
+        request.metadata.get("codex_model"),
+        os.environ.get("DAN_CODEX_MODEL"),
+        limit=400,
+    )
+
+
+def _codex_sandbox(request: AgentBackendRunRequest) -> str:
+    requested = _first_compact_text(
+        request.profile_policy.get("codex_sandbox"),
+        request.metadata.get("codex_sandbox"),
+        os.environ.get("DAN_CODEX_SANDBOX"),
+        limit=80,
+    )
+    if requested in {"read-only", "workspace-write", "danger-full-access"}:
+        return requested
+    mutation_mode = str(request.mutation_policy.get("mode") or "").strip().lower()
+    mutation_permission = str(request.mutation_policy.get("permission") or "").strip().lower()
+    if "read" in mutation_mode and "mutation" not in mutation_mode:
+        return "read-only"
+    if mutation_permission in {"forbidden", "read_only", "read-only"}:
+        return "read-only"
+    return "workspace-write"
+
+
+def _build_codex_exec_command(
+    codex_bin: str,
+    request: AgentBackendRunRequest,
+    *,
+    workspace_root: Path,
+    objective: str,
+) -> list[str]:
+    command = [
+        codex_bin,
+        "exec",
+        "--json",
+        "--color",
+        "never",
+        "--sandbox",
+        _codex_sandbox(request),
+        "--cd",
+        str(workspace_root),
+        "--skip-git-repo-check",
+    ]
+    model = _codex_model(request)
+    if model:
+        command.extend(["--model", model])
+    if bool(request.profile_policy.get("codex_ephemeral", True)):
+        command.append("--ephemeral")
+    command.append(objective)
+    return command
+
+
+def _redacted_command_for_event(command: list[str]) -> list[str]:
+    redacted: list[str] = []
+    skip_next = False
+    for token in command:
+        if skip_next:
+            redacted.append("<redacted>")
+            skip_next = False
+            continue
+        redacted.append(token)
+        if token in {"--api-key", "--token"}:
+            skip_next = True
+    return redacted
+
+
+async def _read_stream_text(stream: Any) -> str:
+    if stream is None:
+        return ""
+    chunks: list[bytes] = []
+    while True:
+        chunk = await stream.read(8192)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks).decode("utf-8", errors="replace").strip()
+
+
+def _codex_events_from_json_row(
+    row: dict[str, Any],
+    *,
+    request: AgentBackendRunRequest,
+    backend_name: str,
+) -> list[AgentRunEvent]:
+    row_type = str(row.get("type") or "").strip()
+    events: list[AgentRunEvent] = []
+    if row_type == "thread.started":
+        thread_id = _first_compact_text(row.get("thread_id"), limit=200)
+        events.append(
+            AgentRunEvent(
+                type="planned",
+                run_id=request.run_id,
+                task_id=request.task_id,
+                summary="Codex thread started.",
+                source_event_type=row_type,
+                payload={"backend": backend_name, "codex_thread_id": thread_id},
+            )
+        )
+        return events
+
+    if row_type in {"turn.started", "item.started"}:
+        item = row.get("item") if isinstance(row.get("item"), dict) else {}
+        summary = _codex_item_summary(item, default="Codex is working.")
+        events.append(
+            AgentRunEvent(
+                type="status_reported",
+                run_id=request.run_id,
+                task_id=request.task_id,
+                summary=summary,
+                source_event_type=row_type,
+                payload={"backend": backend_name, "codex_event": row},
+            )
+        )
+        return events
+
+    if row_type == "item.completed":
+        item = row.get("item") if isinstance(row.get("item"), dict) else {}
+        item_type = str(item.get("type") or "").strip()
+        artifact_refs = _codex_artifact_refs(item)
+        if item_type == "agent_message":
+            text = _first_compact_text(
+                item.get("text"),
+                item.get("message"),
+                item.get("content"),
+                limit=8000,
+            )
+            events.append(
+                AgentRunEvent(
+                    type="model_text_delta",
+                    run_id=request.run_id,
+                    task_id=request.task_id,
+                    summary=text[:500] if text else "Codex wrote a message.",
+                    artifact_refs=artifact_refs,
+                    source_event_type=row_type,
+                    payload={"backend": backend_name, "codex_event": row, "text": text},
+                )
+            )
+        elif "file" in item_type or artifact_refs:
+            events.append(
+                AgentRunEvent(
+                    type="artifact_changed",
+                    run_id=request.run_id,
+                    task_id=request.task_id,
+                    summary=_codex_item_summary(item, default="Codex changed workspace artifacts."),
+                    artifact_refs=artifact_refs,
+                    source_event_type=row_type,
+                    payload={"backend": backend_name, "codex_event": row},
+                )
+            )
+        else:
+            events.append(
+                AgentRunEvent(
+                    type="tool_used",
+                    run_id=request.run_id,
+                    task_id=request.task_id,
+                    summary=_codex_item_summary(item, default="Codex completed a work item."),
+                    artifact_refs=artifact_refs,
+                    source_event_type=row_type,
+                    payload={"backend": backend_name, "codex_event": row},
+                )
+            )
+        return events
+
+    if row_type == "turn.completed":
+        usage = normalize_token_usage(row.get("usage"))
+        if usage:
+            events.append(
+                AgentRunEvent(
+                    type="token_usage_recorded",
+                    run_id=request.run_id,
+                    task_id=request.task_id,
+                    summary="Token usage for Codex run.",
+                    source_event_type=row_type,
+                    token_usage_delta=usage,
+                    token_usage_total=usage,
+                    token_usage_round={
+                        "round": 1,
+                        "model": _first_compact_text(row.get("model"), _codex_model(request), "codex"),
+                        "backend": backend_name,
+                        "delta": usage,
+                        "total": usage,
+                    },
+                    payload={"backend": backend_name},
+                )
+            )
+        final_text = _codex_final_text(row)
+        events.append(
+            AgentRunEvent(
+                type="completed",
+                run_id=request.run_id,
+                task_id=request.task_id,
+                summary=final_text or "Codex completed.",
+                artifact_refs=_codex_artifact_refs(row),
+                source_event_type=row_type,
+                payload={"backend": backend_name, "codex_event": row},
+            )
+        )
+        return events
+
+    if row_type in {"turn.failed", "error"}:
+        events.append(
+            AgentRunEvent(
+                type="failed",
+                run_id=request.run_id,
+                task_id=request.task_id,
+                summary=_first_compact_text(
+                    row.get("message"),
+                    row.get("error"),
+                    row.get("detail"),
+                    "Codex run failed.",
+                ),
+                source_event_type=row_type,
+                payload={"backend": backend_name, "codex_event": row},
+            )
+        )
+    return events
+
+
+def _codex_item_summary(item: dict[str, Any], *, default: str) -> str:
+    item_type = _first_compact_text(item.get("type"), limit=120)
+    command = _first_compact_text(item.get("command"), item.get("cmd"), limit=300)
+    text = _first_compact_text(item.get("text"), item.get("summary"), item.get("message"), limit=300)
+    if command:
+        return f"Codex ran `{command}`."
+    if text:
+        return text
+    if item_type:
+        return f"Codex completed {item_type.replace('_', ' ')}."
+    return default
+
+
+def _codex_final_text(row: dict[str, Any]) -> str:
+    return _first_compact_text(
+        row.get("final_response"),
+        row.get("final_message"),
+        row.get("message"),
+        row.get("text"),
+        limit=8000,
+    )
+
+
+def _codex_artifact_refs(value: Any) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+
+    def visit(item: Any) -> None:
+        if isinstance(item, dict):
+            path_value = _first_compact_text(
+                item.get("path"),
+                item.get("file_path"),
+                item.get("relative_path"),
+                limit=800,
+            )
+            if path_value and not path_value.startswith("item_"):
+                refs.append({"path": path_value})
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return _dedupe_artifact_refs(refs)
+
+
+def _dedupe_artifact_refs(refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ref in refs:
+        path = _first_compact_text(ref.get("path"), limit=1000)
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        result.append({"path": path})
+    return result
 
 
 def _request_policy_payload(request: AgentBackendRunRequest, key: str) -> dict[str, Any]:

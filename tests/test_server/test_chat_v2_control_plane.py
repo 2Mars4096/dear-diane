@@ -29,11 +29,14 @@ from dan.server.chat_v2_progress import AgentProgressStateMachine, TelegramProgr
 from dan.server.chat_v2_organism import map_organism_log_row_to_agent_event
 from dan.server.chat_v2_backend import (
     AgentBackendRunRequest,
+    CodexAgentBackendAdapter,
+    _build_codex_exec_command,
     _build_super_dan_args,
     _is_safe_backend_checkpoint,
     _load_super_dan_cli,
     _objective_with_surface_context,
     build_agent_backend_request,
+    select_agent_backend_adapter,
 )
 from dan.server.chat_v2_store import ChatV2Store, structured_operator_context
 from dan.server.routers.chat import ChatMessageRequest
@@ -469,6 +472,58 @@ def test_v2_super_dan_args_forward_structured_surface_context(tmp_path) -> None:
     assert args._tui_communication_policy["answer_budget"] == "brief"
     assert args._tui_execution_policy["stop_condition"] == "validation_passes"
     assert args._tui_surface_policy["phase_shape"] == "validation_gate"
+
+
+def test_v2_selects_codex_agent_backend_from_profile_policy(tmp_path) -> None:
+    request = AgentBackendRunRequest(
+        task_id="task-1",
+        run_id="run-1",
+        objective="please work on this repo",
+        workspace_root=str(tmp_path),
+        profile_policy={"backend": "codex"},
+    )
+
+    adapter = select_agent_backend_adapter(request)
+
+    assert isinstance(adapter, CodexAgentBackendAdapter)
+
+
+def test_v2_codex_exec_command_is_additive_and_workspace_scoped(tmp_path) -> None:
+    request = AgentBackendRunRequest(
+        task_id="task-1",
+        run_id="run-1",
+        objective="please work on this repo",
+        workspace_root=str(tmp_path),
+        profile_policy={
+            "backend": "codex",
+            "codex_model": "gpt-5.5",
+            "codex_sandbox": "read-only",
+        },
+    )
+
+    command = _build_codex_exec_command(
+        "/usr/local/bin/codex",
+        request,
+        workspace_root=tmp_path,
+        objective="please work on this repo",
+    )
+
+    assert command == [
+        "/usr/local/bin/codex",
+        "exec",
+        "--json",
+        "--color",
+        "never",
+        "--sandbox",
+        "read-only",
+        "--cd",
+        str(tmp_path),
+        "--skip-git-repo-check",
+        "--model",
+        "gpt-5.5",
+        "--ephemeral",
+        "please work on this repo",
+    ]
 
 
 def test_v2_surface_turn_carries_hugo_notes_feature(monkeypatch, tmp_path) -> None:
