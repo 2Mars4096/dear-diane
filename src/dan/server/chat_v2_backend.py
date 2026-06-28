@@ -267,6 +267,7 @@ class CodexAgentBackendAdapter:
                     "backend": self.backend_name,
                     "workspace_root": str(workspace_root),
                     "model": _codex_model(request),
+                    "reasoning_effort": _codex_reasoning_effort(request),
                     "sandbox": _codex_sandbox(request),
                 },
             )
@@ -1011,6 +1012,20 @@ def _codex_sandbox(request: AgentBackendRunRequest) -> str:
     return "workspace-write"
 
 
+def _codex_reasoning_effort(request: AgentBackendRunRequest) -> str:
+    requested = _first_compact_text(
+        request.profile_policy.get("codex_reasoning_effort"),
+        request.profile_policy.get("reasoning_effort"),
+        request.metadata.get("codex_reasoning_effort"),
+        request.metadata.get("selected_reasoning_effort"),
+        os.environ.get("DAN_CODEX_REASONING_EFFORT"),
+        limit=80,
+    )
+    if requested in {"low", "medium", "high", "xhigh"}:
+        return requested
+    return ""
+
+
 def _build_codex_exec_command(
     codex_bin: str,
     request: AgentBackendRunRequest,
@@ -1033,6 +1048,9 @@ def _build_codex_exec_command(
     model = _codex_model(request)
     if model:
         command.extend(["--model", model])
+    reasoning_effort = _codex_reasoning_effort(request)
+    if reasoning_effort:
+        command.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
     if bool(request.profile_policy.get("codex_ephemeral", True)):
         command.append("--ephemeral")
     command.append(objective)

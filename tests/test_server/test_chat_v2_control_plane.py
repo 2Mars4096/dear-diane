@@ -497,6 +497,7 @@ def test_v2_codex_exec_command_is_additive_and_workspace_scoped(tmp_path) -> Non
         profile_policy={
             "backend": "codex",
             "codex_model": "gpt-5.5",
+            "codex_reasoning_effort": "high",
             "codex_sandbox": "read-only",
         },
     )
@@ -521,6 +522,8 @@ def test_v2_codex_exec_command_is_additive_and_workspace_scoped(tmp_path) -> Non
         "--skip-git-repo-check",
         "--model",
         "gpt-5.5",
+        "-c",
+        'model_reasoning_effort="high"',
         "--ephemeral",
         "please work on this repo",
     ]
