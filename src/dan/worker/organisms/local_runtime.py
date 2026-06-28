@@ -195,6 +195,17 @@ def _compact_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if value is not None}
 
 
+def _debug_prompt_messages(messages: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return a JSON-safe copy of provider-facing messages for debug logs."""
+
+    copied = copy.deepcopy([message for message in messages if isinstance(message, dict)])
+    try:
+        json.dumps(copied, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return json.loads(json.dumps(copied, ensure_ascii=False, default=str))
+    return copied
+
+
 def _dedupe(values: Sequence[str]) -> list[str]:
     ordered: list[str] = []
     seen: set[str] = set()
@@ -1230,6 +1241,28 @@ def _operator_intent_blocked_tool_ids(request: CompletionRequest) -> set[str]:
         return set()
 
     blocked: set[str] = set()
+    raw_work_contract = policy.get("work_contract")
+    work_contract = raw_work_contract if isinstance(raw_work_contract, Mapping) else {}
+    work_mode = str(
+        policy.get("work_mode")
+        or work_contract.get("work_mode")
+        or ""
+    )
+    if work_mode == "chat_answer":
+        blocked.update(
+            {
+                "list_directory",
+                "file_read",
+                "file_edit",
+                "file_write",
+                "workspace_check",
+                "shell_command",
+                "git_status",
+                "git_diff",
+                "git_log",
+                "web_search",
+            }
+        )
     if policy.get("allow_workspace_mutation") is False:
         blocked.update({"file_edit", "file_write"})
     if policy.get("allow_shell_command") is False:
@@ -1259,8 +1292,17 @@ def _operator_intent_tool_schemas(
 
 def _request_forbids_workspace_mutation(request: CompletionRequest) -> bool:
     raw_policy = _operator_intent_policy_payload(request)
-    if raw_policy.get("allow_workspace_mutation") is False:
-        return True
+    raw_work_contract = raw_policy.get("work_contract")
+    work_contract = raw_work_contract if isinstance(raw_work_contract, Mapping) else {}
+    mutation_policy = str(
+        raw_policy.get("mutation_policy")
+        or work_contract.get("mutation_policy")
+        or ""
+    ).strip()
+    if mutation_policy:
+        return mutation_policy == "forbidden" or raw_policy.get("allow_workspace_mutation") is False
+    if "allow_workspace_mutation" in raw_policy:
+        return raw_policy.get("allow_workspace_mutation") is False
 
     text = " ".join(
         str(part or "")
@@ -5120,15 +5162,18 @@ class ToolLoopCompletionProvider:
                     tool_schema_chars=tool_schema_chars,
                     emergency=True,
                 )
+            provider_request_messages = apply_cache_hints(self._provider, provider_messages)
             self._emit_event(
                 "model.requested",
                 model=model,
                 round=rounds + 1,
                 tool_count=len(request_tool_schemas),
+                tool_ids=list(request_tool_ids),
                 model_call_id=model_call_id,
                 timeout_seconds=effective_timeout_seconds,
                 timeout_strategy=timeout_strategy,
                 blocked_by_tool_call_ids=list(blocked_by_tool_call_ids) or None,
+                prompt_messages=_debug_prompt_messages(provider_request_messages),
                 **prompt_context_stats,
                 **event_context,
             )
@@ -5139,7 +5184,7 @@ class ToolLoopCompletionProvider:
             }
             try:
                 last_result = await self._complete_text_response_with_timeout(
-                    messages=apply_cache_hints(self._provider, provider_messages),
+                    messages=provider_request_messages,
                     model=model,
                     request=request,
                     provider_kwargs=provider_kwargs,
@@ -5403,6 +5448,8 @@ class ToolLoopCompletionProvider:
                 usage=_normalize_usage_totals(getattr(last_result, "usage", None)),
                 usage_totals=dict(usage_totals),
                 text=(last_result.text or "")[:400],
+                response_text=last_result.text or "",
+                assistant_message=_debug_prompt_messages([assistant_message])[0],
                 streamed=bool((getattr(last_result, "provider_metadata", None) or {}).get("streamed_response")),
                 **event_context,
             )

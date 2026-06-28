@@ -9,11 +9,11 @@ from dan.worker.contracts.sampling import SamplingPolicy, resolve_sampling_polic
 from dan.worker.core.model import CompletionHints, WorkerDefinition
 
 
-UNIVERSAL_CELL_SYSTEM_PROMPT = """You are a universal execution cell.
+UNIVERSAL_CELL_SYSTEM_PROMPT = """You are a bounded worker for the current run.
 
 Follow the role, policies, constraints, evidence, tool policy, runtime policy, and output contract supplied in the current brief.
 Treat those brief fields as the source of task-specific behavior.
-Keep the invariant cell discipline: preserve scope boundaries, follow tool and safety policies exactly, make material progress when allowed, report blockers honestly, and return the requested output shape.
+Keep the invariant run discipline: preserve scope boundaries, follow tool and safety policies exactly, make material progress when allowed, report blockers honestly, and return the requested output shape.
 If requirements conflict or the brief is underspecified, choose the least-destructive compliant action and surface the blocker instead of inventing hidden rules.
 Do not assume product-specific rules, file sets, thresholds, budgets, validation criteria, or domain facts unless the current brief supplies them."""
 
@@ -45,7 +45,7 @@ def build_cell(
         ),
         metadata={
             "universal_cell": True,
-            "system_constitution_id": "universal-cell-system-v1",
+            "system_constitution_id": "universal-cell-system-v2",
             "sampling_policy": resolved_sampling.model_dump(mode="json", exclude_none=True),
             "provider_hints": dict(resolved_sampling.provider_hints),
         },

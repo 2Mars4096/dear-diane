@@ -151,6 +151,164 @@ def _evidence_section(evidence: Sequence[EvidenceBlock]) -> str:
     return "\n".join(blocks)
 
 
+def _compact_work_contract(
+    input_payload: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    policy = input_payload.get("operator_intent_policy")
+    if not isinstance(policy, Mapping):
+        policy = metadata.get("operator_intent_policy")
+    if isinstance(policy, Mapping):
+        contract = policy.get("work_contract")
+        if isinstance(contract, Mapping):
+            return contract
+        return {
+            "work_mode": policy.get("work_mode"),
+            "mutation_policy": policy.get("mutation_policy"),
+            "evidence_policy": policy.get("evidence_policy"),
+            "final_response_policy": "human_readable_synthesis",
+        }
+    request_understanding = input_payload.get("request_understanding")
+    if isinstance(request_understanding, Mapping):
+        contract = request_understanding.get("work_contract")
+        if isinstance(contract, Mapping):
+            return contract
+    return {}
+
+
+def _compact_request_text(brief: WorkerBrief) -> str:
+    payload = brief.input_payload
+    for key in ("original_request", "objective", "user_request"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    request_understanding = payload.get("request_understanding")
+    if isinstance(request_understanding, Mapping):
+        value = request_understanding.get("original_request")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return brief.task.strip()
+
+
+def _compact_tool_policy(tool_policy: ToolUseContract) -> str:
+    payload = tool_policy.model_dump(mode="json", exclude_none=True)
+    allowed = ", ".join(str(item) for item in payload.get("allowed_tool_ids") or []) or "none"
+    preferred = ", ".join(str(item) for item in payload.get("preferred_tool_ids") or []) or "none"
+    max_calls = payload.get("max_tool_calls")
+    parts = [f"allowed={allowed}", f"preferred={preferred}"]
+    if max_calls is not None:
+        parts.append(f"max_tool_calls={max_calls}")
+    return "; ".join(parts)
+
+
+def _compact_context_summary(brief: WorkerBrief) -> str:
+    payload = brief.input_payload
+    parts: list[str] = []
+    workspace_root = payload.get("workspace_root")
+    if workspace_root:
+        parts.append(f"- workspace_root: {workspace_root}")
+    target_paths = payload.get("target_paths")
+    if not target_paths:
+        policy = payload.get("operator_intent_policy")
+        if isinstance(policy, Mapping):
+            target_paths = policy.get("target_artifacts")
+    if target_paths:
+        parts.append("- target_paths: " + ", ".join(str(item) for item in list(target_paths)[:8]))
+    satisfaction_gap = payload.get("satisfaction_gap") or payload.get("failure_reason")
+    if satisfaction_gap:
+        parts.append(f"- current gap: {satisfaction_gap}")
+    already_known = payload.get("surface_already_known")
+    if isinstance(already_known, Mapping) and already_known.get("content"):
+        parts.append("- recent conversation facts: " + _stringify(already_known.get("content")))
+    elif payload.get("surface_history"):
+        try:
+            count = len(payload.get("surface_history") or [])
+        except TypeError:
+            count = 0
+        if count:
+            parts.append(f"- recent conversation history is available ({count} turns); consult only if it clarifies intent or avoids repeated work")
+    attachments = payload.get("surface_attachments") or payload.get("image_attachments")
+    if attachments:
+        parts.append("- attachments are available; inspect only if they affect the current request")
+    plan_context = payload.get("plan_context")
+    if isinstance(plan_context, Mapping):
+        graph_state = plan_context.get("task_graph_state")
+        version = ""
+        if isinstance(graph_state, Mapping):
+            version = str(graph_state.get("version_id") or "").strip()
+        ready = plan_context.get("ready_task_ids") or []
+        if version or ready:
+            parts.append(
+                "- latest task graph: "
+                + (f"version={version}; " if version else "")
+                + ("ready=" + ", ".join(str(item) for item in list(ready)[:8]) if ready else "use supplied graph context")
+            )
+    return "\n".join(parts)
+
+
+def _render_compact_run_prompt(brief: WorkerBrief) -> str:
+    """Render a concise operator-facing run contract for live Super DAN calls."""
+
+    role = brief.role
+    contract = _compact_work_contract(brief.input_payload, brief.metadata)
+    contract_text = ", ".join(
+        f"{key}={value}"
+        for key, value in {
+            "work_mode": contract.get("work_mode"),
+            "mutation_policy": contract.get("mutation_policy"),
+            "evidence_policy": contract.get("evidence_policy"),
+            "final_response_policy": contract.get("final_response_policy") or "human_readable_synthesis",
+        }.items()
+        if value
+    )
+    if not contract_text:
+        contract_text = "use the supplied task, constraints, and tool policy"
+    context_summary = _compact_context_summary(brief)
+    constraints = _list_section([*brief.hard_constraints, *brief.soft_constraints])
+    snippets = _list_section(brief.contract_snippets)
+    evidence = _evidence_section(brief.evidence)
+    output_parts = [
+        brief.output_contract.definition_of_done,
+        brief.output_contract.expected_return_shape,
+    ]
+    sections = [
+        _section("User request", _compact_request_text(brief)),
+        _section("Work contract", contract_text),
+        _section(
+            "Current step",
+            "\n".join(
+                part
+                for part in [
+                    f"stage={brief.metadata.get('organism_stage') or 'run'}",
+                    f"worker={role.role_label}",
+                    role.responsibility,
+                    brief.task,
+                ]
+                if str(part or "").strip()
+            ),
+        ),
+        _section("Available tools", _compact_tool_policy(brief.tool_policy)),
+        _section(
+            "Context hooks",
+            _list_section(
+                [
+                    "Use recent chats, prior requests, and prior responses only when they clarify the current intent, explain a follow-up, or prevent repeated work.",
+                    "Explore project files, project rules, links, and web_search only when they provide evidence needed for the answer, change, or validation.",
+                    "Prefer important project files and explicit targets before broad discovery; avoid rereading the same files unless exact grounding is needed.",
+                    "If the request depends on current external facts, use web_search when available instead of guessing; otherwise name the uncertainty.",
+                    "Track information sources and workspace changes so the final response can explain what was used and what changed.",
+                ]
+            ),
+        ),
+        _section("Known context", context_summary),
+        _section("Constraints", constraints),
+        _section("Stage guidance", snippets),
+        _section("Evidence already supplied", evidence),
+        _section("Return format", "\n\n".join(part for part in output_parts if str(part or "").strip())),
+    ]
+    return "\n\n".join(part for part in sections if part)
+
+
 def render_brief_prompt(role: RoleSpec | WorkerBrief, brief: WorkerBrief | None = None) -> str:
     """Render a brief through the fixed universal prompt architecture."""
 
@@ -158,6 +316,8 @@ def render_brief_prompt(role: RoleSpec | WorkerBrief, brief: WorkerBrief | None 
     if resolved_brief is None:
         raise ValueError("render_brief_prompt requires a WorkerBrief")
     resolved_role = resolved_brief.role if isinstance(role, WorkerBrief) else role
+    if str(resolved_brief.metadata.get("prompt_render_style") or "") == "super_dan_live_compact":
+        return _render_compact_run_prompt(resolved_brief)
     sections = [
         _section("Role", resolved_role.model_dump(mode="json", exclude_none=True)),
         _section("Task", resolved_brief.task),
