@@ -170,9 +170,13 @@ def _live_answer_recovery_loop_limit(args: argparse.Namespace) -> int:
 
 
 _SUPER_DAN_CAPABILITY_POINTS: tuple[str, ...] = (
-    "You are one execution cell inside Super DAN, a private multi-agent organism; do not assume the model already knows this project.",
-    "The organism can inspect workspace files, search when available, edit or write artifacts, validate results, repair failed candidates, and pass compact evidence between organs.",
-    "Your job is to contribute a concrete, inspectable step toward the operator objective, not to behave like a generic standalone chatbot.",
+    "Treat this as a concrete run packet, not an identity prompt: locate the operator request, workspace root, project rules, attachments, prior context, available tools, and active work contract.",
+    "Before planning or acting, gather enough request/project context for this specific task. When evidence policy permits, inspect project rules and important files, summarize the files/rules you rely on, and distinguish central evidence from incidental files.",
+    "When enough information is gathered, produce or update a compact task graph with concrete nodes, branches, dependencies, owned paths, deliverables, and validation checks. Keep ordinary step-by-step work at the same level; use nesting only for true subtasks or repair/retry children.",
+    "Treat task graph versions as authoritative working state: always refer to the latest graph/version in context, explain why a revision changes ready/deferred/blocked work, and execute only the current ready frontier.",
+    "Execute parallel branches only when their dependencies and owned paths do not conflict. Otherwise work step-by-step on the highest-value ready node and report blockers rather than drifting into unrelated future tasks.",
+    "Validate against the original user request, the generated request-understanding criteria, what was attempted, source/change tracking, changed files, and the latest graph. If validation fails, revise the graph and continue with the remaining ready work.",
+    "Final delivery is a human explanation for the operator: answer the request first, then briefly explain what was inspected, what changed if anything, which checks support it, and what remains uncertain or blocked.",
 )
 
 _SUPER_DAN_TOOL_DESCRIPTIONS: dict[str, str] = {
@@ -214,31 +218,42 @@ _SUPER_DAN_TOOL_DESCRIPTIONS: dict[str, str] = {
 
 _SUPER_DAN_STAGE_RULE_INSTRUCTIONS: dict[str, str] = {
     "planner": (
-        "Generate the planning checks from this operator request, the active intent policy, available tools, "
-        "and workspace evidence already seen. Keep only checks that would change the next action; do not reuse "
-        "a fixed stage checklist."
+        "Start by understanding this specific request: identify who/what/where/how/quality/evidence constraints, "
+        "then use available tools to inspect enough project rules, important files, and prior context to decide the next graph. "
+        "Generate planning checks from that evidence, the active intent policy, and available tools. Keep only checks that "
+        "would change the next action; do not reuse a fixed stage checklist."
     ),
     "plan_validator": (
-        "Generate validation checks for the emitted plan from its actual structure, identifiers, dependencies, "
-        "and promised deliverables. Keep deterministic format constraints, but make the substantive review "
-        "specific to this plan."
+        "Generate validation checks for the emitted plan from the original request, gathered project context, actual "
+        "graph structure, identifiers, dependencies, branch/owned-path boundaries, and promised deliverables. Keep "
+        "deterministic format constraints, but make the substantive review specific to this plan."
     ),
     "builder": (
-        "Generate execution checks from the request-specific completion contract before acting. Decide whether "
-        "the operator needs an in-session answer, an edit, a saved artifact, or an explicit blocker; do not turn "
-        "answer-only review/summary work into file edits."
+        "Generate execution checks from the request-specific completion contract and latest task graph before acting. "
+        "Decide whether the operator needs an in-session answer, an edit, a saved artifact, or an explicit blocker; "
+        "do not turn answer-only review/summary work into file edits. If the graph is stale or incomplete, return a "
+        "focused graph update before executing the next ready slice."
     ),
     "builder_retry": (
-        "Generate retry checks from the previous failure evidence and the operator's actual target. The next "
-        "attempt should repair the specific gap or report a blocker, not follow a generic retry recipe."
+        "Generate retry checks from the original request, previous failure evidence, latest graph version, and the "
+        "operator's actual target. The next attempt should repair the specific satisfaction gap, update the graph if "
+        "remaining work changed, or report a blocker; do not follow a generic retry recipe."
     ),
     "validator": (
-        "Generate validation checks from the original request, the current frontier, and concrete evidence from "
-        "the run. Judge only the work that was actually due now, and make remaining-work notes explicit."
+        "Generate validation checks from the original request, request-understanding criteria, current frontier, changed files, "
+        "executed tools, available evidence, and latest task graph. Validate semantic completion and request fit, not just "
+        "that a tool succeeded. If the result falls short, return the graph update and remaining ready/deferred work needed "
+        "to close the gap."
     ),
     "repair": (
-        "Generate repair checks from the validator's concrete findings and the original operator contract. Prefer "
-        "the smallest honest repair, or report the blocker when repair is not currently justified."
+        "Generate repair checks from the validator's concrete findings, changed files, original operator contract, and latest "
+        "graph state. Repair only the current ready/frontier blocker, revise the graph when dependencies or remaining work "
+        "changed, or return a precise blocker."
+    ),
+    "final_response_recovery": (
+        "Generate answer-recovery checks from the original user request, gathered sources/checks, changed files if any, "
+        "latest graph state, and why the previous final response was unsatisfactory. Produce the missing human-readable "
+        "answer or a precise blocker."
     ),
 }
 
@@ -329,7 +344,7 @@ def _bullet_section(title: str, items: Sequence[str]) -> str:
 
 def _super_dan_identity_snippet(extra_points: Sequence[str] | None = None) -> str:
     return _bullet_section(
-        "Super DAN organism context",
+        "Run context packet",
         [*_SUPER_DAN_CAPABILITY_POINTS, *list(extra_points or [])],
     )
 
@@ -1651,12 +1666,19 @@ def _super_plan_executor_contract(plan_context: Mapping[str, Any] | None) -> str
     plan_files = ", ".join(str(item) for item in (payload.get("plan_files") or [])[:6]) or "run-local plan files"
     graph = _super_plan_task_graph_fragment(payload.get("task_graph") or [])
     graph_note = f" Dependency graph: {graph}." if graph else ""
+    graph_state = payload.get("task_graph_state") if isinstance(payload.get("task_graph_state"), Mapping) else {}
+    version = str(dict(graph_state or {}).get("version_id") or payload.get("task_graph_revision") or "").strip()
+    version_note = (
+        f" Latest task graph version: {version}; treat that version as authoritative for ready/deferred/blocker decisions."
+        if version
+        else " Treat the latest task graph in context as authoritative for ready/deferred/blocker decisions."
+    )
     return (
         "Plan execution contract / Dependency-frontier execution contract: a run-local plan has already been validated for this broad objective. "
-        f"Plan files: {plan_files}. Execute the current ready frontier: {ready}.{parallel_note}{deferred_note}{graph_note} "
+        f"Plan files: {plan_files}. Execute the current ready frontier: {ready}.{parallel_note}{deferred_note}{graph_note}{version_note} "
         "You may complete one or more ready tasks when their owned paths are compatible, but do not expand into blocked "
         "downstream tasks merely because the full objective mentions them. If the dependency prediction is wrong, update "
-        "the plan notes or dependency revisions with evidence and stop at the smallest coherent correction. "
+        "the task graph/dependency revisions with evidence and stop at the smallest coherent correction. "
         "You may update plan checkboxes only for work you actually complete with concrete workspace evidence. "
         "Leave partial or blocked work unchecked and add a short note instead. "
         "Plan-file edits alone do not count as the deliverable mutation; create or edit the actual requested artifact too."
@@ -1676,6 +1698,7 @@ def _super_plan_validation_contract(plan_context: Mapping[str, Any] | None) -> s
     return (
         "Plan-progress audit contract / Dependency-frontier validation contract: validate the current ready frontier, not the entire future DAG at once. "
         f"{frontier_note}"
+        "Use the latest task graph version from context as the authoritative frontier; if evidence invalidates it, return a focused graph revision with changed ready/deferred/blocked ids. "
         "Compare plan checkbox state with changed deliverable files and available evidence. "
         "Any task newly marked `[x]` must be supported by actual implementation, dataset/report changes, or verification. "
         "Fail or list `blocking_current_task_failures` only when the current frontier is incomplete, broken, or unsupported. "
@@ -3558,12 +3581,29 @@ def _live_expected_return_shape() -> str:
                 "changed_task_ids": ["1-1"],
                 "reason": "model-authored graph revision or sequencing update",
             },
-            "answer": "short user-facing summary of what was found or changed",
-            "change_summary": ["short summary of concrete files written"],
-            "target_files": ["path/to/changed-file.md"],
-            "test_plan": ["inspect the changed artifact or run a focused verification command"],
-            "risks": ["remaining limitations or assumptions"],
-            "files_created": ["path/to/changed-file.md"],
+            "answer": (
+                "Human-readable response the operator should read first. Good: directly explains the outcome in the user's terms. "
+                "Bad: only `Run completed`, raw JSON, candidate ids, or a file/change receipt."
+            ),
+            "source_tracking": {
+                "files_read": ["Only central files used as evidence, not every incidental read."],
+                "links_opened": ["External links or searches used for current facts."],
+                "commands_run": ["Commands that materially affected confidence or checks."],
+                "checks_performed": ["Focused checks or inspections already performed."],
+            },
+            "change_tracking": {
+                "files_created": ["New files actually created; empty when none."],
+                "files_edited": ["Existing files actually edited; empty when none."],
+                "files_deleted": ["Files actually deleted; empty when none."],
+                "generated_artifacts": ["Standalone artifacts produced for the operator."],
+            },
+            "change_summary": [
+                "Concrete user-relevant changes actually made. Good: `Updated README setup command`. Bad: internal stage/status text."
+            ],
+            "target_files": ["Files intentionally changed or central to the deliverable; avoid incidental reads."],
+            "test_plan": ["Verification already run, or the narrow next verification with blocker if not run."],
+            "risks": ["Remaining uncertainty that affects trust; avoid generic boilerplate."],
+            "files_created": ["Backward-compatible alias for change_tracking.files_created."],
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -3598,11 +3638,26 @@ def _live_answer_return_shape() -> str:
                 "changed_task_ids": ["1-1"],
                 "reason": "model-authored graph revision or sequencing update",
             },
-            "answer": "substantive in-session answer shaped by the operator's request; include only sections and details that help the operator understand the result",
-            "summary": ["key finding or status point"],
-            "risks": ["remaining limitations or assumptions"],
-            "validation": ["inspection evidence used for the answer"],
-            "remaining_work": ["follow-up work that would require explicit permission or a separate request"],
+            "answer": (
+                "Substantive in-session answer shaped by the operator's request. Good: explains the project/question/findings directly. "
+                "Bad: only says work completed, lists changed files, or returns developer telemetry."
+            ),
+            "source_tracking": {
+                "files_read": ["Only files used to ground the answer."],
+                "links_opened": ["External links/searches used, when any."],
+                "commands_run": ["Commands run, usually empty for answer-only work."],
+                "checks_performed": ["Read-only checks/inspections used for confidence."],
+            },
+            "change_tracking": {
+                "files_created": [],
+                "files_edited": [],
+                "files_deleted": [],
+                "generated_artifacts": [],
+            },
+            "summary": ["Key answer points, not tool/status receipts."],
+            "risks": ["Material limitations or assumptions."],
+            "validation": ["Inspection evidence used for the answer."],
+            "remaining_work": ["Follow-up work that would require permission or a separate request."],
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -3826,11 +3881,16 @@ def _request_understanding_payload(
         target_paths = list(policy.target_artifacts)
     rule_generation_brief = [
         "Generate the actual aspect reviews, acceptance criteria, and stop rule from the operator's exact wording and the active intent policy.",
-        "Choose the response shape before planning work: in-session answer, inspection findings, workspace edit, saved artifact, or clarification.",
+        (
+            "Use the resolved work contract before planning work: "
+            f"work_mode={policy.work_mode}, mutation_policy={policy.mutation_policy}, evidence_policy={policy.evidence_policy}."
+        ),
+        "Choose whether the run should answer directly, inspect sources without writing, make a workspace change, or report a blocker.",
         "Default explain, review, summarize, check, status, and 'what is this' style requests to an in-session answer unless the operator explicitly asks to save, export, edit, or create a named artifact.",
         "Do not turn a casual explanation request into document creation; file-existence checks are valid acceptance criteria only when persistence is part of the request.",
         "Generated criteria must test semantic delivery and evidence, not only tool success, artifact existence, or a completed status event.",
         "When intent is uncertain, generate criteria that answer or explain the blocker instead of inventing extra workspace work.",
+        "The final response must be a human-readable synthesis of the answer/outcome, sources used, changes made, and remaining uncertainty; never a raw status or file receipt.",
     ]
     if target_paths:
         rule_generation_brief.append(
@@ -3862,6 +3922,12 @@ def _request_understanding_payload(
         "original_request": clean_objective,
         "workspace_root": str(workspace_root),
         "target_paths": list(target_paths),
+        "work_contract": {
+            "work_mode": policy.work_mode,
+            "mutation_policy": policy.mutation_policy,
+            "evidence_policy": policy.evidence_policy,
+            "final_response_policy": "human_readable_synthesis",
+        },
         "rule_generation_brief": rule_generation_brief,
         "aspect_reviews": [],
         "confidence_scoped_acceptance": [],
@@ -4033,24 +4099,47 @@ def _request_understanding_contract(
     if not aspect_lines and not criteria_lines and not brief_lines:
         return ""
     lines = [
-        "Request rule-generation brief: keep end-to-end responsibility, but execute stage-by-stage with explicit gates. "
-        "The fixed text below is meta-guidance only; generate the concrete request-specific aspect reviews, "
-        "acceptance criteria, and stop rule before deciding what counts as complete.",
+        "Request understanding: generate request-specific aspect reviews, acceptance criteria, and a stop rule from the exact user request and work contract.",
+        "Fixed text here is meta-guidance only; do not treat it as concrete acceptance criteria.",
     ]
     if stage_key:
         lines.append(f"Current stage: {stage_key}.")
-    stage_guidance = _REQUEST_UNDERSTANDING_STAGE_GUIDANCE.get(stage_key, ())
-    if stage_guidance:
-        lines.append("Stage-specific request handling:")
-        lines.extend(f"- {item}" for item in stage_guidance)
+    work_contract = payload.get("work_contract")
+    if isinstance(work_contract, Mapping):
+        contract_parts = [
+            f"work_mode={_single_line(work_contract.get('work_mode') or '')}",
+            f"mutation_policy={_single_line(work_contract.get('mutation_policy') or '')}",
+            f"evidence_policy={_single_line(work_contract.get('evidence_policy') or '')}",
+            f"final_response_policy={_single_line(work_contract.get('final_response_policy') or 'human_readable_synthesis')}",
+        ]
+        lines.append("Resolved work contract: " + ", ".join(part for part in contract_parts if not part.endswith("=")) + ".")
+    lines.append("Context hooks:")
+    lines.extend(
+        [
+            "- Use recent chats, prior requests, and prior responses only when needed to clarify the current intent, explain a follow-up, or avoid repeated work.",
+            "- Inspect project rules, important files, links, and web_search only when they provide evidence needed for the answer, change, plan, or validation.",
+            "- Prefer explicit targets and high-value project files before broad discovery; avoid rereading the same files unless exact grounding is needed.",
+            "- Track sources used and files changed so the final response can explain the basis of the answer or delivery.",
+        ]
+    )
+    lines.append("Criteria hooks:")
+    compact_rule_hints = [
+        "Choose answer-only, read-only inspection, workspace change, or blocker from the request and work contract.",
+        "Do not create or edit files for explain/review/summarize/status/'what is this' requests unless the operator explicitly asks for a saved artifact or edit.",
+        "Completion must satisfy the semantic user request; tool success, file existence, or a run-completed status is not enough.",
+        "Final response must be human-readable: answer/outcome first, then sources, changes, checks, uncertainty, and blockers.",
+    ]
     if brief_lines:
-        lines.append("Rules brief for the model to turn into request-specific criteria:")
-        lines.extend(f"- {item}" for item in brief_lines[:12])
+        for hint in brief_lines:
+            clean_hint = _single_line(hint)
+            if "explicit target path" in clean_hint.lower() or "source boundary" in clean_hint.lower():
+                compact_rule_hints.append(clean_hint)
+    lines.extend(f"- {item}" for item in compact_rule_hints[:8])
     if aspect_lines:
-        lines.append("Generated aspect review comments:")
+        lines.append("Model-generated aspect review comments:")
         lines.extend(aspect_lines[:8])
     if criteria_lines:
-        lines.append("Generated confidence-scoped acceptance criteria:")
+        lines.append("Model-generated confidence-scoped acceptance criteria:")
         lines.extend(criteria_lines[:10])
     stop_rule = _single_line(payload.get("stop_rule") or "")
     if stop_rule:
@@ -4065,7 +4154,7 @@ def _request_understanding_contract(
 def _super_report_evidence_blocks(report: SuperOrganismReport) -> list[dict[str, Any]]:
     return [
         {
-            "label": f"Super DAN {report.cell_count}-cell contract",
+            "label": "Initial coordination context",
             "content": report.final_memo,
             "source": "super_organism_report",
             "trust_label": "advisory",
@@ -4308,6 +4397,18 @@ def _request_from_live_brief(
             if max_work_seconds is not None:
                 metadata_update["completion_timeout_seconds"] = max_work_seconds
             explicit_brief = explicit_brief.model_copy(update={"metadata": metadata_update})
+    if (
+        str(explicit_brief.metadata.get("surface") or "") == "super_organism"
+        and str(explicit_brief.metadata.get("mode") or "") == "live"
+    ):
+        explicit_brief = explicit_brief.model_copy(
+            update={
+                "metadata": {
+                    **dict(explicit_brief.metadata),
+                    "prompt_render_style": "super_dan_live_compact",
+                }
+            }
+        )
     return request_from_brief(_apply_auto_super_dan_skills(explicit_brief))
 
 
@@ -4630,17 +4731,19 @@ def _live_generic_planner_task(
     if understanding_note:
         understanding_note += " "
     return (
-        "Create a run-local Super DAN execution plan for this broad objective, then stop. "
+        "Understand the operator request and project context, then create a run-local execution plan for this broad objective and stop. "
         f"Operator objective: {report.target}. "
         f"Workspace root: {workspace_root}. "
         f"Temporary plan root: {plan_root} (`{plan_root_relative}`). "
         f"{policy_note} "
         f"{understanding_note}"
-        "Do not implement the deliverable in this stage. Inspect only the context needed to make the plan coherent. "
+        "Do not implement the deliverable in this stage. Inspect only the context needed to make the plan coherent: project rules, "
+        "important files, concise summaries of those files, likely deliverable locations, and evidence gaps. "
         "Break the work into at most two file levels: top-level numeric phase files and optional numeric sub-plan files. "
         "Predict a compact dependency task graph even if the dependencies are imperfect: each task should name its "
         "parent/branch when useful, prerequisites, owned paths, deliverables, validation checks, and whether it can run "
-        "in parallel with other ready tasks. Keep graph rules brief; do not write a backup plan in prose. "
+        "in parallel with other ready tasks. Include request_understanding and task_graph_update fields when your understanding "
+        "or graph changes. Keep graph rules brief; do not write a backup plan in prose. "
         "Choose the current ready frontier: tasks whose dependencies are satisfied now and whose owned paths do not conflict. "
         "Downstream tasks should be marked deferred/blocked instead of becoming immediate repair work."
     )
@@ -4661,14 +4764,15 @@ def _live_generic_plan_validation_task(
         understanding_note += " "
     rendered_files = ", ".join(str(path) for path in plan_files) or "none"
     return (
-        "Validate the run-local Super DAN plan before execution. "
+        "Validate the run-local execution plan before execution. "
         f"Operator objective: {report.target}. "
         f"Workspace root: {workspace_root}. "
         f"Plan root: {plan_root}. "
         f"Plan files: {rendered_files}. "
         f"{policy_note} "
         f"{understanding_note}"
-        "Read the plan files, then decide whether they are coherent, numeric, non-contradictory, and ready for a builder. "
+        "Read the plan files and enough context to judge whether the plan reflects the user request and project evidence. "
+        "Decide whether it is coherent, numeric, non-contradictory, and ready for a builder. "
         "Reject plans that use alphabet placeholders, create third-level plan files, mix unrelated sub-plans under one "
         "phase, or fail to identify a dependency-ready frontier. Audit the predicted DAG: dependencies may be imperfect, "
         "but ready tasks must have satisfied prerequisites and non-conflicting owned paths. Return corrected `task_graph`, "
@@ -4726,6 +4830,18 @@ def _live_generic_task(
             "make concrete source or validation edits that create user actions, visible feedback, state transitions, "
             "and a repeatable short interaction loop. "
         )
+    if policy.work_mode == "chat_answer":
+        return (
+            "Answer the operator objective directly in this session without using workspace tools. "
+            f"Operator objective: {report.target}. "
+            f"Workspace root: {workspace_root}. "
+            f"{policy_note} "
+            f"{coordination_sentence}"
+            f"{understanding_note}"
+            "Do not inspect, list, read, create, edit, delete, or mutate workspace files. "
+            "The answer should come from the conversation and general model knowledge only. "
+            "Return compact JSON with an `answer` field containing the human-readable response the operator should read."
+        )
     if not policy.allow_workspace_mutation:
         return (
             "Answer the operator objective from inspection in the current workspace now, using only the enabled tools. "
@@ -4734,7 +4850,9 @@ def _live_generic_task(
             f"{policy_note} "
             f"{coordination_sentence}"
             f"{understanding_note}"
-            "Inspect the existing project or workspace as needed, but do not create or edit workspace files. "
+            "Inspect the existing project or workspace as needed, but do not create or edit workspace files. Gather enough "
+            "context to explain the request: project purpose, central files, concise file summaries, project rules, evidence used, "
+            "and unresolved gaps. "
             f"{workspace_scope_note}"
             "If the objective asks for current external facts, use web_search when available instead of guessing. "
             "The deliverable is the in-session answer, not a saved summary file, unless the operator explicitly asks for a file or artifact. "
@@ -4743,6 +4861,15 @@ def _live_generic_task(
             "For project-summary or 'what is this project about' requests, explain what the project is, main components, current state, important files, and blockers or next steps. "
             "Return the requested compact JSON-like answer summary with an `answer` field containing the actual response the operator should read."
         )
+    mutation_sentence = (
+        "Mutation policy is required because the request asks for a workspace change: perform that specific change, "
+        "or return a precise blocker if the change cannot be made with the available context and tools. "
+        if policy.mutation_policy == "required"
+        else (
+            "Mutation policy is optional: mutate only when the request-specific completion contract requires a file or source change; "
+            "otherwise provide the in-session answer with source/change tracking and do not invent an artifact. "
+        )
+    )
     return (
         "Execute the operator objective in the current workspace now, using the enabled tools to produce the requested deliverable. "
         f"Operator objective: {report.target}. "
@@ -4755,11 +4882,16 @@ def _live_generic_task(
         f"{interactive_source_note}"
         f"{workspace_context_sentence}"
         f"{workspace_scope_note}"
+        f"{mutation_sentence}"
+        "Before editing, gather only enough additional project context to choose the correct ready task, important files, and validation path. "
+        "When a latest task graph is supplied, execute against that version and update the graph if reality changes. "
+        "Parallelize ready branches only when dependencies and owned paths do not conflict; otherwise execute the highest-value ready slice. "
         "If the objective asks for current external facts, use web_search "
-        "instead of guessing. If it asks to save, export, return, or eventually produce a file, create or update the appropriate "
-        "workspace artifact; markdown/report requests should be materialized as a markdown file with source notes or links when "
-        "available. If it asks for software, make the bounded implementation and run focused verification when useful. "
-        "Actually mutate workspace files before finalizing, then return the requested compact JSON-like completion summary."
+        "instead of guessing. Treat `return`, `tell me`, `explain`, `summarize`, `review`, `remind`, and `what is this` as "
+        "in-session answer language unless the operator explicitly names a file/artifact or asks to save/export/edit/create one. "
+        "If the operator explicitly asks for a saved report, markdown file, data note, or named artifact, create or update that artifact. "
+        "If it asks for software, make the bounded implementation and run focused verification when useful. "
+        "Finish by returning compact JSON whose `answer` is the human-readable synthesis; source tracking and change tracking are supporting fields."
     )
 
 
@@ -4793,7 +4925,8 @@ def _live_generic_answer_recovery_task(
         f"{understanding_note}"
         "This is an answer-only recovery pass: do not create, edit, delete, or otherwise mutate workspace files. "
         "Use the enabled read-only tools only if the answer needs more evidence. "
-        "Move closer to the operator's goal by producing the actual in-session answer, not another status receipt. "
+        "Move closer to the operator's goal by producing the actual in-session answer, not another status receipt. Explain what was done "
+        "or found for the user, including the evidence/checks used, changed files if any, and remaining uncertainty or blockers. "
         "Return compact JSON with an `answer` field containing the human-readable answer the operator should read. "
         "If the request truly cannot be answered from available evidence, put the explicit blocker and the narrow next step in `answer`; "
         "do not return only `completed`, `Run finished`, candidate ids, file lists, or change receipts."
@@ -4822,7 +4955,7 @@ def _live_generic_worktree_task(
     if plan_note:
         plan_note += " "
     return (
-        "Execute one Super DAN dependency-frontier task inside this isolated worktree. "
+        "Execute one dependency-frontier task inside this isolated worktree. "
         f"Operator objective: {report.target}. "
         f"Task id: {task_id}. "
         f"Task goal: {goal or 'complete the assigned ready task'}. "
@@ -4833,7 +4966,8 @@ def _live_generic_worktree_task(
         f"{policy_note} "
         f"{understanding_note}"
         f"{plan_note}"
-        "Only edit files under the owned paths for this task. Do not implement sibling ready tasks or deferred downstream tasks. "
+        "Use the latest task graph/context as the source of truth for this branch. Only edit files under the owned paths for this task. "
+        "Do not implement sibling ready tasks or deferred downstream tasks. "
         "Do not edit `.dan-super` state or plan files from a worktree worker. "
         "Make concrete file_write or file_edit calls in the isolated worktree, then return the compact completion summary."
     )
@@ -4891,7 +5025,7 @@ def _live_generic_builder_retry_task(
             "Do not take an inspection/checking call before the first write. "
         )
     return (
-        "Run another Super DAN builder attempt now, narrowed by the previous no-mutation result. "
+        "Run another builder attempt now, narrowed by the previous failure and the latest task graph. "
         f"Attempt: {attempt}. "
         f"Operator objective: {report.target}. "
         f"Workspace root: {workspace_root}. "
@@ -4902,11 +5036,12 @@ def _live_generic_builder_retry_task(
         f"{constrained_creation_note}"
         f"{plan_note}"
         f"{understanding_note}"
-        "The previous builder returned or timed out without a durable workspace mutation. Use any useful evidence it produced, "
+        "The previous builder returned or timed out without satisfying the request. Use any useful evidence it produced, "
         "then decide whether a concrete write is now justified. If it is, make at least one concrete file_write or file_edit "
         "call before finalizing. If the objective asks for a report or markdown deliverable, create or update the report "
         "artifact directly. If an existing relevant artifact is present, prefer appending or targeted edits over replacing it. "
-        "then return the requested compact JSON-like completion summary."
+        "If the needed write is not justified or cannot be made with the available tools/context, return a precise blocker. "
+        "Then return the requested compact JSON-like completion summary."
     )
 
 
@@ -4955,9 +5090,11 @@ def _live_generic_validation_task(
         f"{plan_note}"
         f"{understanding_note}"
         f"{frontier_note}"
-        "Inspect the mutated files and relevant read-only evidence, then decide whether the result materially advances the "
-        "objective. For report or markdown objectives, verify that a report-like artifact was actually written and is not just "
-        "a generic planning memo. For software objectives, inspect the implementation and verification evidence."
+        "Validate semantic completion and request fit. Compare the original user request, generated request-understanding criteria, attempted work, mutated files, source tracking, "
+        "checks, and latest task graph. Decide whether the result materially advances the objective. For report or markdown objectives, "
+        "verify that a report-like artifact was actually written and is not just a generic planning memo. For software objectives, "
+        "inspect the implementation and verification evidence. If the delivery is not satisfactory, return the focused graph update "
+        "and remaining ready work needed before final delivery."
     )
 
 
@@ -4996,7 +5133,8 @@ def _live_generic_repair_task(
             "this repair unless the validator explicitly revised the dependency graph and marked them ready. "
         )
     return (
-        "Repair the previous Super DAN live deliverable now. "
+        "Repair the previous live deliverable now, using the validator feedback and latest task graph. "
+        "Repair only the current ready/frontier blocker unless validation revised the graph. "
         f"Operator objective: {report.target}. "
         f"Workspace root: {workspace_root}. "
         f"Current mutated files: {changed}. "
@@ -5132,9 +5270,65 @@ def _objective_requests_workspace_mutation(objective: str) -> bool:
     if not lowered:
         return False
     patterns = (
-        r"\b(?:edit|modify|change|write|create|delete|touch|mutate|fix|repair|implement|build|add|update|save|export|materialize)\b",
+        r"\b(?:edit|modify|change|write|create|delete|touch|mutate|fix|repair|patch|implement|build|add|update|save|export|materialize|redesign|refactor|enhance|enrich|complete|develop|code)\b",
         r"\bmake\s+(?:a\s+)?(?:change|changes|edit|edits|fix|fixes|patch|patches|improvement|improvements)\b",
+        r"\bmake\s+sure\s+(?:the\s+)?(?:website|site|app|application|game|software|code)\b",
         r"\b(?:produce|generate)\s+(?:a\s+)?(?:file|artifact|document|markdown|report|memo|patch|diff)\b",
+    )
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
+def _objective_mentions_workspace_context(objective: str) -> bool:
+    lowered = " ".join(str(objective or "").lower().split())
+    if not lowered:
+        return False
+    workspace_terms = (
+        "project",
+        "repo",
+        "repository",
+        "codebase",
+        "workspace",
+        "file",
+        "folder",
+        "directory",
+        "readme",
+        "src/",
+        "docs/",
+        ".md",
+        ".py",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".html",
+        ".css",
+    )
+    return any(term in lowered for term in workspace_terms)
+
+
+def _objective_needs_external_facts(objective: str) -> bool:
+    lowered = " ".join(str(objective or "").lower().split())
+    if not lowered:
+        return False
+    patterns = (
+        r"\b(?:current|latest|recent|today|yesterday|tomorrow|now|live|news)\b",
+        r"\b(?:web|internet|online|search|lookup|look\s+up)\b",
+        r"\b(?:price|schedule|law|regulation|release|version)\b",
+    )
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
+def _objective_is_plain_chat_answer_request(objective: str) -> bool:
+    lowered = " ".join(str(objective or "").lower().split())
+    if not lowered:
+        return False
+    if _objective_mentions_workspace_context(lowered):
+        return False
+    if _objective_requests_workspace_mutation(lowered):
+        return False
+    patterns = (
+        r"^(?:what|why|how|when|where|who)\b",
+        r"\b(?:explain|tell\s+me|remind\s+me|define|meaning\s+of|what\s+does)\b",
+        r"\b(?:thanks|thank\s+you|ok|okay|yes|no)\b",
     )
     return any(re.search(pattern, lowered) for pattern in patterns)
 
@@ -5151,6 +5345,7 @@ def _objective_is_project_answer_request(objective: str) -> bool:
         rf"\b(?:summarize|summarise|summary)\s+(?:of\s+)?(?:this|the)?\s*{project_target}\b",
         rf"\b(?:give|write|create)\s+(?:me\s+)?(?:a\s+)?(?:brief\s+)?(?:summary|overview)\s+of\s+(?:this|the)\s+{project_target}\b",
         rf"\bhelp\s+me\s+(?:understand|summarize|summarise|summary)\s+(?:what\s+)?(?:this|the)?\s*{project_target}\s*(?:is\s+)?(?:about)?\b",
+        rf"\b(?:remind\s+me|please\s+remind\s+me)\s+(?:what\s+)?(?:this|the)\s+{project_target}\s+(?:is|is\s+about|does|does\s+now)\b",
     )
     return any(re.search(pattern, lowered) for pattern in patterns)
 
@@ -5186,6 +5381,28 @@ def _objective_is_assessment_only_request(objective: str) -> bool:
     return project_answer or any(re.search(pattern, lowered) for pattern in assessment_patterns)
 
 
+def _resolve_work_contract_for_objective(
+    objective: str,
+    *,
+    target_artifacts: Sequence[str] = (),
+    forbid_workspace_mutation: bool = False,
+    assessment_only: bool = False,
+) -> tuple[str, str, str]:
+    """Resolve work mode, mutation policy, and evidence policy for Super DAN."""
+
+    external_facts = _objective_needs_external_facts(objective)
+    if forbid_workspace_mutation or assessment_only:
+        evidence_policy = "workspace_and_internet_reads" if external_facts else "workspace_reads"
+        return "workspace_read", "forbidden", evidence_policy
+    if _objective_is_plain_chat_answer_request(objective):
+        if external_facts:
+            return "workspace_read", "forbidden", "workspace_and_internet_reads"
+        return "chat_answer", "forbidden", "none"
+    if _objective_requests_workspace_mutation(objective) or target_artifacts:
+        return "workspace_change", "required", "reads_and_checks"
+    return "workspace_change", "optional", "reads_and_checks"
+
+
 def _objective_forbids_shell_command(objective: str) -> bool:
     lowered = " ".join(str(objective or "").lower().split())
     if not lowered:
@@ -5200,23 +5417,55 @@ def _objective_forbids_shell_command(objective: str) -> bool:
     return any(re.search(pattern, lowered) for pattern in patterns)
 
 
+def _objective_for_policy_resolution(objective: str) -> str:
+    text = str(objective or "")
+    if "Original operator request:" not in text:
+        return text
+    original_match = re.search(
+        r"(?is)\bOriginal operator request:\s*(.+?)(?:\n\s*Current follow-up / satisfaction gap:|\n\s*Continuation contract:|\Z)",
+        text,
+    )
+    if not original_match:
+        return text
+    original = " ".join(original_match.group(1).split())
+    if not original:
+        return text
+    followup_match = re.search(
+        r"(?is)\bCurrent follow-up / satisfaction gap:\s*(.+?)(?:\n\s*Continuation contract:|\n\s*Additional surface context|\Z)",
+        text,
+    )
+    followup = " ".join(followup_match.group(1).split()) if followup_match else ""
+    if followup and _objective_explicitly_requests_saved_answer_artifact(followup):
+        return f"{original}\n{followup}"
+    return original
+
+
 def _operator_intent_policy_from_objective(
     objective: str,
     *,
     workspace_root: Path,
 ) -> OperatorIntentPolicy:
+    policy_objective = _objective_for_policy_resolution(objective)
     target_artifacts = tuple(
         _explicit_objective_artifact_paths(
-            objective,
+            policy_objective,
             workspace_root=workspace_root,
         )
     )
-    forbid_other_inputs = _objective_forbids_other_workspace_inputs(objective)
-    forbid_existing_reuse = _objective_forbids_existing_artifact_reuse(objective)
-    forbid_workspace_mutation = _objective_forbids_workspace_mutation(objective)
-    assessment_only = _objective_is_assessment_only_request(objective)
-    forbid_shell_command = forbid_workspace_mutation or assessment_only or _objective_forbids_shell_command(objective)
+    forbid_other_inputs = _objective_forbids_other_workspace_inputs(policy_objective)
+    forbid_existing_reuse = _objective_forbids_existing_artifact_reuse(policy_objective)
+    forbid_workspace_mutation = _objective_forbids_workspace_mutation(policy_objective)
+    assessment_only = _objective_is_assessment_only_request(policy_objective)
+    work_mode, mutation_policy, evidence_policy = _resolve_work_contract_for_objective(
+        policy_objective,
+        target_artifacts=target_artifacts,
+        forbid_workspace_mutation=forbid_workspace_mutation,
+        assessment_only=assessment_only,
+    )
+    forbid_shell_command = forbid_workspace_mutation or assessment_only or _objective_forbids_shell_command(policy_objective)
     constraints: list[str] = []
+    if work_mode == "chat_answer":
+        constraints.append("This is a plain chat answer; answer in-session without reading workspace files or using tools.")
     if forbid_other_inputs:
         constraints.append("Do not read, inspect, list, or otherwise use other workspace files.")
     if forbid_existing_reuse:
@@ -5229,31 +5478,46 @@ def _operator_intent_policy_from_objective(
         constraints.append("Return a direct answer or read-only findings only; no workspace mutation is required.")
     if forbid_shell_command:
         constraints.append("Do not run shell, terminal, or external commands.")
-    if not constraints:
-        return OperatorIntentPolicy(target_artifacts=target_artifacts)
+    if mutation_policy == "optional":
+        constraints.append(
+            "Workspace mutation is optional: mutate only if the request-specific contract requires it; otherwise answer in-session."
+        )
 
     allowed_targets = target_artifacts
+    mutation_allowed = mutation_policy in {"optional", "required"}
+    chat_answer = work_mode == "chat_answer"
     return OperatorIntentPolicy(
         active=True,
-        allow_workspace_mutation=not (forbid_workspace_mutation or assessment_only),
+        work_mode=work_mode,
+        mutation_policy=mutation_policy,
+        evidence_policy=evidence_policy,
+        allow_workspace_mutation=mutation_allowed,
         target_artifacts=target_artifacts,
-        allowed_read_paths=allowed_targets if forbid_other_inputs else (),
-        allowed_write_paths=() if (forbid_workspace_mutation or assessment_only) else allowed_targets,
-        forbid_other_workspace_inputs=forbid_other_inputs,
-        allow_directory_listing=not forbid_other_inputs,
-        allow_git_context=not forbid_other_inputs,
-        allow_shell_command=not (forbid_other_inputs or forbid_shell_command),
+        allowed_read_paths=() if chat_answer else (allowed_targets if forbid_other_inputs else ()),
+        allowed_write_paths=allowed_targets if (mutation_allowed and allowed_targets) else (),
+        forbid_other_workspace_inputs=forbid_other_inputs or chat_answer,
+        allow_directory_listing=not (forbid_other_inputs or chat_answer),
+        allow_git_context=not (forbid_other_inputs or chat_answer),
+        allow_shell_command=not (forbid_other_inputs or forbid_shell_command or chat_answer),
         allow_existing_artifact_reuse=not (forbid_other_inputs or forbid_existing_reuse),
         source_scope=(
-            "operator_prompt_read_only"
-            if forbid_workspace_mutation
+            "conversation_only"
+            if chat_answer
             else (
-                "operator_prompt_assessment_answer_only"
-                if assessment_only
+                "operator_prompt_read_only"
+                if forbid_workspace_mutation
                 else (
-                "operator_prompt_and_target_artifacts_only"
-                if forbid_other_inputs
-                else "workspace_allowed_without_existing_artifact_reuse"
+                    "operator_prompt_assessment_answer_only"
+                    if assessment_only
+                    else (
+                        "operator_prompt_and_target_artifacts_only"
+                        if forbid_other_inputs
+                        else (
+                            "workspace_allowed_without_existing_artifact_reuse"
+                            if forbid_existing_reuse
+                            else "workspace_allowed"
+                        )
+                    )
                 )
             )
         ),
@@ -5265,9 +5529,33 @@ def _operator_intent_policy_from_request(request: ExecutionRequest) -> OperatorI
     raw = getattr(request, "metadata", {}).get("operator_intent_policy")
     if not isinstance(raw, Mapping):
         return OperatorIntentPolicy()
+    raw_work_contract = raw.get("work_contract")
+    work_contract = raw_work_contract if isinstance(raw_work_contract, Mapping) else {}
+    mutation_policy = str(
+        raw.get("mutation_policy")
+        or work_contract.get("mutation_policy")
+        or ("forbidden" if raw.get("allow_workspace_mutation") is False else "required")
+    )
+    raw_allow_mutation = raw.get("allow_workspace_mutation")
+    allow_workspace_mutation = (
+        bool(raw_allow_mutation)
+        if raw_allow_mutation is not None
+        else mutation_policy != "forbidden"
+    )
     return OperatorIntentPolicy(
         active=bool(raw.get("active")),
-        allow_workspace_mutation=bool(raw.get("allow_workspace_mutation", True)),
+        work_mode=str(
+            raw.get("work_mode")
+            or work_contract.get("work_mode")
+            or "workspace_change"
+        ),
+        mutation_policy=mutation_policy,
+        evidence_policy=str(
+            raw.get("evidence_policy")
+            or work_contract.get("evidence_policy")
+            or "reads_and_checks"
+        ),
+        allow_workspace_mutation=allow_workspace_mutation,
         target_artifacts=tuple(str(path) for path in raw.get("target_artifacts") or ()),
         allowed_read_paths=tuple(str(path) for path in raw.get("allowed_read_paths") or ()),
         allowed_write_paths=tuple(str(path) for path in raw.get("allowed_write_paths") or ()),
@@ -5282,12 +5570,34 @@ def _operator_intent_policy_from_request(request: ExecutionRequest) -> OperatorI
 
 
 def _operator_intent_policy_prompt(policy: OperatorIntentPolicy) -> str:
-    if not policy.active:
-        return ""
     lines = [
+        "Resolved Super DAN work contract:",
+        f"- work_mode: {policy.work_mode}.",
+        f"- mutation_policy: {policy.mutation_policy}.",
+        f"- evidence_policy: {policy.evidence_policy}.",
+        "- work_mode meanings: chat_answer means answer from conversation/model context without tools; "
+        "workspace_read means inspect workspace or allowed external sources without writing files; "
+        "workspace_change means read and, when justified by mutation_policy, create or edit workspace files.",
+        "- mutation_policy meanings: forbidden means do not create, edit, delete, or mutate files; "
+        "optional means mutate only if required by the request-specific completion contract; "
+        "required means the requested concrete workspace change is necessary before claiming completion, or a blocker must be reported.",
+        "- evidence_policy meanings: none means no tool evidence is needed; workspace_reads means file/project reads can ground the answer; "
+        "workspace_and_internet_reads means use workspace reads plus web_search when current external facts matter; "
+        "reads_and_checks means inspect sources and run focused checks when useful for confidence.",
+        "- Always track information sources used: files read, links opened, commands run, and checks performed. "
+        "Use that tracking to support the final response, not as the final response itself.",
+        "- Always track workspace changes separately: files created, edited, deleted, or generated. "
+        "Only report changes that actually happened.",
+        "- Final response policy: write a human-readable synthesis. Start with the direct answer or outcome the operator asked for, "
+        "then briefly explain what was inspected, what changed if anything, and what remains uncertain. "
+        "Do not substitute JSON, candidate ids, file receipts, tool logs, or completion status for the answer.",
+    ]
+    if not policy.active:
+        return " ".join(lines)
+    lines.extend([
         "Binding operator intent policy:",
         f"- Source scope: {policy.source_scope}.",
-    ]
+    ])
     if policy.target_artifacts:
         lines.append(f"- Target artifacts: {', '.join(policy.target_artifacts)}.")
     if policy.allowed_read_paths:
@@ -5315,6 +5625,8 @@ def _filter_tool_ids_for_operator_intent(
 ) -> list[str]:
     if not policy.active:
         return list(tool_ids)
+    if policy.work_mode == "chat_answer":
+        return []
     blocked: set[str] = set()
     if not policy.allow_workspace_mutation:
         blocked.update({"file_write", "file_edit"})
@@ -5354,6 +5666,8 @@ def _operator_policy_tool_decision(
         return True, ""
     tool = str(tool_id)
     args = dict(arguments or {})
+    if policy.work_mode == "chat_answer":
+        return False, "operator_intent_blocks_tools_for_chat_answer"
     allowed_reads = set(policy.allowed_read_paths)
     allowed_writes = set(policy.allowed_write_paths)
     allowed_targets = set(policy.target_artifacts) | allowed_reads | allowed_writes
@@ -5366,7 +5680,7 @@ def _operator_policy_tool_decision(
         return False, "operator_intent_blocks_shell_context"
     if tool in {"file_write", "file_edit"} and not policy.allow_workspace_mutation:
         return False, "operator_intent_blocks_workspace_mutation"
-    if tool == "file_read":
+    if tool == "file_read" and allowed_reads:
         relative = _operator_policy_relative_path(str(args.get("path") or ""), workspace_root=workspace_root)
         if not relative or relative not in allowed_reads:
             return False, f"operator_intent_blocks_file_read:{relative or '(unknown)'}"
@@ -8551,27 +8865,43 @@ async def _run_live_generic_execution(
             "After one focused inspection of the failing source/test/error context, the live worker should make "
             "a material source or test edit, or report the exact blocker that prevents the edit."
         )
-    mutation_required = operator_intent_policy.allow_workspace_mutation
+    mutation_forbidden = not operator_intent_policy.allow_workspace_mutation
+    mutation_required = operator_intent_policy.mutation_policy == "required"
     worker_success_criteria = (
         [
             "The final answer is a substantive in-session answer to the requested review, assessment, or project-summary question.",
             "Findings are grounded in available workspace evidence.",
             "Any limitations or follow-up work are explicit.",
         ]
-        if not mutation_required
-        else [
-            "At least one workspace file is created or edited.",
-            "The change materially advances the operator objective.",
-            "The final answer names changed files, validation plan, and remaining risks.",
-        ]
+        if mutation_forbidden
+        else (
+            [
+                "At least one workspace file is created or edited.",
+                "The change materially advances the operator objective.",
+                "The final answer is a human-readable synthesis that names changed files, validation plan, and remaining risks.",
+            ]
+            if mutation_required
+            else [
+                "The worker follows the resolved work contract instead of assuming a file edit is mandatory.",
+                "If files are changed, the change materially advances the operator objective.",
+                "If no files are changed, the answer explains the result and evidence in-session.",
+            ]
+        )
     )
     definition_of_done = (
         "The final response answers the operator in-session with a substantive summary, evidence-backed findings, "
         "limitations, and any follow-up work that would require explicit permission or a separate request; a file-change receipt alone is not done."
-        if not mutation_required
+        if mutation_forbidden
         else (
-            "At least one workspace file was created or edited and the final response names the changed files, "
-            "a concise validation plan, and remaining risks."
+            (
+                "At least one workspace file was created or edited and the final response names the changed files, "
+                "a concise validation plan, and remaining risks in human-readable language."
+            )
+            if mutation_required
+            else (
+                "The final response is a human-readable synthesis of the requested outcome, sources used, changes made if any, "
+                "and remaining uncertainty. Workspace mutation is not required unless the resolved request-specific contract requires it."
+            )
         )
     )
     worker_brief = role_brief(
@@ -8593,8 +8923,12 @@ async def _run_live_generic_execution(
             hard_constraints=[
                 *(
                     ["Do not create, edit, delete, or otherwise mutate workspace files; answer from inspection."]
-                    if not mutation_required
-                    else ["Actually mutate workspace files before finalizing."]
+                    if mutation_forbidden
+                    else (
+                        ["Make the concrete workspace change required by the resolved request contract before finalizing."]
+                        if mutation_required
+                        else ["Do not mutate workspace files unless the request-specific completion contract requires a change."]
+                    )
                 ),
                 *(
                     [
@@ -8634,7 +8968,7 @@ async def _run_live_generic_execution(
                 *(
                     ["Prefer a bounded concrete deliverable over broad speculative analysis."]
                     if mutation_required
-                    else ["Prefer a concise evidence-backed answer over creating a workspace artifact."]
+                    else ["Prefer a concise evidence-backed answer over creating a workspace artifact unless mutation is explicitly required."]
                 ),
                 "For broad maps, cover the highest-value chain first and mark lower-confidence gaps clearly.",
                 "Prefer primary/company/regulatory/source-grounded evidence over unsourced memory when current facts matter.",
@@ -8651,7 +8985,7 @@ async def _run_live_generic_execution(
                 ),
                 (
                     "Avoid rereading the same files unless the next edit truly needs exact grounding."
-                    if mutation_required
+                    if operator_intent_policy.allow_workspace_mutation
                     else "Avoid rereading the same files unless the next finding truly needs exact grounding."
                 ),
                 *(
@@ -8678,7 +9012,7 @@ async def _run_live_generic_execution(
                 definition_of_done=definition_of_done,
                 expected_return_shape=(
                     _live_answer_return_shape()
-                    if not mutation_required
+                    if mutation_forbidden
                     else _live_expected_return_shape()
                 ),
             ),
@@ -8869,7 +9203,7 @@ async def _run_live_generic_execution(
                 ),
                 task_graph_state=dict(plan_context.get("task_graph_state") or {}),
             )
-    mutation_required = operator_intent_policy.allow_workspace_mutation
+    mutation_required = operator_intent_policy.mutation_policy == "required"
     error = result.error
     if mutation_required and not mutated_paths and not error:
         error = "live execution finished without any workspace file mutations"
