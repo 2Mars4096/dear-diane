@@ -30,6 +30,7 @@ from dan.server.chat_v2_organism import map_organism_log_row_to_agent_event
 from dan.server.chat_v2_backend import (
     AgentBackendRunRequest,
     CodexAgentBackendAdapter,
+    _CodexObservableTaskGraph,
     _build_codex_exec_command,
     _build_super_dan_args,
     _is_safe_backend_checkpoint,
@@ -529,6 +530,113 @@ def test_v2_codex_exec_command_is_additive_and_workspace_scoped(tmp_path) -> Non
     ]
 
 
+def test_v2_codex_observable_task_graph_emits_live_revisions(tmp_path) -> None:
+    request = AgentBackendRunRequest(
+        task_id="task-1",
+        run_id="run-1",
+        objective="fix the failing test",
+        workspace_root=str(tmp_path),
+        profile_policy={"backend": "codex"},
+    )
+    graph = _CodexObservableTaskGraph(
+        request,
+        workspace_root=tmp_path,
+        objective=request.objective,
+    )
+
+    start = graph.start()
+    assert start.source_event_type == "live.task_graph.updated"
+    assert start.payload["task_graph_state"]["version_id"] == "codex.r1"
+    assert "codex-worker" in start.payload["task_graph_state"]["active_task_ids"]
+
+    started = graph.events_for_row(
+        {
+            "type": "item.started",
+            "item": {
+                "id": "shell-1",
+                "type": "command_execution",
+                "command": "npm test",
+            },
+        }
+    )
+    assert started[0].payload["task_graph_state"]["version_id"] == "codex.r2"
+    assert started[0].payload["task_graph_state"]["changed_branch_ids"] == ["workspace"]
+    assert any(
+        task["task_id"] == "codex-shell-1" and task["state"] == "active"
+        for task in started[0].payload["task_graph_state"]["tasks"]
+    )
+
+    completed = graph.events_for_row(
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "shell-1",
+                "type": "command_execution",
+                "command": "npm test",
+            },
+        }
+    )
+    state = completed[0].payload["task_graph_state"]
+    assert state["version_id"] == "codex.r3"
+    assert "codex-shell-1" in state["completed_task_ids"]
+    assert any(branch["branch_id"] == "workspace" for branch in state["branches"])
+
+    final = graph.finish("Codex finished.")
+    final_state = final.payload["task_graph_state"]
+    assert final_state["version_id"] == "codex.r4"
+    assert "codex-final" in final_state["completed_task_ids"]
+    assert any(branch["branch_id"] == "answer" for branch in final_state["branches"])
+
+
+def test_v2_codex_observable_task_graph_reuses_unnamed_command_nodes(tmp_path) -> None:
+    request = AgentBackendRunRequest(
+        task_id="task-1",
+        run_id="run-1",
+        objective="check the app",
+        workspace_root=str(tmp_path),
+        profile_policy={"backend": "codex"},
+    )
+    graph = _CodexObservableTaskGraph(
+        request,
+        workspace_root=tmp_path,
+        objective=request.objective,
+    )
+
+    graph.start()
+    started = graph.events_for_row(
+        {
+            "type": "item.started",
+            "item": {
+                "type": "command_execution",
+                "command": "npm test",
+            },
+        }
+    )[0]
+    completed = graph.events_for_row(
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "command": "npm test",
+            },
+        }
+    )[0]
+
+    started_task_ids = {
+        task["task_id"]
+        for task in started.payload["task_graph_state"]["tasks"]
+        if task["goal"] == "Run `npm test`"
+    }
+    completed_task_ids = {
+        task["task_id"]
+        for task in completed.payload["task_graph_state"]["tasks"]
+        if task["goal"] == "Run `npm test`"
+    }
+    assert started_task_ids == {"codex-command-npm-test"}
+    assert completed_task_ids == {"codex-command-npm-test"}
+    assert "codex-command-npm-test" in completed.payload["task_graph_state"]["completed_task_ids"]
+
+
 def test_v2_surface_turn_carries_hugo_notes_feature(monkeypatch, tmp_path) -> None:
     project = tmp_path / "my-knowledge-base"
     content = project / "content"
@@ -738,7 +846,6 @@ def test_v2_thread_prompt_log_renders_model_prompt_and_response(tmp_path) -> Non
     assert "Explain the project." in log["content"]
     assert "`file_read`" in log["content"]
     assert "This project is a DAN workspace." in log["content"]
-
 
 
 def test_v2_store_recovers_running_agent_runs_after_restart(tmp_path) -> None:

@@ -76,6 +76,345 @@ class AgentBackendRunResult(BaseModel):
     raw_result: dict[str, Any] = Field(default_factory=dict)
 
 
+class _CodexObservableTaskGraph:
+    """Small live graph built from observable Codex CLI events."""
+
+    def __init__(
+        self,
+        request: AgentBackendRunRequest,
+        *,
+        workspace_root: Path,
+        objective: str,
+    ) -> None:
+        self.request = request
+        self.workspace_root = workspace_root
+        self.objective = " ".join(str(objective or request.objective or "").split())
+        self.revision = 0
+        self._item_counter = 0
+        self._item_keys: dict[str, str] = {}
+        self._tasks: dict[str, dict[str, Any]] = {}
+        self._completed: set[str] = set()
+        self._active: set[str] = set()
+        self._branches: dict[str, list[str]] = {}
+
+    def start(self) -> AgentRunEvent:
+        request_goal = self.objective or "Handle the operator request"
+        self._upsert_task(
+            "codex-request",
+            branch_id="request",
+            goal=f"Receive request: {request_goal[:140]}",
+            state="done",
+            validation=["The exact request is attached to this run."],
+        )
+        self._upsert_task(
+            "codex-worker",
+            branch_id="workspace",
+            goal="Start Codex worker in the selected workspace",
+            state="active",
+            depends_on=["codex-request"],
+            owned_paths=[str(self.workspace_root)],
+            validation=["Codex CLI worker starts and begins emitting observable work items."],
+        )
+        return self._event(
+            source="codex",
+            reason="Codex worker started; observable task graph is now tracking emitted work items.",
+            changed_task_ids=["codex-request", "codex-worker"],
+            changed_branch_ids=["request", "workspace"],
+        )
+
+    def events_for_row(self, row: dict[str, Any]) -> list[AgentRunEvent]:
+        row_type = str(row.get("type") or "").strip()
+        if row_type in {"item.started", "item.completed"}:
+            item = row.get("item") if isinstance(row.get("item"), dict) else {}
+            item_task_id = self._task_id_for_item(item)
+            branch_id = self._branch_for_item(item)
+            self._upsert_task(
+                item_task_id,
+                branch_id=branch_id,
+                goal=self._goal_for_item(item, row_type=row_type),
+                state="active" if row_type == "item.started" else "done",
+                depends_on=["codex-worker"],
+                owned_paths=self._owned_paths_for_item(item),
+                deliverables=self._deliverables_for_item(item),
+                validation=self._validation_for_item(item, row_type=row_type),
+            )
+            return [
+                self._event(
+                    source="codex",
+                    reason=(
+                        "Codex started an observable work item."
+                        if row_type == "item.started"
+                        else "Codex completed an observable work item."
+                    ),
+                    changed_task_ids=[item_task_id],
+                    changed_branch_ids=[branch_id],
+                )
+            ]
+        if row_type == "turn.completed":
+            return [self.finish("Codex completed the run and returned terminal output.")]
+        return []
+
+    def finish(self, reason: str) -> AgentRunEvent:
+        self._active.discard("codex-worker")
+        self._completed.add("codex-worker")
+        if "codex-worker" in self._tasks:
+            self._tasks["codex-worker"]["state"] = "done"
+            self._tasks["codex-worker"]["status"] = "done"
+        self._upsert_task(
+            "codex-final",
+            branch_id="answer",
+            goal="Return the final user-facing response",
+            state="done",
+            depends_on=self._latest_done_dependencies() or ["codex-worker"],
+            validation=["The Codex run reached terminal completion."],
+        )
+        return self._event(
+            source="codex",
+            reason=reason or "Codex completed the run.",
+            changed_task_ids=["codex-worker", "codex-final"],
+            changed_branch_ids=["workspace", "answer"],
+        )
+
+    def _upsert_task(
+        self,
+        task_id: str,
+        *,
+        branch_id: str,
+        goal: str,
+        state: str,
+        depends_on: list[str] | None = None,
+        owned_paths: list[str] | None = None,
+        deliverables: list[str] | None = None,
+        validation: list[str] | None = None,
+    ) -> None:
+        normalized_state = state if state in {"ready", "active", "done", "deferred"} else "ready"
+        task = self._tasks.get(task_id, {})
+        task.update(
+            {
+                "task_id": task_id,
+                "branch_id": branch_id,
+                "goal": goal or "Codex work item",
+                "depends_on": list(depends_on or task.get("depends_on") or []),
+                "owned_paths": list(owned_paths or task.get("owned_paths") or []),
+                "deliverables": list(deliverables or task.get("deliverables") or []),
+                "validation": list(validation or task.get("validation") or []),
+                "state": normalized_state,
+                "status": normalized_state,
+                "parallel_safe": branch_id not in {"workspace", "answer"},
+            }
+        )
+        self._tasks[task_id] = task
+        branch_tasks = self._branches.setdefault(branch_id, [])
+        if task_id not in branch_tasks:
+            branch_tasks.append(task_id)
+        self._active.discard(task_id)
+        self._completed.discard(task_id)
+        if normalized_state == "active":
+            self._active.add(task_id)
+        elif normalized_state == "done":
+            self._completed.add(task_id)
+
+    def _event(
+        self,
+        *,
+        source: str,
+        reason: str,
+        changed_task_ids: list[str],
+        changed_branch_ids: list[str],
+    ) -> AgentRunEvent:
+        self.revision += 1
+        graph_state = self._graph_state(
+            source=source,
+            reason=reason,
+            changed_task_ids=changed_task_ids,
+            changed_branch_ids=changed_branch_ids,
+        )
+        return AgentRunEvent(
+            type="worker_started",
+            run_id=self.request.run_id,
+            task_id=self.request.task_id,
+            summary=reason,
+            source_event_type="live.task_graph.updated",
+            payload={
+                "backend": "codex",
+                "source": source,
+                "task_graph_state": graph_state,
+                "plan_context": {
+                    "enabled": True,
+                    "usable": True,
+                    "persistence": "run_memory",
+                    "task_graph": list(graph_state["tasks"]),
+                    "ready_task_ids": list(graph_state["ready_task_ids"]),
+                    "active_task_ids": list(graph_state["active_task_ids"]),
+                    "completed_task_ids": list(graph_state["completed_task_ids"]),
+                    "deferred_task_ids": list(graph_state["deferred_task_ids"]),
+                    "task_graph_state": graph_state,
+                },
+            },
+        )
+
+    def _graph_state(
+        self,
+        *,
+        source: str,
+        reason: str,
+        changed_task_ids: list[str],
+        changed_branch_ids: list[str],
+    ) -> dict[str, Any]:
+        tasks = list(self._tasks.values())
+        ready = [
+            str(task["task_id"])
+            for task in tasks
+            if task.get("state") == "ready"
+        ]
+        active = sorted(self._active)
+        completed = sorted(self._completed)
+        deferred = [
+            str(task["task_id"])
+            for task in tasks
+            if task.get("state") == "deferred"
+        ]
+        branches = []
+        for branch_id, task_ids in self._branches.items():
+            branches.append(
+                {
+                    "branch_id": branch_id,
+                    "task_ids": list(task_ids),
+                    "ready_task_ids": [task_id for task_id in task_ids if task_id in ready],
+                    "active_task_ids": [task_id for task_id in task_ids if task_id in active],
+                    "completed_task_ids": [task_id for task_id in task_ids if task_id in completed],
+                    "deferred_task_ids": [task_id for task_id in task_ids if task_id in deferred],
+                }
+            )
+        version_id = f"codex.r{self.revision}"
+        return {
+            "schema": "super_dan_task_graph_v1",
+            "revision": self.revision,
+            "version_id": version_id,
+            "root_version_id": "codex",
+            "base_version_id": "codex",
+            "parent_version_ids": [f"codex.r{self.revision - 1}"] if self.revision > 1 else [],
+            "source": source,
+            "update_scope": "observable_event",
+            "update_reason": reason,
+            "changed_task_ids": list(dict.fromkeys(changed_task_ids)),
+            "changed_branch_ids": list(dict.fromkeys(changed_branch_ids)),
+            "tasks": tasks,
+            "ready_task_ids": ready,
+            "active_task_ids": active,
+            "completed_task_ids": completed,
+            "deferred_task_ids": deferred,
+            "plan_generation_queue_length": 4,
+            "plan_execution_queue_length": 4,
+            "task_execution_queue_length": 4,
+            "parallel_groups": self._parallel_groups(),
+            "branches": branches,
+            "branch_refs": [
+                {
+                    "branch_id": branch_id,
+                    "version_id": f"{version_id}.{_safe_graph_token(branch_id)}",
+                    "parent_version_id": f"codex.r{self.revision - 1}" if self.revision > 1 else "codex",
+                    "base_version_id": "codex",
+                    "local_revision": self.revision,
+                    "changed": branch_id in set(changed_branch_ids),
+                }
+                for branch_id in self._branches
+            ],
+        }
+
+    def _parallel_groups(self) -> list[list[str]]:
+        groups = [
+            [task_id for task_id in task_ids if task_id in self._active or task_id in self._completed]
+            for task_ids in self._branches.values()
+        ]
+        return [group for group in groups if len(group) > 1]
+
+    def _task_id_for_item(self, item: dict[str, Any]) -> str:
+        stable = _first_compact_text(
+            item.get("id"),
+            item.get("call_id"),
+            item.get("item_id"),
+            item.get("name"),
+            limit=120,
+        )
+        if not stable:
+            command = _first_compact_text(item.get("command"), item.get("cmd"), limit=120)
+            if command:
+                stable = f"command:{command}"
+        if not stable:
+            item_type = str(item.get("type") or "item").strip()
+            text = _first_compact_text(
+                item.get("text"),
+                item.get("summary"),
+                item.get("message"),
+                limit=120,
+            )
+            if text:
+                stable = f"{item_type}:{text}"
+        if not stable:
+            self._item_counter += 1
+            stable = f"item-{self._item_counter}"
+        if stable not in self._item_keys:
+            self._item_keys[stable] = f"codex-{_safe_graph_token(stable)}"
+        return self._item_keys[stable]
+
+    def _branch_for_item(self, item: dict[str, Any]) -> str:
+        item_type = str(item.get("type") or "").lower()
+        if item_type == "agent_message":
+            return "answer"
+        if "file" in item_type or self._deliverables_for_item(item):
+            return "workspace"
+        if item.get("command") or item.get("cmd"):
+            return "workspace"
+        if "tool" in item_type:
+            return "workspace"
+        return "codex"
+
+    def _goal_for_item(self, item: dict[str, Any], *, row_type: str) -> str:
+        item_type = str(item.get("type") or "").strip()
+        command = _first_compact_text(item.get("command"), item.get("cmd"), limit=160)
+        text = _first_compact_text(item.get("text"), item.get("summary"), item.get("message"), limit=160)
+        if command:
+            return f"Run `{command}`"
+        if item_type == "agent_message":
+            return "Draft the user-facing response"
+        if "file" in item_type:
+            return "Update workspace artifact"
+        if text:
+            return text
+        if item_type:
+            return f"{'Start' if row_type == 'item.started' else 'Complete'} {item_type.replace('_', ' ')}"
+        return "Codex work item"
+
+    def _owned_paths_for_item(self, item: dict[str, Any]) -> list[str]:
+        return [
+            ref["path"]
+            for ref in _codex_artifact_refs(item)
+            if isinstance(ref.get("path"), str)
+        ][:8]
+
+    def _deliverables_for_item(self, item: dict[str, Any]) -> list[str]:
+        return self._owned_paths_for_item(item)
+
+    def _validation_for_item(self, item: dict[str, Any], *, row_type: str) -> list[str]:
+        if row_type == "item.completed":
+            return ["Codex emitted the item completion event."]
+        return ["Codex emitted the item start event."]
+
+    def _latest_done_dependencies(self) -> list[str]:
+        ordered = [
+            task_id
+            for task_id in self._tasks
+            if task_id in self._completed and task_id != "codex-request"
+        ]
+        return ordered[-4:]
+
+
+def _safe_graph_token(value: str) -> str:
+    token = re.sub(r"[^a-zA-Z0-9]+", "-", str(value).strip()).strip("-").lower()
+    return token[:48] or "item"
+
+
 class AgentBackendRuntime:
     """Runtime bridge from backend execution into durable V2 run control."""
 
@@ -285,6 +624,12 @@ class CodexAgentBackendAdapter:
                 },
             )
         )
+        codex_task_graph = _CodexObservableTaskGraph(
+            request,
+            workspace_root=workspace_root,
+            objective=objective,
+        )
+        emit_event(codex_task_graph.start())
 
         try:
             process = await asyncio.create_subprocess_exec(
@@ -337,6 +682,8 @@ class CodexAgentBackendAdapter:
                 continue
             if isinstance(row, dict):
                 raw_events.append(row)
+                for event in codex_task_graph.events_for_row(row):
+                    emit_event(event)
                 for event in _codex_events_from_json_row(
                     row,
                     request=request,
@@ -397,6 +744,7 @@ class CodexAgentBackendAdapter:
 
         summary = _first_compact_text(final_summary, "Codex completed.")
         if not any(row.get("type") == "turn.completed" for row in raw_events):
+            emit_event(codex_task_graph.finish("Codex exited after emitting observable work items."))
             emit_event(
                 AgentRunEvent(
                     type="completed",
@@ -405,7 +753,11 @@ class CodexAgentBackendAdapter:
                     summary=summary,
                     artifact_refs=artifact_refs,
                     source_event_type="chat_v2.backend.codex.completed",
-                    payload={"backend": self.backend_name, "return_code": return_code},
+                    payload={
+                        "backend": self.backend_name,
+                        "return_code": return_code,
+                        "final_text": final_summary,
+                    },
                 )
             )
         return AgentBackendRunResult(
@@ -655,12 +1007,15 @@ class SuperDanBackendAdapter:
                 "event_log_schema": super_cli.ORGANISM_LOG_SCHEMA_VERSION,
                 "hook_state": event_logger.hook_state_snapshot(),
             }
+            final_text = str(live_result.get("summary") or "").strip()
             super_cli._log_live_event(
                 event_logger,
                 "run.log.completed",
                 trace_id=trace_id,
                 task_id=request.task_id,
                 status=live_result.get("status"),
+                summary=final_text,
+                final_text=final_text,
                 objective_kind="general",
                 validation_passed=bool(
                     dict(live_result.get("validation") or {}).get("passed")
@@ -1199,7 +1554,11 @@ def _codex_events_from_json_row(
                 summary=final_text or "Codex completed.",
                 artifact_refs=_codex_artifact_refs(row),
                 source_event_type=row_type,
-                payload={"backend": backend_name, "codex_event": row},
+                payload={
+                    "backend": backend_name,
+                    "codex_event": row,
+                    "final_text": final_text,
+                },
             )
         )
         return events
