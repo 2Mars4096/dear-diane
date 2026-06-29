@@ -121,6 +121,8 @@ Active Work cards highlight the selected Agent as `Codex` or `DAN`, while model/
 
 In `#workspace`, the Sessions rail timing is the compact session total. The Work Panel also shows one aggregate live `Total` counter in the Run Steps header, ticking while Super DAN is actively working.
 
+When Super DAN emits an explicit plan DAG, the Work Panel shows generated and executing plans as visible cards, including ghost blueprint cards for generated/deferred plans, plan-to-plan dependency arrows, and selected-plan previews with task checklists plus validation/repair history. Plan generation, plan execution, and task execution each default to a visible queue length of 4.
+
 For the lighter Chat/Agent V2 frontend, open `http://localhost:5173/#v2`. It shows only `Chat` and `Agent`: Chat uses the V2 chat ingress, and Agent starts durable V2 Agent runs with live progress, `Fast` / `Balanced` / `Deep` / `Max` profiles, file/image/PDF attachment chips, explicit active-run queue gestures (`Enter` appends at the next checkpoint, `Cmd/Ctrl+Enter` queues after the current run), retry/open-log controls, active-run reconnect, and branch creation/lineage in the thread rail. The existing editor stays available at `#chat`.
 
 **Chat: build + run a workflow** — Open a workflow tab, set chat to **Agent**, use `plan_graph_mutations` to edit, then ask the model to **`start_run`** with any `inputs` (e.g. `watchlist_path`). **Author equity/watchlist workflows in DAN (Agent chat), not by pasting large generated graphs/code from outside.** Prompts: [`docs/chat-equity-workflow-cookbook.md`](docs/chat-equity-workflow-cookbook.md).

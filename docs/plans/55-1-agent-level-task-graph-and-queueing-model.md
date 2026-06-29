@@ -18,6 +18,7 @@
   - [ ] 2-3. Include streaming update events so reducers and validators can consume partial outputs before global stage barriers
   - [ ] 2-4. Preserve the parent workflow-stage boundary so agent-level queueing can optimize inside a stage without losing workflow-level dependencies
   - [x] 2-5. Add replay diagnostics on top of `organism_log_v1` for effective lower bounds, terminal barrier tails, and lane-sequence-only missed-parallelism hints before live queue control changes
+  - [x] 2-6. Carry separate plan-generation, plan-execution, and task-execution queue limits in live `task_graph_state` snapshots so GUI cards can show plan-level and within-plan concurrency without conflating the queues
 - [ ] 3. Define dispatch actions
   - [x] 3-1. Dispatch, split, duplicate, wait, cancel, validate, improve-context, and finalize
   - [ ] 3-2. Keep action decisions inspectable in `organism_log_v1` rather than only implicit in prompts
@@ -65,3 +66,4 @@
 - The shared scheduler policy now ranks proposal lists, not only one proposal at a time. `select_scheduler_proposal(...)` can choose between `serial`, `parallel`, `dispatch`, `split`, `duplicate`, `improve_context`, `validate`, `finalize`, and `stop` from the same contract, while capacity/dependency/validation/pruning guards still decide admissibility. DAN Code artifact-owner planning uses the selector and records the full selection trace in `scheduler.action.selected`.
 - `SchedulerTask` now has readiness requirements, and `evaluate_task_readiness_from_capsules(...)` evaluates context capsules/readiness signals into a ready/not-ready decision plus a bounded context packet for the downstream task.
 - `turn-23` website repair replay exposed a queueing failure where artifact fanout widened before the real single-file dependency was resolved. DAN Code now keeps this feature-driven rather than task-family-specific: paths explicitly marked non-mutated become read-only context instead of owner partitions, and auxiliary backup files found by workspace scan are ignored unless they are explicitly targeted.
+- Work Panel integration now treats explicit plan nodes as a higher graph level over child task trees. `task_graph_state` carries default queue limits of `4` for plan generation, plan execution, and task execution; generation is capacity-limited but has no dependency edges by default, while execution dependencies continue to use plan/task DAG edges.

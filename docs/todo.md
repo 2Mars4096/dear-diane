@@ -1,6 +1,18 @@
 # Todo
 
 ## Current Backlog
+- [x] 2026-06-29 Work Panel plan-card checklists — fixed: plan cards now show their child task checkboxes directly below the title/status row, and low-level emitted task rows no longer crowd the main card timeline.
+- [x] 2026-06-29 Raw truncated JSON in Work Panel Preview — fixed: malformed JSON-looking answer payload fragments are no longer accepted as final prose, so Preview uses the complete task answer instead.
+- [x] 2026-06-29 Duplicate task numbers in Work Panel cards — fixed: graph task bodies no longer start with a repeated numeric Markdown heading when the card title already carries the task number.
+- [x] 2026-06-29 False blocked Super DAN Final response — fixed: structured `model.responded` answer payloads now satisfy the Work Panel final card after generic completion, and new Super DAN completion events include `final_text`.
+- [x] 2026-06-29 Work Panel early future-card collapse — fixed: request-understanding-only updates now keep grey planning/execution/validation/final-response steps visible until a real graph or later phase replaces them.
+- [x] 2026-06-29 Work Panel plan DAG hierarchy — fixed: explicit Super DAN plan nodes now appear as Work cards with plan dependency arrows, generated/deferred ghost states, selected-plan task checklists, validation/repair history, and separate default queue limits of 4 for plan generation, plan execution, and task execution.
+- [x] 2026-06-29 Markdown abbreviation highlighting — fixed: the shared Markdown renderer no longer treats common prose abbreviations such as `e.g.`, `i.e.`, or `p.m.` as dotted code tokens.
+- [x] 2026-06-29 Session workspace affinity — fixed: a ra-neo session can no longer be pulled into the current deep-agent-network file root by a follow-up; grouping and send payloads now prefer the session's established task workspace/root.
+- [x] 2026-06-29 Restart stale sessions — fixed: Chat V2 startup now stops interrupted running Agent records, the Sessions rail no longer treats stale saved running tasks as live, and unbound `_scratch` histories recover their project label from saved `workspace_root`.
+- [x] 2026-06-29 Preview live-status duplication — fixed: Work Panel Preview now hides `Latest Update` when it repeats `Now`, and filters `Recent Updates` so the same progress sentence does not appear under multiple labels.
+- [x] 2026-06-29 Codex Live Task Graph visibility — fixed: Codex-backed Work Panel runs now emit observable `live.task_graph.updated` snapshots for request, workspace activity, answer, and final completion so the graph panel shows real revisions instead of waiting on native Super DAN graph payloads.
+- [x] 2026-06-29 Codex final-response readability — fixed: Work Panel final-response cards now ignore generic `Codex completed` receipts and recover the latest human-readable Codex agent message or `final_text` payload.
 - [x] 2026-06-29 More generous Work card body height — fixed: Run Step cards now give active progress, final answers, and ordinary summaries more vertical room before clipping.
 - [x] 2026-06-29 Active Work card agent identity — fixed: active Work cards now highlight the selected Agent as a compact Markdown token, showing `Codex` for Codex runs and `DAN` for Native runs.
 - [x] 2026-06-29 Work pane Sessions-first order — fixed: the desktop Work layout and header controls now order panes as Sessions, Files, Work, then Preview, and opening a session card switches the active workspace before loading history so the Files rail follows the selected workspace root immediately.
