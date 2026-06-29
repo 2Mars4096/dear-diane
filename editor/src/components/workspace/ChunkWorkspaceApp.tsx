@@ -3617,6 +3617,12 @@ function detailMarkdown(intro: string, sections: BlueprintDetailSection[]) {
   return lines.join("\n");
 }
 
+function truncateReadableText(value: string, limit = 96) {
+  const text = value.trim().replace(/\s+/g, " ");
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 3)).trimEnd()}...`;
+}
+
 function collectRecordsMatching(
   value: unknown,
   predicate: (record: Record<string, unknown>) => boolean,
@@ -5284,7 +5290,10 @@ function buildBlueprintNodesForRunScope(args: {
           ? `Future/deferred: ${planContext.deferredTaskIds.map((id) => `\`${id}\``).join(", ")}`
           : "",
         planContext?.parallelGroups.length
-          ? ["Parallel groups:", ...parallelGroupSummaryItems(planContext, { maxTasksPerGroup: 2 }).map((item) => `- ${item}`)].join("\n")
+          ? [
+              "Parallel groups:",
+              ...parallelGroupSummaryItems(planContext, { maxTasksPerGroup: 2 }).map((item) => `- ${item}`),
+            ].join("\n")
           : "",
       ]
         .filter(Boolean)
@@ -5835,6 +5844,15 @@ export function liveTaskGraphRevisionsForTest(nodes: BlueprintNode[]) {
 
 export function planTaskChecklistItemsForTest(node: BlueprintNode) {
   return planTaskChecklistItems(node).map(({ task, status }) => ({
+    taskId: task.taskId,
+    title: task.goal,
+    status,
+    branchId: task.branchId ?? "",
+  }));
+}
+
+export function planCardChecklistItemsForTest(node: BlueprintNode) {
+  return activePlanTaskChecklistItems(node).map(({ task, status }) => ({
     taskId: task.taskId,
     title: task.goal,
     status,
@@ -8533,6 +8551,10 @@ function planTaskChecklistItems(node: BlueprintNode) {
   }));
 }
 
+function activePlanTaskChecklistItems(node: BlueprintNode) {
+  return planTaskChecklistItems(node).filter((item) => item.status === "active");
+}
+
 function planHistoryItems(node: BlueprintNode, events: ChatV2AgentRunEvent[]) {
   const planId = node.graphTaskId || "";
   const related = events.filter((event) => {
@@ -8572,10 +8594,12 @@ function planValidationItems(node: BlueprintNode, events: ChatV2AgentRunEvent[])
 
 function PlanCardChecklist({ node }: { node: BlueprintNode }) {
   if (node.kind !== "plan") return null;
-  const checklist = planTaskChecklistItems(node);
+  const checklist = activePlanTaskChecklistItems(node);
   if (checklist.length === 0) return null;
-  const visible = checklist.slice(0, 6);
+  const allItems = planTaskChecklistItems(node);
+  const visible = checklist.slice(0, 4);
   const remaining = checklist.length - visible.length;
+  const inactiveCount = allItems.length - checklist.length;
   return (
     <div className="dan-plan-card-checklist mt-2 grid gap-1.5 text-[12px] leading-5">
       {visible.map(({ task, status }) => (
@@ -8601,9 +8625,11 @@ function PlanCardChecklist({ node }: { node: BlueprintNode }) {
           </span>
         </div>
       ))}
-      {remaining > 0 && (
+      {(remaining > 0 || inactiveCount > 0) && (
         <div className="rounded border border-dashed border-slate-200/80 bg-white/30 px-2 py-1 text-[11px] font-medium text-slate-400 dark:border-slate-800 dark:bg-slate-950/20">
-          {remaining} more task{remaining === 1 ? "" : "s"} in Preview
+          {remaining > 0
+            ? `${remaining} more active task${remaining === 1 ? "" : "s"} in Preview`
+            : `${inactiveCount} other task${inactiveCount === 1 ? "" : "s"} in Preview`}
         </div>
       )}
     </div>
@@ -8667,7 +8693,11 @@ function PlanChecklistPreview({
       {checklist.length > 0 ? (
         <ul className="space-y-2">
           {checklist.map(({ task, status }) => (
-            <li key={task.taskId} className="flex gap-2 text-sm leading-5 text-slate-700 dark:text-slate-300">
+            <li
+              key={task.taskId}
+              data-status={status}
+              className="flex gap-2 text-sm leading-5 text-slate-700 dark:text-slate-300"
+            >
               <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded border border-slate-300 bg-white text-slate-500 dark:border-slate-700 dark:bg-slate-950">
                 {status === "done" ? (
                   <Check size={13} strokeWidth={2.6} />
@@ -8681,7 +8711,7 @@ function PlanChecklistPreview({
                 <span className="font-medium text-slate-800 dark:text-slate-100">
                   {task.taskId}. {task.goal}
                 </span>
-                <span className="ml-2 text-xs text-slate-400">
+                <span className="mt-0.5 block text-xs text-slate-400">
                   {graphTaskStatusLabel(status)}
                   {task.branchId ? ` · branch ${task.branchId}` : ""}
                 </span>
@@ -8952,7 +8982,7 @@ function BlueprintView({
           const leftOffset = Math.min(node.depth ?? 0, 2) * 22;
           const cardContent = blueprintCardContent(node, tasks, agentEvents, activeTask);
           const showPlanCardChecklist =
-            node.kind === "plan" && planTaskChecklistItems(node).length > 0;
+            node.kind === "plan" && activePlanTaskChecklistItems(node).length > 0;
           const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
             if (event.key !== "Enter" && event.key !== " ") return;
             event.preventDefault();

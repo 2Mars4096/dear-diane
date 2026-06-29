@@ -12,6 +12,7 @@ import {
   noteMetaItemsForTest,
   noteRailViewForFacetForTest,
   normalizeStructuredMarkdownForTest,
+  planCardChecklistItemsForTest,
   planTaskChecklistItemsForTest,
   queueRowsFromTasksForTest,
   recentModifiedNotesForTest,
@@ -1739,6 +1740,7 @@ describe("workspace blueprint nodes", () => {
         branchId: "",
       },
     ]);
+    expect(planCardChecklistItemsForTest(planNode!)).toEqual([]);
   });
 
   it("renders revisioned task graph snapshots with branch-local state", () => {
@@ -1895,6 +1897,9 @@ describe("workspace blueprint nodes", () => {
     expect(planNode?.previewBody).toContain("Graph Version");
     expect(planNode?.previewBody).toContain("Parents: v2.b1.2, v2");
     expect(planNode?.previewBody).toContain("Parallel Groups");
+    expect(planNode?.previewBody).toContain("Group 1: 2 tasks can run together");
+    expect(planNode?.previewBody).toContain("Includes Create app shell; Add trip data.");
+    expect(planNode?.previewBody).not.toContain("`1-1` + `1-2`");
     expect(planNode?.previewBody).toContain("Branch Refs");
     expect(planNode?.previewBody).toContain("1: 2 tasks, 1 ready, 1 done");
     expect(nodes.find((node) => node.id === "blueprint:task:1-1")).toBeUndefined();
@@ -1920,6 +1925,7 @@ describe("workspace blueprint nodes", () => {
         branchId: "2",
       },
     ]);
+    expect(planCardChecklistItemsForTest(planNode!)).toEqual([]);
 
     const tree = liveTaskTreeForTest(nodes);
     expect(tree).toEqual([]);
@@ -2008,6 +2014,7 @@ describe("workspace blueprint nodes", () => {
               active_task_ids: ["codex-shell-1"],
               completed_task_ids: ["codex-request"],
               deferred_task_ids: ["codex-final"],
+              parallel_groups: [["codex-request", "codex-shell-1", "codex-final"]],
               branches: [
                 {
                   branch_id: "request",
@@ -2042,6 +2049,11 @@ describe("workspace blueprint nodes", () => {
       title: "codex-shell-1. Run `npm test`",
       status: "active",
     });
+    const planNode = nodes.find((node) => node.id === "blueprint:planning");
+    expect(planNode?.body).toContain("Parallel groups:");
+    expect(planNode?.body).toContain("Group 1: 3 tasks can run together");
+    expect(planNode?.body).toContain("Includes Receive request: fix the failing test; Run `npm test`; 1 more task.");
+    expect(planNode?.body).not.toContain("`codex-request` + `codex-shell-1`");
   });
 
   it("settles stale active live graph nodes after a final response", () => {
@@ -2295,6 +2307,14 @@ describe("workspace blueprint nodes", () => {
         branchId: "validation",
       },
     ]);
+    expect(planCardChecklistItemsForTest(plan1!)).toEqual([
+      {
+        taskId: "plan-1-task-a",
+        title: "Execute Plan 1 branch A",
+        status: "active",
+        branchId: "implementation",
+      },
+    ]);
 
     const graphRevisions = liveTaskGraphRevisionsForTest(nodes);
     expect(graphRevisions[0]?.planEdges).toEqual([
@@ -2538,6 +2558,7 @@ describe("workspace blueprint nodes", () => {
         branchId: "",
       },
     ]);
+    expect(planCardChecklistItemsForTest(planning!)).toEqual([]);
     expect(taskTitles.join(" ")).not.toContain("packing checklist");
     expect(taskTitles.join(" ")).not.toContain("budget table");
     expect(nodes.find((node) => node.id === "blueprint:understanding")).toMatchObject({

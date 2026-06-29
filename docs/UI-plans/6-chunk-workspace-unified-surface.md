@@ -216,6 +216,7 @@
   - [x] 6-176. Remove duplicate standalone task-id headings from graph task card bodies while preserving numbered task titles
   - [x] 6-177. Reject truncated JSON-looking answer fragments in Work Panel Preview so complete task progress is used instead
   - [x] 6-178. Put child task checkboxes directly on plan cards and keep minute execution rows out of the main card timeline
+  - [x] 6-179. Show only active child tasks on plan cards while Preview keeps the full live checkbox checklist
   - [x] 6-180. Settle stale active Live Task Graph nodes after a final response when no closing graph snapshot exists
 
 ## Decisions
@@ -258,6 +259,7 @@
 - Final answer prose may arrive with Markdown-like headings and bullets flattened into one line. The Work Panel normalizes those section/list markers before passing content to the shared Markdown renderer, so readable answer structure does not depend on the model inserting perfect line breaks.
 - Final answer Markdown tables can arrive flattened as heading text, header cells, separator rows, and body rows in one paragraph. The Work Panel recovers the pipe-table row breaks before rendering, so Preview can use the normal Markdown table renderer instead of showing the table source as prose.
 - Work cards should scan at the plan level. Plan cards own the visible child checklist directly under their title/status row; minute execution rows remain available through that checklist, selected Preview, and the Live Task Graph, but they should not flood the main Run Steps timeline as full cards unless DAN emits them as explicit top-level plans.
+- Plan cards should be a current-action surface, not the whole plan ledger. Only active child tasks appear inside the card; done, ready, queued, and future child tasks stay visible in the selected Preview's full checkbox list with live status icons.
 - Shared Markdown prose should highlight obvious code-shaped terms even when the model forgets backticks. File paths, CamelCase objects, snake_case fields, dotted members, and function calls get the same inline code treatment, while explicit code spans, fenced code, links, and math keep their own renderer paths.
 - Session timing should read as one aggregate clock. Session cards keep a compact total worked/working label, while the Work Panel header shows a single live `Total m:ss` / `Total h:mm:ss` counter instead of repeating duration chips on every run card.
 - Review, audit, inspect, check, summarize, and explain requests are answer work by default. The Work Plan labels them as review responses, final details lead with Summary, and file edits are not expected unless the operator explicitly asks for a saved artifact or workspace change.

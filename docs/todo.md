@@ -1,6 +1,7 @@
 # Todo
 
 ## Current Backlog
+- [x] 2026-06-29 Work Panel plan-card active-task focus — fixed: plan cards now show only currently active child tasks, while selected Preview keeps the full live checkbox checklist for done, active, ready, and future tasks.
 - [x] 2026-06-29 Live Task Graph stale running state after final response — fixed: final-answer-ready runs now settle stale active frontier ids in the latest graph so completed sessions do not still look like they are running.
 - [x] 2026-06-29 Work Panel plan-card checklists — fixed: plan cards now show their child task checkboxes directly below the title/status row, and low-level emitted task rows no longer crowd the main card timeline.
 - [x] 2026-06-29 Raw truncated JSON in Work Panel Preview — fixed: malformed JSON-looking answer payload fragments are no longer accepted as final prose, so Preview uses the complete task answer instead.
