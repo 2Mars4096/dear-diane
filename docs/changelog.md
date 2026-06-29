@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-06-29
+- [fix] Made Work Panel parallel-group metadata readable. Preview and planning cards now summarize parallel groups by group count, branch/status mix, and example task goals instead of rendering long `codex-item-*` ID chains.
 - [fix] Made Work Panel plan cards show only currently active child tasks. Completed, ready, and future child tasks now stay out of the card body and remain visible in the selected Preview's full live checkbox checklist.
 - [fix] Settled stale active Live Task Graph nodes after final responses. When a run has a usable final answer but no closing graph snapshot, the latest graph now clears stale active frontier tasks and marks them done instead of continuing to show them as running.
 - [fix] Re-centered Work Panel cards on plan-level checklists. Plan cards now show child task checkboxes directly under the title/status row, while non-plan emitted task rows stay inside the plan checklist and Live Task Graph instead of flooding the main card timeline as verbose minute-task cards.

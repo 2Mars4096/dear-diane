@@ -1,6 +1,7 @@
 # Todo
 
 ## Current Backlog
+- [x] 2026-06-29 Work Panel parallel-group readability — fixed: Parallel Groups now summarize lane size, status mix, and example task goals instead of printing long raw `codex-item-*` chains.
 - [x] 2026-06-29 Work Panel plan-card active-task focus — fixed: plan cards now show only currently active child tasks, while selected Preview keeps the full live checkbox checklist for done, active, ready, and future tasks.
 - [x] 2026-06-29 Live Task Graph stale running state after final response — fixed: final-answer-ready runs now settle stale active frontier ids in the latest graph so completed sessions do not still look like they are running.
 - [x] 2026-06-29 Work Panel plan-card checklists — fixed: plan cards now show their child task checkboxes directly below the title/status row, and low-level emitted task rows no longer crowd the main card timeline.
