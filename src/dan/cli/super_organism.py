@@ -850,6 +850,14 @@ def _super_plan_string_list(value: Any) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+def _super_plan_positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
 def _super_plan_task_graph(value: Any) -> list[dict[str, Any]]:
     if isinstance(value, Mapping):
         raw_items = value.get("tasks") or value.get("task_graph") or []
@@ -859,9 +867,9 @@ def _super_plan_task_graph(value: Any) -> list[dict[str, Any]]:
         return []
     tasks: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for item in raw_items:
+    def visit(item: Any, *, inherited_plan_id: str = "", inherited_branch_id: str = "") -> None:
         if not isinstance(item, Mapping):
-            continue
+            return
         task_id = str(
             item.get("task_id")
             or item.get("id")
@@ -869,10 +877,16 @@ def _super_plan_task_graph(value: Any) -> list[dict[str, Any]]:
             or ""
         ).strip()
         if not task_id or task_id in seen:
-            continue
+            return
         seen.add(task_id)
         depends_on = _super_plan_string_list(
             item.get("depends_on") or item.get("dependencies") or []
+        )
+        generation_depends_on = _super_plan_string_list(
+            item.get("generation_depends_on")
+            or item.get("planning_depends_on")
+            or item.get("plan_generation_depends_on")
+            or []
         )
         owned_paths = _super_plan_string_list(
             item.get("owned_paths") or item.get("owner_paths") or item.get("paths") or []
@@ -894,16 +908,54 @@ def _super_plan_task_graph(value: Any) -> list[dict[str, Any]]:
             "status": status,
         }
         parent_id = str(item.get("parent_id") or item.get("parent") or "").strip()
-        branch_id = str(item.get("branch_id") or item.get("branch") or "").strip()
+        branch_id = str(item.get("branch_id") or item.get("branch") or inherited_branch_id).strip()
+        node_type = str(
+            item.get("node_type")
+            or item.get("graph_level")
+            or item.get("level")
+            or item.get("node_kind")
+            or item.get("task_kind")
+            or ("plan" if item.get("is_plan") is True else "")
+            or ""
+        ).strip()
+        plan_id = str(
+            item.get("plan_id")
+            or item.get("parent_plan_id")
+            or item.get("container_plan_id")
+            or item.get("container_id")
+            or inherited_plan_id
+            or ""
+        ).strip()
         if parent_id:
             task["parent_id"] = parent_id
+        if plan_id:
+            task["plan_id"] = plan_id
         if branch_id:
             task["branch_id"] = branch_id
+        if node_type:
+            task["node_type"] = "plan" if node_type == "phase" else node_type
+        if generation_depends_on:
+            task["generation_depends_on"] = generation_depends_on
         if item.get("risk") is not None:
             task["risk"] = str(item.get("risk") or "").strip()
         if item.get("confidence") is not None:
             task["confidence"] = _coerce_float(item.get("confidence"))
         tasks.append(task)
+        child_items = (
+            item.get("tasks")
+            or item.get("task_graph")
+            or item.get("children")
+            or item.get("subtasks")
+            or item.get("task_tree")
+            or []
+        )
+        if isinstance(child_items, list):
+            child_plan_id = task_id if task.get("node_type") == "plan" else plan_id
+            for child in child_items:
+                visit(child, inherited_plan_id=child_plan_id, inherited_branch_id=branch_id)
+
+    for item in raw_items:
+        visit(item)
     return tasks
 
 
@@ -1548,6 +1600,18 @@ def _super_plan_task_graph_state(
         "deferred_task_ids": sorted(deferred),
         "active_task_ids": sorted(active),
         "completed_task_ids": sorted(completed),
+        "plan_generation_queue_length": _super_plan_positive_int(
+            plan_context.get("plan_generation_queue_length"),
+            4,
+        ),
+        "plan_execution_queue_length": _super_plan_positive_int(
+            plan_context.get("plan_execution_queue_length"),
+            4,
+        ),
+        "task_execution_queue_length": _super_plan_positive_int(
+            plan_context.get("task_execution_queue_length"),
+            4,
+        ),
         "parallel_groups": _super_plan_parallel_groups(task_graph, sorted(ready)),
         "branches": list(branch_counts.values()),
         "dependency_revisions": [
@@ -1643,6 +1707,10 @@ def _super_plan_file_contract(plan_root_relative: str) -> str:
         "- For broad tasks, predict a compact dependency task graph: each executable task should have a stable digit "
         "task id, optional `parent_id`, optional `branch_id`, `depends_on`, `owned_paths`, deliverables, validation "
         "checks, and whether it is parallel-safe.\n"
+        "- For DAN Super plan-level orchestration, use the same graph shape: top-level plan cards may be emitted as "
+        "`node_type: plan` nodes with execution `depends_on` edges; tasks inside a plan should use `plan_id` or "
+        "nest under that plan. Plan generation itself should not require dependency edges unless the operator says so; "
+        "the default plan-generation, plan-execution, and task-execution queue lengths are all 4.\n"
         "- The ready frontier is the set of tasks whose dependencies are already satisfied and whose owned paths do not "
         "conflict. Downstream tasks remain queued until their dependencies are complete.\n"
         "- Use sections: Status, Goal, Tasks, Decisions, Notes. Sub-plan files should include a Parent link.\n"
