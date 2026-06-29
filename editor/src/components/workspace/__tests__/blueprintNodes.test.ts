@@ -12,6 +12,7 @@ import {
   noteMetaItemsForTest,
   noteRailViewForFacetForTest,
   normalizeStructuredMarkdownForTest,
+  planTaskChecklistItemsForTest,
   queueRowsFromTasksForTest,
   recentModifiedNotesForTest,
   restorableThreadTargetForTest,
@@ -31,6 +32,7 @@ import {
   workspaceSelectionFromStorageForTest,
   workspaceSurfaceContextForTest,
   workspaceIdForTasksForTest,
+  workspaceRootForTasksForTest,
   workingNoteCardsForTest,
 } from "../ChunkWorkspaceApp";
 import type {
@@ -48,19 +50,6 @@ const baseArgs = {
   queueRows: [],
   activeThreadTitle: "",
 };
-
-function findTreeParentId(
-  nodes: ReturnType<typeof liveTaskTreeForTest>,
-  targetId: string,
-  parentId: string | null = null,
-): string | null {
-  for (const node of nodes) {
-    if (node.id === targetId) return parentId;
-    const found = findTreeParentId(node.children, targetId, node.id);
-    if (found !== null) return found;
-  }
-  return null;
-}
 
 function task(overrides: Partial<ChatV2TaskSnapshot>): ChatV2TaskSnapshot {
   const { metadata, ...rest } = overrides;
@@ -604,7 +593,7 @@ describe("workspace blueprint nodes", () => {
   it("resolves a task back to a workspace from the stored root path", () => {
     const workspaceTask = task({
       metadata: {
-        workspace_id: "/Users/lizhi/Downloads/local_projects/ra-neo",
+        workspace_id: "old-workspace-id",
         workspace_root: "/Users/lizhi/Downloads/local_projects/ra-neo",
       },
     });
@@ -617,28 +606,116 @@ describe("workspace blueprint nodes", () => {
     ).toBe("ra-neo");
   });
 
-  it("prefers the newest task metadata when restoring a mixed-history thread", () => {
-    const oldTask = task({
-      task_id: "task-old",
-      metadata: {
-        workspace_id: "scratch",
-        run_updated_at: "2026-06-24T10:00:00.000Z",
-      },
+  it("groups restart-restored scratch sessions by saved workspace root", () => {
+    const groups = buildSessionGroupsForTest({
+      threads: [
+        thread({
+          id: "thread-restored",
+          title: "Understanding project",
+          workflow_id: "_scratch",
+        }),
+      ],
+      workspaces: [],
+      threadQuery: "",
+      threadWorkspaces: {},
+      taskWorkspaceByThreadId: new Map(),
+      taskWorkspaceRootByThreadId: new Map([
+        ["thread-restored", "/Users/lizhi/Downloads/local_projects/ra-neo"],
+      ]),
     });
-    const newTask = task({
-      task_id: "task-new",
+
+    expect(groups[0]).toMatchObject({
+      id: "project-root:/Users/lizhi/Downloads/local_projects/ra-neo",
+      name: "ra-neo",
+      root: "/Users/lizhi/Downloads/local_projects/ra-neo",
+    });
+    expect(groups[0]?.threads.map((item) => item.id)).toEqual(["thread-restored"]);
+  });
+
+  it("keeps a mixed-history session anchored to its dominant workspace", () => {
+    const raNeoFirst = task({
+      task_id: "task-ra-first",
       metadata: {
         workspace_id: "ra-neo",
-        run_updated_at: "2026-06-24T11:00:00.000Z",
+        workspace_root: "/Users/lizhi/Downloads/local_projects/ra-neo",
+        run_created_at: "2026-06-24T10:00:00.000Z",
+        run_updated_at: "2026-06-24T10:05:00.000Z",
+      },
+    });
+    const raNeoSecond = task({
+      task_id: "task-ra-second",
+      metadata: {
+        workspace_id: "ra-neo",
+        workspace_root: "/Users/lizhi/Downloads/local_projects/ra-neo",
+        run_created_at: "2026-06-24T11:00:00.000Z",
+        run_updated_at: "2026-06-24T11:05:00.000Z",
+      },
+    });
+    const accidentalCurrentWorkspace = task({
+      task_id: "task-current-root",
+      metadata: {
+        workspace_id: "deep-agent-network",
+        workspace_root: "/Users/lizhi/Downloads/local_projects/deep-agent-network",
+        run_created_at: "2026-06-24T12:00:00.000Z",
+        run_updated_at: "2026-06-24T12:05:00.000Z",
       },
     });
 
     expect(
-      workspaceIdForTasksForTest([oldTask, newTask], [
+      workspaceIdForTasksForTest([raNeoFirst, raNeoSecond, accidentalCurrentWorkspace], [
         { id: "scratch", pinnedPaths: ["/Users/lizhi/Downloads/local_projects/scratch"] },
         { id: "ra-neo", pinnedPaths: ["/Users/lizhi/Downloads/local_projects/ra-neo"] },
+        {
+          id: "deep-agent-network",
+          pinnedPaths: ["/Users/lizhi/Downloads/local_projects/deep-agent-network"],
+        },
       ]),
     ).toBe("ra-neo");
+    expect(
+      workspaceRootForTasksForTest([raNeoFirst, raNeoSecond, accidentalCurrentWorkspace]),
+    ).toBe("/Users/lizhi/Downloads/local_projects/ra-neo");
+  });
+
+  it("lets task workspace evidence override a stale local thread binding", () => {
+    const groups = buildSessionGroupsForTest({
+      threads: [
+        thread({
+          id: "thread-ra",
+          title: "Understanding this project",
+          workflow_id: "_scratch",
+        }),
+      ],
+      workspaces: [
+        {
+          id: "deep-agent-network",
+          name: "deep-agent-network",
+          pinnedPaths: ["/Users/lizhi/Downloads/local_projects/deep-agent-network"],
+          activeThreadId: null,
+          openThreadIds: ["thread-ra"],
+        },
+      ],
+      threadQuery: "",
+      threadWorkspaces: {
+        "_scratch:thread-ra": "deep-agent-network",
+      },
+      taskWorkspaceByThreadId: new Map(),
+      taskWorkspaceRootByThreadId: new Map([
+        ["thread-ra", "/Users/lizhi/Downloads/local_projects/ra-neo"],
+      ]),
+    });
+
+    const raNeoGroup = groups.find(
+      (group) => group.id === "project-root:/Users/lizhi/Downloads/local_projects/ra-neo",
+    );
+    expect(raNeoGroup).toMatchObject({
+      id: "project-root:/Users/lizhi/Downloads/local_projects/ra-neo",
+      name: "ra-neo",
+      root: "/Users/lizhi/Downloads/local_projects/ra-neo",
+    });
+    expect(raNeoGroup?.threads.map((item) => item.id)).toEqual(["thread-ra"]);
+    expect(
+      groups.find((group) => group.id === "workspace:deep-agent-network")?.threads ?? [],
+    ).toEqual([]);
   });
 
   it("does not turn a blank new session title into a fake blueprint", () => {
@@ -948,7 +1025,7 @@ describe("workspace blueprint nodes", () => {
     expect(workPlanHeaderSubtitleForTest(planning)).toBe("Planning next steps");
   });
 
-  it("hides unplanned future phases while DAN is still understanding the request", () => {
+  it("keeps the future workflow tail visible while DAN is still understanding the request", () => {
     const activeTask = task({
       task_id: "understanding-first-task",
       status: "running",
@@ -994,10 +1071,18 @@ describe("workspace blueprint nodes", () => {
       status: "active",
       detail: "Rule-generation brief sent to DAN",
     });
-    expect(nodes.find((node) => node.id === "blueprint:planning")).toBeUndefined();
-    expect(nodes.find((node) => node.kind === "build")).toBeUndefined();
-    expect(nodes.find((node) => node.kind === "validation")).toBeUndefined();
-    expect(nodes.find((node) => node.kind === "answer")).toBeUndefined();
+    expect(nodes.find((node) => node.id === "blueprint:planning")).toMatchObject({
+      status: "future",
+    });
+    expect(nodes.find((node) => node.kind === "build")).toMatchObject({
+      status: "future",
+    });
+    expect(nodes.find((node) => node.kind === "validation")).toMatchObject({
+      status: "future",
+    });
+    expect(nodes.find((node) => node.kind === "answer")).toMatchObject({
+      status: "future",
+    });
   });
 
   it("builds live preview status from current task progress and new event results", () => {
@@ -1044,6 +1129,45 @@ describe("workspace blueprint nodes", () => {
     expect(status.now).toContain("Thinking with kimi-k2.6");
     expect(status.latestUpdate).toContain("Changed `README.md`");
     expect(status.results).toContain("- Changed: `README.md`");
+  });
+
+  it("does not repeat the same live status line as now and latest update", () => {
+    const activeTask = task({
+      task_id: "dup-task",
+      status: "running",
+      latest_progress: "Inspecting files before deciding the next patch.",
+      metadata: { active_run_id: "dup-run" },
+    });
+    const events: ChatV2AgentRunEvent[] = [
+      {
+        type: "worker_started",
+        source_event_type: "live.generic_build.started",
+        run_id: "dup-run",
+        task_id: "dup-task",
+        summary: "Working in this workspace.",
+      },
+      {
+        type: "worker_progress",
+        source_event_type: "chat_v2.backend.codex.item.completed",
+        run_id: "dup-run",
+        task_id: "dup-task",
+        summary: "Inspecting files before deciding the next patch.",
+      },
+    ];
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "dup-run",
+      activeRunningTask: activeTask,
+      tasks: [activeTask],
+      agentEvents: events,
+    });
+
+    const build = nodes.find((node) => node.kind === "build");
+    expect(build).toBeTruthy();
+    const status = blueprintLiveStatusForTest(build!, [activeTask], events, activeTask);
+    expect(status.now).toContain("Inspecting files before deciding the next patch.");
+    expect(status.latestUpdate).toBe("");
+    expect(status.recentUpdates).not.toContain("Inspecting files before deciding the next patch.");
   });
 
   it("shows validation scope, deterministic checks, semantic checks, and branch results", () => {
@@ -1411,6 +1535,7 @@ describe("workspace blueprint nodes", () => {
         "_scratch:archived-ra": "ra-neo",
       },
       taskWorkspaceByThreadId: new Map(),
+      taskWorkspaceRootByThreadId: new Map(),
     });
 
     const archived = groups.find((group) => group.id === "archived");
@@ -1528,12 +1653,23 @@ describe("workspace blueprint nodes", () => {
       status: "completed",
       metadata: { active_run_id: "completed-run" },
     });
+    const stale = task({
+      task_id: "stale-task",
+      thread_id: "stale-thread",
+      status: "running",
+      latest_progress: "Old saved work",
+      metadata: {
+        active_run_id: "stale-run",
+        run_updated_at: "2020-01-01T00:00:00.000Z",
+      },
+    });
 
-    expect(sessionProgressTaskForTest([queued, running, completed], "running-thread")).toMatchObject({
+    expect(sessionProgressTaskForTest([queued, running, completed, stale], "running-thread")).toMatchObject({
       task_id: "running-task",
     });
-    expect(sessionProgressTaskForTest([queued, running, completed], "queued-thread")).toBeNull();
-    expect(sessionProgressTaskForTest([queued, running, completed], "completed-thread")).toBeNull();
+    expect(sessionProgressTaskForTest([queued, running, completed, stale], "queued-thread")).toBeNull();
+    expect(sessionProgressTaskForTest([queued, running, completed, stale], "completed-thread")).toBeNull();
+    expect(sessionProgressTaskForTest([queued, running, completed, stale], "stale-thread")).toBeNull();
   });
 
   it("projects emitted task graphs into ready and future blueprint nodes", () => {
@@ -1585,11 +1721,24 @@ describe("workspace blueprint nodes", () => {
       ],
     });
 
+    const planNode = nodes.find((node) => node.id === "blueprint:planning");
     expect(nodes.map((node) => node.title)).toContain("Blueprint planning");
-    expect(nodes.find((node) => node.id === "blueprint:task:1-1")?.status).toBe("ready");
-    const futureNode = nodes.find((node) => node.id === "blueprint:task:2-1");
-    expect(futureNode?.status).toBe("future");
-    expect(futureNode?.compact).toBe(true);
+    expect(nodes.find((node) => node.id === "blueprint:task:1-1")).toBeUndefined();
+    expect(nodes.find((node) => node.id === "blueprint:task:2-1")).toBeUndefined();
+    expect(planTaskChecklistItemsForTest(planNode!)).toEqual([
+      {
+        taskId: "1-1",
+        title: "Create app shell",
+        status: "ready",
+        branchId: "",
+      },
+      {
+        taskId: "2-1",
+        title: "Add persistence",
+        status: "future",
+        branchId: "",
+      },
+    ]);
   });
 
   it("renders revisioned task graph snapshots with branch-local state", () => {
@@ -1748,21 +1897,32 @@ describe("workspace blueprint nodes", () => {
     expect(planNode?.previewBody).toContain("Parallel Groups");
     expect(planNode?.previewBody).toContain("Branch Refs");
     expect(planNode?.previewBody).toContain("1: 2 tasks, 1 ready, 1 done");
-    expect(nodes.find((node) => node.id === "blueprint:task:1-1")?.status).toBe("done");
-    const readyNode = nodes.find((node) => node.id === "blueprint:task:1-2");
-    expect(readyNode?.status).toBe("ready");
-    expect(readyNode?.meta).toContain("branch 1");
-    expect(nodes.find((node) => node.id === "blueprint:task:2-1")?.status).toBe("future");
+    expect(nodes.find((node) => node.id === "blueprint:task:1-1")).toBeUndefined();
+    expect(nodes.find((node) => node.id === "blueprint:task:1-2")).toBeUndefined();
+    expect(nodes.find((node) => node.id === "blueprint:task:2-1")).toBeUndefined();
+    expect(planTaskChecklistItemsForTest(planNode!)).toEqual([
+      {
+        taskId: "1-1",
+        title: "Create app shell",
+        status: "done",
+        branchId: "1",
+      },
+      {
+        taskId: "1-2",
+        title: "Add trip data",
+        status: "ready",
+        branchId: "1",
+      },
+      {
+        taskId: "2-1",
+        title: "Add persistence",
+        status: "future",
+        branchId: "2",
+      },
+    ]);
 
     const tree = liveTaskTreeForTest(nodes);
-    expect(tree.map((node) => node.id)).toEqual([
-      "blueprint:task:1-1",
-      "blueprint:task:1-2",
-      "blueprint:task:2-1",
-    ]);
-    expect(findTreeParentId(tree, "blueprint:task:1-1")).toBeNull();
-    expect(findTreeParentId(tree, "blueprint:task:1-2")).toBeNull();
-    expect(findTreeParentId(tree, "blueprint:task:2-1")).toBeNull();
+    expect(tree).toEqual([]);
 
     const graphRevisions = liveTaskGraphRevisionsForTest(nodes);
     expect(graphRevisions.map((revision) => revision.label)).toEqual([
@@ -1786,6 +1946,323 @@ describe("workspace blueprint nodes", () => {
       "blueprint:task:1-1",
       "blueprint:task:1-2",
     ]);
+  });
+
+  it("renders observable Codex task graph branches with readable word labels", () => {
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "codex-run",
+      chunks: [
+        {
+          id: "message:user-codex-graph",
+          kind: "chat",
+          title: "You · Request",
+          body: "fix the failing test",
+          status: "clean",
+          meta: "user",
+          role: "user",
+          runId: "codex-run",
+        },
+      ],
+      agentEvents: [
+        {
+          type: "worker_started",
+          source_event_type: "live.task_graph.updated",
+          summary: "Codex observable graph updated.",
+          run_id: "codex-run",
+          task_id: "codex-task",
+          payload: {
+            task_graph_state: {
+              schema: "super_dan_task_graph_v1",
+              revision: 2,
+              version_id: "codex.r2",
+              root_version_id: "codex",
+              source: "codex",
+              update_scope: "observable_event",
+              update_reason: "Codex started an observable work item.",
+              changed_task_ids: ["codex-shell-1"],
+              changed_branch_ids: ["workspace"],
+              tasks: [
+                {
+                  task_id: "codex-request",
+                  branch_id: "request",
+                  goal: "Receive request: fix the failing test",
+                  state: "done",
+                  depends_on: [],
+                },
+                {
+                  task_id: "codex-shell-1",
+                  branch_id: "workspace",
+                  goal: "Run `npm test`",
+                  state: "active",
+                  depends_on: ["codex-request"],
+                },
+                {
+                  task_id: "codex-final",
+                  branch_id: "answer",
+                  goal: "Return the final user-facing response",
+                  state: "deferred",
+                  depends_on: ["codex-shell-1"],
+                },
+              ],
+              active_task_ids: ["codex-shell-1"],
+              completed_task_ids: ["codex-request"],
+              deferred_task_ids: ["codex-final"],
+              branches: [
+                {
+                  branch_id: "request",
+                  task_ids: ["codex-request"],
+                  completed_task_ids: ["codex-request"],
+                },
+                {
+                  branch_id: "workspace",
+                  task_ids: ["codex-shell-1"],
+                  active_task_ids: ["codex-shell-1"],
+                },
+                {
+                  branch_id: "answer",
+                  task_ids: ["codex-final"],
+                  deferred_task_ids: ["codex-final"],
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+
+    const graphRevisions = liveTaskGraphRevisionsForTest(nodes);
+    expect(graphRevisions).toHaveLength(1);
+    expect(graphRevisions[0]?.branches.map((branch) => branch.label)).toEqual([
+      "Request",
+      "Workspace",
+      "Answer",
+    ]);
+    expect(graphRevisions[0]?.branches[1]?.nodes[0]).toMatchObject({
+      title: "codex-shell-1. Run `npm test`",
+      status: "active",
+    });
+  });
+
+  it("renders explicit plan DAG nodes as Work cards with child task checklists", () => {
+    const planGraphTasks = [
+      {
+        task_id: "plan-1",
+        node_type: "plan",
+        goal: "Plan 1",
+        state: "executing",
+        depends_on: [],
+      },
+      {
+        task_id: "plan-2",
+        node_type: "plan",
+        goal: "Plan 2",
+        state: "executing",
+        depends_on: [],
+      },
+      {
+        task_id: "plan-3",
+        node_type: "plan",
+        goal: "Plan 3",
+        state: "generated",
+        depends_on: ["plan-1", "plan-2"],
+      },
+      {
+        task_id: "plan-4",
+        node_type: "plan",
+        goal: "Plan 4",
+        state: "generated",
+        depends_on: ["plan-3"],
+      },
+      {
+        task_id: "plan-5",
+        node_type: "plan",
+        goal: "Plan 5",
+        state: "generated",
+        depends_on: ["plan-3"],
+      },
+      {
+        task_id: "plan-6",
+        node_type: "plan",
+        goal: "Plan 6",
+        state: "generated",
+        depends_on: ["plan-4", "plan-5"],
+      },
+      {
+        task_id: "plan-1-task-a",
+        plan_id: "plan-1",
+        branch_id: "implementation",
+        goal: "Execute Plan 1 branch A",
+        state: "active",
+        depends_on: [],
+      },
+      {
+        task_id: "plan-1-task-b",
+        plan_id: "plan-1",
+        branch_id: "validation",
+        goal: "Validate Plan 1 branch B",
+        state: "ready",
+        depends_on: [],
+      },
+      {
+        task_id: "plan-2-task-a",
+        plan_id: "plan-2",
+        branch_id: "implementation",
+        goal: "Execute Plan 2 branch A",
+        state: "active",
+        depends_on: [],
+      },
+    ];
+
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "plan-dag-run",
+      activeThreadTitle: "Plan graph run",
+      chunks: [
+        {
+          id: "message:user-plan-dag",
+          kind: "chat",
+          title: "You · Request",
+          body: "Run the DAN Super plan graph",
+          status: "clean",
+          meta: "user",
+          role: "user",
+          runId: "plan-dag-run",
+        },
+      ],
+      agentEvents: [
+        {
+          type: "worker_started",
+          source_event_type: "live.task_graph.updated",
+          summary: "Plan graph generated.",
+          run_id: "plan-dag-run",
+          task_id: "plan-dag-task",
+          payload: {
+            task_graph_state: {
+              schema: "super_dan_task_graph_v1",
+              revision: 1,
+              version_id: "plans.r1",
+              root_version_id: "plans",
+              source: "planner",
+              update_scope: "plan_graph",
+              update_reason: "Generated top-level plans with execution dependencies.",
+              tasks: planGraphTasks,
+              active_task_ids: ["plan-1", "plan-2", "plan-1-task-a", "plan-2-task-a"],
+              ready_task_ids: ["plan-1-task-b"],
+              deferred_task_ids: ["plan-3", "plan-4", "plan-5", "plan-6"],
+              completed_task_ids: [],
+              plan_generation_queue_length: 4,
+              plan_execution_queue_length: 4,
+              task_execution_queue_length: 4,
+            },
+          },
+        },
+      ],
+    });
+
+    const graphCards = nodes.filter((node) => node.graphTaskId);
+    expect(graphCards.map((node) => node.graphTaskId)).toEqual([
+      "plan-1",
+      "plan-2",
+      "plan-3",
+      "plan-4",
+      "plan-5",
+      "plan-6",
+    ]);
+    expect(nodes.find((node) => node.graphTaskId === "plan-1-task-a")).toBeUndefined();
+    expect(nodes.find((node) => node.graphTaskId === "plan-1")?.status).toBe("active");
+    expect(nodes.find((node) => node.graphTaskId === "plan-3")).toMatchObject({
+      status: "future",
+      compact: true,
+      kind: "plan",
+    });
+
+    const plan1 = nodes.find((node) => node.graphTaskId === "plan-1");
+    expect(planTaskChecklistItemsForTest(plan1!)).toEqual([
+      {
+        taskId: "plan-1-task-a",
+        title: "Execute Plan 1 branch A",
+        status: "active",
+        branchId: "implementation",
+      },
+      {
+        taskId: "plan-1-task-b",
+        title: "Validate Plan 1 branch B",
+        status: "ready",
+        branchId: "validation",
+      },
+    ]);
+
+    const graphRevisions = liveTaskGraphRevisionsForTest(nodes);
+    expect(graphRevisions[0]?.planEdges).toEqual([
+      { from: "blueprint:task:plan-1", to: "blueprint:task:plan-3" },
+      { from: "blueprint:task:plan-2", to: "blueprint:task:plan-3" },
+      { from: "blueprint:task:plan-3", to: "blueprint:task:plan-4" },
+      { from: "blueprint:task:plan-3", to: "blueprint:task:plan-5" },
+      { from: "blueprint:task:plan-4", to: "blueprint:task:plan-6" },
+      { from: "blueprint:task:plan-5", to: "blueprint:task:plan-6" },
+    ]);
+    expect(graphRevisions[0]?.branches.flatMap((branch) => branch.nodes)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "blueprint:task:plan-3", kind: "plan", status: "future" }),
+      ]),
+    );
+  });
+
+  it("keeps future validation and final response visible during request understanding", () => {
+    const activeTask = task({
+      task_id: "understanding-only-task",
+      status: "running",
+      latest_progress: "Understanding request.",
+      metadata: { active_run_id: "understanding-only-run" },
+    });
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "understanding-only-run",
+      activeRunningTask: activeTask,
+      tasks: [activeTask],
+      chunks: [
+        {
+          id: "message:user-understanding-only",
+          kind: "chat",
+          title: "You · Request",
+          body: "Implement the next Work Panel sequence polish",
+          status: "clean",
+          meta: "user",
+          role: "user",
+          runId: "understanding-only-run",
+        },
+      ],
+      agentEvents: [
+        {
+          type: "worker_started",
+          source_event_type: "live.request_understanding.briefed",
+          summary: "Request-understanding brief emitted.",
+          task_id: "understanding-only-task",
+          run_id: "understanding-only-run",
+          payload: {
+            request_understanding: {
+              source: "rule_generation_brief",
+              request_kind: "workspace_change",
+              rule_generation_brief: ["Generate request-specific acceptance criteria."],
+            },
+          },
+        },
+      ],
+    });
+
+    expect(nodes.map((node) => node.title)).toEqual([
+      "Operator request",
+      "Understand request",
+      "Blueprint planning",
+      "Execute workspace change",
+      "Validate current frontier",
+      "Final response",
+    ]);
+    expect(nodes.find((node) => node.title === "Understand request")?.status).toBe("active");
+    expect(nodes.find((node) => node.title === "Blueprint planning")?.status).toBe("future");
+    expect(nodes.find((node) => node.title === "Validate current frontier")?.status).toBe("future");
+    expect(nodes.find((node) => node.title === "Final response")?.status).toBe("future");
   });
 
   it("keeps sequential run phases at the same tree level without emitted tasks", () => {
@@ -1932,17 +2409,32 @@ describe("workspace blueprint nodes", () => {
     });
 
     const taskTitles = nodes.filter((node) => node.kind === "task").map((node) => node.title);
+    const planning = nodes.find((node) => node.id === "blueprint:planning");
     expect(nodes.find((node) => node.id === "blueprint:planning")).toMatchObject({
       detail: "3 projected tasks · 1 ready now",
       meta: "request target: /private/tmp/dan-blueprint-smoke/trip-planner",
     });
-    expect(taskTitles).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("Understand explicit target scope"),
-        expect.stringContaining("Execute the current target slice"),
-        expect.stringContaining("Validate and summarize target coverage"),
-      ]),
-    );
+    expect(taskTitles).toEqual([]);
+    expect(planTaskChecklistItemsForTest(planning!)).toEqual([
+      {
+        taskId: "1",
+        title: "Understand explicit target scope",
+        status: "ready",
+        branchId: "",
+      },
+      {
+        taskId: "2",
+        title: "Execute the current target slice",
+        status: "future",
+        branchId: "",
+      },
+      {
+        taskId: "3",
+        title: "Validate and summarize target coverage",
+        status: "future",
+        branchId: "",
+      },
+    ]);
     expect(taskTitles.join(" ")).not.toContain("packing checklist");
     expect(taskTitles.join(" ")).not.toContain("budget table");
     expect(nodes.find((node) => node.id === "blueprint:understanding")).toMatchObject({
@@ -1950,10 +2442,8 @@ describe("workspace blueprint nodes", () => {
       status: "done",
       detail: "Request context handed into later work",
     });
-    expect(nodes.find((node) => node.id === "blueprint:task:1")).toMatchObject({
-      status: "active",
-      detail: expect.stringContaining("/private/tmp/dan-blueprint-smoke/trip-planner"),
-    });
+    expect(nodes.find((node) => node.id === "blueprint:task:1")).toBeUndefined();
+    expect(nodes.find((node) => node.id === "blueprint:task:2")).toBeUndefined();
     expect(nodes.find((node) => node.kind === "request")?.previewBody).toContain("### Targets");
   });
 
@@ -2667,6 +3157,104 @@ describe("workspace blueprint nodes", () => {
     expect(answer?.previewBody).toContain("### Files");
   });
 
+  it("uses the latest Codex agent message when the terminal event is generic", () => {
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      chunks: [
+        {
+          id: "message:user-codex-answer",
+          kind: "chat",
+          title: "You · Request",
+          body: "What is this project?",
+          status: "clean",
+          meta: "user",
+          role: "user",
+          runId: "codex-run",
+        },
+      ],
+      tasks: [
+        task({
+          task_id: "codex-task",
+          status: "completed",
+          latest_progress: "Codex completed.",
+          metadata: { active_run_id: "codex-run" },
+        }),
+      ],
+      agentEvents: [
+        {
+          type: "model_text_delta",
+          source_event_type: "item.completed",
+          summary: "ra-neo is a tactical command game about large-scale swarm combat.",
+          task_id: "codex-task",
+          run_id: "codex-run",
+          payload: {
+            text: "ra-neo is a tactical command game about large-scale swarm combat.",
+          },
+        },
+        {
+          type: "completed",
+          source_event_type: "turn.completed",
+          summary: "Codex completed.",
+          task_id: "codex-task",
+          run_id: "codex-run",
+        },
+      ],
+    });
+
+    const answer = nodes.find((node) => node.kind === "answer");
+    expect(answer).toMatchObject({
+      title: "Final response",
+      status: "done",
+      body: "ra-neo is a tactical command game about large-scale swarm combat.",
+    });
+    expect(answer?.body).not.toBe("Codex completed.");
+    expect(answer?.previewBody).toContain("ra-neo is a tactical command game");
+  });
+
+  it("uses terminal payload final_text when the terminal summary is generic", () => {
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      chunks: [
+        {
+          id: "message:user-codex-payload",
+          kind: "chat",
+          title: "You · Request",
+          body: "Please summarize this project.",
+          status: "clean",
+          meta: "user",
+          role: "user",
+          runId: "codex-payload-run",
+        },
+      ],
+      tasks: [
+        task({
+          task_id: "codex-payload-task",
+          status: "completed",
+          metadata: { active_run_id: "codex-payload-run" },
+        }),
+      ],
+      agentEvents: [
+        {
+          type: "completed",
+          source_event_type: "turn.completed",
+          summary: "Codex completed.",
+          task_id: "codex-payload-task",
+          run_id: "codex-payload-run",
+          payload: {
+            final_text: "The project is a browser and Godot prototype for large-scale tactical simulation.",
+          },
+        },
+      ],
+    });
+
+    const answer = nodes.find((node) => node.kind === "answer");
+    expect(answer).toMatchObject({
+      status: "done",
+      body: "The project is a browser and Godot prototype for large-scale tactical simulation.",
+    });
+    expect(answer?.body).not.toBe("Codex completed.");
+  });
+
   it("keeps structured final progress user-facing instead of rendering raw internal JSON", () => {
     const nodes = buildBlueprintNodesForTest({
       ...baseArgs,
@@ -2902,6 +3490,128 @@ describe("workspace blueprint nodes", () => {
     expect(answer?.body).not.toContain("Super DAN completed");
     expect(answer?.previewBody).toContain("### Remaining Attention");
     expect(answer?.previewBody).toContain("Ask DAN to answer in this session");
+  });
+
+  it("uses a structured Super DAN model response before a generic completed event", () => {
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      chunks: [
+        {
+          id: "message:user-website-folder",
+          kind: "chat",
+          title: "You · Request",
+          body: "Do you see a website folder here for this project?",
+          status: "clean",
+          meta: "user",
+          role: "user",
+        },
+      ],
+      tasks: [
+        task({
+          task_id: "website-folder-task",
+          status: "completed",
+          latest_progress: "",
+          metadata: { active_run_id: "website-folder-run" },
+        }),
+      ],
+      agentEvents: [
+        {
+          type: "token_usage_recorded",
+          source_event_type: "model.responded",
+          summary:
+            "Token usage for round 2: prompt=12404, completion=656, total=13060.",
+          task_id: "website-folder-task",
+          run_id: "website-folder-run",
+          payload: {
+            text: JSON.stringify({
+              answer:
+                "No - there is no website folder in this project. I checked the workspace root and common alternatives.",
+            }),
+          },
+        },
+        {
+          type: "completed",
+          source_event_type: "run.log.completed",
+          summary: "completed",
+          task_id: "website-folder-task",
+          run_id: "website-folder-run",
+        },
+      ],
+    });
+
+    const answer = nodes.find((node) => node.id === "blueprint:answer");
+    expect(answer).toMatchObject({
+      title: "Final response",
+      status: "done",
+      detail: "model.responded",
+      body:
+        "No - there is no website folder in this project. I checked the workspace root and common alternatives.",
+      runId: "website-folder-run",
+      taskId: "website-folder-task",
+    });
+    expect(answer?.body).not.toContain("did not return");
+  });
+
+  it("ignores truncated structured Super DAN answer payloads and uses complete task progress", () => {
+    const completeAnswer =
+      "This is the Super DAN Website Artifact, a static dependency-free product site with a landing page, organism visualization, and eight app demos.";
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      chunks: [
+        {
+          id: "message:user-website-summary",
+          kind: "chat",
+          title: "You · Request",
+          body: "Can you tell me what this website project is?",
+          status: "clean",
+          meta: "user",
+          role: "user",
+        },
+      ],
+      tasks: [
+        task({
+          task_id: "website-summary-task",
+          status: "completed",
+          latest_progress: JSON.stringify({
+            answer: completeAnswer,
+            summary: ["Static website artifact inspected."],
+          }),
+          metadata: { active_run_id: "website-summary-run" },
+        }),
+      ],
+      agentEvents: [
+        {
+          type: "token_usage_recorded",
+          source_event_type: "model.responded",
+          summary:
+            "Token usage for round 6: prompt=25386, completion=2104, total=27490.",
+          task_id: "website-summary-task",
+          run_id: "website-summary-run",
+          payload: {
+            text: `{"answer": "${completeAnswer.slice(0, 70)}`,
+          },
+        },
+        {
+          type: "completed",
+          source_event_type: "run.log.completed",
+          summary: "completed",
+          task_id: "website-summary-task",
+          run_id: "website-summary-run",
+        },
+      ],
+    });
+
+    const answer = nodes.find((node) => node.id === "blueprint:answer");
+    expect(answer).toMatchObject({
+      title: "Final response",
+      status: "done",
+      body: completeAnswer,
+      runId: "website-summary-run",
+      taskId: "website-summary-task",
+    });
+    expect(answer?.body).not.toContain('"answer"');
+    expect(answer?.previewBody).not.toContain('"answer"');
+    expect(answer?.previewBody).toContain(completeAnswer);
   });
 
   it("does not treat a run-finished terminal chunk as a human-readable project answer", () => {

@@ -484,6 +484,10 @@ type NoteRailView = "pages" | "tags" | "sections";
 type ActiveRunPlacement = "steer" | "queue";
 type ComposerSubmitMode = ActiveRunPlacement;
 
+const DEFAULT_PLAN_GENERATION_QUEUE_LENGTH = 4;
+const DEFAULT_PLAN_EXECUTION_QUEUE_LENGTH = 4;
+const DEFAULT_TASK_EXECUTION_QUEUE_LENGTH = 4;
+
 interface WorkspaceChunk {
   id: string;
   kind: ChunkKind;
@@ -509,9 +513,12 @@ interface PromptLogPreview {
 interface BlueprintPlanTask {
   taskId: string;
   parentId?: string;
+  planId?: string;
   branchId?: string;
+  nodeType?: string;
   goal: string;
   dependsOn: string[];
+  generationDependsOn?: string[];
   ownedPaths: string[];
   deliverables: string[];
   validation: string[];
@@ -544,6 +551,9 @@ interface BlueprintPlanContext {
   parallelGroups: string[][];
   graphBranches: string[];
   graphBranchRefs: string[];
+  planGenerationQueueLength: number;
+  planExecutionQueueLength: number;
+  taskExecutionQueueLength: number;
 }
 
 interface BlueprintNode {
@@ -587,12 +597,18 @@ interface LiveTaskGraphBranch {
   nodes: BlueprintNode[];
 }
 
+interface LiveTaskGraphEdge {
+  from: string;
+  to: string;
+}
+
 interface LiveTaskGraphRevision {
   id: string;
   label: string;
   meta: string;
   reason: string;
   branches: LiveTaskGraphBranch[];
+  planEdges: LiveTaskGraphEdge[];
 }
 
 interface SessionGroup {
@@ -1446,7 +1462,11 @@ function workspaceIdForTask(
   task: ChatV2TaskSnapshot,
   workspaces: Array<{ id: string; pinnedPaths: string[] }>,
 ) {
-  const workspaceId = textValue(task.metadata?.workspace_id);
+  const rawTask = task as ChatV2TaskSnapshot & {
+    workspace_id?: unknown;
+    workspace_root?: unknown;
+  };
+  const workspaceId = textValue(task.metadata?.workspace_id) || textValue(rawTask.workspace_id);
   if (workspaceId && workspaces.some((item) => item.id === workspaceId)) return workspaceId;
   const roots = new Map(
     workspaces.flatMap((item) => {
@@ -1454,24 +1474,74 @@ function workspaceIdForTask(
       return root ? [[root, item.id] as const] : [];
     }),
   );
-  const workspaceRoot = normalizeRootPath(textValue(task.metadata?.workspace_root));
+  const workspaceRoot = workspaceRootForTask(task);
   if (workspaceRoot && roots.has(workspaceRoot)) return roots.get(workspaceRoot) ?? "";
   const idAsRoot = normalizeRootPath(workspaceId);
   return idAsRoot && roots.has(idAsRoot) ? roots.get(idAsRoot) ?? "" : "";
+}
+
+function workspaceRootForTask(task: ChatV2TaskSnapshot) {
+  const rawTask = task as ChatV2TaskSnapshot & { workspace_root?: unknown };
+  return normalizeRootPath(
+    textValue(task.metadata?.workspace_root) || textValue(rawTask.workspace_root),
+  );
+}
+
+function workspaceRootForWorkspaceId(
+  workspaces: Array<{ id: string; pinnedPaths: string[] }>,
+  workspaceId: string,
+) {
+  return normalizeRootPath(
+    workspaces.find((item) => item.id === workspaceId)?.pinnedPaths[0] ?? "",
+  );
+}
+
+function dominantTaskWorkspaceValue(
+  tasks: ChatV2TaskSnapshot[],
+  valueForTask: (task: ChatV2TaskSnapshot) => string,
+) {
+  const buckets = new Map<string, { count: number; newest: number; oldest: number }>();
+  for (const task of tasks) {
+    const value = valueForTask(task);
+    if (!value) continue;
+    const createdAt = timestampValue(taskRunStartedAt(task), Number.NaN);
+    const updatedAt = timestampValue(taskRunUpdatedAt(task), Number.NaN);
+    const newest = Number.isFinite(updatedAt)
+      ? updatedAt
+      : Number.isFinite(createdAt)
+        ? createdAt
+        : 0;
+    const oldest = Number.isFinite(createdAt)
+      ? createdAt
+      : Number.isFinite(updatedAt)
+        ? updatedAt
+        : Number.MAX_SAFE_INTEGER;
+    const bucket = buckets.get(value) ?? { count: 0, newest: 0, oldest: Number.MAX_SAFE_INTEGER };
+    bucket.count += 1;
+    bucket.newest = Math.max(bucket.newest, newest);
+    bucket.oldest = Math.min(bucket.oldest, oldest);
+    buckets.set(value, bucket);
+  }
+  return (
+    [...buckets.entries()].sort(
+      (a, b) =>
+        b[1].count - a[1].count ||
+        a[1].oldest - b[1].oldest ||
+        b[1].newest - a[1].newest ||
+        a[0].localeCompare(b[0]),
+    )[0]?.[0] ?? ""
+  );
 }
 
 function workspaceIdForTasks(
   tasks: ChatV2TaskSnapshot[],
   workspaces: Array<{ id: string; pinnedPaths: string[] }>,
 ) {
-  const orderedTasks = [...tasks].sort(
-    (a, b) => timestampValue(taskRunUpdatedAt(b), 0) - timestampValue(taskRunUpdatedAt(a), 0),
-  );
-  for (const task of orderedTasks) {
-    const workspaceId = workspaceIdForTask(task, workspaces);
-    if (workspaceId) return workspaceId;
-  }
-  return "";
+  return dominantTaskWorkspaceValue(tasks, (task) => workspaceIdForTask(task, workspaces));
+}
+
+function workspaceRootForTasks(tasks: ChatV2TaskSnapshot[]) {
+  return dominantTaskWorkspaceValue(tasks, workspaceRootForTask);
 }
 
 function readStoredRoots() {
@@ -2445,6 +2515,7 @@ function buildSessionGroups(args: {
   threadQuery: string;
   threadWorkspaces: Record<string, string>;
   taskWorkspaceByThreadId: Map<string, string>;
+  taskWorkspaceRootByThreadId: Map<string, string>;
 }) {
   const query = args.threadQuery.trim().toLowerCase();
   const workspaceGroups: SessionGroup[] = args.workspaces.map((item) => ({
@@ -2466,13 +2537,48 @@ function buildSessionGroups(args: {
 
   const projectGroups = new Map<string, SessionGroup>();
   const archivedGroups = new Map<string, SessionGroup>();
-  const resolvedWorkspaceId = (thread: ChatV2ThreadSummary) =>
-    args.threadWorkspaces[threadWorkspaceKey(thread.workflow_id, thread.id)] ??
-    args.taskWorkspaceByThreadId.get(thread.id) ??
-    storedThreadGroupById.get(thread.id) ??
-    "";
+  const recoveredProjectRoot = (thread: ChatV2ThreadSummary) =>
+    args.taskWorkspaceRootByThreadId.get(thread.id) ?? "";
+
+  const workspaceIdMatchesRecoveredRoot = (workspaceId: string, recoveredRoot: string) => {
+    if (!workspaceId || !recoveredRoot) return true;
+    const workspaceRoot = normalizeRootPath(workspaceById.get(workspaceId)?.pinnedPaths[0] ?? "");
+    return !workspaceRoot || workspaceRoot === recoveredRoot;
+  };
+
+  const resolvedWorkspaceId = (thread: ChatV2ThreadSummary) => {
+    const recoveredRoot = recoveredProjectRoot(thread);
+    const taskWorkspaceId = args.taskWorkspaceByThreadId.get(thread.id) ?? "";
+    if (taskWorkspaceId && workspaceIdMatchesRecoveredRoot(taskWorkspaceId, recoveredRoot)) {
+      return taskWorkspaceId;
+    }
+    const storedWorkspaceId =
+      args.threadWorkspaces[threadWorkspaceKey(thread.workflow_id, thread.id)] ??
+      storedThreadGroupById.get(thread.id) ??
+      "";
+    if (storedWorkspaceId && workspaceIdMatchesRecoveredRoot(storedWorkspaceId, recoveredRoot)) {
+      return storedWorkspaceId;
+    }
+    return "";
+  };
 
   const projectGroupFor = (thread: ChatV2ThreadSummary) => {
+    const recoveredRoot = recoveredProjectRoot(thread);
+    if (recoveredRoot) {
+      const projectId = `project-root:${recoveredRoot}`;
+      const projectGroup =
+        projectGroups.get(projectId) ??
+        ({
+          id: projectId,
+          name: fileName(recoveredRoot) || recoveredRoot,
+          workspaceId: null,
+          root: recoveredRoot,
+          threads: [],
+          defaultCollapsed: false,
+        } satisfies SessionGroup);
+      projectGroups.set(projectId, projectGroup);
+      return projectGroup;
+    }
     const workflowId = thread.workflow_id || "unknown";
     const projectId = `project:${workflowId}`;
     const projectGroup =
@@ -2500,6 +2606,23 @@ function buildSessionGroups(args: {
           name: workspaceDisplayName(workspace),
           workspaceId: workspace.id,
           root: workspace.pinnedPaths[0] ?? "",
+          threads: [],
+          defaultCollapsed: !query,
+          archived: true,
+        } satisfies SessionGroup);
+      archivedGroups.set(groupId, group);
+      return group;
+    }
+    const recoveredRoot = recoveredProjectRoot(thread);
+    if (recoveredRoot) {
+      const groupId = `archived:project-root:${recoveredRoot}`;
+      const group =
+        archivedGroups.get(groupId) ??
+        ({
+          id: groupId,
+          name: fileName(recoveredRoot) || recoveredRoot,
+          workspaceId: null,
+          root: recoveredRoot,
           threads: [],
           defaultCollapsed: !query,
           archived: true,
@@ -2611,6 +2734,18 @@ function normalizeSummaryLine(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function statusLineFingerprint(value: string) {
+  return normalizeSummaryLine(value)
+    .replace(/[.。]+$/g, "")
+    .toLowerCase();
+}
+
+function isDuplicateStatusLine(left: string, right: string) {
+  const leftKey = statusLineFingerprint(left);
+  const rightKey = statusLineFingerprint(right);
+  return Boolean(leftKey && rightKey && leftKey === rightKey);
+}
+
 const FLATTENED_PIPE_TABLE_SEPARATOR_RE = /\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?/;
 
 function hasFlattenedPipeTable(value: string) {
@@ -2713,7 +2848,7 @@ function normalizeStructuredMarkdown(content: string) {
 }
 
 function isGenericCompletionText(value: string) {
-  return /^(completed|finished|run completed|run finished|super dan completed|super dan run completed)\.?$/i.test(
+  return /^(completed|finished|run completed|run finished|(?:super\s+dan|codex) completed|(?:super\s+dan|codex) run completed)\.?$/i.test(
     value.trim(),
   );
 }
@@ -2874,7 +3009,7 @@ function structuredAgentDisplayFromValue(
     seen.add(value);
     const direct = structuredAgentDisplayFromRecord(record);
     if (direct) return direct;
-    for (const key of ["result", "final", "output", "outputs", "response", "data", "payload"]) {
+    for (const key of ["result", "final", "output", "outputs", "response", "data", "payload", "text"]) {
       const nested = structuredAgentDisplayFromValue(record[key], seen, depth + 1);
       if (nested) return nested;
     }
@@ -2887,6 +3022,8 @@ function structuredAgentDisplayFromValue(
       if (nested) return nested;
     }
   }
+  const scalar = scalarDetailText(value);
+  if (scalar) return formatStructuredAgentDisplay(scalar);
   return null;
 }
 
@@ -2954,6 +3091,16 @@ function looksLikeFileReceiptOnly(content: string) {
   return hasReceiptVerb && hasFileReference;
 }
 
+function looksLikeStructuredPayloadFragment(content: string) {
+  const normalized = content.trim();
+  if (!normalized) return false;
+  if (/^```[ \t]*(?:json)?\b/i.test(normalized)) return true;
+  if (/^[{[]/.test(normalized)) return true;
+  return /^"?(?:answer|final_answer|public_response|final_response|response|summary|message|result_summary)"?\s*:/i.test(
+    normalized,
+  );
+}
+
 function userFacingAgentDisplay(content: string): StructuredAgentDisplay {
   const structured = formatStructuredAgentDisplay(content);
   if (structured) return structured;
@@ -2978,7 +3125,7 @@ function isUsableFinalResponseSource(
   if (!normalized || isGenericCompletionText(normalized) || isGenericNeedsAttentionText(normalized)) return false;
   if (options.requireDirectAnswer && looksLikeFileReceiptOnly(normalized)) return false;
   const parsed = parseJsonObject(normalized);
-  if (!parsed) return true;
+  if (!parsed) return !looksLikeStructuredPayloadFragment(normalized);
   if (
     options.requireDirectAnswer &&
     !structuredValueHasDirectFinalAnswer(parsed) &&
@@ -3032,9 +3179,28 @@ function objectiveFromRun(run: ChatV2AgentRunRecord | null, task: ChatV2TaskSnap
 }
 
 function answerEventFromAgentEvents(events: ChatV2AgentRunEvent[]) {
+  let latestCompletedIndex = -1;
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (event.type === "completed" && humanEventSummary(event)) return event;
+    if (event.type !== "completed") continue;
+    if (latestCompletedIndex < 0) latestCompletedIndex = index;
+    if (humanEventSummary(event)) return event;
+  }
+  if (latestCompletedIndex >= 0) {
+    for (let index = latestCompletedIndex - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (eventFinalResponseSource(event)) return event;
+    }
+  }
+  return null;
+}
+
+function latestAgentMessageEventFromAgentEvents(events: ChatV2AgentRunEvent[]) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type !== "model_text_delta") continue;
+    const text = eventPayloadText(event, "text") || humanEventSummary(event);
+    if (isUsableFinalResponseSource(text)) return event;
   }
   return null;
 }
@@ -3049,6 +3215,15 @@ function eventPayload(event: ChatV2AgentRunEvent) {
 
 function eventPayloadText(event: ChatV2AgentRunEvent, key: string) {
   return textValue(eventPayload(event)[key]);
+}
+
+function eventFinalResponseSource(event: ChatV2AgentRunEvent) {
+  for (const key of [...DIRECT_FINAL_ANSWER_KEYS, "final_text", "text"]) {
+    const text = eventPayloadText(event, key);
+    if (text && isUsableFinalResponseSource(text)) return text;
+  }
+  const payloadStructured = structuredEventPayloadSummary(event);
+  return payloadStructured && isUsableFinalResponseSource(payloadStructured) ? payloadStructured : "";
 }
 
 function structuredEventPayloadSummary(event: ChatV2AgentRunEvent) {
@@ -3085,6 +3260,12 @@ function humanEventSummary(event: ChatV2AgentRunEvent) {
   const summary = eventSummary(event).trim();
   const structured = formatStructuredAgentSummary(summary);
   if (structured) return structured;
+  const payloadFinalText = eventPayloadText(event, "final_text");
+  if (payloadFinalText && isMachineSummary(summary, event) && isUsableFinalResponseSource(payloadFinalText)) {
+    return payloadFinalText;
+  }
+  const payloadAnswerText = eventFinalResponseSource(event);
+  if (payloadAnswerText && isMachineSummary(summary, event)) return payloadAnswerText;
   const payloadStructured = structuredEventPayloadSummary(event);
   if (payloadStructured && (terminalTaskStatuses.has(event.type) || isMachineSummary(summary, event))) {
     return payloadStructured;
@@ -3266,9 +3447,14 @@ function compactAgentRunChunks(events: ChatV2AgentRunEvent[]) {
     const latest = group[group.length - 1];
     if (!latest) continue;
     const terminal = [...group].reverse().find((event) => terminalTaskStatuses.has(event.type));
+    const latestAgentMessage = latestAgentMessageEventFromAgentEvents(group);
+    const latestAgentMessageText = latestAgentMessage
+      ? eventPayloadText(latestAgentMessage, "text") || humanEventSummary(latestAgentMessage)
+      : "";
     const outcome = [...changedPathLines(group), ...artifactLines(group)];
     if (terminal) {
-      const answer = humanEventSummary(terminal);
+      const terminalAnswer = humanEventSummary(terminal);
+      const answer = terminalAnswer || latestAgentMessageText;
       if (answer) {
         chunks.push({
           id: `agent-answer:${key}`,
@@ -3276,9 +3462,11 @@ function compactAgentRunChunks(events: ChatV2AgentRunEvent[]) {
           title: terminal.type === "completed" ? "DAN · Answer" : `DAN · ${terminal.type}`,
           body: answer,
           status: eventChunkStatus(terminal),
-          meta: eventSource(terminal),
-          taskId: terminal.task_id,
-          runId: terminal.run_id,
+          meta: latestAgentMessageText && !terminalAnswer && latestAgentMessage
+            ? eventSource(latestAgentMessage)
+            : eventSource(terminal),
+          taskId: terminal.task_id || latestAgentMessage?.task_id,
+          runId: terminal.run_id || latestAgentMessage?.run_id,
         });
       }
       if (outcome.length > 0) {
@@ -3506,27 +3694,66 @@ function collectFieldItems(records: Array<Record<string, unknown> | null>, keys:
   );
 }
 
+function graphNodeTypeFromRecord(record: Record<string, unknown>) {
+  const value = (
+    printableTextValue(record.node_type) ||
+    printableTextValue(record.graph_level) ||
+    printableTextValue(record.level) ||
+    printableTextValue(record.node_kind) ||
+    printableTextValue(record.task_kind) ||
+    (record.is_plan === true ? "plan" : "")
+  )
+    .trim()
+    .toLowerCase();
+  if (value === "phase") return "plan";
+  return value;
+}
+
+function isBlueprintPlanTaskPlan(task: BlueprintPlanTask) {
+  return ["plan", "phase"].includes((task.nodeType || "").toLowerCase());
+}
+
+function hasExplicitPlanTasks(context: BlueprintPlanContext | null | undefined) {
+  return Boolean(context?.taskGraph.some(isBlueprintPlanTaskPlan));
+}
+
 function planTaskGraphFromValue(value: unknown): BlueprintPlanTask[] {
   const container = recordValue(value);
   const rawItems = container ? container.tasks ?? container.task_graph : value;
   if (!Array.isArray(rawItems)) return [];
   const seen = new Set<string>();
   const tasks: BlueprintPlanTask[] = [];
-  for (const item of rawItems) {
+  const visit = (
+    item: unknown,
+    inheritedPlanId = "",
+    inheritedBranchId = "",
+  ) => {
     const record = recordValue(item);
-    if (!record) continue;
+    if (!record) return;
     const taskId =
       printableTextValue(record.task_id) ||
       printableTextValue(record.id) ||
       printableTextValue(record.number);
-    if (!taskId || seen.has(taskId)) continue;
+    if (!taskId || seen.has(taskId)) return;
     seen.add(taskId);
     const parentId = printableTextValue(record.parent_id) || printableTextValue(record.parent);
-    const branchId = printableTextValue(record.branch_id) || printableTextValue(record.branch);
+    const branchId =
+      printableTextValue(record.branch_id) ||
+      printableTextValue(record.branch) ||
+      inheritedBranchId;
+    const nodeType = graphNodeTypeFromRecord(record);
+    const explicitPlanId =
+      printableTextValue(record.plan_id) ||
+      printableTextValue(record.parent_plan_id) ||
+      printableTextValue(record.container_plan_id) ||
+      printableTextValue(record.container_id);
+    const planId = explicitPlanId || inheritedPlanId;
     tasks.push({
       taskId,
       ...(parentId ? { parentId } : {}),
+      ...(planId ? { planId } : {}),
       ...(branchId ? { branchId } : {}),
+      ...(nodeType ? { nodeType } : {}),
       goal:
         printableTextValue(record.goal) ||
         printableTextValue(record.summary) ||
@@ -3535,6 +3762,11 @@ function planTaskGraphFromValue(value: unknown): BlueprintPlanTask[] {
       dependsOn: uniqueStringList([
         ...stringList(record.depends_on),
         ...stringList(record.dependencies),
+      ]),
+      generationDependsOn: uniqueStringList([
+        ...stringList(record.generation_depends_on),
+        ...stringList(record.planning_depends_on),
+        ...stringList(record.plan_generation_depends_on),
       ]),
       ownedPaths: uniqueStringList([
         ...stringList(record.owned_paths),
@@ -3551,7 +3783,19 @@ function planTaskGraphFromValue(value: unknown): BlueprintPlanTask[] {
       state: printableTextValue(record.state),
       parallelSafe: typeof record.parallel_safe === "boolean" ? record.parallel_safe : true,
     });
-  }
+    const childItems =
+      recordValue(record.tasks)?.tasks ||
+      record.tasks ||
+      record.task_graph ||
+      record.children ||
+      record.subtasks ||
+      record.task_tree;
+    if (Array.isArray(childItems)) {
+      const childPlanId = nodeType === "plan" ? taskId : planId;
+      for (const child of childItems) visit(child, childPlanId, branchId);
+    }
+  };
+  for (const item of rawItems) visit(item);
   return tasks;
 }
 
@@ -3570,6 +3814,11 @@ function numericValue(value: unknown) {
     if (Number.isFinite(parsed)) return parsed;
   }
   return null;
+}
+
+function positiveIntegerValue(value: unknown, fallback: number) {
+  const parsed = numericValue(value);
+  return parsed && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 
 function parallelGroupsFromValue(value: unknown) {
@@ -3693,6 +3942,23 @@ function normalizePlanContext(value: unknown): BlueprintPlanContext | null {
     parallelGroups: parallelGroupsFromValue(graphState?.parallel_groups),
     graphBranches: branchSummariesFromValue(graphState?.branches),
     graphBranchRefs: branchRefsFromValue(graphState?.branch_refs),
+    planGenerationQueueLength: positiveIntegerValue(
+      graphState?.plan_generation_queue_length ??
+        graphState?.generation_queue_length ??
+        record.plan_generation_queue_length,
+      DEFAULT_PLAN_GENERATION_QUEUE_LENGTH,
+    ),
+    planExecutionQueueLength: positiveIntegerValue(
+      graphState?.plan_execution_queue_length ??
+        graphState?.execution_queue_length ??
+        record.plan_execution_queue_length,
+      DEFAULT_PLAN_EXECUTION_QUEUE_LENGTH,
+    ),
+    taskExecutionQueueLength: positiveIntegerValue(
+      graphState?.task_execution_queue_length ??
+        record.task_execution_queue_length,
+      DEFAULT_TASK_EXECUTION_QUEUE_LENGTH,
+    ),
   };
   const hasContent =
     context.taskGraph.length > 0 ||
@@ -3754,6 +4020,9 @@ function extractBlueprintPlanContext(events: ChatV2AgentRunEvent[]) {
     parallelGroups: [],
     graphBranches: [],
     graphBranchRefs: [],
+    planGenerationQueueLength: DEFAULT_PLAN_GENERATION_QUEUE_LENGTH,
+    planExecutionQueueLength: DEFAULT_PLAN_EXECUTION_QUEUE_LENGTH,
+    taskExecutionQueueLength: DEFAULT_TASK_EXECUTION_QUEUE_LENGTH,
   };
   let found = false;
   for (const event of events) {
@@ -3797,6 +4066,9 @@ function extractBlueprintPlanContext(events: ChatV2AgentRunEvent[]) {
         merged.parallelGroups = context.parallelGroups;
         merged.graphBranches = context.graphBranches;
         merged.graphBranchRefs = context.graphBranchRefs;
+        merged.planGenerationQueueLength = context.planGenerationQueueLength;
+        merged.planExecutionQueueLength = context.planExecutionQueueLength;
+        merged.taskExecutionQueueLength = context.taskExecutionQueueLength;
       }
     }
   }
@@ -3938,9 +4210,49 @@ function activePlanTaskIdsFromEvents(
   return new Set<string>();
 }
 
+function visiblePlanGraphTasks(context: BlueprintPlanContext) {
+  return hasExplicitPlanTasks(context)
+    ? context.taskGraph.filter(isBlueprintPlanTaskPlan)
+    : [];
+}
+
+function taskBelongsToPlan(task: BlueprintPlanTask, planTaskId: string) {
+  if (task.taskId === planTaskId) return false;
+  if (task.planId === planTaskId) return true;
+  if (task.parentId === planTaskId) return true;
+  return task.taskId.startsWith(`${planTaskId}-`);
+}
+
+function planChildTasksForNode(node: BlueprintNode) {
+  const context = node.graphContext;
+  const planTaskId = node.graphTaskId;
+  if (!context || !planTaskId) return [];
+  return context.taskGraph.filter(
+    (task) => !isBlueprintPlanTaskPlan(task) && taskBelongsToPlan(task, planTaskId),
+  );
+}
+
+function planTaskById(context: BlueprintPlanContext | undefined, taskId: string | undefined) {
+  if (!context || !taskId) return null;
+  return context.taskGraph.find((task) => task.taskId === taskId) ?? null;
+}
+
+function graphTaskKind(task: BlueprintPlanTask, context: BlueprintPlanContext): BlueprintNodeKind {
+  if (isBlueprintPlanTaskPlan(task)) return "plan";
+  return context.parallelWorktreeTaskIds.includes(task.taskId) ? "worktree" : "task";
+}
+
+function graphTaskNodeId(task: BlueprintPlanTask) {
+  return `blueprint:task:${task.taskId}`;
+}
+
 function taskBody(task: BlueprintPlanTask, context: BlueprintPlanContext) {
-  const lines = [`### ${task.taskId}`, "", task.goal];
+  const lines = [task.goal];
+  const dependsOn = task.dependsOn ?? [];
+  const generationDependsOn = task.generationDependsOn ?? [];
   const branchLine = [
+    task.nodeType ? `type ${task.nodeType}` : "",
+    task.planId ? `plan \`${task.planId}\`` : "",
     task.parentId ? `parent \`${task.parentId}\`` : "",
     task.branchId ? `branch \`${task.branchId}\`` : "",
     task.state ? `state ${task.state}` : "",
@@ -3948,8 +4260,14 @@ function taskBody(task: BlueprintPlanTask, context: BlueprintPlanContext) {
     .filter(Boolean)
     .join(" · ");
   if (branchLine) lines.push("", branchLine);
-  if (task.dependsOn.length > 0) {
-    lines.push("", `Depends on: ${task.dependsOn.map((item) => `\`${item}\``).join(", ")}`);
+  if (dependsOn.length > 0) {
+    lines.push("", `Depends on: ${dependsOn.map((item) => `\`${item}\``).join(", ")}`);
+  }
+  if (generationDependsOn.length > 0) {
+    lines.push(
+      "",
+      `Generation waits for: ${generationDependsOn.map((item) => `\`${item}\``).join(", ")}`,
+    );
   }
   if (task.ownedPaths.length > 0) {
     lines.push("", "Owned paths:", ...task.ownedPaths.map((path) => `- \`${path}\``));
@@ -3967,10 +4285,16 @@ function taskBody(task: BlueprintPlanTask, context: BlueprintPlanContext) {
 }
 
 function compactTaskDetail(task: BlueprintPlanTask) {
+  const dependsOn = task.dependsOn ?? [];
   const paths = uniqueStringList([...task.ownedPaths, ...task.deliverables]).slice(0, 2);
   const suffix = paths.length > 0 ? ` · ${paths.join(", ")}` : "";
   const branch = task.branchId ? `branch ${task.branchId} · ` : "";
-  return `${branch}${task.dependsOn.length > 0 ? `after ${task.dependsOn.join(", ")}` : "ready when reached"}${suffix}`;
+  const dependency = dependsOn.length > 0
+    ? `after ${dependsOn.join(", ")}`
+    : isBlueprintPlanTaskPlan(task)
+      ? "no execution blockers"
+      : "ready when reached";
+  return `${branch}${dependency}${suffix}`;
 }
 
 function phaseStatus(args: {
@@ -4196,6 +4520,9 @@ function deriveRequestPlanContext(text: string): BlueprintPlanContext | null {
     parallelGroups: [],
     graphBranches: [],
     graphBranchRefs: [],
+    planGenerationQueueLength: DEFAULT_PLAN_GENERATION_QUEUE_LENGTH,
+    planExecutionQueueLength: DEFAULT_PLAN_EXECUTION_QUEUE_LENGTH,
+    taskExecutionQueueLength: DEFAULT_TASK_EXECUTION_QUEUE_LENGTH,
   };
 }
 
@@ -4313,6 +4640,14 @@ function planPreviewBody(planContext: BlueprintPlanContext | null) {
     {
       title: "Plan Files",
       items: planContext.planFiles.map((path) => `\`${path}\``),
+    },
+    {
+      title: "Queue Limits",
+      items: [
+        `Plan generation: ${planContext.planGenerationQueueLength}`,
+        `Plan execution: ${planContext.planExecutionQueueLength}`,
+        `Task execution: ${planContext.taskExecutionQueueLength}`,
+      ],
     },
     {
       title: "Ready Frontier",
@@ -4588,6 +4923,10 @@ function buildBlueprintNodesForRunScope(args: {
   const latestOutcomeItems = latestOutcomeChunk ? markdownListItems(latestOutcomeChunk.body) : [];
   const latestAnswerEvent = answerEventFromAgentEvents(activeRunEvents);
   const latestAnswerEventBody = latestAnswerEvent ? humanEventSummary(latestAnswerEvent) : "";
+  const latestAgentMessageEvent = latestAgentMessageEventFromAgentEvents(activeRunEvents);
+  const latestAgentMessageBody = latestAgentMessageEvent
+    ? eventPayloadText(latestAgentMessageEvent, "text") || humanEventSummary(latestAgentMessageEvent)
+    : "";
   const latestTerminalTaskWithProgress =
     [...activeRunTasks].reverse().find((task) => Boolean(humanTerminalTaskProgress(task))) ?? null;
   const latestTerminalTaskRaw = latestTerminalTaskWithProgress
@@ -4659,6 +4998,34 @@ function buildBlueprintNodesForRunScope(args: {
       (latestValidation.type === "failed" ||
         latestValidation.type === "blocked" ||
         eventPayload(latestValidation).passed === false),
+  );
+  const repairStarted = hasEventSource(activeRunEvents, (source) =>
+    source.includes("repair") || source.includes("retry"),
+  );
+  const latestNonUnderstandingCompletedEvent =
+    latestCompletedEvent && !eventSource(latestCompletedEvent).startsWith("live.request_understanding")
+      ? latestCompletedEvent
+      : null;
+  const hasAnswerOrTerminalEvidence = Boolean(
+    latestAnswerChunk ||
+      latestOutcomeChunk ||
+      latestAnswerEvent ||
+      latestTerminalTaskWithProgress ||
+      activeRunTasks.some((task) => task.status === "completed") ||
+      latestNonUnderstandingCompletedEvent,
+  );
+  const showActiveRunSkeleton = Boolean(
+    requestBody &&
+      hasActiveRun &&
+      !readOnlyRun &&
+      !hasPlannedTaskGraph &&
+      !executionPhaseStarted &&
+      !executionPhaseCompleted &&
+      !validationStarted &&
+      !validationCompleted &&
+      !repairStarted &&
+      !attentionTask &&
+      !hasAnswerOrTerminalEvidence,
   );
   const laterThanPlanning = Boolean(
     executionPhaseStarted ||
@@ -4756,7 +5123,7 @@ function buildBlueprintNodesForRunScope(args: {
 
   const planningFallbackActive =
     hasActiveRun && laterThanUnderstanding && !planningStarted && !planningCompleted && !planContext;
-  if (planningStarted || planningCompletedExplicit || planContext) {
+  if (planningStarted || planningCompletedExplicit || planContext || showActiveRunSkeleton) {
     const graphVersionLabel =
       planContext?.graphVersionId ||
       (planContext?.graphRevision !== null && planContext?.graphRevision !== undefined
@@ -4826,25 +5193,33 @@ function buildBlueprintNodesForRunScope(args: {
   }
 
   if (planContext?.taskGraph.length) {
-    for (const task of planContext.taskGraph) {
-      const taskState = (task.state || "").toLowerCase();
+    for (const task of visiblePlanGraphTasks(planContext)) {
+      const taskState = (task.state || task.status || "").toLowerCase();
       const done =
         completedTaskIds.has(task.taskId) ||
         ["done", "complete", "completed", "x"].includes(taskState);
-      const active = (activeTaskIds.has(task.taskId) || taskState === "active") && !done;
+      const active =
+        (activeTaskIds.has(task.taskId) ||
+          ["active", "generating", "planning", "executing", "running", "validating", "repairing"].includes(taskState)) &&
+        !done;
       const ready = (readyTaskIds.has(task.taskId) || taskState === "ready") && !done && !active;
       const future =
         deferredTaskIds.has(task.taskId) ||
-        taskState === "deferred" ||
+        ["deferred", "future", "planned", "projected", "generated", "blueprint", "waiting"].includes(taskState) ||
         (!done && !active && !ready);
-      const kind: BlueprintNodeKind = worktreeTaskIds.has(task.taskId) ? "worktree" : "task";
+      const kind: BlueprintNodeKind = isBlueprintPlanTaskPlan(task)
+        ? "plan"
+        : worktreeTaskIds.has(task.taskId)
+          ? "worktree"
+          : "task";
       const meta = uniqueStringList([
+        kind === "plan" ? "plan" : "",
         kind === "worktree" ? "parallel lane" : "",
         task.branchId ? `branch ${task.branchId}` : "",
         task.parallelSafe ? "parallel-safe" : "serial",
       ]).join(" · ");
       nodes.push({
-        id: `blueprint:task:${task.taskId}`,
+        id: graphTaskNodeId(task),
         title: `${task.taskId}. ${task.goal}`,
         detail: compactTaskDetail(task),
         meta,
@@ -4858,11 +5233,12 @@ function buildBlueprintNodesForRunScope(args: {
         graphTaskId: task.taskId,
         parentGraphTaskId: task.parentId,
         branchId: task.branchId,
+        graphContext: planContext,
         runId: activeRunId,
         taskId: activeRunningTask?.task_id,
       });
     }
-  } else if (buildStarted || buildCompleted || attentionTask) {
+  } else if (buildStarted || buildCompleted || attentionTask || showActiveRunSkeleton) {
     const buildProgressBody = buildStarted ? latestWorkingChunk?.body || "" : "";
     const buildIntro =
       attentionDetail ||
@@ -4908,7 +5284,7 @@ function buildBlueprintNodesForRunScope(args: {
     });
   }
 
-  if (validationStarted || validationCompleted || hasPlannedTaskGraph) {
+  if (validationStarted || validationCompleted || hasPlannedTaskGraph || showActiveRunSkeleton) {
     nodes.push({
       id: "blueprint:validation",
       title: "Validate current frontier",
@@ -4941,9 +5317,6 @@ function buildBlueprintNodesForRunScope(args: {
     });
   }
 
-  const repairStarted = hasEventSource(activeRunEvents, (source) =>
-    source.includes("repair") || source.includes("retry"),
-  );
   if (repairStarted) {
     nodes.push({
       id: "blueprint:repair",
@@ -4964,6 +5337,7 @@ function buildBlueprintNodesForRunScope(args: {
     latestOutcomeChunk ||
     latestAnswerEvent ||
     latestTerminalTaskWithProgress ||
+    showActiveRunSkeleton ||
     (!hasActiveRun && nodes.length > 0 && hasRunEvidence)
   ) {
     const latestAnswerEventRaw = latestAnswerEvent ? eventSummary(latestAnswerEvent).trim() : "";
@@ -4975,6 +5349,7 @@ function buildBlueprintNodesForRunScope(args: {
     const finalAnswerSource = [
       latestAnswerChunk?.body || "",
       latestAnswerEventSourceBody,
+      latestAgentMessageBody,
       latestTerminalTaskRaw,
       latestTerminalTaskBody,
     ].find((source) =>
@@ -5037,6 +5412,7 @@ function buildBlueprintNodesForRunScope(args: {
         latestAnswerChunk?.runId ||
         latestOutcomeChunk?.runId ||
         latestAnswerEvent?.run_id ||
+        latestAgentMessageEvent?.run_id ||
         latestCompletedEvent?.run_id ||
         (latestTerminalTaskWithProgress ? taskRunId(latestTerminalTaskWithProgress) : "") ||
         activeRunId ||
@@ -5045,6 +5421,7 @@ function buildBlueprintNodesForRunScope(args: {
         latestAnswerChunk?.taskId ||
         latestOutcomeChunk?.taskId ||
         latestAnswerEvent?.task_id ||
+        latestAgentMessageEvent?.task_id ||
         latestCompletedEvent?.task_id ||
         latestTerminalTaskWithProgress?.task_id ||
         activeRunningTask?.task_id ||
@@ -5338,16 +5715,27 @@ export function liveTaskGraphRevisionsForTest(nodes: BlueprintNode[]) {
     label: revision.label,
     meta: revision.meta,
     reason: revision.reason,
+    planEdges: revision.planEdges,
     branches: revision.branches.map((branch) => ({
       id: branch.id,
       label: branch.label,
       nodes: branch.nodes.map((node) => ({
         id: node.id,
         title: treeDisplayTitle(node),
+        kind: node.kind,
         status: node.status,
         meta: treeNodeMeta(node),
       })),
     })),
+  }));
+}
+
+export function planTaskChecklistItemsForTest(node: BlueprintNode) {
+  return planTaskChecklistItems(node).map(({ task, status }) => ({
+    taskId: task.taskId,
+    title: task.goal,
+    status,
+    branchId: task.branchId ?? "",
   }));
 }
 
@@ -5435,6 +5823,10 @@ export function workspaceIdForTasksForTest(
   workspaces: Array<{ id: string; pinnedPaths: string[] }>,
 ) {
   return workspaceIdForTasks(tasks, workspaces);
+}
+
+export function workspaceRootForTasksForTest(tasks: ChatV2TaskSnapshot[]) {
+  return workspaceRootForTasks(tasks);
 }
 
 export function noteRailViewForFacetForTest(facet: string) {
@@ -6960,6 +7352,16 @@ function BlueprintNodePreview({
     );
   }
 
+  if (node.kind === "plan" && planTaskChecklistItems(node).length > 0) {
+    return (
+      <div className="space-y-4">
+        <LiveStatusCard status={liveStatus} />
+        <PlanChecklistPreview node={node} events={events} />
+        <MarkdownRenderer content={node.previewBody || node.body || "_Waiting for output._"} />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <LiveStatusCard status={liveStatus} />
@@ -6983,7 +7385,12 @@ function workPlanHeaderSubtitle(node: BlueprintNode | null, fallbackTitle?: stri
   if (node.kind === "understanding") {
     return node.status === "done" ? "Request understood" : "Understanding request";
   }
-  if (node.kind === "plan") return node.status === "done" ? "Steps planned" : "Planning next steps";
+  if (node.kind === "plan") {
+    if (node.graphTaskId) {
+      return `${node.status === "active" ? "Current" : "Selected"} plan: ${strippedStepTitle(node.title)}`;
+    }
+    return node.status === "done" ? "Steps planned" : "Planning next steps";
+  }
   if (node.kind === "validation") {
     return node.status === "done" ? "Checks complete" : "Checking the result";
   }
@@ -7005,7 +7412,7 @@ function workPlanHeaderSubtitle(node: BlueprintNode | null, fallbackTitle?: stri
 }
 
 function treeDisplayTitle(node: BlueprintNode) {
-  if (node.kind === "plan") return "Plan";
+  if (node.kind === "plan") return node.graphTaskId ? strippedStepTitle(node.title) : "Plan";
   if (node.kind === "validation") return "Validation";
   if (node.kind === "repair") return "Repair / retry";
   if (node.kind === "answer") return "Final response";
@@ -7087,11 +7494,16 @@ function statusForPlanTask(task: BlueprintPlanTask, context: BlueprintPlanContex
   ) {
     return "done";
   }
-  if (context.activeTaskIds.includes(task.taskId) || state === "active") return "active";
+  if (
+    context.activeTaskIds.includes(task.taskId) ||
+    ["active", "generating", "planning", "executing", "running", "validating", "repairing"].includes(state)
+  ) {
+    return "active";
+  }
   if (context.readyTaskIds.includes(task.taskId) || state === "ready") return "ready";
   if (
     context.deferredTaskIds.includes(task.taskId) ||
-    ["deferred", "future", "planned", "projected"].includes(state)
+    ["deferred", "future", "planned", "projected", "generated", "blueprint", "waiting"].includes(state)
   ) {
     return "future";
   }
@@ -7102,16 +7514,15 @@ function blueprintNodeFromPlanTask(
   task: BlueprintPlanTask,
   context: BlueprintPlanContext,
 ): BlueprintNode {
-  const kind: BlueprintNodeKind = context.parallelWorktreeTaskIds.includes(task.taskId)
-    ? "worktree"
-    : "task";
+  const kind = graphTaskKind(task, context);
   const meta = uniqueStringList([
+    isBlueprintPlanTaskPlan(task) ? "plan" : "",
     task.branchId ? `branch ${task.branchId}` : "",
     task.dependsOn.length > 0 ? `after ${task.dependsOn.join(", ")}` : "",
     kind === "worktree" ? "parallel lane" : "",
   ]).join(" · ");
   return {
-    id: `blueprint:task:${task.taskId}`,
+    id: graphTaskNodeId(task),
     title: `${task.taskId}. ${task.goal}`,
     detail: compactTaskDetail(task),
     meta,
@@ -7125,6 +7536,7 @@ function blueprintNodeFromPlanTask(
     graphTaskId: task.taskId,
     parentGraphTaskId: task.parentId,
     branchId: task.branchId,
+    graphContext: context,
   };
 }
 
@@ -7138,9 +7550,17 @@ function liveTaskBranchesForNodes(nodes: BlueprintNode[]) {
   }
   return [...groups.entries()].map(([branchId, branchNodes]) => ({
     id: branchId,
-    label: branchId === "main" ? "Main path" : `Branch ${branchId}`,
+    label: liveTaskBranchLabel(branchId),
     nodes: branchNodes,
   }));
+}
+
+function liveTaskBranchLabel(branchId: string) {
+  if (branchId === "main") return "Main path";
+  if (/^\d+(?:[-.]\d+)*$/.test(branchId)) return `Branch ${branchId}`;
+  return branchId
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
 function graphRevisionLabel(context: BlueprintPlanContext, index: number) {
@@ -7162,17 +7582,21 @@ function graphRevisionMeta(context: BlueprintPlanContext) {
 }
 
 function buildLiveTaskGraphRevisions(nodes: BlueprintNode[]): LiveTaskGraphRevision[] {
-  const planNode = primaryNodeByKind(nodes, "plan");
+  const planNode =
+    nodes.find((node) => node.kind === "plan" && !node.graphTaskId && node.graphHistory?.length) ??
+    primaryNodeByKind(nodes, "plan");
   const history = planNode?.graphHistory?.filter((context) => context.taskGraph.length > 0) ?? [];
   if (history.length > 0) {
     return history.map((context, index) => {
       const revisionNodes = context.taskGraph.map((task) => blueprintNodeFromPlanTask(task, context));
+      const branches = liveTaskBranchesForNodes(revisionNodes);
       return {
         id: graphContextIdentity(context, index),
         label: graphRevisionLabel(context, index),
         meta: graphRevisionMeta(context),
         reason: context.graphUpdateReason || context.planRootRelative || "",
-        branches: liveTaskBranchesForNodes(revisionNodes),
+        branches,
+        planEdges: planDependencyEdgesForNodes(revisionNodes),
       };
     });
   }
@@ -7187,8 +7611,48 @@ function buildLiveTaskGraphRevisions(nodes: BlueprintNode[]): LiveTaskGraphRevis
       meta: "",
       reason: "",
       branches: liveTaskBranchesForNodes(taskNodes),
+      planEdges: planDependencyEdgesForNodes(taskNodes),
     },
   ];
+}
+
+function uniquePlanNodesForRevision(revision: LiveTaskGraphRevision) {
+  const byId = new Map<string, BlueprintNode>();
+  for (const branch of revision.branches) {
+    for (const node of branch.nodes) {
+      if (node.kind !== "plan" || !node.graphTaskId) continue;
+      if (!byId.has(node.id)) byId.set(node.id, node);
+    }
+  }
+  return [...byId.values()];
+}
+
+function planDependencyEdgesForNodes(nodes: BlueprintNode[]): LiveTaskGraphEdge[] {
+  const planIds = new Set(
+    nodes
+      .filter((node) => node.kind === "plan" && node.graphTaskId)
+      .map((node) => node.graphTaskId as string),
+  );
+  const nodeIdByTaskId = new Map(
+    nodes
+      .filter((node) => node.kind === "plan" && node.graphTaskId)
+      .map((node) => [node.graphTaskId as string, node.id] as const),
+  );
+  const edges: LiveTaskGraphEdge[] = [];
+  const seen = new Set<string>();
+  for (const node of nodes) {
+    if (node.kind !== "plan" || !node.graphTaskId) continue;
+    for (const dependency of node.dependencyIds ?? []) {
+      if (!planIds.has(dependency)) continue;
+      const from = nodeIdByTaskId.get(dependency);
+      if (!from) continue;
+      const key = `${from}->${node.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push({ from, to: node.id });
+    }
+  }
+  return edges;
 }
 
 function liveTaskTreeSnapshot(items: LiveTaskTreeItem[]): LiveTaskTreeSnapshot[] {
@@ -7210,6 +7674,178 @@ function treeNodeMeta(node: BlueprintNode) {
   return bits.join(" · ");
 }
 
+function planGraphLayout(nodes: BlueprintNode[], edges: LiveTaskGraphEdge[]) {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const incoming = new Map<string, string[]>();
+  for (const edge of edges) {
+    if (!byId.has(edge.from) || !byId.has(edge.to)) continue;
+    const deps = incoming.get(edge.to) ?? [];
+    deps.push(edge.from);
+    incoming.set(edge.to, deps);
+  }
+  const levels = new Map<string, number>();
+  const levelFor = (nodeId: string, stack = new Set<string>()): number => {
+    if (levels.has(nodeId)) return levels.get(nodeId) ?? 0;
+    if (stack.has(nodeId)) return 0;
+    stack.add(nodeId);
+    const deps = incoming.get(nodeId) ?? [];
+    const level = deps.length ? Math.max(...deps.map((depId) => levelFor(depId, stack) + 1)) : 0;
+    stack.delete(nodeId);
+    levels.set(nodeId, level);
+    return level;
+  };
+  for (const node of nodes) levelFor(node.id);
+  const grouped = new Map<number, BlueprintNode[]>();
+  for (const node of nodes) {
+    const level = levels.get(node.id) ?? 0;
+    const group = grouped.get(level) ?? [];
+    group.push(node);
+    grouped.set(level, group);
+  }
+  const cardWidth = 178;
+  const cardHeight = 78;
+  const columnGap = 74;
+  const rowGap = 24;
+  const padding = 12;
+  const positions = new Map<string, { x: number; y: number; node: BlueprintNode }>();
+  const maxLevel = Math.max(0, ...[...grouped.keys()]);
+  let maxRows = 1;
+  for (const [level, group] of grouped.entries()) {
+    maxRows = Math.max(maxRows, group.length);
+    group.forEach((node, rowIndex) => {
+      positions.set(node.id, {
+        node,
+        x: padding + level * (cardWidth + columnGap),
+        y: padding + rowIndex * (cardHeight + rowGap),
+      });
+    });
+  }
+  return {
+    positions,
+    width: padding * 2 + (maxLevel + 1) * cardWidth + maxLevel * columnGap,
+    height: padding * 2 + maxRows * cardHeight + Math.max(0, maxRows - 1) * rowGap,
+    cardWidth,
+    cardHeight,
+  };
+}
+
+function PlanDependencyGraph({
+  revision,
+  currentNodes,
+  latestRevisionId,
+  activeNodeId,
+  selectedNodeId,
+  onSelect,
+}: {
+  revision: LiveTaskGraphRevision;
+  currentNodes: BlueprintNode[];
+  latestRevisionId: string | null;
+  activeNodeId: string | null;
+  selectedNodeId: string | null;
+  onSelect: (node: BlueprintNode) => void;
+}) {
+  const planNodes = uniquePlanNodesForRevision(revision);
+  const currentById = new Map(currentNodes.map((node) => [node.id, node]));
+  const layout = planGraphLayout(planNodes, revision.planEdges);
+  const markerId = `plan-arrow-${revision.id.replace(/[^a-z0-9_-]+/gi, "-") || "current"}`;
+  const canSelectLatest = revision.id === latestRevisionId;
+
+  return (
+    <div
+      className="relative"
+      style={{ width: layout.width, height: layout.height }}
+      aria-label="Plan dependency graph"
+    >
+      <svg
+        className="pointer-events-none absolute inset-0 h-full w-full overflow-visible"
+        width={layout.width}
+        height={layout.height}
+        aria-hidden="true"
+      >
+        <defs>
+          <marker
+            id={markerId}
+            viewBox="0 0 10 10"
+            refX="8"
+            refY="5"
+            markerWidth="5"
+            markerHeight="5"
+            orient="auto-start-reverse"
+          >
+            <path d="M 0 0 L 10 5 L 0 10 z" className="fill-slate-300 dark:fill-slate-600" />
+          </marker>
+        </defs>
+        {revision.planEdges.map((edge) => {
+          const from = layout.positions.get(edge.from);
+          const to = layout.positions.get(edge.to);
+          if (!from || !to) return null;
+          const x1 = from.x + layout.cardWidth;
+          const y1 = from.y + layout.cardHeight / 2;
+          const x2 = to.x;
+          const y2 = to.y + layout.cardHeight / 2;
+          const mid = x1 + Math.max(24, (x2 - x1) / 2);
+          return (
+            <path
+              key={`${edge.from}->${edge.to}`}
+              d={`M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2 - 6} ${y2}`}
+              className="fill-none stroke-slate-300 dark:stroke-slate-600"
+              strokeWidth="1.5"
+              markerEnd={`url(#${markerId})`}
+            />
+          );
+        })}
+      </svg>
+      {[...layout.positions.values()].map(({ node, x, y }) => {
+        const tone = blueprintStatusTone(node.status);
+        const Icon = blueprintKindIcon(node.kind);
+        const active = node.id === activeNodeId;
+        const selected = node.id === selectedNodeId;
+        const currentNode = currentById.get(node.id) ?? node;
+        const disabled = !canSelectLatest || !currentById.has(node.id);
+        return (
+          <button
+            key={node.id}
+            type="button"
+            data-status={node.status}
+            data-current={active ? "true" : undefined}
+            disabled={disabled}
+            onClick={() => {
+              if (!disabled) onSelect(currentNode);
+            }}
+            className={cx(
+              "dan-plan-graph-node absolute flex min-w-0 flex-col rounded-md border px-3 py-2 text-left text-xs outline-none transition focus-visible:ring-2 focus-visible:ring-slate-300 dark:focus-visible:ring-slate-600",
+              tone.node,
+              active &&
+                "ring-2 ring-cyan-300 ring-offset-1 ring-offset-white dark:ring-cyan-500 dark:ring-offset-slate-950",
+              selected && !active && "ring-1 ring-slate-300 dark:ring-slate-600",
+              disabled && "cursor-default opacity-85",
+            )}
+            style={{ left: x, top: y, width: layout.cardWidth, height: layout.cardHeight }}
+          >
+            <span className="mb-1 flex min-w-0 items-center gap-2">
+              <span className={cx("grid h-6 w-6 shrink-0 place-items-center rounded-full border", tone.marker)}>
+                {node.status === "active" ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : node.status === "future" ? (
+                  <Circle size={9} />
+                ) : (
+                  <Icon size={12} />
+                )}
+              </span>
+              <span className="min-w-0 flex-1 truncate font-semibold text-slate-800 dark:text-slate-100">
+                {treeDisplayTitle(node)}
+              </span>
+            </span>
+            <span className="line-clamp-2 text-[10px] leading-4 text-slate-500 dark:text-slate-400">
+              {treeNodeMeta(node)}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function BlueprintTreeOverview({
   nodes,
   activeNodeId,
@@ -7226,6 +7862,7 @@ function BlueprintTreeOverview({
   const latestRevision = revisions[revisions.length - 1] ?? null;
   const selectedRevision =
     revisions.find((revision) => revision.id === selectedRevisionId) ?? latestRevision;
+  const selectedPlanNodes = selectedRevision ? uniquePlanNodesForRevision(selectedRevision) : [];
 
   useEffect(() => {
     if (revisions.length === 0) {
@@ -7345,22 +7982,33 @@ function BlueprintTreeOverview({
                 )}
               </div>
             )}
-            <div className="grid gap-2">
-              {selectedRevision.branches.map((branch) => (
-                <div key={branch.id} className="min-w-0">
-                  <div className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
-                    <GitBranchIcon />
-                    <span className="truncate">{branch.label}</span>
-                    <span className="rounded-full border border-slate-200 px-1.5 py-0.5 text-[9px] normal-case tracking-normal text-slate-500 dark:border-slate-800 dark:text-slate-400">
-                      {branch.nodes.length} task{branch.nodes.length === 1 ? "" : "s"}
-                    </span>
+            {selectedPlanNodes.length > 0 ? (
+              <PlanDependencyGraph
+                revision={selectedRevision}
+                currentNodes={nodes}
+                latestRevisionId={latestRevision?.id ?? null}
+                activeNodeId={activeNodeId}
+                selectedNodeId={selectedNodeId}
+                onSelect={onSelect}
+              />
+            ) : (
+              <div className="grid gap-2">
+                {selectedRevision.branches.map((branch) => (
+                  <div key={branch.id} className="min-w-0">
+                    <div className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+                      <GitBranchIcon />
+                      <span className="truncate">{branch.label}</span>
+                      <span className="rounded-full border border-slate-200 px-1.5 py-0.5 text-[9px] normal-case tracking-normal text-slate-500 dark:border-slate-800 dark:text-slate-400">
+                        {branch.nodes.length} task{branch.nodes.length === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    <ul className="grid min-w-0 gap-1.5">
+                      {branch.nodes.map(renderGraphNode)}
+                    </ul>
                   </div>
-                  <ul className="grid min-w-0 gap-1.5">
-                    {branch.nodes.map(renderGraphNode)}
-                  </ul>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
           <div className="min-w-[360px] rounded border border-dashed border-slate-200/80 bg-white/45 p-3 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-950/30 dark:text-slate-400">
@@ -7439,12 +8087,28 @@ function blueprintLiveStatus(
       .reverse()
       .map(taskProgressLabel)
       .find((line) => line && !isGenericAgentStatusText(line)) || "";
+  const now = stepNowLabel(node, activeTask);
+  const hasLiveUpdateCandidate = Boolean(latestEventLine || latestTaskLine);
+  const latestUpdate =
+    [
+      latestEventLine,
+      latestTaskLine,
+      hasLiveUpdateCandidate ? "" : node.detail,
+    ].find(
+      (line) => line && !isDuplicateStatusLine(line, now),
+    ) || "";
   const recentUpdates = uniqueStringList(
     eventScope
-      .slice(-6)
+      .slice(-8)
       .map(eventActivityLine)
       .filter(Boolean),
-  ).slice(-4);
+  )
+    .filter(
+      (line) =>
+        !isDuplicateStatusLine(line, now) &&
+        (!latestUpdate || !isDuplicateStatusLine(line, latestUpdate)),
+    )
+    .slice(-4);
   const results = uniqueStringList([
     ...changedPathLines(eventScope),
     ...artifactLines(eventScope),
@@ -7452,8 +8116,8 @@ function blueprintLiveStatus(
 
   return {
     status: displayStatusLabel(node.status),
-    now: stepNowLabel(node, activeTask),
-    latestUpdate: latestEventLine || latestTaskLine || node.detail,
+    now,
+    latestUpdate,
     recentUpdates,
     results,
   };
@@ -7743,6 +8407,226 @@ function LiveStatusCard({ status }: { status: BlueprintLiveStatus }) {
   );
 }
 
+function graphTaskStatusLabel(status: BlueprintNodeStatus) {
+  if (status === "active") return "in progress";
+  if (status === "done") return "done";
+  if (status === "ready") return "ready";
+  if (status === "future") return "waiting";
+  if (status === "blocked") return "needs attention";
+  return "queued";
+}
+
+function planTaskChecklistItems(node: BlueprintNode) {
+  const context = node.graphContext;
+  if (!context) return [];
+  const tasks = node.graphTaskId
+    ? planChildTasksForNode(node)
+    : hasExplicitPlanTasks(context)
+      ? context.taskGraph.filter(isBlueprintPlanTaskPlan)
+      : context.taskGraph.filter((task) => !isBlueprintPlanTaskPlan(task));
+  return tasks.map((task) => ({
+    task,
+    status: statusForPlanTask(task, context),
+  }));
+}
+
+function planHistoryItems(node: BlueprintNode, events: ChatV2AgentRunEvent[]) {
+  const planId = node.graphTaskId || "";
+  const related = events.filter((event) => {
+    const payload = eventPayload(event);
+    const eventPlanId =
+      scalarDetailText(payload.plan_id) ||
+      scalarDetailText(payload.parent_plan_id) ||
+      scalarDetailText(payload.plan_task_id) ||
+      scalarDetailText(payload.owner_scope);
+    return !planId || eventPlanId === planId || eventMatchesNode(event, node);
+  });
+  return uniqueStringList((related.length ? related : events).slice(-8).map(eventActivityLine).filter(Boolean));
+}
+
+function planValidationItems(node: BlueprintNode, events: ChatV2AgentRunEvent[]) {
+  const planId = node.graphTaskId || "";
+  return uniqueStringList(
+    events
+      .filter((event) => {
+        const source = eventSource(event);
+        if (!source.includes("validation") && !source.includes("repair") && !source.includes("retry")) {
+          return false;
+        }
+        const payload = eventPayload(event);
+        const eventPlanId =
+          scalarDetailText(payload.plan_id) ||
+          scalarDetailText(payload.parent_plan_id) ||
+          scalarDetailText(payload.plan_task_id) ||
+          scalarDetailText(payload.owner_scope);
+        return !eventPlanId || !planId || eventPlanId === planId;
+      })
+      .slice(-6)
+      .map(eventActivityLine)
+      .filter(Boolean),
+  );
+}
+
+function PlanCardChecklist({ node }: { node: BlueprintNode }) {
+  if (node.kind !== "plan") return null;
+  const checklist = planTaskChecklistItems(node);
+  if (checklist.length === 0) return null;
+  const visible = checklist.slice(0, 6);
+  const remaining = checklist.length - visible.length;
+  return (
+    <div className="dan-plan-card-checklist mt-2 grid gap-1.5 text-[12px] leading-5">
+      {visible.map(({ task, status }) => (
+        <div
+          key={task.taskId}
+          className="flex min-w-0 items-start gap-2 rounded border border-slate-200/70 bg-white/45 px-2 py-1.5 text-slate-700 dark:border-slate-800/80 dark:bg-slate-950/30 dark:text-slate-300"
+        >
+          <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded border border-slate-300 bg-white text-slate-500 dark:border-slate-700 dark:bg-slate-950">
+            {status === "done" ? (
+              <Check size={11} strokeWidth={2.6} />
+            ) : status === "active" ? (
+              <Loader2 size={11} className="animate-spin text-cyan-500" />
+            ) : (
+              <Square size={11} />
+            )}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="line-clamp-2 break-words font-medium">{task.goal}</span>
+            <span className="text-[10px] uppercase tracking-[0.08em] text-slate-400">
+              {graphTaskStatusLabel(status)}
+              {task.branchId ? ` · ${task.branchId}` : ""}
+            </span>
+          </span>
+        </div>
+      ))}
+      {remaining > 0 && (
+        <div className="rounded border border-dashed border-slate-200/80 bg-white/30 px-2 py-1 text-[11px] font-medium text-slate-400 dark:border-slate-800 dark:bg-slate-950/20">
+          {remaining} more task{remaining === 1 ? "" : "s"} in Preview
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PlanChecklistPreview({
+  node,
+  events,
+}: {
+  node: BlueprintNode;
+  events: ChatV2AgentRunEvent[];
+}) {
+  const context = node.graphContext;
+  const planTask = planTaskById(context, node.graphTaskId);
+  const checklist = planTaskChecklistItems(node);
+  const activeItems = checklist.filter((item) => item.status === "active");
+  const history = planHistoryItems(node, events);
+  const validation = planValidationItems(node, events);
+  return (
+    <section className="rounded-md border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-800 dark:bg-slate-900/60">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
+            Plan Detail
+          </div>
+          <div className="mt-1 truncate text-sm font-semibold text-slate-800 dark:text-slate-100">
+            {planTask?.goal || strippedStepTitle(node.title)}
+          </div>
+        </div>
+        {context && (
+          <div className="flex flex-wrap gap-1 text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+            <span className="rounded-full border border-slate-200 bg-white/65 px-2 py-0.5 dark:border-slate-800 dark:bg-slate-950/60">
+              plan gen {context.planGenerationQueueLength}
+            </span>
+            <span className="rounded-full border border-slate-200 bg-white/65 px-2 py-0.5 dark:border-slate-800 dark:bg-slate-950/60">
+              plan exec {context.planExecutionQueueLength}
+            </span>
+            <span className="rounded-full border border-slate-200 bg-white/65 px-2 py-0.5 dark:border-slate-800 dark:bg-slate-950/60">
+              task exec {context.taskExecutionQueueLength}
+            </span>
+          </div>
+        )}
+      </div>
+      {activeItems.length > 1 && (
+        <div className="mb-3 rounded border border-cyan-200 bg-cyan-50/65 px-2.5 py-2 text-xs text-cyan-900 dark:border-cyan-800 dark:bg-cyan-950/25 dark:text-cyan-100">
+          <div className="mb-1 font-semibold">Parallel active sections</div>
+          <div className="flex flex-wrap gap-1.5">
+            {activeItems.map(({ task }) => (
+              <span
+                key={task.taskId}
+                className="rounded-full border border-cyan-200 bg-white/65 px-2 py-0.5 dark:border-cyan-800 dark:bg-slate-950/50"
+              >
+                {task.branchId ? `${task.branchId}: ` : ""}
+                {task.goal}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {checklist.length > 0 ? (
+        <ul className="space-y-2">
+          {checklist.map(({ task, status }) => (
+            <li key={task.taskId} className="flex gap-2 text-sm leading-5 text-slate-700 dark:text-slate-300">
+              <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded border border-slate-300 bg-white text-slate-500 dark:border-slate-700 dark:bg-slate-950">
+                {status === "done" ? (
+                  <Check size={13} strokeWidth={2.6} />
+                ) : status === "active" ? (
+                  <Loader2 size={13} className="animate-spin text-cyan-500" />
+                ) : (
+                  <Square size={13} />
+                )}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="font-medium text-slate-800 dark:text-slate-100">
+                  {task.taskId}. {task.goal}
+                </span>
+                <span className="ml-2 text-xs text-slate-400">
+                  {graphTaskStatusLabel(status)}
+                  {task.branchId ? ` · branch ${task.branchId}` : ""}
+                </span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="rounded border border-dashed border-slate-200 bg-white/50 p-3 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-950/40 dark:text-slate-400">
+          DAN has not emitted task details inside this plan yet.
+        </div>
+      )}
+      {(history.length > 0 || validation.length > 0) && (
+        <div className="mt-4 grid gap-3 text-sm text-slate-700 dark:text-slate-300">
+          {history.length > 0 && (
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-slate-400">
+                History
+              </div>
+              <ul className="mt-1 list-disc space-y-1 pl-5 leading-6">
+                {history.map((item) => (
+                  <li key={item}>
+                    <StatusLine text={item} />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {validation.length > 0 && (
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-slate-400">
+                Validation / Repair
+              </div>
+              <ul className="mt-1 list-disc space-y-1 pl-5 leading-6">
+                {validation.map((item) => (
+                  <li key={item}>
+                    <StatusLine text={item} />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function userConversationChunks(chunks: WorkspaceChunk[]) {
   return chunks.filter(
     (chunk) =>
@@ -7964,6 +8848,8 @@ function BlueprintView({
           const selected = node.id === selectedNodeId;
           const leftOffset = Math.min(node.depth ?? 0, 2) * 22;
           const cardContent = blueprintCardContent(node, tasks, agentEvents, activeTask);
+          const showPlanCardChecklist =
+            node.kind === "plan" && planTaskChecklistItems(node).length > 0;
           const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
             if (event.key !== "Enter" && event.key !== " ") return;
             event.preventDefault();
@@ -8036,23 +8922,27 @@ function BlueprintView({
                     </span>
                   </div>
                 </div>
-                <div
-                  className={cx(
-                    "mt-2 max-w-full overflow-hidden text-sm leading-6 text-slate-700 [overflow-wrap:anywhere] dark:text-slate-300",
-                    node.kind === "answer"
-                      ? "max-h-80"
-                      : node.status === "active"
-                        ? "max-h-72"
-                        : node.compact
-                          ? "max-h-32"
-                          : "max-h-48",
-                  )}
-                >
-                  <MarkdownRenderer
-                    content={cardContent || "Waiting for output..."}
-                    className="max-w-full overflow-hidden [&_code]:break-words [&_h3]:mb-1 [&_h3]:mt-0 [&_h3]:text-[11px] [&_h3]:uppercase [&_h3]:tracking-[0.12em] [&_li]:break-words [&_li]:leading-6 [&_ol]:my-1 [&_p]:my-0 [&_p]:break-words [&_p]:leading-6 [&_ul]:my-1.5"
-                  />
-                </div>
+                {showPlanCardChecklist ? (
+                  <PlanCardChecklist node={node} />
+                ) : (
+                  <div
+                    className={cx(
+                      "mt-2 max-w-full overflow-hidden text-sm leading-6 text-slate-700 [overflow-wrap:anywhere] dark:text-slate-300",
+                      node.kind === "answer"
+                        ? "max-h-80"
+                        : node.status === "active"
+                          ? "max-h-72"
+                          : node.compact
+                            ? "max-h-32"
+                            : "max-h-48",
+                    )}
+                  >
+                    <MarkdownRenderer
+                      content={cardContent || "Waiting for output..."}
+                      className="max-w-full overflow-hidden [&_code]:break-words [&_h3]:mb-1 [&_h3]:mt-0 [&_h3]:text-[11px] [&_h3]:uppercase [&_h3]:tracking-[0.12em] [&_li]:break-words [&_li]:leading-6 [&_ol]:my-1 [&_p]:my-0 [&_p]:break-words [&_p]:leading-6 [&_ul]:my-1.5"
+                    />
+                  </div>
+                )}
                 {node.dependencyIds && node.dependencyIds.length > 0 && (
                   <div className="mt-1 flex flex-wrap gap-1 text-[10px] text-slate-400">
                     {node.dependencyIds.slice(0, 4).map((dependency) => (
@@ -9281,12 +10171,19 @@ export default function ChunkWorkspaceApp() {
     return grouped;
   }, [sessionStatusTasks]);
   const taskWorkspaceByThreadId = useMemo(() => {
-    const entries = sessionStatusTasks.flatMap((task) => {
-      const workspaceId = workspaceIdForTask(task, workspaces);
-      return workspaceId ? [[task.thread_id, workspaceId] as const] : [];
+    const entries = [...tasksByThreadId.entries()].flatMap(([threadId, threadTasks]) => {
+      const workspaceId = workspaceIdForTasks(threadTasks, workspaces);
+      return workspaceId ? [[threadId, workspaceId] as const] : [];
     });
     return new Map(entries);
-  }, [sessionStatusTasks, workspaces]);
+  }, [tasksByThreadId, workspaces]);
+  const taskWorkspaceRootByThreadId = useMemo(() => {
+    const entries = [...tasksByThreadId.entries()].flatMap(([threadId, threadTasks]) => {
+      const workspaceRoot = workspaceRootForTasks(threadTasks);
+      return workspaceRoot ? [[threadId, workspaceRoot] as const] : [];
+    });
+    return new Map(entries);
+  }, [tasksByThreadId]);
 
   const markSessionResponseSeen = useCallback(
     (thread: ThreadIdentity, threadTasks: ChatV2TaskSnapshot[]) => {
@@ -9406,8 +10303,9 @@ export default function ChunkWorkspaceApp() {
         threadQuery,
         threadWorkspaces,
         taskWorkspaceByThreadId,
+        taskWorkspaceRootByThreadId,
       }),
-    [taskWorkspaceByThreadId, threadQuery, threadWorkspaces, threads, workspaces],
+    [taskWorkspaceByThreadId, taskWorkspaceRootByThreadId, threadQuery, threadWorkspaces, threads, workspaces],
   );
   const workspaceDragIdFromEvent = useCallback(
     (event: DragEvent<HTMLElement>) =>
@@ -10078,6 +10976,24 @@ export default function ChunkWorkspaceApp() {
     setStatus("Workspace root changed");
   }, [createWorkspace, setActiveWorkspace, updateWorkspace, workspace?.id]);
 
+  const workspaceIdForRoot = useCallback(
+    (root: string) => {
+      const normalizedRoot = normalizeRootPath(root);
+      if (!normalizedRoot) return "";
+      const existing = workspaces.find(
+        (item) => normalizeRootPath(item.pinnedPaths[0] ?? "") === normalizedRoot,
+      );
+      if (existing) return existing.id;
+      const id = createWorkspace(fileName(normalizedRoot), "chat");
+      updateWorkspace(id, {
+        pinnedPaths: [normalizedRoot],
+        name: fileName(normalizedRoot),
+      });
+      return id;
+    },
+    [createWorkspace, updateWorkspace, workspaces],
+  );
+
   const browseDevelopmentRoot = useCallback((root: string) => {
     const nextRoot = browsingRootPath(root);
     if (!nextRoot) return;
@@ -10220,13 +11136,14 @@ export default function ChunkWorkspaceApp() {
   ]);
 
   const openSession = useCallback(
-    async (summary: ChatV2ThreadSummary, workspaceId?: string | null) => {
+    async (summary: ChatV2ThreadSummary, workspaceId?: string | null, workspaceRoot?: string) => {
       if (summary.archived) {
         setStatus("Restore session to view it");
         return;
       }
-      if (workspaceId) {
-        setActiveWorkspace(workspaceId);
+      const optimisticWorkspaceId = workspaceId || (workspaceRoot ? workspaceIdForRoot(workspaceRoot) : "");
+      if (optimisticWorkspaceId) {
+        setActiveWorkspace(optimisticWorkspaceId);
         setActiveFilePath(null);
       }
       const selectionSeq = ++sessionSelectionSeqRef.current;
@@ -10261,7 +11178,11 @@ export default function ChunkWorkspaceApp() {
         }));
         if (sessionSelectionSeqRef.current !== selectionSeq) return;
         const loadedMessages = thread.messages.length > 0 ? thread.messages : history.messages;
-        const resolvedWorkspaceId = workspaceId || workspaceIdForTasks(history.tasks, workspaces);
+        const resolvedWorkspaceRoot = workspaceRoot || workspaceRootForTasks(history.tasks);
+        const resolvedWorkspaceId =
+          optimisticWorkspaceId ||
+          workspaceIdForTasks(history.tasks, workspaces) ||
+          (resolvedWorkspaceRoot ? workspaceIdForRoot(resolvedWorkspaceRoot) : "");
         if (resolvedWorkspaceId) {
           setActiveWorkspace(resolvedWorkspaceId);
           bindThreadToWorkspace(thread.workflow_id, thread.id, resolvedWorkspaceId);
@@ -10314,12 +11235,13 @@ export default function ChunkWorkspaceApp() {
       mergeBackgroundTasks,
       refreshThreads,
       setActiveWorkspace,
+      workspaceIdForRoot,
       workspaces,
     ],
   );
 
   const viewSessionProgress = useCallback(
-    async (thread: ChatV2ThreadSummary, workspaceId?: string | null) => {
+    async (thread: ChatV2ThreadSummary, workspaceId?: string | null, workspaceRoot?: string) => {
       if (thread.archived) {
         setStatus("Restore session to view progress");
         return;
@@ -10332,7 +11254,7 @@ export default function ChunkWorkspaceApp() {
       if (activeThread?.id === thread.id) {
         return;
       }
-      await openSession(thread, workspaceId);
+      await openSession(thread, workspaceId, workspaceRoot);
     },
     [activeThread?.id, openSession],
   );
@@ -10617,6 +11539,8 @@ export default function ChunkWorkspaceApp() {
       runId: string,
       thread: { id: string; workflowId: string },
       assistantId: string,
+      runWorkspaceRoot = developmentRoot,
+      runWorkspaceId = workspace?.id ?? activeWorkspaceId ?? "",
     ) => {
       agentStreamRef.current?.close();
       agentStreamRef.current = connectChatV2AgentRunEvents(
@@ -10658,8 +11582,8 @@ export default function ChunkWorkspaceApp() {
                         taskId: event.task_id,
                         runId: event.run_id,
                         status: event.type,
-                        workspaceRoot: developmentRoot,
-                        workspaceId: workspace?.id ?? "",
+                        workspaceRoot: runWorkspaceRoot,
+                        workspaceId: runWorkspaceId,
                       },
                     }
                   : message,
@@ -10688,6 +11612,7 @@ export default function ChunkWorkspaceApp() {
       persistMessages,
       refreshBackgroundTasks,
       refreshTasks,
+      activeWorkspaceId,
       workspace?.id,
       developmentRoot,
     ],
@@ -10699,7 +11624,32 @@ export default function ChunkWorkspaceApp() {
       queueCommand: "append_followup" | "continue_after_current" = "append_followup",
     ) => {
       const thread = await ensureThread(prompt);
-      bindThreadToWorkspace(thread.workflowId, thread.id, workspace?.id ?? activeWorkspaceId);
+      const taskRoot = activeThreadRef.current?.id === thread.id
+        ? workspaceRootForTasks(tasks)
+        : taskWorkspaceRootByThreadId.get(thread.id) ?? "";
+      const taskWorkspaceId = activeThreadRef.current?.id === thread.id
+        ? workspaceIdForTasks(tasks, workspaces)
+        : taskWorkspaceByThreadId.get(thread.id) ?? "";
+      const localWorkspaceId =
+        threadWorkspaces[threadWorkspaceKey(thread.workflowId, thread.id)] ||
+        workspace?.id ||
+        activeWorkspaceId ||
+        "";
+      const localWorkspaceRoot = workspaceRootForWorkspaceId(workspaces, localWorkspaceId);
+      const taskWorkspaceRootForId = workspaceRootForWorkspaceId(workspaces, taskWorkspaceId);
+      const resolvedWorkspaceId =
+        taskWorkspaceId && (!taskRoot || !taskWorkspaceRootForId || taskWorkspaceRootForId === taskRoot)
+          ? taskWorkspaceId
+          : localWorkspaceId && (!taskRoot || !localWorkspaceRoot || localWorkspaceRoot === taskRoot)
+            ? localWorkspaceId
+            : "";
+      const resolvedWorkspaceRoot =
+        taskRoot ||
+        (resolvedWorkspaceId ? workspaceRootForWorkspaceId(workspaces, resolvedWorkspaceId) : "") ||
+        developmentRoot;
+      if (resolvedWorkspaceId) {
+        bindThreadToWorkspace(thread.workflowId, thread.id, resolvedWorkspaceId);
+      }
       const sendSelectionSeq = sessionSelectionSeqRef.current;
       const isStillSelectedThread = () =>
         sessionSelectionSeqRef.current === sendSelectionSeq &&
@@ -10732,8 +11682,8 @@ export default function ChunkWorkspaceApp() {
               note: activeNote,
               selectedChunk,
               selectedBlueprintNode,
-              workspaceRoot: developmentRoot,
-              workspaceId: workspace?.id ?? activeWorkspaceId ?? "",
+              workspaceRoot: resolvedWorkspaceRoot,
+              workspaceId: resolvedWorkspaceId || resolvedWorkspaceRoot,
               notesRoot,
               workspaceMode: activePane,
               agentSelection: selectedAgentOption,
@@ -10788,8 +11738,8 @@ export default function ChunkWorkspaceApp() {
           note: activeNote,
           selectedChunk,
           selectedBlueprintNode,
-          workspaceRoot: developmentRoot,
-          workspaceId: workspace?.id ?? activeWorkspaceId ?? "",
+          workspaceRoot: resolvedWorkspaceRoot,
+          workspaceId: resolvedWorkspaceId || resolvedWorkspaceRoot,
           notesRoot,
           workspaceMode: activePane,
           agentSelection: selectedAgentOption,
@@ -10837,12 +11787,12 @@ export default function ChunkWorkspaceApp() {
                   workspaceRoot:
                     textValue(created.task?.metadata?.workspace_root) ||
                     created.task_run_ref?.workspace_root ||
-                    developmentRoot,
+                    resolvedWorkspaceRoot,
                   workspaceId:
                     textValue(created.task?.metadata?.workspace_id) ||
                     created.task_run_ref?.workspace_id ||
-                    workspace?.id ||
-                    activeWorkspaceId ||
+                    resolvedWorkspaceId ||
+                    resolvedWorkspaceRoot ||
                     "",
                 },
               }
@@ -10860,7 +11810,13 @@ export default function ChunkWorkspaceApp() {
         return;
       }
       if (isStillSelectedThread()) {
-        connectAgentStream(runId, thread, assistant.id);
+        connectAgentStream(
+          runId,
+          thread,
+          assistant.id,
+          resolvedWorkspaceRoot,
+          resolvedWorkspaceId || resolvedWorkspaceRoot,
+        );
       }
       const executed = await executeChatV2AgentRun(
         runId,
@@ -10897,6 +11853,10 @@ export default function ChunkWorkspaceApp() {
       selectedAgentOption,
       selectedModelOption,
       selectedBlueprintNode,
+      taskWorkspaceByThreadId,
+      taskWorkspaceRootByThreadId,
+      tasks,
+      threadWorkspaces,
       wireGuardStatus,
       workspaces,
       workspace?.id,
@@ -11334,7 +12294,7 @@ export default function ChunkWorkspaceApp() {
                   setStatus("Restore session to view it");
                   return;
                 }
-                void openSession(thread, group.workspaceId);
+                void openSession(thread, group.workspaceId, group.root);
               }}
               className="flex min-w-0 flex-1 items-start gap-2 px-2.5 py-2 text-left"
             >
@@ -11367,7 +12327,7 @@ export default function ChunkWorkspaceApp() {
                   <button
                     type="button"
                     data-session-action
-                    onClick={() => void viewSessionProgress(thread, group.workspaceId)}
+                    onClick={() => void viewSessionProgress(thread, group.workspaceId, group.root)}
                     title="View progress"
                     aria-label="View progress"
                     className="dan-session-live-button grid h-6 w-6 place-items-center rounded-md text-blue-500 transition hover:bg-blue-50 hover:text-blue-700 dark:text-blue-300 dark:hover:bg-blue-950/40 dark:hover:text-blue-100"
