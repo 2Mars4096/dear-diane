@@ -667,6 +667,12 @@ async def init_stores(state: AppState) -> None:
         os.path.join(graphs_dir, "chat_v2"),
     )
     state.chat_v2_store = ChatV2Store(base_dir=chat_v2_dir)
+    recovered_chat_v2 = state.chat_v2_store.recover_interrupted_runs_after_restart()
+    if recovered_chat_v2:
+        logger.warning(
+            "Recovered %d interrupted Chat V2 Agent run/task record(s) after restart",
+            recovered_chat_v2,
+        )
 
     workspace_root = os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())
     state.block_registry = BlockRegistry(workspace=Path(workspace_root))

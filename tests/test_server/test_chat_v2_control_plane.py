@@ -740,6 +740,40 @@ def test_v2_thread_prompt_log_renders_model_prompt_and_response(tmp_path) -> Non
     assert "This project is a DAN workspace." in log["content"]
 
 
+
+def test_v2_store_recovers_running_agent_runs_after_restart(tmp_path) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    accepted = store.accept_bridge_context(
+        build_v2_bridge_context(
+            ChatMessageRequest(
+                workflow_id="_scratch",
+                message="keep working",
+                mode="agent",
+                surface_type="frontend",
+                surface_id="chunk-workspace",
+                thread_id="thread-restart",
+            )
+        ),
+        stream_channel_id="chat-stream-1",
+    )
+    assert accepted.run_id is not None
+    assert accepted.task_id is not None
+    assert store.get_run(accepted.run_id).status == "running"
+
+    recovered = ChatV2Store(tmp_path / "chat_v2")
+    assert recovered.recover_interrupted_runs_after_restart() == 2
+
+    run = recovered.get_run(accepted.run_id)
+    task_snapshot = recovered.get_task_snapshot(accepted.task_id)
+    assert run is not None
+    assert task_snapshot is not None
+    assert run.status == "stopped"
+    assert run.metadata["restart_recovery_reason"] == "process_restart"
+    assert task_snapshot.status == "stopped"
+    assert task_snapshot.metadata["restart_recovery_reason"] == "process_restart"
+    assert "backend restarted" in task_snapshot.latest_progress
+
+
 def test_v2_store_inherits_active_task_workspace_for_followups(tmp_path) -> None:
     workspace = tmp_path / "topic-workspace"
     workspace.mkdir()

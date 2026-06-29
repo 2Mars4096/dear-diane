@@ -339,6 +339,72 @@ class ChatV2Store:
         runs.sort(key=lambda run: run.updated_at, reverse=True)
         return [run.model_copy(deep=True) for run in runs[: max(1, limit)]]
 
+    def recover_interrupted_runs_after_restart(self) -> int:
+        """Mark persisted running Agent runs as stopped after process restart.
+
+        Chat V2 background workers are in-process tasks today. If the server
+        restarts, a durable ``running`` record no longer has a live worker
+        behind it, so exposing it as active makes the GUI look stuck.
+        """
+
+        with self._lock:
+            now = _now()
+            summary = "Stopped because the backend restarted before this run completed."
+            recovered = 0
+            running_task_ids: set[str] = set()
+            for run in self._iter_runs():
+                if run.status != "running":
+                    continue
+                previous_status = run.status
+                run.status = "stopped"
+                run.latest_event_type = "process_restarted"
+                run.latest_summary = summary
+                run.updated_at = now
+                run.metadata.update({
+                    "restart_recovered_at": now,
+                    "restart_recovery_reason": "process_restart",
+                    "previous_status": previous_status,
+                })
+                self._save_run(run)
+                self._append_run_event(
+                    run.run_id,
+                    AgentRunEvent(
+                        type="stopped",
+                        run_id=run.run_id,
+                        task_id=run.task_id,
+                        summary=summary,
+                        source_event_type="chat_v2.recovery.process_restart",
+                        payload={
+                            "reason": "process_restart",
+                            "previous_status": previous_status,
+                            "recovered_at": now,
+                        },
+                    ),
+                )
+                running_task_ids.add(run.task_id)
+                recovered += 1
+
+            terminal_statuses = {"completed", "failed", "blocked", "stopped"}
+            recovered_tasks = 0
+            for task in self._iter_tasks():
+                if task.task_id not in running_task_ids and task.status != "running":
+                    continue
+                if task.status in terminal_statuses:
+                    continue
+                previous_status = task.status
+                task.status = "stopped"
+                task.phase = "process_restarted"
+                task.latest_progress = summary
+                task.updated_at = now
+                task.metadata.update({
+                    "restart_recovered_at": now,
+                    "restart_recovery_reason": "process_restart",
+                    "previous_status": previous_status,
+                })
+                self._save_task(task)
+                recovered_tasks += 1
+            return recovered + recovered_tasks
+
     def annotate_run_for_board(
         self,
         run_id: str,
