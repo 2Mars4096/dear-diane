@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-06-29
+- [fix] Settled stale active Live Task Graph nodes after final responses. When a run has a usable final answer but no closing graph snapshot, the latest graph now clears stale active frontier tasks and marks them done instead of continuing to show them as running.
 - [fix] Re-centered Work Panel cards on plan-level checklists. Plan cards now show child task checkboxes directly under the title/status row, while non-plan emitted task rows stay inside the plan checklist and Live Task Graph instead of flooding the main card timeline as verbose minute-task cards.
 - [fix] Stopped truncated Super DAN structured answer fragments from rendering as raw JSON in Work Panel Preview. Incomplete JSON-looking `model.responded` payloads are now rejected as final-answer sources so the UI falls through to complete task progress instead.
 - [fix] Removed duplicate standalone task numbers from Work Panel task cards. Emitted task cards keep numbering in the title, while the body now starts with the task goal instead of a repeated Markdown heading such as `2`.

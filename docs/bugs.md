@@ -1,5 +1,8 @@
 # Known Issues & Failed Approaches
 
+- ~~**P2: Live Task Graph could keep showing active tasks after the Final response was done.**~~ **FIXED 2026-06-29.** Some runs emit a graph snapshot with `active_task_ids` or task `state="active"`, then finish with a valid final response without emitting a closing `task_graph_state`. The Work Panel's final card correctly showed done, but the Live Task Graph kept rendering the last snapshot as running. The GUI now settles the latest graph context after a usable final response by clearing stale active ids and marking those frontier tasks done.
+- **Failed approach recorded:** waiting for every backend to emit a perfect terminal graph snapshot leaves historical sessions and partial emitters visually stale. The UI still preserves older revision history, but the current/latest graph must reconcile terminal final-answer evidence.
+
 - ~~**P2: Work Panel Preview could show incomplete raw `{"answer": ...` JSON.**~~ **FIXED 2026-06-29.** Some persisted `model.responded` events carry only the first 400 characters of the provider response text. When that text began with structured answer JSON, the final-answer detector accepted the malformed fragment as plain prose, so Preview showed a raw/incomplete `"answer": ...` line instead of the complete answer saved on the task progress. The detector now rejects incomplete JSON-looking payloads and falls through to complete task progress or another valid final-answer source.
 - **Failed approach recorded:** if `JSON.parse` fails, do not automatically treat the string as human prose. Payloads that start like JSON, fenced JSON, or answer-field key/value data are transport fragments until they parse cleanly.
 

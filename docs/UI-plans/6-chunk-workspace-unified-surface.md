@@ -216,6 +216,7 @@
   - [x] 6-176. Remove duplicate standalone task-id headings from graph task card bodies while preserving numbered task titles
   - [x] 6-177. Reject truncated JSON-looking answer fragments in Work Panel Preview so complete task progress is used instead
   - [x] 6-178. Put child task checkboxes directly on plan cards and keep minute execution rows out of the main card timeline
+  - [x] 6-180. Settle stale active Live Task Graph nodes after a final response when no closing graph snapshot exists
 
 ## Decisions
 - The workspace route is a surface, not another product mode.
@@ -234,6 +235,7 @@
 - Super DAN chunks should follow the TUI presentation shape: request, working status, answer, and outcome/checks. Raw provider/tool/model JSON stays below the event ledger, not as primary conversation cards.
 - The Work middle column is now blueprint-first, not card-first. It projects Super DAN task snapshots, organism-log events, and any emitted `plan_context.task_graph` into a live task rail where the current executable task is the anchor, completed nodes are solid, ready nodes are emphasized, and future/deferred nodes are thinner dashed placeholders. Blank new sessions remain empty until an actual user request, task snapshot, or run event exists.
 - Blueprint `active` now means a task is actually `running`. Queued, dependency-waiting, input-needed, paused, failed, blocked, and stopped task states remain visible without borrowing the active-run anchor; terminal failed/blocked/stopped work renders blocked execution/final nodes with the backend detail.
+- Final-answer evidence closes stale graph activity. If a run is no longer active and has a usable final response but the backend did not emit a final `task_graph_state`, the GUI clears stale active ids in the latest graph snapshot and marks those frontier tasks done so the current graph does not continue to look running.
 - Blueprint direct-response turns are not workspace-change turns. If the operator forbids file edits or shell commands, the GUI labels the build lane as `Prepare direct response`, the backend removes mutation-capable tools, and completed task progress can backfill the final answer when persisted event streams do not include a terminal human summary.
 - Answer-only project/repo questions must become tool policy, not only prompt text. The backend classifies exact forms such as "what is this project" as in-session answer work, passes that intent through `operator_intent_policy`, and the local runtime narrows tool schemas plus disables write-stage first-write nudges when mutation is forbidden.
 - Missing final answers are recoverable until bounded recovery is exhausted. For answer-only runs, Super DAN validates that the final response is a substantive in-session answer rather than a completion receipt, then runs a read-only `live.answer_recovery` pass before the terminal validation event if needed.

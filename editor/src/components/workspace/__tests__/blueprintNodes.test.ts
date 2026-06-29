@@ -2044,6 +2044,109 @@ describe("workspace blueprint nodes", () => {
     });
   });
 
+  it("settles stale active live graph nodes after a final response", () => {
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "codex-run",
+      chunks: [
+        {
+          id: "message:user-codex-graph-done",
+          kind: "chat",
+          title: "You · Request",
+          body: "fix the failing test",
+          status: "clean",
+          meta: "user",
+          role: "user",
+          runId: "codex-run",
+        },
+      ],
+      agentEvents: [
+        {
+          type: "worker_started",
+          source_event_type: "live.task_graph.updated",
+          summary: "Codex observable graph updated.",
+          run_id: "codex-run",
+          task_id: "codex-task",
+          payload: {
+            task_graph_state: {
+              schema: "super_dan_task_graph_v1",
+              revision: 2,
+              version_id: "codex.r2",
+              source: "codex",
+              update_scope: "observable_event",
+              update_reason: "Codex started an observable work item.",
+              changed_task_ids: ["codex-shell-1"],
+              changed_branch_ids: ["workspace"],
+              tasks: [
+                {
+                  task_id: "codex-request",
+                  branch_id: "request",
+                  goal: "Receive request: fix the failing test",
+                  state: "done",
+                  depends_on: [],
+                },
+                {
+                  task_id: "codex-shell-1",
+                  branch_id: "workspace",
+                  goal: "Run `npm test`",
+                  state: "active",
+                  depends_on: ["codex-request"],
+                },
+                {
+                  task_id: "codex-final",
+                  branch_id: "answer",
+                  goal: "Return the final user-facing response",
+                  state: "deferred",
+                  depends_on: ["codex-shell-1"],
+                },
+              ],
+              active_task_ids: ["codex-shell-1"],
+              completed_task_ids: ["codex-request"],
+              deferred_task_ids: ["codex-final"],
+            },
+          },
+        },
+        {
+          type: "completed",
+          source_event_type: "run.log.completed",
+          summary: "Codex completed",
+          run_id: "codex-run",
+          task_id: "codex-task",
+          payload: {
+            final_text: "The failing test is fixed and the run is complete.",
+          },
+        },
+      ],
+    });
+
+    const graphRevisions = liveTaskGraphRevisionsForTest(nodes);
+    expect(graphRevisions).toHaveLength(1);
+    expect(graphRevisions[0]?.branches[1]?.nodes[0]).toMatchObject({
+      title: "codex-shell-1. Run `npm test`",
+      status: "done",
+    });
+    expect(planTaskChecklistItemsForTest(nodes.find((node) => node.id === "blueprint:planning")!)).toEqual([
+      {
+        taskId: "codex-request",
+        title: "Receive request: fix the failing test",
+        status: "done",
+        branchId: "request",
+      },
+      {
+        taskId: "codex-shell-1",
+        title: "Run `npm test`",
+        status: "done",
+        branchId: "workspace",
+      },
+      {
+        taskId: "codex-final",
+        title: "Return the final user-facing response",
+        status: "future",
+        branchId: "answer",
+      },
+    ]);
+  });
+
   it("renders explicit plan DAG nodes as Work cards with child task checklists", () => {
     const planGraphTasks = [
       {

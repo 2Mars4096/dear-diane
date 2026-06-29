@@ -4131,6 +4131,45 @@ function graphHistoryWithLatest(
   return [...history, latest];
 }
 
+function planTaskStateLooksActive(task: BlueprintPlanTask) {
+  const state = (task.state || task.status || "").toLowerCase();
+  return ["active", "generating", "planning", "executing", "running", "validating", "repairing"].includes(state);
+}
+
+function settlePlanContextAfterFinalResponse(context: BlueprintPlanContext | null) {
+  if (!context) return context;
+  const staleActiveIds = new Set(context.activeTaskIds);
+  for (const task of context.taskGraph) {
+    if (planTaskStateLooksActive(task)) staleActiveIds.add(task.taskId);
+  }
+  if (staleActiveIds.size === 0 && context.activeTaskIds.length === 0) return context;
+  const completedIds = new Set([...context.completedTaskIds, ...staleActiveIds]);
+  const taskGraph = context.taskGraph.map((task) =>
+    staleActiveIds.has(task.taskId)
+      ? {
+          ...task,
+          state: "done",
+          status: "done",
+        }
+      : task,
+  );
+  return {
+    ...context,
+    taskGraph,
+    activeTaskIds: [],
+    completedTaskIds: [...completedIds],
+    readyTaskIds: context.readyTaskIds.filter((taskId) => !completedIds.has(taskId)),
+    deferredTaskIds: context.deferredTaskIds.filter((taskId) => !completedIds.has(taskId)),
+  };
+}
+
+function settleLatestPlanContextHistoryAfterFinalResponse(history: BlueprintPlanContext[]) {
+  if (history.length === 0) return history;
+  return history.map((context, index) =>
+    index === history.length - 1 ? settlePlanContextAfterFinalResponse(context) ?? context : context,
+  );
+}
+
 function hasEventSource(events: ChatV2AgentRunEvent[], match: string | ((source: string) => boolean)) {
   return events.some((event) => {
     const source = eventSource(event);
@@ -4609,6 +4648,64 @@ function understandingPreviewBody(args: {
   ]);
 }
 
+function countNoun(count: number, noun: string) {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function statusSummaryForTasks(tasks: BlueprintPlanTask[], context: BlueprintPlanContext) {
+  const counts = new Map<BlueprintNodeStatus, number>();
+  for (const task of tasks) {
+    const status = statusForPlanTask(task, context);
+    counts.set(status, (counts.get(status) ?? 0) + 1);
+  }
+  return (["active", "ready", "done", "future", "queued", "blocked"] as const)
+    .map((status) => {
+      const count = counts.get(status) ?? 0;
+      return count > 0 ? `${count} ${graphTaskStatusLabel(status)}` : "";
+    })
+    .filter(Boolean)
+    .join(", ");
+}
+
+function taskGoalForGroup(task: BlueprintPlanTask | undefined, fallbackId: string) {
+  return truncateReadableText(task?.goal || fallbackId, 92);
+}
+
+function parallelGroupSummaryItems(
+  planContext: BlueprintPlanContext,
+  options: { maxTasksPerGroup?: number } = {},
+) {
+  const maxTasksPerGroup = options.maxTasksPerGroup ?? 3;
+  const taskById = new Map(planContext.taskGraph.map((task) => [task.taskId, task]));
+  return planContext.parallelGroups.map((group, index) => {
+    const knownTasks = group
+      .map((taskId) => taskById.get(taskId))
+      .filter((task): task is BlueprintPlanTask => Boolean(task));
+    const branches = uniqueStringList(knownTasks.map((task) => task.branchId || "").filter(Boolean));
+    const branchText =
+      branches.length === 0
+        ? ""
+        : branches.length === 1
+          ? ` · branch ${branches[0]}`
+          : ` · ${countNoun(branches.length, "branch")}`;
+    const statusText = knownTasks.length > 0 ? statusSummaryForTasks(knownTasks, planContext) : "";
+    const sample = group
+      .slice(0, maxTasksPerGroup)
+      .map((taskId) => taskGoalForGroup(taskById.get(taskId), taskId));
+    const hiddenCount = Math.max(0, group.length - sample.length);
+    const sampleText =
+      sample.length > 0
+        ? ` Includes ${sample.join("; ")}${hiddenCount > 0 ? `; ${countNoun(hiddenCount, "more task")}.` : "."}`
+        : "";
+    return [
+      `Group ${index + 1}: ${countNoun(group.length, "task")} can run together${branchText}`,
+      statusText ? ` · ${statusText}` : "",
+      ".",
+      sampleText,
+    ].join("");
+  });
+}
+
 function planPreviewBody(planContext: BlueprintPlanContext | null) {
   if (!planContext) return "Waiting for the planner to emit a task graph or frontier metadata.";
   const graphLabel =
@@ -4663,7 +4760,7 @@ function planPreviewBody(planContext: BlueprintPlanContext | null) {
     },
     {
       title: "Parallel Groups",
-      items: planContext.parallelGroups.map((group) => group.map((id) => `\`${id}\``).join(" + ")),
+      items: parallelGroupSummaryItems(planContext),
     },
     {
       title: "Branches",
@@ -4965,15 +5062,38 @@ function buildBlueprintNodesForRunScope(args: {
   const projectAnswerRun = assessmentOnlyRun && textRequestsProjectAnswer(requestBody);
   const readOnlyRun = assessmentOnlyRun || textForbidsWorkspaceMutation(requestBody) || validationSaysNoMutation;
   const noShellRun = textForbidsShellCommands(requestBody);
+  const directAnswerRequired = readOnlyRun || assessmentOnlyRun;
+  const latestAnswerEventRaw = latestAnswerEvent ? eventSummary(latestAnswerEvent).trim() : "";
+  const latestAnswerEventSourceBody =
+    latestAnswerEventRaw && formatStructuredAgentDisplay(latestAnswerEventRaw)
+      ? latestAnswerEventRaw
+      : latestAnswerEventBody;
+  const finalAnswerSource = [
+    latestAnswerChunk?.body || "",
+    latestAnswerEventSourceBody,
+    latestAgentMessageBody,
+    latestTerminalTaskRaw,
+    latestTerminalTaskBody,
+  ].find((source) =>
+    isUsableFinalResponseSource(source, { requireDirectAnswer: directAnswerRequired }),
+  ) || "";
+  const finalAnswerReady = Boolean(finalAnswerSource);
+  const shouldSettlePlanGraph = finalAnswerReady && !hasActiveRun && !attentionTask;
   const requestUnderstanding = latestRequestUnderstanding(activeRunEvents, activeRunTasks);
   const operatorContexts = operatorContextRecords(activeRunEvents, activeRunTasks);
   const requestPlanContext = readOnlyRun ? null : deriveRequestPlanContext(requestBody);
-  const planContext = emittedPlanContext ?? requestPlanContext;
+  const rawPlanContext = emittedPlanContext ?? requestPlanContext;
   const emittedGraphHistory = extractBlueprintPlanContextHistory(activeRunEvents);
-  const graphHistory = graphHistoryWithLatest(
+  const rawGraphHistory = graphHistoryWithLatest(
     emittedGraphHistory.length > 0 ? emittedGraphHistory : requestPlanContext ? [requestPlanContext] : [],
     emittedPlanContext,
   );
+  const planContext = shouldSettlePlanGraph
+    ? settlePlanContextAfterFinalResponse(rawPlanContext)
+    : rawPlanContext;
+  const graphHistory = shouldSettlePlanGraph
+    ? settleLatestPlanContextHistoryAfterFinalResponse(rawGraphHistory)
+    : rawGraphHistory;
   const completedTaskIds = completedPlanTaskIdsFromEvents(activeRunEvents, planContext);
   const activeTaskIds = activePlanTaskIdsFromEvents(activeRunEvents, planContext, hasActiveRun);
   const readyTaskIds = new Set(planContext?.readyTaskIds ?? []);
@@ -5164,9 +5284,7 @@ function buildBlueprintNodesForRunScope(args: {
           ? `Future/deferred: ${planContext.deferredTaskIds.map((id) => `\`${id}\``).join(", ")}`
           : "",
         planContext?.parallelGroups.length
-          ? `Parallel: ${planContext.parallelGroups
-              .map((group) => group.map((id) => `\`${id}\``).join(" + "))
-              .join("; ")}`
+          ? ["Parallel groups:", ...parallelGroupSummaryItems(planContext, { maxTasksPerGroup: 2 }).map((item) => `- ${item}`)].join("\n")
           : "",
       ]
         .filter(Boolean)
@@ -5340,21 +5458,6 @@ function buildBlueprintNodesForRunScope(args: {
     showActiveRunSkeleton ||
     (!hasActiveRun && nodes.length > 0 && hasRunEvidence)
   ) {
-    const latestAnswerEventRaw = latestAnswerEvent ? eventSummary(latestAnswerEvent).trim() : "";
-    const latestAnswerEventSourceBody =
-      latestAnswerEventRaw && formatStructuredAgentDisplay(latestAnswerEventRaw)
-        ? latestAnswerEventRaw
-        : latestAnswerEventBody;
-    const directAnswerRequired = readOnlyRun || assessmentOnlyRun;
-    const finalAnswerSource = [
-      latestAnswerChunk?.body || "",
-      latestAnswerEventSourceBody,
-      latestAgentMessageBody,
-      latestTerminalTaskRaw,
-      latestTerminalTaskBody,
-    ].find((source) =>
-      isUsableFinalResponseSource(source, { requireDirectAnswer: directAnswerRequired }),
-    ) || "";
     const finalDone = Boolean(finalAnswerSource);
     const finalMissing = Boolean(
       !finalDone && !hasActiveRun && !attentionTask && (runCompleted || latestOutcomeChunk),
