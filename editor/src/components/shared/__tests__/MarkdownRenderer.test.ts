@@ -36,6 +36,17 @@ describe("MarkdownRenderer", () => {
     expect(autoCodeCount(html)).toBe(0);
   });
 
+  it("does not auto-highlight prose abbreviations", () => {
+    const html = renderMarkdownToHtml(
+      "Approve a scaffold/demo run, e.g., generate a README. Use i.e. for clarification at 3 p.m.",
+    );
+
+    expect(autoCodeCount(html)).toBe(0);
+    expect(html).toContain("e.g.");
+    expect(html).toContain("i.e.");
+    expect(html).toContain("p.m.");
+  });
+
   it("keeps bold markers working inside lists with auto-highlighted code", () => {
     const html = renderMarkdownToHtml(
       "- **Browser prototype** (`src/`, `index.html`) — TypeScript/JS ECS.\n" +

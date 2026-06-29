@@ -17,11 +17,13 @@ const INLINE_CODE_CLASS =
 const AUTO_CODE_CLASS = `dan-markdown-auto-code ${INLINE_CODE_CLASS}`;
 const MATH_PLACEHOLDER_RE = /(\u0000DAN_MD_\d+\u0000)/g;
 const MATH_PLACEHOLDER_PART_RE = /^\u0000DAN_MD_\d+\u0000$/;
+const PROSE_DOTTED_ABBREVIATIONS = new Set(["a.m", "e.g", "i.e", "n.b", "p.m", "p.s", "u.k", "u.s"]);
 const AUTO_CODE_TOKEN_RE =
   /(^|[^\w./$-])((?:[\w.-]+\/)*[\w.-]+\.(?:c|cc|cpp|css|csv|gd|go|h|hpp|html|ini|java|json|jsx|log|md|mdx|py|rs|sh|sql|toml|ts|tsx|txt|xml|ya?ml)\b|_?[A-Za-z][A-Za-z0-9_]*(?:\._?[A-Za-z][A-Za-z0-9_]*)+(?:\(\))?|_[A-Za-z][A-Za-z0-9_]*(?:\(\))?|[A-Z][A-Z0-9]+(?:_[A-Z0-9]+)+\b|[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+\b)(?=$|[^\w/])/g;
 
 function shouldAutoHighlightCodeToken(source: string, tokenStart: number, token: string): boolean {
   if (token.length > 72) return false;
+  if (PROSE_DOTTED_ABBREVIATIONS.has(token.replace(/\.+$/, "").toLowerCase())) return false;
 
   const tokenEnd = tokenStart + token.length;
   const nextCharacter = source[tokenEnd] ?? "";
