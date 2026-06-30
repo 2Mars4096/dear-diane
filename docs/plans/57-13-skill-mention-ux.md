@@ -23,23 +23,27 @@
     - [x] The Super DAN runner now runs any matching file-backed preflight hook under conventional `scripts/*_preflight.py` / `scripts/*_docs.py` / `scripts/*_scaffold.py` names before the model run; GUI/TUI do not own injection.
 - [ ] 3. Add catalog-backed suggestions
   - [x] 3-1. Expose a capped skill suggestion API or local helper over the read-through catalog.
-  - [ ] 3-2. GUI: show suggestions after `$` in the composer.
+  - [x] 3-2. GUI: show suggestions after `$` in the composer.
+    - [x] The `#workspace` composer now opens a compact suggestion menu for `$` skill mentions from `/api/workspace-skills`.
+    - [x] The same composer menu also restores `/` Super TUI command suggestions and `@` workspace file/path suggestions.
   - [x] 3-3. TUI: show command-line suggestions or a `/skills` picker when possible.
     - [x] Bare `$` now opens the TUI skill dropdown instead of waiting for a typed skill prefix.
   - [x] 3-4. Use `$idea-cart` as the first end-to-end test target.
 - [ ] 4. Preserve surface parity
   - [ ] 4-1. Let Telegram and plain CLI accept raw `$skill-name` text even without autocomplete.
     - [x] Plain `dan super-organism "$skill-name ..."` parses selected skills before the runner.
-    - [ ] Telegram/V2 Agent request metadata still needs the same selected-skill field.
+    - [ ] Telegram request metadata still needs the same selected-skill field.
   - [ ] 4-2. Record selected skills consistently in V2 task/run metadata.
+    - [x] GUI Agent-run requests now carry selected `$skill-name` tokens in `surface_context.selected_skills`, and the Super DAN Chat V2 backend hands them to the shared skill invocation parser before execution.
   - [ ] 4-3. Show selected skill chips or concise labels in GUI/TUI progress views.
     - [x] TUI direct runs add selected skills to the compact Recent Events feed.
 - [ ] 5. Validate behavior
   - [x] 5-1. Test passive skill selection still works without mentions.
   - [x] 5-2. Test `$idea-cart` forces the expected skill packet.
   - [x] 5-3. Test `$5`, `$PATH`, and shell-like text do not trigger skill selection.
-  - [ ] 5-4. Test GUI/TUI suggestion filtering and selection against the same catalog data.
-    - [x] TUI candidate filtering and prompt-toolkit `/` / `$` key-binding coverage landed; GUI suggestion coverage remains open.
+  - [x] 5-4. Test GUI/TUI suggestion filtering and selection against the same catalog data.
+    - [x] TUI candidate filtering and prompt-toolkit `/` / `$` key-binding coverage landed.
+    - [x] GUI composer tests cover `/`, `$`, and `@` token detection, filtering, skill invocation extraction, and mentioned-file extraction.
 
 ## Decisions
 - Two invocation levels are enough: passive auto-selection and active `$skill-name` mention.
@@ -55,3 +59,4 @@
 - 2026-05-11: TUI-selected `$skill-name` mentions now hard-force the corresponding Super DAN skill packet through `_request_from_live_brief(...)`; focused tests cover explicit `$scaffold-research` forcing, selected-skill constraints, companion reference excerpts, a generic `$demo-skill` preflight hook, no-hook prompt-contract activation, and passive fallback selection.
 - 2026-05-11: Extracted `$skill-name` parsing, selected-skill metadata helpers, explicit skill resolution, companion reference excerpting, and conventional preflight hooks into `src/dan/skills/invocation.py`. The TUI now delegates parsing/selection to that shared layer and no longer owns preflight/injection.
 - 2026-05-11: Made the TUI suggestion menu open on bare `$` with prompt-toolkit key bindings, while `/skills [filter]` remains the non-dropdown picker fallback.
+- 2026-06-29: Restored the `#workspace` composer shortcut menu for `/` commands, `$` installed skills, and `@` workspace paths. Selected GUI skills now travel through Chat V2 surface context into the shared Super DAN skill parser; selected `@` paths become bounded `mentioned_files` context.

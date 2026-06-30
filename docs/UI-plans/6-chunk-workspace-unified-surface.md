@@ -38,7 +38,7 @@
   - [x] 6-4. Add workspace slot buttons and browser-safe `Option+Shift+1..9` switching for development workspaces
   - [x] 6-5. Align conversation chunks and the file/chunk preview sidecar as vertical Work columns
   - [x] 6-6. Add automatic active-run steer/queue composer behavior backed by V2 Agent run commands
-  - [ ] 6-7. Promote generated UI chunks into sandboxed preview artifacts
+  - [x] 6-7. Promote generated UI chunks into sandboxed preview artifacts
   - [ ] 6-8. Add virtualized chunk lists if large chat/run histories make it necessary
   - [ ] 6-9. Migrate legacy chat/research Markdown rendering call sites onto the shared renderer
   - [ ] 6-10. Add focused UI tests for note switching, autosave, file tree selection, shortcuts, queue controls, and route-level code splitting
@@ -219,6 +219,18 @@
   - [x] 6-179. Show only active child tasks on plan cards while Preview keeps the full live checkbox checklist
   - [x] 6-180. Settle stale active Live Task Graph nodes after a final response when no closing graph snapshot exists
   - [x] 6-181. Summarize Parallel Groups by task count, status mix, and readable task goals instead of raw id chains
+  - [x] 6-182. Keep Codex/tool/terminal execution traces out of the semantic plan/subplan/item task graph
+  - [x] 6-183. Keep low-level graph telemetry and output chunk parser failures out of primary Work Panel live-status prose
+  - [x] 6-184. Add bounded Agent continuation at cap exits: Native/Super DAN gets no-tool budget-audited leases, and Codex-backed incomplete/limit-shaped exits queue a continuation run anchored to the original goal
+  - [x] 6-185. Create Notes pages as local tmp drafts first, focus the body, and materialize on explicit save with inferred Hugo bundle metadata
+  - [x] 6-186. Compile follow-up context before backend execution so Native/Super DAN and Codex receive the same normalized request packet with original goal, current update, previous result context, selected Work card, and active file/workspace context
+  - [x] 6-187. Keep internal Notes tmp drafts out of Pages, Recent Modified, pageID suggestions, graphs, and taxonomy counts until materialized
+  - [x] 6-188. Treat stop-requested Agent tasks as control state so they do not appear as Message Queue work or keep the next typed request behind a stopped run
+  - [x] 6-189. Remove the unused ordinal number pill from Work Panel Run Step cards while keeping status badges visible
+  - [x] 6-190. Add a Context Composer shared evidence ledger to follow-up packets and selected Work Preview details
+  - [x] 6-191. Add a Work Preview Card for previewable artifacts, including backend-reported output refs and workspace files such as HTML, PDF, image, Markdown, and text previews.
+  - [x] 6-192. Quiet raw Codex shell-command progress in Work cards and Preview live status by replacing full command invocations with short semantic activity summaries.
+  - [x] 6-193. Clear stale active-run queue/session/composer state when terminal run events finalize a task before the persisted task snapshot catches up.
 
 ## Decisions
 - The workspace route is a surface, not another product mode.
@@ -230,12 +242,21 @@
 - The `#workspace` composer is Super DAN-only. It does not call `/api/v2/chat/message`; it creates Agent runs, executes them with `backend=super_dan` plus `surface_profile=super_tui`, and uses Agent-run commands for active-run steer/queue behavior.
 - Active Work card prose should expose who is working without becoming a model dump. Codex runs highlight `Codex`; Native runs highlight `DAN`; model/config details stay in the composer controls and task metadata unless the progress text itself mentions them.
 - Active-run Stop belongs in the composer action slot, not as a separate button. When a run is active and the composer is empty, the send button becomes Stop; once the user types, the same slot returns to Steer or Next.
+- Stop-requested task snapshots are run-control state, not user-message queue state. They can still explain why the stopped run did not finish, but they must not occupy the Message Queue or make the next typed request look blocked.
 - Notes Source uses the same composer controls as the Work Panel, but Notes-pane submissions carry `workspace_mode=notes` plus a `notes_workspace` packet with Hugo content-tree, frontmatter, bundle, pageID, and root-containment rules.
+- New Notes pages should start as local tmp drafts when confidence is low. The rail `+` note action and clear Notes composer create/write/generate intents create a local draft with the cursor in the body, then explicit save infers title, bundle path, pageID, tags, and categories before writing into the Hugo content tree. This tmp state is internal working state: it can appear in Working Now and the editor, but it must not show as a `tmp` folder, page, recent item, pageID suggestion, graph node, or taxonomy count.
 - The Work header treats the root path as flexible context, not fixed chrome. The mode switcher and status/action controls keep their natural sizes, while the root field truncates inside the remaining header space.
 - Notes preview metadata should show Last Update even when the page has not declared Hugo `lastmod`; frontmatter wins, otherwise the file timestamp is the best available freshness signal.
 - Notes content navigation exposes activity without replacing the tree. The rail keeps a compact Recent shelf between search/tabs and the Pages/Tags/Categories body, with a bounded internal scroller, a Working Now count/card for active edits or Notes Agent runs, and a five-page modified list from note mtimes.
 - Super DAN chunks should follow the TUI presentation shape: request, working status, answer, and outcome/checks. Raw provider/tool/model JSON stays below the event ledger, not as primary conversation cards.
 - The Work middle column is now blueprint-first, not card-first. It projects Super DAN task snapshots, organism-log events, and any emitted `plan_context.task_graph` into a live task rail where the current executable task is the anchor, completed nodes are solid, ready nodes are emphasized, and future/deferred nodes are thinner dashed placeholders. Blank new sessions remain empty until an actual user request, task snapshot, or run event exists.
+- Task graph means semantic plan structure: plans, subplans, and plan items. Terminal commands, Codex item ids, tool calls, file reads, validator events, and other runtime traces are execution activity/status evidence attached to the relevant work, not nodes in the Live Task Graph.
+- Live status is not a raw event log, and Final response is not a runtime-error bucket. Observable graph-update telemetry should not appear as `Task graph updated to codex.r...` event or task-progress prose, and known runtime parser limits should be translated into concise technical notes instead of copied as raw backend strings or accepted as final answers.
+- Codex shell commands are debug evidence, not primary progress prose. The backend should summarize commands by intent, such as local preview check, build, test, endpoint check, or workspace command; the GUI should also sanitize older persisted `Codex ran \`...\`` summaries before rendering Work cards or Preview live status.
+- Terminal/final events can settle visible run controls before task persistence refreshes. The Work surface derives a settled task view from matching terminal run events before computing active task, queue rows, elapsed counters, session cards, and Stop controls; stage-level `*.completed` events do not settle the run by themselves.
+- Previewable outputs belong in the Work flow, not a separate artifact browser. The Work Preview Card lists backend-reported artifacts and output-like workspace files, then uses the existing Preview pane as a built-in preview runtime for sandboxed HTML/sites, image/figure, PDF, Markdown, and text rendering. External browser opening stays available as an escape hatch, not the default user path.
+- Follow-up interpretation belongs before backend execution. Chat V2 compiles `history + current update + selected UI/workspace state` into a structured `normalized_request` packet, then renders that as the backend objective; fixed continuation phrases are only weak fallback hints when no explicit previous-run context exists.
+- Runtime limits are control boundaries, not user-goal boundaries. Native/Super DAN may extend a live stage only through a bounded no-tool budget-auditor lease, while Codex can only continue after its external process exits by queuing a new run that preserves the original request plus the remaining gap.
 - Blueprint `active` now means a task is actually `running`. Queued, dependency-waiting, input-needed, paused, failed, blocked, and stopped task states remain visible without borrowing the active-run anchor; terminal failed/blocked/stopped work renders blocked execution/final nodes with the backend detail.
 - Final-answer evidence closes stale graph activity. If a run is no longer active and has a usable final response but the backend did not emit a final `task_graph_state`, the GUI clears stale active ids in the latest graph snapshot and marks those frontier tasks done so the current graph does not continue to look running.
 - Parallel group ids are source data, not a readable explanation. Preview summaries should lead with lane size, branch/status mix, and representative task goals; raw ids can remain implicit in the task graph but should not appear as long `id + id + id` chains.
@@ -365,6 +386,8 @@
 - Notes taxonomy clicks should drill into article lists without switching users back to the Pages folder tree. Tags and Categories remain their own rail contexts; Pages stays the folder hierarchy.
 
 ## Notes
+- 2026-06-30: Added the Work Preview Card and root-aware file preview route. The card lists backend artifact refs plus previewable workspace outputs, file-tree/card clicks clear selected Work steps, and the Preview pane renders HTML in a sandboxed iframe with neighboring assets, images/PDFs natively, and Markdown/text through the existing renderers.
+- 2026-06-29: Released Stop from the Message Queue. Stop-requested Agent task snapshots no longer become queue rows or synthetic Work cards, while the stopped run can still render as needing attention if it did not produce a final response.
 - 2026-06-28: Fixed shared Markdown inline parsing inside list items. Bullet and numbered items now preserve `**bold**` and explicit backtick code spans before the automatic code-like prose highlighter runs.
 - 2026-06-28: Required model-authored request understanding. Generic Super DAN runs now execute a dedicated no-mutation understanding pass before planning or execution; if the model does not return tailored aspect reviews, acceptance criteria, and a stop rule, the run blocks instead of relying on the deterministic brief alone.
 - 2026-06-28: Clarified Work Panel attention states. Blocked/failed cards now use explicit blocker/error/reason fields when available, and generic "needs attention" text no longer counts as a final response or falls back to the user's request.
@@ -376,6 +399,7 @@
 - 2026-06-29: De-duplicated Preview live status. `Now`, `Latest Update`, and `Recent Updates` now suppress identical normalized lines so Codex/DAN progress prose appears once in the most useful slot.
 - 2026-06-29: Added explicit Super DAN plan-DAG rendering. Plan graph nodes now become top-level Work cards with dependency arrows and ghost blueprint states, while per-plan child tasks show as selected-card checklists with active/done/ready indicators plus validation and repair history.
 - 2026-06-29: Stabilized the early Work Panel future sequence. A request-understanding `completed` stage event no longer removes the grey planning/execution/validation/final-response cards before the next real phase appears.
+- 2026-06-29: Quieted Work Panel live-status technical noise. Codex observable graph updates are no longer shown as event or task-progress prose, and output chunk parser-limit text is rendered as a concise technical note instead of raw backend wording or a completed Final response.
 - 2026-06-26: Limited the Sessions rail title dot to unread ready responses. Running and selected sessions no longer get a leading dot by default; completed sessions show the blue marker only when a user-facing answer or structured summary is ready and newer than the local seen timestamp.
 - 2026-06-26: Aligned Archived inner bucket rows with the rest of the Sessions rail. Nested workspace/project buckets now use the same rounded rail-card spacing, title treatment, hover tone, and count badge pattern as regular workspace rows.
 - 2026-06-26: Added a centralized desktop surface theme layer. Factory Worn now applies at the app root, keeps the current look as dark mode, and gains a light-mode override file with shared machine tokens for panels, rails, buttons, inputs, Work Plan cards, status badges, and accent states.
