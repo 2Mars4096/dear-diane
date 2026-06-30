@@ -5,11 +5,13 @@ import {
   useMemo,
   useRef,
   useState,
+  type ChangeEvent,
   type DragEvent,
   type KeyboardEvent,
   type MouseEvent,
   type PointerEvent,
   type ReactNode,
+  type SyntheticEvent,
   type WheelEvent,
 } from "react";
 import {
@@ -23,6 +25,7 @@ import {
   ChevronRight,
   Circle,
   Clock3,
+  Eye,
   File,
   FileText,
   Folder,
@@ -55,16 +58,19 @@ import {
   listWorkspaceFileTree,
   listWorkspaceNotes,
   listWorkspaceRootSuggestions,
+  listWorkspaceSkillSuggestions,
   createWorkspaceFolder,
   getWorkspaceWireGuardStatus,
   moveWorkspaceNotePath,
   moveWorkspacePath,
   readWorkspaceFile,
   readWorkspaceNote,
+  workspaceFilePreviewUrl,
   writeWorkspaceNote,
   type WorkspaceFileEntry,
   type WorkspaceNoteSummary,
   type WorkspaceRootSuggestion,
+  type WorkspaceSkillSuggestion,
   type WorkspaceWireGuardStatus,
 } from "../../lib/api";
 import {
@@ -412,6 +418,8 @@ interface WorkspaceNote {
   date?: string;
   lastmod?: string;
   draft?: boolean;
+  temporary?: boolean;
+  draftTargetSection?: string;
   tags: string[];
   categories: string[];
   citations: string[];
@@ -483,10 +491,44 @@ type PhonePage = "chat" | "sessions" | "files" | "preview" | "note-list" | "note
 type NoteRailView = "pages" | "tags" | "sections";
 type ActiveRunPlacement = "steer" | "queue";
 type ComposerSubmitMode = ActiveRunPlacement;
+type WorkspaceComposerTrigger = "/" | "$" | "@";
+
+interface WorkspaceComposerToken {
+  trigger: WorkspaceComposerTrigger;
+  query: string;
+  start: number;
+  end: number;
+  key: string;
+}
+
+interface WorkspaceComposerSuggestion {
+  id: string;
+  type: "command" | "skill" | "file";
+  insertText: string;
+  label: string;
+  detail: string;
+  meta: string;
+}
 
 const DEFAULT_PLAN_GENERATION_QUEUE_LENGTH = 4;
 const DEFAULT_PLAN_EXECUTION_QUEUE_LENGTH = 4;
 const DEFAULT_TASK_EXECUTION_QUEUE_LENGTH = 4;
+const WORKSPACE_COMPOSER_COMMANDS: Array<{ command: string; description: string }> = [
+  { command: "/plan", description: "Show the deterministic contract" },
+  { command: "/progress", description: "Narrate current or recent work" },
+  { command: "/tasks", description: "Show active, queued, and recent work" },
+  { command: "/status", description: "Show visible task status" },
+  { command: "/inside", description: "Inspect recent internal activity" },
+  { command: "/skills", description: "Browse skill mentions" },
+  { command: "/reset", description: "Archive workspace context or state" },
+  { command: "/help", description: "Show commands" },
+  { command: "/new", description: "Start a separate task turn" },
+  { command: "/append", description: "Add instructions to active work" },
+  { command: "/pause", description: "Pause active work at checkpoints" },
+  { command: "/resume", description: "Resume paused work" },
+  { command: "/stop", description: "Request stop for active work" },
+  { command: "/focus", description: "Choose a visible task target" },
+];
 
 interface WorkspaceChunk {
   id: string;
@@ -508,6 +550,15 @@ interface PromptLogPreview {
   path: string;
   entryCount: number;
   status: "idle" | "loading" | "error";
+}
+
+type WorkspaceFilePreviewKind = "image" | "pdf" | "html" | "markdown" | "text";
+
+interface WorkspacePreviewArtifact {
+  id: string;
+  entry: WorkspaceFileEntry;
+  kind: WorkspaceFilePreviewKind;
+  source: "file" | "artifact";
 }
 
 interface BlueprintPlanTask {
@@ -936,11 +987,19 @@ function yamlQuote(value: string) {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
+function yamlStringList(values: string[]) {
+  const clean = values.map((value) => value.trim()).filter(Boolean);
+  return clean.length > 0 ? `[${clean.map(yamlQuote).join(", ")}]` : "[]";
+}
+
 function hugoFrontmatterTemplate(args: {
   title: string;
   pageID: string;
   date: string;
   author?: string;
+  draft?: boolean;
+  tags?: string[];
+  categories?: string[];
 }) {
   return [
     "---",
@@ -948,15 +1007,15 @@ function hugoFrontmatterTemplate(args: {
     'subtitle: ""',
     `date: ${args.date}`,
     `lastmod: ${args.date}`,
-    "draft: false",
+    `draft: ${args.draft ? "true" : "false"}`,
     `author: ${yamlQuote(args.author || "Adam")}`,
     'abstract: ""',
     'summary: ""',
     'description: ""',
     'link: ""',
     `pageID: ${yamlQuote(args.pageID)}`,
-    "tags: []",
-    "categories: []",
+    `tags: ${yamlStringList(args.tags ?? [])}`,
+    `categories: ${yamlStringList(args.categories ?? [])}`,
     "series: []",
     "aliases: []",
     "images: []",
@@ -980,7 +1039,12 @@ function noteRelativePath(note: WorkspaceNote, root: string) {
   return note.title;
 }
 
+function noteDisplayPath(note: WorkspaceNote, root: string) {
+  return isTemporaryDraftNote(note) ? "Uncategorized draft" : noteRelativePath(note, root);
+}
+
 function noteSection(note: WorkspaceNote, root: string) {
+  if (isTemporaryDraftNote(note)) return note.draftTargetSection || "uncategorized";
   if (note.section) return note.section;
   const parts = pathParts(noteRelativePath(note, root));
   return parts.length > 1 ? parts[0] : "root";
@@ -994,6 +1058,234 @@ function noteRoutePath(note: WorkspaceNote, root: string) {
     ? parts.slice(0, -1)
     : [...parts.slice(0, -1), last.replace(/\.mdx?$/i, "")];
   return `/${routeParts.join("/")}${routeParts.length ? "/" : ""}`;
+}
+
+function isTemporaryDraftNote(note: WorkspaceNote) {
+  return (
+    note.temporary === true ||
+    (note.source === "local" &&
+      (note.path?.startsWith("tmp://notes/") ||
+        note.relativePath?.startsWith("tmp/drafts/")))
+  );
+}
+
+function isCatalogNote(note: WorkspaceNote) {
+  return !isTemporaryDraftNote(note);
+}
+
+function catalogNotes(notes: WorkspaceNote[]) {
+  return notes.filter(isCatalogNote);
+}
+
+function isDraftPlaceholderTitle(title: string) {
+  return /^(untitled|untitled draft|new note|draft)$/i.test(title.trim());
+}
+
+function frontmatterBodyStartOffset(content: string) {
+  const match = /^---\s*\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n|$)/.exec(content);
+  return match ? match[0].length : 0;
+}
+
+function cleanDraftTitle(value: string) {
+  const cleaned = value
+    .replace(/^#+\s+/, "")
+    .replace(/^[`*_~\s]+|[`*_~\s]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.?!:;,-]+$/g, "")
+    .trim();
+  if (!cleaned) return "";
+  return `${cleaned.charAt(0).toUpperCase()}${cleaned.slice(1)}`.slice(0, 96);
+}
+
+function firstDraftBodyTitle(body: string) {
+  const heading = /^#\s+(.+)$/m.exec(body)?.[1]?.trim() || "";
+  if (heading) return cleanDraftTitle(heading);
+  const snippet = compactNoteSnippet(body);
+  const firstSentence = snippet.split(/[.!?]\s/)[0] ?? "";
+  return cleanDraftTitle(firstSentence);
+}
+
+function notesComposerRequestsNewDraft(text: string) {
+  return /^(?:please\s+)?(?:can you\s+)?(?:new|create|draft|write|generate|make)\s+(?:a\s+|an\s+|the\s+)?(?:new\s+)?(?:note|page|doc|document|file)\b/i.test(
+    text.trim(),
+  ) || /^(?:note|page|doc|document|file)\s*:\s*\S/i.test(text.trim());
+}
+
+function draftSeedFromComposerText(text: string) {
+  const trimmed = text.trim();
+  if (!trimmed) return { titleHint: "", body: "" };
+  const colonMatch = /^(?:note|page|doc|document|file)\s*:\s*([\s\S]+)$/i.exec(trimmed);
+  if (colonMatch) {
+    const body = colonMatch[1].trim();
+    return { titleHint: firstDraftBodyTitle(body), body };
+  }
+  const withoutCommand = trimmed
+    .replace(
+      /^(?:please\s+)?(?:can you\s+)?(?:new|create|draft|write|generate|make)\s+(?:a\s+|an\s+|the\s+)?(?:new\s+)?(?:note|page|doc|document|file)\b/i,
+      "",
+    )
+    .trim();
+  const remainder = withoutCommand.replace(/^(?:about|on|for|called|titled)\s+/i, "").trim();
+  if (remainder.startsWith(":")) {
+    const body = remainder.slice(1).trim();
+    return { titleHint: firstDraftBodyTitle(body), body };
+  }
+  return { titleHint: cleanDraftTitle(remainder), body: "" };
+}
+
+function draftFacetMetadata(facet: string) {
+  const [kind, ...rest] = facet.split(":");
+  const value = rest.join(":").trim();
+  if (!value) return { tags: [] as string[], categories: [] as string[] };
+  if (kind === "tag") return { tags: [value], categories: [] as string[] };
+  if (kind === "category") return { tags: [] as string[], categories: [value] };
+  return { tags: [] as string[], categories: [] as string[] };
+}
+
+function draftTargetSectionFromContext(args: {
+  facet?: string;
+  activeSection?: string;
+  fallback?: string;
+}) {
+  const facetSection =
+    args.facet?.startsWith("section:") ? args.facet.slice("section:".length) : "";
+  const raw = facetSection || args.activeSection || args.fallback || "notes";
+  const section = safeRelativePath(raw);
+  if (!section || section === "root" || section === "tmp") return "notes";
+  return section.startsWith("tmp/") ? "notes" : section;
+}
+
+function pageIdFromRelativePath(relativePath: string, fallback: string) {
+  const base = relativePath
+    .replace(/\/index\.mdx?$/i, "")
+    .replace(/\.mdx?$/i, "")
+    .replace(/[\\/]+/g, "-")
+    .replace(/[^A-Za-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return base || fallback;
+}
+
+function uniqueDraftRelativePath(args: {
+  section: string;
+  slug: string;
+  notes: WorkspaceNote[];
+  root: string;
+  excludeId: string;
+}) {
+  const existing = new Set(
+    args.notes
+      .filter((note) => note.id !== args.excludeId)
+      .map((note) => noteRelativePath(note, args.root).toLowerCase()),
+  );
+  for (let index = 0; index < 200; index += 1) {
+    const folderSlug = index === 0 ? args.slug : `${args.slug}-${index + 1}`;
+    const relativePath = `${args.section}/${folderSlug}/index.md`;
+    if (!existing.has(relativePath.toLowerCase())) return relativePath;
+  }
+  return `${args.section}/${args.slug}-${Date.now()}/index.md`;
+}
+
+function createTemporaryDraftNote(args: {
+  now?: Date;
+  seedText?: string;
+  targetSection?: string;
+  facet?: string;
+} = {}): WorkspaceNote {
+  const now = args.now ?? new Date();
+  const seed = draftSeedFromComposerText(args.seedText ?? "");
+  const metadata = draftFacetMetadata(args.facet ?? "");
+  const title = seed.titleHint || "Untitled draft";
+  const stamp = compactDateStamp(now);
+  const slug = slugifyPathPart(title, "untitled-draft");
+  const content = `${hugoFrontmatterTemplate({
+    title,
+    pageID: "",
+    date: now.toISOString(),
+    draft: true,
+    tags: metadata.tags,
+    categories: metadata.categories,
+  })}${seed.body ? `${seed.body.trim()}\n` : ""}`;
+  return {
+    id: nowId("draft-note"),
+    title,
+    path: `tmp://notes/${stamp}`,
+    relativePath: `tmp/drafts/${slug}-${stamp}.md`,
+    source: "local",
+    content,
+    loaded: true,
+    status: "dirty",
+    updatedAt: now.getTime(),
+    size: content.length,
+    section: "tmp",
+    pageID: "",
+    date: now.toISOString(),
+    lastmod: now.toISOString(),
+    draft: true,
+    temporary: true,
+    draftTargetSection: args.targetSection || "notes",
+    tags: metadata.tags,
+    categories: metadata.categories,
+    citations: extractPageIdCitations(content),
+  };
+}
+
+function materializeTemporaryDraftNote(args: {
+  note: WorkspaceNote;
+  notes: WorkspaceNote[];
+  root: string;
+  facet?: string;
+  activeSection?: string;
+  now?: Date;
+}) {
+  const root = normalizeRootPath(args.root);
+  if (!root) return null;
+  const now = args.now ?? new Date();
+  const page = extractHugoPage(args.note.content || "", args.note.title);
+  const body = page.body.trimStart();
+  const inferredTitle =
+    (page.meta.title && !isDraftPlaceholderTitle(page.meta.title) ? cleanDraftTitle(page.meta.title) : "") ||
+    firstDraftBodyTitle(body) ||
+    (args.note.title && !isDraftPlaceholderTitle(args.note.title) ? cleanDraftTitle(args.note.title) : "") ||
+    "Untitled note";
+  const section = draftTargetSectionFromContext({
+    facet: args.facet,
+    activeSection: args.note.draftTargetSection || args.activeSection,
+    fallback: "notes",
+  });
+  const slug = slugifyPathPart(inferredTitle, "untitled-note");
+  const relativePath = uniqueDraftRelativePath({
+    section,
+    slug,
+    notes: args.notes,
+    root,
+    excludeId: args.note.id,
+  });
+  const pageID = page.meta.pageID || pageIdFromRelativePath(relativePath, `note-${compactDateStamp(now)}`);
+  const facetMetadata = draftFacetMetadata(args.facet ?? "");
+  const tags = page.meta.tags.length > 0 ? page.meta.tags : facetMetadata.tags;
+  const categories =
+    page.meta.categories.length > 0 ? page.meta.categories : facetMetadata.categories;
+  const date = now.toISOString();
+  const content = `${hugoFrontmatterTemplate({
+    title: inferredTitle,
+    pageID,
+    date,
+    draft: false,
+    tags,
+    categories,
+  })}${body ? `${body.trim()}\n` : ""}`;
+  return {
+    title: inferredTitle,
+    path: joinPath(root, relativePath),
+    relativePath,
+    section,
+    pageID,
+    date,
+    content,
+    tags,
+    categories,
+  };
 }
 
 function workspaceDisplayName(workspace: { name?: string; pinnedPaths?: string[] } | null | undefined) {
@@ -1202,7 +1494,7 @@ function recentModifiedNotes(
   root: string,
   limit = RECENT_MODIFIED_LIMIT,
 ): RecentModifiedNote[] {
-  return [...notes]
+  return catalogNotes(notes)
     .map((note) => {
       const updatedAt = noteModifiedTimestamp(note);
       return {
@@ -1297,7 +1589,7 @@ function workingNoteCards(
       note,
       title: note.title,
       state,
-      path: noteRelativePath(note, root),
+      path: noteDisplayPath(note, root),
       target,
       snippet,
       status: state === "Agent" ? "agent" : note.status,
@@ -1328,7 +1620,7 @@ function noteMetaItems(note: WorkspaceNote | null, page: ParsedHugoPage) {
     ["Link", meta.link],
     ["Figure", meta.figure],
     ["Draft", meta.draft === "true" ? "draft" : ""],
-    ["Path", note ? noteRelativePath(note, "") : ""],
+    ["Path", note ? noteDisplayPath(note, "") : ""],
   ].filter((item): item is [string, string] => Boolean(item[1]));
 }
 
@@ -1987,6 +2279,11 @@ function readStoredNotes(): { notes: WorkspaceNote[]; activeId: string | null } 
           date: typeof note.date === "string" ? note.date : undefined,
           lastmod: typeof note.lastmod === "string" ? note.lastmod : undefined,
           draft: typeof note.draft === "boolean" ? note.draft : undefined,
+          temporary: typeof note.temporary === "boolean" ? note.temporary : undefined,
+          draftTargetSection:
+            typeof note.draftTargetSection === "string"
+              ? note.draftTargetSection
+              : undefined,
           tags: Array.isArray(note.tags)
             ? note.tags.filter((item): item is string => typeof item === "string")
             : [],
@@ -2029,6 +2326,8 @@ function persistNotes(notes: WorkspaceNote[], activeId: string | null) {
           date: note.date,
           lastmod: note.lastmod,
           draft: note.draft,
+          temporary: note.temporary,
+          draftTargetSection: note.draftTargetSection,
           tags: note.tags,
           categories: note.categories,
           citations: note.citations,
@@ -2177,6 +2476,10 @@ function taskStopRequested(task?: ChatV2TaskSnapshot | null) {
   return Boolean(metadata.stop_requested || metadata.stop_requested_at || metadata.stop_command);
 }
 
+function taskIsStopControlState(task?: ChatV2TaskSnapshot | null) {
+  return Boolean(task && (task.status === "stop_requested" || taskStopRequested(task)));
+}
+
 function taskIsStaleRunning(task?: ChatV2TaskSnapshot | null) {
   if (task?.status !== "running") return false;
   const updatedAt = taskRunUpdatedAt(task);
@@ -2191,6 +2494,48 @@ function isTaskRunning(task?: ChatV2TaskSnapshot | null) {
 
 function isTaskTerminal(task?: ChatV2TaskSnapshot | null) {
   return Boolean(task && terminalTaskStatuses.has(task.status));
+}
+
+function agentRunEventSettlesTask(event: ChatV2AgentRunEvent) {
+  const type = event.type.trim().toLowerCase();
+  if (type === "failed" || type === "blocked" || type === "stopped") return true;
+  if (type !== "completed") return false;
+  const source = eventSource(event).trim().toLowerCase();
+  return (
+    source === "completed" ||
+    /(?:^|\.)turn\.completed$/.test(source) ||
+    /(?:^|\.)run\.completed$/.test(source) ||
+    /(?:^|\.)run\.log\.completed$/.test(source)
+  );
+}
+
+function agentRunEventMatchesTask(event: ChatV2AgentRunEvent, task: ChatV2TaskSnapshot) {
+  const eventTaskId = event.task_id || "";
+  if (eventTaskId && eventTaskId === task.task_id) return true;
+  const eventRunId = event.run_id || "";
+  return Boolean(eventRunId && eventRunId === taskRunId(task));
+}
+
+function settleTaskSnapshotsFromEvents(
+  tasks: ChatV2TaskSnapshot[],
+  events: ChatV2AgentRunEvent[],
+) {
+  if (tasks.length === 0 || events.length === 0) return tasks;
+  let changed = false;
+  const settled = tasks.map((task) => {
+    if (isTaskTerminal(task)) return task;
+    const terminalEvent = [...events]
+      .reverse()
+      .find((event) => agentRunEventSettlesTask(event) && agentRunEventMatchesTask(event, task));
+    if (!terminalEvent) return task;
+    changed = true;
+    return applyRunEventToTaskSnapshot(task, {
+      ...terminalEvent,
+      task_id: terminalEvent.task_id || task.task_id,
+      run_id: terminalEvent.run_id || taskRunId(task),
+    });
+  });
+  return changed ? settled : tasks;
 }
 
 function taskNeedsAttention(task?: ChatV2TaskSnapshot | null) {
@@ -3123,6 +3468,7 @@ function isUsableFinalResponseSource(
 ) {
   const normalized = content.trim();
   if (!normalized || isGenericCompletionText(normalized) || isGenericNeedsAttentionText(normalized)) return false;
+  if (isRuntimeOutputChunkLimitText(normalized) || isGraphTelemetryText(normalized)) return false;
   if (options.requireDirectAnswer && looksLikeFileReceiptOnly(normalized)) return false;
   const parsed = parseJsonObject(normalized);
   if (!parsed) return !looksLikeStructuredPayloadFragment(normalized);
@@ -3235,6 +3581,7 @@ function isMachineSummary(summary: string, event: ChatV2AgentRunEvent) {
   const text = summary.trim();
   if (!text) return true;
   if (text === source || text === event.type) return true;
+  if (isGraphTelemetryText(text)) return true;
   if (/^Token usage\b/i.test(text)) return true;
   if (
     isGenericCompletionText(text) ||
@@ -3260,6 +3607,8 @@ function humanEventSummary(event: ChatV2AgentRunEvent) {
   const summary = eventSummary(event).trim();
   const structured = formatStructuredAgentSummary(summary);
   if (structured) return structured;
+  const readableCommand = readableCodexCommandSummary(summary);
+  if (readableCommand) return readableCommand;
   const payloadFinalText = eventPayloadText(event, "final_text");
   if (payloadFinalText && isMachineSummary(summary, event) && isUsableFinalResponseSource(payloadFinalText)) {
     return payloadFinalText;
@@ -3316,9 +3665,83 @@ function pathFromEvent(event: ChatV2AgentRunEvent) {
   return "";
 }
 
+function isExecutionTraceGraphUpdateEvent(event: ChatV2AgentRunEvent) {
+  if (eventSource(event) !== "live.task_graph.updated") return false;
+  const payload = eventPayload(event);
+  if (isExecutionTracePlanContext(normalizePlanContext(payload))) return true;
+  const graphState = recordValue(payload.task_graph_state);
+  if (!graphState) return false;
+  const source = printableTextValue(graphState.source).trim().toLowerCase();
+  const scope = printableTextValue(graphState.update_scope).trim().toLowerCase();
+  const tasks = planTaskGraphFromValue(graphState.tasks ?? graphState.task_graph);
+  const hasPlanStructure = tasks.some(isBlueprintPlanTaskPlan);
+  const hasCodexTraceIds = tasks.some((task) =>
+    /^codex-(?:item|worker|request|final)(?:-|$)/i.test(task.taskId),
+  );
+  if (hasPlanStructure) return false;
+  if (source === "codex" && scope === "observable_event") return true;
+  return scope === "observable_event" && hasCodexTraceIds;
+}
+
+function isRuntimeOutputChunkLimitText(text: string) {
+  const normalized = text.trim().toLowerCase();
+  return (
+    normalized.includes("separator is not found") &&
+    /chunk exceed(?:ed|s)? the limit/.test(normalized)
+  );
+}
+
+function isGraphTelemetryText(text: string) {
+  return /^task graph updated(?:\s+to\s+\S+)?(?:\s+by\s+\S+)?\.?$/i.test(text.trim());
+}
+
+function rawCodexCommandFromSummary(text: string) {
+  const match = text.trim().match(/^Codex ran\s+`([^`]+)`\.?$/i);
+  return match?.[1]?.trim() || "";
+}
+
+function readableCodexCommandSummary(text: string) {
+  const command = rawCodexCommandFromSummary(text);
+  if (!command) return "";
+  const normalized = command.toLowerCase();
+  if (normalized.includes("playwright") || normalized.includes("pwcli") || normalized.includes("screenshot")) {
+    return "Codex checked the local preview.";
+  }
+  if (normalized.includes("npm run build") || normalized.includes("vite build") || /\btsc\b/.test(normalized)) {
+    return "Codex built the frontend.";
+  }
+  if (
+    normalized.includes("npm test") ||
+    normalized.includes("npm run test") ||
+    normalized.includes("vitest") ||
+    normalized.includes("jest")
+  ) {
+    return "Codex ran frontend tests.";
+  }
+  if (normalized.includes("pytest") || normalized.includes("python -m pytest")) {
+    return "Codex ran Python tests.";
+  }
+  if (normalized.includes("git diff") || normalized.includes("git status")) {
+    return "Codex checked workspace changes.";
+  }
+  if (normalized.includes("curl ")) {
+    return "Codex checked a local endpoint.";
+  }
+  return "Codex ran a workspace command.";
+}
+
+function readableRuntimeIssueText(text: string, task?: ChatV2TaskSnapshot | null) {
+  if (isRuntimeOutputChunkLimitText(text)) {
+    return `${taskAgentDisplayLabel(task)} hit an output-size parsing limit while reading command output.`;
+  }
+  return text;
+}
+
 function eventActivityLine(event: ChatV2AgentRunEvent) {
   const source = eventSource(event);
   const payload = eventPayload(event);
+  const readableCommand = readableCodexCommandSummary(eventSummary(event));
+  if (readableCommand) return readableCommand;
 
   if (source === "model.requested") {
     const model = eventPayloadText(event, "model");
@@ -3333,6 +3756,7 @@ function eventActivityLine(event: ChatV2AgentRunEvent) {
     return "";
   }
   if (source === "live.task_graph.updated") {
+    if (isExecutionTraceGraphUpdateEvent(event)) return "";
     const graphState = recordValue(payload.task_graph_state);
     const versionId = printableTextValue(graphState?.version_id);
     const revision = printableTextValue(graphState?.revision);
@@ -3360,7 +3784,10 @@ function eventActivityLine(event: ChatV2AgentRunEvent) {
     const toolId = eventPayloadText(event, "tool_id");
     const path = pathFromEvent(event);
     const reason = eventPayloadText(event, "error") || humanEventSummary(event);
-    return `${toolId ? toolLabel(toolId) : "Tool"} failed${path ? ` for \`${path}\`` : ""}${reason ? `: ${readableToolPolicyReason(reason)}` : ""}.`;
+    const readableReason = reason
+      ? readableRuntimeIssueText(readableToolPolicyReason(reason))
+      : "";
+    return `${toolId ? toolLabel(toolId) : "Tool"} failed${path ? ` for \`${path}\`` : ""}${readableReason ? `: ${readableReason}` : ""}.`;
   }
   if (source === "tool.completed") {
     const toolId = eventPayloadText(event, "tool_id");
@@ -3541,6 +3968,16 @@ interface BlueprintDetailSection {
   items: string[];
 }
 
+interface SharedEvidenceItem {
+  id: string;
+  kind: string;
+  status: string;
+  title: string;
+  summary: string;
+  source: string;
+  ref: string;
+}
+
 function humanizeDetailKey(key: string) {
   return key.replace(/^_+/, "").replace(/_/g, " ");
 }
@@ -3621,6 +4058,179 @@ function truncateReadableText(value: string, limit = 96) {
   const text = value.trim().replace(/\s+/g, " ");
   if (text.length <= limit) return text;
   return `${text.slice(0, Math.max(0, limit - 3)).trimEnd()}...`;
+}
+
+function sharedEvidenceItemFromRecord(
+  record: Record<string, unknown>,
+  index: number,
+  fallbackSource = "",
+): SharedEvidenceItem | null {
+  const title =
+    textValue(record.title) ||
+    textValue(record.name) ||
+    textValue(record.kind) ||
+    "Evidence";
+  const summary =
+    textValue(record.summary) ||
+    textValue(record.detail) ||
+    textValue(record.preview) ||
+    detailItemsFromValue(record.summary).join("; ") ||
+    title;
+  if (!title && !summary) return null;
+  const ref =
+    textValue(record.ref) ||
+    textValue(record.path) ||
+    textValue(record.uri) ||
+    textValue(record.url);
+  return {
+    id: textValue(record.id) || `${fallbackSource || "evidence"}-${index}`,
+    kind: textValue(record.kind) || "evidence",
+    status: textValue(record.status) || "context",
+    title,
+    summary,
+    source: textValue(record.source) || fallbackSource,
+    ref,
+  };
+}
+
+function sharedEvidenceItemsFromTaskMetadata(task: ChatV2TaskSnapshot) {
+  const normalized = recordValue(task.metadata?.normalized_request);
+  const composer =
+    recordValue(task.metadata?.context_composer) ||
+    recordValue(normalized?.context_composer);
+  const ledger =
+    recordValue(task.metadata?.shared_evidence_context) ||
+    recordValue(composer?.shared_evidence) ||
+    recordValue(normalized?.shared_evidence_context);
+  const rawItems = Array.isArray(ledger?.items) ? ledger.items : [];
+  return rawItems
+    .map((item, index) => {
+      const record = recordValue(item);
+      return record ? sharedEvidenceItemFromRecord(record, index, "context_composer") : null;
+    })
+    .filter((item): item is SharedEvidenceItem => Boolean(item));
+}
+
+function firstCapsuleRef(record: Record<string, unknown>) {
+  const refs = record.raw_refs || record.refs || record.references;
+  if (Array.isArray(refs)) {
+    for (const ref of refs) {
+      const refRecord = recordValue(ref);
+      if (!refRecord) continue;
+      const text =
+        textValue(refRecord.path) ||
+        textValue(refRecord.uri) ||
+        textValue(refRecord.url) ||
+        textValue(refRecord.source);
+      if (text) return text;
+    }
+  }
+  return (
+    textValue(record.path) ||
+    textValue(record.uri) ||
+    textValue(record.url) ||
+    textValue(record.source)
+  );
+}
+
+function isUsefulSharedEvidenceText(text: string) {
+  const normalized = text.trim();
+  if (!normalized) return false;
+  if (isGenericCompletionText(normalized) || isGenericNeedsAttentionText(normalized)) return false;
+  if (isGraphTelemetryText(normalized) || isRuntimeOutputChunkLimitText(normalized)) return false;
+  return true;
+}
+
+function sharedEvidenceItemsFromEvent(event: ChatV2AgentRunEvent, index: number) {
+  const source = eventSource(event);
+  const payload = eventPayload(event);
+  const items: SharedEvidenceItem[] = [];
+  const capsules = payload.capsules || payload.context_capsules;
+  if (Array.isArray(capsules)) {
+    capsules.forEach((capsule, capsuleIndex) => {
+      const record = recordValue(capsule);
+      if (!record) return;
+      const summary =
+        textValue(record.summary) ||
+        textValue(record.excerpt) ||
+        textValue(record.text) ||
+        textValue(record.title);
+      if (!isUsefulSharedEvidenceText(summary)) return;
+      items.push({
+        id: textValue(record.capsule_id) || textValue(record.id) || `${source}-${index}-${capsuleIndex}`,
+        kind: "worker_evidence",
+        status: textValue(record.artifact_state) || textValue(record.status) || "worker context",
+        title: textValue(record.title) || textValue(record.kind) || "Worker evidence",
+        summary,
+        source: "worker_context_capsule",
+        ref: firstCapsuleRef(record),
+      });
+    });
+  }
+
+  const summary = humanEventSummary(event);
+  if (!isUsefulSharedEvidenceText(summary)) return items;
+  if (source.includes("validation")) {
+    items.push({
+      id: `${source}-${index}-validation`,
+      kind: "validation",
+      status: event.type === "failed" || event.type === "blocked" ? "needs attention" : "validated",
+      title: "Validation evidence",
+      summary,
+      source,
+      ref: "",
+    });
+  } else if (event.type === "failed" || event.type === "blocked") {
+    items.push({
+      id: `${source}-${index}-blocker`,
+      kind: "blocker",
+      status: "needs attention",
+      title: "Execution blocker",
+      summary,
+      source,
+      ref: "",
+    });
+  } else if (terminalTaskStatuses.has(event.type) && isUsableFinalResponseSource(summary)) {
+    items.push({
+      id: `${source}-${index}-answer`,
+      kind: "final_response",
+      status: "accepted",
+      title: "Final response evidence",
+      summary,
+      source,
+      ref: "",
+    });
+  }
+  return items;
+}
+
+function uniqueSharedEvidenceItems(items: SharedEvidenceItem[]) {
+  const seen = new Set<string>();
+  const unique: SharedEvidenceItem[] = [];
+  for (const item of items) {
+    const signature = [item.kind, item.title, item.summary, item.ref].join("\n").toLowerCase();
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    unique.push(item);
+  }
+  return unique;
+}
+
+function sharedEvidenceItemsForNode(
+  node: BlueprintNode,
+  tasks: ChatV2TaskSnapshot[],
+  events: ChatV2AgentRunEvent[],
+  activeTask: ChatV2TaskSnapshot | null,
+) {
+  const relatedTasks = tasks.filter((task) => taskMatchesNode(task, node));
+  if (activeTask && taskMatchesNode(activeTask, node) && !relatedTasks.some((task) => task.task_id === activeTask.task_id)) {
+    relatedTasks.push(activeTask);
+  }
+  const eventScope = relatedNodeEvents(node, events).slice(-80);
+  return uniqueSharedEvidenceItems([
+    ...relatedTasks.flatMap(sharedEvidenceItemsFromTaskMetadata),
+    ...eventScope.flatMap((event, index) => sharedEvidenceItemsFromEvent(event, index)),
+  ]).slice(0, 14);
 }
 
 function collectRecordsMatching(
@@ -3721,6 +4331,23 @@ function isBlueprintPlanTaskPlan(task: BlueprintPlanTask) {
 
 function hasExplicitPlanTasks(context: BlueprintPlanContext | null | undefined) {
   return Boolean(context?.taskGraph.some(isBlueprintPlanTaskPlan));
+}
+
+function isExecutionTracePlanContext(context: BlueprintPlanContext | null | undefined) {
+  if (!context) return false;
+  const source = context.graphSource.trim().toLowerCase();
+  const scope = context.graphUpdateScope.trim().toLowerCase();
+  const hasPlanStructure = hasExplicitPlanTasks(context);
+  const hasCodexTraceIds = context.taskGraph.some((task) =>
+    /^codex-(?:item|worker|request|final)(?:-|$)/i.test(task.taskId),
+  );
+  if (hasPlanStructure) return false;
+  if (source === "codex" && scope === "observable_event") return true;
+  return scope === "observable_event" && hasCodexTraceIds;
+}
+
+function isSemanticPlanContext(context: BlueprintPlanContext | null | undefined) {
+  return Boolean(context && !isExecutionTracePlanContext(context));
 }
 
 function planTaskGraphFromValue(value: unknown): BlueprintPlanTask[] {
@@ -4256,6 +4883,7 @@ function activePlanTaskIdsFromEvents(
 }
 
 function visiblePlanGraphTasks(context: BlueprintPlanContext) {
+  if (!isSemanticPlanContext(context)) return [];
   return hasExplicitPlanTasks(context)
     ? context.taskGraph.filter(isBlueprintPlanTaskPlan)
     : [];
@@ -4714,6 +5342,9 @@ function parallelGroupSummaryItems(
 
 function planPreviewBody(planContext: BlueprintPlanContext | null) {
   if (!planContext) return "Waiting for the planner to emit a task graph or frontier metadata.";
+  if (!isSemanticPlanContext(planContext)) {
+    return "Execution activity is being tracked as live status. The semantic plan graph appears here when DAN emits plans, subplans, or plan items.";
+  }
   const graphLabel =
     planContext.graphVersionId ||
     (planContext.graphRevision !== null ? `r${planContext.graphRevision}` : "");
@@ -4914,6 +5545,7 @@ function chunkMatchesRun(chunk: WorkspaceChunk, activeRunId: string) {
 function isFinalAnswerChunk(chunk: WorkspaceChunk) {
   if (chunk.kind !== "agent") return false;
   if (/outcome/i.test(chunk.title) || /^agent-outcome:/.test(chunk.id)) return false;
+  if (isRuntimeOutputChunkLimitText(chunk.body) || isGraphTelemetryText(chunk.body)) return false;
   return /answer|terminal/i.test(chunk.title) || /^agent-(answer|terminal):/.test(chunk.id);
 }
 
@@ -5020,7 +5652,8 @@ function buildBlueprintNodesForRunScope(args: {
     shouldScopeToRun
       ? tasks.filter((task) => taskRunId(task) === activeRunId)
       : tasks;
-  const emittedPlanContext = extractBlueprintPlanContext(activeRunEvents);
+  const extractedPlanContext = extractBlueprintPlanContext(activeRunEvents);
+  const emittedPlanContext = isSemanticPlanContext(extractedPlanContext) ? extractedPlanContext : null;
   const latestAnswerChunk = latestMatchingChunk(chunks, activeRunId, isFinalAnswerChunk);
   const latestOutcomeChunk = latestMatchingChunk(chunks, activeRunId, isOutcomeChunk);
   const latestOutcomeItems = latestOutcomeChunk ? markdownListItems(latestOutcomeChunk.body) : [];
@@ -5089,7 +5722,7 @@ function buildBlueprintNodesForRunScope(args: {
   const operatorContexts = operatorContextRecords(activeRunEvents, activeRunTasks);
   const requestPlanContext = readOnlyRun ? null : deriveRequestPlanContext(requestBody);
   const rawPlanContext = emittedPlanContext ?? requestPlanContext;
-  const emittedGraphHistory = extractBlueprintPlanContextHistory(activeRunEvents);
+  const emittedGraphHistory = extractBlueprintPlanContextHistory(activeRunEvents).filter(isSemanticPlanContext);
   const rawGraphHistory = graphHistoryWithLatest(
     emittedGraphHistory.length > 0 ? emittedGraphHistory : requestPlanContext ? [requestPlanContext] : [],
     emittedPlanContext,
@@ -5764,10 +6397,454 @@ function workspaceComposerPlaceholder(args: {
   return "Ask Super DAN to work in this workspace";
 }
 
+function workspaceComposerTokenAt(text: string, caret: number): WorkspaceComposerToken | null {
+  const boundedCaret = Math.max(0, Math.min(caret, text.length));
+  const before = text.slice(0, boundedCaret);
+  const match = /(^|[\s([{"'])([/@$])([^\s]*)$/.exec(before);
+  if (!match) return null;
+  const trigger = match[2] as WorkspaceComposerTrigger;
+  const query = match[3] ?? "";
+  const start = boundedCaret - query.length - 1;
+  if (trigger === "/" && before.slice(0, start).trim()) return null;
+  if (trigger === "$") {
+    if (query && !/^[A-Za-z][A-Za-z0-9_-]*$/.test(query)) return null;
+    if (query && /^[A-Z_][A-Z0-9_]*$/.test(query)) return null;
+  }
+  return {
+    trigger,
+    query,
+    start,
+    end: boundedCaret,
+    key: `${trigger}:${start}:${query}`,
+  };
+}
+
+function workspaceCommandSuggestions(query: string): WorkspaceComposerSuggestion[] {
+  const normalized = query.toLowerCase();
+  const prefix = `/${normalized}`;
+  return WORKSPACE_COMPOSER_COMMANDS.filter((item) =>
+    normalized ? item.command.startsWith(prefix) : true,
+  )
+    .slice(0, 9)
+    .map((item) => ({
+      id: `command:${item.command}`,
+      type: "command" as const,
+      insertText: item.command,
+      label: item.command,
+      detail: item.description,
+      meta: "command",
+    }));
+}
+
+function workspaceSkillSuggestionRank(skill: WorkspaceSkillSuggestion, query: string, index: number) {
+  if (!query) return index;
+  const token = skill.token.toLowerCase();
+  const name = skill.name.toLowerCase();
+  const description = skill.description.toLowerCase();
+  const haystack = `${token} ${name} ${description}`;
+  if (token.startsWith(query)) return index;
+  if (name.startsWith(query)) return 100 + index;
+  if (token.includes(query)) return 200 + index;
+  if (name.includes(query)) return 300 + index;
+  if (haystack.includes(query)) return 400 + index;
+  return Number.POSITIVE_INFINITY;
+}
+
+function workspaceSkillSuggestions(
+  skills: WorkspaceSkillSuggestion[],
+  query: string,
+): WorkspaceComposerSuggestion[] {
+  const normalized = query.toLowerCase();
+  return skills
+    .map((skill, index) => ({
+      skill,
+      rank: workspaceSkillSuggestionRank(skill, normalized, index),
+    }))
+    .filter((item) => Number.isFinite(item.rank))
+    .sort((a, b) => a.rank - b.rank || a.skill.token.localeCompare(b.skill.token))
+    .slice(0, 9)
+    .map(({ skill }) => ({
+      id: `skill:${skill.token}`,
+      type: "skill" as const,
+      insertText: `$${skill.token}`,
+      label: `$${skill.token}`,
+      detail: skill.description || skill.name,
+      meta: skill.source_scope || "skill",
+    }));
+}
+
+function workspaceFileSuggestionRank(entry: WorkspaceFileEntry, query: string, index: number) {
+  if (!query) return entry.is_directory ? 1000 + index : index;
+  const path = entry.relative_path.toLowerCase();
+  const name = entry.name.toLowerCase();
+  if (path.startsWith(query)) return entry.is_directory ? 100 + index : index;
+  if (name.startsWith(query)) return entry.is_directory ? 300 + index : 200 + index;
+  if (path.includes(query)) return entry.is_directory ? 500 + index : 400 + index;
+  if (name.includes(query)) return entry.is_directory ? 700 + index : 600 + index;
+  return Number.POSITIVE_INFINITY;
+}
+
+function workspaceFileSuggestions(
+  entries: WorkspaceFileEntry[],
+  query: string,
+): WorkspaceComposerSuggestion[] {
+  const normalized = query.toLowerCase();
+  return entries
+    .map((entry, index) => ({
+      entry,
+      rank: workspaceFileSuggestionRank(entry, normalized, index),
+    }))
+    .filter((item) => Number.isFinite(item.rank))
+    .sort((a, b) => a.rank - b.rank || a.entry.relative_path.localeCompare(b.entry.relative_path))
+    .slice(0, 9)
+    .map(({ entry }) => ({
+      id: `file:${entry.path}`,
+      type: "file" as const,
+      insertText: `@${entry.relative_path}`,
+      label: `@${entry.relative_path}`,
+      detail: entry.is_directory ? "folder" : compactFileSize(entry.size),
+      meta: entry.is_directory ? "folder" : "file",
+    }));
+}
+
+function workspaceComposerSuggestions(
+  token: WorkspaceComposerToken | null,
+  args: {
+    skills: WorkspaceSkillSuggestion[];
+    files: WorkspaceFileEntry[];
+  },
+): WorkspaceComposerSuggestion[] {
+  if (!token) return [];
+  if (token.trigger === "/") return workspaceCommandSuggestions(token.query);
+  if (token.trigger === "$") return workspaceSkillSuggestions(args.skills, token.query);
+  return workspaceFileSuggestions(args.files, token.query);
+}
+
+function workspaceSelectedSkillInvocation(
+  text: string,
+  skills: WorkspaceSkillSuggestion[],
+): { selectedTokens: string[]; objective: string } {
+  const known = new Set(skills.map((skill) => skill.token.toLowerCase()));
+  let remaining = text.trim();
+  const selectedTokens: string[] = [];
+  while (remaining.startsWith("$")) {
+    const match = /^\$([A-Za-z][A-Za-z0-9_-]*)(?:\s+|$)/.exec(remaining);
+    if (!match) break;
+    const token = match[1].toLowerCase();
+    if (!known.has(token)) break;
+    if (!selectedTokens.includes(token)) selectedTokens.push(token);
+    remaining = remaining.slice(match[0].length).trim();
+  }
+  return { selectedTokens, objective: remaining };
+}
+
+function workspaceMentionedFilesFromText(
+  text: string,
+  entries: WorkspaceFileEntry[],
+): WorkspaceFileEntry[] {
+  const selected: WorkspaceFileEntry[] = [];
+  const seen = new Set<string>();
+  const ordered = [...entries].sort((a, b) => b.relative_path.length - a.relative_path.length);
+  for (const entry of ordered) {
+    const token = `@${entry.relative_path}`;
+    if (!text.includes(token) || seen.has(entry.path)) continue;
+    selected.push(entry);
+    seen.add(entry.path);
+    if (selected.length >= 6) break;
+  }
+  return selected;
+}
+
+const WORKSPACE_PREVIEW_IMAGE_EXTENSIONS = new Set([
+  "avif",
+  "gif",
+  "jpeg",
+  "jpg",
+  "png",
+  "svg",
+  "webp",
+]);
+const WORKSPACE_PREVIEW_MARKDOWN_EXTENSIONS = new Set(["markdown", "md", "mdx"]);
+const WORKSPACE_PREVIEW_TEXT_EXTENSIONS = new Set(["csv", "json", "jsonl", "log", "txt"]);
+const WORKSPACE_PREVIEW_OUTPUT_SEGMENTS = new Set([
+  "artifact",
+  "artifacts",
+  "export",
+  "exports",
+  "figure",
+  "figures",
+  "output",
+  "outputs",
+  "plot",
+  "plots",
+  "preview",
+  "previews",
+  "report",
+  "reports",
+  "site",
+  "website",
+]);
+
+function workspaceFileExtension(entry: WorkspaceFileEntry) {
+  const name = entry.name || fileName(entry.relative_path || entry.path);
+  const index = name.lastIndexOf(".");
+  return index >= 0 ? name.slice(index + 1).toLowerCase() : "";
+}
+
+function workspaceFilePreviewKind(entry: WorkspaceFileEntry): WorkspaceFilePreviewKind | null {
+  if (entry.is_directory) return null;
+  const extension = workspaceFileExtension(entry);
+  if (WORKSPACE_PREVIEW_IMAGE_EXTENSIONS.has(extension)) return "image";
+  if (extension === "pdf") return "pdf";
+  if (extension === "html" || extension === "htm") return "html";
+  if (WORKSPACE_PREVIEW_MARKDOWN_EXTENSIONS.has(extension)) return "markdown";
+  if (WORKSPACE_PREVIEW_TEXT_EXTENSIONS.has(extension)) return "text";
+  return null;
+}
+
+function workspaceFilePreviewNeedsText(entry: WorkspaceFileEntry | null) {
+  if (!entry) return false;
+  const kind = workspaceFilePreviewKind(entry);
+  return kind === "markdown" || kind === "text";
+}
+
+function workspacePreviewKindLabel(kind: WorkspaceFilePreviewKind) {
+  if (kind === "image") return "image";
+  if (kind === "pdf") return "PDF";
+  if (kind === "html") return "web";
+  if (kind === "markdown") return "Markdown";
+  return "text";
+}
+
+function workspacePreviewPathSegments(entry: WorkspaceFileEntry) {
+  return (entry.relative_path || entry.path).replace(/\\/g, "/").split("/").filter(Boolean);
+}
+
+function workspacePreviewInOutputArea(entry: WorkspaceFileEntry) {
+  return workspacePreviewPathSegments(entry)
+    .slice(0, -1)
+    .some((segment) => WORKSPACE_PREVIEW_OUTPUT_SEGMENTS.has(segment.toLowerCase()));
+}
+
+function workspacePreviewMarkdownLooksOutput(entry: WorkspaceFileEntry) {
+  if (workspaceFilePreviewKind(entry) !== "markdown") return false;
+  const name = (entry.name || fileName(entry.relative_path)).toLowerCase();
+  return (
+    workspacePreviewInOutputArea(entry) ||
+    /(?:report|summary|preview|artifact|output|result|readme)\.(?:md|mdx|markdown)$/.test(name)
+  );
+}
+
+function workspacePreviewCandidate(entry: WorkspaceFileEntry, source: "file" | "artifact") {
+  const kind = workspaceFilePreviewKind(entry);
+  if (!kind) return null;
+  if (source === "artifact") return kind;
+  if (kind === "markdown" && !workspacePreviewMarkdownLooksOutput(entry)) return null;
+  if (kind === "text" && !workspacePreviewInOutputArea(entry)) return null;
+  return kind;
+}
+
+function normalizeWorkspacePreviewPath(path: string) {
+  return path.trim().replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+}
+
+function isAbsoluteWorkspacePreviewPath(path: string) {
+  return path.startsWith("/") || /^[A-Za-z]:\//.test(path);
+}
+
+function workspacePreviewPathInsideRoot(path: string, root: string) {
+  const normalizedRoot = normalizeWorkspacePreviewPath(root).replace(/\/+$/, "");
+  const normalizedPath = normalizeWorkspacePreviewPath(path);
+  return Boolean(
+    normalizedRoot &&
+      (normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`)),
+  );
+}
+
+function workspacePreviewRelativePath(path: string, root: string) {
+  const normalizedPath = normalizeWorkspacePreviewPath(path);
+  const normalizedRoot = normalizeWorkspacePreviewPath(root).replace(/\/+$/, "");
+  if (normalizedRoot && workspacePreviewPathInsideRoot(normalizedPath, normalizedRoot)) {
+    return normalizedPath.slice(normalizedRoot.length).replace(/^\/+/, "");
+  }
+  return normalizedPath.replace(/^\.\//, "").replace(/^\/+/, "");
+}
+
+function workspacePreviewEntryFromPath(
+  rawPath: string,
+  root: string,
+  index: number,
+): WorkspaceFileEntry | null {
+  const trimmed = rawPath.trim();
+  if (!trimmed || /^https?:\/\//i.test(trimmed)) return null;
+  const normalizedPath = normalizeWorkspacePreviewPath(trimmed);
+  const isAbsolute = isAbsoluteWorkspacePreviewPath(normalizedPath);
+  if (isAbsolute && root && !workspacePreviewPathInsideRoot(normalizedPath, root)) return null;
+  const relativePath = workspacePreviewRelativePath(normalizedPath, root);
+  if (!relativePath || relativePath === "." || relativePath.split("/").includes("..")) return null;
+  const parent = relativePath.includes("/")
+    ? relativePath.slice(0, relativePath.lastIndexOf("/"))
+    : "";
+  const path = isAbsolute
+    ? normalizedPath
+    : root
+      ? `${normalizeWorkspacePreviewPath(root).replace(/\/+$/, "")}/${relativePath}`
+      : relativePath;
+  return {
+    path,
+    relative_path: relativePath,
+    name: fileName(relativePath),
+    parent,
+    is_directory: false,
+    size: 0,
+    mtime: index,
+    depth: Math.max(0, relativePath.split("/").length - 1),
+  };
+}
+
+function workspacePreviewArtifactPathsFromRunData(
+  tasks: ChatV2TaskSnapshot[],
+  events: ChatV2AgentRunEvent[],
+) {
+  const paths: string[] = [];
+  for (const task of tasks) {
+    for (const ref of task.latest_artifact_refs ?? []) {
+      const path = textValue(ref.path) || textValue(ref.uri) || textValue(ref.url);
+      if (path) paths.push(path);
+    }
+  }
+  for (const event of events) {
+    for (const ref of event.artifact_refs ?? []) {
+      const path = textValue(ref.path) || textValue(ref.uri) || textValue(ref.url);
+      if (path) paths.push(path);
+    }
+  }
+  return paths;
+}
+
+function workspacePreviewArtifactRank(artifact: WorkspacePreviewArtifact, index: number) {
+  const { entry, kind, source } = artifact;
+  const outputArea = workspacePreviewInOutputArea(entry);
+  const name = (entry.name || "").toLowerCase();
+  const kindRank =
+    kind === "html" ? 0 : kind === "pdf" ? 20 : kind === "image" ? 30 : kind === "markdown" ? 60 : 90;
+  const sourceRank = source === "artifact" ? -500 : 0;
+  const outputRank = outputArea ? -220 : 0;
+  const nameRank = /^(index|preview|report|summary|dashboard|readme)\./.test(name) ? -40 : 0;
+  return sourceRank + outputRank + kindRank + nameRank + entry.depth * 8 + index / 1000;
+}
+
+function workspacePreviewArtifacts(args: {
+  entries: WorkspaceFileEntry[];
+  root: string;
+  tasks: ChatV2TaskSnapshot[];
+  events: ChatV2AgentRunEvent[];
+  limit?: number;
+}): WorkspacePreviewArtifact[] {
+  const seen = new Set<string>();
+  const candidates: WorkspacePreviewArtifact[] = [];
+  const addEntry = (entry: WorkspaceFileEntry, source: "file" | "artifact") => {
+    const kind = workspacePreviewCandidate(entry, source);
+    if (!kind) return;
+    const key = normalizeWorkspacePreviewPath(entry.relative_path || entry.path).toLowerCase();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    candidates.push({
+      id: `${source}:${key}`,
+      entry,
+      kind,
+      source,
+    });
+  };
+
+  workspacePreviewArtifactPathsFromRunData(args.tasks, args.events).forEach((path, index) => {
+    const entry = workspacePreviewEntryFromPath(path, args.root, index);
+    if (entry) addEntry(entry, "artifact");
+  });
+  args.entries.forEach((entry) => addEntry(entry, "file"));
+
+  return candidates
+    .map((artifact, index) => ({ artifact, rank: workspacePreviewArtifactRank(artifact, index) }))
+    .sort(
+      (a, b) =>
+        a.rank - b.rank ||
+        b.artifact.entry.mtime - a.artifact.entry.mtime ||
+        a.artifact.entry.relative_path.localeCompare(b.artifact.entry.relative_path),
+    )
+    .slice(0, args.limit ?? 8)
+    .map((item) => item.artifact);
+}
+
 export function workspaceComposerPlaceholderForTest(
   args: Parameters<typeof workspaceComposerPlaceholder>[0],
 ) {
   return workspaceComposerPlaceholder(args);
+}
+
+export function workspaceComposerTokenForTest(text: string, caret = text.length) {
+  return workspaceComposerTokenAt(text, caret);
+}
+
+export function workspaceComposerSuggestionsForTest(
+  text: string,
+  args: {
+    skills?: WorkspaceSkillSuggestion[];
+    files?: WorkspaceFileEntry[];
+    caret?: number;
+  } = {},
+) {
+  return workspaceComposerSuggestions(workspaceComposerTokenAt(text, args.caret ?? text.length), {
+    skills: args.skills ?? [],
+    files: args.files ?? [],
+  });
+}
+
+export function workspaceSelectedSkillInvocationForTest(
+  text: string,
+  skills: WorkspaceSkillSuggestion[],
+) {
+  return workspaceSelectedSkillInvocation(text, skills);
+}
+
+export function workspaceMentionedFilesFromTextForTest(
+  text: string,
+  entries: WorkspaceFileEntry[],
+) {
+  return workspaceMentionedFilesFromText(text, entries);
+}
+
+export function workspacePreviewArtifactsForTest(
+  args: Parameters<typeof workspacePreviewArtifacts>[0],
+) {
+  return workspacePreviewArtifacts(args).map((artifact) => ({
+    path: artifact.entry.relative_path,
+    kind: artifact.kind,
+    source: artifact.source,
+  }));
+}
+
+export function notesComposerRequestsNewDraftForTest(text: string) {
+  return notesComposerRequestsNewDraft(text);
+}
+
+export function createTemporaryDraftNoteForTest(
+  args: Parameters<typeof createTemporaryDraftNote>[0] = {},
+) {
+  const note = createTemporaryDraftNote(args);
+  return {
+    ...note,
+    bodyStartOffset: frontmatterBodyStartOffset(note.content),
+  };
+}
+
+export function materializeTemporaryDraftNoteForTest(
+  args: Parameters<typeof materializeTemporaryDraftNote>[0],
+) {
+  return materializeTemporaryDraftNote(args);
+}
+
+export function catalogNotesForTest(notes: WorkspaceNote[]) {
+  return catalogNotes(notes);
 }
 
 export function workspaceAgentOptionsForTest() {
@@ -5881,6 +6958,13 @@ export function queueRowsFromTasksForTest(tasks: ChatV2TaskSnapshot[]) {
 
 export function selectActiveRunningTaskForTest(tasks: ChatV2TaskSnapshot[]) {
   return selectActiveRunningTask(tasks);
+}
+
+export function settleTaskSnapshotsFromEventsForTest(
+  tasks: ChatV2TaskSnapshot[],
+  events: ChatV2AgentRunEvent[],
+) {
+  return settleTaskSnapshotsFromEvents(tasks, events);
 }
 
 export function sessionProgressTaskForTest(tasks: ChatV2TaskSnapshot[], threadId: string) {
@@ -6004,6 +7088,15 @@ export function blueprintCardContentForTest(
   return blueprintCardContent(node, tasks, events, activeTask);
 }
 
+export function sharedEvidenceItemsForTest(
+  node: BlueprintNode,
+  tasks: ChatV2TaskSnapshot[],
+  events: ChatV2AgentRunEvent[],
+  activeTask: ChatV2TaskSnapshot | null,
+) {
+  return sharedEvidenceItemsForNode(node, tasks, events, activeTask);
+}
+
 function blueprintAnchorNode(nodes: BlueprintNode[]) {
   return (
     nodes.find((node) => node.status === "active") ??
@@ -6017,7 +7110,9 @@ function blueprintAnchorNode(nodes: BlueprintNode[]) {
 function isMachineProgressText(text: string) {
   return Boolean(
     !text ||
+      rawCodexCommandFromSummary(text) ||
       ["model.requested", "tool.started", "completed"].includes(text) ||
+      isGraphTelemetryText(text) ||
       isGenericNeedsAttentionText(text) ||
       (/^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/i.test(text) && !/\s/.test(text)) ||
       /^Token usage\b/i.test(text),
@@ -6093,6 +7188,9 @@ function taskProgressFallbackLabel(task: ChatV2TaskSnapshot) {
 
 function taskProgressLabel(task: ChatV2TaskSnapshot) {
   const text = textValue(task.latest_progress);
+  const readableCommand = readableCodexCommandSummary(text);
+  if (readableCommand) return readableCommand;
+  if (isRuntimeOutputChunkLimitText(text)) return taskProgressFallbackLabel(task);
   if (isMachineProgressText(text)) return taskProgressFallbackLabel(task);
   const structured = formatStructuredAgentDisplay(text);
   if (structured) return structured.body;
@@ -6149,7 +7247,7 @@ function attentionReasonFromValues(values: unknown[], requestText = "") {
 function taskAttentionReason(task: ChatV2TaskSnapshot) {
   const metadata = task.metadata ?? {};
   const requestText = taskRequestText(task);
-  return attentionReasonFromValues(
+  const reason = attentionReasonFromValues(
     [
       task.blocker,
       metadata.blocker,
@@ -6168,6 +7266,7 @@ function taskAttentionReason(task: ChatV2TaskSnapshot) {
     ],
     requestText,
   );
+  return reason ? readableRuntimeIssueText(reason, task) : "";
 }
 
 function taskAttentionDetail(task: ChatV2TaskSnapshot) {
@@ -6203,6 +7302,7 @@ function humanTerminalTaskProgress(task: ChatV2TaskSnapshot) {
 function rawTerminalTaskProgress(task: ChatV2TaskSnapshot) {
   if (task.status !== "completed") return "";
   const text = textValue(task.latest_progress);
+  if (isRuntimeOutputChunkLimitText(text)) return "";
   return isMachineProgressText(text) ? "" : text;
 }
 
@@ -6348,12 +7448,8 @@ function followUpBlueprintNodes(row: QueueRow, _index: number): BlueprintNode[] 
 function queueRowsFromTasks(tasks: ChatV2TaskSnapshot[]) {
   const rows: QueueRow[] = [];
   for (const task of tasks) {
-    if (!isTaskTerminal(task)) {
-      const status = taskStopRequested(task)
-        ? "stop_requested"
-        : taskIsStaleRunning(task)
-          ? "stale_running"
-          : task.status || "queued";
+    if (!isTaskTerminal(task) && !taskIsStopControlState(task)) {
+      const status = taskIsStaleRunning(task) ? "stale_running" : task.status || "queued";
       rows.push({
         id: `task:${task.task_id}`,
         label: taskQueueLabel(status),
@@ -6490,6 +7586,8 @@ function buildSurfaceContext(args: {
   activeFile: WorkspaceFileEntry | null;
   activeFileContent: string;
   wireGuardStatus: WorkspaceWireGuardStatus | null;
+  selectedSkills?: string[];
+  mentionedFiles?: WorkspaceFileEntry[];
 }) {
   const {
     note,
@@ -6504,6 +7602,8 @@ function buildSurfaceContext(args: {
     activeFile,
     activeFileContent,
     wireGuardStatus,
+    selectedSkills = [],
+    mentionedFiles = [],
   } = args;
   const selectedAgent = agentSelection ?? workspaceAgentOptionForId(DEFAULT_AGENT_SELECTION_ID);
   const selectedModel =
@@ -6554,6 +7654,7 @@ function buildSurfaceContext(args: {
       ...(selectedModel.reasoningEffort ? { reasoning_effort: selectedModel.reasoningEffort } : {}),
     },
     gui_for: selectedAgent.backend === CODEX_BACKEND ? "codex exec" : "dan super-tui",
+    ...(selectedSkills.length > 0 ? { selected_skills: selectedSkills } : {}),
     capabilities: [
       "notes",
       "markdown_preview",
@@ -6617,6 +7718,18 @@ function buildSurfaceContext(args: {
           preview: activeFileContent.slice(0, 1800),
         }
       : null,
+    ...(mentionedFiles.length > 0
+      ? {
+          mentioned_files: mentionedFiles.slice(0, 6).map((entry) => ({
+            path: entry.path,
+            relative_path: entry.relative_path,
+            name: entry.name,
+            kind: entry.is_directory ? "directory" : "file",
+            size: entry.size,
+            ...(activeFile?.path === entry.path ? { content: activeFileContent.slice(0, 1800) } : {}),
+          })),
+        }
+      : {}),
   };
 }
 
@@ -6680,6 +7793,8 @@ function blueprintKindIcon(kind: BlueprintNodeKind) {
 
 function noteStatusText(note: WorkspaceNote | null) {
   if (!note) return "No note";
+  if (isTemporaryDraftNote(note) && note.status === "dirty") return "Draft";
+  if (isTemporaryDraftNote(note) && note.status === "clean") return "Staged draft";
   if (note.status === "dirty") return "Unsaved";
   if (note.status === "saving") return "Saving";
   if (note.status === "loading") return "Loading";
@@ -6721,6 +7836,56 @@ function QueueList({ rows }: { rows: QueueRow[] }) {
               {row.detail}
             </div>
           </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function WorkspaceComposerSuggestionPopup({
+  suggestions,
+  activeIndex,
+  onActiveIndexChange,
+  onSelect,
+}: {
+  suggestions: WorkspaceComposerSuggestion[];
+  activeIndex: number;
+  onActiveIndexChange: (index: number) => void;
+  onSelect: (suggestion: WorkspaceComposerSuggestion) => void;
+}) {
+  if (suggestions.length === 0) return null;
+  return (
+    <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl shadow-slate-950/10 dark:border-slate-800 dark:bg-slate-950">
+      {suggestions.map((suggestion, index) => {
+        const active = index === activeIndex;
+        const Icon =
+          suggestion.type === "command"
+            ? TerminalSquare
+            : suggestion.type === "skill"
+              ? WandSparkles
+              : suggestion.meta === "folder"
+                ? Folder
+                : File;
+        return (
+          <button
+            key={suggestion.id}
+            type="button"
+            onMouseDown={(event) => event.preventDefault()}
+            onMouseEnter={() => onActiveIndexChange(index)}
+            onClick={() => onSelect(suggestion)}
+            className={cx(
+              "flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition",
+              active
+                ? "bg-slate-100 text-slate-950 dark:bg-slate-800 dark:text-white"
+                : "text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-900 dark:hover:text-white",
+            )}
+          >
+            <Icon size={13} className="shrink-0" />
+            <span className="min-w-0 flex-1 truncate text-xs font-semibold">{suggestion.label}</span>
+            <span className="max-w-[45%] truncate text-[11px] text-slate-400">
+              {suggestion.detail || suggestion.meta}
+            </span>
+          </button>
         );
       })}
     </div>
@@ -7458,11 +8623,13 @@ function BlueprintNodePreview({
   activeTask: ChatV2TaskSnapshot | null;
 }) {
   const liveStatus = blueprintLiveStatus(node, tasks, events, activeTask);
+  const sharedEvidence = sharedEvidenceItemsForNode(node, tasks, events, activeTask);
   if (node.kind === "request" && node.rawRequest) {
     const requestDetails = (node.previewBody || "").trim();
     return (
       <div className="space-y-4">
         <LiveStatusCard status={liveStatus} />
+        <SharedEvidencePreview items={sharedEvidence} />
         <section className="rounded-md border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-800 dark:bg-slate-900/60">
           <div className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-800 dark:text-slate-200">
             {node.rawRequest}
@@ -7477,6 +8644,7 @@ function BlueprintNodePreview({
     return (
       <div className="space-y-4">
         <LiveStatusCard status={liveStatus} />
+        <SharedEvidencePreview items={sharedEvidence} />
         <PlanChecklistPreview node={node} events={events} />
         <MarkdownRenderer content={node.previewBody || node.body || "_Waiting for output._"} />
       </div>
@@ -7486,6 +8654,7 @@ function BlueprintNodePreview({
   return (
     <div className="space-y-4">
       <LiveStatusCard status={liveStatus} />
+      <SharedEvidencePreview items={sharedEvidence} />
       <MarkdownRenderer
         content={node.previewBody || node.body || "_Waiting for output._"}
       />
@@ -8247,6 +9416,8 @@ function blueprintLiveStatus(
 function isUsefulCardProgressLine(line: string) {
   const text = normalizeSummaryLine(line);
   if (!text) return false;
+  if (isGraphTelemetryText(text)) return false;
+  if (isRuntimeOutputChunkLimitText(text)) return false;
   if (/^This step is complete\.?$/i.test(text)) return false;
   if (/^Waiting for earlier steps\.?$/i.test(text)) return false;
   if (/^Ready to run when reached\.?$/i.test(text)) return false;
@@ -8463,6 +9634,47 @@ function StatusLine({ text }: { text: string }) {
   }
   if (lastIndex < source.length) parts.push(source.slice(lastIndex));
   return <>{parts}</>;
+}
+
+function SharedEvidencePreview({ items }: { items: SharedEvidenceItem[] }) {
+  if (items.length === 0) return null;
+  return (
+    <section className="rounded-md border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-800 dark:bg-slate-900/60">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
+          Evidence
+        </div>
+        <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">
+          {items.length} item{items.length === 1 ? "" : "s"}
+        </span>
+      </div>
+      <ul className="space-y-2">
+        {items.map((item) => (
+          <li
+            key={`${item.id}:${item.title}:${item.summary}`}
+            className="rounded border border-slate-200/80 bg-white/70 px-2.5 py-2 text-sm dark:border-slate-800 dark:bg-slate-950/40"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0 flex-1 font-semibold text-slate-800 dark:text-slate-100">
+                {item.title}
+              </div>
+              <span className="rounded-full border border-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-500 dark:border-slate-700 dark:text-slate-300">
+                {item.status}
+              </span>
+            </div>
+            <div className="mt-1 leading-6 text-slate-700 dark:text-slate-300">
+              <StatusLine text={item.summary} />
+            </div>
+            {(item.source || item.ref) && (
+              <div className="mt-1 break-all text-[11px] text-slate-400">
+                {[item.source, item.ref].filter(Boolean).join(" · ")}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
 }
 
 function LiveStatusCard({ status }: { status: BlueprintLiveStatus }) {
@@ -8974,7 +10186,6 @@ function BlueprintView({
             );
           }
           const { node } = item;
-          const index = nodes.findIndex((candidate) => candidate.id === node.id);
           const tone = blueprintStatusTone(node.status);
           const Icon = blueprintKindIcon(node.kind);
           const active = node.id === activeNodeId;
@@ -9049,9 +10260,6 @@ function BlueprintView({
                     >
                       {node.status === "done" ? <Check size={11} strokeWidth={2.6} /> : null}
                       {node.status}
-                    </span>
-                    <span className="hidden rounded-full border border-slate-200 bg-white/60 px-2 py-0.5 text-[10px] text-slate-400 dark:border-slate-800 dark:bg-slate-950 sm:inline">
-                      {index + 1}
                     </span>
                   </div>
                 </div>
@@ -9345,6 +10553,142 @@ function NoteTree({
   return <div className="space-y-0.5">{nodes.map((node) => renderNode(node, 0))}</div>;
 }
 
+function WorkspacePreviewIcon({ kind }: { kind: WorkspaceFilePreviewKind }) {
+  if (kind === "image") return <File size={13} />;
+  if (kind === "pdf") return <ScrollText size={13} />;
+  if (kind === "html") return <PanelRight size={13} />;
+  return <FileText size={13} />;
+}
+
+function WorkspacePreviewArtifactsCard({
+  artifacts,
+  selectedPath,
+  onSelect,
+}: {
+  artifacts: WorkspacePreviewArtifact[];
+  selectedPath: string | null;
+  onSelect: (entry: WorkspaceFileEntry) => void;
+}) {
+  return (
+    <section className="mb-3 rounded-md border border-slate-200/80 bg-white/75 p-3 shadow-sm dark:border-slate-800 dark:bg-slate-950/65">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
+          <Eye size={13} />
+          Preview Card
+        </div>
+        <span className="rounded-full border border-slate-200 bg-white/70 px-2 py-0.5 text-[10px] font-semibold text-slate-500 dark:border-slate-800 dark:bg-slate-950/70 dark:text-slate-400">
+          {artifacts.length}
+        </span>
+      </div>
+      {artifacts.length > 0 ? (
+        <div className="grid gap-1.5">
+          {artifacts.map((artifact) => {
+            const selected =
+              selectedPath === artifact.entry.path ||
+              selectedPath === artifact.entry.relative_path;
+            return (
+              <button
+                type="button"
+                key={artifact.id}
+                onClick={() => onSelect(artifact.entry)}
+                data-selected={selected ? "true" : undefined}
+                className={cx(
+                  "flex min-w-0 items-center gap-2 rounded border px-2.5 py-2 text-left text-sm transition",
+                  selected
+                    ? "border-amber-300 bg-amber-50/75 text-amber-950 ring-1 ring-amber-200 dark:border-amber-700 dark:bg-amber-950/25 dark:text-amber-100 dark:ring-amber-900"
+                    : "border-slate-200/80 bg-slate-50/70 text-slate-700 hover:border-slate-300 hover:bg-white dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-300 dark:hover:border-slate-700 dark:hover:bg-slate-900/70",
+                )}
+              >
+                <span className="grid h-7 w-7 shrink-0 place-items-center rounded border border-slate-200 bg-white text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">
+                  <WorkspacePreviewIcon kind={artifact.kind} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-semibold">{artifact.entry.name}</span>
+                  <span className="block truncate text-[11px] text-slate-400">
+                    {artifact.entry.parent || artifact.entry.relative_path}
+                  </span>
+                </span>
+                <span className="hidden shrink-0 items-center gap-1 rounded-full border border-slate-200 bg-white/70 px-2 py-0.5 text-[10px] font-semibold text-slate-500 dark:border-slate-800 dark:bg-slate-950/70 dark:text-slate-300 sm:inline-flex">
+                  {workspacePreviewKindLabel(artifact.kind)}
+                  <LinkIcon size={10} />
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="rounded border border-dashed border-slate-200/80 bg-slate-50/60 px-3 py-2 text-sm text-slate-400 dark:border-slate-800 dark:bg-slate-900/35">
+          No previewable outputs yet.
+        </div>
+      )}
+    </section>
+  );
+}
+
+function WorkspaceFilePreviewPanel({
+  entry,
+  root,
+  content,
+  status,
+}: {
+  entry: WorkspaceFileEntry;
+  root: string;
+  content: string;
+  status: DevFileStatus;
+}) {
+  const kind = workspaceFilePreviewKind(entry);
+  const url = workspaceFilePreviewUrl(entry.path, root || undefined, entry.relative_path);
+  const frameClass =
+    "h-[72vh] min-h-[420px] w-full rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950";
+  if (kind === "image") {
+    return (
+      <div className="grid min-h-[320px] place-items-center rounded-md border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-800 dark:bg-slate-900/50">
+        <img
+          src={url}
+          alt={entry.name}
+          className="max-h-[72vh] max-w-full rounded object-contain shadow-sm"
+        />
+      </div>
+    );
+  }
+  if (kind === "pdf") {
+    return <iframe title={entry.name} src={url} className={frameClass} />;
+  }
+  if (kind === "html") {
+    return (
+      <iframe
+        title={entry.name}
+        src={url}
+        sandbox="allow-forms allow-modals allow-popups allow-presentation allow-scripts"
+        className={frameClass}
+      />
+    );
+  }
+  if (status === "loading") {
+    return (
+      <div className="flex items-center gap-2 text-sm text-slate-400">
+        <Loader2 size={14} className="animate-spin" />
+        Loading file
+      </div>
+    );
+  }
+  if (status === "error") {
+    return (
+      <div className="rounded-md border border-rose-200 bg-rose-50/75 p-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/25 dark:text-rose-200">
+        {content || "File preview failed."}
+      </div>
+    );
+  }
+  if (kind === "markdown") {
+    return <MarkdownRenderer content={content || "_empty file_"} />;
+  }
+  return (
+    <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-slate-700 dark:text-slate-300">
+      {content || "_empty file_"}
+    </pre>
+  );
+}
+
 export default function ChunkWorkspaceApp() {
   const isPhoneViewport = usePhoneViewport();
   const initialNotes = useMemo(() => readStoredNotes(), []);
@@ -9380,6 +10724,9 @@ export default function ChunkWorkspaceApp() {
   const [backgroundTasks, setBackgroundTasks] = useState<ChatV2TaskSnapshot[]>([]);
   const [agentEvents, setAgentEvents] = useState<ChatV2AgentRunEvent[]>([]);
   const [input, setInput] = useState("");
+  const [composerCaret, setComposerCaret] = useState(0);
+  const [composerSuggestionIndex, setComposerSuggestionIndex] = useState(0);
+  const [composerSuggestionSuppressedFor, setComposerSuggestionSuppressedFor] = useState<string | null>(null);
   const [activeRunPlacement, setActiveRunPlacement] = useState<ActiveRunPlacement>("steer");
   const [status, setStatus] = useState("Ready");
   const [sending, setSending] = useState(false);
@@ -9393,6 +10740,7 @@ export default function ChunkWorkspaceApp() {
   const [notesRoot, setNotesRoot] = useState("");
   const [devRoot, setDevRoot] = useState("");
   const [devFiles, setDevFiles] = useState<WorkspaceFileEntry[]>([]);
+  const [workspaceSkills, setWorkspaceSkills] = useState<WorkspaceSkillSuggestion[]>([]);
   const [devFileQuery, setDevFileQuery] = useState(initialUiState.devFileQuery);
   const [expandedFileDirs, setExpandedFileDirs] = useState<Record<string, boolean>>(
     initialUiState.expandedFileDirs,
@@ -9478,6 +10826,7 @@ export default function ChunkWorkspaceApp() {
 
   const activeNote = notes.find((note) => note.id === activeNoteId) ?? notes[0] ?? null;
   const activeNoteSection = activeNote ? noteSection(activeNote, notesRoot) : "";
+  const catalogNoteItems = useMemo(() => catalogNotes(notes), [notes]);
   const deferredNoteContent = useDeferredValue(activeNote?.content ?? "");
   const parsedActiveNote = useMemo(
     () => extractHugoPage(deferredNoteContent, activeNote?.title || "Note"),
@@ -9503,7 +10852,7 @@ export default function ChunkWorkspaceApp() {
   );
   const pageIdSuggestions = useMemo<PageIdSuggestion[]>(
     () =>
-      notes
+      catalogNoteItems
         .flatMap((note) => {
           const pageID = pageIdFromNote(note);
           if (!pageID) return [];
@@ -9517,7 +10866,7 @@ export default function ChunkWorkspaceApp() {
           ];
         })
         .sort((a, b) => a.pageID.localeCompare(b.pageID, undefined, { sensitivity: "base" })),
-    [notes, notesRoot],
+    [catalogNoteItems, notesRoot],
   );
   const activeMentionSuggestions = useMemo(() => {
     if (!noteMention) return [];
@@ -9569,11 +10918,124 @@ export default function ChunkWorkspaceApp() {
     () => devFiles.find((entry) => entry.path === activeFilePath) ?? null,
     [activeFilePath, devFiles],
   );
+  const previewArtifacts = useMemo(
+    () =>
+      workspacePreviewArtifacts({
+        entries: devFiles,
+        root: developmentRoot,
+        tasks,
+        events: agentEvents,
+      }),
+    [agentEvents, devFiles, developmentRoot, tasks],
+  );
+  const activePreviewFileEntry = useMemo(
+    () =>
+      activeFileEntry ??
+      previewArtifacts.find(
+        (artifact) =>
+          artifact.entry.path === activeFilePath ||
+          artifact.entry.relative_path === activeFilePath,
+      )?.entry ??
+      null,
+    [activeFileEntry, activeFilePath, previewArtifacts],
+  );
 
   const saveNoteNow = useCallback(async (noteToSave: WorkspaceNote | null, force = false) => {
     if (!noteToSave) return;
     if (!force && noteToSave.status !== "dirty") return;
     if (noteToSave.status === "saving") return;
+    if (isTemporaryDraftNote(noteToSave)) {
+      if (!force) return;
+      const materialized = materializeTemporaryDraftNote({
+        note: noteToSave,
+        notes,
+        root: notesRoot,
+        facet: noteFacet,
+        activeSection: activeNoteSection,
+      });
+      if (!materialized) {
+        setNotes((previous) =>
+          previous.map((note) =>
+            note.id === noteToSave.id
+              ? { ...note, status: "clean", updatedAt: Date.now() }
+              : note,
+          ),
+        );
+        setStatus("Draft staged locally; no notes root is available");
+        return;
+      }
+
+      setNotes((previous) =>
+        previous.map((note) =>
+          note.id === noteToSave.id ? { ...note, status: "saving" } : note,
+        ),
+      );
+
+      try {
+        const response = await writeWorkspaceNote(materialized.path, materialized.content);
+        const summary = response.note;
+        const finalNote: WorkspaceNote = summary
+          ? {
+              ...noteFromServerSummary(summary),
+              content: materialized.content,
+              loaded: true,
+              status: "clean",
+            }
+          : {
+              ...noteToSave,
+              id: `server:${materialized.path}`,
+              title: materialized.title,
+              path: materialized.path,
+              relativePath: materialized.relativePath,
+              section: materialized.section,
+              source: "server",
+              content: materialized.content,
+              loaded: true,
+              status: "clean",
+              updatedAt: Date.now(),
+              size: materialized.content.length,
+              pageID: materialized.pageID,
+              date: materialized.date,
+              lastmod: materialized.date,
+              draft: false,
+              temporary: undefined,
+              draftTargetSection: undefined,
+              tags: materialized.tags,
+              categories: materialized.categories,
+              citations: extractPageIdCitations(materialized.content),
+              error: undefined,
+            };
+
+        selfWriteAtRef.current[materialized.path] = Date.now();
+        noteContentCacheRef.current[materialized.path] = {
+          content: materialized.content,
+          updatedAt: finalNote.updatedAt,
+          size: finalNote.size ?? materialized.content.length,
+        };
+        persistNoteContentCache(noteContentCacheRef.current);
+        setNotes((previous) => [
+          finalNote,
+          ...previous.filter((note) => note.id !== noteToSave.id && note.id !== finalNote.id),
+        ]);
+        setActiveNoteId((current) => (current === noteToSave.id ? finalNote.id : current));
+        setStatus(`Draft saved as ${finalNote.relativePath || materialized.relativePath}`);
+      } catch (error) {
+        setNotes((previous) =>
+          previous.map((note) =>
+            note.id === noteToSave.id
+              ? {
+                  ...note,
+                  status: "error",
+                  error: error instanceof Error ? error.message : "Draft save failed",
+                  updatedAt: Date.now(),
+                }
+              : note,
+          ),
+        );
+        setStatus(error instanceof Error ? error.message : "Draft save failed");
+      }
+      return;
+    }
     if (noteToSave.source === "local" || !noteToSave.path) {
       setNotes((previous) =>
         previous.map((note) =>
@@ -9671,7 +11133,7 @@ export default function ChunkWorkspaceApp() {
         ),
       );
     }
-  }, []);
+  }, [activeNoteSection, noteFacet, notes, notesRoot]);
 
   useEffect(() => {
     if (!rootEditing) setRootInput(developmentRoot);
@@ -10009,7 +11471,9 @@ export default function ChunkWorkspaceApp() {
       if (serverNotes.length > 0) {
         setActiveNoteId((current) => {
           const currentNote = current ? byId.get(current) : null;
-          return currentNote?.source === "server" || currentNote?.source === "disk"
+          return currentNote?.source === "server" ||
+            currentNote?.source === "disk" ||
+            (currentNote && isTemporaryDraftNote(currentNote))
             ? current
             : serverNotes[0].id;
         });
@@ -10051,15 +11515,33 @@ export default function ChunkWorkspaceApp() {
     void refreshDevFiles();
   }, [refreshDevFiles]);
 
+  const refreshWorkspaceSkills = useCallback(async () => {
+    try {
+      const payload = await listWorkspaceSkillSuggestions(workspaceRoot || undefined);
+      setWorkspaceSkills(payload.skills ?? []);
+    } catch {
+      setWorkspaceSkills([]);
+    }
+  }, [workspaceRoot]);
+
   useEffect(() => {
-    if (!activeFilePath) {
+    void refreshWorkspaceSkills();
+  }, [refreshWorkspaceSkills]);
+
+  useEffect(() => {
+    if (!activeFilePath || !activePreviewFileEntry) {
+      setActiveFileContent("");
+      setActiveFileStatus("idle");
+      return;
+    }
+    if (!workspaceFilePreviewNeedsText(activePreviewFileEntry)) {
       setActiveFileContent("");
       setActiveFileStatus("idle");
       return;
     }
     let cancelled = false;
     setActiveFileStatus("loading");
-    void readWorkspaceFile(activeFilePath, developmentRoot || undefined)
+    void readWorkspaceFile(activePreviewFileEntry.path, developmentRoot || undefined)
       .then((payload) => {
         if (cancelled) return;
         setActiveFileContent(
@@ -10075,7 +11557,7 @@ export default function ChunkWorkspaceApp() {
     return () => {
       cancelled = true;
     };
-  }, [activeFilePath, developmentRoot]);
+  }, [activeFilePath, activePreviewFileEntry, developmentRoot]);
 
   useEffect(() => {
     if (!activeNote || activeNote.loaded || !activeNote.path) return;
@@ -10285,11 +11767,15 @@ export default function ChunkWorkspaceApp() {
     if (!chunks.some((chunk) => chunk.id === selectedChunkId)) setSelectedChunkId(null);
   }, [chunks, selectedChunkId]);
 
-  const activeRunningTask = selectActiveRunningTask(tasks);
+  const settledTasks = useMemo(
+    () => settleTaskSnapshotsFromEvents(tasks, agentEvents),
+    [agentEvents, tasks],
+  );
+  const activeRunningTask = selectActiveRunningTask(settledTasks);
   const activeRunId = activeRunningTask ? taskRunId(activeRunningTask) : "";
   const sessionStatusTasks = useMemo(
-    () => mergeTaskSnapshots(backgroundTasks, tasks),
-    [backgroundTasks, tasks],
+    () => mergeTaskSnapshots(backgroundTasks, settledTasks),
+    [backgroundTasks, settledTasks],
   );
   const runningTaskByThreadId = useMemo(
     () => runningTaskMapByThreadId(sessionStatusTasks),
@@ -10335,13 +11821,13 @@ export default function ChunkWorkspaceApp() {
 
   useEffect(() => {
     if (!activeThread) return;
-    markSessionResponseSeen(activeThread, tasks);
-  }, [activeThread, markSessionResponseSeen, tasks]);
+    markSessionResponseSeen(activeThread, settledTasks);
+  }, [activeThread, markSessionResponseSeen, settledTasks]);
 
   const noteFacetOptions = useMemo(() => {
     const sections = new Map<string, number>();
     const tags = new Map<string, number>();
-    for (const note of notes) {
+    for (const note of catalogNoteItems) {
       const section = noteSection(note, notesRoot);
       sections.set(section, (sections.get(section) ?? 0) + 1);
       for (const tag of note.tags) tags.set(tag, (tags.get(tag) ?? 0) + 1);
@@ -10352,7 +11838,7 @@ export default function ChunkWorkspaceApp() {
       sections: sortEntries(sections.entries()),
       tags: sortEntries(tags.entries()),
     };
-  }, [notes, notesRoot]);
+  }, [catalogNoteItems, notesRoot]);
   const visibleTagFacetOptions = useMemo(() => {
     const query = noteQuery.trim().toLowerCase();
     if (!query) return noteFacetOptions.tags;
@@ -10368,17 +11854,17 @@ export default function ChunkWorkspaceApp() {
 
   const visibleNotes = useMemo(() => {
     const query = noteQuery.trim().toLowerCase();
-    return notes.filter((note) => {
+    return catalogNoteItems.filter((note) => {
       if (!noteMatchesFacet(note, notesRoot, noteFacet)) return false;
       if (!query) return true;
       return `${note.title} ${note.path ?? ""} ${note.relativePath ?? ""} ${note.pageID ?? ""} ${noteSection(note, notesRoot)} ${note.tags.join(" ")} ${note.categories.join(" ")}`
         .toLowerCase()
         .includes(query);
     });
-  }, [noteFacet, noteQuery, notes, notesRoot]);
+  }, [catalogNoteItems, noteFacet, noteQuery, notesRoot]);
   const recentModifiedNoteItems = useMemo(
-    () => recentModifiedNotes(notes, notesRoot, RECENT_MODIFIED_LIMIT),
-    [notes, notesRoot],
+    () => recentModifiedNotes(catalogNoteItems, notesRoot, RECENT_MODIFIED_LIMIT),
+    [catalogNoteItems, notesRoot],
   );
   const noteWorkingCards = useMemo(
     () =>
@@ -10542,16 +12028,16 @@ export default function ChunkWorkspaceApp() {
   }, [activeRunId, activeRunningTask?.task_id]);
   const composerText = input.trim();
   const composerActionIsStop = Boolean(activeThread && activeRunningTask && !composerText);
-  const queueRows = useMemo(() => queueRowsFromTasks(tasks), [tasks]);
+  const queueRows = useMemo(() => queueRowsFromTasks(settledTasks), [settledTasks]);
   const showAgentQueuePanel = queueRows.length > 0;
   const elapsedCounter = useMemo(
-    () => taskGroupElapsedCounter(tasks, elapsedCounterNow),
-    [elapsedCounterNow, tasks],
+    () => taskGroupElapsedCounter(settledTasks, elapsedCounterNow),
+    [elapsedCounterNow, settledTasks],
   );
   const blueprintNodes = useMemo(
     () =>
       buildBlueprintNodes({
-        tasks,
+        tasks: settledTasks,
         agentEvents,
         chunks,
         activeRunId,
@@ -10559,7 +12045,7 @@ export default function ChunkWorkspaceApp() {
         queueRows,
         activeThreadTitle: activeThread?.title || "",
       }),
-    [activeRunId, activeRunningTask, activeThread?.title, agentEvents, chunks, queueRows, tasks],
+    [activeRunId, activeRunningTask, activeThread?.title, agentEvents, chunks, queueRows, settledTasks],
   );
   const activeBlueprintNode = useMemo(() => blueprintAnchorNode(blueprintNodes), [blueprintNodes]);
   const selectedBlueprintNode =
@@ -10570,10 +12056,41 @@ export default function ChunkWorkspaceApp() {
     workspaceMode: activePane,
     selectedBlueprintTitle: selectedBlueprintNode?.title,
     selectedChunkTitle: selectedChunk?.title,
-    activeFilePath: activeFileEntry?.relative_path,
+    activeFilePath: activePreviewFileEntry?.relative_path,
     activeNoteTitle: activeNote?.title,
-    activeNotePath: activeNote ? noteRelativePath(activeNote, notesRoot) : null,
+    activeNotePath: activeNote ? noteDisplayPath(activeNote, notesRoot) : null,
   });
+  const activeComposerToken = useMemo(
+    () => workspaceComposerTokenAt(input, composerCaret),
+    [composerCaret, input],
+  );
+  const rawComposerSuggestions = useMemo(
+    () =>
+      workspaceComposerSuggestions(activeComposerToken, {
+        skills: workspaceSkills,
+        files: devFiles,
+      }),
+    [activeComposerToken, devFiles, workspaceSkills],
+  );
+  const composerSuggestions = useMemo(
+    () =>
+      activeComposerToken?.key === composerSuggestionSuppressedFor
+        ? []
+        : rawComposerSuggestions,
+    [activeComposerToken?.key, composerSuggestionSuppressedFor, rawComposerSuggestions],
+  );
+  const selectedComposerSuggestion =
+    composerSuggestions[composerSuggestionIndex] ?? composerSuggestions[0] ?? null;
+
+  useEffect(() => {
+    setComposerSuggestionIndex(0);
+  }, [activeComposerToken?.key]);
+
+  useEffect(() => {
+    if (composerSuggestionIndex >= composerSuggestions.length) {
+      setComposerSuggestionIndex(0);
+    }
+  }, [composerSuggestionIndex, composerSuggestions.length]);
 
   useEffect(() => {
     if (!selectedBlueprintNodeId) return;
@@ -10864,8 +12381,48 @@ export default function ChunkWorkspaceApp() {
     });
   }, []);
 
+  const focusNoteBodyField = useCallback((content: string) => {
+    window.requestAnimationFrame(() => {
+      const editor = noteEditorRef.current;
+      if (!editor) return;
+      const selectionStart = frontmatterBodyStartOffset(content);
+      editor.focus();
+      editor.setSelectionRange(selectionStart, selectionStart);
+    });
+  }, []);
+
+  const createDraftNote = useCallback(
+    (seedText = "") => {
+      const targetSection = draftTargetSectionFromContext({
+        facet: noteFacet,
+        activeSection: activeNoteSection,
+        fallback: "notes",
+      });
+      const note = createTemporaryDraftNote({
+        seedText,
+        targetSection,
+        facet: noteFacet,
+      });
+      setNotes((previous) => [note, ...previous.filter((item) => item.id !== note.id)]);
+      setActiveNoteId(note.id);
+      setSelectedChunkId(null);
+      setActivePane("notes");
+      setPhonePage("note-edit");
+      setShowNoteEditor(true);
+      setShowNotesPreview(true);
+      setNoteRailView("pages");
+      setStatus("Draft ready");
+      focusNoteBodyField(note.content);
+    },
+    [activeNoteSection, focusNoteBodyField, noteFacet],
+  );
+
   const createNote = useCallback(
     async (kind: "note" | "folder" = "note") => {
+      if (kind === "note") {
+        createDraftNote();
+        return;
+      }
       const now = new Date();
       const stamp = compactDateStamp(now);
       const rawFolderTitle =
@@ -10988,6 +12545,7 @@ export default function ChunkWorkspaceApp() {
     },
     [
       activeNoteSection,
+      createDraftNote,
       focusNoteTitleField,
       noteFacet,
       notes,
@@ -11755,6 +13313,7 @@ export default function ChunkWorkspaceApp() {
     async (
       prompt: string,
       queueCommand: "append_followup" | "continue_after_current" = "append_followup",
+      options: { selectedSkills?: string[]; mentionedFiles?: WorkspaceFileEntry[] } = {},
     ) => {
       const thread = await ensureThread(prompt);
       const taskRoot = activeThreadRef.current?.id === thread.id
@@ -11821,9 +13380,11 @@ export default function ChunkWorkspaceApp() {
               workspaceMode: activePane,
               agentSelection: selectedAgentOption,
               modelSelection: selectedModelOption,
-              activeFile: activeFileEntry,
+              activeFile: activePreviewFileEntry,
               activeFileContent,
               wireGuardStatus,
+              selectedSkills: options.selectedSkills ?? [],
+              mentionedFiles: options.mentionedFiles ?? [],
             }),
           },
         });
@@ -11877,9 +13438,11 @@ export default function ChunkWorkspaceApp() {
           workspaceMode: activePane,
           agentSelection: selectedAgentOption,
           modelSelection: selectedModelOption,
-          activeFile: activeFileEntry,
+          activeFile: activePreviewFileEntry,
           activeFileContent,
           wireGuardStatus,
+          selectedSkills: options.selectedSkills ?? [],
+          mentionedFiles: options.mentionedFiles ?? [],
         }),
       });
       const createdTaskWorkspaceId =
@@ -11969,7 +13532,7 @@ export default function ChunkWorkspaceApp() {
     [
       activeNote,
       activeFileContent,
-      activeFileEntry,
+      activePreviewFileEntry,
       activePane,
       activeWorkspaceId,
       activeRunId,
@@ -11996,26 +13559,109 @@ export default function ChunkWorkspaceApp() {
     ],
   );
 
+  const handleComposerInputChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
+    setInput(event.target.value);
+    setComposerCaret(event.target.selectionStart ?? event.target.value.length);
+    setComposerSuggestionSuppressedFor(null);
+  }, []);
+
+  const handleComposerSelectionChange = useCallback((event: SyntheticEvent<HTMLTextAreaElement>) => {
+    const target = event.currentTarget;
+    setComposerCaret(target.selectionStart ?? target.value.length);
+  }, []);
+
+  const applyComposerSuggestion = useCallback(
+    (suggestion: WorkspaceComposerSuggestion) => {
+      const token = workspaceComposerTokenAt(input, composerCaret);
+      if (!token) return;
+      const replacement = `${suggestion.insertText} `;
+      const nextInput = `${input.slice(0, token.start)}${replacement}${input.slice(token.end)}`;
+      const nextCaret = token.start + replacement.length;
+      setInput(nextInput);
+      setComposerCaret(nextCaret);
+      setComposerSuggestionIndex(0);
+      setComposerSuggestionSuppressedFor(null);
+      requestAnimationFrame(() => {
+        composerRef.current?.focus();
+        composerRef.current?.setSelectionRange(nextCaret, nextCaret);
+      });
+    },
+    [composerCaret, input],
+  );
+
   const submit = useCallback(async (modeOverride?: ComposerSubmitMode) => {
     const prompt = input.trim();
     if (!prompt || sending) return;
+    if (activePane === "notes" && notesComposerRequestsNewDraft(prompt)) {
+      setInput("");
+      createDraftNote(prompt);
+      return;
+    }
+    const selectedSkillInvocation = workspaceSelectedSkillInvocation(prompt, workspaceSkills);
+    if (selectedSkillInvocation.selectedTokens.length > 0 && !selectedSkillInvocation.objective) {
+      setStatus(
+        `Add objective text after ${selectedSkillInvocation.selectedTokens
+          .map((token) => `$${token}`)
+          .join(", ")}`,
+      );
+      requestAnimationFrame(() => composerRef.current?.focus());
+      return;
+    }
+    const mentionedFiles = workspaceMentionedFilesFromText(prompt, devFiles);
     const mode = modeOverride ?? (hasActiveRun ? activeRunPlacement : "steer");
     setInput("");
+    setComposerCaret(0);
+    setComposerSuggestionIndex(0);
+    setComposerSuggestionSuppressedFor(null);
     setSelectedBlueprintNodeId(null);
     setPromptLogPreview(null);
     setSending(true);
     try {
-      if (mode === "queue") await sendAgent(prompt, "continue_after_current");
-      else await sendAgent(prompt, "append_followup");
+      const options = {
+        selectedSkills: selectedSkillInvocation.selectedTokens,
+        mentionedFiles,
+      };
+      if (mode === "queue") await sendAgent(prompt, "continue_after_current", options);
+      else await sendAgent(prompt, "append_followup", options);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Request failed");
     } finally {
       setSending(false);
     }
-  }, [activeRunPlacement, hasActiveRun, input, sendAgent, sending]);
+  }, [
+    activePane,
+    activeRunPlacement,
+    createDraftNote,
+    devFiles,
+    hasActiveRun,
+    input,
+    sendAgent,
+    sending,
+    workspaceSkills,
+  ]);
 
   const handleComposerKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (composerSuggestions.length > 0) {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          setComposerSuggestionIndex((current) => {
+            const delta = event.key === "ArrowDown" ? 1 : -1;
+            return (current + delta + composerSuggestions.length) % composerSuggestions.length;
+          });
+          return;
+        }
+        if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
+          event.preventDefault();
+          if (selectedComposerSuggestion) applyComposerSuggestion(selectedComposerSuggestion);
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          if (activeComposerToken) setComposerSuggestionSuppressedFor(activeComposerToken.key);
+          return;
+        }
+      }
       if (event.key !== "Enter") return;
       if (event.shiftKey) return;
       event.preventDefault();
@@ -12025,17 +13671,34 @@ export default function ChunkWorkspaceApp() {
       }
       void submit();
     },
-    [hasActiveRun, submit],
+    [
+      activeComposerToken,
+      applyComposerSuggestion,
+      composerSuggestions.length,
+      hasActiveRun,
+      selectedComposerSuggestion,
+      submit,
+    ],
   );
 
   const renderWorkspaceComposer = () => (
     <div className="shrink-0 border-t border-slate-200/80 bg-white/95 p-3 shadow-[0_-1px_0_rgba(15,23,42,0.02)] dark:border-slate-800 dark:bg-slate-950">
       <div className="flex flex-col gap-2">
+        <WorkspaceComposerSuggestionPopup
+          suggestions={composerSuggestions}
+          activeIndex={composerSuggestionIndex}
+          onActiveIndexChange={setComposerSuggestionIndex}
+          onSelect={applyComposerSuggestion}
+        />
         <textarea
           ref={composerRef}
           value={input}
-          onChange={(event) => setInput(event.target.value)}
+          onChange={handleComposerInputChange}
           onKeyDown={handleComposerKeyDown}
+          onKeyUp={handleComposerSelectionChange}
+          onClick={handleComposerSelectionChange}
+          onSelect={handleComposerSelectionChange}
+          onFocus={handleComposerSelectionChange}
           placeholder={composerPlaceholder}
           rows={1}
           className="max-h-32 min-h-11 w-full resize-none rounded-lg border border-slate-200 bg-slate-50/90 px-3 py-2.5 text-sm leading-6 outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:bg-white focus:shadow-sm dark:border-slate-800 dark:bg-slate-900"
@@ -12252,8 +13915,20 @@ export default function ChunkWorkspaceApp() {
       void nativeShell.openPath(promptLogPreview.path);
       return;
     }
-    if (activeFileEntry?.path) void nativeShell.openPath(activeFileEntry.path);
-  }, [activeFileEntry?.path, promptLogPreview?.path]);
+    if (activePreviewFileEntry?.path) void nativeShell.openPath(activePreviewFileEntry.path);
+  }, [activePreviewFileEntry?.path, promptLogPreview?.path]);
+
+  const selectPreviewFile = useCallback(
+    (entry: WorkspaceFileEntry) => {
+      setActiveFilePath(entry.path);
+      setSelectedBlueprintNodeId(null);
+      setSelectedChunkId(null);
+      setPromptLogPreview(null);
+      setShowSidecarPreview(true);
+      if (isPhoneViewport) setPhonePage("preview");
+    },
+    [isPhoneViewport],
+  );
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
@@ -13181,7 +14856,7 @@ export default function ChunkWorkspaceApp() {
                     kind="tag"
                     entries={visibleTagFacetOptions}
                     activeFacet={noteFacet}
-                    total={notes.length}
+                    total={catalogNoteItems.length}
                     onSelect={selectNoteFacet}
                   />
                 )
@@ -13202,7 +14877,7 @@ export default function ChunkWorkspaceApp() {
                     kind="section"
                     entries={visibleSectionFacetOptions}
                     activeFacet={noteFacet}
-                    total={notes.length}
+                    total={catalogNoteItems.length}
                     onSelect={selectNoteFacet}
                   />
                 )
@@ -13236,7 +14911,7 @@ export default function ChunkWorkspaceApp() {
                   {activeNote?.title || "Markdown source"}
                 </div>
                 <div className="truncate text-[11px] leading-4 text-slate-500">
-                  {activeNote ? noteRelativePath(activeNote, notesRoot) : "local note"}
+                  {activeNote ? noteDisplayPath(activeNote, notesRoot) : "local note"}
                 </div>
               </div>
               {!isPhoneViewport && (
@@ -13409,7 +15084,7 @@ export default function ChunkWorkspaceApp() {
                   }
                 />
               ) : isKnowledgeGraphPage ? (
-                <KnowledgeGraphView notes={notes} root={notesRoot} onSelect={selectNote} />
+                <KnowledgeGraphView notes={catalogNoteItems} root={notesRoot} onSelect={selectNote} />
               ) : (
                 <article className="mx-auto w-full max-w-6xl">
                   {parsedActiveNote.hasFrontmatter && (
@@ -13983,8 +15658,7 @@ export default function ChunkWorkspaceApp() {
                     expanded={expandedFileDirs}
                     onToggle={toggleFileDir}
                     onSelect={(entry) => {
-                      setActiveFilePath(entry.path);
-                      setPromptLogPreview(null);
+                      selectPreviewFile(entry);
                     }}
                     onMove={moveDevelopmentEntry}
                   />
@@ -14035,11 +15709,16 @@ export default function ChunkWorkspaceApp() {
               </div>
 
               <div className="min-h-0 flex-1 overflow-auto p-4">
+                <WorkspacePreviewArtifactsCard
+                  artifacts={previewArtifacts}
+                  selectedPath={activeFilePath}
+                  onSelect={selectPreviewFile}
+                />
                 {isPhoneViewport || showConversationChunks ? (
                   <BlueprintView
                     nodes={blueprintNodes}
                     conversationChunks={userConversationChunks}
-                    tasks={tasks}
+                    tasks={settledTasks}
                     agentEvents={agentEvents}
                     activeTask={activeRunningTask}
                     activeNodeId={activeBlueprintNode?.id ?? null}
@@ -14096,7 +15775,7 @@ export default function ChunkWorkspaceApp() {
                     <button
                       type="button"
                       onClick={openActiveFile}
-                      disabled={!activeFileEntry && !promptLogPreview?.path}
+                      disabled={!activePreviewFileEntry && !promptLogPreview?.path}
                       className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
                     >
                       Open
@@ -14139,29 +15818,32 @@ export default function ChunkWorkspaceApp() {
                   ) : selectedBlueprintNode ? (
                     <BlueprintNodePreview
                       node={selectedBlueprintNode}
-                      tasks={tasks}
+                      tasks={settledTasks}
                       events={agentEvents}
                       activeTask={activeRunningTask}
                     />
                   ) : selectedChunk ? (
                     <MarkdownRenderer content={selectedChunk.body || "_Waiting for output._"} />
-                  ) : activeFileStatus === "loading" ? (
-                    <div className="flex items-center gap-2 text-sm text-slate-400">
-                      <Loader2 size={14} className="animate-spin" />
-                      Loading file
-                    </div>
-                  ) : activeFileEntry ? (
-                    <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-slate-700 dark:text-slate-300">
-                      {activeFileContent || "_empty file_"}
-                    </pre>
+                  ) : activePreviewFileEntry ? (
+                    <WorkspaceFilePreviewPanel
+                      entry={activePreviewFileEntry}
+                      root={developmentRoot}
+                      content={activeFileContent}
+                      status={activeFileStatus}
+                    />
                   ) : (
                     <div className="text-sm text-slate-400">Select a step or development file.</div>
                   )}
                 </div>
-                {activeFileEntry && !selectedBlueprintNode && !selectedChunk && (
+                {activePreviewFileEntry && !selectedBlueprintNode && !selectedChunk && (
                   <div className="border-t border-slate-200 px-3 py-2 text-[11px] text-slate-400 dark:border-slate-800">
-                    {compactFileSize(activeFileEntry.size)}
-                    {activeFileStatus === "error" ? " · preview unavailable" : ""}
+                    {activePreviewFileEntry.size
+                      ? compactFileSize(activePreviewFileEntry.size)
+                      : workspacePreviewKindLabel(workspaceFilePreviewKind(activePreviewFileEntry) ?? "text")}
+                    {workspaceFilePreviewNeedsText(activePreviewFileEntry) &&
+                    activeFileStatus === "error"
+                      ? " · preview unavailable"
+                      : ""}
                   </div>
                 )}
               </aside>
@@ -14180,7 +15862,7 @@ export default function ChunkWorkspaceApp() {
                     <button
                       type="button"
                       onClick={openActiveFile}
-                      disabled={!activeFileEntry && !promptLogPreview?.path}
+                      disabled={!activePreviewFileEntry && !promptLogPreview?.path}
                       className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
                     >
                       Open
@@ -14223,21 +15905,19 @@ export default function ChunkWorkspaceApp() {
                 ) : selectedBlueprintNode ? (
                   <BlueprintNodePreview
                     node={selectedBlueprintNode}
-                    tasks={tasks}
+                    tasks={settledTasks}
                     events={agentEvents}
                     activeTask={activeRunningTask}
                   />
                 ) : selectedChunk ? (
                   <MarkdownRenderer content={selectedChunk.body || "_Waiting for output._"} />
-                ) : activeFileStatus === "loading" ? (
-                  <div className="flex items-center gap-2 text-sm text-slate-400">
-                    <Loader2 size={14} className="animate-spin" />
-                    Loading file
-                  </div>
-                ) : activeFileEntry ? (
-                  <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-slate-700 dark:text-slate-300">
-                    {activeFileContent || "_empty file_"}
-                  </pre>
+                ) : activePreviewFileEntry ? (
+                  <WorkspaceFilePreviewPanel
+                    entry={activePreviewFileEntry}
+                    root={developmentRoot}
+                    content={activeFileContent}
+                    status={activeFileStatus}
+                  />
                 ) : (
                   <div className="text-sm text-slate-400">Select a step or development file.</div>
                 )}

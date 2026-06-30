@@ -6,10 +6,14 @@ import {
   blueprintTimelineItemsForTest,
   blueprintLiveStatusForTest,
   buildBlueprintNodesForTest,
+  catalogNotesForTest,
   conversationUserChunksForTest,
+  createTemporaryDraftNoteForTest,
   liveTaskGraphRevisionsForTest,
   liveTaskTreeForTest,
+  materializeTemporaryDraftNoteForTest,
   noteMetaItemsForTest,
+  notesComposerRequestsNewDraftForTest,
   noteRailViewForFacetForTest,
   normalizeStructuredMarkdownForTest,
   planCardChecklistItemsForTest,
@@ -21,21 +25,29 @@ import {
   sessionHasNewReadyResponseForTest,
   sessionProgressTaskForTest,
   sessionReadyResponseAtForTest,
+  sharedEvidenceItemsForTest,
   selectActiveRunningTaskForTest,
+  settleTaskSnapshotsFromEventsForTest,
   sessionStatusTasksForTest,
   shouldAutoRestoreSessionForTest,
   taskGroupElapsedCounterForTest,
   workPlanHeaderSubtitleForTest,
   workspaceComposerPlaceholderForTest,
+  workspaceComposerSuggestionsForTest,
+  workspaceComposerTokenForTest,
+  workspaceMentionedFilesFromTextForTest,
+  workspaceSelectedSkillInvocationForTest,
   workspaceAgentExecutePayloadForTest,
   workspaceAgentOptionsForTest,
   workspaceModelOptionsForTest,
+  workspacePreviewArtifactsForTest,
   workspaceSelectionFromStorageForTest,
   workspaceSurfaceContextForTest,
   workspaceIdForTasksForTest,
   workspaceRootForTasksForTest,
   workingNoteCardsForTest,
 } from "../ChunkWorkspaceApp";
+import type { WorkspaceFileEntry } from "../../../lib/api";
 import type {
   ChatV2AgentRunEvent,
   ChatV2TaskSnapshot,
@@ -79,6 +91,20 @@ function thread(overrides: Partial<ChatV2ThreadSummary>): ChatV2ThreadSummary {
     created_at: "2026-06-25T12:00:00.000Z",
     updated_at: "2026-06-25T12:01:00.000Z",
     mode: "agent",
+    ...overrides,
+  };
+}
+
+function workspaceFile(relativePath: string, overrides: Partial<WorkspaceFileEntry> = {}): WorkspaceFileEntry {
+  return {
+    path: `/tmp/workspace/${relativePath}`,
+    relative_path: relativePath,
+    name: relativePath.split("/").pop() || relativePath,
+    parent: relativePath.includes("/") ? relativePath.slice(0, relativePath.lastIndexOf("/")) : "",
+    is_directory: false,
+    size: 1024,
+    mtime: 100,
+    depth: Math.max(0, relativePath.split("/").length - 1),
     ...overrides,
   };
 }
@@ -224,6 +250,98 @@ describe("workspace blueprint nodes", () => {
         selectedBlueprintTitle: "Final response",
       }),
     ).toBe("Ask Super DAN about Final response");
+  });
+
+  it("creates tmp Hugo drafts with the cursor target in the body", () => {
+    const note = createTemporaryDraftNoteForTest({
+      now: new Date(2026, 6, 17, 10, 20, 30),
+      targetSection: "blogs/travel-plans",
+      facet: "tag:travel",
+    });
+
+    expect(note.source).toBe("local");
+    expect(note.temporary).toBe(true);
+    expect(note.draftTargetSection).toBe("blogs/travel-plans");
+    expect(note.path).toBe("tmp://notes/20260717-102030");
+    expect(note.relativePath).toBe("tmp/drafts/untitled-draft-20260717-102030.md");
+    expect(note.content).toContain("draft: true");
+    expect(note.content).toContain('tags: ["travel"]');
+    expect(note.bodyStartOffset).toBe(note.content.length);
+  });
+
+  it("materializes tmp drafts into inferred Hugo bundle paths", () => {
+    const note = createTemporaryDraftNoteForTest({
+      now: new Date(2026, 6, 17, 10, 20, 30),
+      seedText:
+        "note: # Turin Automobile Museum Guide\n\nOpening hours and ticket notes for MAUTO.",
+      targetSection: "blogs/travel-plans",
+      facet: "category:travel",
+    });
+    const existing = {
+      ...note,
+      id: "server:/kb/content/blogs/travel-plans/turin-automobile-museum-guide/index.md",
+      source: "server" as const,
+      path: "/kb/content/blogs/travel-plans/turin-automobile-museum-guide/index.md",
+      relativePath: "blogs/travel-plans/turin-automobile-museum-guide/index.md",
+      temporary: false,
+    };
+
+    const materialized = materializeTemporaryDraftNoteForTest({
+      note,
+      notes: [note, existing],
+      root: "/kb/content",
+      facet: "category:travel",
+      activeSection: "notes",
+      now: new Date(2026, 6, 18, 9, 0, 0),
+    });
+
+    expect(materialized).toMatchObject({
+      title: "Turin Automobile Museum Guide",
+      relativePath: "blogs/travel-plans/turin-automobile-museum-guide-2/index.md",
+      path: "/kb/content/blogs/travel-plans/turin-automobile-museum-guide-2/index.md",
+      pageID: "blogs-travel-plans-turin-automobile-museum-guide-2",
+      categories: ["travel"],
+    });
+    expect(materialized?.content).toContain('title: "Turin Automobile Museum Guide"');
+    expect(materialized?.content).toContain("draft: false");
+    expect(materialized?.content).toContain("# Turin Automobile Museum Guide");
+  });
+
+  it("detects only clear Notes composer requests for new drafts", () => {
+    expect(notesComposerRequestsNewDraftForTest("create a new note about Turin museums")).toBe(true);
+    expect(notesComposerRequestsNewDraftForTest("note: Turin museums\n\nTickets and hours")).toBe(true);
+    expect(notesComposerRequestsNewDraftForTest("how do I create a note in Hugo?")).toBe(false);
+    expect(notesComposerRequestsNewDraftForTest("summarize this page")).toBe(false);
+  });
+
+  it("keeps tmp drafts out of catalog lists while Working Now can show them", () => {
+    const draft = createTemporaryDraftNoteForTest({
+      now: new Date(2026, 6, 17, 10, 20, 30),
+      seedText: "create a new note about Turin museums",
+      targetSection: "blogs/travel-plans",
+    });
+    const durableNote = {
+      ...draft,
+      id: "server:/kb/content/blogs/travel-plans/turin-food/index.md",
+      title: "Turin Food",
+      source: "server" as const,
+      path: "/kb/content/blogs/travel-plans/turin-food/index.md",
+      relativePath: "blogs/travel-plans/turin-food/index.md",
+      section: "blogs",
+      status: "clean" as const,
+      temporary: false,
+      draftTargetSection: undefined,
+      updatedAt: new Date(2026, 6, 18, 9, 0, 0).getTime(),
+    };
+
+    expect(catalogNotesForTest([draft, durableNote]).map((note) => note.id)).toEqual([
+      durableNote.id,
+    ]);
+    expect(recentModifiedNotesForTest([draft, durableNote], "/kb/content")).toHaveLength(1);
+    expect(workingNoteCardsForTest(draft, "/kb/content")[0]).toMatchObject({
+      path: "Uncategorized draft",
+      state: "Editing",
+    });
   });
 
   it("renders active Work card content from live branch updates", () => {
@@ -386,6 +504,165 @@ describe("workspace blueprint nodes", () => {
         activeNoteTitle: "Knowledge Graph",
       }),
     ).toBe("Ask Super DAN about Knowledge Graph");
+  });
+
+  it("detects workspace composer shortcut tokens without treating prices or env vars as skills", () => {
+    expect(workspaceComposerTokenForTest("/")).toMatchObject({ trigger: "/", query: "" });
+    expect(workspaceComposerTokenForTest("$")).toMatchObject({ trigger: "$", query: "" });
+    expect(workspaceComposerTokenForTest("review @docs")).toMatchObject({
+      trigger: "@",
+      query: "docs",
+    });
+    expect(workspaceComposerTokenForTest("cost $5")).toBeNull();
+    expect(workspaceComposerTokenForTest("$PATH")).toBeNull();
+  });
+
+  it("suggests slash commands, skills, and workspace files from the active token", () => {
+    const skills = [
+      {
+        token: "idea-cart",
+        name: "idea-cart",
+        description: "Capture follow-up ideas",
+        source_scope: "user",
+      },
+      {
+        token: "scaffold-dev",
+        name: "scaffold-dev",
+        description: "Normalize project docs",
+        source_scope: "project",
+      },
+    ];
+    const files = [
+      {
+        path: "/repo/README.md",
+        relative_path: "README.md",
+        name: "README.md",
+        parent: "",
+        is_directory: false,
+        size: 120,
+        mtime: 1,
+        depth: 0,
+      },
+      {
+        path: "/repo/docs/todo.md",
+        relative_path: "docs/todo.md",
+        name: "todo.md",
+        parent: "docs",
+        is_directory: false,
+        size: 240,
+        mtime: 1,
+        depth: 1,
+      },
+    ];
+
+    expect(workspaceComposerSuggestionsForTest("/st")[0]).toMatchObject({
+      label: "/status",
+      insertText: "/status",
+    });
+    expect(workspaceComposerSuggestionsForTest("$", { skills }).map((item) => item.label)).toEqual([
+      "$idea-cart",
+      "$scaffold-dev",
+    ]);
+    expect(workspaceComposerSuggestionsForTest("$dev", { skills })[0]).toMatchObject({
+      label: "$scaffold-dev",
+    });
+    expect(workspaceComposerSuggestionsForTest("@READ", { files })[0]).toMatchObject({
+      label: "@README.md",
+    });
+    expect(workspaceComposerSuggestionsForTest("review @docs", { files })[0]).toMatchObject({
+      label: "@docs/todo.md",
+    });
+  });
+
+  it("builds a scoped preview artifact list from output files and run artifacts", () => {
+    const entries = [
+      workspaceFile("src/app.tsx"),
+      workspaceFile("docs/architecture.md"),
+      workspaceFile("figures/model-fit.png", { mtime: 200 }),
+      workspaceFile("website/index.html", { mtime: 150 }),
+      workspaceFile("outputs/report.pdf", { mtime: 180 }),
+      workspaceFile("outputs/summary.md", { mtime: 170 }),
+    ];
+    const artifacts = workspacePreviewArtifactsForTest({
+      entries,
+      root: "/tmp/workspace",
+      tasks: [
+        task({
+          latest_artifact_refs: [{ path: "/tmp/workspace/exports/final-chart.svg" }],
+        }),
+      ],
+      events: [
+        {
+          type: "completed",
+          artifact_refs: [{ path: "outputs/report.pdf" }],
+        },
+      ],
+      limit: 8,
+    });
+
+    expect(artifacts).toEqual([
+      { path: "outputs/report.pdf", kind: "pdf", source: "artifact" },
+      { path: "exports/final-chart.svg", kind: "image", source: "artifact" },
+      { path: "website/index.html", kind: "html", source: "file" },
+      { path: "outputs/summary.md", kind: "markdown", source: "file" },
+      { path: "figures/model-fit.png", kind: "image", source: "file" },
+    ]);
+    expect(artifacts.map((artifact) => artifact.path)).not.toContain("src/app.tsx");
+    expect(artifacts.map((artifact) => artifact.path)).not.toContain("docs/architecture.md");
+  });
+
+  it("extracts selected skills and mentioned files for workspace composer submits", () => {
+    const skills = [
+      {
+        token: "idea-cart",
+        name: "idea-cart",
+        description: "Capture follow-up ideas",
+        source_scope: "user",
+      },
+      {
+        token: "frontend-design",
+        name: "frontend-design",
+        description: "Polish UI",
+        source_scope: "user",
+      },
+    ];
+    const files = [
+      {
+        path: "/repo/src/app.tsx",
+        relative_path: "src/app.tsx",
+        name: "app.tsx",
+        parent: "src",
+        is_directory: false,
+        size: 99,
+        mtime: 1,
+        depth: 1,
+      },
+      {
+        path: "/repo/src",
+        relative_path: "src",
+        name: "src",
+        parent: "",
+        is_directory: true,
+        size: 0,
+        mtime: 1,
+        depth: 0,
+      },
+    ];
+
+    expect(
+      workspaceSelectedSkillInvocationForTest(
+        "$idea-cart $frontend-design build this from @src/app.tsx",
+        skills,
+      ),
+    ).toEqual({
+      selectedTokens: ["idea-cart", "frontend-design"],
+      objective: "build this from @src/app.tsx",
+    });
+    expect(
+      workspaceMentionedFilesFromTextForTest("review @src/app.tsx and @src", files).map(
+        (entry) => entry.relative_path,
+      ),
+    ).toEqual(["src/app.tsx", "src"]);
   });
 
   it("adds Hugo notes workspace rules for Notes-pane agent runs", () => {
@@ -1171,6 +1448,226 @@ describe("workspace blueprint nodes", () => {
     expect(status.recentUpdates).not.toContain("Inspecting files before deciding the next patch.");
   });
 
+  it("summarizes raw Codex shell-command progress before showing it in live status", () => {
+    const activeTask = task({
+      task_id: "codex-preview-task",
+      status: "running",
+      latest_progress: "Codex ran `/bin/zsh -lc 'export CODEX_HOME=\"${CODEX_HOME:-$HOME/.codex}\"; export PWCLI=\"$CODEX_HOME/skills/playwright/scripts/playwrightcli.sh\"; \"$PWCLI\" screenshot output/playwright/dan-website.png'`.",
+      metadata: { active_run_id: "codex-preview-run", selected_backend: "codex" },
+    });
+    const events: ChatV2AgentRunEvent[] = [
+      {
+        type: "tool_used",
+        source_event_type: "item.completed",
+        run_id: "codex-preview-run",
+        task_id: "codex-preview-task",
+        summary: "Codex ran `/bin/zsh -lc 'export CODEX_HOME=\"${CODEX_HOME:-$HOME/.codex}\"; export PWCLI=\"$CODEX_HOME/skills/playwright/scripts/playwrightcli.sh\"; \"$PWCLI\" open \"file:///tmp/website/index.html\"'`.",
+      },
+    ];
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "codex-preview-run",
+      activeRunningTask: activeTask,
+      tasks: [activeTask],
+      agentEvents: events,
+    });
+
+    const build = nodes.find((node) => node.kind === "build");
+    expect(build).toBeTruthy();
+    const status = blueprintLiveStatusForTest(build!, [activeTask], events, activeTask);
+    const allStatusText = [status.now, status.latestUpdate, ...status.recentUpdates].join(" ");
+    expect(allStatusText).toContain("Codex checked the local preview.");
+    expect(allStatusText).not.toContain("/bin/zsh");
+    expect(allStatusText).not.toContain("playwrightcli.sh");
+  });
+
+  it("keeps Codex observable graph telemetry out of live preview updates", () => {
+    const activeTask = task({
+      task_id: "trace-task",
+      status: "running",
+      latest_progress: "Checking the current workspace.",
+      metadata: { active_run_id: "trace-run", selected_backend: "codex" },
+    });
+    const events: ChatV2AgentRunEvent[] = [
+      {
+        type: "worker_progress",
+        source_event_type: "live.task_graph.updated",
+        run_id: "trace-run",
+        task_id: "trace-task",
+        payload: {
+          task_graph_state: {
+            source: "codex",
+            update_scope: "observable_event",
+            version_id: "codex.r35",
+            tasks: [
+              {
+                task_id: "codex-item-1",
+                goal: "Run a workspace command",
+                status: "active",
+              },
+            ],
+          },
+        },
+      },
+    ];
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "trace-run",
+      activeRunningTask: activeTask,
+      tasks: [activeTask],
+      agentEvents: events,
+    });
+
+    const build = nodes.find((node) => node.kind === "build");
+    expect(build).toBeTruthy();
+    const status = blueprintLiveStatusForTest(build!, [activeTask], events, activeTask);
+    expect(`${status.latestUpdate} ${status.recentUpdates.join(" ")}`).not.toContain(
+      "Task graph updated",
+    );
+    expect(status.now).toContain("Checking the current workspace.");
+  });
+
+  it("surfaces context composer and worker evidence in preview evidence items", () => {
+    const activeTask = task({
+      task_id: "evidence-task",
+      status: "running",
+      latest_progress: "Checking the selected plan.",
+      metadata: {
+        active_run_id: "evidence-run",
+        context_composer: {
+          shared_evidence: {
+            items: [
+              {
+                id: "ev-1",
+                kind: "selected_card",
+                status: "active",
+                title: "Selected card: Plan 3",
+                summary: "Dependent plan is generating.",
+                source: "gui_selection",
+                ref: "plan-3",
+              },
+            ],
+          },
+        },
+      },
+    });
+    const events: ChatV2AgentRunEvent[] = [
+      {
+        type: "worker_started",
+        source_event_type: "live.generic_build.started",
+        run_id: "evidence-run",
+        task_id: "evidence-task",
+        summary: "Checking the selected plan.",
+      },
+      {
+        type: "worker_progress",
+        source_event_type: "context.capsule.emitted",
+        run_id: "evidence-run",
+        task_id: "evidence-task",
+        payload: {
+          capsules: [
+            {
+              capsule_id: "capsule-1",
+              kind: "file_scan",
+              summary: "README confirms the current milestone.",
+              raw_refs: [{ path: "README.md" }],
+            },
+          ],
+        },
+      },
+    ];
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "evidence-run",
+      activeRunningTask: activeTask,
+      tasks: [activeTask],
+      agentEvents: events,
+      chunks: [
+        {
+          id: "message:evidence-request",
+          kind: "chat",
+          title: "You · Request",
+          body: "continue the selected plan",
+          status: "clean",
+          meta: "user",
+          role: "user",
+          runId: "evidence-run",
+          taskId: "evidence-task",
+        },
+      ],
+    });
+
+    const build = nodes.find((node) => node.kind === "build");
+    expect(build).toBeTruthy();
+    const evidence = sharedEvidenceItemsForTest(build!, [activeTask], events, activeTask);
+    expect(evidence.map((item) => item.title)).toContain("Selected card: Plan 3");
+    expect(evidence.map((item) => item.summary)).toContain("README confirms the current milestone.");
+  });
+
+  it("keeps graph revision telemetry out of task progress card text", () => {
+    const activeTask = task({
+      task_id: "trace-progress-task",
+      status: "running",
+      latest_progress: "Task graph updated to codex.r42 by codex.",
+      metadata: { active_run_id: "trace-progress-run", selected_backend: "codex" },
+    });
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "trace-progress-run",
+      activeRunningTask: activeTask,
+      tasks: [activeTask],
+      agentEvents: [
+        {
+          type: "worker_started",
+          source_event_type: "live.generic_build.started",
+          run_id: "trace-progress-run",
+          task_id: "trace-progress-task",
+          summary: "Working in this workspace.",
+        },
+      ],
+    });
+
+    const build = nodes.find((node) => node.kind === "build");
+    expect(build).toBeTruthy();
+    const events: ChatV2AgentRunEvent[] = [
+      {
+        type: "worker_started",
+        source_event_type: "live.generic_build.started",
+        run_id: "trace-progress-run",
+        task_id: "trace-progress-task",
+        summary: "Working in this workspace.",
+      },
+    ];
+    const status = blueprintLiveStatusForTest(build!, [activeTask], events, activeTask);
+    const card = blueprintCardContentForTest(build!, [activeTask], events, activeTask);
+    expect(status.now).toBe("Codex is working");
+    expect(card).not.toContain("Task graph updated");
+    expect(card).toContain("`Codex` is working");
+  });
+
+  it("does not show raw output chunk parser errors as plan status", () => {
+    const blockedTask = task({
+      task_id: "parser-task",
+      status: "failed",
+      latest_progress: "Separator is not found, and chunk exceed the limit",
+      metadata: { active_run_id: "parser-run", selected_backend: "codex" },
+    });
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "parser-run",
+      tasks: [blockedTask],
+      agentEvents: [],
+    });
+
+    const build = nodes.find((node) => node.id === "blueprint:build");
+    expect(build).toBeTruthy();
+    const status = blueprintLiveStatusForTest(build!, [blockedTask], [], blockedTask);
+    const rendered = [status.now, status.latestUpdate, build?.body, build?.previewBody].join("\n");
+    expect(status.now).toBe("Codex needs attention");
+    expect(rendered).toContain("Codex hit an output-size parsing limit while reading command output.");
+    expect(rendered).not.toContain("Separator is not found");
+  });
+
   it("shows validation scope, deterministic checks, semantic checks, and branch results", () => {
     const validationTask = task({
       task_id: "validation-task",
@@ -1954,7 +2451,7 @@ describe("workspace blueprint nodes", () => {
     ]);
   });
 
-  it("renders observable Codex task graph branches with readable word labels", () => {
+  it("keeps observable Codex execution items out of the semantic task graph", () => {
     const nodes = buildBlueprintNodesForTest({
       ...baseArgs,
       activeRunId: "codex-run",
@@ -2039,21 +2536,9 @@ describe("workspace blueprint nodes", () => {
     });
 
     const graphRevisions = liveTaskGraphRevisionsForTest(nodes);
-    expect(graphRevisions).toHaveLength(1);
-    expect(graphRevisions[0]?.branches.map((branch) => branch.label)).toEqual([
-      "Request",
-      "Workspace",
-      "Answer",
-    ]);
-    expect(graphRevisions[0]?.branches[1]?.nodes[0]).toMatchObject({
-      title: "codex-shell-1. Run `npm test`",
-      status: "active",
-    });
-    const planNode = nodes.find((node) => node.id === "blueprint:planning");
-    expect(planNode?.body).toContain("Parallel groups:");
-    expect(planNode?.body).toContain("Group 1: 3 tasks can run together");
-    expect(planNode?.body).toContain("Includes Receive request: fix the failing test; Run `npm test`; 1 more task.");
-    expect(planNode?.body).not.toContain("`codex-request` + `codex-shell-1`");
+    expect(graphRevisions).toEqual([]);
+    expect(nodes.find((node) => node.id === "blueprint:planning")).toBeUndefined();
+    expect(nodes.find((node) => node.graphTaskId === "codex-shell-1")).toBeUndefined();
   });
 
   it("settles stale active live graph nodes after a final response", () => {
@@ -2083,38 +2568,38 @@ describe("workspace blueprint nodes", () => {
             task_graph_state: {
               schema: "super_dan_task_graph_v1",
               revision: 2,
-              version_id: "codex.r2",
-              source: "codex",
-              update_scope: "observable_event",
-              update_reason: "Codex started an observable work item.",
-              changed_task_ids: ["codex-shell-1"],
-              changed_branch_ids: ["workspace"],
+              version_id: "plan.r2",
+              source: "planner",
+              update_scope: "plan_execution",
+              update_reason: "DAN started the current plan item.",
+              changed_task_ids: ["plan-item-1"],
+              changed_branch_ids: ["b1"],
               tasks: [
                 {
-                  task_id: "codex-request",
-                  branch_id: "request",
-                  goal: "Receive request: fix the failing test",
+                  task_id: "plan-item-0",
+                  branch_id: "b1",
+                  goal: "Understand the failing test",
                   state: "done",
                   depends_on: [],
                 },
                 {
-                  task_id: "codex-shell-1",
-                  branch_id: "workspace",
-                  goal: "Run `npm test`",
+                  task_id: "plan-item-1",
+                  branch_id: "b1",
+                  goal: "Fix the failing behavior",
                   state: "active",
-                  depends_on: ["codex-request"],
+                  depends_on: ["plan-item-0"],
                 },
                 {
-                  task_id: "codex-final",
-                  branch_id: "answer",
-                  goal: "Return the final user-facing response",
+                  task_id: "plan-item-2",
+                  branch_id: "b1",
+                  goal: "Summarize the result",
                   state: "deferred",
-                  depends_on: ["codex-shell-1"],
+                  depends_on: ["plan-item-1"],
                 },
               ],
-              active_task_ids: ["codex-shell-1"],
-              completed_task_ids: ["codex-request"],
-              deferred_task_ids: ["codex-final"],
+              active_task_ids: ["plan-item-1"],
+              completed_task_ids: ["plan-item-0"],
+              deferred_task_ids: ["plan-item-2"],
             },
           },
         },
@@ -2133,28 +2618,28 @@ describe("workspace blueprint nodes", () => {
 
     const graphRevisions = liveTaskGraphRevisionsForTest(nodes);
     expect(graphRevisions).toHaveLength(1);
-    expect(graphRevisions[0]?.branches[1]?.nodes[0]).toMatchObject({
-      title: "codex-shell-1. Run `npm test`",
+    expect(graphRevisions[0]?.branches[0]?.nodes[1]).toMatchObject({
+      title: "plan-item-1. Fix the failing behavior",
       status: "done",
     });
     expect(planTaskChecklistItemsForTest(nodes.find((node) => node.id === "blueprint:planning")!)).toEqual([
       {
-        taskId: "codex-request",
-        title: "Receive request: fix the failing test",
+        taskId: "plan-item-0",
+        title: "Understand the failing test",
         status: "done",
-        branchId: "request",
+        branchId: "b1",
       },
       {
-        taskId: "codex-shell-1",
-        title: "Run `npm test`",
+        taskId: "plan-item-1",
+        title: "Fix the failing behavior",
         status: "done",
-        branchId: "workspace",
+        branchId: "b1",
       },
       {
-        taskId: "codex-final",
-        title: "Return the final user-facing response",
+        taskId: "plan-item-2",
+        title: "Summarize the result",
         status: "future",
-        branchId: "answer",
+        branchId: "b1",
       },
     ]);
   });
@@ -2729,6 +3214,59 @@ describe("workspace blueprint nodes", () => {
     expect(selectActiveRunningTaskForTest([queued, running])?.task_id).toBe("older-running");
   });
 
+  it("settles stale running task state from a terminal final event before queue rendering", () => {
+    const running = task({
+      task_id: "finalized-task",
+      thread_id: "thread-1",
+      status: "running",
+      latest_progress: "Still marked running in the saved task snapshot.",
+      metadata: { active_run_id: "finalized-run" },
+    });
+    const settled = settleTaskSnapshotsFromEventsForTest([running], [
+      {
+        type: "completed",
+        source_event_type: "turn.completed",
+        run_id: "finalized-run",
+        task_id: "finalized-task",
+        summary: "I opened the site directly in Chrome.",
+      },
+    ]);
+
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toMatchObject({
+      status: "completed",
+      latest_progress: "I opened the site directly in Chrome.",
+    });
+    expect(selectActiveRunningTaskForTest(settled)).toBeNull();
+    expect(queueRowsFromTasksForTest(settled)).toEqual([]);
+    expect(sessionCardDisplayForTest(thread({}), settled).detail).toContain("1 run · done");
+  });
+
+  it("does not settle running task state from non-terminal stage completion events", () => {
+    const running = task({
+      task_id: "stage-task",
+      thread_id: "thread-1",
+      status: "running",
+      latest_progress: "Working on the current stage.",
+      metadata: { active_run_id: "stage-run" },
+    });
+    const settled = settleTaskSnapshotsFromEventsForTest([running], [
+      {
+        type: "completed",
+        source_event_type: "live.generic_build.completed",
+        run_id: "stage-run",
+        task_id: "stage-task",
+        summary: "Execution stage completed.",
+      },
+    ]);
+
+    expect(settled[0]).toMatchObject({
+      status: "running",
+      latest_progress: "Working on the current stage.",
+    });
+    expect(selectActiveRunningTaskForTest(settled)?.task_id).toBe("stage-task");
+  });
+
   it("keeps waiting and input-needed tasks visible without marking them active", () => {
     const rows = queueRowsFromTasksForTest([
       task({ task_id: "waiting", status: "waiting_dependency" }),
@@ -2909,7 +3447,7 @@ describe("workspace blueprint nodes", () => {
     ]);
   });
 
-  it("recovers old phone-session requests from task metadata and shows stop requests", () => {
+  it("recovers old phone-session requests without queueing stop controls", () => {
     const stopped = task({
       task_id: "phone-task",
       status: "queued",
@@ -2935,12 +3473,10 @@ describe("workspace blueprint nodes", () => {
       detail: "Request captured",
       rawRequest: "Phone app smoke test: verify admission only.",
     });
-    expect(rows[0]).toMatchObject({
-      label: "Stop requested",
-      status: "stop_requested",
-      active: false,
-    });
-    expect(nodes.find((node) => node.id === "blueprint:task:phone-task")).toMatchObject({
+    expect(rows).toEqual([]);
+    expect(selectActiveRunningTaskForTest([stopped])).toBeNull();
+    expect(nodes.find((node) => node.id === "blueprint:task:phone-task")).toBeUndefined();
+    expect(nodes.find((node) => node.kind === "build")).toMatchObject({
       status: "blocked",
       detail: expect.stringContaining("Stop requested"),
     });
@@ -3090,6 +3626,58 @@ describe("workspace blueprint nodes", () => {
     expect(liveStatus.latestUpdate).toBe(
       "DAN needs attention, but did not emit a specific reason.",
     );
+  });
+
+  it("does not treat output chunk parser errors as final responses", () => {
+    const parserTask = task({
+      task_id: "parser-final-task",
+      status: "failed",
+      latest_progress: "Separator is not found, and chunk exceed the limit",
+      metadata: { active_run_id: "parser-final-run", selected_backend: "codex" },
+    });
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "parser-final-run",
+      chunks: [
+        {
+          id: "message:user-parser-final",
+          kind: "chat",
+          title: "You · Request",
+          body: "Finish the current workspace task.",
+          status: "clean",
+          meta: "user",
+          role: "user",
+        },
+        {
+          id: "agent-answer:parser-final-run",
+          kind: "agent",
+          title: "DAN · Answer",
+          body: "Separator is not found, and chunk exceed the limit",
+          status: "clean",
+          meta: "run.log.completed",
+          runId: "parser-final-run",
+          taskId: "parser-final-task",
+        },
+      ],
+      tasks: [parserTask],
+      agentEvents: [
+        {
+          type: "completed",
+          source_event_type: "run.log.completed",
+          run_id: "parser-final-run",
+          task_id: "parser-final-task",
+          summary: "Separator is not found, and chunk exceed the limit",
+        },
+      ],
+    });
+
+    const answer = nodes.find((node) => node.kind === "answer");
+    expect(answer).toMatchObject({
+      title: "Final response",
+      status: "blocked",
+    });
+    expect(answer?.body).toContain("Codex hit an output-size parsing limit while reading command output.");
+    expect(answer?.body).not.toContain("Separator is not found");
   });
 
   it("renders completed read-only exact-answer runs without edit-file wording", () => {
