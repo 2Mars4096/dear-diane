@@ -13203,12 +13203,9 @@ export default function ChunkWorkspaceApp() {
   );
 
   const applyMessages = useCallback((updater: (messages: ChatMessage[]) => ChatMessage[]) => {
-    let next: ChatMessage[] = [];
-    setMessages((previous) => {
-      next = updater(previous);
-      messagesRef.current = next;
-      return next;
-    });
+    const next = updater(messagesRef.current);
+    messagesRef.current = next;
+    setMessages(next);
     return next;
   }, []);
 
