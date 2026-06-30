@@ -6397,6 +6397,21 @@ function workspaceComposerPlaceholder(args: {
   return "Ask Super DAN to work in this workspace";
 }
 
+function workspaceComposerPrimaryActionLabel(args: {
+  hasActiveRun: boolean;
+  placement: ActiveRunPlacement;
+  isStop: boolean;
+}) {
+  if (args.isStop) return "Stop";
+  if (!args.hasActiveRun) return "Send";
+  return args.placement === "queue" ? "Next" : "Steer";
+}
+
+function workspaceComposerPlacementLabel(mode: ActiveRunPlacement, hasActiveRun: boolean) {
+  if (mode === "queue") return "Next";
+  return hasActiveRun ? "Steer" : "New";
+}
+
 function workspaceComposerTokenAt(text: string, caret: number): WorkspaceComposerToken | null {
   const boundedCaret = Math.max(0, Math.min(caret, text.length));
   const before = text.slice(0, boundedCaret);
@@ -6779,6 +6794,16 @@ export function workspaceComposerPlaceholderForTest(
   args: Parameters<typeof workspaceComposerPlaceholder>[0],
 ) {
   return workspaceComposerPlaceholder(args);
+}
+
+export function workspaceComposerPrimaryActionLabelForTest(
+  args: Parameters<typeof workspaceComposerPrimaryActionLabel>[0],
+) {
+  return workspaceComposerPrimaryActionLabel(args);
+}
+
+export function workspaceComposerPlacementLabelForTest(mode: ActiveRunPlacement, hasActiveRun: boolean) {
+  return workspaceComposerPlacementLabel(mode, hasActiveRun);
 }
 
 export function workspaceComposerTokenForTest(text: string, caret = text.length) {
@@ -13605,7 +13630,9 @@ export default function ChunkWorkspaceApp() {
       return;
     }
     const mentionedFiles = workspaceMentionedFilesFromText(prompt, devFiles);
-    const mode = modeOverride ?? (hasActiveRun ? activeRunPlacement : "steer");
+    const mode = hasActiveRun
+      ? modeOverride ?? activeRunPlacement
+      : "steer";
     setInput("");
     setComposerCaret(0);
     setComposerSuggestionIndex(0);
@@ -13731,7 +13758,7 @@ export default function ChunkWorkspaceApp() {
                   )}
                 >
                   {mode === "queue" ? <Clock3 size={11} /> : <WandSparkles size={11} />}
-                  {mode === "queue" ? "Next" : "Steer"}
+                  {workspaceComposerPlacementLabel(mode, hasActiveRun)}
                 </button>
               );
             })}
@@ -13896,11 +13923,11 @@ export default function ChunkWorkspaceApp() {
             ) : (
               <Send size={12} />
             )}
-            {composerActionIsStop
-              ? "Stop"
-              : hasActiveRun && activeRunPlacement === "queue"
-                ? "Next"
-                : "Steer"}
+            {workspaceComposerPrimaryActionLabel({
+              hasActiveRun,
+              placement: activeRunPlacement,
+              isStop: composerActionIsStop,
+            })}
           </button>
         </div>
       </div>

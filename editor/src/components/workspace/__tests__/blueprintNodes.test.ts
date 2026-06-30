@@ -31,8 +31,10 @@ import {
   sessionStatusTasksForTest,
   shouldAutoRestoreSessionForTest,
   taskGroupElapsedCounterForTest,
+  workspaceComposerPlacementLabelForTest,
   workPlanHeaderSubtitleForTest,
   workspaceComposerPlaceholderForTest,
+  workspaceComposerPrimaryActionLabelForTest,
   workspaceComposerSuggestionsForTest,
   workspaceComposerTokenForTest,
   workspaceMentionedFilesFromTextForTest,
@@ -250,6 +252,43 @@ describe("workspace blueprint nodes", () => {
         selectedBlueprintTitle: "Final response",
       }),
     ).toBe("Ask Super DAN about Final response");
+  });
+
+  it("labels the composer as a new send when no run is active", () => {
+    expect(
+      workspaceComposerPrimaryActionLabelForTest({
+        hasActiveRun: false,
+        placement: "steer",
+        isStop: false,
+      }),
+    ).toBe("Send");
+    expect(workspaceComposerPlacementLabelForTest("steer", false)).toBe("New");
+    expect(workspaceComposerPlacementLabelForTest("queue", false)).toBe("Next");
+  });
+
+  it("labels the composer as steer, next, or stop only for active runs", () => {
+    expect(
+      workspaceComposerPrimaryActionLabelForTest({
+        hasActiveRun: true,
+        placement: "steer",
+        isStop: false,
+      }),
+    ).toBe("Steer");
+    expect(
+      workspaceComposerPrimaryActionLabelForTest({
+        hasActiveRun: true,
+        placement: "queue",
+        isStop: false,
+      }),
+    ).toBe("Next");
+    expect(
+      workspaceComposerPrimaryActionLabelForTest({
+        hasActiveRun: true,
+        placement: "steer",
+        isStop: true,
+      }),
+    ).toBe("Stop");
+    expect(workspaceComposerPlacementLabelForTest("steer", true)).toBe("Steer");
   });
 
   it("creates tmp Hugo drafts with the cursor target in the body", () => {
