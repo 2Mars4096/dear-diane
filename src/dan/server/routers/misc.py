@@ -3,6 +3,8 @@ test cases, memory, errors, and rules."""
 
 from __future__ import annotations
 
+import base64
+import mimetypes
 import os
 import re
 import shutil
@@ -16,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse
 
 from dan.notes import (
     DEFAULT_CONTENT_PROJECT_NAME,
@@ -881,6 +884,31 @@ def _resolve_workspace_file_entry_path(
     return resolved, root
 
 
+def _decode_workspace_file_preview_root(token: str) -> str | None:
+    if not token or token == "-":
+        return None
+    try:
+        padding = "=" * (-len(token) % 4)
+        decoded = base64.urlsafe_b64decode(f"{token}{padding}".encode("ascii")).decode("utf-8")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid workspace preview root") from exc
+    decoded = decoded.strip()
+    return decoded or None
+
+
+def _workspace_file_response(path: Path) -> FileResponse:
+    media_type, _ = mimetypes.guess_type(path.name)
+    safe_name = re.sub(r'["\r\n]', "_", path.name)
+    return FileResponse(
+        path,
+        media_type=media_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_name}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 def _move_workspace_entry(source: Path, destination: Path, root: Path, *, label: str) -> Path:
     if source == root:
         raise HTTPException(status_code=400, detail=f"Cannot move the {label} root")
@@ -1316,6 +1344,43 @@ async def list_workspace_roots(
     return {"root": str(default_root), "suggestions": suggestions[:requested_limit]}
 
 
+@router.get("/api/workspace-skills")
+async def list_workspace_skills(
+    root_path: str | None = None,
+    limit: int = 80,
+) -> dict[str, Any]:
+    """List installed skill mention tokens for the workspace composer."""
+
+    root = _workspace_files_root(root_path)
+    requested_limit = max(1, min(int(limit), 200))
+    try:
+        from dan.skills.invocation import load_skill_catalog, skill_token
+
+        rows = load_skill_catalog(str(root))
+    except Exception as exc:
+        logger.warning("Failed to load workspace skill suggestions: %s", exc)
+        rows = []
+
+    skills: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in rows:
+        token = skill_token(item)
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        skills.append(
+            {
+                "token": token,
+                "name": str(item.get("name") or token),
+                "description": str(item.get("description") or ""),
+                "source_scope": str(item.get("source_scope") or ""),
+            }
+        )
+        if len(skills) >= requested_limit:
+            break
+    return {"root": str(root), "skills": skills}
+
+
 @router.get("/api/workspace-files")
 async def list_workspace_file_tree(
     root_path: str | None = None,
@@ -1394,6 +1459,18 @@ async def read_workspace_file(
         "truncated": truncated,
         "root": str(root),
     }
+
+
+@router.get("/api/workspace-files/preview/{root_token}/{path:path}")
+async def preview_workspace_file(
+    root_token: str,
+    path: str,
+) -> FileResponse:
+    root_path = _decode_workspace_file_preview_root(root_token)
+    resolved, _root = _resolve_workspace_file_path(path, root_path=root_path)
+    if not resolved.exists() or not resolved.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return _workspace_file_response(resolved)
 
 
 @router.post("/api/workspace-files/mkdir")

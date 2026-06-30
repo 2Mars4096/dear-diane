@@ -392,6 +392,13 @@ export interface WorkspaceFileEntry {
   depth: number;
 }
 
+export interface WorkspaceSkillSuggestion {
+  token: string;
+  name: string;
+  description: string;
+  source_scope: string;
+}
+
 export type WorkspaceRootSuggestionKind =
   | "current"
   | "match"
@@ -456,6 +463,15 @@ export const listWorkspaceFileTree = (rootPath?: string) =>
     rootPath ? `/workspace-files?root_path=${encodeURIComponent(rootPath)}` : "/workspace-files",
   );
 
+export const listWorkspaceSkillSuggestions = (rootPath?: string, limit = 80) => {
+  const params = new URLSearchParams();
+  if (rootPath?.trim()) params.set("root_path", rootPath.trim());
+  params.set("limit", String(limit));
+  return request<{ root: string; skills: WorkspaceSkillSuggestion[] }>(
+    `/workspace-skills?${params.toString()}`,
+  );
+};
+
 export const listWorkspaceRootSuggestions = (query?: string) => {
   const params = new URLSearchParams();
   if (query?.trim()) params.set("query", query.trim());
@@ -477,6 +493,30 @@ export const readWorkspaceFile = (path: string, rootPath?: string) => {
     content: string;
     truncated: boolean;
   }>(`/workspace-files/read?${params.toString()}`);
+};
+
+const encodeBase64Url = (value: string) => {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+};
+
+export const workspaceFilePreviewUrl = (
+  path: string,
+  rootPath?: string,
+  relativePath?: string,
+) => {
+  const token = rootPath?.trim() ? encodeBase64Url(rootPath.trim()) : "-";
+  const normalizedPath = (relativePath || path).replace(/\\/g, "/").replace(/^\/+/, "");
+  const encodedPath = normalizedPath
+    .split("/")
+    .filter(Boolean)
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+  return `${BASE}/workspace-files/preview/${token}/${encodedPath || encodeURIComponent(path)}`;
 };
 
 export const createWorkspaceFolder = (path: string, rootPath?: string) =>
