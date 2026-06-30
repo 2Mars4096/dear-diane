@@ -599,6 +599,13 @@ class ChatV2Store:
                         "backend_selection": run.metadata.get("backend_selection", ""),
                     }
                 )
+                for key in (
+                    "normalized_request",
+                    "context_composer",
+                    "shared_evidence_context",
+                ):
+                    if key in run.metadata:
+                        task.metadata[key] = run.metadata[key]
                 if run.token_usage:
                     task.token_usage = dict(run.token_usage)
                     task.metadata["token_usage"] = dict(run.token_usage)
@@ -1484,6 +1491,7 @@ class ChatV2Store:
                 return event
 
             run_id = str(command.run_id or task.active_run_id or "")
+            command_payload = dict(command.payload or {})
             text = _queue_text_from_command(command)
             dedup_key = str(command.idempotency_key or "").strip() or _stable_id(
                 "command-queue",
@@ -1533,16 +1541,44 @@ class ChatV2Store:
                 position=position,
                 metadata={
                     "command": command.command,
-                    "command_payload": dict(command.payload or {}),
+                    "command_payload": command_payload,
                     "idempotency_key": command.idempotency_key or "",
                     "queue_key": task.queue_key,
                     "workspace_root": task.workspace_root,
                     "workspace_id": task.workspace_id,
-                    "operator_context": _structured_operator_context(
+                    "operator_context": dict(command_payload.get("operator_context") or {})
+                    or _structured_operator_context(
                         text,
-                        attachments=list(
-                            dict(command.payload or {}).get("attachments") or []
-                        ),
+                        attachments=list(command_payload.get("attachments") or []),
+                    ),
+                    "original_request": command_payload.get("original_request") or "",
+                    "satisfaction_gap": command_payload.get("satisfaction_gap") or text,
+                    "goal_context": dict(command_payload.get("goal_context") or {}),
+                    "history": list(command_payload.get("history") or []),
+                    "reply_context": dict(command_payload.get("reply_context") or {}),
+                    "surface_context": dict(command_payload.get("surface_context") or {}),
+                    "attachments": list(command_payload.get("attachments") or []),
+                    "profile_policy": dict(command_payload.get("profile_policy") or {}),
+                    "mutation_policy": dict(command_payload.get("mutation_policy") or {}),
+                    "approval_policy": dict(command_payload.get("approval_policy") or {}),
+                    "tool_policy": dict(command_payload.get("tool_policy") or {}),
+                    "auto_backend_continuation": bool(
+                        command_payload.get("auto_backend_continuation")
+                    ),
+                    "auto_continuation_depth": command_payload.get("auto_continuation_depth"),
+                    "max_auto_backend_continuations": command_payload.get(
+                        "max_auto_backend_continuations"
+                    ),
+                    "previous_run_status": command_payload.get("previous_run_status"),
+                    "previous_failure_or_blocker": command_payload.get(
+                        "previous_failure_or_blocker"
+                    ),
+                    "previous_final_response": command_payload.get("previous_final_response"),
+                    "previous_validation_summary": command_payload.get(
+                        "previous_validation_summary"
+                    ),
+                    "previous_backend_result": dict(
+                        command_payload.get("previous_backend_result") or {}
                     ),
                 },
             )
@@ -1706,6 +1742,7 @@ class ChatV2Store:
                     item,
                     previous_run=run,
                     previous_run_id=run_id,
+                    previous_run_events=self.load_run_events(run_id),
                 ),
             )
             start_payload = dict(command.payload or {})
@@ -2470,6 +2507,73 @@ def _original_request_from_task(task: V2TaskRecord | None) -> str:
     return ""
 
 
+def _previous_failure_or_blocker_from_result(
+    result: dict[str, Any],
+    *,
+    previous_status: str,
+    fallback: str,
+) -> str:
+    normalized_status = str(previous_status or result.get("status") or "").strip().lower()
+    if normalized_status not in {"failed", "blocked", "stopped"}:
+        return ""
+    raw = result.get("raw_result") if isinstance(result.get("raw_result"), dict) else {}
+    return (
+        _compact_user_text(result.get("summary"))
+        or _compact_user_text(raw.get("error"))
+        or _compact_user_text(raw.get("stderr"))
+        or fallback
+    )
+
+
+def _previous_final_response_from_result(
+    result: dict[str, Any],
+    *,
+    previous_status: str,
+    fallback: str,
+) -> str:
+    normalized_status = str(previous_status or result.get("status") or "").strip().lower()
+    raw = result.get("raw_result") if isinstance(result.get("raw_result"), dict) else {}
+    for value in (
+        raw.get("final_text"),
+        raw.get("final_response"),
+        result.get("final_text"),
+        result.get("summary") if normalized_status == "completed" else "",
+        fallback if normalized_status == "completed" else "",
+    ):
+        text = _compact_user_text(value)
+        if text and text.lower() not in {"codex completed.", "codex completed"}:
+            return text
+    return ""
+
+
+def _previous_validation_summary_from_sources(
+    result: dict[str, Any],
+    events: list[dict[str, Any]],
+) -> str:
+    raw = result.get("raw_result") if isinstance(result.get("raw_result"), dict) else {}
+    for key in ("validation_summary", "validation", "validation_result"):
+        text = _compact_user_text(raw.get(key))
+        if text:
+            return text
+    lines: list[str] = []
+    for event in reversed(events[-80:]):
+        if not isinstance(event, dict):
+            continue
+        event_name = " ".join(
+            str(event.get(key) or "")
+            for key in ("type", "source_event_type", "latest_event_type")
+        ).lower()
+        if "validation" not in event_name:
+            continue
+        text = _compact_user_text(event.get("summary"))
+        if text:
+            lines.append(text)
+        if len(lines) >= 4:
+            break
+    lines.reverse()
+    return " | ".join(lines)
+
+
 def _queue_injected_summary(item: QueueItemRecord, *, checkpoint: str = "") -> str:
     lane = "checkpoint append" if item.lane == "append" else "after-current follow-up"
     text = " ".join(str(item.text or "").split())
@@ -2487,8 +2591,10 @@ def _start_payload_from_queue_item(
     *,
     previous_run: AgentRunRecord | None = None,
     previous_run_id: str,
+    previous_run_events: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     metadata = dict(item.metadata or {})
+    previous_payload = dict(previous_run.command.payload or {}) if previous_run is not None else {}
     original_request = (
         _compact_user_text(metadata.get("original_request"))
         or _original_request_from_run(previous_run)
@@ -2501,17 +2607,47 @@ def _start_payload_from_queue_item(
         _compact_user_text(previous_result.get("summary"))
         or _compact_user_text(previous_run.latest_summary if previous_run is not None else "")
     )
+    previous_status = str(previous_run.status) if previous_run is not None else ""
+    previous_failure_or_blocker = _previous_failure_or_blocker_from_result(
+        previous_result,
+        previous_status=previous_status,
+        fallback=previous_summary,
+    )
+    previous_final_response = _previous_final_response_from_result(
+        previous_result,
+        previous_status=previous_status,
+        fallback=previous_summary,
+    )
+    previous_validation_summary = _previous_validation_summary_from_sources(
+        previous_result,
+        previous_run_events or [],
+    )
+    previous_failure_or_blocker = (
+        _compact_user_text(metadata.get("previous_failure_or_blocker"))
+        or previous_failure_or_blocker
+    )
+    previous_final_response = (
+        _compact_user_text(metadata.get("previous_final_response"))
+        or previous_final_response
+    )
+    previous_validation_summary = (
+        _compact_user_text(metadata.get("previous_validation_summary"))
+        or previous_validation_summary
+    )
     goal_context = {
         "original_request": original_request,
         "current_request": item.text,
         "satisfaction_gap": satisfaction_gap,
         "previous_run_id": previous_run_id,
-        "previous_status": str(previous_run.status) if previous_run is not None else "",
+        "previous_status": previous_status,
         "previous_summary": previous_summary,
+        "previous_failure_or_blocker": previous_failure_or_blocker,
+        "previous_final_response": previous_final_response,
+        "previous_validation_summary": previous_validation_summary,
         "queue_item_id": item.id,
         "source": "continue_after_current",
     }
-    return {
+    payload = {
         "text": item.text,
         "original_request": original_request,
         "follow_up_request": item.text,
@@ -2526,9 +2662,37 @@ def _start_payload_from_queue_item(
         "reply_context": dict(metadata.get("reply_context") or {}),
         "surface_context": dict(metadata.get("surface_context") or {}),
         "continued_from_run_id": previous_run_id,
+        "previous_run_status": previous_status,
+        "previous_failure_or_blocker": previous_failure_or_blocker,
+        "previous_final_response": previous_final_response,
+        "previous_validation_summary": previous_validation_summary,
         "queue_item_id": item.id,
         "operator_context": dict(metadata.get("operator_context") or {}),
     }
+    if previous_result:
+        payload["previous_backend_result"] = previous_result
+    for key in (
+        "profile_policy",
+        "mutation_policy",
+        "approval_policy",
+        "tool_policy",
+    ):
+        value = metadata.get(key)
+        if not value:
+            value = previous_payload.get(key)
+        if isinstance(value, dict) and value:
+            payload[key] = dict(value)
+    for key in (
+        "auto_backend_continuation",
+        "auto_continuation_depth",
+        "max_auto_backend_continuations",
+        "previous_backend_result",
+    ):
+        if key in metadata and metadata.get(key) not in (None, ""):
+            payload[key] = metadata.get(key)
+        elif key in previous_payload and previous_payload.get(key) not in (None, ""):
+            payload[key] = previous_payload.get(key)
+    return payload
 
 
 def _structured_operator_context(

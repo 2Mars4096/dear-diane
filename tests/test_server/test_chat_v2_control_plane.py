@@ -29,6 +29,7 @@ from dan.server.chat_v2_progress import AgentProgressStateMachine, TelegramProgr
 from dan.server.chat_v2_organism import map_organism_log_row_to_agent_event
 from dan.server.chat_v2_backend import (
     AgentBackendRunRequest,
+    AgentBackendRunResult,
     CodexAgentBackendAdapter,
     _CodexObservableTaskGraph,
     _build_codex_exec_command,
@@ -37,6 +38,7 @@ from dan.server.chat_v2_backend import (
     _load_super_dan_cli,
     _objective_with_surface_context,
     build_agent_backend_request,
+    run_agent_backend,
     select_agent_backend_adapter,
 )
 from dan.server.chat_v2_store import ChatV2Store, structured_operator_context
@@ -528,6 +530,235 @@ def test_v2_codex_exec_command_is_additive_and_workspace_scoped(tmp_path) -> Non
         "--ephemeral",
         "please work on this repo",
     ]
+
+
+class _FailingCodexContinuationAdapter:
+    backend_name = "codex"
+
+    async def run(self, request, emit_event, runtime=None):
+        emit_event(
+            AgentRunEvent(
+                type="failed",
+                run_id=request.run_id,
+                task_id=request.task_id,
+                summary="Codex hit an output-size parsing limit while reading command output.",
+                source_event_type="turn.failed",
+                payload={"backend": "codex"},
+            )
+        )
+        return AgentBackendRunResult(
+            status="failed",
+            backend="codex",
+            summary="Codex hit an output-size parsing limit while reading command output.",
+            raw_result={
+                "return_code": 1,
+                "stderr": "Separator is not found, and chunk exceeded the limit",
+                "events": [{"type": "turn.failed", "message": "chunk exceeded the limit"}],
+            },
+        )
+
+
+class _CompletingContextAdapter:
+    backend_name = "deterministic"
+
+    async def run(self, request, emit_event, runtime=None):
+        emit_event(
+            AgentRunEvent(
+                type="completed",
+                run_id=request.run_id,
+                task_id=request.task_id,
+                summary="Completed context composer smoke run.",
+                source_event_type="deterministic.completed",
+            )
+        )
+        return AgentBackendRunResult(
+            status="completed",
+            backend=self.backend_name,
+            summary="Completed context composer smoke run.",
+            raw_result={"final_text": "Completed context composer smoke run."},
+        )
+
+
+@pytest.mark.asyncio
+async def test_v2_codex_failed_limit_queues_bounded_auto_continuation(tmp_path) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    accepted = store.accept_bridge_context(
+        build_v2_bridge_context(
+            ChatMessageRequest(
+                workflow_id="_scratch",
+                message="build a static project page and report back",
+                mode="agent",
+                surface_type="web",
+                surface_id="v2",
+                thread_id="thread-web",
+                history=[{"role": "assistant", "content": "Earlier context"}],
+            )
+        )
+    )
+    assert accepted.run_id is not None
+
+    result = await run_agent_backend(
+        store,
+        accepted.run_id,
+        adapter=_FailingCodexContinuationAdapter(),
+        backend_name="codex",
+    )
+
+    assert result.status == "failed"
+    first_run = store.get_run(accepted.run_id)
+    assert first_run is not None
+    next_run_id = first_run.metadata["continued_run_id"]
+    assert next_run_id != accepted.run_id
+    next_run = store.get_run(next_run_id)
+    assert next_run is not None
+    assert next_run.status == "queued"
+    assert next_run.metadata["continued_from_run_id"] == accepted.run_id
+    assert next_run.metadata["original_request"] == "build a static project page and report back"
+    assert "Previous status: failed" in next_run.metadata["satisfaction_gap"]
+    assert next_run.command.payload["profile_policy"]["backend"] == "codex"
+    assert next_run.command.payload["continued_from_run_id"] == accepted.run_id
+    assert next_run.command.payload["auto_continuation_depth"] == 1
+    assert next_run.command.payload["history"] == [
+        {"role": "assistant", "content": "Earlier context"}
+    ]
+    backend_request = build_agent_backend_request(next_run, store.get_task(next_run.task_id))
+    packet = backend_request.metadata["normalized_request"]
+    assert packet["original_request"] == "build a static project page and report back"
+    assert packet["current_operator_update"].startswith(
+        "The previous Codex run ended before"
+    )
+    assert packet["continued_from_run_id"] == accepted.run_id
+    assert packet["previous_run_status"] == "failed"
+    assert "output-size parsing limit" in packet["previous_failure_or_blocker"]
+    effective = _objective_with_surface_context(backend_request)
+    assert "Original operator request: build a static project page and report back" in effective
+    assert "Current follow-up / satisfaction gap:" in effective
+    assert "Codex hit an output-size parsing limit" in effective
+
+
+@pytest.mark.asyncio
+async def test_v2_run_persists_context_composer_for_gui_task_metadata(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = ChatV2Store(tmp_path / "chat_v2")
+    accepted = store.accept_bridge_context(
+        build_v2_bridge_context(
+            ChatMessageRequest(
+                workflow_id="_scratch",
+                message="continue the selected card",
+                mode="agent",
+                surface_type="web",
+                surface_id="v2",
+                thread_id="thread-web",
+                surface_context={
+                    "workspace_root": str(workspace),
+                    "selected_blueprint_node": {
+                        "id": "plan-3",
+                        "title": "Plan 3",
+                        "kind": "plan",
+                        "status": "active",
+                        "detail": "Dependent plan is generating.",
+                    },
+                },
+            )
+        )
+    )
+    assert accepted.run_id is not None
+
+    await run_agent_backend(
+        store,
+        accepted.run_id,
+        adapter=_CompletingContextAdapter(),
+        backend_name="deterministic",
+    )
+
+    task_record = store.get_task(accepted.task_id)
+    assert task_record is not None
+    composer = task_record.metadata["context_composer"]
+    assert composer["compiler"] == "chat_v2_context_composer_v1"
+    evidence_items = task_record.metadata["shared_evidence_context"]["items"]
+    assert any(
+        item["kind"] == "selected_card" and "Plan 3" in item["title"]
+        for item in evidence_items
+    )
+
+
+def test_v2_normalized_request_carries_selected_card_and_active_file(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = ChatV2Store(tmp_path / "chat_v2")
+    accepted = store.accept_bridge_context(
+        build_v2_bridge_context(
+            ChatMessageRequest(
+                workflow_id="_scratch",
+                message="please continue from this card",
+                mode="agent",
+                surface_type="web",
+                surface_id="v2",
+                thread_id="thread-web",
+                surface_context={
+                    "workspace_root": str(workspace),
+                    "selected_blueprint_node": {
+                        "id": "plan-3",
+                        "title": "Plan 3",
+                        "kind": "plan",
+                        "status": "active",
+                        "detail": "Dependent plan is now generating.",
+                        "preview": "Plan 3 checklist preview",
+                    },
+                    "active_file": {
+                        "path": str(workspace / "src/app.ts"),
+                        "relativePath": "src/app.ts",
+                        "name": "app.ts",
+                        "preview": "export const active = true;",
+                    },
+                    "conversation": {
+                        "recent_turns": [
+                            {
+                                "role": "user",
+                                "content": "build the plan graph UI",
+                            },
+                            {
+                                "role": "assistant",
+                                "content": "I started the card rendering pass.",
+                            },
+                        ]
+                    },
+                },
+            )
+        )
+    )
+    assert accepted.run_id is not None
+    run = store.get_run(accepted.run_id)
+    assert run is not None
+
+    backend_request = build_agent_backend_request(run, store.get_task(run.task_id))
+
+    assert backend_request.surface_context["selected_blueprint_node"]["title"] == "Plan 3"
+    assert backend_request.surface_context["active_file"]["relativePath"] == "src/app.ts"
+    packet = backend_request.metadata["normalized_request"]
+    assert packet["selected_plan_context"]["selected_card"]["title"] == "Plan 3"
+    assert (
+        packet["active_workspace_context"]["active_file"]["relativePath"]
+        == "src/app.ts"
+    )
+    composer = packet["context_composer"]
+    evidence_items = composer["shared_evidence"]["items"]
+    assert composer["compiler"] == "chat_v2_context_composer_v1"
+    assert any(
+        item["kind"] == "selected_card" and "Plan 3" in item["title"]
+        for item in evidence_items
+    )
+    assert any(
+        item["kind"] == "active_file" and item["ref"] == "src/app.ts"
+        for item in evidence_items
+    )
+    effective = _objective_with_surface_context(backend_request)
+    assert "Selected plan/card context:" in effective
+    assert "Active workspace context:" in effective
+    assert "Shared evidence ledger:" in effective
+    assert "Plan 3" in effective
+    assert "src/app.ts" in effective
 
 
 def test_v2_codex_observable_task_graph_emits_live_revisions(tmp_path) -> None:
@@ -1668,9 +1899,23 @@ async def test_v2_continue_after_current_preserves_original_goal_context(
     assert next_run.metadata["satisfaction_gap"] == "yes please proceed"
 
     backend_request = build_agent_backend_request(next_run, store.get_task(next_run.task_id))
+    packet = backend_request.metadata["normalized_request"]
+    assert packet["original_request"] == "what is this project?"
+    assert packet["current_operator_update"] == "yes please proceed"
+    assert packet["continued_from_run_id"] == run_id
+    assert packet["previous_run_status"] == "completed"
+    assert "Completed deterministic Agent run" in packet["previous_final_response"]
+    evidence_items = packet["context_composer"]["shared_evidence"]["items"]
+    assert any(
+        item["kind"] == "final_response"
+        and "Completed deterministic Agent run" in item["summary"]
+        for item in evidence_items
+    )
     effective = _objective_with_surface_context(backend_request)
     assert "Original operator request: what is this project?" in effective
     assert "Current follow-up / satisfaction gap: yes please proceed" in effective
+    assert "Previous final response:" in effective
+    assert "Shared evidence ledger:" in effective
     assert "Continue toward the same user-visible goal" in effective
     assert not effective.startswith("Operator request: yes please proceed")
 

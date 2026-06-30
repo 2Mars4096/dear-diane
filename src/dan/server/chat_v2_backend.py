@@ -13,7 +13,7 @@ from typing import Any, Callable, Protocol
 from pydantic import BaseModel, Field
 
 from dan.notes import enrich_notes_surface_context
-from dan.server.chat_v2 import AgentRunEvent, normalize_token_usage
+from dan.server.chat_v2 import AgentRunCommand, AgentRunEvent, normalize_token_usage
 from dan.server.chat_v2_organism import map_organism_log_row_to_agent_event
 from dan.server.chat_v2_store import (
     AgentRunRecord,
@@ -795,6 +795,26 @@ class SuperDanBackendAdapter:
             workspace_root=workspace_root,
             objective=effective_objective,
         )
+        if not bool(getattr(args, "_skill_invocation_should_run", True)):
+            summary = str(
+                getattr(args, "_skill_invocation_message", "")
+                or "Selected skill mention needs objective text."
+            )
+            event = AgentRunEvent(
+                type="blocked",
+                run_id=request.run_id,
+                task_id=request.task_id,
+                summary=summary,
+                source_event_type="chat_v2.backend.super_dan.skill_invocation_blocked",
+                payload={"backend": self.backend_name, "objective": request.objective},
+            )
+            emit_event(event)
+            return AgentBackendRunResult(
+                status="blocked",
+                backend=self.backend_name,
+                summary=summary,
+            )
+        effective_objective = str(getattr(args, "target", "") or effective_objective)
         report = super_cli.run_super_organism_demo(
             effective_objective,
             organism_id=str(getattr(args, "organism_id", "") or "super-dan-20"),
@@ -1070,6 +1090,9 @@ async def run_agent_backend(
         raise KeyError(run_id)
     task = store.get_task(run.task_id)
     request = build_agent_backend_request(run, task, overrides=overrides)
+    request_context_metadata = _request_context_metadata(request)
+    if request_context_metadata:
+        store.update_run_metadata(run_id, request_context_metadata)
     runtime = AgentBackendRuntime(store, run_id=run_id, task_id=run.task_id)
     initial_operator_items = runtime.admit_checkpoint("backend.start")
     if initial_operator_items:
@@ -1186,6 +1209,12 @@ async def run_agent_backend(
         },
         status=_terminal_status(result.status),
     )
+    _queue_backend_auto_continuation_if_needed(
+        store,
+        run_id,
+        backend_name=selected.backend_name,
+        result=result,
+    )
     store.promote_next_continue_after_current(run_id)
     return result
 
@@ -1241,6 +1270,9 @@ def build_agent_backend_request(
         dict(payload.get("surface_context") or {}),
         workspace_root=workspace_root,
     )
+    objective = str(overrides.get("objective") or payload.get("text") or "")
+    reply_context = dict(payload.get("reply_context") or {})
+    attachments = list(payload.get("attachments") or [])
     metadata = {
         "queue_key": run.metadata.get("queue_key", ""),
         "topic_key": payload.get("topic_key", ""),
@@ -1276,17 +1308,30 @@ def build_agent_backend_request(
         ],
         **dict(overrides.get("metadata") or {}),
     }
+    metadata["normalized_request"] = _compile_normalized_request_context(
+        objective=objective,
+        run=run,
+        task=task,
+        payload=payload,
+        metadata=metadata,
+        history=history,
+        reply_context=reply_context,
+        surface_context=surface_context,
+        attachments=attachments,
+        workspace_root=workspace_root,
+        workspace_id=workspace_id,
+    )
     return AgentBackendRunRequest(
         task_id=run.task_id,
         run_id=run.run_id,
-        objective=str(overrides.get("objective") or payload.get("text") or ""),
+        objective=objective,
         workspace_root=workspace_root,
         workspace_id=workspace_id,
         thread_id=run.thread_id,
         surface_turn_id=run.surface_turn_id,
-        attachments=list(payload.get("attachments") or []),
+        attachments=attachments,
         history=history,
-        reply_context=dict(payload.get("reply_context") or {}),
+        reply_context=reply_context,
         surface_context=surface_context,
         profile_policy=profile_policy,
         mutation_policy=mutation_policy,
@@ -1587,12 +1632,34 @@ def _codex_item_summary(item: dict[str, Any], *, default: str) -> str:
     command = _first_compact_text(item.get("command"), item.get("cmd"), limit=300)
     text = _first_compact_text(item.get("text"), item.get("summary"), item.get("message"), limit=300)
     if command:
-        return f"Codex ran `{command}`."
+        return _codex_command_summary(command)
     if text:
         return text
     if item_type:
         return f"Codex completed {item_type.replace('_', ' ')}."
     return default
+
+
+def _codex_command_summary(command: str) -> str:
+    normalized = command.lower()
+    if "playwright" in normalized or "pwcli" in normalized or "screenshot" in normalized:
+        return "Codex checked the local preview."
+    if "npm run build" in normalized or "vite build" in normalized or "tsc " in normalized:
+        return "Codex built the frontend."
+    if (
+        "npm test" in normalized
+        or "npm run test" in normalized
+        or "vitest" in normalized
+        or "jest" in normalized
+    ):
+        return "Codex ran frontend tests."
+    if "pytest" in normalized or "python -m pytest" in normalized:
+        return "Codex ran Python tests."
+    if "git diff" in normalized or "git status" in normalized:
+        return "Codex checked workspace changes."
+    if "curl " in normalized:
+        return "Codex checked a local endpoint."
+    return "Codex ran a workspace command."
 
 
 def _codex_final_text(row: dict[str, Any]) -> str:
@@ -1687,7 +1754,24 @@ def _build_super_dan_args(
         dict(request.surface_context or {}),
         workspace_root=request.workspace_root,
     )
+    selected_skills = _selected_skills_from_surface(request, surface_context)
+    if selected_skills:
+        setattr(args, "_selected_skill_mentions", selected_skills)
+        setattr(args, "selected_skill_mentions", selected_skills)
+        setattr(args, "_selected_skill_source", "gui")
+        setattr(args, "_tui_selected_skill_mentions", selected_skills)
     setattr(args, "_surface_context", surface_context)
+    try:
+        parsed = super_cli._prepare_super_dan_skill_invocation_args(
+            args,
+            workspace_root=workspace_root,
+            source="gui",
+        )
+        setattr(args, "_skill_invocation_should_run", bool(parsed.should_run))
+        if parsed.message:
+            setattr(args, "_skill_invocation_message", str(parsed.message))
+    except Exception:
+        setattr(args, "_skill_invocation_should_run", True)
     history = _normalize_history(request.history)
     if not history:
         conversation = surface_context.get("conversation") if isinstance(surface_context, dict) else {}
@@ -1718,11 +1802,326 @@ def _build_super_dan_args(
     return args
 
 
+def _selected_skills_from_surface(
+    request: AgentBackendRunRequest,
+    surface_context: dict[str, Any],
+) -> list[str]:
+    selected: list[str] = []
+    seen: set[str] = set()
+    for raw in (
+        surface_context.get("selected_skills"),
+        request.metadata.get("selected_skills") if isinstance(request.metadata, dict) else None,
+    ):
+        values = raw if isinstance(raw, list) else [raw] if isinstance(raw, str) else []
+        for value in values:
+            token = str(value or "").strip().lower().lstrip("$").replace("_", "-")
+            if token and token not in seen:
+                selected.append(token)
+                seen.add(token)
+    return selected
+
+
 def _terminal_status(status: str) -> str:
     normalized = str(status or "").strip().lower()
     if normalized in {"completed", "failed", "blocked", "paused", "stopped"}:
         return normalized
     return "failed" if normalized else "completed"
+
+
+_CODEX_AUTO_CONTINUATION_DEFAULT_MAX = 1
+_CODEX_CONTINUATION_LIMITISH_TERMS = (
+    "limit",
+    "cap",
+    "exceed",
+    "exceeded",
+    "max",
+    "context length",
+    "too long",
+    "output-size",
+    "output size",
+    "chunk",
+    "separator",
+    "timeout",
+    "timed out",
+    "truncated",
+    "incomplete",
+)
+
+
+def _queue_backend_auto_continuation_if_needed(
+    store: ChatV2Store,
+    run_id: str,
+    *,
+    backend_name: str,
+    result: AgentBackendRunResult,
+) -> None:
+    run = store.get_run(run_id)
+    if run is None:
+        return
+    if not _backend_auto_continuation_needed(run, backend_name=backend_name, result=result):
+        return
+    depth = _backend_auto_continuation_depth(run)
+    max_depth = _backend_auto_continuation_max(run, backend_name=backend_name)
+    if depth >= max_depth:
+        store.update_run_metadata(
+            run_id,
+            {
+                "auto_continuation_skipped": {
+                    "reason": "max_auto_backend_continuations_reached",
+                    "depth": depth,
+                    "max_depth": max_depth,
+                }
+            },
+        )
+        return
+    next_depth = depth + 1
+    payload = _backend_auto_continuation_payload(
+        run,
+        result,
+        backend_name=backend_name,
+        next_depth=next_depth,
+        max_depth=max_depth,
+    )
+    command = AgentRunCommand(
+        command="continue_after_current",
+        run_id=run_id,
+        task_id=run.task_id,
+        surface_turn_id=run.surface_turn_id or f"auto-continuation:{run_id}",
+        idempotency_key=f"backend-auto-continuation:{run_id}:{next_depth}",
+        payload=payload,
+    )
+    event = store.queue_agent_command(command)
+    store.update_run_metadata(
+        run_id,
+        {
+            "auto_continuation_requested": {
+                "backend": backend_name,
+                "depth": next_depth,
+                "max_depth": max_depth,
+                "queue_event_type": event.type,
+                "queue_item_id": str(event.payload.get("queue_item_id") or ""),
+                "reason": payload.get("satisfaction_gap") or "",
+            }
+        },
+        status=_terminal_status(result.status),
+    )
+
+
+def _backend_auto_continuation_needed(
+    run: AgentRunRecord,
+    *,
+    backend_name: str,
+    result: AgentBackendRunResult,
+) -> bool:
+    normalized_backend = str(backend_name or result.backend or "").strip().lower()
+    if normalized_backend != "codex":
+        return False
+    payload = dict(run.command.payload or {})
+    profile_policy = dict(payload.get("profile_policy") or {})
+    raw_enabled = (
+        payload.get("auto_backend_continuation")
+        if "auto_backend_continuation" in payload
+        else profile_policy.get("auto_backend_continuation")
+    )
+    if isinstance(raw_enabled, bool) and not raw_enabled:
+        return False
+    if isinstance(raw_enabled, str) and raw_enabled.strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+        "disabled",
+    }:
+        return False
+    status = _terminal_status(result.status)
+    if status in {"paused", "stopped"}:
+        return False
+    combined_text = _backend_result_search_text(result)
+    if "codex cli was not found" in combined_text or "executable was not found" in combined_text:
+        return False
+    if status == "failed":
+        return True
+    if status == "blocked":
+        return _text_looks_limitish(combined_text)
+    if status == "completed":
+        return _codex_completed_result_looks_incomplete(result) or _text_looks_limitish(combined_text)
+    return False
+
+
+def _backend_result_search_text(result: AgentBackendRunResult) -> str:
+    raw = dict(result.raw_result or {})
+    pieces = [
+        result.status,
+        result.summary,
+        raw.get("stderr"),
+        raw.get("error"),
+        raw.get("error_type"),
+    ]
+    for row in list(raw.get("events") or [])[-8:]:
+        if isinstance(row, dict):
+            pieces.extend(
+                [
+                    row.get("type"),
+                    row.get("message"),
+                    row.get("error"),
+                    row.get("detail"),
+                    row.get("final_response"),
+                ]
+            )
+    return " ".join(str(piece or "") for piece in pieces).lower()
+
+
+def _text_looks_limitish(text: str) -> bool:
+    normalized = str(text or "").lower()
+    return any(term in normalized for term in _CODEX_CONTINUATION_LIMITISH_TERMS)
+
+
+def _codex_completed_result_looks_incomplete(result: AgentBackendRunResult) -> bool:
+    raw = dict(result.raw_result or {})
+    events = [row for row in list(raw.get("events") or []) if isinstance(row, dict)]
+    has_turn_completed = any(str(row.get("type") or "") == "turn.completed" for row in events)
+    if has_turn_completed:
+        return False
+    summary = _first_compact_text(result.summary, limit=400).strip().lower()
+    finalish = _first_compact_text(
+        raw.get("final_text"),
+        raw.get("final_response"),
+        result.summary,
+        limit=400,
+    ).strip().lower()
+    generic = {"codex completed.", "codex completed", ""}
+    return summary in generic or finalish in generic
+
+
+def _backend_auto_continuation_depth(run: AgentRunRecord) -> int:
+    payload = dict(run.command.payload or {})
+    for source in (payload, run.metadata):
+        value = source.get("auto_continuation_depth") if isinstance(source, dict) else None
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _backend_auto_continuation_max(run: AgentRunRecord, *, backend_name: str) -> int:
+    payload = dict(run.command.payload or {})
+    profile_policy = dict(payload.get("profile_policy") or {})
+    candidates = [
+        payload.get("max_auto_backend_continuations"),
+        profile_policy.get("max_auto_backend_continuations"),
+        run.metadata.get("max_auto_backend_continuations"),
+    ]
+    if str(backend_name or "").strip().lower() == "codex":
+        candidates.append(os.environ.get("DAN_CODEX_AUTO_CONTINUATION_MAX"))
+        default = _CODEX_AUTO_CONTINUATION_DEFAULT_MAX
+    else:
+        default = 0
+    for value in candidates:
+        if value is None or value == "":
+            continue
+        try:
+            return max(0, min(int(value), 8))
+        except (TypeError, ValueError):
+            continue
+    return default
+
+
+def _backend_auto_continuation_payload(
+    run: AgentRunRecord,
+    result: AgentBackendRunResult,
+    *,
+    backend_name: str,
+    next_depth: int,
+    max_depth: int,
+) -> dict[str, Any]:
+    previous_payload = dict(run.command.payload or {})
+    previous_goal_context = dict(previous_payload.get("goal_context") or {})
+    original_request = _first_compact_text(
+        previous_payload.get("original_request"),
+        previous_goal_context.get("original_request"),
+        run.metadata.get("original_request"),
+        previous_payload.get("text"),
+        limit=4000,
+    )
+    previous_summary = _first_compact_text(
+        result.summary,
+        dict(result.raw_result or {}).get("stderr"),
+        "Codex ended before DAN could confirm a complete response.",
+        limit=1600,
+    )
+    previous_result_payload = result.model_dump(mode="json")
+    previous_status = _terminal_status(result.status)
+    previous_failure_or_blocker = _first_compact_text(
+        _previous_failure_or_blocker(previous_result_payload, status=previous_status),
+        previous_summary,
+        limit=1800,
+    )
+    previous_final_response = _previous_final_response(previous_result_payload)
+    previous_validation_summary = _previous_validation_summary(previous_result_payload)
+    gap = (
+        "The previous Codex run ended before the original request was fully satisfied. "
+        f"Previous status: {previous_status}. "
+        f"Previous summary: {previous_summary}"
+    )
+    goal_context = {
+        **previous_goal_context,
+        "original_request": original_request,
+        "current_request": gap,
+        "satisfaction_gap": gap,
+        "previous_run_id": run.run_id,
+        "previous_status": previous_status,
+        "previous_summary": previous_summary,
+        "previous_failure_or_blocker": previous_failure_or_blocker,
+        "previous_final_response": previous_final_response,
+        "previous_validation_summary": previous_validation_summary,
+        "previous_backend": backend_name,
+        "source": "backend_auto_continuation",
+        "auto_continuation_depth": next_depth,
+        "max_auto_backend_continuations": max_depth,
+        "previous_backend_result": previous_result_payload,
+    }
+    carry_keys = (
+        "workspace_root",
+        "workspace_id",
+        "attachments",
+        "history",
+        "reply_context",
+        "surface_context",
+        "operator_context",
+        "profile_policy",
+        "mutation_policy",
+        "approval_policy",
+        "tool_policy",
+        "topic_key",
+    )
+    payload = {
+        key: copy_value
+        for key in carry_keys
+        if (copy_value := previous_payload.get(key)) is not None
+    }
+    profile_policy = dict(payload.get("profile_policy") or {})
+    profile_policy.setdefault("backend", backend_name)
+    payload["profile_policy"] = profile_policy
+    payload.update(
+        {
+            "text": gap,
+            "original_request": original_request,
+            "follow_up_request": gap,
+            "satisfaction_gap": gap,
+            "goal_context": goal_context,
+            "continued_from_run_id": run.run_id,
+            "previous_run_status": previous_status,
+            "previous_failure_or_blocker": previous_failure_or_blocker,
+            "previous_final_response": previous_final_response,
+            "previous_validation_summary": previous_validation_summary,
+            "auto_backend_continuation": True,
+            "auto_continuation_depth": next_depth,
+            "max_auto_backend_continuations": max_depth,
+            "previous_backend_result": previous_result_payload,
+        }
+    )
+    return payload
 
 
 def _backend_selection_reason(backend_name: str) -> str:
@@ -1772,8 +2171,1033 @@ def _normalize_history(raw_history: Any) -> list[dict[str, str]]:
     return history
 
 
+def _compile_normalized_request_context(
+    *,
+    objective: str,
+    run: AgentRunRecord,
+    task: V2TaskRecord | None,
+    payload: dict[str, Any],
+    metadata: dict[str, Any],
+    history: list[dict[str, str]],
+    reply_context: dict[str, Any],
+    surface_context: dict[str, Any],
+    attachments: list[dict[str, Any]],
+    workspace_root: str,
+    workspace_id: str,
+) -> dict[str, Any]:
+    """Build the structured f(history, current) request packet shared by backends."""
+
+    objective_text = _compact_context_text(objective, limit=4000)
+    goal_context = dict(metadata.get("goal_context") or {})
+    previous_backend_result = _coerce_dict(
+        payload.get("previous_backend_result")
+        or metadata.get("previous_backend_result")
+        or goal_context.get("previous_backend_result")
+    )
+    original_request = _first_compact_text(
+        metadata.get("original_request"),
+        goal_context.get("original_request"),
+        payload.get("original_request"),
+        run.metadata.get("original_request"),
+        limit=4000,
+    )
+    satisfaction_gap = _first_compact_text(
+        metadata.get("satisfaction_gap"),
+        metadata.get("follow_up_request"),
+        goal_context.get("satisfaction_gap"),
+        goal_context.get("current_request"),
+        payload.get("satisfaction_gap"),
+        payload.get("follow_up_request"),
+        limit=3000,
+    )
+    continued_from_run_id = _first_compact_text(
+        metadata.get("continued_from_run_id"),
+        goal_context.get("previous_run_id"),
+        goal_context.get("continued_from_run_id"),
+        payload.get("continued_from_run_id"),
+        limit=200,
+    )
+    previous_status = _first_compact_text(
+        metadata.get("previous_run_status"),
+        goal_context.get("previous_status"),
+        previous_backend_result.get("status"),
+        limit=200,
+    )
+    previous_final_response = _first_compact_text(
+        metadata.get("previous_final_response"),
+        goal_context.get("previous_final_response"),
+        _previous_final_response(previous_backend_result),
+        limit=1800,
+    )
+    previous_validation_summary = _first_compact_text(
+        metadata.get("previous_validation_summary"),
+        goal_context.get("previous_validation_summary"),
+        _previous_validation_summary(previous_backend_result),
+        limit=1400,
+    )
+    previous_failure_or_blocker = _first_compact_text(
+        metadata.get("previous_failure_or_blocker"),
+        goal_context.get("previous_failure_or_blocker"),
+        _previous_failure_or_blocker(previous_backend_result, status=previous_status),
+        goal_context.get("previous_summary"),
+        limit=1800,
+    )
+    literal_followup_hint = _looks_like_continuation_gap(objective_text)
+    has_explicit_previous = bool(
+        continued_from_run_id
+        or goal_context.get("previous_run_id")
+        or metadata.get("retry_policy")
+        or previous_backend_result
+        or previous_status
+    )
+    if not has_explicit_previous and literal_followup_hint:
+        prior_user_turn = _latest_prior_user_turn(history, objective_text)
+        if prior_user_turn and prior_user_turn != objective_text:
+            original_request = prior_user_turn
+            satisfaction_gap = satisfaction_gap or objective_text
+            has_explicit_previous = True
+    if not original_request:
+        original_request = objective_text
+    current_update = satisfaction_gap or objective_text
+    is_continuation = bool(
+        has_explicit_previous
+        or (
+            original_request
+            and current_update
+            and original_request != current_update
+            and (
+                continued_from_run_id
+                or previous_status
+                or metadata.get("retry_policy")
+                or literal_followup_hint
+            )
+        )
+    )
+    recent_turns = _recent_chat_turns(
+        history,
+        surface_context,
+        current_objective=objective_text,
+    )
+    selected_plan_context = _selected_plan_context(surface_context)
+    active_workspace_context = _active_workspace_context(
+        surface_context,
+        workspace_root=workspace_root,
+        workspace_id=workspace_id,
+    )
+    attachment_context = _attachment_context(attachments)
+    operator_context = dict(metadata.get("operator_context") or {})
+    task_context = {
+        "task_id": task.task_id if task is not None else run.task_id,
+        "run_id": run.run_id,
+        "thread_id": run.thread_id,
+        "workspace_root": workspace_root,
+        "workspace_id": workspace_id,
+    }
+    context_composer = _compile_context_composer_context(
+        original_request=original_request,
+        current_update=current_update,
+        is_continuation=is_continuation,
+        continued_from_run_id=continued_from_run_id,
+        previous_status=previous_status,
+        previous_failure_or_blocker=previous_failure_or_blocker,
+        previous_final_response=previous_final_response,
+        previous_validation_summary=previous_validation_summary,
+        previous_backend_result=previous_backend_result,
+        recent_turns=recent_turns,
+        selected_plan_context=selected_plan_context,
+        active_workspace_context=active_workspace_context,
+        attachments=attachment_context,
+        operator_context=operator_context,
+        task_context=task_context,
+    )
+    normalized = {
+        "kind": "normalized_request",
+        "compiler": "chat_v2_context_aggregation_v1",
+        "original_request": original_request,
+        "current_operator_update": current_update,
+        "effective_user_goal": original_request if is_continuation else objective_text,
+        "is_continuation": is_continuation,
+        "continued_from_run_id": continued_from_run_id,
+        "previous_run_status": previous_status,
+        "previous_failure_or_blocker": previous_failure_or_blocker,
+        "previous_final_response": previous_final_response,
+        "previous_validation_summary": previous_validation_summary,
+        "recent_chat_turns": recent_turns,
+        "selected_plan_context": selected_plan_context,
+        "active_workspace_context": active_workspace_context,
+        "reply_context": _bounded_reply_context(reply_context),
+        "attachments": attachment_context,
+        "operator_context": operator_context,
+        "context_composer": context_composer,
+        "shared_evidence_context": context_composer.get("shared_evidence", {}),
+        "decision_hints": {
+            "literal_followup_hint": literal_followup_hint,
+            "has_explicit_previous_run_context": has_explicit_previous,
+            "source": goal_context.get("source") or payload.get("triage_action") or "agent_run",
+        },
+        "task_context": task_context,
+    }
+    return _drop_empty_nested(normalized)
+
+
+def _request_context_metadata(request: AgentBackendRunRequest) -> dict[str, Any]:
+    packet = request.metadata.get("normalized_request")
+    if not isinstance(packet, dict):
+        return {}
+    composer = _coerce_dict(packet.get("context_composer"))
+    shared_evidence = _coerce_dict(
+        packet.get("shared_evidence_context") or composer.get("shared_evidence")
+    )
+    return _drop_empty_nested(
+        {
+            "normalized_request": packet,
+            "context_composer": composer,
+            "shared_evidence_context": shared_evidence,
+        }
+    )
+
+
+def _compile_context_composer_context(
+    *,
+    original_request: str,
+    current_update: str,
+    is_continuation: bool,
+    continued_from_run_id: str,
+    previous_status: str,
+    previous_failure_or_blocker: str,
+    previous_final_response: str,
+    previous_validation_summary: str,
+    previous_backend_result: dict[str, Any],
+    recent_turns: list[dict[str, str]],
+    selected_plan_context: dict[str, Any],
+    active_workspace_context: dict[str, Any],
+    attachments: list[dict[str, str]],
+    operator_context: dict[str, Any],
+    task_context: dict[str, Any],
+) -> dict[str, Any]:
+    """Compose durable GUI/session context plus promoted worker evidence."""
+
+    items: list[dict[str, Any]] = []
+
+    def add(
+        kind: str,
+        title: str,
+        summary: Any,
+        *,
+        status: str = "context",
+        source: str = "",
+        ref: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        _append_shared_evidence_item(
+            items,
+            kind=kind,
+            title=title,
+            summary=summary,
+            status=status,
+            source=source,
+            ref=ref,
+            metadata=metadata,
+            task_context=task_context,
+        )
+
+    if previous_failure_or_blocker:
+        add(
+            "previous_blocker",
+            "Previous blocker",
+            previous_failure_or_blocker,
+            status="needs_attention",
+            source="previous_run",
+            ref=continued_from_run_id,
+        )
+    if previous_validation_summary:
+        add(
+            "validation",
+            "Previous validation",
+            previous_validation_summary,
+            status="validated",
+            source="previous_run",
+            ref=continued_from_run_id,
+        )
+    if previous_final_response:
+        add(
+            "final_response",
+            "Previous final response",
+            previous_final_response,
+            status="accepted",
+            source="previous_run",
+            ref=continued_from_run_id,
+        )
+
+    selected_card = _coerce_dict(selected_plan_context.get("selected_card"))
+    if selected_card:
+        card_title = _first_compact_text(
+            selected_card.get("title"),
+            selected_card.get("id"),
+            limit=160,
+        )
+        add(
+            "selected_card",
+            f"Selected card: {card_title}" if card_title else "Selected card",
+            _first_compact_text(
+                selected_card.get("detail"),
+                selected_card.get("preview"),
+                limit=700,
+            )
+            or card_title,
+            status=_first_compact_text(selected_card.get("status"), limit=80) or "selected",
+            source="gui_selection",
+            ref=_first_compact_text(selected_card.get("id"), limit=200),
+            metadata={
+                "kind": selected_card.get("kind"),
+                "task_id": selected_card.get("taskId"),
+                "run_id": selected_card.get("runId"),
+            },
+        )
+
+    selected_chunk = _coerce_dict(selected_plan_context.get("selected_chunk"))
+    if selected_chunk:
+        chunk_title = _first_compact_text(
+            selected_chunk.get("title"),
+            selected_chunk.get("id"),
+            limit=160,
+        )
+        add(
+            "selected_chunk",
+            f"Selected chunk: {chunk_title}" if chunk_title else "Selected chunk",
+            _first_compact_text(selected_chunk.get("preview"), limit=700) or chunk_title,
+            status="selected",
+            source="gui_selection",
+            ref=_first_compact_text(
+                selected_chunk.get("filePath"),
+                selected_chunk.get("id"),
+                limit=240,
+            ),
+        )
+
+    active_file = _coerce_dict(active_workspace_context.get("active_file"))
+    if active_file:
+        file_ref = _first_compact_text(
+            active_file.get("relativePath"),
+            active_file.get("path"),
+            active_file.get("name"),
+            limit=260,
+        )
+        add(
+            "active_file",
+            f"Active file: {file_ref}" if file_ref else "Active file",
+            _first_compact_text(active_file.get("preview"), limit=700) or file_ref,
+            status="context",
+            source="gui_selection",
+            ref=file_ref,
+        )
+
+    target_paths = _string_list(operator_context.get("target_paths"))[:8]
+    for path in target_paths:
+        add(
+            "target_path",
+            "Operator target path",
+            path,
+            status="targeted",
+            source="operator_context",
+            ref=path,
+        )
+    for key, title, status in (
+        ("hard_constraints", "Hard constraint", "constraint"),
+        ("validation_requirements", "Validation requirement", "validation_required"),
+    ):
+        for item in _string_list(operator_context.get(key))[:6]:
+            add(
+                key,
+                title,
+                item,
+                status=status,
+                source="operator_context",
+            )
+
+    for attachment in attachments[:8]:
+        detail = _first_compact_text(attachment.get("detail"), attachment.get("name"), limit=260)
+        if not detail:
+            continue
+        add(
+            "attachment",
+            f"Attachment: {attachment.get('kind') or 'file'}",
+            detail,
+            status="attached",
+            source="surface",
+            ref=detail,
+        )
+
+    for item in _worker_evidence_items_from_previous_backend_result(previous_backend_result):
+        add(**item)
+
+    summary = _context_composer_summary(
+        original_request=original_request,
+        current_update=current_update,
+        is_continuation=is_continuation,
+        item_count=len(items),
+        has_previous=bool(
+            previous_status
+            or previous_failure_or_blocker
+            or previous_final_response
+            or previous_validation_summary
+        ),
+        has_recent_chat=bool(recent_turns),
+    )
+    return _drop_empty_nested(
+        {
+            "kind": "context_composer",
+            "compiler": "chat_v2_context_composer_v1",
+            "summary": summary,
+            "shared_evidence": {
+                "scope": "gui_session",
+                "policy": (
+                    "Shared GUI evidence keeps user-visible facts, blockers, "
+                    "validation, selected cards, files, and promoted worker evidence."
+                ),
+                "items": items[:14],
+            },
+            "worker_evidence_policy": (
+                "Worker-local tool output remains with the worker unless it affects "
+                "the answer, a blocker, validation, a selected artifact, or a future continuation."
+            ),
+        }
+    )
+
+
+def _append_shared_evidence_item(
+    items: list[dict[str, Any]],
+    *,
+    kind: str,
+    title: str,
+    summary: Any,
+    status: str,
+    source: str,
+    ref: str,
+    metadata: dict[str, Any] | None,
+    task_context: dict[str, Any],
+) -> None:
+    clean_title = _compact_context_text(title, limit=180)
+    clean_summary = _compact_context_text(summary, limit=800)
+    clean_ref = _compact_context_text(ref, limit=300)
+    if not clean_title and not clean_summary:
+        return
+    signature = (
+        kind,
+        clean_title.lower(),
+        clean_summary.lower(),
+        clean_ref.lower(),
+    )
+    for item in items:
+        existing = (
+            str(item.get("kind") or ""),
+            str(item.get("title") or "").lower(),
+            str(item.get("summary") or "").lower(),
+            str(item.get("ref") or "").lower(),
+        )
+        if existing == signature:
+            return
+    clean_metadata = _drop_empty_nested(_bounded_evidence_metadata(metadata or {}))
+    item_id = f"ev-{len(items) + 1}"
+    items.append(
+        _drop_empty_nested(
+            {
+                "id": item_id,
+                "kind": kind,
+                "status": _compact_context_text(status, limit=80) or "context",
+                "title": clean_title or clean_summary[:180],
+                "summary": clean_summary,
+                "source": _compact_context_text(source, limit=120),
+                "ref": clean_ref,
+                "run_id": task_context.get("run_id"),
+                "task_id": task_context.get("task_id"),
+                "metadata": clean_metadata,
+            }
+        )
+    )
+
+
+def _bounded_evidence_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    bounded: dict[str, Any] = {}
+    for key, value in list(metadata.items())[:12]:
+        if value in (None, "", [], {}):
+            continue
+        if isinstance(value, str):
+            bounded[str(key)] = _compact_context_text(value, limit=220)
+        elif isinstance(value, (int, float, bool)):
+            bounded[str(key)] = value
+        elif isinstance(value, list):
+            bounded[str(key)] = [
+                _compact_context_text(item, limit=160)
+                for item in value[:8]
+                if _compact_context_text(item, limit=160)
+            ]
+        elif isinstance(value, dict):
+            bounded[str(key)] = _bounded_context_dict(
+                value,
+                keys=tuple(str(child_key) for child_key in list(value.keys())[:8]),
+                text_limit=220,
+            )
+    return bounded
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [
+            text
+            for text in (_compact_context_text(item, limit=500) for item in value)
+            if text
+        ]
+    text = _compact_context_text(value, limit=500)
+    return [text] if text else []
+
+
+def _context_composer_summary(
+    *,
+    original_request: str,
+    current_update: str,
+    is_continuation: bool,
+    item_count: int,
+    has_previous: bool,
+    has_recent_chat: bool,
+) -> str:
+    parts = []
+    if is_continuation:
+        parts.append("keeps the original user-visible goal")
+    elif original_request:
+        parts.append("captures the current operator request")
+    if current_update and current_update != original_request:
+        parts.append("treats the latest message as the current satisfaction gap")
+    if has_previous:
+        parts.append("carries prior run status, answer, validation, or blockers")
+    if has_recent_chat:
+        parts.append("keeps recent chat turns as context")
+    if item_count:
+        parts.append(f"promotes {item_count} shared evidence item{'s' if item_count != 1 else ''}")
+    if not parts:
+        return "Context composer has no additional historical evidence for this run."
+    return "Context composer " + "; ".join(parts) + "."
+
+
+def _worker_evidence_items_from_previous_backend_result(
+    previous_backend_result: dict[str, Any],
+) -> list[dict[str, Any]]:
+    raw = _coerce_dict(previous_backend_result.get("raw_result"))
+    rows = [row for row in list(raw.get("events") or []) if isinstance(row, dict)]
+    items: list[dict[str, Any]] = []
+    for row in rows[-80:]:
+        event_name = " ".join(
+            str(row.get(key) or "")
+            for key in ("type", "event", "event_type", "source_event_type")
+        ).lower()
+        payload = _coerce_dict(row.get("payload"))
+        detail = _coerce_dict(row.get("detail"))
+        if not payload and detail:
+            payload = _coerce_dict(detail.get("payload"))
+        capsules = payload.get("capsules") or payload.get("context_capsules")
+        if not capsules and "context.capsule" not in event_name:
+            continue
+        for capsule in list(capsules or [])[:6]:
+            record = _coerce_dict(capsule)
+            if not record:
+                continue
+            title = _first_compact_text(
+                record.get("title"),
+                record.get("kind"),
+                "Worker evidence",
+                limit=180,
+            )
+            summary = _first_compact_text(
+                record.get("summary"),
+                record.get("excerpt"),
+                record.get("text"),
+                title,
+                limit=800,
+            )
+            ref = _first_evidence_ref(record)
+            items.append(
+                {
+                    "kind": "worker_evidence",
+                    "title": title,
+                    "summary": summary,
+                    "status": _first_compact_text(
+                        record.get("artifact_state"),
+                        record.get("status"),
+                        "worker_context",
+                        limit=80,
+                    ),
+                    "source": "worker_context_capsule",
+                    "ref": ref,
+                    "metadata": {
+                        "capsule_id": record.get("capsule_id") or record.get("id"),
+                        "readiness": record.get("readiness"),
+                        "kind": record.get("kind"),
+                    },
+                }
+            )
+    return items[:8]
+
+
+def _first_evidence_ref(record: dict[str, Any]) -> str:
+    refs = record.get("raw_refs") or record.get("refs") or record.get("references")
+    if isinstance(refs, list):
+        for ref in refs:
+            ref_record = _coerce_dict(ref)
+            text = _first_compact_text(
+                ref_record.get("path"),
+                ref_record.get("uri"),
+                ref_record.get("url"),
+                ref_record.get("source"),
+                ref,
+                limit=300,
+            )
+            if text:
+                return text
+    return _first_compact_text(
+        record.get("path"),
+        record.get("uri"),
+        record.get("url"),
+        record.get("source"),
+        limit=300,
+    )
+
+
+def _render_normalized_request_context(
+    request: AgentBackendRunRequest,
+    packet: dict[str, Any],
+    *,
+    fallback_objective: str,
+) -> str:
+    original_request = _compact_context_text(
+        packet.get("original_request") or fallback_objective,
+        limit=4000,
+    )
+    current_update = _compact_context_text(
+        packet.get("current_operator_update") or fallback_objective,
+        limit=3000,
+    )
+    is_continuation = bool(packet.get("is_continuation"))
+    context_lines = _normalized_request_context_lines(request, packet)
+    if is_continuation and original_request:
+        rendered = (
+            f"Original operator request: {original_request}\n\n"
+            f"Current follow-up / satisfaction gap: {current_update or fallback_objective}\n\n"
+            "Continuation contract:\n"
+            "- Continue toward the same user-visible goal instead of completing an internal run ticket.\n"
+            "- Treat the latest operator update as the missing answer, correction, or steering note for that goal.\n"
+            "- Resolve the work mode from the original operator request; answer in-session for explanation, summary, review, diagnosis, or status requests unless the user explicitly asks for project edits or a saved deliverable."
+        )
+        if context_lines:
+            rendered += (
+                "\n\nAggregated context packet for resolving this follow-up:\n"
+                + "\n".join(context_lines)
+            )
+        return (
+            rendered
+            + "\n\nSatisfy the original request plus the current gap; do not treat older chat context as extra tasks."
+        )
+    if not _has_meaningful_fresh_context(request, packet):
+        return fallback_objective
+    if not context_lines:
+        return fallback_objective
+    return (
+        f"Operator request: {fallback_objective}\n\n"
+        "Aggregated context packet for resolving references and active-run updates:\n"
+        + "\n".join(context_lines)
+        + "\n\nSatisfy the operator request and admitted updates above; do not treat older chat context as extra tasks."
+    )
+
+
+def _has_meaningful_fresh_context(
+    request: AgentBackendRunRequest,
+    packet: dict[str, Any],
+) -> bool:
+    if _admitted_operator_messages(request.metadata):
+        return True
+    if packet.get("previous_run_status") or packet.get("continued_from_run_id"):
+        return True
+    if packet.get("recent_chat_turns") or packet.get("attachments"):
+        return True
+    reply_context = _coerce_dict(packet.get("reply_context"))
+    if reply_context.get("reply_to_text"):
+        return True
+    selected_context = _coerce_dict(packet.get("selected_plan_context"))
+    if selected_context:
+        return True
+    workspace_context = _coerce_dict(packet.get("active_workspace_context"))
+    return bool(workspace_context.get("active_file"))
+
+
+def _normalized_request_context_lines(
+    request: AgentBackendRunRequest,
+    packet: dict[str, Any],
+) -> list[str]:
+    lines: list[str] = []
+    admitted_messages = _admitted_operator_messages(request.metadata)
+    if admitted_messages:
+        lines.append("Operator updates admitted from the active-run queue:")
+        for item in admitted_messages[-10:]:
+            lane = str(item.get("lane") or "append").replace("_", "-")
+            text = _compact_context_text(item.get("text"), limit=1200)
+            if text:
+                lines.append(f"- {lane}: {text}")
+            operator_context = (
+                item.get("operator_context")
+                if isinstance(item.get("operator_context"), dict)
+                else {}
+            )
+            paths = [
+                str(path)
+                for path in list(operator_context.get("target_paths") or [])[:8]
+                if path
+            ]
+            if paths:
+                lines.append(f"  target paths: {', '.join(paths)}")
+            if operator_context.get("validation_requirements"):
+                lines.append("  includes validation requirement")
+            if operator_context.get("hard_constraints"):
+                lines.append("  includes hard constraint")
+
+    if packet.get("continued_from_run_id"):
+        lines.append(f"Continued from run: {packet['continued_from_run_id']}")
+    if packet.get("previous_run_status"):
+        lines.append(f"Previous run status: {packet['previous_run_status']}")
+    if packet.get("previous_failure_or_blocker"):
+        lines.append(f"Previous failure/blocker: {packet['previous_failure_or_blocker']}")
+    if packet.get("previous_final_response"):
+        lines.append(f"Previous final response: {packet['previous_final_response']}")
+    if packet.get("previous_validation_summary"):
+        lines.append(f"Previous validation summary: {packet['previous_validation_summary']}")
+
+    composer = _coerce_dict(packet.get("context_composer"))
+    composer_summary = _compact_context_text(composer.get("summary"), limit=900)
+    if composer_summary:
+        lines.append(f"Context composer summary: {composer_summary}")
+    shared_evidence = _coerce_dict(
+        packet.get("shared_evidence_context") or composer.get("shared_evidence")
+    )
+    shared_items = [
+        dict(item)
+        for item in list(shared_evidence.get("items") or [])
+        if isinstance(item, dict)
+    ]
+    if shared_items:
+        lines.append("Shared evidence ledger:")
+        for item in shared_items[:12]:
+            title = _compact_context_text(item.get("title"), limit=240)
+            summary = _compact_context_text(item.get("summary"), limit=700)
+            status = _compact_context_text(item.get("status"), limit=80)
+            ref = _compact_context_text(item.get("ref"), limit=260)
+            if not title and not summary:
+                continue
+            evidence_line = f"- {title or summary}"
+            if status:
+                evidence_line += f" [{status}]"
+            if summary and summary != title:
+                evidence_line += f": {summary}"
+            if ref:
+                evidence_line += f" (ref: {ref})"
+            lines.append(evidence_line)
+
+    selected_context = _coerce_dict(packet.get("selected_plan_context"))
+    if selected_context:
+        lines.append("Selected plan/card context:")
+        for line in _context_dict_lines(selected_context, prefix="- ", limit=1000):
+            lines.append(line)
+
+    workspace_context = _coerce_dict(packet.get("active_workspace_context"))
+    if workspace_context:
+        lines.append("Active workspace context:")
+        for line in _context_dict_lines(workspace_context, prefix="- ", limit=1000):
+            lines.append(line)
+
+    reply_context = _coerce_dict(packet.get("reply_context"))
+    if reply_context.get("reply_to_text"):
+        lines.append(f"Replied-to message: {reply_context['reply_to_text']}")
+
+    turns = [
+        dict(item)
+        for item in list(packet.get("recent_chat_turns") or [])
+        if isinstance(item, dict)
+    ]
+    if turns:
+        lines.append("Recent chat turns:")
+        for turn in turns[-10:]:
+            role = "User" if turn.get("role") == "user" else "Assistant"
+            content = _compact_context_text(turn.get("content"), limit=1200)
+            if content:
+                lines.append(f"- {role}: {content}")
+
+    attachments = [
+        dict(item)
+        for item in list(packet.get("attachments") or [])
+        if isinstance(item, dict)
+    ]
+    if attachments:
+        lines.append("Surface attachments:")
+        for item in attachments[:8]:
+            kind = str(item.get("kind") or "attachment")
+            detail = str(item.get("detail") or item.get("name") or "").strip()
+            if detail:
+                lines.append(f"- {kind}: {detail}")
+    return lines
+
+
+def _context_dict_lines(
+    context: dict[str, Any],
+    *,
+    prefix: str,
+    limit: int,
+) -> list[str]:
+    lines: list[str] = []
+    for key, value in context.items():
+        if value in (None, "", [], {}):
+            continue
+        if isinstance(value, dict):
+            compact = _compact_context_text(json.dumps(value, sort_keys=True), limit=limit)
+        elif isinstance(value, list):
+            compact = _compact_context_text(", ".join(str(item) for item in value), limit=limit)
+        else:
+            compact = _compact_context_text(value, limit=limit)
+        if compact:
+            lines.append(f"{prefix}{key}: {compact}")
+    return lines
+
+
+def _selected_plan_context(surface_context: dict[str, Any]) -> dict[str, Any]:
+    selected_blueprint = _coerce_dict(surface_context.get("selected_blueprint_node"))
+    selected_chunk = _coerce_dict(surface_context.get("selected_chunk"))
+    active_note = _coerce_dict(surface_context.get("active_note"))
+    context: dict[str, Any] = {}
+    if selected_blueprint:
+        context["selected_card"] = _bounded_context_dict(
+            selected_blueprint,
+            keys=("id", "title", "kind", "status", "detail", "taskId", "runId", "preview", "meta"),
+            text_limit=1400,
+        )
+    if selected_chunk:
+        context["selected_chunk"] = _bounded_context_dict(
+            selected_chunk,
+            keys=("id", "kind", "title", "filePath", "taskId", "runId", "preview"),
+            text_limit=1000,
+        )
+    if active_note:
+        context["active_note"] = _bounded_context_dict(
+            active_note,
+            keys=("title", "path", "relative_path", "section", "pageID", "tags", "categories", "dirty"),
+            text_limit=800,
+        )
+    return context
+
+
+def _active_workspace_context(
+    surface_context: dict[str, Any],
+    *,
+    workspace_root: str,
+    workspace_id: str,
+) -> dict[str, Any]:
+    active_file = _coerce_dict(surface_context.get("active_file"))
+    context: dict[str, Any] = {
+        "workspace_root": workspace_root,
+        "workspace_id": workspace_id,
+        "workspace_mode": surface_context.get("workspace_mode"),
+        "ui_surface": surface_context.get("ui_surface"),
+        "agent_backend": surface_context.get("agent_backend"),
+        "gui_for": surface_context.get("gui_for"),
+    }
+    if active_file:
+        context["active_file"] = _bounded_context_dict(
+            active_file,
+            keys=("path", "relativePath", "name", "preview"),
+            text_limit=1800,
+        )
+    return _drop_empty_nested(context)
+
+
+def _recent_chat_turns(
+    history: list[dict[str, str]],
+    surface_context: dict[str, Any],
+    *,
+    current_objective: str,
+) -> list[dict[str, str]]:
+    turns = _history_without_current_objective(history, current_objective)
+    if not turns:
+        conversation = surface_context.get("conversation") if isinstance(surface_context, dict) else {}
+        recent_turns = conversation.get("recent_turns") if isinstance(conversation, dict) else []
+        turns = _normalize_history(recent_turns)
+        turns = _history_without_current_objective(turns, current_objective)
+    return turns[-12:]
+
+
+def _latest_prior_user_turn(history: list[dict[str, str]], current_objective: str) -> str:
+    for turn in reversed(_history_without_current_objective(history, current_objective)):
+        if turn.get("role") != "user":
+            continue
+        text = _compact_context_text(turn.get("content"), limit=3000)
+        if text:
+            return text
+    return ""
+
+
+def _bounded_reply_context(reply_context: dict[str, Any]) -> dict[str, Any]:
+    context = _coerce_dict(reply_context)
+    if not context:
+        return {}
+    bounded = dict(context)
+    if "reply_to_text" in bounded:
+        bounded["reply_to_text"] = _compact_context_text(
+            bounded.get("reply_to_text"),
+            limit=1200,
+        )
+    return _drop_empty_nested(bounded)
+
+
+def _attachment_context(attachments: list[dict[str, Any]]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for item in attachments[:12]:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("local_path") or item.get("path") or "").strip()
+        name = str(item.get("display_name") or item.get("name") or Path(path).name).strip()
+        kind = str(item.get("kind") or "attachment").strip() or "attachment"
+        detail = path or name
+        if detail:
+            rows.append({"kind": kind, "detail": detail, "name": name})
+    return rows
+
+
+def _previous_failure_or_blocker(result: dict[str, Any], *, status: str) -> str:
+    if not result:
+        return ""
+    normalized_status = str(status or result.get("status") or "").strip().lower()
+    raw = _coerce_dict(result.get("raw_result"))
+    if normalized_status in {"failed", "blocked", "stopped"}:
+        return _first_compact_text(
+            result.get("summary"),
+            raw.get("error"),
+            raw.get("stderr"),
+            raw.get("message"),
+            limit=1800,
+        )
+    return _first_compact_text(raw.get("error"), raw.get("stderr"), limit=1800)
+
+
+def _previous_final_response(result: dict[str, Any]) -> str:
+    if not result:
+        return ""
+    raw = _coerce_dict(result.get("raw_result"))
+    direct = _first_compact_text(
+        raw.get("final_text"),
+        raw.get("final_response"),
+        result.get("final_text"),
+        result.get("summary") if str(result.get("status") or "").lower() == "completed" else "",
+        limit=1800,
+    )
+    if direct and direct.lower() not in {"codex completed.", "codex completed"}:
+        return direct
+    for row in reversed(list(raw.get("events") or [])):
+        if not isinstance(row, dict):
+            continue
+        text = _first_compact_text(
+            row.get("final_response"),
+            row.get("final_text"),
+            row.get("message") if str(row.get("type") or "") in {"turn.completed", "message"} else "",
+            limit=1800,
+        )
+        if text and text.lower() not in {"codex completed.", "codex completed"}:
+            return text
+    return ""
+
+
+def _previous_validation_summary(result: dict[str, Any]) -> str:
+    if not result:
+        return ""
+    raw = _coerce_dict(result.get("raw_result"))
+    for key in ("validation_summary", "validation", "validation_result"):
+        text = _compact_context_text(raw.get(key), limit=1400)
+        if text:
+            return text
+    validation_lines: list[str] = []
+    for row in reversed(list(raw.get("events") or [])):
+        if not isinstance(row, dict):
+            continue
+        event_name = " ".join(
+            str(row.get(key) or "")
+            for key in ("type", "event", "event_type", "source_event_type")
+        ).lower()
+        if "validation" not in event_name:
+            continue
+        text = _first_compact_text(
+            row.get("summary"),
+            row.get("message"),
+            row.get("detail"),
+            limit=400,
+        )
+        if text:
+            validation_lines.append(text)
+        if len(validation_lines) >= 4:
+            break
+    validation_lines.reverse()
+    return _compact_context_text(" | ".join(validation_lines), limit=1400)
+
+
+def _bounded_context_dict(
+    source: dict[str, Any],
+    *,
+    keys: tuple[str, ...],
+    text_limit: int,
+) -> dict[str, Any]:
+    bounded: dict[str, Any] = {}
+    for key in keys:
+        if key not in source:
+            continue
+        value = source.get(key)
+        if isinstance(value, str):
+            value = _compact_context_text(value, limit=text_limit)
+        elif isinstance(value, dict):
+            value = {
+                str(child_key): (
+                    _compact_context_text(child_value, limit=600)
+                    if isinstance(child_value, str)
+                    else child_value
+                )
+                for child_key, child_value in list(value.items())[:20]
+            }
+        bounded[key] = value
+    return _drop_empty_nested(bounded)
+
+
+def _coerce_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _drop_empty_nested(value: Any) -> Any:
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for key, item in value.items():
+            nested = _drop_empty_nested(item)
+            if nested in (None, "", [], {}):
+                continue
+            cleaned[key] = nested
+        return cleaned
+    if isinstance(value, list):
+        return [
+            item
+            for item in (_drop_empty_nested(entry) for entry in value)
+            if item not in (None, "", [], {})
+        ]
+    return value
+
+
 def _objective_with_surface_context(request: AgentBackendRunRequest) -> str:
     objective = " ".join(str(request.objective or "").split())
+    normalized_request = request.metadata.get("normalized_request")
+    if isinstance(normalized_request, dict):
+        return _render_normalized_request_context(
+            request,
+            normalized_request,
+            fallback_objective=objective,
+        )
     context_lines: list[str] = []
     goal_context = _resolved_goal_context(request, objective)
     original_request = str(goal_context.get("original_request") or "").strip()
