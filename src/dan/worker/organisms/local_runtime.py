@@ -166,6 +166,9 @@ _FILE_WRITE_RAW_ARGUMENT_RISKY_LENGTH = 4000
 _SOFT_BUDGET_PROFILE_SUPER_DAN = "super_dan_live"
 _SUPER_DAN_PROVIDER_OVERLOAD_MAX_RETRIES = 2
 _SUPER_DAN_PROVIDER_OVERLOAD_RETRY_DELAYS = (0.5, 2.0)
+_SUPER_DAN_BUDGET_EXTENSION_DEFAULT_MAX_LEASES = 1
+_SUPER_DAN_BUDGET_EXTENSION_MAX_ROUNDS_PER_LEASE = 3
+_SUPER_DAN_BUDGET_EXTENSION_MAX_TOOL_CALLS_PER_LEASE = 32
 _DIRECT_WRITE_TIMEOUT_SOFT_CAP_SECONDS = 60.0
 _EXCLUSIVE_OWNER_DIRECT_WRITE_SOFT_CAP_SECONDS = 45.0
 _SOFT_PHASE_TOOL_CALL_BASE_BUDGETS = {
@@ -3697,6 +3700,195 @@ def _soft_budget_action_for_phase(phase: str | None) -> str | None:
     return None
 
 
+def _dynamic_budget_extension_enabled(request: CompletionRequest, *, profile: str | None) -> bool:
+    raw = request.metadata.get("dynamic_budget_extension")
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        normalized = raw.strip().lower()
+        if normalized in {"0", "false", "no", "off", "disabled"}:
+            return False
+        if normalized in {"1", "true", "yes", "on", "enabled"}:
+            return True
+    return profile == _SOFT_BUDGET_PROFILE_SUPER_DAN
+
+
+def _dynamic_budget_max_leases(request: CompletionRequest, *, profile: str | None) -> int:
+    raw = request.metadata.get("max_budget_extension_leases")
+    if raw is None:
+        raw = request.metadata.get("dynamic_budget_max_leases")
+    if raw is None and profile == _SOFT_BUDGET_PROFILE_SUPER_DAN:
+        return _SUPER_DAN_BUDGET_EXTENSION_DEFAULT_MAX_LEASES
+    try:
+        return max(0, min(int(raw), 4))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _short_budget_text(value: Any, *, limit: int = 240) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _budget_audit_prompt_payload(
+    *,
+    request: CompletionRequest,
+    limit_kind: str,
+    current_limit: int | None,
+    rounds: int,
+    total_tool_calls: int,
+    executed_tools: Sequence[dict[str, Any]],
+    workspace_root: Path,
+    last_text: str,
+) -> dict[str, Any]:
+    progress = _soft_budget_progress_snapshot(
+        executed_tools=executed_tools,
+        workspace_root=workspace_root,
+    )
+    recent_tools = []
+    for tool in list(executed_tools)[-12:]:
+        if not isinstance(tool, dict):
+            continue
+        result = tool.get("result")
+        result_summary = ""
+        if isinstance(result, dict):
+            result_summary = _event_text(
+                result.get("path")
+                or result.get("summary")
+                or result.get("message")
+                or result.get("stdout")
+                or result.get("stderr")
+            ) or ""
+        elif result is not None:
+            result_summary = _short_budget_text(str(result), limit=180)
+        recent_tools.append(
+            {
+                "tool_id": _event_text(tool.get("tool_id")),
+                "ok": bool(tool.get("ok")),
+                "error": _event_text(tool.get("error")),
+                "arguments": _compact_event_payload(dict(tool.get("arguments") or {})),
+                "result_summary": _short_budget_text(result_summary, limit=240),
+            }
+        )
+    return {
+        "limit_kind": limit_kind,
+        "current_limit": current_limit,
+        "rounds_used": rounds,
+        "tool_calls_used": total_tool_calls,
+        "progress": progress,
+        "worker_id": _event_text(request.metadata.get("worker_id")),
+        "organism_stage": _event_text(request.metadata.get("organism_stage")),
+        "definition_of_done": _short_budget_text(
+            getattr(request.output_contract, "definition_of_done", "") or "",
+            limit=1000,
+        ),
+        "expected_return_shape": _short_budget_text(
+            getattr(request.output_contract, "expected_return_shape", "") or "",
+            limit=1000,
+        ),
+        "user_prompt": _short_budget_text(request.user_prompt, limit=1600),
+        "recent_tools": recent_tools,
+        "last_assistant_text": _short_budget_text(last_text, limit=1200),
+    }
+
+
+def _budget_audit_messages(payload: dict[str, Any]) -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are a no-tool budget auditor for a local DAN worker. Decide whether "
+                "a small extra budget lease is justified. Approve only when the evidence "
+                "shows concrete progress toward the original task and a small lease is "
+                "likely to finish or validate the work. Deny if the worker is looping, "
+                "speculating, or has no clear remaining step. Return strict JSON only."
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "audit_request": payload,
+                    "return_shape": {
+                        "approved": "boolean",
+                        "extra_rounds": "integer 0-3",
+                        "extra_tool_calls": "integer 0-32",
+                        "reason": "short operator-readable reason",
+                    },
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ),
+        },
+    ]
+
+
+def _parse_budget_audit_decision(text: str, *, limit_kind: str) -> dict[str, Any]:
+    raw = str(text or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE).strip()
+        raw = re.sub(r"\s*```$", "", raw).strip()
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+        if not match:
+            return {"approved": False, "reason": "Budget auditor did not return JSON."}
+        try:
+            parsed = json.loads(match.group(0))
+        except Exception:
+            return {"approved": False, "reason": "Budget auditor returned invalid JSON."}
+    if not isinstance(parsed, dict):
+        return {"approved": False, "reason": "Budget auditor returned a non-object decision."}
+    approved_raw = parsed.get("approved")
+    approved = (
+        approved_raw is True
+        or (
+            isinstance(approved_raw, str)
+            and approved_raw.strip().lower() in {"true", "yes", "approved", "approve"}
+        )
+    )
+    if not approved:
+        return {
+            "approved": False,
+            "reason": _short_budget_text(parsed.get("reason") or "Budget auditor denied the extension.", limit=240),
+        }
+
+    def clamp_int(value: Any, *, default: int, upper: int) -> int:
+        try:
+            coerced = int(value)
+        except (TypeError, ValueError):
+            coerced = default
+        return max(0, min(coerced, upper))
+
+    default_rounds = 2 if limit_kind == "rounds" else 1
+    default_tool_calls = 16 if limit_kind == "rounds" else 24
+    extra_rounds = clamp_int(
+        parsed.get("extra_rounds"),
+        default=default_rounds,
+        upper=_SUPER_DAN_BUDGET_EXTENSION_MAX_ROUNDS_PER_LEASE,
+    )
+    extra_tool_calls = clamp_int(
+        parsed.get("extra_tool_calls"),
+        default=default_tool_calls,
+        upper=_SUPER_DAN_BUDGET_EXTENSION_MAX_TOOL_CALLS_PER_LEASE,
+    )
+    if extra_rounds <= 0 and extra_tool_calls <= 0:
+        return {
+            "approved": False,
+            "reason": "Budget auditor approved but granted no usable lease.",
+        }
+    return {
+        "approved": True,
+        "extra_rounds": extra_rounds,
+        "extra_tool_calls": extra_tool_calls,
+        "reason": _short_budget_text(parsed.get("reason") or "Small continuation lease approved.", limit=240),
+    }
+
+
 def _soft_budget_message(
     phase: str,
     *,
@@ -4964,6 +5156,16 @@ class ToolLoopCompletionProvider:
         soft_budget_tracked_phase: str | None = None
         soft_budget_phase_start_rounds = 0
         soft_budget_phase_start_tool_calls = 0
+        dynamic_budget_enabled = _dynamic_budget_extension_enabled(
+            request,
+            profile=soft_budget_profile,
+        )
+        dynamic_budget_max_leases = _dynamic_budget_max_leases(
+            request,
+            profile=soft_budget_profile,
+        )
+        dynamic_budget_lease_count = 0
+        budget_extensions: list[dict[str, Any]] = []
 
         def _soft_budget_phase_consumed(
             phase: str | None,
@@ -5003,7 +5205,116 @@ class ToolLoopCompletionProvider:
                 "executed_tools": executed_tools,
                 "stop_reason": stop_reason_value,
                 "usage_totals": dict(usage_totals),
+                "budget_extensions": list(budget_extensions),
             }
+
+        async def _maybe_extend_hard_budget(
+            *,
+            limit_kind: str,
+            current_limit: int | None,
+            last_text: str = "",
+        ) -> bool:
+            nonlocal dynamic_budget_lease_count
+            if not dynamic_budget_enabled or dynamic_budget_max_leases <= 0:
+                return False
+            if current_limit is None:
+                return False
+            if dynamic_budget_lease_count >= dynamic_budget_max_leases:
+                return False
+            audit_payload = _budget_audit_prompt_payload(
+                request=request,
+                limit_kind=limit_kind,
+                current_limit=current_limit,
+                rounds=rounds,
+                total_tool_calls=total_tool_calls,
+                executed_tools=executed_tools,
+                workspace_root=self._tool_runtime.workspace_root,
+                last_text=last_text,
+            )
+            audit_model_call_id = self._next_model_call_id()
+            self._emit_event(
+                "toolloop.budget_review.started",
+                model=model,
+                model_call_id=audit_model_call_id,
+                limit_kind=limit_kind,
+                current_limit=current_limit,
+                lease_index=dynamic_budget_lease_count + 1,
+                max_leases=dynamic_budget_max_leases,
+                progress=dict(audit_payload.get("progress") or {}),
+                tool_calls_executed=len(executed_tools),
+                **event_context,
+            )
+            try:
+                audit_result = await self._provider.complete(
+                    messages=_budget_audit_messages(audit_payload),
+                    model=model,
+                    temperature=0.0,
+                    max_tokens=400,
+                )
+            except Exception as exc:
+                self._emit_event(
+                    "toolloop.budget_review.failed",
+                    model=model,
+                    model_call_id=audit_model_call_id,
+                    limit_kind=limit_kind,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                    tool_calls_executed=len(executed_tools),
+                    **event_context,
+                )
+                return False
+            decision = _parse_budget_audit_decision(
+                getattr(audit_result, "text", "") or "",
+                limit_kind=limit_kind,
+            )
+            self._emit_event(
+                "toolloop.budget_review.completed",
+                model=getattr(audit_result, "model", None) or model,
+                model_call_id=audit_model_call_id,
+                limit_kind=limit_kind,
+                approved=bool(decision.get("approved")),
+                reason=decision.get("reason"),
+                usage=_normalize_usage_totals(getattr(audit_result, "usage", None)),
+                tool_calls_executed=len(executed_tools),
+                **event_context,
+            )
+            if not bool(decision.get("approved")):
+                return False
+
+            extra_rounds = int(decision.get("extra_rounds") or 0)
+            extra_tool_calls = int(decision.get("extra_tool_calls") or 0)
+            if limit_kind == "rounds" and extra_rounds <= 0:
+                return False
+            if limit_kind == "tool_calls" and extra_tool_calls <= 0:
+                return False
+
+            previous_round_limit = self._max_rounds
+            previous_tool_call_limit = self._max_tool_calls
+            if self._max_rounds is not None:
+                self._max_rounds += extra_rounds
+            self._max_tool_calls += extra_tool_calls
+            dynamic_budget_lease_count += 1
+            lease = {
+                "lease_index": dynamic_budget_lease_count,
+                "limit_kind": limit_kind,
+                "extra_rounds": extra_rounds,
+                "extra_tool_calls": extra_tool_calls,
+                "previous_round_limit": previous_round_limit,
+                "new_round_limit": self._max_rounds,
+                "previous_tool_call_limit": previous_tool_call_limit,
+                "new_tool_call_limit": self._max_tool_calls,
+                "reason": decision.get("reason") or "",
+            }
+            budget_extensions.append(lease)
+            self._emit_event(
+                "toolloop.budget_extension.approved",
+                model=getattr(audit_result, "model", None) or model,
+                model_call_id=audit_model_call_id,
+                **lease,
+                tool_calls_executed=len(executed_tools),
+                **event_context,
+            )
+            return True
 
         while True:
             request_tool_schemas = _enabled_tool_schemas(
@@ -5588,41 +5899,56 @@ class ToolLoopCompletionProvider:
 
             rounds += 1
             if self._max_rounds is not None and rounds > self._max_rounds:
-                stop_reason = f"max_tool_rounds_exceeded:{self._max_rounds}"
-                partial_candidate = _partial_coding_candidate_from_tool_evidence(
-                    request=request,
-                    executed_tools=executed_tools,
-                    stop_reason=stop_reason,
-                    existing_text=last_result.text or "",
-                    workspace_root=self._tool_runtime.workspace_root,
-                )
-                fallback_text = (
-                    json.dumps(partial_candidate, ensure_ascii=False, sort_keys=True)
-                    if partial_candidate is not None
-                    else (last_result.text or "")
-                )
-                self._emit_event(
-                    "completion.completed",
-                    model=last_result.model or model,
-                    model_call_id=model_call_id,
-                    stop_reason=stop_reason,
-                    tool_calls_executed=len(executed_tools),
-                    **event_context,
-                )
-                return CompletionResponse(
-                    text=fallback_text,
-                    raw=_completion_raw(
-                        provider_model=last_result.model,
-                        finish_reason=last_result.finish_reason,
-                        usage=last_result.usage,
-                        provider_metadata={
-                            **dict(last_result.provider_metadata or {}),
-                            "tool_evidence_fallback": partial_candidate is not None,
-                        },
-                        assistant_message=assistant_message,
-                        stop_reason_value=stop_reason,
-                    ),
-                )
+                if await _maybe_extend_hard_budget(
+                    limit_kind="rounds",
+                    current_limit=self._max_rounds,
+                    last_text=last_result.text or "",
+                ):
+                    self._emit_event(
+                        "toolloop.budget_extension.continued",
+                        limit_kind="rounds",
+                        round=rounds,
+                        round_limit=self._max_rounds,
+                        tool_call_limit=self._max_tool_calls,
+                        tool_calls_executed=len(executed_tools),
+                        **event_context,
+                    )
+                else:
+                    stop_reason = f"max_tool_rounds_exceeded:{self._max_rounds}"
+                    partial_candidate = _partial_coding_candidate_from_tool_evidence(
+                        request=request,
+                        executed_tools=executed_tools,
+                        stop_reason=stop_reason,
+                        existing_text=last_result.text or "",
+                        workspace_root=self._tool_runtime.workspace_root,
+                    )
+                    fallback_text = (
+                        json.dumps(partial_candidate, ensure_ascii=False, sort_keys=True)
+                        if partial_candidate is not None
+                        else (last_result.text or "")
+                    )
+                    self._emit_event(
+                        "completion.completed",
+                        model=last_result.model or model,
+                        model_call_id=model_call_id,
+                        stop_reason=stop_reason,
+                        tool_calls_executed=len(executed_tools),
+                        **event_context,
+                    )
+                    return CompletionResponse(
+                        text=fallback_text,
+                        raw=_completion_raw(
+                            provider_model=last_result.model,
+                            finish_reason=last_result.finish_reason,
+                            usage=last_result.usage,
+                            provider_metadata={
+                                **dict(last_result.provider_metadata or {}),
+                                "tool_evidence_fallback": partial_candidate is not None,
+                            },
+                            assistant_message=assistant_message,
+                            stop_reason_value=stop_reason,
+                        ),
+                    )
             round_tool_call_ids: list[str] = []
             invalid_tool_argument_nudges: list[tuple[str, str]] = []
             availability_tool_nudges: list[tuple[str, str]] = []
@@ -5820,6 +6146,12 @@ class ToolLoopCompletionProvider:
                         workspace_root=self._tool_runtime.workspace_root,
                     )
                 )
+                if total_tool_calls > self._max_tool_calls:
+                    await _maybe_extend_hard_budget(
+                        limit_kind="tool_calls",
+                        current_limit=self._max_tool_calls,
+                        last_text=last_result.text or "",
+                    )
                 if total_tool_calls > self._max_tool_calls:
                     tool_payload = {
                         "ok": False,
