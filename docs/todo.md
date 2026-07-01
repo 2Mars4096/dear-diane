@@ -1,6 +1,11 @@
 # Todo
 
 ## Current Backlog
+- [x] 2026-07-01 Scheduler soft-budget continuation leases — fixed: exhausted Codex/background continuation caps can grant one audited continuation lease with persisted ledger/events, while max parallel run admission remains hard queue capacity.
+- [x] 2026-07-01 Work Preview Card placement — fixed: previewable output files now sit at the bottom of the Work pane as an output shelf below the run steps.
+- [x] 2026-07-01 Work timeline follow-up visibility — fixed: unmatched recent user turns stay visible as selectable `You` cards, visible run ordering follows chat-message sequence when present, and the Work panel only scroll-anchors to genuinely active cards instead of older ready/done fallback steps.
+- [x] 2026-06-30 Work send stuck behind stopped Codex continuation — fixed: stop-requested Agent runs no longer hold the async board's active lane, and Work Codex runs opt out of backend auto-continuation so follow-ups are user-driven instead of spawning synthetic `previous run ended...` work.
+- [x] 2026-06-30 Follow-up composer visibility — fixed: completed/stopped sessions now show `Send` instead of stale `Steer`, optimistic follow-up messages persist from the live message ref, and new unsynced follow-ups remain visible in multi-run Work timelines before the backend assigns a run id.
 - [x] 2026-06-30 Active-run settlement from final events — fixed: Work cards, Message Queue, session status, and Stop composer controls now clear stale `running` task snapshots when matching terminal run events prove the run has finalized.
 - [x] 2026-06-30 Preview runtime direction — decided: the Preview pane should act as DAN's built-in universal preview runtime for HTML/site artifacts, PDFs, figures/images, Markdown, and text, with external browser opening as an escape hatch rather than the primary surface.
 - [x] 2026-06-30 Codex command-summary quieting — fixed: Work cards and Preview live status now summarize raw Codex shell-command events as semantic activity such as local preview checks, builds, tests, endpoint checks, or workspace commands instead of rendering full `/bin/zsh ...` invocations.

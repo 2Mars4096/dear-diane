@@ -1,6 +1,13 @@
 # Changelog
 
+## 2026-07-01
+- [feat] Added Chat V2 scheduler soft-budget leases for continuation caps. Codex auto-continuation depth and background promoted continuation/dependency exhaustion now request one audited continuation lease with persisted ledger/events, while parallel-run capacity stays a hard queue admission limit.
+- [fix] Moved the Work Preview Card to the bottom of the Work pane so previewable files behave like an output shelf after the current run steps instead of a header above the work.
+- [fix] Restored visible and correctly sequenced follow-up feedback in the Work timeline. Recent user turns that cannot be paired to a backend request card now remain visible as `You` cards, chat-message order wins over stale task timestamps for run ordering, and ready/done blueprint cards no longer become fallback scroll anchors when no task is genuinely active.
+
 ## 2026-06-30
+- [fix] Restored Work send/progress after stopped Codex continuations. Stop-requested Agent runs no longer count as active board blockers, and the Work Codex execution payload opts out of synthetic backend auto-continuation so one Send produces one visible run unless the operator explicitly queues a follow-up.
+- [fix] Kept follow-up sends visible after a run is no longer active. The Work composer now labels inactive sessions as `Send`/`New` instead of stale `Steer`, persists optimistic user/assistant messages from the live message ref, and gives unsynced user messages a temporary local timeline slot in multi-run sessions until the backend assigns a run id.
 - [fix] Settled stale active-run UI from terminal run events. The Work surface now derives a settled task view from matching final/terminal Agent events before computing active task, Message Queue, elapsed counter, session status, and Stop controls, so a final response cannot leave the session looking active.
 - [docs] Recorded the Preview pane direction as a built-in universal preview runtime for HTML/site artifacts, PDFs, figures/images, Markdown, and text, with external browser opening kept as a secondary escape hatch.
 - [fix] Quieted raw Codex shell-command progress in Work and Preview. Codex backend item summaries now describe command activity semantically, and the Work Panel also sanitizes already-persisted `Codex ran \`/bin/zsh ...\`` summaries before rendering live status.

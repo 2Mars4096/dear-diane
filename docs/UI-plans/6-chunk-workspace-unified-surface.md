@@ -218,6 +218,7 @@
   - [x] 6-178. Put child task checkboxes directly on plan cards and keep minute execution rows out of the main card timeline
   - [x] 6-179. Show only active child tasks on plan cards while Preview keeps the full live checkbox checklist
   - [x] 6-180. Settle stale active Live Task Graph nodes after a final response when no closing graph snapshot exists
+  - [x] 6-181. Keep unmatched recent user turns visible in chat order in the Work timeline and only scroll-anchor genuine active cards
   - [x] 6-181. Summarize Parallel Groups by task count, status mix, and readable task goals instead of raw id chains
   - [x] 6-182. Keep Codex/tool/terminal execution traces out of the semantic plan/subplan/item task graph
   - [x] 6-183. Keep low-level graph telemetry and output chunk parser failures out of primary Work Panel live-status prose
@@ -231,6 +232,10 @@
   - [x] 6-191. Add a Work Preview Card for previewable artifacts, including backend-reported output refs and workspace files such as HTML, PDF, image, Markdown, and text previews.
   - [x] 6-192. Quiet raw Codex shell-command progress in Work cards and Preview live status by replacing full command invocations with short semantic activity summaries.
   - [x] 6-193. Clear stale active-run queue/session/composer state when terminal run events finalize a task before the persisted task snapshot catches up.
+  - [x] 6-194. Keep follow-up sends visible after terminal/stopped runs by using `Send`/`New` inactive labels, persisting from the live message ref, and giving unsynced user messages a temporary Work timeline slot before run-id assignment.
+  - [x] 6-195. Restore Work send/progress after stopped Codex continuations by keeping stop-requested runs out of active board capacity and disabling synthetic Codex backend auto-continuation for ordinary Work sends.
+  - [x] 6-196. Move the Work Preview Card below Run Steps so previewable artifacts read as an output shelf at the bottom of the Work pane.
+  - [x] 6-197. Add scheduler soft-budget leases for exhausted continuation/promoted-run caps while keeping max-parallel admission hard.
 
 ## Decisions
 - The workspace route is a surface, not another product mode.
@@ -254,9 +259,12 @@
 - Live status is not a raw event log, and Final response is not a runtime-error bucket. Observable graph-update telemetry should not appear as `Task graph updated to codex.r...` event or task-progress prose, and known runtime parser limits should be translated into concise technical notes instead of copied as raw backend strings or accepted as final answers.
 - Codex shell commands are debug evidence, not primary progress prose. The backend should summarize commands by intent, such as local preview check, build, test, endpoint check, or workspace command; the GUI should also sanitize older persisted `Codex ran \`...\`` summaries before rendering Work cards or Preview live status.
 - Terminal/final events can settle visible run controls before task persistence refreshes. The Work surface derives a settled task view from matching terminal run events before computing active task, queue rows, elapsed counters, session cards, and Stop controls; stage-level `*.completed` events do not settle the run by themselves.
+- Composer labels must reflect routability. `Steer` and `Next` are active-run actions only; when no task is genuinely running, the primary action reads `Send` and the routing chip reads `New`. User messages render optimistically from local state first, including a temporary timeline slot in multi-run sessions before the backend assigns a run id.
+- Ordinary Work sends should map to one visible backend run. Codex-backed Work runs opt out of synthetic backend auto-continuation by default; explicit operator follow-ups still use the queue/continue path, but the GUI should not create a hidden `previous run ended...` continuation unless a backend policy intentionally enables it.
 - Previewable outputs belong in the Work flow, not a separate artifact browser. The Work Preview Card lists backend-reported artifacts and output-like workspace files, then uses the existing Preview pane as a built-in preview runtime for sandboxed HTML/sites, image/figure, PDF, Markdown, and text rendering. External browser opening stays available as an escape hatch, not the default user path.
 - Follow-up interpretation belongs before backend execution. Chat V2 compiles `history + current update + selected UI/workspace state` into a structured `normalized_request` packet, then renders that as the backend objective; fixed continuation phrases are only weak fallback hints when no explicit previous-run context exists.
 - Runtime limits are control boundaries, not user-goal boundaries. Native/Super DAN may extend a live stage only through a bounded no-tool budget-auditor lease, while Codex can only continue after its external process exits by queuing a new run that preserves the original request plus the remaining gap.
+- Scheduler soft budget applies to continuation-style exhaustion only. Codex backend auto-continuation depth, promoted continuations, and ready dependency promotion can request a bounded audited lease after terminal checkpoint evidence and queued follow-up/dependency candidates exist; `max_parallel_runs` remains hard traffic control and queues instead of leasing.
 - Blueprint `active` now means a task is actually `running`. Queued, dependency-waiting, input-needed, paused, failed, blocked, and stopped task states remain visible without borrowing the active-run anchor; terminal failed/blocked/stopped work renders blocked execution/final nodes with the backend detail.
 - Final-answer evidence closes stale graph activity. If a run is no longer active and has a usable final response but the backend did not emit a final `task_graph_state`, the GUI clears stale active ids in the latest graph snapshot and marks those frontier tasks done so the current graph does not continue to look running.
 - Parallel group ids are source data, not a readable explanation. Preview summaries should lead with lane size, branch/status mix, and representative task goals; raw ids can remain implicit in the task graph but should not appear as long `id + id + id` chains.
