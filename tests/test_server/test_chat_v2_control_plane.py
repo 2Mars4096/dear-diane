@@ -1242,6 +1242,44 @@ def test_v2_async_board_snapshot_survives_restart_and_parallel_admission(tmp_pat
     }
 
 
+def test_v2_async_board_does_not_block_on_stop_requested_run(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    store = ChatV2Store(tmp_path / "chat_v2")
+
+    first = admit_foreground_turn(
+        store,
+        _async_core_turn("show me the website", workspace=workspace, turn_id="turn-a"),
+    )
+    assert first.decision.action == "start_parallel"
+    mark_background_run_started(store, first.decision.run_id, backend="codex")
+
+    stop_event = store.request_agent_run_stop(
+        AgentRunCommand(
+            command="stop",
+            run_id=first.decision.run_id,
+            task_id=first.decision.task_id,
+            surface_turn_id="turn-stop",
+            payload={"reason": "user_requested_from_workspace_gui"},
+        )
+    )
+    assert stop_event.type == "stop_requested"
+
+    snapshot = build_task_board_snapshot(
+        store,
+        workspace_root=str(workspace),
+        thread_id="thread-async",
+    )
+    assert snapshot.active_runs == []
+
+    second = admit_foreground_turn(
+        store,
+        _async_core_turn("what's next", workspace=workspace, turn_id="turn-b"),
+    )
+
+    assert second.decision.action == "start_parallel"
+    assert second.decision.reason == "no active or queued executor work in this board scope"
+
+
 def test_v2_async_board_snapshot_is_isolated_by_surface_topic_key(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     store = ChatV2Store(tmp_path / "chat_v2")

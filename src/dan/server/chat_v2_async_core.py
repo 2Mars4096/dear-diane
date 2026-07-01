@@ -223,7 +223,7 @@ def build_task_board_snapshot(
 
     for run in runs:
         row = _board_run_from_record(run, tasks_by_id.get(run.task_id))
-        bucket = _run_bucket(row.status)
+        bucket = _run_bucket(row)
         if bucket == "active":
             active_runs.append(row)
         elif bucket == "queued":
@@ -766,13 +766,27 @@ def _owned_paths_for_run(run: AgentRunRecord) -> list[str]:
     return [_normalize_path_key(path) for path in paths if _normalize_path_key(path)]
 
 
-def _run_bucket(status: str) -> Literal["active", "queued", "completed"]:
-    normalized = str(status or "").strip().lower()
+def _run_bucket(run: BoardRun | str) -> Literal["active", "queued", "completed"]:
+    if isinstance(run, BoardRun):
+        normalized = str(run.status or "").strip().lower()
+        if _run_stop_requested(run):
+            return "completed"
+    else:
+        normalized = str(run or "").strip().lower()
     if normalized in {"completed", "failed", "stopped"}:
         return "completed"
     if normalized in {"queued", "waiting_dependency"}:
         return "queued"
     return "active"
+
+
+def _run_stop_requested(run: BoardRun) -> bool:
+    metadata = run.metadata or {}
+    return bool(
+        metadata.get("stop_requested")
+        or metadata.get("stop_requested_at")
+        or metadata.get("stop_command")
+    )
 
 
 def _target_paths_from_admission(admission: ForegroundAdmissionInput) -> list[str]:
