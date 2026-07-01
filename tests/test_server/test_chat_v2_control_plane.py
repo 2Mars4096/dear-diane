@@ -637,6 +637,86 @@ async def test_v2_codex_failed_limit_queues_bounded_auto_continuation(tmp_path) 
 
 
 @pytest.mark.asyncio
+async def test_v2_codex_auto_continuation_can_be_disabled_by_profile_policy(tmp_path) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    accepted = store.accept_bridge_context(
+        build_v2_bridge_context(
+            ChatMessageRequest(
+                workflow_id="_scratch",
+                message="build a static project page and report back",
+                mode="agent",
+                surface_type="web",
+                surface_id="v2",
+                thread_id="thread-web",
+            )
+        )
+    )
+    assert accepted.run_id is not None
+
+    result = await run_agent_backend(
+        store,
+        accepted.run_id,
+        adapter=_FailingCodexContinuationAdapter(),
+        backend_name="codex",
+        overrides={"profile_policy": {"auto_backend_continuation": False}},
+    )
+
+    assert result.status == "failed"
+    first_run = store.get_run(accepted.run_id)
+    assert first_run is not None
+    assert "continued_run_id" not in first_run.metadata
+
+
+@pytest.mark.asyncio
+async def test_v2_codex_auto_continuation_cap_uses_scheduler_soft_budget(tmp_path) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    accepted = store.accept_bridge_context(
+        build_v2_bridge_context(
+            ChatMessageRequest(
+                workflow_id="_scratch",
+                message="build a static project page and report back",
+                mode="agent",
+                surface_type="web",
+                surface_id="v2",
+                thread_id="thread-web",
+            )
+        )
+    )
+    assert accepted.run_id is not None
+    store.update_run_metadata(
+        accepted.run_id,
+        {"max_auto_backend_continuations": 0},
+    )
+
+    result = await run_agent_backend(
+        store,
+        accepted.run_id,
+        adapter=_FailingCodexContinuationAdapter(),
+        backend_name="codex",
+    )
+
+    assert result.status == "failed"
+    first_run = store.get_run(accepted.run_id)
+    assert first_run is not None
+    next_run_id = first_run.metadata["continued_run_id"]
+    assert next_run_id
+    extensions = first_run.metadata["scheduler_budget_extensions"]
+    assert extensions[0]["cap_name"] == "backend_auto_continuation"
+    assert extensions[0]["extra_continuations"] == 1
+    next_run = store.get_run(next_run_id)
+    assert next_run is not None
+    assert next_run.command.payload["max_auto_backend_continuations"] == 1
+    assert next_run.command.payload["scheduler_budget_extensions"][0]["cap_name"] == (
+        "backend_auto_continuation"
+    )
+    event_types = [
+        event.get("source_event_type")
+        for event in store.load_run_events(accepted.run_id)
+    ]
+    assert "chat_v2.scheduler.soft_budget.approved" in event_types
+
+
+@pytest.mark.asyncio
 async def test_v2_run_persists_context_composer_for_gui_task_metadata(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -2006,6 +2086,82 @@ async def test_v2_background_execution_auto_runs_promoted_continue(
     next_events = await chat_v2_router.get_agent_run_events(next_run_id)
     assert first_events["events"][-1]["type"] == "queue_item_injected"
     assert next_events["events"][-1]["type"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_v2_background_execution_soft_budget_extends_promoted_continue_cap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = ChatV2Store(tmp_path / "chat_v2")
+    monkeypatch.setattr(chat_v2_router, "get_chat_v2_store", lambda request=None: store)
+    created = await chat_v2_router.create_agent_run(
+        req=ChatMessageRequest(
+            workflow_id="_scratch",
+            message="build the landing page",
+            mode="agent",
+            surface_type="web",
+            surface_id="v2",
+            thread_id="thread-web",
+        )
+    )
+    run_id = created["v2_control_plane"]["run_id"]
+    await chat_v2_router.append_agent_run_command(
+        run_id,
+        AgentRunCommand(
+            command="continue_after_current",
+            surface_turn_id="turn-followup-background",
+            idempotency_key="followup-background-soft-budget",
+            payload={"text": "then add tests"},
+        ),
+    )
+
+    await chat_v2_router._execute_agent_run_background(
+        store,
+        run_id,
+        backend_name="deterministic",
+        overrides={},
+        auto_execute_continuations=True,
+        remaining_continuations=0,
+    )
+
+    first_run = store.get_run(run_id)
+    assert first_run.status == "completed"
+    next_run_id = first_run.metadata["continued_run_id"]
+    next_run = store.get_run(next_run_id)
+    assert next_run is not None
+    assert next_run.status == "completed"
+    assert next_run.metadata["promoted_from_run_id"] == run_id
+    assert next_run.metadata["scheduler_budget_extensions"][0]["cap_name"] == (
+        "promoted_continuations"
+    )
+    first_event_sources = [
+        event.get("source_event_type")
+        for event in store.load_run_events(run_id)
+    ]
+    assert "chat_v2.scheduler.soft_budget.approved" in first_event_sources
+
+
+def test_v2_async_admission_parallel_cap_stays_hard(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    store = ChatV2Store(tmp_path / "chat_v2")
+    first = admit_foreground_turn(
+        store,
+        _async_core_turn("build script_a.py", workspace=workspace, turn_id="turn-a"),
+        max_parallel_runs=1,
+    )
+    assert first.decision.action == "start_parallel"
+    mark_background_run_started(store, first.decision.run_id, backend="deterministic")
+
+    second = admit_foreground_turn(
+        store,
+        _async_core_turn("build script_b.py", workspace=workspace, turn_id="turn-b"),
+        max_parallel_runs=1,
+    )
+
+    assert second.decision.action == "queue_after"
+    assert second.decision.capacity_blocked is True
+    assert "capacity" in second.decision.reason.lower()
 
 
 @pytest.mark.asyncio

@@ -30,6 +30,11 @@ from dan.server.chat_v2_async_core import (
     mark_background_run_started,
 )
 from dan.server.chat_v2_backend import run_agent_backend
+from dan.server.chat_v2_scheduler_budget import (
+    scheduler_budget_event,
+    scheduler_budget_metadata_update,
+    scheduler_continuation_budget_decision,
+)
 from dan.server.chat_v2_store import ChatV2Store
 from dan.server.routers.chat import ChatMessageRequest, chat_message
 from dan.server.routers.dependencies import get_chat_v2_store
@@ -497,14 +502,27 @@ async def _execute_agent_run_background(
             overrides=overrides,
         )
         run = store.get_run(run_id)
-        if not auto_execute_continuations or remaining_continuations <= 0:
+        continuation_budget = int(remaining_continuations or 0)
+        queued_continued_run_id = ""
+        if run is not None:
+            candidate_run_id = str(run.metadata.get("continued_run_id") or "")
+            candidate_run = store.get_run(candidate_run_id) if candidate_run_id else None
+            if candidate_run is not None and candidate_run.status == "queued":
+                queued_continued_run_id = candidate_run_id
+        if auto_execute_continuations and run is not None and continuation_budget <= 0:
+            continuation_budget = _maybe_extend_background_continuation_budget(
+                store,
+                run,
+                cap_name="promoted_continuations",
+                reason="Background promoted-continuation cap reached.",
+                remaining_continuations=continuation_budget,
+                candidate_count=1 if queued_continued_run_id else 0,
+                next_run_id=queued_continued_run_id,
+            )
+        if not auto_execute_continuations or continuation_budget <= 0:
             next_run_id = ""
         else:
-            next_run_id = (
-                str(run.metadata.get("continued_run_id") or "")
-                if run is not None
-                else ""
-            )
+            next_run_id = queued_continued_run_id
         if next_run_id:
             next_run = store.get_run(next_run_id)
             if next_run is not None and next_run.status == "queued":
@@ -524,15 +542,33 @@ async def _execute_agent_run_background(
                     backend_name=backend_name,
                     overrides=overrides,
                     auto_execute_continuations=True,
-                    remaining_continuations=remaining_continuations - 1,
+                    remaining_continuations=continuation_budget - 1,
                     auto_execute_ready_dependencies=auto_execute_ready_dependencies,
                 )
         if not auto_execute_ready_dependencies or run is None:
             return
+        dependency_budget = int(remaining_continuations or 0)
+        if dependency_budget <= 0:
+            dependency_candidates = _ready_dependency_run_count(
+                store,
+                dependency_task_id=run.task_id,
+            )
+            if dependency_candidates > 0:
+                dependency_budget = _maybe_extend_background_continuation_budget(
+                    store,
+                    run,
+                    cap_name="ready_dependency_promotions",
+                    reason="Background dependency-promotion cap reached.",
+                    remaining_continuations=dependency_budget,
+                    candidate_count=dependency_candidates,
+                )
+        if dependency_budget <= 0:
+            return
         for ready in store.promote_waiting_dependency_runs(
             dependency_task_id=run.task_id,
-            limit=max(1, remaining_continuations),
+            limit=max(1, dependency_budget),
         ):
+            _inherit_scheduler_budget_decision(store, ready.run_id, run)
             mark_background_run_started(
                 store,
                 ready.run_id,
@@ -546,12 +582,98 @@ async def _execute_agent_run_background(
                     backend_name=backend_name,
                     overrides=overrides,
                     auto_execute_continuations=auto_execute_continuations,
-                    remaining_continuations=remaining_continuations,
+                    remaining_continuations=dependency_budget,
                     auto_execute_ready_dependencies=True,
                 )
             )
     except Exception:
         logger.exception("Background Chat V2 Agent run failed for %s", run_id)
+
+
+def _maybe_extend_background_continuation_budget(
+    store: ChatV2Store,
+    run: Any,
+    *,
+    cap_name: str,
+    reason: str,
+    remaining_continuations: int,
+    candidate_count: int = 0,
+    next_run_id: str = "",
+) -> int:
+    decision = scheduler_continuation_budget_decision(
+        run,
+        cap_name=cap_name,
+        reason=reason,
+        remaining_continuations=remaining_continuations,
+        candidate_count=candidate_count,
+        next_run_id=next_run_id,
+        requested_extra=1,
+    )
+    store.update_run_metadata(run.run_id, scheduler_budget_metadata_update(decision))
+    store.record_agent_event(scheduler_budget_event(run, decision))
+    if not decision.get("approved"):
+        return max(0, int(remaining_continuations or 0))
+    if next_run_id:
+        store.update_run_metadata(
+            next_run_id,
+            {
+                "scheduler_budget_extensions": [
+                    dict(item)
+                    for item in decision.get("scheduler_budget_extensions") or []
+                    if isinstance(item, dict)
+                ]
+            },
+        )
+    return max(0, int(remaining_continuations or 0)) + int(
+        decision.get("extra_continuations") or 0
+    )
+
+
+def _inherit_scheduler_budget_decision(
+    store: ChatV2Store,
+    run_id: str,
+    source_run: Any,
+) -> None:
+    refreshed = store.get_run(str(source_run.run_id or ""))
+    source = refreshed if refreshed is not None else source_run
+    extensions = source.metadata.get("scheduler_budget_extensions")
+    if not isinstance(extensions, list):
+        return
+    store.update_run_metadata(
+        run_id,
+        {
+            "scheduler_budget_extensions": [
+                dict(item) for item in extensions if isinstance(item, dict)
+            ]
+        },
+    )
+
+
+def _ready_dependency_run_count(
+    store: ChatV2Store,
+    *,
+    dependency_task_id: str,
+) -> int:
+    count = 0
+    for run in store.list_run_records(limit=500):
+        if run.status != "waiting_dependency":
+            continue
+        deps = [
+            str(item)
+            for item in run.metadata.get("depends_on_task_ids", [])
+            if str(item).strip()
+        ]
+        if dependency_task_id and dependency_task_id not in deps:
+            continue
+        if not deps:
+            continue
+        dep_tasks = [store.get_task(dep_id) for dep_id in deps]
+        if any(task is None for task in dep_tasks):
+            continue
+        dep_statuses = {str(task.status) for task in dep_tasks if task is not None}
+        if dep_statuses.issubset({"completed", "failed", "blocked", "stopped"}):
+            count += 1
+    return count
 
 
 def _task_run_ref_from_acceptance(acceptance: Any) -> dict[str, Any] | None:

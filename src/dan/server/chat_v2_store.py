@@ -1580,6 +1580,11 @@ class ChatV2Store:
                     "previous_backend_result": dict(
                         command_payload.get("previous_backend_result") or {}
                     ),
+                    "scheduler_budget_extensions": [
+                        dict(item)
+                        for item in command_payload.get("scheduler_budget_extensions") or []
+                        if isinstance(item, dict)
+                    ],
                 },
             )
             task.queue_items.append(item)
@@ -2687,6 +2692,7 @@ def _start_payload_from_queue_item(
         "auto_continuation_depth",
         "max_auto_backend_continuations",
         "previous_backend_result",
+        "scheduler_budget_extensions",
     ):
         if key in metadata and metadata.get(key) not in (None, ""):
             payload[key] = metadata.get(key)

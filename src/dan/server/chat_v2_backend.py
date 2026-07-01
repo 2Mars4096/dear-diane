@@ -21,6 +21,11 @@ from dan.server.chat_v2_store import (
     QueueItemRecord,
     V2TaskRecord,
 )
+from dan.server.chat_v2_scheduler_budget import (
+    scheduler_budget_event,
+    scheduler_budget_metadata_update,
+    scheduler_continuation_budget_decision,
+)
 
 
 AgentEventSink = Callable[[AgentRunEvent], None]
@@ -1214,6 +1219,7 @@ async def run_agent_backend(
         run_id,
         backend_name=selected.backend_name,
         result=result,
+        request=request,
     )
     store.promote_next_continue_after_current(run_id)
     return result
@@ -1854,14 +1860,47 @@ def _queue_backend_auto_continuation_if_needed(
     *,
     backend_name: str,
     result: AgentBackendRunResult,
+    request: AgentBackendRunRequest | None = None,
 ) -> None:
     run = store.get_run(run_id)
     if run is None:
         return
-    if not _backend_auto_continuation_needed(run, backend_name=backend_name, result=result):
+    if not _backend_auto_continuation_needed(
+        run,
+        backend_name=backend_name,
+        result=result,
+        request=request,
+    ):
         return
     depth = _backend_auto_continuation_depth(run)
     max_depth = _backend_auto_continuation_max(run, backend_name=backend_name)
+    scheduler_decision: dict[str, Any] | None = None
+    if depth >= max_depth:
+        scheduler_decision = scheduler_continuation_budget_decision(
+            run,
+            cap_name="backend_auto_continuation",
+            reason="Codex backend auto-continuation depth cap reached.",
+            remaining_continuations=max_depth - depth,
+            candidate_count=1,
+            requested_extra=1,
+        )
+        store.update_run_metadata(run_id, scheduler_budget_metadata_update(scheduler_decision))
+        store.record_agent_event(scheduler_budget_event(run, scheduler_decision))
+        if scheduler_decision.get("approved"):
+            max_depth += int(scheduler_decision.get("extra_continuations") or 0)
+        else:
+            store.update_run_metadata(
+                run_id,
+                {
+                    "auto_continuation_skipped": {
+                        "reason": "max_auto_backend_continuations_reached",
+                        "depth": depth,
+                        "max_depth": max_depth,
+                        "scheduler_budget_decision": dict(scheduler_decision),
+                    }
+                },
+            )
+            return
     if depth >= max_depth:
         store.update_run_metadata(
             run_id,
@@ -1882,6 +1921,15 @@ def _queue_backend_auto_continuation_if_needed(
         next_depth=next_depth,
         max_depth=max_depth,
     )
+    extensions = (
+        scheduler_decision.get("scheduler_budget_extensions")
+        if scheduler_decision is not None
+        else None
+    )
+    if isinstance(extensions, list):
+        payload["scheduler_budget_extensions"] = [
+            dict(item) for item in extensions if isinstance(item, dict)
+        ]
     command = AgentRunCommand(
         command="continue_after_current",
         run_id=run_id,
@@ -1901,6 +1949,9 @@ def _queue_backend_auto_continuation_if_needed(
                 "queue_event_type": event.type,
                 "queue_item_id": str(event.payload.get("queue_item_id") or ""),
                 "reason": payload.get("satisfaction_gap") or "",
+                "scheduler_budget_decision": (
+                    dict(scheduler_decision) if scheduler_decision is not None else {}
+                ),
             }
         },
         status=_terminal_status(result.status),
@@ -1912,12 +1963,17 @@ def _backend_auto_continuation_needed(
     *,
     backend_name: str,
     result: AgentBackendRunResult,
+    request: AgentBackendRunRequest | None = None,
 ) -> bool:
     normalized_backend = str(backend_name or result.backend or "").strip().lower()
     if normalized_backend != "codex":
         return False
     payload = dict(run.command.payload or {})
-    profile_policy = dict(payload.get("profile_policy") or {})
+    profile_policy = _merged_dict(
+        payload.get("profile_policy"),
+        run.metadata.get("profile_policy"),
+        request.profile_policy if request is not None else {},
+    )
     raw_enabled = (
         payload.get("auto_backend_continuation")
         if "auto_backend_continuation" in payload
@@ -2094,6 +2150,7 @@ def _backend_auto_continuation_payload(
         "approval_policy",
         "tool_policy",
         "topic_key",
+        "scheduler_budget_extensions",
     )
     payload = {
         key: copy_value
