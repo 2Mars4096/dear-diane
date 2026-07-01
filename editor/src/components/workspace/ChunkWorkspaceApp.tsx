@@ -6264,6 +6264,17 @@ function namespaceBlueprintRunNodes(nodes: BlueprintNode[], runId: string, shoul
   }));
 }
 
+const PENDING_CHUNK_RUN_PREFIX = "pending-chunk:";
+
+function pendingChunkRunId(chunk: WorkspaceChunk) {
+  return `${PENDING_CHUNK_RUN_PREFIX}${chunk.id}`;
+}
+
+function chunkBelongsToTimelineRun(chunk: WorkspaceChunk, runId: string) {
+  if (chunk.runId) return chunk.runId === runId;
+  return chunk.kind === "chat" && chunk.role === "user" && pendingChunkRunId(chunk) === runId;
+}
+
 function blueprintRunTimelineIds(args: {
   tasks: ChatV2TaskSnapshot[];
   agentEvents: ChatV2AgentRunEvent[];
@@ -6271,22 +6282,50 @@ function blueprintRunTimelineIds(args: {
   queueRows: QueueRow[];
   activeRunId: string;
 }) {
-  const runOrder = new Map<string, { firstSeen: number; sortTime: number }>();
-  const addRun = (runId: string | null | undefined, firstSeen: number, sortTime = Number.NaN) => {
+  const realRunIds = new Set<string>();
+  const collectRealRun = (runId: string | null | undefined) => {
+    const id = textValue(runId);
+    if (id) realRunIds.add(id);
+  };
+  args.chunks.forEach((chunk) => collectRealRun(chunk.runId));
+  args.tasks.forEach((task) => collectRealRun(taskRunId(task)));
+  args.agentEvents.forEach((event) => collectRealRun(event.run_id));
+  args.queueRows.forEach((row) => collectRealRun(row.runId));
+  collectRealRun(args.activeRunId);
+
+  const runOrder = new Map<string, { firstSeen: number; sortTime: number; conversationIndex: number }>();
+  const addRun = (
+    runId: string | null | undefined,
+    firstSeen: number,
+    sortTime = Number.NaN,
+    conversationIndex = Number.NaN,
+  ) => {
     const id = textValue(runId);
     if (!id) return;
     const previous = runOrder.get(id);
     const nextSortTime = Number.isFinite(sortTime) ? sortTime : previous?.sortTime ?? Number.NaN;
+    const nextConversationIndex = Number.isFinite(conversationIndex)
+      ? conversationIndex
+      : previous?.conversationIndex ?? Number.NaN;
     if (!previous) {
-      runOrder.set(id, { firstSeen, sortTime: nextSortTime });
+      runOrder.set(id, { firstSeen, sortTime: nextSortTime, conversationIndex: nextConversationIndex });
       return;
     }
     previous.firstSeen = Math.min(previous.firstSeen, firstSeen);
     if (Number.isFinite(nextSortTime)) previous.sortTime = nextSortTime;
+    if (Number.isFinite(nextConversationIndex)) {
+      previous.conversationIndex = Number.isFinite(previous.conversationIndex)
+        ? Math.min(previous.conversationIndex, nextConversationIndex)
+        : nextConversationIndex;
+    }
   };
+  const includePendingChunks = realRunIds.size > 1;
 
   args.chunks.forEach((chunk, index) => {
-    addRun(chunk.runId, index);
+    const isUserTurn = chunk.kind === "chat" && chunk.role === "user";
+    const runId =
+      chunk.runId || (includePendingChunks && isUserTurn ? pendingChunkRunId(chunk) : "");
+    addRun(runId, index, Number.NaN, isUserTurn ? index : Number.NaN);
   });
   args.tasks.forEach((task, index) => {
     addRun(taskRunId(task), 10_000 + index, runSortTimeForTask(task));
@@ -6301,9 +6340,15 @@ function blueprintRunTimelineIds(args: {
 
   return [...runOrder.entries()]
     .sort(([, a], [, b]) => {
+      const aHasConversation = Number.isFinite(a.conversationIndex);
+      const bHasConversation = Number.isFinite(b.conversationIndex);
+      if (aHasConversation && bHasConversation && a.conversationIndex !== b.conversationIndex) {
+        return a.conversationIndex - b.conversationIndex;
+      }
       const aHasTime = Number.isFinite(a.sortTime);
       const bHasTime = Number.isFinite(b.sortTime);
       if (aHasTime && bHasTime && a.sortTime !== b.sortTime) return a.sortTime - b.sortTime;
+      if (aHasConversation !== bHasConversation) return aHasConversation ? -1 : 1;
       if (aHasTime !== bHasTime) return aHasTime ? -1 : 1;
       return a.firstSeen - b.firstSeen;
     })
@@ -6333,7 +6378,7 @@ function buildBlueprintNodes(args: {
   const nodes = runIds.flatMap((runId) => {
     const scopedTasks = args.tasks.filter((task) => taskRunId(task) === runId);
     const scopedEvents = args.agentEvents.filter((event) => event.run_id === runId);
-    const scopedChunks = args.chunks.filter((chunk) => chunk.runId === runId);
+    const scopedChunks = args.chunks.filter((chunk) => chunkBelongsToTimelineRun(chunk, runId));
     const scopedQueueRows = args.queueRows.filter((row) => row.runId === runId);
     const scopedActiveTask =
       args.activeRunningTask && taskRunId(args.activeRunningTask) === runId
@@ -7123,13 +7168,11 @@ export function sharedEvidenceItemsForTest(
 }
 
 function blueprintAnchorNode(nodes: BlueprintNode[]) {
-  return (
-    nodes.find((node) => node.status === "active") ??
-    nodes.find((node) => node.status === "ready") ??
-    [...nodes].reverse().find((node) => node.status === "done") ??
-    nodes[0] ??
-    null
-  );
+  return nodes.find((node) => node.status === "active") ?? null;
+}
+
+export function blueprintAnchorNodeForTest(nodes: BlueprintNode[]) {
+  return blueprintAnchorNode(nodes);
 }
 
 function isMachineProgressText(text: string) {
@@ -10027,12 +10070,18 @@ function blueprintTimelineItems(
   conversationChunks: WorkspaceChunk[],
 ): BlueprintTimelineItem[] {
   const chunks = userConversationChunks(conversationChunks);
+  const chunkIndexById = new Map(chunks.map((chunk, index) => [chunk.id, index]));
   const assignedChunkIds = new Set<string>();
+  let latestAssignedChunkIndex = -1;
   const items: BlueprintTimelineItem[] = [];
   for (const node of nodes) {
     const chunk = nodeConversationChunk(node, chunks, assignedChunkIds);
     if (chunk) {
       assignedChunkIds.add(chunk.id);
+      latestAssignedChunkIndex = Math.max(
+        latestAssignedChunkIndex,
+        chunkIndexById.get(chunk.id) ?? -1,
+      );
       items.push({
         kind: "conversation",
         id: `conversation:${chunk.id}:before:${node.id}`,
@@ -10041,6 +10090,15 @@ function blueprintTimelineItems(
     }
     items.push({ kind: "node", id: `node:${node.id}`, node });
   }
+  chunks.forEach((chunk, index) => {
+    if (assignedChunkIds.has(chunk.id)) return;
+    if (latestAssignedChunkIndex >= 0 && index <= latestAssignedChunkIndex) return;
+    items.push({
+      kind: "conversation",
+      id: `conversation:${chunk.id}:unmatched`,
+      chunk,
+    });
+  });
   return items;
 }
 

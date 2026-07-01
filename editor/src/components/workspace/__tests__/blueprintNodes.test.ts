@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   activeThreadArchivedSummaryForTest,
+  blueprintAnchorNodeForTest,
   blueprintCardContentForTest,
   buildSessionGroupsForTest,
   blueprintTimelineItemsForTest,
@@ -1081,6 +1082,97 @@ describe("workspace blueprint nodes", () => {
     expect(chunks).toHaveLength(1);
     expect(chunks[0]?.id).toBe("message:user-2");
     expect(chunks[0]?.body).toBe("Second request");
+  });
+
+  it("keeps newer unmatched user turns visible after the latest paired request", () => {
+    const chunks = conversationUserChunksForTest([
+      {
+        id: "message:user-old",
+        kind: "chat",
+        title: "You · Request",
+        body: "old request",
+        status: "clean",
+        meta: "user",
+        role: "user",
+      },
+      {
+        id: "message:user-try-again",
+        kind: "chat",
+        title: "You · Request",
+        body: "try again",
+        status: "clean",
+        meta: "user",
+        role: "user",
+      },
+    ]);
+    const nodes = [
+      {
+        id: "blueprint:old-request",
+        title: "Operator request",
+        detail: "Request captured",
+        meta: "input",
+        body: "Ready for request understanding.",
+        rawRequest: "old request",
+        status: "done" as const,
+        kind: "request" as const,
+      },
+    ];
+
+    expect(blueprintTimelineItemsForTest(nodes, chunks)).toEqual([
+      {
+        kind: "conversation",
+        id: "conversation:message:user-old:before:blueprint:old-request",
+        chunkId: "message:user-old",
+        body: "old request",
+      },
+      {
+        kind: "node",
+        id: "node:blueprint:old-request",
+        nodeId: "blueprint:old-request",
+        title: "Operator request",
+      },
+      {
+        kind: "conversation",
+        id: "conversation:message:user-try-again:unmatched",
+        chunkId: "message:user-try-again",
+        body: "try again",
+      },
+    ]);
+  });
+
+  it("only treats an actually active blueprint node as the scroll anchor", () => {
+    const readyNode = {
+      id: "blueprint:ready",
+      title: "Understand request",
+      detail: "Waiting",
+      meta: "request",
+      body: "Waiting for work.",
+      status: "ready" as const,
+      kind: "understanding" as const,
+    };
+    const doneNode = {
+      id: "blueprint:done",
+      title: "Final response",
+      detail: "Done",
+      meta: "answer",
+      body: "Finished.",
+      status: "done" as const,
+      kind: "answer" as const,
+    };
+    const activeNode = {
+      id: "blueprint:active",
+      title: "Execute workspace change",
+      detail: "Working",
+      meta: "workspace lane",
+      body: "Working.",
+      status: "active" as const,
+      kind: "build" as const,
+    };
+
+    expect(blueprintAnchorNodeForTest([doneNode, readyNode])).toBeNull();
+    expect(blueprintAnchorNodeForTest([doneNode, activeNode, readyNode])?.id).toBe(
+      "blueprint:active",
+    );
   });
 
   it("labels blank Super DAN sessions as having no request yet", () => {
@@ -3484,6 +3576,148 @@ describe("workspace blueprint nodes", () => {
       "node:blueprint:run:followup-run:understanding",
       "node:blueprint:run:followup-run:build",
     ]);
+  });
+
+  it("keeps a newly sent follow-up visible before the backend assigns a run id", () => {
+    const oldTasks = [
+      task({
+        task_id: "old-task-1",
+        status: "completed",
+        latest_progress: "First run done.",
+        metadata: { active_run_id: "old-run-1" },
+      }),
+      task({
+        task_id: "old-task-2",
+        status: "completed",
+        latest_progress: "Second run done.",
+        metadata: { active_run_id: "old-run-2" },
+      }),
+    ];
+    const chunks = [
+      {
+        id: "message:user-old-1",
+        kind: "chat" as const,
+        title: "You · Request",
+        body: "first request",
+        status: "clean" as const,
+        meta: "user",
+        role: "user" as const,
+        runId: "old-run-1",
+      },
+      {
+        id: "message:user-old-2",
+        kind: "chat" as const,
+        title: "You · Request",
+        body: "second request",
+        status: "clean" as const,
+        meta: "user",
+        role: "user" as const,
+        runId: "old-run-2",
+      },
+      {
+        id: "message:user-pending-followup",
+        kind: "chat" as const,
+        title: "You · Request",
+        body: "actually can you explain why it stopped",
+        status: "clean" as const,
+        meta: "user",
+        role: "user" as const,
+      },
+    ];
+
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      tasks: oldTasks,
+      chunks,
+      agentEvents: [
+        {
+          type: "completed",
+          source_event_type: "run.log.completed",
+          summary: "First run done.",
+          run_id: "old-run-1",
+          task_id: "old-task-1",
+        },
+        {
+          type: "completed",
+          source_event_type: "run.log.completed",
+          summary: "Second run done.",
+          run_id: "old-run-2",
+          task_id: "old-task-2",
+        },
+      ],
+    });
+
+    expect(nodes.find((node) => node.rawRequest === "actually can you explain why it stopped")).toMatchObject({
+      title: "Operator request",
+      status: "done",
+    });
+    expect(
+      blueprintTimelineItemsForTest(nodes, conversationUserChunksForTest(chunks))
+        .map((item) => item.id)
+        .some((id) => id.includes("message:user-pending-followup")),
+    ).toBe(true);
+  });
+
+  it("orders pending user turns by chat sequence instead of after task-backed runs", () => {
+    const oldTask = task({
+      task_id: "old-task",
+      status: "completed",
+      latest_progress: "Old run done.",
+      metadata: {
+        active_run_id: "old-run",
+        created_at: "2026-06-29T15:10:07.995591+00:00",
+        updated_at: "2026-07-01T00:58:21.641539+00:00",
+      },
+    });
+    const activeTask = task({
+      task_id: "active-task",
+      status: "running",
+      latest_progress: "Thinking with kimi-k2.6.",
+      metadata: {
+        active_run_id: "active-run",
+        created_at: "2026-07-01T01:05:55.365717+00:00",
+        updated_at: "2026-07-01T01:07:07.025444+00:00",
+      },
+    });
+    const chunks = [
+      {
+        id: "message:user-pending-old",
+        kind: "chat" as const,
+        title: "You · Request",
+        body: "can you fix the DAn typo",
+        status: "clean" as const,
+        meta: "user",
+        role: "user" as const,
+      },
+      {
+        id: "message:user-active",
+        kind: "chat" as const,
+        title: "You · Request",
+        body: "continue?",
+        status: "clean" as const,
+        meta: "user",
+        role: "user" as const,
+        runId: "active-run",
+      },
+    ];
+
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      tasks: [activeTask, oldTask],
+      chunks,
+      activeRunId: "active-run",
+      activeRunningTask: activeTask,
+    });
+    const pendingRequestIndex = nodes.findIndex(
+      (node) => node.kind === "request" && node.rawRequest === "can you fix the DAn typo",
+    );
+    const activeRequestIndex = nodes.findIndex(
+      (node) => node.kind === "request" && node.rawRequest === "continue?",
+    );
+
+    expect(pendingRequestIndex).toBeGreaterThanOrEqual(0);
+    expect(activeRequestIndex).toBeGreaterThanOrEqual(0);
+    expect(pendingRequestIndex).toBeLessThan(activeRequestIndex);
   });
 
   it("recovers old phone-session requests without queueing stop controls", () => {
