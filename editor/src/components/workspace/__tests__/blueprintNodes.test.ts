@@ -167,6 +167,7 @@ describe("workspace blueprint nodes", () => {
       surface_profile: "super_tui",
       codex_model: "gpt-5.5",
       codex_reasoning_effort: "high",
+      auto_backend_continuation: false,
     });
     expect(payload.metadata).toMatchObject({
       selected_agent: "codex",

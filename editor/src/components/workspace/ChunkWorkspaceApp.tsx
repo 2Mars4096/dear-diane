@@ -364,6 +364,9 @@ function buildWorkspaceAgentExecutePayload(
   if (agentOption.backend === CODEX_BACKEND && modelOption.reasoningEffort) {
     profilePolicy.codex_reasoning_effort = modelOption.reasoningEffort;
   }
+  if (agentOption.backend === CODEX_BACKEND) {
+    profilePolicy.auto_backend_continuation = false;
+  }
   return {
     backend: agentOption.backend,
     surface_profile: SUPER_TUI_PROFILE,
@@ -10653,7 +10656,7 @@ function WorkspacePreviewArtifactsCard({
   onSelect: (entry: WorkspaceFileEntry) => void;
 }) {
   return (
-    <section className="mb-3 rounded-md border border-slate-200/80 bg-white/75 p-3 shadow-sm dark:border-slate-800 dark:bg-slate-950/65">
+    <section className="mt-3 rounded-md border border-slate-200/80 bg-white/75 p-3 shadow-sm dark:border-slate-800 dark:bg-slate-950/65">
       <div className="mb-2 flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
           <Eye size={13} />
@@ -15791,11 +15794,6 @@ export default function ChunkWorkspaceApp() {
               </div>
 
               <div className="min-h-0 flex-1 overflow-auto p-4">
-                <WorkspacePreviewArtifactsCard
-                  artifacts={previewArtifacts}
-                  selectedPath={activeFilePath}
-                  onSelect={selectPreviewFile}
-                />
                 {isPhoneViewport || showConversationChunks ? (
                   <BlueprintView
                     nodes={blueprintNodes}
@@ -15825,6 +15823,11 @@ export default function ChunkWorkspaceApp() {
                     Work panel hidden.
                   </div>
                 )}
+                <WorkspacePreviewArtifactsCard
+                  artifacts={previewArtifacts}
+                  selectedPath={activeFilePath}
+                  onSelect={selectPreviewFile}
+                />
               </div>
 
               {showAgentQueuePanel && (
