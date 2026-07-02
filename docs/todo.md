@@ -1,6 +1,16 @@
 # Todo
 
 ## Current Backlog
+- [x] 2026-07-02 Workspace root alias for local DAN checkout — fixed: the GUI now maps the stale `/Volumes/data/Dropbox/Projects/deep-agent-network` root to `/Users/lizhi/Downloads/local_projects/deep-agent-network` before grouping sessions, browsing files, or sending new Agent runs.
+- [x] 2026-07-02 Flattened continuation policy parsing — fixed: Super DAN mutation policy now extracts operator/follow-up labels from flattened GUI packets before scanning intent, so generated context `do not ...` instructions no longer make write follow-ups read-only.
+- [x] 2026-07-02 Full Preview context/highlight cleanup — fixed: selected Work chunks/cards now render as calmer reading views with automatic maybe-code highlighting off, and copied internal selected-card/file context dumps are hidden from Preview.
+- [x] 2026-07-02 Backend run-start mutation-policy recompute — fixed: newly admitted runs recompute effective mutation permission before adapter execution instead of trusting stale inherited payload policy.
+- [x] 2026-07-02 Inline code color treatment — fixed: generic code and long inline snippets now use color-first monospace styling instead of badge backgrounds, reserving stronger chips for file paths and status tokens.
+- [x] 2026-07-02 Markdown highlight semantics — fixed: file paths, URLs, short symbols/config tokens, long snippets, and status tokens now have separate highlight treatments instead of sharing one heavy badge style.
+- [x] 2026-07-02 Work Preview evidence Markdown — fixed: Evidence and Live Status now render long Markdown-shaped summaries as Markdown with quieter highlighting, while short status rows keep compact scan tokens.
+- [x] 2026-07-02 Queued follow-up mutation-policy reset — fixed: human follow-up run payloads no longer inherit the previous run's `mutation_policy`, so new follow-ups can be reclassified from current text.
+- [x] 2026-07-02 Follow-up mutation-policy recheck — fixed: each Super DAN continuation policy pass now considers the current follow-up, so explicit implement/apply requests can become write-capable while hard no-edit constraints remain read-only.
+- [x] 2026-07-02 Work Panel optional planning cards — fixed: small one-off runs no longer show a future Blueprint planning card unless planning/graph evidence exists; tool work settles understanding and makes execution the clear active phase.
 - [x] 2026-07-01 Scheduler soft-budget continuation leases — fixed: exhausted Codex/background continuation caps can grant one audited continuation lease with persisted ledger/events, while max parallel run admission remains hard queue capacity.
 - [x] 2026-07-01 Work Preview Card placement — fixed: previewable output files now sit at the bottom of the Work pane as an output shelf below the run steps.
 - [x] 2026-07-01 Work timeline follow-up visibility — fixed: unmatched recent user turns stay visible as selectable `You` cards, visible run ordering follows chat-message sequence when present, and the Work panel only scroll-anchors to genuinely active cards instead of older ready/done fallback steps.

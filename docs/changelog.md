@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-07-02
+- [fix] Canonicalized the stale Dropbox `/Volumes` project root to the active local `Downloads/local_projects` checkout in the workspace GUI, so session grouping, file browsing, and future Agent run payloads target the same local tree.
+- [fix] Prevented flattened GUI continuation context from poisoning Super DAN mutation policy. Policy resolution now extracts only the operator request and current follow-up labels before checking read-only/write intent, so generated context instructions such as "do not quote context labels" cannot force an implement follow-up into read-only mode.
+- [fix] Recomputed mutation policy at backend run-request build time. Newly admitted runs now get a fresh operator-intent permission decision before adapter execution, while already-running backends keep their started contract.
+- [fix] Calmed full Preview rendering for selected Work chunks and cards. The Preview pane now disables automatic maybe-code highlighting in long reading views, strips copied internal selected-card/file context dumps, and the backend tells future runs not to quote selected-card or active-file JSON back to the operator.
+- [fix] Stopped queued follow-up runs from inheriting stale previous-run mutation policy. Human follow-ups now carry prior context but let the next backend run reclassify permissions from the original request plus current follow-up text.
+- [fix] Made inline code highlights read as code instead of badges. Generic code symbols and long inline snippets now use color-first monospace styling, while stronger chip backgrounds stay reserved for file paths and explicit status tokens.
+- [fix] Split Markdown highlight styling by semantic role. Inline file paths, URLs, short code/config symbols, long snippets, and status tokens now use distinct visual treatments so evidence previews do not render every highlighted fragment as the same heavy badge.
+- [fix] Restored Markdown structure in Work Preview evidence and live-status cards. Long Markdown-shaped evidence now renders through the shared Markdown renderer with automatic code-like prose highlighting disabled, while short operational status lines keep compact file/tool/state tokens.
+- [fix] Rechecked Super DAN mutation policy on continuation follow-ups. Write-like follow-ups such as "please implement these" can upgrade an assessment/read-only original into a workspace-change run unless the original request explicitly forbids file edits.
+- [fix] Made Work Panel planning cards evidence-based. One-off runs that move directly from request understanding into tool/execution work no longer keep a grey Blueprint planning card in the middle; tool work now settles understanding and shows execution as the current phase unless DAN emits a real planning event or task graph.
+
 ## 2026-07-01
 - [feat] Added Chat V2 scheduler soft-budget leases for continuation caps. Codex auto-continuation depth and background promoted continuation/dependency exhaustion now request one audited continuation lease with persisted ledger/events, while parallel-run capacity stays a hard queue admission limit.
 - [fix] Moved the Work Preview Card to the bottom of the Work pane so previewable files behave like an output shelf after the current run steps instead of a header above the work.
