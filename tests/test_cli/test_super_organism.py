@@ -4564,6 +4564,86 @@ def test_operator_intent_policy_classifies_continuation_from_original_request(
     assert policy.source_scope == "operator_prompt_assessment_answer_only"
 
 
+def test_operator_intent_policy_rechecks_write_followup_for_continuation_round(
+    tmp_path,
+) -> None:
+    objective = (
+        "Original operator request: Inspect the website and suggest the exact CSS changes.\n\n"
+        "Current follow-up / satisfaction gap: ok sounds good, please implement these?\n\n"
+        "Continuation contract:\n"
+        "- Continue toward the same user-visible goal instead of completing an internal run ticket.\n"
+        "- Use the follow-up as the missing answer, correction, or steering note for that goal.\n"
+        "- Resolve the work mode from the original operator request; answer in-session for explanation, summary, review, diagnosis, or status requests unless the user explicitly asks for project edits or a saved deliverable."
+    )
+
+    policy = super_cli._operator_intent_policy_from_objective(
+        objective,
+        workspace_root=tmp_path,
+    )
+
+    assert policy.active is True
+    assert policy.work_mode == "workspace_change"
+    assert policy.mutation_policy == "required"
+    assert policy.evidence_policy == "reads_and_checks"
+    assert policy.allow_workspace_mutation is True
+    assert policy.allow_shell_command is True
+    assert "assessment request" not in " ".join(policy.constraints)
+
+
+def test_operator_intent_policy_ignores_flattened_gui_context_when_rechecking_followup(
+    tmp_path,
+) -> None:
+    objective = (
+        "Original operator request: try again, please update the website "
+        "Current follow-up / satisfaction gap: try again to implement these changes we just discussed "
+        "Continuation contract: - Continue toward the same user-visible goal instead of completing an internal run ticket. "
+        "- Resolve the work mode from the original operator request; answer in-session for explanation requests unless the user explicitly asks for project edits. "
+        "Aggregated context packet for resolving this follow-up: Context handling: use this context for grounding only. "
+        "Do not quote context labels, selected-card JSON, or active-file JSON back to the operator unless they ask for diagnostics. "
+        "Recent chat turns: - Assistant: this session is read-only. "
+        "Satisfy the original request plus the current gap; do not treat older chat context as extra tasks."
+    )
+
+    policy = super_cli._operator_intent_policy_from_objective(
+        objective,
+        workspace_root=tmp_path,
+    )
+
+    assert policy.active is True
+    assert policy.work_mode == "workspace_change"
+    assert policy.mutation_policy == "required"
+    assert policy.allow_workspace_mutation is True
+    assert policy.source_scope == "workspace_allowed"
+    assert "Do not write" not in " ".join(policy.constraints)
+
+
+def test_operator_intent_policy_write_followup_keeps_original_no_edits_binding(
+    tmp_path,
+) -> None:
+    objective = (
+        "Original operator request: Inspect the website and suggest the exact CSS changes. No edits.\n\n"
+        "Current follow-up / satisfaction gap: ok sounds good, please implement these?\n\n"
+        "Continuation contract:\n"
+        "- Continue toward the same user-visible goal instead of completing an internal run ticket.\n"
+        "- Use the follow-up as the missing answer, correction, or steering note for that goal.\n"
+        "- Resolve the work mode from the original operator request; answer in-session for explanation, summary, review, diagnosis, or status requests unless the user explicitly asks for project edits or a saved deliverable."
+    )
+
+    policy = super_cli._operator_intent_policy_from_objective(
+        objective,
+        workspace_root=tmp_path,
+    )
+
+    assert policy.active is True
+    assert policy.work_mode == "workspace_read"
+    assert policy.mutation_policy == "forbidden"
+    assert policy.evidence_policy == "workspace_reads"
+    assert policy.allow_workspace_mutation is False
+    assert policy.allow_shell_command is False
+    assert policy.source_scope == "operator_prompt_read_only"
+    assert "Do not write" in " ".join(policy.constraints)
+
+
 def test_operator_intent_policy_marks_ambiguous_workspace_work_optional(tmp_path) -> None:
     objective = "help me improve this project"
     report = super_cli.run_super_organism_demo(objective)

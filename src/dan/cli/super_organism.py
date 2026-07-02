@@ -5635,10 +5635,33 @@ def _objective_forbids_shell_command(objective: str) -> bool:
 
 def _objective_for_policy_resolution(objective: str) -> str:
     text = str(objective or "")
+    stop_labels = (
+        "Current follow-up / satisfaction gap:",
+        "Continuation contract:",
+        "Aggregated context packet",
+        "Context composer summary:",
+        "Shared evidence ledger:",
+        "Selected plan/card context:",
+        "Active workspace context:",
+        "Recent chat turns:",
+        "Surface attachments:",
+        "Context handling:",
+        "Satisfy the original request",
+        "Satisfy the operator request",
+    )
+    stop_pattern = "|".join(re.escape(label) for label in stop_labels)
     if "Original operator request:" not in text:
+        operator_match = re.search(
+            rf"(?is)\bOperator request:\s*(.+?)(?=\s*(?:{stop_pattern})|\Z)",
+            text,
+        )
+        if operator_match:
+            operator_request = " ".join(operator_match.group(1).split())
+            if operator_request:
+                return operator_request
         return text
     original_match = re.search(
-        r"(?is)\bOriginal operator request:\s*(.+?)(?:\n\s*Current follow-up / satisfaction gap:|\n\s*Continuation contract:|\Z)",
+        rf"(?is)\bOriginal operator request:\s*(.+?)(?=\s*(?:{stop_pattern})|\Z)",
         text,
     )
     if not original_match:
@@ -5647,11 +5670,15 @@ def _objective_for_policy_resolution(objective: str) -> str:
     if not original:
         return text
     followup_match = re.search(
-        r"(?is)\bCurrent follow-up / satisfaction gap:\s*(.+?)(?:\n\s*Continuation contract:|\n\s*Additional surface context|\Z)",
+        rf"(?is)\bCurrent follow-up / satisfaction gap:\s*(.+?)(?=\s*(?:{stop_pattern}|Additional surface context)|\Z)",
         text,
     )
     followup = " ".join(followup_match.group(1).split()) if followup_match else ""
-    if followup and _objective_explicitly_requests_saved_answer_artifact(followup):
+    if not followup:
+        return original
+    if _objective_forbids_workspace_mutation(original):
+        return original
+    if _objective_explicitly_requests_saved_answer_artifact(followup) or _objective_requests_workspace_mutation(followup):
         return f"{original}\n{followup}"
     return original
 
