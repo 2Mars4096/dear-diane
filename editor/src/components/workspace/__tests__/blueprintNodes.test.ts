@@ -18,6 +18,7 @@ import {
   noteRailViewForFacetForTest,
   normalizeStructuredMarkdownForTest,
   planCardChecklistItemsForTest,
+  previewMarkdownContentForTest,
   planTaskChecklistItemsForTest,
   queueRowsFromTasksForTest,
   recentModifiedNotesForTest,
@@ -31,6 +32,8 @@ import {
   settleTaskSnapshotsFromEventsForTest,
   sessionStatusTasksForTest,
   shouldAutoRestoreSessionForTest,
+  statusLineUsesMarkdownForTest,
+  statusMarkdownContentForTest,
   taskGroupElapsedCounterForTest,
   workspaceComposerPlacementLabelForTest,
   workPlanHeaderSubtitleForTest,
@@ -925,6 +928,27 @@ describe("workspace blueprint nodes", () => {
     ).toBe("ra-neo");
   });
 
+  it("canonicalizes the old Dropbox project root to the local project root", () => {
+    const workspaceTask = task({
+      metadata: {
+        workspace_id: "ws-1779357375714-zeqg2h",
+        workspace_root: "/Volumes/data/Dropbox/Projects/deep-agent-network",
+      },
+    });
+
+    expect(workspaceRootForTasksForTest([workspaceTask])).toBe(
+      "/Users/lizhi/Downloads/local_projects/deep-agent-network",
+    );
+    expect(
+      workspaceIdForTasksForTest([workspaceTask], [
+        {
+          id: "deep-agent-network",
+          pinnedPaths: ["/Users/lizhi/Downloads/local_projects/deep-agent-network"],
+        },
+      ]),
+    ).toBe("deep-agent-network");
+  });
+
   it("groups restart-restored scratch sessions by saved workspace root", () => {
     const groups = buildSessionGroupsForTest({
       threads: [
@@ -1435,7 +1459,7 @@ describe("workspace blueprint nodes", () => {
     expect(workPlanHeaderSubtitleForTest(planning)).toBe("Planning next steps");
   });
 
-  it("keeps the future workflow tail visible while DAN is still understanding the request", () => {
+  it("keeps the future workflow tail visible without forcing a planning card while DAN is still understanding the request", () => {
     const activeTask = task({
       task_id: "understanding-first-task",
       status: "running",
@@ -1481,9 +1505,7 @@ describe("workspace blueprint nodes", () => {
       status: "active",
       detail: "Rule-generation brief sent to DAN",
     });
-    expect(nodes.find((node) => node.id === "blueprint:planning")).toMatchObject({
-      status: "future",
-    });
+    expect(nodes.find((node) => node.id === "blueprint:planning")).toBeUndefined();
     expect(nodes.find((node) => node.kind === "build")).toMatchObject({
       status: "future",
     });
@@ -1881,6 +1903,35 @@ describe("workspace blueprint nodes", () => {
     expect(normalized).toContain("\n1. **Three.js browser prototype**");
     expect(normalized).toContain("\n- A minimal ECS core.");
     expect(normalized).toContain("\n\n### Core design pillars\n\n- **Visibility:** every entity is visible.");
+  });
+
+  it("routes flattened markdown status evidence through rich markdown", () => {
+    const flattened =
+      "### Summary - **First:** nothing was changed. ## What I inspected - **`website/styles.css`** defines `--font-display`. ```css :root { --font-display: \"Avenir Next\"; } ``` ### Why this matters - **Body:** Avenir Next is too polished.";
+
+    expect(statusLineUsesMarkdownForTest(flattened)).toBe(true);
+
+    const normalized = statusMarkdownContentForTest(flattened);
+    expect(normalized).toContain("### Summary\n\n- **First:** nothing was changed.");
+    expect(normalized).toContain("## What I inspected\n\n- **`website/styles.css`**");
+    expect(normalized).toContain("```css\n:root { --font-display");
+    expect(normalized).toContain("```\n\n### Why this matters");
+  });
+
+  it("keeps copied internal context dumps out of the full preview body", () => {
+    const leaked =
+      "### Summary\n\nReady-to-paste implementation.\n\n" +
+      "Selected plan/card context:\n" +
+      '- selected_card: {"detail":"run.log.completed","id":"agent-answer:run-1"}\n' +
+      '- selected_chunk: {"preview":"### Summary - copied answer"}\n' +
+      '- active_note: {"dirty":false,"path":"notes/index.md"}';
+
+    const preview = previewMarkdownContentForTest(leaked);
+
+    expect(preview).toContain("Ready-to-paste implementation.");
+    expect(preview).not.toContain("selected_card");
+    expect(preview).not.toContain("selected_chunk");
+    expect(preview).not.toContain("active_note");
   });
 
   it("restores flattened pipe tables in final-answer markdown", () => {
@@ -2994,13 +3045,12 @@ describe("workspace blueprint nodes", () => {
     expect(nodes.map((node) => node.title)).toEqual([
       "Operator request",
       "Understand request",
-      "Blueprint planning",
       "Execute workspace change",
       "Validate current frontier",
       "Final response",
     ]);
     expect(nodes.find((node) => node.title === "Understand request")?.status).toBe("active");
-    expect(nodes.find((node) => node.title === "Blueprint planning")?.status).toBe("future");
+    expect(nodes.find((node) => node.title === "Blueprint planning")).toBeUndefined();
     expect(nodes.find((node) => node.title === "Validate current frontier")?.status).toBe("future");
     expect(nodes.find((node) => node.title === "Final response")?.status).toBe("future");
   });
@@ -3042,6 +3092,15 @@ describe("workspace blueprint nodes", () => {
     const tree = liveTaskTreeForTest(nodes);
     expect(tree).toEqual([]);
     expect(liveTaskGraphRevisionsForTest(nodes)).toEqual([]);
+    expect(nodes.find((node) => node.id === "blueprint:planning")).toBeUndefined();
+    expect(nodes.find((node) => node.id === "blueprint:understanding")).toMatchObject({
+      status: "done",
+      detail: "Request context handed into later work",
+    });
+    expect(nodes.find((node) => node.id === "blueprint:build")).toMatchObject({
+      status: "active",
+      title: "Prepare answer",
+    });
   });
 
   it("settles earlier broad phases when execution has already completed without a graph", () => {

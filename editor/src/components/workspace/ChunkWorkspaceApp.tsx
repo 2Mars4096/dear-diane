@@ -125,6 +125,12 @@ const MODEL_SELECTION_STORAGE_KEY = "dan.chunkWorkspace.modelSelection.v1";
 const MODEL_SELECTIONS_BY_AGENT_STORAGE_KEY = "dan.chunkWorkspace.modelSelectionsByAgent.v1";
 const WORKSPACE_DRAG_MIME = "application/x-dan-workspace-id";
 type WorkspaceDropPlacement = "before" | "after";
+const WORKSPACE_ROOT_ALIASES = new Map([
+  [
+    "/Volumes/data/Dropbox/Projects/deep-agent-network",
+    "/Users/lizhi/Downloads/local_projects/deep-agent-network",
+  ],
+]);
 const WORKSPACE_SURFACE_TYPE = "frontend";
 const WORKSPACE_SURFACE_ID = "chunk-workspace";
 const WORKSPACE_SURFACE = `${WORKSPACE_SURFACE_TYPE}:${WORKSPACE_SURFACE_ID}`;
@@ -1292,7 +1298,7 @@ function materializeTemporaryDraftNote(args: {
 }
 
 function workspaceDisplayName(workspace: { name?: string; pinnedPaths?: string[] } | null | undefined) {
-  const rootName = fileName(workspace?.pinnedPaths?.[0] ?? "");
+  const rootName = fileName(normalizeRootPath(workspace?.pinnedPaths?.[0] ?? ""));
   return rootName || workspace?.name || "Workspace";
 }
 
@@ -1703,7 +1709,8 @@ function parentNoteFor(note: WorkspaceNote | null, candidates: WorkspaceNote[], 
 function normalizeRootPath(path: string) {
   const trimmed = path.trim();
   if (trimmed === "/" || /^[a-z]:[\\/]$/i.test(trimmed)) return trimmed;
-  return trimmed.replace(/[\\/]+$/, "");
+  const normalized = trimmed.replace(/[\\/]+$/, "");
+  return WORKSPACE_ROOT_ALIASES.get(normalized) ?? normalized;
 }
 
 function rootSuggestion(
@@ -2870,7 +2877,7 @@ function buildSessionGroups(args: {
     id: `workspace:${item.id}`,
     name: workspaceDisplayName(item),
     workspaceId: item.id,
-    root: item.pinnedPaths[0] ?? "",
+    root: normalizeRootPath(item.pinnedPaths[0] ?? ""),
     threads: [],
   }));
   const groupByWorkspaceId = new Map(workspaceGroups.map((group) => [group.workspaceId, group]));
@@ -3179,6 +3186,8 @@ function splitFlattenedMarkdownHeading(line: string) {
 function normalizeStructuredMarkdown(content: string) {
   const normalized = content
     .replace(/\r\n/g, "\n")
+    .replace(/([^\n])\s+```([A-Za-z0-9_-]*)[ \t]+/g, "$1\n\n```$2\n")
+    .replace(/([^\n])\s+```\s+(?=(?:#{2,6}\s|\d+[\.)]\s|[-*]\s|$))/g, "$1\n```\n\n")
     .replace(/\s*\*\*(Files|Risks|Checks):\*\*\s*/g, "\n\n### $1\n\n")
     .replace(/([^\n])\s+(#{2,6}\s+\S)/g, "$1\n\n$2")
     .split("\n")
@@ -3193,6 +3202,23 @@ function normalizeStructuredMarkdown(content: string) {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   return normalized || content;
+}
+
+const INTERNAL_CONTEXT_ECHO_RE =
+  /(?:^|\s)(?:Context composer summary:|Shared evidence ledger:|Selected plan\/card context:|Active workspace context:|Recent chat turns:|Surface attachments:|-?\s*(?:selected_card|selected_chunk|active_note|active_file|workspace_root|workspace_id):\s*\{)/i;
+
+function stripInternalContextEcho(content: string) {
+  const match = INTERNAL_CONTEXT_ECHO_RE.exec(content);
+  if (!match) return content;
+  const matchText = match[0] ?? "";
+  const leadingWhitespace = matchText.match(/^\s*/)?.[0]?.length ?? 0;
+  const cutIndex = match.index + leadingWhitespace;
+  const visible = content.slice(0, cutIndex).trimEnd();
+  return visible || "_Internal context hidden from Preview._";
+}
+
+function previewMarkdownContent(content: string) {
+  return stripInternalContextEcho(content || "_Waiting for output._").trim() || "_Waiting for output._";
 }
 
 function isGenericCompletionText(value: string) {
@@ -5745,8 +5771,8 @@ function buildBlueprintNodesForRunScope(args: {
   const planningStarted = hasEventSource(activeRunEvents, (source) => source.startsWith("live.planning"));
   const executionPhaseStarted = hasEventSource(activeRunEvents, eventStartsExecutionPhase);
   const executionPhaseCompleted = hasEventSource(activeRunEvents, eventCompletesExecutionPhase);
-  const buildStarted =
-    executionPhaseStarted || hasEventSource(activeRunEvents, eventStartsToolWork);
+  const toolWorkStarted = hasEventSource(activeRunEvents, eventStartsToolWork);
+  const buildStarted = executionPhaseStarted || toolWorkStarted;
   const buildCompleted =
     executionPhaseCompleted ||
     Boolean((latestAnswerChunk || latestAnswerEvent || latestOutcomeChunk || runCompleted) && !hasActiveRun);
@@ -5781,7 +5807,7 @@ function buildBlueprintNodesForRunScope(args: {
       hasActiveRun &&
       !readOnlyRun &&
       !hasPlannedTaskGraph &&
-      !executionPhaseStarted &&
+      !buildStarted &&
       !executionPhaseCompleted &&
       !validationStarted &&
       !validationCompleted &&
@@ -5790,7 +5816,7 @@ function buildBlueprintNodesForRunScope(args: {
       !hasAnswerOrTerminalEvidence,
   );
   const laterThanPlanning = Boolean(
-    executionPhaseStarted ||
+    buildStarted ||
       executionPhaseCompleted ||
       validationStarted ||
       validationCompleted ||
@@ -5885,7 +5911,7 @@ function buildBlueprintNodesForRunScope(args: {
 
   const planningFallbackActive =
     hasActiveRun && laterThanUnderstanding && !planningStarted && !planningCompleted && !planContext;
-  if (planningStarted || planningCompletedExplicit || planContext || showActiveRunSkeleton) {
+  if (planningStarted || planningCompletedExplicit || planContext) {
     const graphVersionLabel =
       planContext?.graphVersionId ||
       (planContext?.graphRevision !== null && planContext?.graphRevision !== undefined
@@ -7141,6 +7167,18 @@ export function workPlanHeaderSubtitleForTest(node: BlueprintNode | null, fallba
 
 export function normalizeStructuredMarkdownForTest(content: string) {
   return normalizeStructuredMarkdown(content);
+}
+
+export function previewMarkdownContentForTest(content: string) {
+  return previewMarkdownContent(content);
+}
+
+export function statusLineUsesMarkdownForTest(content: string) {
+  return statusLineUsesMarkdown(content);
+}
+
+export function statusMarkdownContentForTest(content: string) {
+  return statusMarkdownContent(content);
 }
 
 export function blueprintLiveStatusForTest(
@@ -8706,7 +8744,9 @@ function BlueprintNodePreview({
             {node.rawRequest}
           </div>
         </section>
-        {requestDetails && <MarkdownRenderer content={requestDetails} />}
+        {requestDetails && (
+          <MarkdownRenderer content={previewMarkdownContent(requestDetails)} autoHighlightCode={false} />
+        )}
       </div>
     );
   }
@@ -8717,7 +8757,10 @@ function BlueprintNodePreview({
         <LiveStatusCard status={liveStatus} />
         <SharedEvidencePreview items={sharedEvidence} />
         <PlanChecklistPreview node={node} events={events} />
-        <MarkdownRenderer content={node.previewBody || node.body || "_Waiting for output._"} />
+        <MarkdownRenderer
+          content={previewMarkdownContent(node.previewBody || node.body)}
+          autoHighlightCode={false}
+        />
       </div>
     );
   }
@@ -8727,7 +8770,8 @@ function BlueprintNodePreview({
       <LiveStatusCard status={liveStatus} />
       <SharedEvidencePreview items={sharedEvidence} />
       <MarkdownRenderer
-        content={node.previewBody || node.body || "_Waiting for output._"}
+        content={previewMarkdownContent(node.previewBody || node.body)}
+        autoHighlightCode={false}
       />
     </div>
   );
@@ -9707,6 +9751,30 @@ function StatusLine({ text }: { text: string }) {
   return <>{parts}</>;
 }
 
+function statusLineUsesMarkdown(text: string) {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (/^(?:#{2,6}\s|[-*]\s+|\d+\.\s+)/.test(trimmed)) return true;
+  if (/\n\s*(?:#{2,6}\s|[-*]\s+|\d+\.\s+|```)/.test(trimmed)) return true;
+  if (trimmed.length < 140) return false;
+  return /(?:#{2,6}\s|\*\*|```|\[[^\]]+\]\(|`[^`]+`)/.test(trimmed);
+}
+
+function statusMarkdownContent(text: string) {
+  return normalizeStructuredMarkdown(text);
+}
+
+function RichStatusLine({ text }: { text: string }) {
+  if (!statusLineUsesMarkdown(text)) return <StatusLine text={text} />;
+  return (
+    <MarkdownRenderer
+      content={statusMarkdownContent(text)}
+      autoHighlightCode={false}
+      className="max-w-full [overflow-wrap:anywhere] [&_code]:break-words [&_h2]:mb-1 [&_h2]:mt-2 [&_h2]:text-sm [&_h3]:mb-1 [&_h3]:mt-2 [&_h3]:text-[11px] [&_h3]:uppercase [&_h3]:tracking-[0.1em] [&_li]:break-words [&_li]:leading-6 [&_ol]:my-1 [&_p]:my-1 [&_p]:break-words [&_p]:leading-6 [&_pre]:whitespace-pre-wrap [&_ul]:my-1"
+    />
+  );
+}
+
 function SharedEvidencePreview({ items }: { items: SharedEvidenceItem[] }) {
   if (items.length === 0) return null;
   return (
@@ -9734,7 +9802,7 @@ function SharedEvidencePreview({ items }: { items: SharedEvidenceItem[] }) {
               </span>
             </div>
             <div className="mt-1 leading-6 text-slate-700 dark:text-slate-300">
-              <StatusLine text={item.summary} />
+              <RichStatusLine text={item.summary} />
             </div>
             {(item.source || item.ref) && (
               <div className="mt-1 break-all text-[11px] text-slate-400">
@@ -9765,7 +9833,7 @@ function LiveStatusCard({ status }: { status: BlueprintLiveStatus }) {
             Now
           </div>
           <div className="mt-1 leading-6">
-            <StatusLine text={status.now} />
+            <RichStatusLine text={status.now} />
           </div>
         </div>
         {status.latestUpdate && (
@@ -9774,7 +9842,7 @@ function LiveStatusCard({ status }: { status: BlueprintLiveStatus }) {
               Latest Update
             </div>
             <div className="mt-1 leading-6">
-              <StatusLine text={status.latestUpdate} />
+              <RichStatusLine text={status.latestUpdate} />
             </div>
           </div>
         )}
@@ -9786,7 +9854,7 @@ function LiveStatusCard({ status }: { status: BlueprintLiveStatus }) {
             <ul className="mt-1 list-disc space-y-1 pl-5 leading-6">
               {status.recentUpdates.map((item) => (
                 <li key={item}>
-                  <StatusLine text={item} />
+                  <RichStatusLine text={item} />
                 </li>
               ))}
             </ul>
@@ -9800,7 +9868,7 @@ function LiveStatusCard({ status }: { status: BlueprintLiveStatus }) {
             <ul className="mt-1 list-disc space-y-1 pl-5 leading-6">
               {status.results.map((item) => (
                 <li key={item}>
-                  <StatusLine text={item.replace(/^- /, "")} />
+                  <RichStatusLine text={item.replace(/^- /, "")} />
                 </li>
               ))}
             </ul>
@@ -10017,7 +10085,7 @@ function PlanChecklistPreview({
               <ul className="mt-1 list-disc space-y-1 pl-5 leading-6">
                 {history.map((item) => (
                   <li key={item}>
-                    <StatusLine text={item} />
+                    <RichStatusLine text={item} />
                   </li>
                 ))}
               </ul>
@@ -10031,7 +10099,7 @@ function PlanChecklistPreview({
               <ul className="mt-1 list-disc space-y-1 pl-5 leading-6">
                 {validation.map((item) => (
                   <li key={item}>
-                    <StatusLine text={item} />
+                    <RichStatusLine text={item} />
                   </li>
                 ))}
               </ul>
@@ -10922,6 +10990,22 @@ export default function ChunkWorkspaceApp() {
     () => formatHugoPreviewBody(parsedActiveNote.body),
     [parsedActiveNote.body],
   );
+  useEffect(() => {
+    for (const item of workspaces) {
+      const canonicalPaths = item.pinnedPaths
+        .map((path) => normalizeRootPath(path))
+        .filter(Boolean);
+      if (
+        canonicalPaths.length !== item.pinnedPaths.length ||
+        canonicalPaths.some((path, index) => path !== item.pinnedPaths[index])
+      ) {
+        updateWorkspace(item.id, {
+          pinnedPaths: canonicalPaths,
+          ...(canonicalPaths[0] ? { name: fileName(canonicalPaths[0]) } : {}),
+        });
+      }
+    }
+  }, [updateWorkspace, workspaces]);
   const isKnowledgeGraphPage = useMemo(() => {
     if (!activeNote) return false;
     const layout = parsedActiveNote.meta.layout || activeNote.layout || "";
@@ -10998,7 +11082,7 @@ export default function ChunkWorkspaceApp() {
     },
     [notes, selectNote],
   );
-  const workspaceRoot = workspace?.pinnedPaths[0] ?? "";
+  const workspaceRoot = normalizeRootPath(workspace?.pinnedPaths[0] ?? "");
   const developmentRoot = workspaceRoot || devRoot;
   const activeFileEntry = useMemo(
     () => devFiles.find((entry) => entry.path === activeFilePath) ?? null,
@@ -15908,7 +15992,10 @@ export default function ChunkWorkspaceApp() {
                       activeTask={activeRunningTask}
                     />
                   ) : selectedChunk ? (
-                    <MarkdownRenderer content={selectedChunk.body || "_Waiting for output._"} />
+                    <MarkdownRenderer
+                      content={previewMarkdownContent(selectedChunk.body)}
+                      autoHighlightCode={false}
+                    />
                   ) : activePreviewFileEntry ? (
                     <WorkspaceFilePreviewPanel
                       entry={activePreviewFileEntry}
@@ -15995,7 +16082,10 @@ export default function ChunkWorkspaceApp() {
                     activeTask={activeRunningTask}
                   />
                 ) : selectedChunk ? (
-                  <MarkdownRenderer content={selectedChunk.body || "_Waiting for output._"} />
+                  <MarkdownRenderer
+                    content={previewMarkdownContent(selectedChunk.body)}
+                    autoHighlightCode={false}
+                  />
                 ) : activePreviewFileEntry ? (
                   <WorkspaceFilePreviewPanel
                     entry={activePreviewFileEntry}
