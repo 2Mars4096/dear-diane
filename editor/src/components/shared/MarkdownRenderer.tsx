@@ -12,14 +12,26 @@ function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;");
 }
 
-const INLINE_CODE_CLASS =
-  "rounded bg-slate-100 px-1 py-0.5 text-[0.88em] text-slate-900 dark:bg-slate-800 dark:text-slate-100";
-const AUTO_CODE_CLASS = `dan-markdown-auto-code ${INLINE_CODE_CLASS}`;
+const INLINE_CODE_BASE_CLASS =
+  "dan-markdown-inline-code break-words font-mono text-[0.88em]";
+const INLINE_CODE_STYLE_BY_KIND = {
+  code: "dan-markdown-inline-symbol px-0.5 font-semibold text-slate-800 dark:text-slate-100",
+  file: "dan-markdown-inline-file rounded border border-amber-200/70 bg-amber-50/65 px-1 py-0.5 font-semibold text-amber-950 dark:border-amber-800/70 dark:bg-amber-950/25 dark:text-amber-100",
+  snippet:
+    "dan-markdown-inline-snippet px-0.5 font-medium text-slate-700 dark:text-slate-200",
+  url: "dan-markdown-inline-url rounded bg-sky-50/45 px-1 py-0.5 font-medium text-sky-800 underline decoration-sky-300 underline-offset-2 dark:bg-sky-950/25 dark:text-sky-100 dark:decoration-sky-700",
+};
 const MATH_PLACEHOLDER_RE = /(\u0000DAN_MD_\d+\u0000)/g;
 const MATH_PLACEHOLDER_PART_RE = /^\u0000DAN_MD_\d+\u0000$/;
 const PROSE_DOTTED_ABBREVIATIONS = new Set(["a.m", "e.g", "i.e", "n.b", "p.m", "p.s", "u.k", "u.s"]);
 const AUTO_CODE_TOKEN_RE =
   /(^|[^\w./$-])((?:[\w.-]+\/)*[\w.-]+\.(?:c|cc|cpp|css|csv|gd|go|h|hpp|html|ini|java|json|jsx|log|md|mdx|py|rs|sh|sql|toml|ts|tsx|txt|xml|ya?ml)\b|_?[A-Za-z][A-Za-z0-9_]*(?:\._?[A-Za-z][A-Za-z0-9_]*)+(?:\(\))?|_[A-Za-z][A-Za-z0-9_]*(?:\(\))?|[A-Z][A-Z0-9]+(?:_[A-Z0-9]+)+\b|[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+\b)(?=$|[^\w/])/g;
+const INLINE_FILE_EXT_RE =
+  /\.(?:c|cc|cpp|css|csv|gd|go|h|hpp|html|ini|java|json|jsx|log|md|mdx|pdf|png|jpe?g|rs|sh|sql|svg|toml|ts|tsx|txt|xml|ya?ml)\b/i;
+
+interface MarkdownRenderOptions {
+  autoHighlightCode?: boolean;
+}
 
 function shouldAutoHighlightCodeToken(source: string, tokenStart: number, token: string): boolean {
   if (token.length > 72) return false;
@@ -30,6 +42,40 @@ function shouldAutoHighlightCodeToken(source: string, tokenStart: number, token:
   if ((nextCharacter === "(" || nextCharacter === "[") && !token.endsWith("()")) return false;
 
   return true;
+}
+
+function inlineCodeKind(text: string): keyof typeof INLINE_CODE_STYLE_BY_KIND {
+  const trimmed = text.trim();
+  if (/^https?:\/\//i.test(trimmed)) return "url";
+  if (
+    trimmed.length <= 96 &&
+    !/\s/.test(trimmed) &&
+    (INLINE_FILE_EXT_RE.test(trimmed) ||
+      /[/\\]/.test(trimmed) ||
+      /^(?:README|AGENTS|PRODUCT|package|tsconfig|vite\.config)\b/i.test(trimmed))
+  ) {
+    return "file";
+  }
+  if (
+    trimmed.length > 36 ||
+    (/[\s;]/.test(trimmed) && /[{}=<>()]/.test(trimmed)) ||
+    /^(?:html|css|js|ts|tsx|json|bash|sh|python|py)\s/i.test(trimmed)
+  ) {
+    return "snippet";
+  }
+  return "code";
+}
+
+function inlineCodeClass(text: string, auto = false) {
+  const kind = inlineCodeKind(text);
+  return [
+    INLINE_CODE_BASE_CLASS,
+    INLINE_CODE_STYLE_BY_KIND[kind],
+    `dan-markdown-inline-${kind}`,
+    auto ? "dan-markdown-auto-code" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function renderAutoCodeText(value: string): string {
@@ -43,7 +89,7 @@ function renderAutoCodeText(value: string): string {
         if (!shouldAutoHighlightCodeToken(source, tokenStart, token)) {
           return match;
         }
-        return `${prefix}<code class="${AUTO_CODE_CLASS}">${token}</code>`;
+        return `${prefix}<code class="${inlineCodeClass(token, true)}">${token}</code>`;
       });
     })
     .join("");
@@ -61,14 +107,16 @@ function renderKatex(source: string, displayMode: boolean): string {
   }
 }
 
-function createRenderer(): Marked {
+function createRenderer(options: MarkdownRenderOptions = {}): Marked {
+  const autoHighlightCode = options.autoHighlightCode !== false;
   const renderer = new Renderer();
 
   renderer.text = function text(token: any) {
     if (Array.isArray(token.tokens) && token.tokens.length > 0) {
       return this.parser.parseInline(token.tokens);
     }
-    return renderAutoCodeText(String(token.text ?? token.raw ?? ""));
+    const text = String(token.text ?? token.raw ?? "");
+    return autoHighlightCode ? renderAutoCodeText(text) : escapeHtml(text);
   };
 
   renderer.heading = function heading(token: any) {
@@ -112,7 +160,7 @@ function createRenderer(): Marked {
   };
 
   renderer.codespan = ({ text }: { text: string }) =>
-    `<code class="${INLINE_CODE_CLASS}">${escapeHtml(text)}</code>`;
+    `<code class="${inlineCodeClass(text)}">${escapeHtml(text)}</code>`;
 
   renderer.blockquote = function blockquote(token: any) {
     const body = this.parser.parse(token.tokens);
@@ -195,8 +243,12 @@ function createRenderer(): Marked {
 }
 
 const markedInstance = createRenderer();
+const markedNoAutoCodeInstance = createRenderer({ autoHighlightCode: false });
 
-export function renderMarkdownToHtml(source: string): string {
+export function renderMarkdownToHtml(
+  source: string,
+  options: MarkdownRenderOptions = {},
+): string {
   const preserved: string[] = [];
   const preserve = (html: string) => {
     preserved.push(html);
@@ -211,7 +263,8 @@ export function renderMarkdownToHtml(source: string): string {
       preserve(renderKatex(tex, false)),
     );
 
-  let html = markedInstance.parse(text) as string;
+  const instance = options.autoHighlightCode === false ? markedNoAutoCodeInstance : markedInstance;
+  let html = instance.parse(text) as string;
   preserved.forEach((value, index) => {
     html = html.replaceAll(`\u0000DAN_MD_${index}\u0000`, value);
   });
@@ -221,13 +274,18 @@ export function renderMarkdownToHtml(source: string): string {
 export default function MarkdownRenderer({
   content,
   className = "",
+  autoHighlightCode = true,
   onClick,
 }: {
   content: string;
   className?: string;
+  autoHighlightCode?: boolean;
   onClick?: (event: MouseEvent<HTMLDivElement>) => void;
 }) {
-  const html = useMemo(() => renderMarkdownToHtml(content), [content]);
+  const html = useMemo(
+    () => renderMarkdownToHtml(content, { autoHighlightCode }),
+    [autoHighlightCode, content],
+  );
   return (
     <div
       className={`dan-markdown text-sm ${className}`}

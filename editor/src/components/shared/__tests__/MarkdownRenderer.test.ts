@@ -25,9 +25,31 @@ describe("MarkdownRenderer", () => {
     );
 
     expect(autoCodeCount(html)).toBe(1);
+    expect(html).toContain("dan-markdown-inline-file");
     expect(html).toContain(">GameLoop.gd</code>");
     expect(html).toContain("katex");
     expect(html).not.toContain("DAN_MD_");
+  });
+
+  it("classifies inline highlights by role", () => {
+    const html = renderMarkdownToHtml(
+      "Open `website/styles.css`, set `--font-display`, and use `css body { font-family: var(--font-body); }`.",
+    );
+
+    expect(html).toContain("dan-markdown-inline-file");
+    expect(html).toContain("dan-markdown-inline-symbol");
+    expect(html).toContain("dan-markdown-inline-snippet");
+  });
+
+  it("can turn off automatic code-like prose highlighting", () => {
+    const html = renderMarkdownToHtml(
+      "GameLoop.gd calls AgentNeighborSystem, while `explicit.ts` remains explicit.",
+      { autoHighlightCode: false },
+    );
+
+    expect(autoCodeCount(html)).toBe(0);
+    expect(html).toContain("GameLoop.gd calls AgentNeighborSystem");
+    expect(html).toContain(">explicit.ts</code>");
   });
 
   it("does not highlight ordinary prose headings", () => {

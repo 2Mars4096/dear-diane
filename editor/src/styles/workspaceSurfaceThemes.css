@@ -688,22 +688,67 @@
 
 :root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme
   .dan-markdown
-  :where(:not(pre) > code) {
+  :where(:not(pre) > code.dan-markdown-inline-code) {
+  background: transparent !important;
+  border: 0 !important;
+  color: oklch(0.305 0.056 238) !important;
+  border-radius: 0 !important;
+  font-weight: 640;
+  box-shadow: none !important;
+  overflow-wrap: anywhere;
+}
+
+:root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme
+  .dan-markdown
+  :where(:not(pre) > code.dan-markdown-inline-symbol) {
+  color: oklch(0.285 0.070 236) !important;
+  text-shadow: 0 1px 0 oklch(0.990 0.004 88 / 0.55);
+}
+
+:root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme
+  .dan-markdown
+  :where(:not(pre) > code.dan-markdown-inline-file) {
   background:
-    repeating-linear-gradient(
-      90deg,
-      oklch(0.995 0.004 86 / 0.32) 0 1px,
-      transparent 1px 10px
-    ),
-    linear-gradient(180deg, var(--machine-code-bg-top), var(--machine-code-bg-bottom)) !important;
-  border: 1px solid var(--machine-code-border) !important;
-  color: var(--machine-code-text) !important;
-  border-radius: 0.28rem !important;
-  font-weight: 600;
+    linear-gradient(180deg, oklch(0.910 0.020 78 / 0.82), oklch(0.820 0.024 78 / 0.78)) !important;
+  border-color: oklch(0.535 0.070 72 / 0.62) !important;
+  color: oklch(0.275 0.066 70) !important;
+  font-weight: 680;
   box-shadow:
-    inset 0 1px 0 oklch(0.995 0.004 88 / 0.58),
-    inset 0 -1px 0 oklch(0.420 0.016 82 / 0.16),
-    0 1px 2px oklch(0.420 0.016 82 / 0.08) !important;
+    inset 0 1px 0 oklch(0.990 0.006 86 / 0.42),
+    0 1px 1px oklch(0.360 0.024 78 / 0.06) !important;
+}
+
+:root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme
+  .dan-markdown
+  :where(:not(pre) > code.dan-markdown-inline-url) {
+  background:
+    linear-gradient(180deg, transparent 48%, var(--machine-link-wash) 48%) !important;
+  border-color: transparent !important;
+  color: var(--machine-link-text) !important;
+  font-weight: 650;
+  text-decoration-color: var(--machine-link-border);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+  box-shadow: none !important;
+}
+
+:root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme
+  .dan-markdown
+  :where(:not(pre) > code.dan-markdown-inline-snippet) {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: oklch(0.265 0.060 238) !important;
+  font-weight: 560;
+  box-shadow: none !important;
+}
+
+:root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme
+  .dan-markdown
+  :where(:not(pre) > code.dan-markdown-auto-code):not(.dan-markdown-inline-file) {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: oklch(0.325 0.052 238) !important;
+  font-weight: 600;
 }
 
 :root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme .dan-markdown-code-frame {
@@ -804,11 +849,25 @@
   color: var(--machine-link-text) !important;
 }
 
+:root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme .dan-status-token-file {
+  background:
+    linear-gradient(180deg, oklch(0.910 0.020 78), oklch(0.820 0.024 78)) !important;
+  border-color: oklch(0.535 0.070 72 / 0.62) !important;
+  color: oklch(0.275 0.066 70) !important;
+}
+
 :root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme .dan-status-token-tool {
   background:
     linear-gradient(180deg, oklch(0.890 0.020 158), oklch(0.780 0.024 160)) !important;
   border-color: oklch(0.500 0.060 158 / 0.64) !important;
   color: oklch(0.255 0.060 160) !important;
+}
+
+:root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme .dan-status-token-code {
+  background: oklch(0.915 0.008 84 / 0.48) !important;
+  border-color: oklch(0.575 0.030 78 / 0.30) !important;
+  color: oklch(0.325 0.026 78) !important;
+  box-shadow: none !important;
 }
 
 :root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme .dan-status-token-state {
