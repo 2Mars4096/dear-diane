@@ -41,7 +41,14 @@ from dan.server.chat_v2_backend import (
     run_agent_backend,
     select_agent_backend_adapter,
 )
-from dan.server.chat_v2_store import ChatV2Store, structured_operator_context
+from dan.server.chat_v2_store import (
+    AgentRunRecord,
+    ChatV2Store,
+    QueueItemRecord,
+    V2TaskRecord,
+    _start_payload_from_queue_item,
+    structured_operator_context,
+)
 from dan.server.routers.chat import ChatMessageRequest
 from dan.server.routers import chat_v2 as chat_v2_router
 
@@ -475,6 +482,141 @@ def test_v2_super_dan_args_forward_structured_surface_context(tmp_path) -> None:
     assert args._tui_communication_policy["answer_budget"] == "brief"
     assert args._tui_execution_policy["stop_condition"] == "validation_passes"
     assert args._tui_surface_policy["phase_shape"] == "validation_gate"
+
+
+def test_v2_continue_payload_rechecks_mutation_policy_instead_of_inheriting(
+    tmp_path,
+) -> None:
+    previous_run = AgentRunRecord(
+        run_id="run-1",
+        task_id="task-1",
+        thread_id="thread-1",
+        workspace_root=str(tmp_path),
+        workspace_id=str(tmp_path),
+        status="completed",
+        command=AgentRunCommand(
+            command="start",
+            task_id="task-1",
+            run_id="run-1",
+            payload={
+                "text": "Inspect the website and suggest exact changes.",
+                "profile_policy": {"backend": "super_dan"},
+                "mutation_policy": {
+                    "mode": "workspace_read",
+                    "permission": "forbidden",
+                },
+            },
+        ),
+        latest_summary="Read-only inspection completed with paste-ready changes.",
+    )
+    task = V2TaskRecord(
+        task_id="task-1",
+        thread_id="thread-1",
+        workspace_root=str(tmp_path),
+        workspace_id=str(tmp_path),
+        metadata={"original_request": "Inspect the website and suggest exact changes."},
+    )
+    queue_item = QueueItemRecord(
+        id="queue-1",
+        task_id="task-1",
+        lane="continue_after_current",
+        surface_turn_id="turn-2",
+        text="ok sounds good, please implement these?",
+        metadata={
+            "original_request": "Inspect the website and suggest exact changes.",
+            "satisfaction_gap": "ok sounds good, please implement these?",
+        },
+    )
+
+    payload = _start_payload_from_queue_item(
+        task,
+        queue_item,
+        previous_run=previous_run,
+        previous_run_id=previous_run.run_id,
+    )
+
+    assert payload["profile_policy"] == {"backend": "super_dan"}
+    assert "mutation_policy" not in payload
+    assert payload["original_request"] == "Inspect the website and suggest exact changes."
+    assert payload["satisfaction_gap"] == "ok sounds good, please implement these?"
+
+
+def test_v2_backend_request_recomputes_mutation_policy_for_each_run(tmp_path) -> None:
+    followup = "ok sounds good, please implement these?"
+    run = AgentRunRecord(
+        run_id="run-2",
+        task_id="task-1",
+        thread_id="thread-1",
+        workspace_root=str(tmp_path),
+        workspace_id=str(tmp_path),
+        command=AgentRunCommand(
+            command="start",
+            task_id="task-1",
+            run_id="run-2",
+            payload={
+                "text": followup,
+                "original_request": "Inspect the website and suggest exact changes.",
+                "satisfaction_gap": followup,
+                "continued_from_run_id": "run-1",
+                "mutation_policy": {
+                    "mode": "workspace_read",
+                    "permission": "forbidden",
+                },
+            },
+        ),
+    )
+    task = V2TaskRecord(
+        task_id="task-1",
+        thread_id="thread-1",
+        workspace_root=str(tmp_path),
+        workspace_id=str(tmp_path),
+    )
+
+    request = build_agent_backend_request(run, task)
+
+    assert request.mutation_policy["source"] == "operator_intent_policy"
+    assert request.mutation_policy["mode"] == "workspace_mutation"
+    assert request.mutation_policy["permission"] == "workspace_mutation"
+    assert request.mutation_policy["operator_mutation_policy"] == "required"
+
+
+def test_v2_backend_request_recompute_keeps_hard_no_edits_binding(tmp_path) -> None:
+    followup = "ok sounds good, please implement these?"
+    run = AgentRunRecord(
+        run_id="run-2",
+        task_id="task-1",
+        thread_id="thread-1",
+        workspace_root=str(tmp_path),
+        workspace_id=str(tmp_path),
+        command=AgentRunCommand(
+            command="start",
+            task_id="task-1",
+            run_id="run-2",
+            payload={
+                "text": followup,
+                "original_request": "Inspect the website and suggest exact changes. No edits.",
+                "satisfaction_gap": followup,
+                "continued_from_run_id": "run-1",
+                "mutation_policy": {
+                    "mode": "workspace_mutation",
+                    "permission": "workspace_mutation",
+                },
+            },
+        ),
+    )
+    task = V2TaskRecord(
+        task_id="task-1",
+        thread_id="thread-1",
+        workspace_root=str(tmp_path),
+        workspace_id=str(tmp_path),
+    )
+
+    request = build_agent_backend_request(run, task)
+
+    assert request.mutation_policy["source"] == "operator_intent_policy"
+    assert request.mutation_policy["mode"] == "workspace_read"
+    assert request.mutation_policy["permission"] == "forbidden"
+    assert request.mutation_policy["operator_mutation_policy"] == "forbidden"
 
 
 def test_v2_selects_codex_agent_backend_from_profile_policy(tmp_path) -> None:

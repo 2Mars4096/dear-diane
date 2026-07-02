@@ -2683,7 +2683,9 @@ def _start_payload_from_queue_item(
         "tool_policy",
     ):
         value = metadata.get(key)
-        if not value:
+        # Reclassify each human follow-up; a read-only prior run must not stamp
+        # the next run's mutation policy before backend intent checks rerun.
+        if not value and key != "mutation_policy":
             value = previous_payload.get(key)
         if isinstance(value, dict) and value:
             payload[key] = dict(value)

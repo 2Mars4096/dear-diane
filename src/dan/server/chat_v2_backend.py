@@ -1327,7 +1327,7 @@ def build_agent_backend_request(
         workspace_root=workspace_root,
         workspace_id=workspace_id,
     )
-    return AgentBackendRunRequest(
+    request = AgentBackendRunRequest(
         task_id=run.task_id,
         run_id=run.run_id,
         objective=objective,
@@ -1345,6 +1345,45 @@ def build_agent_backend_request(
         tool_policy=tool_policy,
         metadata=metadata,
     )
+    return request.model_copy(
+        update={"mutation_policy": _recompute_run_mutation_policy(request)}
+    )
+
+
+def _recompute_run_mutation_policy(request: AgentBackendRunRequest) -> dict[str, Any]:
+    """Resolve the mutation policy for this admitted run, not a prior run."""
+
+    mutation_policy = dict(request.mutation_policy or {})
+    try:
+        super_cli = _load_super_dan_cli()
+        workspace_root = super_cli.normalize_workspace_root(request.workspace_root or "~")
+        effective_objective = _objective_with_surface_context(request)
+        operator_policy = super_cli._operator_intent_policy_from_objective(
+            effective_objective,
+            workspace_root=workspace_root,
+        )
+    except Exception:
+        return mutation_policy
+
+    mutation_policy.update(
+        {
+            "source": "operator_intent_policy",
+            "mode": "workspace_mutation"
+            if operator_policy.allow_workspace_mutation
+            else (
+                "chat_answer"
+                if operator_policy.work_mode == "chat_answer"
+                else "workspace_read"
+            ),
+            "permission": "workspace_mutation"
+            if operator_policy.allow_workspace_mutation
+            else "forbidden",
+            "operator_work_mode": operator_policy.work_mode,
+            "operator_mutation_policy": operator_policy.mutation_policy,
+            "operator_evidence_policy": operator_policy.evidence_policy,
+        }
+    )
+    return mutation_policy
 
 
 def select_agent_backend_adapter(
@@ -2926,6 +2965,8 @@ def _normalized_request_context_lines(
     if packet.get("previous_validation_summary"):
         lines.append(f"Previous validation summary: {packet['previous_validation_summary']}")
 
+    selected_context = _coerce_dict(packet.get("selected_plan_context"))
+    workspace_context = _coerce_dict(packet.get("active_workspace_context"))
     composer = _coerce_dict(packet.get("context_composer"))
     composer_summary = _compact_context_text(composer.get("summary"), limit=900)
     if composer_summary:
@@ -2956,13 +2997,18 @@ def _normalized_request_context_lines(
                 evidence_line += f" (ref: {ref})"
             lines.append(evidence_line)
 
-    selected_context = _coerce_dict(packet.get("selected_plan_context"))
+    if composer_summary or shared_items or selected_context or workspace_context:
+        lines.append(
+            "Context handling: use this context for grounding only. "
+            "Do not quote context labels, selected-card JSON, or active-file JSON "
+            "back to the operator unless they ask for diagnostics."
+        )
+
     if selected_context:
         lines.append("Selected plan/card context:")
         for line in _context_dict_lines(selected_context, prefix="- ", limit=1000):
             lines.append(line)
 
-    workspace_context = _coerce_dict(packet.get("active_workspace_context"))
     if workspace_context:
         lines.append("Active workspace context:")
         for line in _context_dict_lines(workspace_context, prefix="- ", limit=1000):
