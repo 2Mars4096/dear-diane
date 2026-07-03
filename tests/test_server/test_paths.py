@@ -46,6 +46,18 @@ def test_resolve_workspace_root_env_wins(monkeypatch, tmp_path: Path) -> None:
     assert paths_mod.resolve_workspace_root() == str(target)
 
 
+def test_resolve_workspace_root_canonicalizes_legacy_project_env(monkeypatch) -> None:
+    from dan.server import paths as paths_mod
+
+    repo_root = Path(__file__).resolve().parents[2]
+    monkeypatch.setenv(
+        "DAN_WORKSPACE_ROOT",
+        "/Volumes/data/Dropbox/Projects/deep-agent-network",
+    )
+
+    assert paths_mod.resolve_workspace_root() == str(repo_root)
+
+
 def test_resolve_graphs_dir_falls_back_when_cwd_missing(
     monkeypatch, tmp_path: Path
 ) -> None:

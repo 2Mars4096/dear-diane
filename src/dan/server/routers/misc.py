@@ -31,6 +31,7 @@ from dan.notes import (
 )
 from dan.server.capabilities.config import _update_env_file
 from dan.server.paths import resolve_workspace_root
+from dan.workspace_roots import canonicalize_workspace_root
 from dan.server.routers.dependencies import (
     get_app_state,
     get_run_manager,
@@ -249,7 +250,7 @@ def _isoformat_utc(timestamp: float | None) -> str | None:
 
 def _resolve_organism_log_root(root_path: str | None = None) -> Path:
     raw = str(root_path or resolve_workspace_root()).strip()
-    candidate = Path(raw).expanduser().resolve()
+    candidate = canonicalize_workspace_root(raw)
     if not candidate.exists() or not candidate.is_dir():
         raise HTTPException(status_code=404, detail=f"Workspace root not found: {candidate}")
     return candidate
@@ -747,7 +748,7 @@ def _workspace_notes_root() -> Path:
 
 def _workspace_files_root(root_path: str | None = None) -> Path:
     raw = str(root_path or resolve_workspace_root()).strip()
-    root = Path(raw).expanduser().resolve()
+    root = canonicalize_workspace_root(raw)
     if not root.exists() or not root.is_dir():
         raise HTTPException(status_code=404, detail=f"Workspace root not found: {root}")
     return root
@@ -758,9 +759,9 @@ def _workspace_root_candidate(raw_path: str, *, default_root: Path) -> Path:
     if not candidate.is_absolute():
         candidate = default_root / candidate
     try:
-        return candidate.resolve(strict=False)
+        return canonicalize_workspace_root(candidate.resolve(strict=False))
     except OSError:
-        return candidate
+        return canonicalize_workspace_root(candidate)
 
 
 def _workspace_root_suggestion(

@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from dan.workspace_roots import canonicalize_workspace_root
+
 
 def _safe_cwd() -> Path | None:
     """Return the current working directory when it is still addressable."""
@@ -64,9 +66,10 @@ def resolve_workspace_root() -> str:
     """Resolve the workspace root used by server-side relative paths."""
     raw = os.environ.get("DAN_WORKSPACE_ROOT", "").strip()
     if raw:
-        return str(Path(_stabilize_path(raw)).expanduser().resolve())
+        stabilized = Path(_stabilize_path(raw)).expanduser().resolve(strict=False)
+        return str(canonicalize_workspace_root(stabilized))
     cwd = _safe_cwd()
     if cwd is not None:
-        return str(cwd.resolve())
+        return str(canonicalize_workspace_root(cwd.resolve()))
     base = _find_repo_root() or (Path.home() / ".dan")
-    return str(base.resolve())
+    return str(canonicalize_workspace_root(base.resolve()))

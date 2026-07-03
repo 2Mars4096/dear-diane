@@ -2252,6 +2252,16 @@ def test_normalize_workspace_root_uses_pwd_when_getcwd_is_unavailable(tmp_path, 
     assert normalize_workspace_root(".") == expected
 
 
+def test_normalize_workspace_root_canonicalizes_legacy_project_checkout() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+
+    assert normalize_workspace_root("/Volumes/data/Dropbox/Projects/deep-agent-network") == repo_root
+    assert (
+        normalize_workspace_root("/Volumes/data/Dropbox/Projects/deep-agent-network/website")
+        == repo_root / "website"
+    )
+
+
 def test_coding_report_normalizes_multiline_string_test_plan() -> None:
     report = CodingOrganismReport.model_validate(
         {

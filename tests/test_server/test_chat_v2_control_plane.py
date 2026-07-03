@@ -165,6 +165,27 @@ def test_v2_surface_turn_links_session_to_explicit_workspace(tmp_path) -> None:
     assert "workspace-alpha" in decision.topic_key
 
 
+def test_v2_surface_turn_canonicalizes_legacy_project_workspace() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    req = ChatMessageRequest(
+        workflow_id="_scratch",
+        message="try again to implement these changes",
+        mode="agent",
+        surface_type="web",
+        surface_id="v2",
+        session_id="session-legacy-root",
+        surface_context={
+            "workspace_root": "/Volumes/data/Dropbox/Projects/deep-agent-network",
+        },
+    )
+
+    turn = build_surface_turn_from_chat_request(req)
+
+    assert turn.workspace_root == str(repo_root)
+    assert turn.workspace_id == str(repo_root)
+    assert turn.metadata["workspace_source"] == "explicit"
+
+
 def test_v2_surface_turn_infers_workspace_from_message_path(tmp_path) -> None:
     workspace = tmp_path / "phone-project"
     workspace.mkdir()

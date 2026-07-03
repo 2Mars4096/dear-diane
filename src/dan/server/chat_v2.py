@@ -16,6 +16,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from dan.notes import enrich_notes_surface_context
+from dan.workspace_roots import normalize_workspace_root as normalize_workspace_root_path
 
 
 AttachmentKind = Literal[
@@ -781,10 +782,8 @@ def _first_workspace_value(*values: Any) -> str:
 
 def _normalize_workspace_root(value: str) -> str:
     raw = _clean(value) or "~"
-    if raw.startswith("$HOME/") or raw == "$HOME":
-        raw = str(Path.home()) + raw[len("$HOME") :]
     try:
-        return str(Path(raw).expanduser().resolve(strict=False))
+        return str(normalize_workspace_root_path(raw))
     except Exception:
         try:
             return str(Path(raw).expanduser())

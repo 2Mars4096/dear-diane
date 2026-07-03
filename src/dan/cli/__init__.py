@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from dan.workspace_roots import normalize_workspace_root
+
 DAN_DIR = Path.home() / ".dan"
 RUNS_DIR = DAN_DIR / "runs"
 
@@ -58,24 +60,6 @@ def resolve_config(
         ),
         "workspace": workspace or os.environ.get("DAN_WORKSPACE_ROOT") or _safe_current_directory(),
     }
-
-
-def normalize_workspace_root(workspace: str | Path) -> Path:
-    """Resolve a workspace root without requiring the process CWD to exist."""
-
-    candidate = Path(str(workspace or ".")).expanduser()
-    if candidate.is_absolute():
-        return candidate.resolve(strict=False)
-
-    pwd = str(os.environ.get("PWD") or "").strip()
-    if pwd:
-        return (Path(pwd).expanduser() / candidate).resolve(strict=False)
-
-    try:
-        base = Path.cwd()
-    except FileNotFoundError:
-        return Path(os.path.normpath(str(candidate)))
-    return (base / candidate).resolve(strict=False)
 
 
 def ensure_dan_dir() -> Path:
