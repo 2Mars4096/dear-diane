@@ -190,6 +190,7 @@ pnpm-debug.log*
 !/tests/test_worker/test_dan_conversation.py
 !/tests/test_worker/test_incident_conversation.py
 !/tests/test_worker/test_incident_execution.py
+!/tests/test_worker/test_local_runtime_source_recovery.py
 !/tests/test_worker/test_organism_log.py
 !/tests/test_worker/test_core_executor.py
 !/tests/test_worker/test_equivalence.py

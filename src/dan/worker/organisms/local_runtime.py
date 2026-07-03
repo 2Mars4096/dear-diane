@@ -6696,11 +6696,11 @@ class ToolLoopCompletionProvider:
                 )
                 if any(
                     _tool_schema_name(tool) == "file_read"
-                    for tool in request_tool_schemas
+                    for tool in tool_schemas
                     if isinstance(tool, dict)
                 ):
                     source_recovery_tool_schemas = _write_stage_tool_schemas(
-                        request_tool_schemas,
+                        tool_schemas,
                         allow_final_read=True,
                         prefer_file_write_only=exclusive_write_owner,
                         prefer_file_edit_only=exclusive_owner_prefers_file_edit,
@@ -6709,10 +6709,16 @@ class ToolLoopCompletionProvider:
                         active_tool_schemas = source_recovery_tool_schemas
                         disabled_tool_ids.clear()
                         write_stage_final_read_available = True
+                        write_stage_final_read_consumed = False
                         write_stage_direct_write_required = False
                 self._emit_event(
                     "toolloop.source_structure_nudged",
                     tool_ids=_dedupe(affected_tool_ids),
+                    enabled_tools=[
+                        str(tool.get("function", {}).get("name") or "").strip()
+                        for tool in active_tool_schemas
+                        if isinstance(tool, dict)
+                    ],
                     blocked_by_tool_call_ids=list(round_tool_call_ids) or None,
                     tool_calls_executed=len(executed_tools),
                     **event_context,
