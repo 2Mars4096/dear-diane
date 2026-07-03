@@ -47,6 +47,7 @@ import {
   workspaceAgentOptionsForTest,
   workspaceModelOptionsForTest,
   workspacePreviewArtifactsForTest,
+  workspacePreviewOpenUrlForTest,
   workspaceSelectionFromStorageForTest,
   workspaceSurfaceContextForTest,
   workspaceIdForTasksForTest,
@@ -653,6 +654,19 @@ describe("workspace blueprint nodes", () => {
     ]);
     expect(artifacts.map((artifact) => artifact.path)).not.toContain("src/app.tsx");
     expect(artifacts.map((artifact) => artifact.path)).not.toContain("docs/architecture.md");
+  });
+
+  it("builds an external browser URL for the current preview file", () => {
+    const url = workspacePreviewOpenUrlForTest({
+      path: "/tmp/workspace/website/index.html",
+      relativePath: "website/index.html",
+      root: "/tmp/workspace",
+      href: "http://127.0.0.1:5173/workspace",
+    });
+
+    expect(url).toMatch(
+      /^http:\/\/127\.0\.0\.1:5173\/api\/workspace-files\/preview\/[^/]+\/website\/index\.html$/,
+    );
   });
 
   it("extracts selected skills and mentioned files for workspace composer submits", () => {

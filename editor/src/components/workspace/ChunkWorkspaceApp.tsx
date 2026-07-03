@@ -6715,6 +6715,19 @@ function workspacePreviewKindLabel(kind: WorkspaceFilePreviewKind) {
   return "text";
 }
 
+function absoluteWorkspacePreviewUrl(
+  entry: WorkspaceFileEntry,
+  root: string,
+  baseHref = typeof window !== "undefined" ? window.location.href : "http://127.0.0.1/",
+) {
+  const url = workspaceFilePreviewUrl(entry.path, root || undefined, entry.relative_path);
+  try {
+    return new URL(url, baseHref).toString();
+  } catch {
+    return url;
+  }
+}
+
 function workspacePreviewPathSegments(entry: WorkspaceFileEntry) {
   return (entry.relative_path || entry.path).replace(/\\/g, "/").split("/").filter(Boolean);
 }
@@ -6930,6 +6943,29 @@ export function workspacePreviewArtifactsForTest(
     kind: artifact.kind,
     source: artifact.source,
   }));
+}
+
+export function workspacePreviewOpenUrlForTest(args: {
+  path: string;
+  relativePath?: string;
+  root?: string;
+  href?: string;
+}) {
+  const relativePath = args.relativePath ?? workspacePreviewRelativePath(args.path, args.root ?? "");
+  return absoluteWorkspacePreviewUrl(
+    {
+      path: args.path,
+      relative_path: relativePath,
+      name: fileName(relativePath || args.path),
+      parent: relativePath.includes("/") ? relativePath.slice(0, relativePath.lastIndexOf("/")) : "",
+      is_directory: false,
+      size: 0,
+      mtime: 0,
+      depth: Math.max(0, relativePath.split("/").filter(Boolean).length - 1),
+    },
+    args.root ?? "",
+    args.href,
+  );
 }
 
 export function notesComposerRequestsNewDraftForTest(text: string) {
@@ -14168,13 +14204,24 @@ export default function ChunkWorkspaceApp() {
     </div>
   );
 
+  const visiblePreviewFileEntry =
+    !promptLogPreview && !selectedBlueprintNode && !selectedChunk ? activePreviewFileEntry : null;
+  const activePreviewExternalUrl = useMemo(
+    () =>
+      visiblePreviewFileEntry
+        ? absoluteWorkspacePreviewUrl(visiblePreviewFileEntry, developmentRoot)
+        : "",
+    [developmentRoot, visiblePreviewFileEntry],
+  );
+  const canOpenPreview = Boolean(promptLogPreview?.path || activePreviewExternalUrl);
+
   const openActiveFile = useCallback(() => {
     if (promptLogPreview?.path) {
       void nativeShell.openPath(promptLogPreview.path);
       return;
     }
-    if (activePreviewFileEntry?.path) void nativeShell.openPath(activePreviewFileEntry.path);
-  }, [activePreviewFileEntry?.path, promptLogPreview?.path]);
+    if (activePreviewExternalUrl) void nativeShell.openExternal(activePreviewExternalUrl);
+  }, [activePreviewExternalUrl, promptLogPreview?.path]);
 
   const selectPreviewFile = useCallback(
     (entry: WorkspaceFileEntry) => {
@@ -16033,7 +16080,8 @@ export default function ChunkWorkspaceApp() {
                     <button
                       type="button"
                       onClick={openActiveFile}
-                      disabled={!activePreviewFileEntry && !promptLogPreview?.path}
+                      disabled={!canOpenPreview}
+                      title="Open current preview"
                       className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
                     >
                       Open
@@ -16123,7 +16171,8 @@ export default function ChunkWorkspaceApp() {
                     <button
                       type="button"
                       onClick={openActiveFile}
-                      disabled={!activePreviewFileEntry && !promptLogPreview?.path}
+                      disabled={!canOpenPreview}
+                      title="Open current preview"
                       className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
                     >
                       Open
