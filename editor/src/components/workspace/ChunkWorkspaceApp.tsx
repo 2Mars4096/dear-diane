@@ -3841,8 +3841,12 @@ function eventActivityLine(event: ChatV2AgentRunEvent) {
       payload.exception,
       eventSummary(event),
     ]);
-    return reason
-      ? `Needs attention: ${reason}${/[.!?]$/.test(reason) ? "" : "."}`
+    const evidenceReason = reason
+      ? ""
+      : attentionReasonFromSharedEvidenceItems(sharedEvidenceItemsFromEvent(event, 0));
+    const resolvedReason = reason || evidenceReason;
+    return resolvedReason
+      ? `Needs attention: ${resolvedReason}${/[.!?]$/.test(resolvedReason) ? "" : "."}`
       : "DAN needs attention, but did not emit a specific reason.";
   }
   const human = humanEventSummary(event);
@@ -5712,7 +5716,9 @@ function buildBlueprintNodesForRunScope(args: {
   const firstTask = activeRunTasks[0] ?? null;
   const attentionTask = activeRunTasks.find(taskNeedsAttention) ?? null;
   const attentionRunId = attentionTask ? taskRunId(attentionTask) : "";
-  const attentionDetail = attentionTask ? taskAttentionDetail(attentionTask) : "";
+  const attentionDetail = attentionTask
+    ? taskAttentionDetail(attentionTask, activeRunEvents)
+    : "";
   const hasRunEvidence = activeRunTasks.length > 0 || activeRunEvents.length > 0 || hasActiveRun;
   const taskRequestSources = activeRunTasks.length > 0 ? activeRunTasks : appendingActiveFollowUp ? [] : tasks;
   const taskRequestLabel = taskRequestSources
@@ -7378,8 +7384,64 @@ function taskAttentionReason(task: ChatV2TaskSnapshot) {
   return reason ? readableRuntimeIssueText(reason, task) : "";
 }
 
-function taskAttentionDetail(task: ChatV2TaskSnapshot) {
-  const reason = taskAttentionReason(task);
+function attentionReasonFromSharedEvidenceItems(items: SharedEvidenceItem[], requestText = "") {
+  for (const item of [...items].reverse()) {
+    const marker = normalizeSummaryLine(
+      [item.kind, item.status, item.title, item.summary].filter(Boolean).join(" "),
+    );
+    if (!/\b(?:block|blocked|blocker|fail|failed|failure|error|exception|denied|invalid)\b/i.test(marker)) {
+      continue;
+    }
+    const reason = attentionReasonFromValues([item.summary], requestText);
+    if (reason) return reason;
+  }
+  return "";
+}
+
+function taskAttentionReasonFromEvents(
+  task: ChatV2TaskSnapshot,
+  events: ChatV2AgentRunEvent[] = [],
+) {
+  const requestText = taskRequestText(task);
+  const runId = taskRunId(task);
+  const relatedEvents = events.filter(
+    (event) =>
+      (runId && event.run_id === runId) ||
+      (task.task_id && event.task_id === task.task_id),
+  );
+  for (const event of [...relatedEvents].reverse()) {
+    const payload = eventPayload(event);
+    const reason = attentionReasonFromValues(
+      [
+        payload.blocker,
+        payload.blocked_on,
+        payload.blockers,
+        payload.attention_reason,
+        payload.failure_reason,
+        payload.status_reason,
+        payload.reason,
+        payload.error,
+        payload.errors,
+        payload.exception,
+        eventSummary(event),
+      ],
+      requestText,
+    );
+    if (reason) return readableRuntimeIssueText(reason, task);
+    const evidenceReason = attentionReasonFromSharedEvidenceItems(
+      sharedEvidenceItemsFromEvent(event, 0),
+      requestText,
+    );
+    if (evidenceReason) return readableRuntimeIssueText(evidenceReason, task);
+  }
+  return "";
+}
+
+function taskAttentionDetail(
+  task: ChatV2TaskSnapshot,
+  events: ChatV2AgentRunEvent[] = [],
+) {
+  const reason = taskAttentionReason(task) || taskAttentionReasonFromEvents(task, events);
   if (taskIsStaleRunning(task)) {
     const age = taskLastUpdateAge(task);
     return `Saved run still says running${age ? `, but last updated ${age} ago` : ""}.`;
@@ -10145,7 +10207,8 @@ function blueprintTimelineItems(
   const assignedChunkIds = new Set<string>();
   let latestAssignedChunkIndex = -1;
   const items: BlueprintTimelineItem[] = [];
-  for (const node of nodes) {
+  const visibleNodes = nodes.filter(isVisibleRunStepNode);
+  for (const node of visibleNodes) {
     const chunk = nodeConversationChunk(node, chunks, assignedChunkIds);
     if (chunk) {
       assignedChunkIds.add(chunk.id);
@@ -10171,6 +10234,10 @@ function blueprintTimelineItems(
     });
   });
   return items;
+}
+
+function isVisibleRunStepNode(node: BlueprintNode) {
+  return node.status === "done" || node.status === "active" || node.status === "blocked";
 }
 
 function ConversationTimelineCard({
@@ -10248,7 +10315,8 @@ function BlueprintView({
     });
   }, [activeNodeId, nodes.length]);
 
-  const counts = nodes.reduce(
+  const visibleRunStepNodes = useMemo(() => nodes.filter(isVisibleRunStepNode), [nodes]);
+  const counts = visibleRunStepNodes.reduce(
     (acc, node) => {
       acc[node.status] += 1;
       return acc;

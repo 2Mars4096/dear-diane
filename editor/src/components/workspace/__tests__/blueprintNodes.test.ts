@@ -1515,6 +1515,11 @@ describe("workspace blueprint nodes", () => {
     expect(nodes.find((node) => node.kind === "answer")).toMatchObject({
       status: "future",
     });
+
+    expect(blueprintTimelineItemsForTest(nodes, []).map((item) => item.id)).toEqual([
+      "node:blueprint:message:user-understanding-first",
+      "node:blueprint:understanding",
+    ]);
   });
 
   it("builds live preview status from current task progress and new event results", () => {
@@ -3959,6 +3964,71 @@ describe("workspace blueprint nodes", () => {
     expect(liveStatus.latestUpdate).toBe(
       "DAN needs attention, but did not emit a specific reason.",
     );
+  });
+
+  it("uses shared blocker evidence when failed task progress is generic", () => {
+    const blockedTask = task({
+      task_id: "workspace-check-task",
+      status: "failed",
+      latest_progress: "Super DAN needs attention.",
+      metadata: {
+        active_run_id: "workspace-check-run",
+        last_surface_turn: {
+          text: "try again to implement the font changes",
+        },
+      },
+    });
+    const blocker =
+      "workspace_check failed: ValueError: workspace_check syntax=auto only supports .py, .json, .html, .htm, or files with a registered source-shape profile.";
+    const blockedEvent: ChatV2AgentRunEvent = {
+      type: "failed",
+      source_event_type: "worker.context.capsule",
+      summary: "Super DAN needs attention.",
+      task_id: "workspace-check-task",
+      run_id: "workspace-check-run",
+      payload: {
+        capsules: [
+          {
+            kind: "blocker",
+            status: "provisional",
+            title: "blocker",
+            summary: blocker,
+          },
+        ],
+      },
+    };
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "workspace-check-run",
+      chunks: [
+        {
+          id: "message:user-workspace-check",
+          kind: "chat",
+          title: "You · Request",
+          body: "try again to implement the font changes",
+          status: "clean",
+          meta: "user",
+          role: "user",
+        },
+      ],
+      tasks: [blockedTask],
+      agentEvents: [blockedEvent],
+    });
+
+    const build = nodes.find((node) => node.id === "blueprint:build");
+    expect(build).toMatchObject({
+      title: "Execution needs attention",
+      status: "blocked",
+      body: blocker,
+    });
+    const answer = nodes.find((node) => node.kind === "answer");
+    expect(answer).toMatchObject({
+      title: "Final response",
+      status: "blocked",
+      body: blocker,
+    });
+    const liveStatus = blueprintLiveStatusForTest(build!, [blockedTask], [blockedEvent], null);
+    expect(liveStatus.latestUpdate).toContain("workspace_check failed");
   });
 
   it("does not treat output chunk parser errors as final responses", () => {
