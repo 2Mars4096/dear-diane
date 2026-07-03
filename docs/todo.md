@@ -1,6 +1,11 @@
 # Todo
 
 ## Current Backlog
+- [x] 2026-07-03 Preview Card session scope — fixed: blank/new sessions no longer inherit workspace-wide previewable files; the card now lists only current-session artifacts, changed files, or explicit file mentions.
+- [x] 2026-07-03 Work pane selected-session active run sync — fixed: the visible Work pane now merges background task snapshots for the selected thread so a newer active follow-up appears instead of leaving the previous final response as the apparent latest card.
+- [x] 2026-07-03 Work queued Steer/Next card projection — fixed: queued active-run composer messages now keep their source chat turn paired with the queue card, without replacing the active request or spawning duplicate pending-run cards.
+- [x] 2026-07-03 Work composer screenshot input — added clipboard screenshot paste, removable chat-bar thumbnails, structured Agent-run attachment payloads, and multimodal data-URL support for provider adapters.
+- [x] 2026-07-03 Source-structure recovery read — fixed: guarded `file_edit`/`file_write` source-shape rejections now reopen one focused `file_read` from the original allowed tool catalog before forcing direct write again.
 - [x] 2026-07-03 Preview Open button target — fixed: the Preview pane Open button now launches the currently visible preview file through the same app-served preview URL used by the pane.
 - [x] 2026-07-03 Work session auto-restore refresh loop — fixed: startup/session auto-restore now uses a hidden in-flight guard and commits restored state only after historical Agent run events are hydrated, preventing duplicate history-load bursts and visible board clearing.
 - [x] 2026-07-03 Workspace check mixed-file syntax handling — fixed: `workspace_check` now validates CSS with a lightweight source-shape profile and returns non-blocking informational results for unsupported `syntax=auto` file types.
