@@ -248,6 +248,7 @@
   - [x] 6-206. Keep Work Run Steps card visibility consistent by rendering only done, active, or blocked cards in the main stack while leaving future/planned nodes in the Live Task Graph.
   - [x] 6-207. Surface concrete shared blocker evidence on blocked Execution and Final response cards when the task progress itself is generic.
   - [x] 6-208. Harden `workspace_check` syntax handling for mixed frontend files by adding a CSS source-shape profile and non-blocking unsupported results for unknown file types.
+  - [x] 6-209. Prevent duplicate Work session auto-restore history loads with a hidden in-flight guard, then commit restored board state only after historical Agent run records/events are ready.
 
 ## Decisions
 - The workspace route is a surface, not another product mode.
@@ -282,6 +283,7 @@
 - Policy resolution reads operator labels, not generated context labels. Flattened GUI packets may include internal instructions such as `do not quote context labels`; those must be cut away before classifying whether the user asked for read-only work or workspace mutation.
 - Run-start policy is authoritative. Already-running backends keep the policy/tools they started with, but each newly admitted run recomputes the effective mutation policy before adapter execution so stale payload permissions can upgrade or downgrade from the current objective packet.
 - Run Steps are for current/completed operator-facing progress. Future, ready, queued, and planned blueprint nodes may exist for graph/preview context, but the main card stack should show only done, active, or blocked cards so phases do not appear during request understanding and disappear during execution.
+- Session auto-restore should be implicit unless the user actively opens a session. Rehydrating every run record/event for a thread is useful for old sessions, but restore should use a hidden in-flight guard, avoid clearing the visible board during hydration, and commit the restored state only once the first history load is ready.
 - Blocked Run Step cards should use the same promoted evidence as the Preview pane. If task progress only says "needs attention", the card should fall through to related blocker/failed/error evidence capsules before claiming no reason was emitted.
 - Deterministic syntax checks must not become project blockers merely because the workspace contains unsupported file types. `workspace_check` may validate known profiles such as CSS, but unsupported `syntax=auto` results are informational and should send workers to counts, file reads, or project-native lint/build checks.
 - Runtime limits are control boundaries, not user-goal boundaries. Native/Super DAN may extend a live stage only through a bounded no-tool budget-auditor lease, while Codex can only continue after its external process exits by queuing a new run that preserves the original request plus the remaining gap.
@@ -415,6 +417,7 @@
 - Notes taxonomy clicks should drill into article lists without switching users back to the Pages folder tree. Tags and Categories remain their own rail contexts; Pages stays the folder hierarchy.
 
 ## Notes
+- 2026-07-03: Prevented duplicate auto-restore history loads without visible board churn. Startup/session restore now keeps a hidden restoring-thread marker while historical Agent run records/events hydrate, and only commits the restored Work board after that history is ready.
 - 2026-06-30: Added the Work Preview Card and root-aware file preview route. The card lists backend artifact refs plus previewable workspace outputs, file-tree/card clicks clear selected Work steps, and the Preview pane renders HTML in a sandboxed iframe with neighboring assets, images/PDFs natively, and Markdown/text through the existing renderers.
 - 2026-06-29: Released Stop from the Message Queue. Stop-requested Agent task snapshots no longer become queue rows or synthetic Work cards, while the stopped run can still render as needing attention if it did not produce a final response.
 - 2026-06-28: Fixed shared Markdown inline parsing inside list items. Bullet and numbered items now preserve `**bold**` and explicit backtick code spans before the automatic code-like prose highlighter runs.

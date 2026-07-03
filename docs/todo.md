@@ -1,6 +1,7 @@
 # Todo
 
 ## Current Backlog
+- [x] 2026-07-03 Work session auto-restore refresh loop — fixed: startup/session auto-restore now uses a hidden in-flight guard and commits restored state only after historical Agent run events are hydrated, preventing duplicate history-load bursts and visible board clearing.
 - [x] 2026-07-03 Workspace check mixed-file syntax handling — fixed: `workspace_check` now validates CSS with a lightweight source-shape profile and returns non-blocking informational results for unsupported `syntax=auto` file types.
 - [x] 2026-07-03 Work blocked-card evidence — fixed: blocked Execution/Final cards now pull concrete blocker details from related shared evidence capsules when task progress is only generic needs-attention text.
 - [x] 2026-07-03 Work Run Steps active/done consistency — fixed: the main Work card stack now filters out future/queued/ready blueprint nodes and shows only done, active, or blocked steps, while future plan nodes remain available in the Live Task Graph.
