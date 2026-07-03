@@ -2775,12 +2775,16 @@ function sessionHasNewReadyResponse(tasks: ChatV2TaskSnapshot[], seenAt?: string
 function shouldAutoRestoreSession(args: {
   activeThreadPresent: boolean;
   creatingSession: boolean;
+  loadingThreadId?: string | null;
+  restoringThreadId?: string | null;
   targetThreadId?: string | null;
   threadCount: number;
 }) {
   return Boolean(
     !args.activeThreadPresent &&
       !args.creatingSession &&
+      !args.loadingThreadId &&
+      !args.restoringThreadId &&
       args.targetThreadId &&
       args.threadCount > 0,
   );
@@ -11032,6 +11036,7 @@ export default function ChunkWorkspaceApp() {
   const agentStreamRef = useRef<WebSocket | null>(null);
   const sessionSelectionSeqRef = useRef(0);
   const creatingSessionRef = useRef(false);
+  const autoRestoringThreadIdRef = useRef<string | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const noteEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const sessionSwipeRef = useRef<SessionSwipeState | null>(null);
@@ -11578,6 +11583,8 @@ export default function ChunkWorkspaceApp() {
       !shouldAutoRestoreSession({
         activeThreadPresent: Boolean(activeThread),
         creatingSession: creatingSessionRef.current,
+        loadingThreadId,
+        restoringThreadId: autoRestoringThreadIdRef.current,
         targetThreadId: match?.id,
         threadCount: threads.length,
       })
@@ -11586,6 +11593,7 @@ export default function ChunkWorkspaceApp() {
     }
     if (!match) return;
     const selectionSeq = ++sessionSelectionSeqRef.current;
+    autoRestoringThreadIdRef.current = match.id;
     void getChatV2Thread(match.workflow_id, match.id)
       .then(async (thread) => {
         const history = await loadSuperDanThreadHistory(thread.id, thread.title, thread.updated_at).catch(() => ({
@@ -11612,6 +11620,10 @@ export default function ChunkWorkspaceApp() {
               : [...(restoredWorkspace?.openThreadIds ?? []), thread.id],
           });
         }
+        setPendingAssistantIds({});
+        setSelectedChunkId(null);
+        setSelectedBlueprintNodeId(null);
+        setPromptLogPreview(null);
         setActiveThread({ id: thread.id, workflowId: thread.workflow_id, title: thread.title });
         setMessages(restoredMessages);
         messagesRef.current = restoredMessages;
@@ -11630,11 +11642,20 @@ export default function ChunkWorkspaceApp() {
         );
       })
       .catch(() => {
-        if (sessionSelectionSeqRef.current === selectionSeq) setStatus("Session restore failed");
+        if (sessionSelectionSeqRef.current === selectionSeq) {
+          setStatus("Session restore failed");
+        }
+      })
+      .finally(() => {
+        if (autoRestoringThreadIdRef.current === match.id) {
+          autoRestoringThreadIdRef.current = null;
+        }
+        if (sessionSelectionSeqRef.current === selectionSeq) setLoadingThreadId(null);
       });
   }, [
     activeThread,
     clearStoredThreadSelection,
+    loadingThreadId,
     mergeBackgroundTasks,
     removeThreadFromWorkspaceSlots,
     refreshThreads,

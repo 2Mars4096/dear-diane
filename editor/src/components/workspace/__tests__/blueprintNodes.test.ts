@@ -2166,6 +2166,27 @@ describe("workspace blueprint nodes", () => {
     ).toBe(true);
   });
 
+  it("does not start duplicate auto-restore while session history is loading", () => {
+    expect(
+      shouldAutoRestoreSessionForTest({
+        activeThreadPresent: false,
+        creatingSession: false,
+        loadingThreadId: "previous-thread",
+        targetThreadId: "previous-thread",
+        threadCount: 3,
+      }),
+    ).toBe(false);
+    expect(
+      shouldAutoRestoreSessionForTest({
+        activeThreadPresent: false,
+        creatingSession: false,
+        restoringThreadId: "previous-thread",
+        targetThreadId: "previous-thread",
+        threadCount: 3,
+      }),
+    ).toBe(false);
+  });
+
   it("does not pick archived sessions as restore targets", () => {
     const archived = thread({ id: "archived-thread", archived: true });
     const active = thread({ id: "active-thread", archived: false });
