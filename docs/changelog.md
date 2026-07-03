@@ -1,7 +1,12 @@
 # Changelog
 
+## 2026-07-03
+- [fix] Hardened `workspace_check` syntax validation for mixed frontend projects. CSS files now use a lightweight registered source-shape profile, and unsupported `syntax=auto` file types return structured informational results instead of raising run-blocking exceptions.
+- [fix] Surfaced shared blocker evidence on blocked Work cards. If a failed task only has generic progress such as "DAN needs attention" but related worker evidence carries a concrete blocker, the Execution and Final response cards now show that blocker instead of saying no error reason was emitted.
+- [fix] Made Work Run Steps card visibility consistent. The main card stack now shows only done, active, or blocked steps, while future/planned nodes stay available to the Live Task Graph and preview context instead of appearing during request understanding and disappearing during execution.
+
 ## 2026-07-02
-- [fix] Canonicalized the stale Dropbox `/Volumes` project root to the active local `Downloads/local_projects` checkout in the workspace GUI, so session grouping, file browsing, and future Agent run payloads target the same local tree.
+- [fix] Canonicalized the stale Dropbox `/Volumes` project root to the active local `Downloads/local_projects` checkout across shared runtime path resolution, Chat V2 run admission, workspace file/log APIs, and the workspace GUI, so new Agent runs and previews target the same local tree.
 - [fix] Prevented flattened GUI continuation context from poisoning Super DAN mutation policy. Policy resolution now extracts only the operator request and current follow-up labels before checking read-only/write intent, so generated context instructions such as "do not quote context labels" cannot force an implement follow-up into read-only mode.
 - [fix] Recomputed mutation policy at backend run-request build time. Newly admitted runs now get a fresh operator-intent permission decision before adapter execution, while already-running backends keep their started contract.
 - [fix] Calmed full Preview rendering for selected Work chunks and cards. The Preview pane now disables automatic maybe-code highlighting in long reading views, strips copied internal selected-card/file context dumps, and the backend tells future runs not to quote selected-card or active-file JSON back to the operator.

@@ -1,7 +1,10 @@
 # Todo
 
 ## Current Backlog
-- [x] 2026-07-02 Workspace root alias for local DAN checkout — fixed: the GUI now maps the stale `/Volumes/data/Dropbox/Projects/deep-agent-network` root to `/Users/lizhi/Downloads/local_projects/deep-agent-network` before grouping sessions, browsing files, or sending new Agent runs.
+- [x] 2026-07-03 Workspace check mixed-file syntax handling — fixed: `workspace_check` now validates CSS with a lightweight source-shape profile and returns non-blocking informational results for unsupported `syntax=auto` file types.
+- [x] 2026-07-03 Work blocked-card evidence — fixed: blocked Execution/Final cards now pull concrete blocker details from related shared evidence capsules when task progress is only generic needs-attention text.
+- [x] 2026-07-03 Work Run Steps active/done consistency — fixed: the main Work card stack now filters out future/queued/ready blueprint nodes and shows only done, active, or blocked steps, while future plan nodes remain available in the Live Task Graph.
+- [x] 2026-07-02 Workspace root alias for local DAN checkout — fixed: shared runtime path resolution and the GUI now map the stale `/Volumes/data/Dropbox/Projects/deep-agent-network` root to `/Users/lizhi/Downloads/local_projects/deep-agent-network` before grouping sessions, browsing files/logs, previewing artifacts, or sending new Agent runs.
 - [x] 2026-07-02 Flattened continuation policy parsing — fixed: Super DAN mutation policy now extracts operator/follow-up labels from flattened GUI packets before scanning intent, so generated context `do not ...` instructions no longer make write follow-ups read-only.
 - [x] 2026-07-02 Full Preview context/highlight cleanup — fixed: selected Work chunks/cards now render as calmer reading views with automatic maybe-code highlighting off, and copied internal selected-card/file context dumps are hidden from Preview.
 - [x] 2026-07-02 Backend run-start mutation-policy recompute — fixed: newly admitted runs recompute effective mutation permission before adapter execution instead of trusting stale inherited payload policy.
