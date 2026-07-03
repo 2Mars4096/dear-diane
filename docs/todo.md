@@ -1,6 +1,7 @@
 # Todo
 
 ## Current Backlog
+- [x] 2026-07-03 Preview Open button target — fixed: the Preview pane Open button now launches the currently visible preview file through the same app-served preview URL used by the pane.
 - [x] 2026-07-03 Work session auto-restore refresh loop — fixed: startup/session auto-restore now uses a hidden in-flight guard and commits restored state only after historical Agent run events are hydrated, preventing duplicate history-load bursts and visible board clearing.
 - [x] 2026-07-03 Workspace check mixed-file syntax handling — fixed: `workspace_check` now validates CSS with a lightweight source-shape profile and returns non-blocking informational results for unsupported `syntax=auto` file types.
 - [x] 2026-07-03 Work blocked-card evidence — fixed: blocked Execution/Final cards now pull concrete blocker details from related shared evidence capsules when task progress is only generic needs-attention text.

@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-07-03
+- [fix] Made the Preview pane Open button launch the currently visible preview. Selected HTML, PDF, image, Markdown, and text preview files now open through the same app-served preview URL used by the pane, while prompt logs still open their backing file.
 - [fix] Made Work session auto-restore quieter and non-reentrant. Startup restore now tracks a hidden in-flight target while it hydrates historical run records/events, then commits the restored board only after history is ready, so thread/workspace refreshes cannot start repeated `/agent-runs/.../events` bursts or visibly clear/reload the Work panel.
 - [fix] Hardened `workspace_check` syntax validation for mixed frontend projects. CSS files now use a lightweight registered source-shape profile, and unsupported `syntax=auto` file types return structured informational results instead of raising run-blocking exceptions.
 - [fix] Surfaced shared blocker evidence on blocked Work cards. If a failed task only has generic progress such as "DAN needs attention" but related worker evidence carries a concrete blocker, the Execution and Final response cards now show that blocker instead of saying no error reason was emitted.

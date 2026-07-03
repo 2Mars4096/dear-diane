@@ -1,5 +1,8 @@
 # Known Issues & Failed Approaches
 
+- ~~**P3: Preview pane Open button did not open the visible preview.**~~ **FIXED 2026-07-03.** The Preview header button only knew how to open prompt-log files or raw file paths, while Preview Card HTML/PDF/image/text artifacts were displayed through `/api/workspace-files/preview/...`. The button now opens the currently visible preview file through that same app-served URL, and disables itself when the visible preview is a Work card/chunk rather than a file.
+- **Failed approach recorded:** a universal `Open` button cannot rely on stale file selection state. It must target the currently rendered Preview branch, otherwise it can open nothing or open a different file than the one on screen.
+
 - ~~**P2: Work session auto-restore could start duplicate history loads and look like constant refreshing.**~~ **FIXED 2026-07-03.** The auto-restore effect did not mark the target thread as in-flight until after fetching every historical Agent run record and event list. While that fetch fan-out was pending, ordinary thread/workspace refresh effects could enter the same auto-restore path again, producing repeated `/api/v2/agent-runs/...` and `/events` bursts even though the backend was not restarting. Auto-restore now uses a hidden restoring-thread guard and commits the restored board only after history is ready, so restore does not visibly clear/reload the Work panel.
 - **Failed approach recorded:** treating every visible repaint as a backend reload misses frontend rehydration loops. History loading is valuable for old sessions, but long rehydration work needs a local in-progress guard before async fetches start.
 

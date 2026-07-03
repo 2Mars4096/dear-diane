@@ -249,6 +249,7 @@
   - [x] 6-207. Surface concrete shared blocker evidence on blocked Execution and Final response cards when the task progress itself is generic.
   - [x] 6-208. Harden `workspace_check` syntax handling for mixed frontend files by adding a CSS source-shape profile and non-blocking unsupported results for unknown file types.
   - [x] 6-209. Prevent duplicate Work session auto-restore history loads with a hidden in-flight guard, then commit restored board state only after historical Agent run records/events are ready.
+  - [x] 6-210. Make the Preview pane Open button launch the currently visible app-served preview URL for selected preview files.
 
 ## Decisions
 - The workspace route is a surface, not another product mode.
