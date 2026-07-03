@@ -1386,7 +1386,7 @@ def _tool_use_policy(tool_ids: Sequence[str]) -> str:
         )
     if "workspace_check" in available:
         lines.append(
-            "- Use `workspace_check` before `shell_command` for deterministic file existence, literal/regex counts, HTML tag balance, and Python/JSON syntax checks."
+            "- Use `workspace_check` before `shell_command` for deterministic file existence, literal/regex counts, HTML tag balance, and Python/JSON/HTML/CSS/registered-profile syntax checks. If a syntax check returns unsupported, treat it as informational and use counts, file reads, or a project-native lint/build command instead of blocking on the unsupported syntax profile."
         )
     if not mutation_capable:
         lines.append(

@@ -71,7 +71,7 @@ TOOL_METADATA = {
             },
             "syntax": {
                 "type": "string",
-                "enum": ["auto", "python", "json", "html", "gdscript"],
+                "enum": ["auto", "python", "json", "html", "css", "gdscript"],
                 "description": "Syntax flavor for syntax checks.",
                 "default": "auto",
             },
@@ -288,10 +288,7 @@ def _infer_syntax(path: str, syntax: str | None) -> str:
     source_profile = source_shape_profile_for_path(path)
     if source_profile:
         return source_profile
-    raise ValueError(
-        "workspace_check syntax=auto only supports .py, .json, .html, .htm, "
-        "or files with a registered source-shape profile."
-    )
+    return "unsupported"
 
 
 def _syntax_result(path: str, content: str, size: int, syntax: str | None) -> dict[str, Any]:
@@ -330,11 +327,33 @@ def _syntax_result(path: str, content: str, size: int, syntax: str | None) -> di
             "error": error,
             "issues": issues,
         }
+    elif kind == "css":
+        issues = suspicious_source_structure_issues(path, content, profile="css")
+        error = "; ".join(issues)
+        return {
+            "check": "syntax",
+            "path": path,
+            "syntax": "css",
+            "passed": not issues,
+            "size": size,
+            "error": error,
+            "issues": issues,
+        }
     else:
-        raise ValueError(
-            "workspace_check syntax supports only auto, python, json, html, "
-            "or a registered source-shape profile."
-        )
+        return {
+            "check": "syntax",
+            "path": path,
+            "syntax": "unsupported",
+            "requested_syntax": kind,
+            "passed": None,
+            "unsupported": True,
+            "size": size,
+            "error": "",
+            "warning": (
+                "No deterministic workspace_check syntax profile is registered for this file type. "
+                "Use exists, literal_count, regex_count, file_read, or a project-native lint/build command."
+            ),
+        }
     return {
         "check": "syntax",
         "path": path,

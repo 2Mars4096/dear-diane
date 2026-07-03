@@ -11,6 +11,7 @@ import os
 import re
 from collections import Counter
 
+_CSS_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 _GDSCRIPT_FUNCTION_RE = re.compile(
     r"^[ \t]*(?:static[ \t]+)?func[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(",
     re.MULTILINE,
@@ -30,6 +31,7 @@ _GDSCRIPT_VAR_RE = re.compile(
 )
 _GDSCRIPT_BLOCK_PREFIXES = ("if", "elif", "else", "for", "while", "match")
 _SOURCE_SHAPE_PROFILE_BY_EXTENSION = {
+    ".css": "css",
     ".gd": "gdscript",
 }
 
@@ -55,9 +57,37 @@ def suspicious_source_structure_issues(
     normalized_profile = (profile or source_shape_profile_for_path(path) or "").strip().lower()
     if normalized_profile in {"", "auto"}:
         return []
+    if normalized_profile == "css":
+        return _suspicious_css_structure_issues(text)
     if normalized_profile in {"gd", "gdscript"}:
         return _suspicious_gdscript_structure_issues(text)
     return []
+
+
+def _suspicious_css_structure_issues(text: str) -> list[str]:
+    """Return cheap CSS parse-risk issues without pretending to be a full CSS parser."""
+
+    if not text.strip():
+        return []
+
+    issues: list[str] = []
+    if text.count("/*") != text.count("*/"):
+        issues.append("unterminated CSS block comment [css profile]")
+
+    stripped = _CSS_BLOCK_COMMENT_RE.sub("", text)
+    balance = 0
+    for index, char in enumerate(stripped):
+        if char == "{":
+            balance += 1
+        elif char == "}":
+            balance -= 1
+            if balance < 0:
+                issues.append(f"unexpected closing brace near character {index + 1} [css profile]")
+                balance = 0
+    if balance > 0:
+        issues.append(f"unclosed CSS rule block count={balance} [css profile]")
+
+    return issues
 
 
 def _suspicious_gdscript_structure_issues(text: str) -> list[str]:
