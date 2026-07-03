@@ -42,6 +42,7 @@ import {
   workspaceComposerSuggestionsForTest,
   workspaceComposerTokenForTest,
   workspaceMentionedFilesFromTextForTest,
+  workPanelTasksForTest,
   workspaceSelectedSkillInvocationForTest,
   workspaceAgentExecutePayloadForTest,
   workspaceAgentOptionsForTest,
@@ -625,6 +626,7 @@ describe("workspace blueprint nodes", () => {
       workspaceFile("docs/architecture.md"),
       workspaceFile("figures/model-fit.png", { mtime: 200 }),
       workspaceFile("website/index.html", { mtime: 150 }),
+      workspaceFile("website/apps/chat-bot/index.html", { mtime: 210 }),
       workspaceFile("outputs/report.pdf", { mtime: 180 }),
       workspaceFile("outputs/summary.md", { mtime: 170 }),
     ];
@@ -634,12 +636,41 @@ describe("workspace blueprint nodes", () => {
       tasks: [
         task({
           latest_artifact_refs: [{ path: "/tmp/workspace/exports/final-chart.svg" }],
+          metadata: {
+            surface_context: {
+              mentioned_files: [
+                { relative_path: "outputs/summary.md" },
+                { path: "/tmp/workspace/docs/architecture.md" },
+              ],
+            },
+          },
         }),
       ],
       events: [
         {
           type: "completed",
           artifact_refs: [{ path: "outputs/report.pdf" }],
+        },
+        {
+          type: "tool.completed",
+          source_event_type: "tool.completed",
+          payload: {
+            result: {
+              changed: true,
+              path: "website/index.html",
+            },
+          },
+        },
+      ],
+      chunks: [
+        {
+          id: "chunk-1",
+          kind: "chat" as const,
+          title: "You",
+          body: "Please inspect @figures/model-fit.png",
+          status: "clean",
+          meta: "",
+          role: "user",
         },
       ],
       limit: 8,
@@ -648,12 +679,31 @@ describe("workspace blueprint nodes", () => {
     expect(artifacts).toEqual([
       { path: "outputs/report.pdf", kind: "pdf", source: "artifact" },
       { path: "exports/final-chart.svg", kind: "image", source: "artifact" },
-      { path: "website/index.html", kind: "html", source: "file" },
-      { path: "outputs/summary.md", kind: "markdown", source: "file" },
-      { path: "figures/model-fit.png", kind: "image", source: "file" },
+      { path: "website/index.html", kind: "html", source: "session" },
+      { path: "outputs/summary.md", kind: "markdown", source: "session" },
+      { path: "figures/model-fit.png", kind: "image", source: "session" },
+      { path: "docs/architecture.md", kind: "markdown", source: "session" },
     ]);
     expect(artifacts.map((artifact) => artifact.path)).not.toContain("src/app.tsx");
-    expect(artifacts.map((artifact) => artifact.path)).not.toContain("docs/architecture.md");
+    expect(artifacts.map((artifact) => artifact.path)).not.toContain(
+      "website/apps/chat-bot/index.html",
+    );
+  });
+
+  it("leaves the preview artifact list empty for a session with no artifacts or mentions", () => {
+    const artifacts = workspacePreviewArtifactsForTest({
+      entries: [
+        workspaceFile("website/index.html"),
+        workspaceFile("website/apps/chat-bot/index.html"),
+        workspaceFile("outputs/report.pdf"),
+      ],
+      root: "/tmp/workspace",
+      tasks: [],
+      events: [],
+      limit: 8,
+    });
+
+    expect(artifacts).toEqual([]);
   });
 
   it("builds an external browser URL for the current preview file", () => {
@@ -771,6 +821,35 @@ describe("workspace blueprint nodes", () => {
       "Treat the notes root as a Hugo content tree, not a scratch folder.",
     );
     expect(context.notes_workspace.write_policy).toContain("create or edit notes only");
+  });
+
+  it("adds screenshot attachments to workspace surface context", () => {
+    const context = workspaceSurfaceContextForTest({
+      attachments: [
+        {
+          id: "shot-1",
+          kind: "figure",
+          name: "Screenshot.png",
+          mimeType: "image/png",
+          path: "/tmp/dan/shot.png",
+          size: 128,
+          source: "clipboard",
+        },
+      ],
+    });
+
+    expect(context.attachment_count).toBe(1);
+    expect(context.appended_attachments).toEqual([
+      expect.objectContaining({
+        id: "shot-1",
+        kind: "figure",
+        name: "Screenshot.png",
+        local_path: "/tmp/dan/shot.png",
+        mime_type: "image/png",
+        size_bytes: 128,
+        source: "clipboard",
+      }),
+    ]);
   });
 
   it("shows a Last Update metadata chip from file mtime when lastmod is absent", () => {
@@ -1336,6 +1415,54 @@ describe("workspace blueprint nodes", () => {
     });
 
     expect(taskGroupElapsedCounterForTest([queued])).toBeNull();
+  });
+
+  it("merges selected-thread background tasks into the Work pane task list", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-25T12:06:30.000Z"));
+    try {
+      const selectedCompleted = task({
+        task_id: "done-task",
+        thread_id: "thread-1",
+        status: "completed",
+        metadata: {
+          active_run_id: "done-run",
+          run_updated_at: "2026-06-25T12:04:00.000Z",
+        },
+      });
+      const backgroundRunning = task({
+        task_id: "running-task",
+        thread_id: "thread-1",
+        status: "running",
+        metadata: {
+          active_run_id: "running-run",
+          run_updated_at: "2026-06-25T12:05:00.000Z",
+        },
+      });
+      const otherThreadRunning = task({
+        task_id: "other-running-task",
+        thread_id: "thread-2",
+        status: "running",
+        metadata: {
+          active_run_id: "other-running-run",
+          run_updated_at: "2026-06-25T12:06:00.000Z",
+        },
+      });
+
+      const visibleTasks = workPanelTasksForTest(
+        [selectedCompleted],
+        [backgroundRunning, otherThreadRunning],
+        "thread-1",
+      );
+
+      expect(visibleTasks.map((item) => item.task_id).sort()).toEqual([
+        "done-task",
+        "running-task",
+      ]);
+      expect(selectActiveRunningTaskForTest(visibleTasks)?.task_id).toBe("running-task");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("marks a session response as new only until that ready response has been seen", () => {
@@ -3578,6 +3705,175 @@ describe("workspace blueprint nodes", () => {
       title: "Follow-up response",
       status: "future",
     });
+  });
+
+  it("keeps queued next messages from replacing the active request card", () => {
+    const running = task({
+      task_id: "running",
+      status: "running",
+      latest_progress: "Thinking with kimi-k2.6.",
+      metadata: {
+        active_run_id: "active-run",
+        queue_items: [
+          {
+            id: "next-1",
+            task_id: "running",
+            lane: "continue_after_current",
+            status: "queued",
+            text: "then add screenshot support",
+            position: 1,
+          },
+        ],
+      },
+    });
+    const chunks = [
+      {
+        id: "message:user-active",
+        kind: "chat" as const,
+        title: "You · Request",
+        body: "build the workspace page",
+        status: "clean" as const,
+        meta: "user",
+        role: "user" as const,
+        runId: "active-run",
+      },
+      {
+        id: "message:user-next",
+        kind: "chat" as const,
+        title: "You · Request",
+        body: "then add screenshot support",
+        status: "clean" as const,
+        meta: "user",
+        role: "user" as const,
+      },
+    ];
+    const rows = queueRowsFromTasksForTest([running]);
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "active-run",
+      activeRunningTask: running,
+      tasks: [running],
+      queueRows: rows,
+      chunks,
+    });
+
+    expect(nodes.find((node) => node.title === "Operator request")).toMatchObject({
+      rawRequest: "build the workspace page",
+      runId: "active-run",
+    });
+    expect(nodes.find((node) => node.rawRequest === "then add screenshot support")).toMatchObject({
+      title: "Follow-up request",
+      detail: "Next message",
+    });
+
+    const timeline = blueprintTimelineItemsForTest(nodes, conversationUserChunksForTest(chunks));
+    expect(timeline.map((item) => item.id)).toEqual([
+      "conversation:message:user-active:before:blueprint:message:user-active",
+      "node:blueprint:message:user-active",
+      "node:blueprint:understanding",
+      "conversation:message:user-next:before:blueprint:queue:next-1:request",
+      "node:blueprint:queue:next-1:request",
+    ]);
+  });
+
+  it("keeps queued steering messages out of synthetic pending-run groups", () => {
+    const oldTask = task({
+      task_id: "old-task",
+      status: "completed",
+      latest_progress: "Old run done.",
+      metadata: { active_run_id: "old-run" },
+    });
+    const running = task({
+      task_id: "running",
+      status: "running",
+      latest_progress: "Thinking with kimi-k2.6.",
+      metadata: {
+        active_run_id: "active-run",
+        queue_items: [
+          {
+            id: "steer-1",
+            task_id: "running",
+            lane: "append",
+            status: "queued",
+            text: "use the smaller card layout",
+            position: 1,
+          },
+        ],
+      },
+    });
+    const chunks = [
+      {
+        id: "message:user-old",
+        kind: "chat" as const,
+        title: "You · Request",
+        body: "first request",
+        status: "clean" as const,
+        meta: "user",
+        role: "user" as const,
+        runId: "old-run",
+      },
+      {
+        id: "agent-answer:old-run",
+        kind: "agent" as const,
+        title: "DAN · Answer",
+        body: "Old run done.",
+        status: "clean" as const,
+        meta: "run.log.completed",
+        runId: "old-run",
+      },
+      {
+        id: "message:user-active",
+        kind: "chat" as const,
+        title: "You · Request",
+        body: "continue the UI fix",
+        status: "clean" as const,
+        meta: "user",
+        role: "user" as const,
+        runId: "active-run",
+      },
+      {
+        id: "message:user-steer",
+        kind: "chat" as const,
+        title: "You · Request",
+        body: "use the smaller card layout",
+        status: "clean" as const,
+        meta: "user",
+        role: "user" as const,
+      },
+    ];
+    const rows = queueRowsFromTasksForTest([running]);
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "active-run",
+      activeRunningTask: running,
+      tasks: [oldTask, running],
+      queueRows: rows,
+      chunks,
+      agentEvents: [
+        {
+          type: "completed",
+          source_event_type: "run.log.completed",
+          summary: "Old run done.",
+          run_id: "old-run",
+          task_id: "old-task",
+        },
+      ],
+    });
+
+    expect(nodes.some((node) => node.id.includes("pending-chunk:message:user-steer"))).toBe(false);
+    expect(nodes.find((node) => node.rawRequest === "use the smaller card layout")).toMatchObject({
+      title: "Follow-up request",
+      detail: "Steering message",
+    });
+
+    const timelineIds = blueprintTimelineItemsForTest(
+      nodes,
+      conversationUserChunksForTest(chunks),
+    ).map((item) => item.id);
+    expect(timelineIds).toContain(
+      "conversation:message:user-steer:before:blueprint:run:active-run:queue:steer-1:request",
+    );
+    expect(timelineIds).not.toContain("conversation:message:user-steer:unmatched");
   });
 
   it("appends an active follow-up without refreshing the completed base plan", () => {

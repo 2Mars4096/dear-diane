@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type ClipboardEvent,
   type DragEvent,
   type KeyboardEvent,
   type MouseEvent,
@@ -33,6 +34,7 @@ import {
   FolderOpen,
   GitBranch as GitBranchIcon,
   GripVertical,
+  Image as ImageIcon,
   Link as LinkIcon,
   Lightbulb,
   Loader2,
@@ -96,6 +98,12 @@ import {
   type ChatV2ThreadSummary,
 } from "../../lib/chatV2Api";
 import {
+  composerDraftToChatAttachment,
+  normalizeAttachmentDrafts,
+  resolveAttachmentName,
+  type ComposerAttachmentDraft,
+} from "../../lib/editorChat";
+import {
   isElectron,
   nativeDialog,
   nativeFs,
@@ -118,6 +126,7 @@ const LAST_THREAD_STORAGE_KEY = "dan.chunkWorkspace.lastThread.v1";
 const ROOT_SUGGESTION_STORAGE_KEY = "dan.chunkWorkspace.roots.v1";
 const THREAD_WORKSPACE_STORAGE_KEY = "dan.chunkWorkspace.threadWorkspaces.v1";
 const SESSION_RESPONSE_SEEN_STORAGE_KEY = "dan.chunkWorkspace.sessionResponseSeen.v1";
+const WORKSPACE_COMPOSER_MAX_SCREENSHOTS = 4;
 const LAYOUT_STORAGE_KEY = "dan.chunkWorkspace.layout.v1";
 const UI_STATE_STORAGE_KEY = "dan.chunkWorkspace.uiState.v1";
 const AGENT_SELECTION_STORAGE_KEY = "dan.chunkWorkspace.agentSelection.v1";
@@ -562,12 +571,13 @@ interface PromptLogPreview {
 }
 
 type WorkspaceFilePreviewKind = "image" | "pdf" | "html" | "markdown" | "text";
+type WorkspacePreviewArtifactSource = "file" | "artifact" | "session";
 
 interface WorkspacePreviewArtifact {
   id: string;
   entry: WorkspaceFileEntry;
   kind: WorkspaceFilePreviewKind;
-  source: "file" | "artifact";
+  source: WorkspacePreviewArtifactSource;
 }
 
 interface BlueprintPlanTask {
@@ -693,6 +703,35 @@ interface QueueRow {
   taskId?: string | null;
   runId?: string | null;
   sourceChunkId?: string;
+}
+
+function userChunkBody(chunk: WorkspaceChunk) {
+  return chunk.kind === "chat" && chunk.role === "user" ? chunk.body.trim() : "";
+}
+
+function attachQueueRowSourceChunks(queueRows: QueueRow[], chunks: WorkspaceChunk[]) {
+  if (queueRows.length === 0 || chunks.length === 0) return queueRows;
+  const assignedChunkIds = new Set(queueRows.map((row) => row.sourceChunkId).filter(Boolean));
+  const pendingUserChunks = chunks.filter((chunk) => userChunkBody(chunk) && !chunk.runId);
+  if (pendingUserChunks.length === 0) return queueRows;
+  let changed = false;
+  const rows = queueRows.map((row) => {
+    if (row.sourceChunkId || row.kind !== "followup") return row;
+    const detail = row.detail.trim();
+    if (!detail) return row;
+    const match = [...pendingUserChunks]
+      .reverse()
+      .find((chunk) => !assignedChunkIds.has(chunk.id) && userChunkBody(chunk) === detail);
+    if (!match) return row;
+    assignedChunkIds.add(match.id);
+    changed = true;
+    return { ...row, sourceChunkId: match.id };
+  });
+  return changed ? rows : queueRows;
+}
+
+function queueSourceChunkIds(queueRows: QueueRow[]) {
+  return new Set(queueRows.map((row) => row.sourceChunkId).filter(Boolean));
 }
 
 interface BlueprintTimelineNodeItem {
@@ -920,6 +959,87 @@ function makeMessage(role: ChatMessage["role"], content: string): ChatMessage {
     role,
     content,
     timestamp: Date.now(),
+  };
+}
+
+function dataUrlFromFile(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("Failed to read clipboard image"));
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+        return;
+      }
+      reject(new Error("Unexpected clipboard image read result"));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function extensionForImageMimeType(mimeType?: string) {
+  switch ((mimeType || "").toLowerCase()) {
+    case "image/jpeg":
+      return ".jpg";
+    case "image/webp":
+      return ".webp";
+    case "image/gif":
+      return ".gif";
+    case "image/png":
+    default:
+      return ".png";
+  }
+}
+
+function formatAttachmentSize(size?: number) {
+  if (!Number.isFinite(size ?? NaN) || !size) return "";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function workspaceAttachmentOnlyPrompt(attachments: ComposerAttachmentDraft[]) {
+  if (attachments.length <= 1) return "Please review the attached screenshot.";
+  return "Please review the attached screenshots.";
+}
+
+function workspaceAttachmentDisplayText(attachments: ComposerAttachmentDraft[]) {
+  if (attachments.length <= 1) {
+    const name = attachments[0]?.name || "Screenshot";
+    return `Attached ${name}`;
+  }
+  return `Attached ${attachments.length} screenshots`;
+}
+
+function workspaceAttachmentPayload(attachment: ComposerAttachmentDraft): Record<string, unknown> {
+  const name = resolveAttachmentName(attachment.name, attachment.mimeType);
+  const path = typeof attachment.path === "string" && attachment.path.trim()
+    ? attachment.path.trim()
+    : "";
+  return {
+    id: attachment.id,
+    kind: attachment.kind === "figure" ? "figure" : "document",
+    name,
+    display_name: name,
+    path: path || null,
+    local_path: path || null,
+    mime_type: attachment.mimeType ?? null,
+    size_bytes: attachment.size ?? null,
+    caption: attachment.caption ?? null,
+    source: attachment.source ?? null,
+    ...(!path && attachment.dataUrl ? { data_url: attachment.dataUrl } : {}),
+  };
+}
+
+function workspaceAttachmentPayloads(attachments: ComposerAttachmentDraft[]) {
+  return attachments.map(workspaceAttachmentPayload);
+}
+
+function workspaceAttachmentSurfaceContext(attachments: ComposerAttachmentDraft[]) {
+  if (!attachments.length) return {};
+  return {
+    attachment_count: attachments.length,
+    appended_attachments: workspaceAttachmentPayloads(attachments),
   };
 }
 
@@ -5638,9 +5758,13 @@ function buildBlueprintNodesForRunScope(args: {
     queueRows,
     activeThreadTitle,
   } = args;
+  const queuedMessageChunkIds = queueSourceChunkIds(queueRows);
   const latestUserIndex = (() => {
     for (let index = chunks.length - 1; index >= 0; index -= 1) {
-      if (chunks[index]?.role === "user") return index;
+      const chunk = chunks[index];
+      if (chunk?.role !== "user") continue;
+      if (queuedMessageChunkIds.has(chunk.id)) continue;
+      return index;
     }
     return -1;
   })();
@@ -6359,11 +6483,13 @@ function blueprintRunTimelineIds(args: {
     }
   };
   const includePendingChunks = realRunIds.size > 1;
+  const queuedMessageChunkIds = queueSourceChunkIds(args.queueRows);
 
   args.chunks.forEach((chunk, index) => {
     const isUserTurn = chunk.kind === "chat" && chunk.role === "user";
+    const isQueuedUserTurn = isUserTurn && queuedMessageChunkIds.has(chunk.id);
     const runId =
-      chunk.runId || (includePendingChunks && isUserTurn ? pendingChunkRunId(chunk) : "");
+      chunk.runId || (includePendingChunks && isUserTurn && !isQueuedUserTurn ? pendingChunkRunId(chunk) : "");
     addRun(runId, index, Number.NaN, isUserTurn ? index : Number.NaN);
   });
   args.tasks.forEach((task, index) => {
@@ -6403,11 +6529,18 @@ function buildBlueprintNodes(args: {
   queueRows: QueueRow[];
   activeThreadTitle: string;
 }) {
-  const runIds = blueprintRunTimelineIds(args);
+  const normalizedArgs = {
+    ...args,
+    queueRows: attachQueueRowSourceChunks(args.queueRows, args.chunks),
+  };
+  const runIds = blueprintRunTimelineIds(normalizedArgs);
   if (runIds.length <= 1) {
-    const runId = runIds[0] || args.activeRunId || (args.tasks[0] ? taskRunId(args.tasks[0]) : "");
+    const runId =
+      runIds[0] ||
+      normalizedArgs.activeRunId ||
+      (normalizedArgs.tasks[0] ? taskRunId(normalizedArgs.tasks[0]) : "");
     return namespaceBlueprintRunNodes(
-      buildBlueprintNodesForRunScope(args),
+      buildBlueprintNodesForRunScope(normalizedArgs),
       runId,
       false,
     );
@@ -6415,15 +6548,15 @@ function buildBlueprintNodes(args: {
 
   const shouldNamespace = true;
   const nodes = runIds.flatMap((runId) => {
-    const scopedTasks = args.tasks.filter((task) => taskRunId(task) === runId);
-    const scopedEvents = args.agentEvents.filter((event) => event.run_id === runId);
-    const scopedChunks = args.chunks.filter((chunk) => chunkBelongsToTimelineRun(chunk, runId));
-    const scopedQueueRows = args.queueRows.filter((row) => row.runId === runId);
+    const scopedTasks = normalizedArgs.tasks.filter((task) => taskRunId(task) === runId);
+    const scopedEvents = normalizedArgs.agentEvents.filter((event) => event.run_id === runId);
+    const scopedChunks = normalizedArgs.chunks.filter((chunk) => chunkBelongsToTimelineRun(chunk, runId));
+    const scopedQueueRows = normalizedArgs.queueRows.filter((row) => row.runId === runId);
     const scopedActiveTask =
-      args.activeRunningTask && taskRunId(args.activeRunningTask) === runId
-        ? args.activeRunningTask
+      normalizedArgs.activeRunningTask && taskRunId(normalizedArgs.activeRunningTask) === runId
+        ? normalizedArgs.activeRunningTask
         : null;
-    const scopedActiveRunId = args.activeRunId === runId ? runId : "";
+    const scopedActiveRunId = normalizedArgs.activeRunId === runId ? runId : "";
     if (
       scopedTasks.length === 0 &&
       scopedEvents.length === 0 &&
@@ -6434,7 +6567,7 @@ function buildBlueprintNodes(args: {
     }
     return namespaceBlueprintRunNodes(
       buildBlueprintNodesForRunScope({
-        ...args,
+        ...normalizedArgs,
         tasks: scopedTasks,
         agentEvents: scopedEvents,
         chunks: scopedChunks,
@@ -6448,7 +6581,7 @@ function buildBlueprintNodes(args: {
     );
   });
 
-  return nodes.length > 0 ? nodes : buildBlueprintNodesForRunScope(args);
+  return nodes.length > 0 ? nodes : buildBlueprintNodesForRunScope(normalizedArgs);
 }
 
 export function buildBlueprintNodesForTest(args: Parameters<typeof buildBlueprintNodes>[0]) {
@@ -6747,10 +6880,10 @@ function workspacePreviewMarkdownLooksOutput(entry: WorkspaceFileEntry) {
   );
 }
 
-function workspacePreviewCandidate(entry: WorkspaceFileEntry, source: "file" | "artifact") {
+function workspacePreviewCandidate(entry: WorkspaceFileEntry, source: WorkspacePreviewArtifactSource) {
   const kind = workspaceFilePreviewKind(entry);
   if (!kind) return null;
-  if (source === "artifact") return kind;
+  if (source === "artifact" || source === "session") return kind;
   if (kind === "markdown" && !workspacePreviewMarkdownLooksOutput(entry)) return null;
   if (kind === "text" && !workspacePreviewInOutputArea(entry)) return null;
   return kind;
@@ -6834,13 +6967,164 @@ function workspacePreviewArtifactPathsFromRunData(
   return paths;
 }
 
+function addWorkspacePreviewPathKey(keys: Set<string>, rawPath: string, root: string) {
+  const trimmed = rawPath.trim();
+  if (!trimmed || /^https?:\/\//i.test(trimmed)) return;
+  const normalizedPath = normalizeWorkspacePreviewPath(trimmed);
+  if (!normalizedPath) return;
+  const relativePath = workspacePreviewRelativePath(normalizedPath, root);
+  for (const value of [normalizedPath, relativePath]) {
+    const key = value.trim().toLowerCase();
+    if (key && key !== "." && !key.split("/").includes("..")) keys.add(key);
+  }
+}
+
+function workspacePreviewEntryMatchesPathKeys(
+  entry: WorkspaceFileEntry,
+  pathKeys: Set<string>,
+  root: string,
+) {
+  const entryKeys = new Set<string>();
+  addWorkspacePreviewPathKey(entryKeys, entry.path, root);
+  addWorkspacePreviewPathKey(entryKeys, entry.relative_path, root);
+  return [...entryKeys].some((key) => pathKeys.has(key));
+}
+
+function workspacePreviewPathsFromValue(value: unknown): string[] {
+  if (Array.isArray(value)) return uniqueStringList(value.flatMap(workspacePreviewPathsFromValue));
+  const record = recordValue(value);
+  if (record) {
+    const direct =
+      textValue(record.path) ||
+      textValue(record.file_path) ||
+      textValue(record.relative_path) ||
+      textValue(record.relativePath) ||
+      textValue(record.uri) ||
+      textValue(record.url);
+    return direct ? [direct] : [];
+  }
+  return stringList(value);
+}
+
+function workspacePreviewSessionPathsFromTask(task: ChatV2TaskSnapshot) {
+  const metadata = task.metadata ?? {};
+  const surfaceContext = metadataObject(metadata.surface_context);
+  const commandPayload = metadataObject(metadata.command_payload);
+  const commandSurfaceContext = metadataObject(commandPayload.surface_context);
+  const operatorContext = metadataObject(metadata.operator_context);
+  const lastSurfaceTurn = metadataObject(metadata.last_surface_turn);
+  return uniqueStringList([
+    ...workspacePreviewPathsFromValue(surfaceContext.mentioned_files),
+    ...workspacePreviewPathsFromValue(surfaceContext.active_file),
+    ...workspacePreviewPathsFromValue(surfaceContext.selected_chunk),
+    ...workspacePreviewPathsFromValue(commandSurfaceContext.mentioned_files),
+    ...workspacePreviewPathsFromValue(commandSurfaceContext.active_file),
+    ...workspacePreviewPathsFromValue(commandSurfaceContext.selected_chunk),
+    ...workspacePreviewPathsFromValue(operatorContext.target_paths),
+    ...workspacePreviewPathsFromValue(operatorContext.attachments),
+    ...workspacePreviewPathsFromValue(metadata.attachments),
+    ...workspacePreviewPathsFromValue(lastSurfaceTurn.attachments),
+  ]);
+}
+
+function workspacePreviewSessionPathsFromEvents(events: ChatV2AgentRunEvent[]) {
+  const paths: string[] = [];
+  for (const event of events) {
+    const payload = eventPayload(event);
+    const result = recordValue(payload.result);
+    if (eventSource(event) === "tool.completed" && Boolean(result?.changed)) {
+      const path = pathFromEvent(event);
+      if (path) paths.push(path);
+    }
+    if (result) {
+      paths.push(
+        ...workspacePreviewPathsFromValue(result.changed_files),
+        ...workspacePreviewPathsFromValue(result.changed_paths),
+        ...workspacePreviewPathsFromValue(result.files_changed),
+        ...workspacePreviewPathsFromValue(result.modified_files),
+        ...workspacePreviewPathsFromValue(result.created_files),
+        ...workspacePreviewPathsFromValue(result.files_created),
+        ...workspacePreviewPathsFromValue(result.artifacts),
+        ...workspacePreviewPathsFromValue(result.artifact_refs),
+      );
+    }
+    paths.push(
+      ...workspacePreviewPathsFromValue(payload.changed_files),
+      ...workspacePreviewPathsFromValue(payload.changed_paths),
+      ...workspacePreviewPathsFromValue(payload.files_changed),
+      ...workspacePreviewPathsFromValue(payload.modified_files),
+      ...workspacePreviewPathsFromValue(payload.created_files),
+      ...workspacePreviewPathsFromValue(payload.files_created),
+    );
+  }
+  return uniqueStringList(paths);
+}
+
+function escapedRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function workspacePreviewTextMentionsPath(text: string, relativePath: string, uniqueName = false) {
+  if (!text || !relativePath) return false;
+  const normalizedText = text.replace(/\\/g, "/");
+  const path = relativePath.replace(/\\/g, "/");
+  if (normalizedText.includes(`@${path}`)) return true;
+  const escapedPath = escapedRegExp(path);
+  if (new RegExp(`(?:^|[\\s("'\\[])\`?${escapedPath}\`?(?=$|[\\s).,;:'"\\]])`).test(normalizedText)) {
+    return true;
+  }
+  if (!uniqueName) return false;
+  const name = fileName(path);
+  if (!name || name === path) return false;
+  const escapedName = escapedRegExp(name);
+  return new RegExp(`(?:^|[\\s("'\\[])\`?@?${escapedName}\`?(?=$|[\\s).,;:'"\\]])`).test(
+    normalizedText,
+  );
+}
+
+function workspacePreviewMentionedEntryPathsFromTexts(
+  entries: WorkspaceFileEntry[],
+  texts: string[],
+) {
+  if (texts.length === 0 || entries.length === 0) return [];
+  const previewableEntries = entries.filter((entry) => workspaceFilePreviewKind(entry));
+  const nameCounts = new Map<string, number>();
+  previewableEntries.forEach((entry) => {
+    const name = (entry.name || fileName(entry.relative_path)).toLowerCase();
+    if (name) nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
+  });
+  const selected: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of [...previewableEntries].sort((a, b) => b.relative_path.length - a.relative_path.length)) {
+    const path = entry.relative_path || entry.path;
+    const name = (entry.name || fileName(path)).toLowerCase();
+    const uniqueName = Boolean(name && nameCounts.get(name) === 1);
+    if (!texts.some((text) => workspacePreviewTextMentionsPath(text, path, uniqueName))) continue;
+    if (seen.has(path)) continue;
+    seen.add(path);
+    selected.push(path);
+    if (selected.length >= 12) break;
+  }
+  return selected;
+}
+
+function workspacePreviewMentionedEntryPathsFromChunks(
+  entries: WorkspaceFileEntry[],
+  chunks: WorkspaceChunk[],
+) {
+  return workspacePreviewMentionedEntryPathsFromTexts(
+    entries,
+    chunks.map((chunk) => [chunk.body, chunk.filePath ?? ""].filter(Boolean).join("\n")),
+  );
+}
+
 function workspacePreviewArtifactRank(artifact: WorkspacePreviewArtifact, index: number) {
   const { entry, kind, source } = artifact;
   const outputArea = workspacePreviewInOutputArea(entry);
   const name = (entry.name || "").toLowerCase();
   const kindRank =
     kind === "html" ? 0 : kind === "pdf" ? 20 : kind === "image" ? 30 : kind === "markdown" ? 60 : 90;
-  const sourceRank = source === "artifact" ? -500 : 0;
+  const sourceRank = source === "artifact" ? -500 : source === "session" ? -260 : 0;
   const outputRank = outputArea ? -220 : 0;
   const nameRank = /^(index|preview|report|summary|dashboard|readme)\./.test(name) ? -40 : 0;
   return sourceRank + outputRank + kindRank + nameRank + entry.depth * 8 + index / 1000;
@@ -6851,11 +7135,13 @@ function workspacePreviewArtifacts(args: {
   root: string;
   tasks: ChatV2TaskSnapshot[];
   events: ChatV2AgentRunEvent[];
+  chunks?: WorkspaceChunk[];
+  texts?: string[];
   limit?: number;
 }): WorkspacePreviewArtifact[] {
   const seen = new Set<string>();
   const candidates: WorkspacePreviewArtifact[] = [];
-  const addEntry = (entry: WorkspaceFileEntry, source: "file" | "artifact") => {
+  const addEntry = (entry: WorkspaceFileEntry, source: WorkspacePreviewArtifactSource) => {
     const kind = workspacePreviewCandidate(entry, source);
     if (!kind) return;
     const key = normalizeWorkspacePreviewPath(entry.relative_path || entry.path).toLowerCase();
@@ -6873,7 +7159,21 @@ function workspacePreviewArtifacts(args: {
     const entry = workspacePreviewEntryFromPath(path, args.root, index);
     if (entry) addEntry(entry, "artifact");
   });
-  args.entries.forEach((entry) => addEntry(entry, "file"));
+  const sessionPaths = uniqueStringList([
+    ...args.tasks.flatMap(workspacePreviewSessionPathsFromTask),
+    ...workspacePreviewSessionPathsFromEvents(args.events),
+    ...workspacePreviewMentionedEntryPathsFromChunks(args.entries, args.chunks ?? []),
+    ...workspacePreviewMentionedEntryPathsFromTexts(args.entries, args.texts ?? []),
+  ]);
+  const sessionPathKeys = new Set<string>();
+  sessionPaths.forEach((path) => addWorkspacePreviewPathKey(sessionPathKeys, path, args.root));
+  args.entries
+    .filter((entry) => workspacePreviewEntryMatchesPathKeys(entry, sessionPathKeys, args.root))
+    .forEach((entry) => addEntry(entry, "session"));
+  sessionPaths.forEach((path, index) => {
+    const entry = workspacePreviewEntryFromPath(path, args.root, index);
+    if (entry) addEntry(entry, "session");
+  });
 
   return candidates
     .map((artifact, index) => ({ artifact, rank: workspacePreviewArtifactRank(artifact, index) }))
@@ -7132,6 +7432,19 @@ export function sessionStatusTasksForTest(
   backgroundTasks: ChatV2TaskSnapshot[],
 ) {
   return mergeTaskSnapshots(backgroundTasks, selectedTasks);
+}
+
+export function workPanelTasksForTest(
+  selectedTasks: ChatV2TaskSnapshot[],
+  backgroundTasks: ChatV2TaskSnapshot[],
+  activeThreadId: string,
+  events: ChatV2AgentRunEvent[] = [],
+) {
+  const settled = settleTaskSnapshotsFromEvents(selectedTasks, events);
+  const selectedThreadBackgroundTasks = activeThreadId
+    ? backgroundTasks.filter((task) => task.thread_id === activeThreadId)
+    : [];
+  return mergeTaskSnapshots(selectedThreadBackgroundTasks, settled);
 }
 
 export function sessionCardDisplayForTest(
@@ -7799,6 +8112,7 @@ function buildSurfaceContext(args: {
   wireGuardStatus: WorkspaceWireGuardStatus | null;
   selectedSkills?: string[];
   mentionedFiles?: WorkspaceFileEntry[];
+  attachments?: ComposerAttachmentDraft[];
 }) {
   const {
     note,
@@ -7815,6 +8129,7 @@ function buildSurfaceContext(args: {
     wireGuardStatus,
     selectedSkills = [],
     mentionedFiles = [],
+    attachments = [],
   } = args;
   const selectedAgent = agentSelection ?? workspaceAgentOptionForId(DEFAULT_AGENT_SELECTION_ID);
   const selectedModel =
@@ -7866,6 +8181,7 @@ function buildSurfaceContext(args: {
     },
     gui_for: selectedAgent.backend === CODEX_BACKEND ? "codex exec" : "dan super-tui",
     ...(selectedSkills.length > 0 ? { selected_skills: selectedSkills } : {}),
+    ...workspaceAttachmentSurfaceContext(attachments),
     capabilities: [
       "notes",
       "markdown_preview",
@@ -10986,6 +11302,7 @@ export default function ChunkWorkspaceApp() {
   const [backgroundTasks, setBackgroundTasks] = useState<ChatV2TaskSnapshot[]>([]);
   const [agentEvents, setAgentEvents] = useState<ChatV2AgentRunEvent[]>([]);
   const [input, setInput] = useState("");
+  const [composerAttachments, setComposerAttachments] = useState<ComposerAttachmentDraft[]>([]);
   const [composerCaret, setComposerCaret] = useState(0);
   const [composerSuggestionIndex, setComposerSuggestionIndex] = useState(0);
   const [composerSuggestionSuppressedFor, setComposerSuggestionSuppressedFor] = useState<string | null>(null);
@@ -11204,8 +11521,9 @@ export default function ChunkWorkspaceApp() {
         root: developmentRoot,
         tasks,
         events: agentEvents,
+        texts: messages.map((message) => message.content),
       }),
-    [agentEvents, devFiles, developmentRoot, tasks],
+    [agentEvents, devFiles, developmentRoot, messages, tasks],
   );
   const activePreviewFileEntry = useMemo(
     () =>
@@ -12066,11 +12384,22 @@ export default function ChunkWorkspaceApp() {
     () => settleTaskSnapshotsFromEvents(tasks, agentEvents),
     [agentEvents, tasks],
   );
-  const activeRunningTask = selectActiveRunningTask(settledTasks);
+  const selectedThreadBackgroundTasks = useMemo(
+    () =>
+      activeThread
+        ? backgroundTasks.filter((task) => task.thread_id === activeThread.id)
+        : [],
+    [activeThread, backgroundTasks],
+  );
+  const workPanelTasks = useMemo(
+    () => mergeTaskSnapshots(selectedThreadBackgroundTasks, settledTasks),
+    [selectedThreadBackgroundTasks, settledTasks],
+  );
+  const activeRunningTask = selectActiveRunningTask(workPanelTasks);
   const activeRunId = activeRunningTask ? taskRunId(activeRunningTask) : "";
   const sessionStatusTasks = useMemo(
-    () => mergeTaskSnapshots(backgroundTasks, settledTasks),
-    [backgroundTasks, settledTasks],
+    () => mergeTaskSnapshots(backgroundTasks, workPanelTasks),
+    [backgroundTasks, workPanelTasks],
   );
   const runningTaskByThreadId = useMemo(
     () => runningTaskMapByThreadId(sessionStatusTasks),
@@ -12116,8 +12445,8 @@ export default function ChunkWorkspaceApp() {
 
   useEffect(() => {
     if (!activeThread) return;
-    markSessionResponseSeen(activeThread, settledTasks);
-  }, [activeThread, markSessionResponseSeen, settledTasks]);
+    markSessionResponseSeen(activeThread, workPanelTasks);
+  }, [activeThread, markSessionResponseSeen, workPanelTasks]);
 
   const noteFacetOptions = useMemo(() => {
     const sections = new Map<string, number>();
@@ -12322,17 +12651,18 @@ export default function ChunkWorkspaceApp() {
     return () => window.clearInterval(timer);
   }, [activeRunId, activeRunningTask?.task_id]);
   const composerText = input.trim();
-  const composerActionIsStop = Boolean(activeThread && activeRunningTask && !composerText);
-  const queueRows = useMemo(() => queueRowsFromTasks(settledTasks), [settledTasks]);
+  const composerHasPayload = Boolean(composerText || composerAttachments.length > 0);
+  const composerActionIsStop = Boolean(activeThread && activeRunningTask && !composerHasPayload);
+  const queueRows = useMemo(() => queueRowsFromTasks(workPanelTasks), [workPanelTasks]);
   const showAgentQueuePanel = queueRows.length > 0;
   const elapsedCounter = useMemo(
-    () => taskGroupElapsedCounter(settledTasks, elapsedCounterNow),
-    [elapsedCounterNow, settledTasks],
+    () => taskGroupElapsedCounter(workPanelTasks, elapsedCounterNow),
+    [elapsedCounterNow, workPanelTasks],
   );
   const blueprintNodes = useMemo(
     () =>
       buildBlueprintNodes({
-        tasks: settledTasks,
+        tasks: workPanelTasks,
         agentEvents,
         chunks,
         activeRunId,
@@ -12340,7 +12670,7 @@ export default function ChunkWorkspaceApp() {
         queueRows,
         activeThreadTitle: activeThread?.title || "",
       }),
-    [activeRunId, activeRunningTask, activeThread?.title, agentEvents, chunks, queueRows, settledTasks],
+    [activeRunId, activeRunningTask, activeThread?.title, agentEvents, chunks, queueRows, workPanelTasks],
   );
   const activeBlueprintNode = useMemo(() => blueprintAnchorNode(blueprintNodes), [blueprintNodes]);
   const selectedBlueprintNode =
@@ -13605,8 +13935,19 @@ export default function ChunkWorkspaceApp() {
     async (
       prompt: string,
       queueCommand: "append_followup" | "continue_after_current" = "append_followup",
-      options: { selectedSkills?: string[]; mentionedFiles?: WorkspaceFileEntry[] } = {},
+      options: {
+        selectedSkills?: string[];
+        mentionedFiles?: WorkspaceFileEntry[];
+        attachments?: ComposerAttachmentDraft[];
+        displayText?: string;
+      } = {},
     ) => {
+      const attachments = options.attachments ?? [];
+      const attachmentPayloads = workspaceAttachmentPayloads(attachments);
+      const firstAttachmentPath =
+        attachments.find((attachment) => typeof attachment.path === "string" && attachment.path.trim())
+          ?.path ?? null;
+      const displayText = options.displayText || prompt;
       const thread = await ensureThread(prompt);
       const taskRoot = activeThreadRef.current?.id === thread.id
         ? workspaceRootForTasks(tasks)
@@ -13639,7 +13980,11 @@ export default function ChunkWorkspaceApp() {
         sessionSelectionSeqRef.current === sendSelectionSeq &&
         (!activeThreadRef.current || activeThreadRef.current.id === thread.id);
       setSelectedBlueprintNodeId(null);
-      const user = makeMessage("user", prompt);
+      const user = {
+        ...makeMessage("user", displayText),
+        attachments:
+          attachments.length > 0 ? attachments.map(composerDraftToChatAttachment) : undefined,
+      };
       const assistant = makeMessage(
         "assistant",
         activeRunId
@@ -13662,6 +14007,7 @@ export default function ChunkWorkspaceApp() {
           idempotency_key: nowId(queueCommand),
           payload: {
             text: prompt,
+            attachments: attachmentPayloads,
             surface_context: buildSurfaceContext({
               note: activeNote,
               selectedChunk,
@@ -13677,6 +14023,7 @@ export default function ChunkWorkspaceApp() {
               wireGuardStatus,
               selectedSkills: options.selectedSkills ?? [],
               mentionedFiles: options.mentionedFiles ?? [],
+              attachments,
             }),
           },
         });
@@ -13720,6 +14067,7 @@ export default function ChunkWorkspaceApp() {
         surface: WORKSPACE_SURFACE,
         surface_type: WORKSPACE_SURFACE_TYPE,
         surface_id: WORKSPACE_SURFACE_ID,
+        attachment_path: firstAttachmentPath,
         surface_context: buildSurfaceContext({
           note: activeNote,
           selectedChunk,
@@ -13735,6 +14083,7 @@ export default function ChunkWorkspaceApp() {
           wireGuardStatus,
           selectedSkills: options.selectedSkills ?? [],
           mentionedFiles: options.mentionedFiles ?? [],
+          attachments,
         }),
       });
       const createdTaskWorkspaceId =
@@ -13862,6 +14211,62 @@ export default function ChunkWorkspaceApp() {
     setComposerCaret(target.selectionStart ?? target.value.length);
   }, []);
 
+  const handleComposerPaste = useCallback(
+    (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      const clipboard = event.clipboardData;
+      const imageFiles = Array.from(clipboard?.items ?? [])
+        .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => Boolean(file));
+      if (imageFiles.length === 0) return;
+      event.preventDefault();
+      const remainingSlots = WORKSPACE_COMPOSER_MAX_SCREENSHOTS - composerAttachments.length;
+      if (remainingSlots <= 0) {
+        setStatus("Remove a screenshot before adding another");
+        return;
+      }
+      const filesToAttach = imageFiles.slice(0, remainingSlots);
+      setStatus("Adding screenshot");
+      void (async () => {
+        try {
+          const drafts = await Promise.all(
+            filesToAttach.map(async (file, index) => {
+              const mimeType = file.type || "image/png";
+              const fallbackName = `Screenshot ${index + 1}${extensionForImageMimeType(mimeType)}`;
+              const dataUrl = await dataUrlFromFile(file);
+              return {
+                id: crypto.randomUUID(),
+                kind: "figure" as const,
+                name: resolveAttachmentName(file.name || fallbackName, mimeType),
+                size: file.size,
+                mimeType,
+                source: "clipboard",
+                dataUrl,
+                file,
+              };
+            }),
+          );
+          const normalized = await normalizeAttachmentDrafts(drafts);
+          setComposerAttachments((previous) =>
+            [...previous, ...normalized].slice(0, WORKSPACE_COMPOSER_MAX_SCREENSHOTS),
+          );
+          setStatus(normalized.length === 1 ? "Screenshot attached" : "Screenshots attached");
+          requestAnimationFrame(() => composerRef.current?.focus());
+        } catch (error) {
+          setStatus(error instanceof Error ? error.message : "Screenshot paste failed");
+        }
+      })();
+    },
+    [composerAttachments.length],
+  );
+
+  const removeComposerAttachment = useCallback((attachmentId: string) => {
+    setComposerAttachments((previous) =>
+      previous.filter((attachment) => attachment.id !== attachmentId),
+    );
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }, []);
+
   const applyComposerSuggestion = useCallback(
     (suggestion: WorkspaceComposerSuggestion) => {
       const token = workspaceComposerTokenAt(input, composerCaret);
@@ -13883,8 +14288,9 @@ export default function ChunkWorkspaceApp() {
 
   const submit = useCallback(async (modeOverride?: ComposerSubmitMode) => {
     const prompt = input.trim();
-    if (!prompt || sending) return;
-    if (activePane === "notes" && notesComposerRequestsNewDraft(prompt)) {
+    const sourceAttachments = composerAttachments;
+    if ((!prompt && sourceAttachments.length === 0) || sending) return;
+    if (activePane === "notes" && sourceAttachments.length === 0 && notesComposerRequestsNewDraft(prompt)) {
       setInput("");
       createDraftNote(prompt);
       return;
@@ -13904,6 +14310,7 @@ export default function ChunkWorkspaceApp() {
       ? modeOverride ?? activeRunPlacement
       : "steer";
     setInput("");
+    setComposerAttachments([]);
     setComposerCaret(0);
     setComposerSuggestionIndex(0);
     setComposerSuggestionSuppressedFor(null);
@@ -13911,20 +14318,29 @@ export default function ChunkWorkspaceApp() {
     setPromptLogPreview(null);
     setSending(true);
     try {
+      const normalizedAttachments = await normalizeAttachmentDrafts(sourceAttachments);
+      const requestPrompt =
+        prompt || workspaceAttachmentOnlyPrompt(normalizedAttachments);
+      const displayText =
+        prompt || workspaceAttachmentDisplayText(normalizedAttachments);
       const options = {
         selectedSkills: selectedSkillInvocation.selectedTokens,
         mentionedFiles,
+        attachments: normalizedAttachments,
+        displayText,
       };
-      if (mode === "queue") await sendAgent(prompt, "continue_after_current", options);
-      else await sendAgent(prompt, "append_followup", options);
+      if (mode === "queue") await sendAgent(requestPrompt, "continue_after_current", options);
+      else await sendAgent(requestPrompt, "append_followup", options);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Request failed");
+      setComposerAttachments(sourceAttachments);
     } finally {
       setSending(false);
     }
   }, [
     activePane,
     activeRunPlacement,
+    composerAttachments,
     createDraftNote,
     devFiles,
     hasActiveRun,
@@ -13984,10 +14400,48 @@ export default function ChunkWorkspaceApp() {
           onActiveIndexChange={setComposerSuggestionIndex}
           onSelect={applyComposerSuggestion}
         />
+        {composerAttachments.length > 0 && (
+          <div className="flex min-h-16 flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50/80 p-2 dark:border-slate-800 dark:bg-slate-900/70">
+            {composerAttachments.map((attachment) => {
+              const attachmentName = resolveAttachmentName(attachment.name, attachment.mimeType);
+              const attachmentSize = formatAttachmentSize(attachment.size);
+              return (
+                <div
+                  key={attachment.id}
+                  className="relative h-14 w-20 shrink-0 overflow-hidden rounded-md border border-slate-300 bg-slate-100 shadow-sm dark:border-slate-700 dark:bg-slate-950"
+                  title={attachmentSize ? `${attachmentName} · ${attachmentSize}` : attachmentName}
+                >
+                  {attachment.dataUrl ? (
+                    <img
+                      src={attachment.dataUrl}
+                      alt={attachmentName}
+                      className="h-full w-full object-cover"
+                      draggable={false}
+                    />
+                  ) : (
+                    <div className="grid h-full w-full place-items-center text-slate-500 dark:text-slate-400">
+                      <ImageIcon size={18} />
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => removeComposerAttachment(attachment.id)}
+                    className="absolute right-1 top-1 grid h-5 w-5 place-items-center rounded-full border border-slate-200 bg-white/95 text-slate-600 shadow-sm transition hover:border-red-200 hover:text-red-600 dark:border-slate-700 dark:bg-slate-950/95 dark:text-slate-300 dark:hover:border-red-900 dark:hover:text-red-200"
+                    title={`Remove ${attachmentName}`}
+                    aria-label={`Remove ${attachmentName}`}
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
         <textarea
           ref={composerRef}
           value={input}
           onChange={handleComposerInputChange}
+          onPaste={handleComposerPaste}
           onKeyDown={handleComposerKeyDown}
           onKeyUp={handleComposerSelectionChange}
           onClick={handleComposerSelectionChange}
@@ -14176,7 +14630,7 @@ export default function ChunkWorkspaceApp() {
               }
               void submit();
             }}
-            disabled={sending || (!composerActionIsStop && !composerText)}
+            disabled={sending || (!composerActionIsStop && !composerHasPayload)}
             className={cx(
               "inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2.5 text-[11px] font-semibold shadow-sm transition disabled:cursor-not-allowed disabled:opacity-40",
               composerActionIsStop
@@ -16018,7 +16472,7 @@ export default function ChunkWorkspaceApp() {
                   <BlueprintView
                     nodes={blueprintNodes}
                     conversationChunks={userConversationChunks}
-                    tasks={settledTasks}
+                    tasks={workPanelTasks}
                     agentEvents={agentEvents}
                     activeTask={activeRunningTask}
                     activeNodeId={activeBlueprintNode?.id ?? null}
@@ -16124,7 +16578,7 @@ export default function ChunkWorkspaceApp() {
                   ) : selectedBlueprintNode ? (
                     <BlueprintNodePreview
                       node={selectedBlueprintNode}
-                      tasks={settledTasks}
+                      tasks={workPanelTasks}
                       events={agentEvents}
                       activeTask={activeRunningTask}
                     />
@@ -16215,7 +16669,7 @@ export default function ChunkWorkspaceApp() {
                 ) : selectedBlueprintNode ? (
                   <BlueprintNodePreview
                     node={selectedBlueprintNode}
-                    tasks={settledTasks}
+                    tasks={workPanelTasks}
                     events={agentEvents}
                     activeTask={activeRunningTask}
                   />
