@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import mimetypes
 import re
@@ -185,10 +186,25 @@ def _attachment_path(item: Mapping[str, Any]) -> str:
     return str(item.get("local_path") or item.get("path") or "").strip()
 
 
+def _attachment_data_url(item: Mapping[str, Any]) -> str:
+    for key in ("data_url", "dataUrl", "image_data_url", "imageDataUrl"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    metadata = item.get("metadata")
+    if isinstance(metadata, Mapping):
+        for key in ("data_url", "dataUrl", "image_data_url", "imageDataUrl"):
+            value = str(metadata.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
 def image_attachment_payloads(
     raw_attachments: Any,
     *,
     max_images: int = 4,
+    max_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
 ) -> list[dict[str, Any]]:
     if not isinstance(raw_attachments, Sequence) or isinstance(raw_attachments, (str, bytes)):
         return []
@@ -200,27 +216,62 @@ def image_attachment_payloads(
         if not isinstance(raw, Mapping):
             continue
         path_text = _attachment_path(raw)
-        if not path_text or not is_supported_image_path(path_text):
-            continue
+        data_url = _attachment_data_url(raw)
         kind = str(raw.get("kind") or "").strip().lower()
         if kind and kind not in {"image", "figure", "unknown"}:
             continue
-        path = Path(path_text).expanduser()
-        try:
-            resolved = path.resolve()
-            stat = resolved.stat()
-        except OSError:
+        if path_text:
+            if not is_supported_image_path(path_text):
+                continue
+            path = Path(path_text).expanduser()
+            try:
+                resolved = path.resolve()
+                stat = resolved.stat()
+            except OSError:
+                continue
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            checksum = str(raw.get("checksum") or "").strip()
+            if not checksum:
+                try:
+                    checksum = hashlib.sha1(resolved.read_bytes()).hexdigest()
+                except OSError:
+                    checksum = ""
+            attachment_id = str(raw.get("id") or "").strip()
+            if not attachment_id:
+                attachment_id = f"image-{checksum[:16]}" if checksum else f"image-{len(payloads) + 1}"
+            payload = dict(raw)
+            payload.update(
+                {
+                    "id": attachment_id,
+                    "kind": "image" if kind in {"", "unknown"} else kind,
+                    "local_path": str(resolved),
+                    "path": str(resolved),
+                    "display_name": str(raw.get("display_name") or raw.get("name") or resolved.name),
+                    "mime_type": str(raw.get("mime_type") or image_mime_type(resolved)),
+                    "size_bytes": int(raw.get("size_bytes") or stat.st_size),
+                    "checksum": checksum or None,
+                }
+            )
+            payloads.append(payload)
             continue
-        key = str(resolved)
+        parsed = parse_data_url_image(data_url)
+        if parsed is None:
+            continue
+        mime_type, encoded = parsed
+        try:
+            decoded = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error):
+            continue
+        if len(decoded) > int(max_bytes):
+            continue
+        checksum = str(raw.get("checksum") or "").strip() or hashlib.sha1(decoded).hexdigest()
+        key = checksum or data_url[:128]
         if key in seen:
             continue
         seen.add(key)
-        checksum = str(raw.get("checksum") or "").strip()
-        if not checksum:
-            try:
-                checksum = hashlib.sha1(resolved.read_bytes()).hexdigest()
-            except OSError:
-                checksum = ""
         attachment_id = str(raw.get("id") or "").strip()
         if not attachment_id:
             attachment_id = f"image-{checksum[:16]}" if checksum else f"image-{len(payloads) + 1}"
@@ -229,12 +280,11 @@ def image_attachment_payloads(
             {
                 "id": attachment_id,
                 "kind": "image" if kind in {"", "unknown"} else kind,
-                "local_path": str(resolved),
-                "path": str(resolved),
-                "display_name": str(raw.get("display_name") or raw.get("name") or resolved.name),
-                "mime_type": str(raw.get("mime_type") or image_mime_type(resolved)),
-                "size_bytes": int(raw.get("size_bytes") or stat.st_size),
+                "display_name": str(raw.get("display_name") or raw.get("name") or f"image {len(payloads) + 1}"),
+                "mime_type": str(raw.get("mime_type") or mime_type),
+                "size_bytes": int(raw.get("size_bytes") or len(decoded)),
                 "checksum": checksum or None,
+                "data_url": data_url,
             }
         )
         payloads.append(payload)
@@ -255,7 +305,7 @@ def content_with_image_attachments(
     for index, item in enumerate(payloads, start=1):
         display_name = str(item.get("display_name") or Path(str(item.get("local_path") or "")).name or f"image {index}")
         path = str(item.get("local_path") or "")
-        attachment_lines.append(f"- image {index}: {display_name} ({path})")
+        attachment_lines.append(f"- image {index}: {display_name} ({path or 'inline image'})")
     prompt_text = str(text or "").rstrip()
     if attachment_lines:
         prompt_text = (
@@ -265,10 +315,12 @@ def content_with_image_attachments(
         )
     blocks.append({"type": "text", "text": prompt_text})
     for item in payloads:
-        try:
-            url = image_data_url_from_path(str(item.get("local_path") or ""))
-        except (OSError, ValueError):
-            continue
+        url = str(item.get("data_url") or "")
+        if not url:
+            try:
+                url = image_data_url_from_path(str(item.get("local_path") or ""))
+            except (OSError, ValueError):
+                continue
         blocks.append(openai_image_block_from_data_url(url))
     if len(blocks) == 1:
         return str(text or "")

@@ -88,6 +88,19 @@ def test_multimodal_helper_builds_openai_image_blocks(tmp_path):
     assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
+def test_multimodal_helper_accepts_inline_clipboard_image_data_url():
+    data_url = "data:image/png;base64,iVBORw0KGgpmYWtl"
+
+    content = content_with_image_attachments(
+        "What is in this screenshot?",
+        [{"kind": "figure", "name": "Screenshot.png", "data_url": data_url}],
+    )
+
+    assert isinstance(content, list)
+    assert "inline image" in content[0]["text"]
+    assert content[1] == {"type": "image_url", "image_url": {"url": data_url}}
+
+
 def test_openai_message_normalizer_accepts_short_image_url_alias():
     messages = normalize_openai_messages_for_multimodal(
         [{"role": "user", "content": [{"type": "image_url", "url": "data:image/png;base64,abc"}]}]
