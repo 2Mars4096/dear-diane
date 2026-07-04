@@ -432,6 +432,64 @@ describe("workspace blueprint nodes", () => {
     );
   });
 
+  it("keeps validation tool progress off the completed Execute card", () => {
+    const activeTask = task({
+      task_id: "active-task",
+      status: "running",
+      latest_progress: "DAN is working",
+      metadata: { active_run_id: "run-1" },
+    });
+    const events: ChatV2AgentRunEvent[] = [
+      {
+        type: "worker_started",
+        source_event_type: "live.generic_build.started",
+        run_id: "run-1",
+        task_id: "active-task",
+        summary: "Editing the workspace.",
+      },
+      {
+        type: "worker_started",
+        source_event_type: "live.validation.started",
+        run_id: "run-1",
+        task_id: "active-task",
+        summary: "Validation started.",
+      },
+      {
+        type: "model_request",
+        source_event_type: "model.requested",
+        run_id: "run-1",
+        task_id: "active-task",
+        summary: "model.requested",
+        payload: { model: "kimi-k2.6" },
+      },
+      {
+        type: "tool_used",
+        source_event_type: "tool.started",
+        run_id: "run-1",
+        task_id: "active-task",
+        summary: "tool.started",
+        payload: { tool_id: "git_log" },
+      },
+    ];
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "run-1",
+      activeRunningTask: activeTask,
+      tasks: [activeTask],
+      agentEvents: events,
+    });
+    const build = nodes.find((node) => node.kind === "build")!;
+    const validation = nodes.find((node) => node.kind === "validation")!;
+    const buildContent = blueprintCardContentForTest(build, [activeTask], events, activeTask);
+    const validationContent = blueprintCardContentForTest(validation, [activeTask], events, activeTask);
+
+    expect(build.status).toBe("done");
+    expect(validation.status).toBe("active");
+    expect(buildContent).toBe("Execution handed off to validation for the current frontier.");
+    expect(buildContent).not.toContain("Using git log.");
+    expect(validationContent).toContain("Using git log.");
+  });
+
   it("highlights Codex as the active Work card agent", () => {
     const activeTask = task({
       task_id: "codex-task",

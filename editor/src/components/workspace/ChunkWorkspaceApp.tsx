@@ -5907,11 +5907,13 @@ function buildBlueprintNodesForRunScope(args: {
   const executionPhaseCompleted = hasEventSource(activeRunEvents, eventCompletesExecutionPhase);
   const toolWorkStarted = hasEventSource(activeRunEvents, eventStartsToolWork);
   const buildStarted = executionPhaseStarted || toolWorkStarted;
-  const buildCompleted =
-    executionPhaseCompleted ||
-    Boolean((latestAnswerChunk || latestAnswerEvent || latestOutcomeChunk || runCompleted) && !hasActiveRun);
   const validationStarted = hasEventSource(activeRunEvents, (source) => source.startsWith("live.validation"));
   const validationCompleted = hasEventSource(activeRunEvents, "live.validation.completed");
+  const buildCompleted =
+    executionPhaseCompleted ||
+    validationStarted ||
+    validationCompleted ||
+    Boolean((latestAnswerChunk || latestAnswerEvent || latestOutcomeChunk || runCompleted) && !hasActiveRun);
   const latestValidation = [...activeRunEvents]
     .reverse()
     .find((event) => eventSource(event).startsWith("live.validation"));
@@ -6162,10 +6164,20 @@ function buildBlueprintNodesForRunScope(args: {
       });
     }
   } else if (buildStarted || buildCompleted || attentionTask || showActiveRunSkeleton) {
-    const buildProgressBody = buildStarted ? latestWorkingChunk?.body || "" : "";
+    const buildHandoffBody =
+      !readOnlyRun && (validationStarted || validationCompleted)
+        ? "Execution handed off to validation for the current frontier."
+        : "";
+    const buildDoneBody = !readOnlyRun && buildCompleted && !hasActiveRun ? "Execution is complete." : "";
+    const buildProgressBody =
+      buildStarted && hasActiveRun && !buildHandoffBody
+        ? latestWorkingChunk?.body || ""
+        : "";
     const buildIntro =
       attentionDetail ||
       buildProgressBody ||
+      buildHandoffBody ||
+      buildDoneBody ||
       (readOnlyRun ? directResponseDetail : "Execution details will appear as Super DAN emits events.");
     nodes.push({
       id: "blueprint:build",
@@ -6182,7 +6194,9 @@ function buildBlueprintNodesForRunScope(args: {
           : "Execute workspace change",
       detail:
         attentionDetail ||
-        latestWorkingChunk?.body ||
+        buildProgressBody ||
+        buildHandoffBody ||
+        buildDoneBody ||
         (readOnlyRun ? directResponseDetail : "Use tools, edit files, and collect artifacts"),
       meta: attentionTask?.status || latestSource || "workspace lane",
       body: buildIntro,
@@ -6201,7 +6215,7 @@ function buildBlueprintNodesForRunScope(args: {
             planned: true,
           }),
       kind: "build",
-      sourceChunkId: latestWorkingChunk?.id,
+      sourceChunkId: buildProgressBody ? latestWorkingChunk?.id : undefined,
       runId: activeRunId || attentionRunId,
       taskId: activeRunningTask?.task_id || attentionTask?.task_id,
     });
