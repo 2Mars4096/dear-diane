@@ -126,6 +126,7 @@ const LAST_THREAD_STORAGE_KEY = "dan.chunkWorkspace.lastThread.v1";
 const ROOT_SUGGESTION_STORAGE_KEY = "dan.chunkWorkspace.roots.v1";
 const THREAD_WORKSPACE_STORAGE_KEY = "dan.chunkWorkspace.threadWorkspaces.v1";
 const SESSION_RESPONSE_SEEN_STORAGE_KEY = "dan.chunkWorkspace.sessionResponseSeen.v1";
+const COMPOSER_DRAFT_STORAGE_KEY = "dan.chunkWorkspace.composerDrafts.v1";
 const WORKSPACE_COMPOSER_MAX_SCREENSHOTS = 4;
 const LAYOUT_STORAGE_KEY = "dan.chunkWorkspace.layout.v1";
 const UI_STATE_STORAGE_KEY = "dan.chunkWorkspace.uiState.v1";
@@ -2924,6 +2925,64 @@ type ThreadIdentity = {
 
 function threadIdentityWorkflowId(thread: ThreadIdentity) {
   return thread.workflow_id ?? thread.workflowId ?? "";
+}
+
+function composerDraftKey(thread: ThreadIdentity | null | undefined) {
+  if (!thread?.id) return "";
+  const workflowId = threadIdentityWorkflowId(thread) || DEFAULT_WORKFLOW_ID;
+  return threadWorkspaceKey(workflowId, thread.id);
+}
+
+function composerDraftForThread(
+  drafts: Record<string, string>,
+  thread: ThreadIdentity | null | undefined,
+) {
+  const key = composerDraftKey(thread);
+  return key ? drafts[key] ?? "" : "";
+}
+
+function composerDraftsWithValue(
+  drafts: Record<string, string>,
+  thread: ThreadIdentity | null | undefined,
+  value: string,
+) {
+  const key = composerDraftKey(thread);
+  if (!key) return drafts;
+  if (value.length === 0) {
+    if (!(key in drafts)) return drafts;
+    const next = { ...drafts };
+    delete next[key];
+    return next;
+  }
+  if (drafts[key] === value) return drafts;
+  return {
+    ...drafts,
+    [key]: value,
+  };
+}
+
+function readStoredComposerDrafts() {
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY) || "{}",
+    ) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).flatMap(([key, value]) =>
+        typeof value === "string" && key.includes(":") ? [[key, value]] : [],
+      ),
+    ) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+function persistComposerDrafts(drafts: Record<string, string>) {
+  try {
+    window.localStorage.setItem(COMPOSER_DRAFT_STORAGE_KEY, JSON.stringify(drafts));
+  } catch {
+    // Composer drafts are a convenience layer.
+  }
 }
 
 function savedThreadSelectionMatches(
@@ -7240,6 +7299,21 @@ export function workspaceComposerTokenForTest(text: string, caret = text.length)
   return workspaceComposerTokenAt(text, caret);
 }
 
+export function composerDraftForThreadForTest(
+  drafts: Record<string, string>,
+  thread: ThreadIdentity | null,
+) {
+  return composerDraftForThread(drafts, thread);
+}
+
+export function composerDraftsWithValueForTest(
+  drafts: Record<string, string>,
+  thread: ThreadIdentity | null,
+  value: string,
+) {
+  return composerDraftsWithValue(drafts, thread, value);
+}
+
 export function workspaceComposerSuggestionsForTest(
   text: string,
   args: {
@@ -11329,6 +11403,7 @@ export default function ChunkWorkspaceApp() {
   const initialNotes = useMemo(() => readStoredNotes(), []);
   const initialLayout = useMemo(() => readStoredLayout(), []);
   const initialUiState = useMemo(() => readStoredUiState(), []);
+  const initialComposerDrafts = useMemo(() => readStoredComposerDrafts(), []);
   const [notes, setNotes] = useState<WorkspaceNote[]>(initialNotes.notes);
   const [activeNoteId, setActiveNoteId] = useState<string | null>(initialNotes.activeId);
   const [activePane, setActivePane] = useState<WorkspacePane>(initialUiState.activePane);
@@ -11448,6 +11523,7 @@ export default function ChunkWorkspaceApp() {
   const creatingSessionRef = useRef(false);
   const autoRestoringThreadIdRef = useRef<string | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerDraftsRef = useRef<Record<string, string>>(initialComposerDrafts);
   const noteEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const sessionSwipeRef = useRef<SessionSwipeState | null>(null);
   const suppressSessionClickRef = useRef<string | null>(null);
@@ -11460,6 +11536,39 @@ export default function ChunkWorkspaceApp() {
   useEffect(() => {
     activeThreadRef.current = activeThread;
   }, [activeThread]);
+
+  const commitComposerDraft = useCallback(
+    (thread: ThreadIdentity | null | undefined, value: string) => {
+      const next = composerDraftsWithValue(composerDraftsRef.current, thread, value);
+      if (next === composerDraftsRef.current) return;
+      composerDraftsRef.current = next;
+      persistComposerDrafts(next);
+    },
+    [],
+  );
+
+  const setComposerInputValue = useCallback(
+    (
+      value: string,
+      options: { persist?: boolean; thread?: ThreadIdentity | null } = {},
+    ) => {
+      setInput(value);
+      if (options.persist === false) return;
+      commitComposerDraft(options.thread ?? activeThreadRef.current, value);
+    },
+    [commitComposerDraft],
+  );
+
+  const loadComposerDraftForThread = useCallback(
+    (thread: ThreadIdentity | null | undefined) => {
+      const draft = composerDraftForThread(composerDraftsRef.current, thread);
+      setInput(draft);
+      setComposerCaret(draft.length);
+      setComposerSuggestionIndex(0);
+      setComposerSuggestionSuppressedFor(null);
+    },
+    [],
+  );
 
   const activeNote = notes.find((note) => note.id === activeNoteId) ?? notes[0] ?? null;
   const activeNoteSection = activeNote ? noteSection(activeNote, notesRoot) : "";
@@ -11936,8 +12045,9 @@ export default function ChunkWorkspaceApp() {
     setAgentEvents([]);
     setSelectedChunkId(null);
     setSelectedBlueprintNodeId(null);
+    loadComposerDraftForThread(null);
     if (statusText) setStatus(statusText);
-  }, []);
+  }, [loadComposerDraftForThread]);
 
   const clearStoredThreadSelection = useCallback((thread: ThreadIdentity) => {
     try {
@@ -12035,7 +12145,13 @@ export default function ChunkWorkspaceApp() {
         setSelectedChunkId(null);
         setSelectedBlueprintNodeId(null);
         setPromptLogPreview(null);
-        setActiveThread({ id: thread.id, workflowId: thread.workflow_id, title: thread.title });
+        const restoredThread = {
+          id: thread.id,
+          workflowId: thread.workflow_id,
+          title: thread.title,
+        };
+        setActiveThread(restoredThread);
+        loadComposerDraftForThread(restoredThread);
         setMessages(restoredMessages);
         messagesRef.current = restoredMessages;
         setTasks(history.tasks);
@@ -12066,6 +12182,7 @@ export default function ChunkWorkspaceApp() {
   }, [
     activeThread,
     clearStoredThreadSelection,
+    loadComposerDraftForThread,
     loadingThreadId,
     mergeBackgroundTasks,
     removeThreadFromWorkspaceSlots,
@@ -13456,7 +13573,7 @@ export default function ChunkWorkspaceApp() {
     setAgentEvents([]);
     setSelectedChunkId(null);
     setSelectedBlueprintNodeId(null);
-    setInput("");
+    loadComposerDraftForThread(null);
     setActivePane("work");
     if (targetWorkspaceId) setActiveWorkspace(targetWorkspaceId);
     try {
@@ -13471,6 +13588,7 @@ export default function ChunkWorkspaceApp() {
       };
       if (sessionSelectionSeqRef.current !== selectionSeq) return;
       setActiveThread(next);
+      loadComposerDraftForThread(next);
       bindThreadToWorkspace(next.workflowId, next.id, targetWorkspaceId);
       if (targetWorkspaceId) {
         setCollapsedThreadGroups((previous) => ({
@@ -13499,6 +13617,7 @@ export default function ChunkWorkspaceApp() {
     activeWorkspaceId,
     agentEvents.length,
     bindThreadToWorkspace,
+    loadComposerDraftForThread,
     messages.length,
     refreshThreads,
     setActiveWorkspace,
@@ -13530,6 +13649,7 @@ export default function ChunkWorkspaceApp() {
         title: summary.title,
       };
       setActiveThread(optimisticThread);
+      loadComposerDraftForThread(optimisticThread);
       setMessages([]);
       messagesRef.current = [];
       setPendingAssistantIds({});
@@ -13565,11 +13685,13 @@ export default function ChunkWorkspaceApp() {
         setSelectedChunkId(null);
         setSelectedBlueprintNodeId(null);
         setPromptLogPreview(null);
-        setActiveThread({
+        const loadedThread = {
           id: thread.id,
           workflowId: thread.workflow_id,
           title: thread.title,
-        });
+        };
+        setActiveThread(loadedThread);
+        loadComposerDraftForThread(loadedThread);
         setMessages(loadedMessages);
         messagesRef.current = loadedMessages;
         setPendingAssistantIds({});
@@ -13604,6 +13726,7 @@ export default function ChunkWorkspaceApp() {
     },
     [
       bindThreadToWorkspace,
+      loadComposerDraftForThread,
       markSessionResponseSeen,
       mergeBackgroundTasks,
       refreshThreads,
@@ -14258,10 +14381,10 @@ export default function ChunkWorkspaceApp() {
   );
 
   const handleComposerInputChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
-    setInput(event.target.value);
+    setComposerInputValue(event.target.value);
     setComposerCaret(event.target.selectionStart ?? event.target.value.length);
     setComposerSuggestionSuppressedFor(null);
-  }, []);
+  }, [setComposerInputValue]);
 
   const handleComposerSelectionChange = useCallback((event: SyntheticEvent<HTMLTextAreaElement>) => {
     const target = event.currentTarget;
@@ -14331,7 +14454,7 @@ export default function ChunkWorkspaceApp() {
       const replacement = `${suggestion.insertText} `;
       const nextInput = `${input.slice(0, token.start)}${replacement}${input.slice(token.end)}`;
       const nextCaret = token.start + replacement.length;
-      setInput(nextInput);
+      setComposerInputValue(nextInput);
       setComposerCaret(nextCaret);
       setComposerSuggestionIndex(0);
       setComposerSuggestionSuppressedFor(null);
@@ -14340,15 +14463,16 @@ export default function ChunkWorkspaceApp() {
         composerRef.current?.setSelectionRange(nextCaret, nextCaret);
       });
     },
-    [composerCaret, input],
+    [composerCaret, input, setComposerInputValue],
   );
 
   const submit = useCallback(async (modeOverride?: ComposerSubmitMode) => {
+    const draftBeforeSubmit = input;
     const prompt = input.trim();
     const sourceAttachments = composerAttachments;
     if ((!prompt && sourceAttachments.length === 0) || sending) return;
     if (activePane === "notes" && sourceAttachments.length === 0 && notesComposerRequestsNewDraft(prompt)) {
-      setInput("");
+      setComposerInputValue("");
       createDraftNote(prompt);
       return;
     }
@@ -14366,7 +14490,7 @@ export default function ChunkWorkspaceApp() {
     const mode = hasActiveRun
       ? modeOverride ?? activeRunPlacement
       : "steer";
-    setInput("");
+    setComposerInputValue("");
     setComposerAttachments([]);
     setComposerCaret(0);
     setComposerSuggestionIndex(0);
@@ -14390,6 +14514,7 @@ export default function ChunkWorkspaceApp() {
       else await sendAgent(requestPrompt, "append_followup", options);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Request failed");
+      setComposerInputValue(draftBeforeSubmit);
       setComposerAttachments(sourceAttachments);
     } finally {
       setSending(false);
@@ -14404,6 +14529,7 @@ export default function ChunkWorkspaceApp() {
     input,
     sendAgent,
     sending,
+    setComposerInputValue,
     workspaceSkills,
   ]);
 

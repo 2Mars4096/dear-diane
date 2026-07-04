@@ -8,6 +8,8 @@ import {
   blueprintLiveStatusForTest,
   buildBlueprintNodesForTest,
   catalogNotesForTest,
+  composerDraftForThreadForTest,
+  composerDraftsWithValueForTest,
   conversationUserChunksForTest,
   createTemporaryDraftNoteForTest,
   liveTaskGraphRevisionsForTest,
@@ -619,6 +621,24 @@ describe("workspace blueprint nodes", () => {
     });
     expect(workspaceComposerTokenForTest("cost $5")).toBeNull();
     expect(workspaceComposerTokenForTest("$PATH")).toBeNull();
+  });
+
+  it("keeps workspace composer drafts scoped to their session", () => {
+    const first = { id: "thread-a", workflowId: "_scratch" };
+    const second = { id: "thread-b", workflowId: "_scratch" };
+    let drafts: Record<string, string> = {};
+
+    drafts = composerDraftsWithValueForTest(drafts, first, "finish the site copy");
+    drafts = composerDraftsWithValueForTest(drafts, second, "check the chart colors");
+
+    expect(composerDraftForThreadForTest(drafts, first)).toBe("finish the site copy");
+    expect(composerDraftForThreadForTest(drafts, second)).toBe("check the chart colors");
+    expect(composerDraftForThreadForTest(drafts, null)).toBe("");
+
+    drafts = composerDraftsWithValueForTest(drafts, first, "");
+
+    expect(composerDraftForThreadForTest(drafts, first)).toBe("");
+    expect(composerDraftForThreadForTest(drafts, second)).toBe("check the chart colors");
   });
 
   it("suggests slash commands, skills, and workspace files from the active token", () => {
