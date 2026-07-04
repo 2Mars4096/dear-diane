@@ -3740,6 +3740,14 @@ function looksLikeStructuredPayloadFragment(content: string) {
   );
 }
 
+function looksLikeOperationalProgressPromise(content: string) {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  if (!normalized) return false;
+  return /^(?:i(?:'ll| will| am going to)|i[’']m going to|we(?:'ll| will| are going to)|let me)\s+(?:trace|scan|check|inspect|look|read|review|restore|revert|follow|run|test|build|implement|fix|update|create|edit|write|try|continue|start|open|use|compare|investigate|debug|validate|verify|find|search)\b/i.test(
+    normalized,
+  );
+}
+
 function userFacingAgentDisplay(content: string): StructuredAgentDisplay {
   const structured = formatStructuredAgentDisplay(content);
   if (structured) return structured;
@@ -3763,6 +3771,7 @@ function isUsableFinalResponseSource(
   const normalized = content.trim();
   if (!normalized || isGenericCompletionText(normalized) || isGenericNeedsAttentionText(normalized)) return false;
   if (isRuntimeOutputChunkLimitText(normalized) || isGraphTelemetryText(normalized)) return false;
+  if (looksLikeOperationalProgressPromise(normalized)) return false;
   if (options.requireDirectAnswer && looksLikeFileReceiptOnly(normalized)) return false;
   const parsed = parseJsonObject(normalized);
   if (!parsed) return !looksLikeStructuredPayloadFragment(normalized);
@@ -6040,7 +6049,7 @@ function buildBlueprintNodesForRunScope(args: {
     isUsableFinalResponseSource(source, { requireDirectAnswer: directAnswerRequired }),
   ) || "";
   const finalAnswerReady = Boolean(finalAnswerSource);
-  const shouldSettlePlanGraph = finalAnswerReady && !hasActiveRun && !attentionTask;
+  const shouldSettlePlanGraph = finalAnswerReady && !attentionTask;
   const requestUnderstanding = latestRequestUnderstanding(activeRunEvents, activeRunTasks);
   const operatorContexts = operatorContextRecords(activeRunEvents, activeRunTasks);
   const requestPlanContext = readOnlyRun ? null : deriveRequestPlanContext(requestBody);
@@ -6437,17 +6446,17 @@ function buildBlueprintNodesForRunScope(args: {
     showActiveRunSkeleton ||
     (!hasActiveRun && nodes.length > 0 && hasRunEvidence)
   ) {
-    const finalDone = Boolean(finalAnswerSource);
+    const finalDone = Boolean(finalAnswerSource && !attentionTask);
     const finalMissing = Boolean(
       !finalDone && !hasActiveRun && !attentionTask && (runCompleted || latestOutcomeChunk),
     );
     const finalSourceBody =
-      finalAnswerSource ||
-      (finalMissing
-        ? missingFinalResponseMessage(latestOutcomeItems.length > 0, directAnswerRequired)
-        : attentionTask
-          ? attentionDetail || "Super DAN needs attention before it can answer."
-          : "This will become solid when Super DAN emits the final answer.");
+      attentionTask
+        ? attentionDetail || "Super DAN needs attention before it can answer."
+        : finalAnswerSource ||
+          (finalMissing
+            ? missingFinalResponseMessage(latestOutcomeItems.length > 0, directAnswerRequired)
+            : "This will become solid when Super DAN emits the final answer.");
     const finalDisplay = userFacingAgentDisplay(finalSourceBody);
     nodes.push({
       id: latestAnswerChunk?.id ? `blueprint:${latestAnswerChunk.id}` : "blueprint:answer",
@@ -6455,16 +6464,18 @@ function buildBlueprintNodesForRunScope(args: {
       detail:
         finalMissing
           ? "Final answer missing"
-          : latestAnswerChunk?.meta ||
+          : attentionTask
+            ? "Stopped before final response"
+            : latestAnswerChunk?.meta ||
             (latestAnswerEvent ? eventSource(latestAnswerEvent) : "") ||
             (runCompleted || latestOutcomeChunk ? "Run completed" : "") ||
-            (attentionTask ? "Stopped before final response" : "Summarize what changed and what remains"),
+            "Summarize what changed and what remains",
       meta:
         finalMissing
           ? "missing answer"
-          : latestAnswerChunk?.meta ||
+          : attentionTask?.status ||
+            latestAnswerChunk?.meta ||
             (latestAnswerEvent ? eventSource(latestAnswerEvent) : "") ||
-            attentionTask?.status ||
             "answer",
       body: finalDisplay.body,
       previewBody: detailMarkdown(finalDisplay.previewBody, [

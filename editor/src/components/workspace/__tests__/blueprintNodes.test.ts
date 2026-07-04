@@ -3081,6 +3081,102 @@ describe("workspace blueprint nodes", () => {
     ]);
   });
 
+  it("settles active plan checklist rows when a final response appears before the task snapshot catches up", () => {
+    const runningTask = task({
+      task_id: "plan-task",
+      thread_id: "thread-1",
+      status: "running",
+      latest_progress: "DAN is still marked as running by the task snapshot.",
+      metadata: { active_run_id: "plan-run" },
+    });
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      tasks: [runningTask],
+      activeRunId: "plan-run",
+      activeRunningTask: runningTask,
+      chunks: [
+        {
+          id: "message:user-plan-final",
+          kind: "chat",
+          title: "You · Request",
+          body: "locate the right old commits",
+          status: "clean",
+          meta: "user",
+          role: "user",
+          runId: "plan-run",
+        },
+      ],
+      agentEvents: [
+        {
+          type: "worker_started",
+          source_event_type: "live.task_graph.updated",
+          summary: "Plan graph updated.",
+          run_id: "plan-run",
+          task_id: "plan-task",
+          payload: {
+            task_graph_state: {
+              schema: "super_dan_task_graph_v1",
+              revision: 3,
+              version_id: "plan.r3",
+              source: "planner",
+              update_scope: "plan_execution",
+              update_reason: "DAN started locating old commits.",
+              tasks: [
+                {
+                  task_id: "b1",
+                  branch_id: "main",
+                  goal: "Scan the git reflog",
+                  state: "active",
+                  depends_on: [],
+                },
+                {
+                  task_id: "b2",
+                  branch_id: "main",
+                  goal: "Scan backup files",
+                  state: "running",
+                  depends_on: [],
+                },
+              ],
+              active_task_ids: ["b1", "b2"],
+              completed_task_ids: [],
+            },
+          },
+        },
+        {
+          type: "completed",
+          source_event_type: "run.log.completed",
+          summary: "workspace check failed for website: FileNotFoundError: File not found: 'website'.",
+          run_id: "plan-run",
+          task_id: "plan-task",
+          payload: {
+            final_text: "workspace check failed for website: FileNotFoundError: File not found: 'website'.",
+          },
+        },
+      ],
+    });
+
+    const planning = nodes.find((node) => node.id === "blueprint:planning");
+    const final = nodes.find((node) => node.id === "blueprint:answer");
+
+    expect(planning?.status).toBe("done");
+    expect(final?.status).toBe("done");
+    expect(planTaskChecklistItemsForTest(planning!)).toEqual([
+      {
+        taskId: "b1",
+        title: "Scan the git reflog",
+        status: "done",
+        branchId: "main",
+      },
+      {
+        taskId: "b2",
+        title: "Scan backup files",
+        status: "done",
+        branchId: "main",
+      },
+    ]);
+    expect(planCardChecklistItemsForTest(planning!)).toEqual([]);
+  });
+
   it("renders explicit plan DAG nodes as Work cards with child task checklists", () => {
     const planGraphTasks = [
       {
@@ -4510,6 +4606,61 @@ describe("workspace blueprint nodes", () => {
     });
     expect(answer?.body).toContain("Codex hit an output-size parsing limit while reading command output.");
     expect(answer?.body).not.toContain("Separator is not found");
+  });
+
+  it("keeps progress-like answer chunks blocked when execution needs attention", () => {
+    const parserTask = task({
+      task_id: "website-revert-task",
+      status: "failed",
+      latest_progress: "Separator is not found, and chunk exceed the limit",
+      metadata: { active_run_id: "website-revert-run", selected_backend: "codex" },
+    });
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "website-revert-run",
+      chunks: [
+        {
+          id: "message:user-website-revert",
+          kind: "chat",
+          title: "You · Request",
+          body: "can you help me revert the website",
+          status: "clean",
+          meta: "user",
+          role: "user",
+          runId: "website-revert-run",
+          taskId: "website-revert-task",
+        },
+        {
+          id: "agent-answer:website-revert-run",
+          kind: "agent",
+          title: "Codex · Answer",
+          body: "I'll trace the website history first, then restore only the website files needed for the biology/network version. I'll also follow the repo tracking docs before editing so the project log stays consistent.",
+          status: "clean",
+          meta: "run.log.completed",
+          runId: "website-revert-run",
+          taskId: "website-revert-task",
+        },
+      ],
+      tasks: [parserTask],
+      agentEvents: [
+        {
+          type: "failed",
+          source_event_type: "tool.failed",
+          run_id: "website-revert-run",
+          task_id: "website-revert-task",
+          summary: "Separator is not found, and chunk exceed the limit",
+        },
+      ],
+    });
+
+    const answer = nodes.find((node) => node.kind === "answer");
+    expect(answer).toMatchObject({
+      title: "Final response",
+      status: "blocked",
+      detail: "Stopped before final response",
+    });
+    expect(answer?.body).toContain("Codex hit an output-size parsing limit while reading command output.");
+    expect(answer?.body).not.toContain("I'll trace");
   });
 
   it("renders completed read-only exact-answer runs without edit-file wording", () => {
