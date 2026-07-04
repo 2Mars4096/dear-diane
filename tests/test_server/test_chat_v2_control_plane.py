@@ -41,6 +41,10 @@ from dan.server.chat_v2_backend import (
     run_agent_backend,
     select_agent_backend_adapter,
 )
+from dan.server.chat_v2_scheduler_budget import (
+    scheduler_budget_metadata_update,
+    scheduler_continuation_budget_decision,
+)
 from dan.server.chat_v2_store import (
     AgentRunRecord,
     ChatV2Store,
@@ -640,6 +644,54 @@ def test_v2_backend_request_recompute_keeps_hard_no_edits_binding(tmp_path) -> N
     assert request.mutation_policy["operator_mutation_policy"] == "forbidden"
 
 
+def test_v2_scheduler_budget_default_allows_two_larger_leases(tmp_path) -> None:
+    run = AgentRunRecord(
+        run_id="run-budget",
+        task_id="task-budget",
+        thread_id="thread-budget",
+        workspace_root=str(tmp_path),
+        workspace_id=str(tmp_path),
+        status="completed",
+        command=AgentRunCommand(
+            command="start",
+            task_id="task-budget",
+            run_id="run-budget",
+            payload={"text": "continue this plan"},
+        ),
+    )
+
+    first = scheduler_continuation_budget_decision(
+        run,
+        cap_name="promoted_continuations",
+        reason="Background promoted-continuation cap reached.",
+        remaining_continuations=0,
+        candidate_count=1,
+    )
+    run.metadata.update(scheduler_budget_metadata_update(first))
+    second = scheduler_continuation_budget_decision(
+        run,
+        cap_name="promoted_continuations",
+        reason="Background promoted-continuation cap reached again.",
+        remaining_continuations=0,
+        candidate_count=1,
+    )
+    run.metadata.update(scheduler_budget_metadata_update(second))
+    third = scheduler_continuation_budget_decision(
+        run,
+        cap_name="promoted_continuations",
+        reason="Background promoted-continuation cap reached a third time.",
+        remaining_continuations=0,
+        candidate_count=1,
+    )
+
+    assert first["approved"] is True
+    assert first["extra_continuations"] == 2
+    assert second["approved"] is True
+    assert second["extra_continuations"] == 2
+    assert third["approved"] is False
+    assert "lease limit reached (2)" in third["reason"]
+
+
 def test_v2_selects_codex_agent_backend_from_profile_policy(tmp_path) -> None:
     request = AgentBackendRunRequest(
         task_id="task-1",
@@ -865,10 +917,10 @@ async def test_v2_codex_auto_continuation_cap_uses_scheduler_soft_budget(tmp_pat
     assert next_run_id
     extensions = first_run.metadata["scheduler_budget_extensions"]
     assert extensions[0]["cap_name"] == "backend_auto_continuation"
-    assert extensions[0]["extra_continuations"] == 1
+    assert extensions[0]["extra_continuations"] == 2
     next_run = store.get_run(next_run_id)
     assert next_run is not None
-    assert next_run.command.payload["max_auto_backend_continuations"] == 1
+    assert next_run.command.payload["max_auto_backend_continuations"] == 2
     assert next_run.command.payload["scheduler_budget_extensions"][0]["cap_name"] == (
         "backend_auto_continuation"
     )
@@ -2298,6 +2350,7 @@ async def test_v2_background_execution_soft_budget_extends_promoted_continue_cap
     assert next_run.metadata["scheduler_budget_extensions"][0]["cap_name"] == (
         "promoted_continuations"
     )
+    assert next_run.metadata["scheduler_budget_extensions"][0]["extra_continuations"] == 2
     first_event_sources = [
         event.get("source_event_type")
         for event in store.load_run_events(run_id)

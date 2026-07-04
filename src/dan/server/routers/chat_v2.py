@@ -43,13 +43,15 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["chat-v2"])
 
+DEFAULT_MAX_PROMOTED_CONTINUATIONS = 16
+
 
 class AgentRunExecuteRequest(BaseModel):
     backend: str | None = None
     surface_profile: str | None = None
     background: bool = False
     auto_execute_continuations: bool = True
-    max_promoted_continuations: int = 8
+    max_promoted_continuations: int = DEFAULT_MAX_PROMOTED_CONTINUATIONS
     profile_policy: dict[str, Any] = Field(default_factory=dict)
     mutation_policy: dict[str, Any] = Field(default_factory=dict)
     approval_policy: dict[str, Any] = Field(default_factory=dict)
@@ -491,7 +493,7 @@ async def _execute_agent_run_background(
     backend_name: str | None,
     overrides: dict[str, Any],
     auto_execute_continuations: bool = True,
-    remaining_continuations: int = 8,
+    remaining_continuations: int = DEFAULT_MAX_PROMOTED_CONTINUATIONS,
     auto_execute_ready_dependencies: bool = True,
 ) -> None:
     try:
@@ -607,7 +609,6 @@ def _maybe_extend_background_continuation_budget(
         remaining_continuations=remaining_continuations,
         candidate_count=candidate_count,
         next_run_id=next_run_id,
-        requested_extra=1,
     )
     store.update_run_metadata(run.run_id, scheduler_budget_metadata_update(decision))
     store.record_agent_event(scheduler_budget_event(run, decision))

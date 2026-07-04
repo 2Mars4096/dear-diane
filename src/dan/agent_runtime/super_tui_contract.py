@@ -9,7 +9,7 @@ from dan.notes import HUGO_NOTES_CAPABILITIES, enrich_notes_surface_context
 
 SUPER_TUI_SURFACE_PROFILE = "super_tui"
 SUPER_TUI_DEFAULT_BACKEND = "super_dan"
-SUPER_TUI_MAX_PROMOTED_CONTINUATIONS = 8
+SUPER_TUI_MAX_PROMOTED_CONTINUATIONS = 16
 SUPER_TUI_AGENT_CAPABILITIES: tuple[str, ...] = (
     "foreground_admission",
     "background_agent_runs",

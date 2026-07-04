@@ -1753,7 +1753,7 @@ def test_super_tui_explicit_async_turn_uses_local_store_without_server(
         assert workspace_root == workspace
         assert backend_name == "deterministic"
         assert overrides["metadata"]["surface"] == "super-tui"
-        assert remaining_continuations == 8
+        assert remaining_continuations == 16
         started_runs.append(run_id)
 
     def fail_post(*args, **kwargs):

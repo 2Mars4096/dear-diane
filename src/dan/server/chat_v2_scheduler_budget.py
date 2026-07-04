@@ -9,10 +9,10 @@ from dan.server.chat_v2 import AgentRunEvent
 from dan.server.chat_v2_store import AgentRunRecord
 
 
-_DEFAULT_MAX_LEASES = 1
-_MAX_LEASES_HARD_CAP = 4
-_DEFAULT_EXTRA_CONTINUATIONS = 1
-_MAX_EXTRA_CONTINUATIONS_HARD_CAP = 2
+_DEFAULT_MAX_LEASES = 2
+_MAX_LEASES_HARD_CAP = 6
+_DEFAULT_EXTRA_CONTINUATIONS = 2
+_MAX_EXTRA_CONTINUATIONS_HARD_CAP = 4
 _TERMINAL_RUN_STATUSES = {"completed", "failed", "blocked", "stopped"}
 _DISABLE_TOKENS = {"0", "false", "no", "off", "disabled"}
 _ENABLE_TOKENS = {"1", "true", "yes", "on", "enabled"}
@@ -26,7 +26,7 @@ def scheduler_continuation_budget_decision(
     remaining_continuations: int,
     candidate_count: int = 0,
     next_run_id: str = "",
-    requested_extra: int = 1,
+    requested_extra: int = _DEFAULT_EXTRA_CONTINUATIONS,
 ) -> dict[str, Any]:
     """Decide whether a scheduler continuation cap gets a small lease.
 
@@ -115,7 +115,8 @@ def scheduler_budget_event(
     approved = bool(decision.get("approved"))
     extra = int(decision.get("extra_continuations") or 0)
     if approved:
-        summary = f"Scheduler lease granted: +{extra} continuation."
+        label = "continuation" if extra == 1 else "continuations"
+        summary = f"Scheduler lease granted: +{extra} {label}."
     else:
         summary = "Scheduler lease denied."
     reason = _compact(decision.get("reason"), limit=240)

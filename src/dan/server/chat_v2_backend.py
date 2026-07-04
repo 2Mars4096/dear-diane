@@ -1921,7 +1921,6 @@ def _queue_backend_auto_continuation_if_needed(
             reason="Codex backend auto-continuation depth cap reached.",
             remaining_continuations=max_depth - depth,
             candidate_count=1,
-            requested_extra=1,
         )
         store.update_run_metadata(run_id, scheduler_budget_metadata_update(scheduler_decision))
         store.record_agent_event(scheduler_budget_event(run, scheduler_decision))
