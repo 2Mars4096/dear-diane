@@ -50,14 +50,27 @@ def image_data_url_from_path(
 
 
 def parse_data_url_image(url: str) -> tuple[str, str] | None:
-    match = re.match(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$", str(url or ""), flags=re.DOTALL)
+    match = re.match(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$", str(url or "").strip(), flags=re.DOTALL)
     if not match:
         return None
-    return match.group(1), match.group(2)
+    return match.group(1), re.sub(r"\s+", "", match.group(2))
+
+
+def _canonical_data_url(mime_type: str, decoded: bytes) -> str:
+    encoded = base64.b64encode(decoded).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def _normalized_data_url_text(url: str) -> str:
+    parsed = parse_data_url_image(url)
+    if parsed is None:
+        return str(url or "")
+    mime_type, encoded = parsed
+    return f"data:{mime_type};base64,{encoded}"
 
 
 def openai_image_block_from_data_url(url: str) -> dict[str, Any]:
-    return {"type": "image_url", "image_url": {"url": url}}
+    return {"type": "image_url", "image_url": {"url": _normalized_data_url_text(url)}}
 
 
 def anthropic_image_block_from_data_url(url: str) -> dict[str, Any] | None:
@@ -99,7 +112,7 @@ def normalize_openai_content_blocks(content: Any) -> Any:
             continue
         image_url = block.get("image_url")
         if isinstance(image_url, Mapping) and image_url.get("url"):
-            normalized.append({"type": "image_url", "image_url": {"url": str(image_url.get("url"))}})
+            normalized.append(openai_image_block_from_data_url(str(image_url.get("url"))))
             continue
         url = block.get("url")
         if url:
@@ -284,7 +297,7 @@ def image_attachment_payloads(
                 "mime_type": str(raw.get("mime_type") or mime_type),
                 "size_bytes": int(raw.get("size_bytes") or len(decoded)),
                 "checksum": checksum or None,
-                "data_url": data_url,
+                "data_url": _canonical_data_url(mime_type, decoded),
             }
         )
         payloads.append(payload)

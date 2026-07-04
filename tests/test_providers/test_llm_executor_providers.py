@@ -101,9 +101,53 @@ def test_multimodal_helper_accepts_inline_clipboard_image_data_url():
     assert content[1] == {"type": "image_url", "image_url": {"url": data_url}}
 
 
+def test_multimodal_helper_canonicalizes_folded_inline_image_data_url():
+    data_url = "data:image/png;base64,iVBORw0K\nGgpmYWtl"
+
+    content = content_with_image_attachments(
+        "What is in this screenshot?",
+        [{"kind": "figure", "name": "Screenshot.png", "data_url": data_url}],
+    )
+
+    assert isinstance(content, list)
+    assert content[1] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,iVBORw0KGgpmYWtl"},
+    }
+
+
 def test_openai_message_normalizer_accepts_short_image_url_alias():
     messages = normalize_openai_messages_for_multimodal(
         [{"role": "user", "content": [{"type": "image_url", "url": "data:image/png;base64,abc"}]}]
+    )
+
+    assert messages[0]["content"][0] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,abc"},
+    }
+
+
+def test_openai_message_normalizer_strips_folded_data_url_alias():
+    messages = normalize_openai_messages_for_multimodal(
+        [{"role": "user", "content": [{"type": "image_url", "url": "data:image/png;base64,ab\nc"}]}]
+    )
+
+    assert messages[0]["content"][0] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,abc"},
+    }
+
+
+def test_openai_message_normalizer_strips_folded_nested_data_url():
+    messages = normalize_openai_messages_for_multimodal(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,ab\nc"}}
+                ],
+            }
+        ]
     )
 
     assert messages[0]["content"][0] == {
