@@ -22,6 +22,7 @@ import {
   planCardChecklistItemsForTest,
   previewMarkdownContentForTest,
   planTaskChecklistItemsForTest,
+  queueDisplayDetailForTest,
   queueRowsFromTasksForTest,
   recentModifiedNotesForTest,
   restorableThreadTargetForTest,
@@ -3741,6 +3742,16 @@ describe("workspace blueprint nodes", () => {
     expect(nodes.find((node) => node.id === "blueprint:task:running")?.status).toBe("active");
   });
 
+  it("shows a polished queue intent instead of echoing a rough request verbatim", () => {
+    const rough =
+      "Oh I think you're right. But can you check the git history, and try to revert back when we had the dan super biology, and when we had the moving dots and networks, just check";
+
+    expect(queueDisplayDetailForTest(rough)).toBe(
+      "Check git history for earlier DAN Super Biology and moving dots/network states.",
+    );
+    expect(queueDisplayDetailForTest(rough)).not.toBe(rough);
+  });
+
   it("expands queued follow-ups into visible ghost plan steps", () => {
     const running = task({
       task_id: "running",
@@ -3772,7 +3783,8 @@ describe("workspace blueprint nodes", () => {
     expect(rows.find((row) => row.id === "queue:followup-1")).toMatchObject({
       kind: "followup",
       label: "Steering message",
-      detail: "wait, don't edit anything, summarize the project",
+      detail: "Summarize the project without editing files.",
+      rawDetail: "wait, don't edit anything, summarize the project",
     });
     expect(nodes.find((node) => node.id === "blueprint:queue:followup-1:request")).toMatchObject({
       title: "Follow-up request",

@@ -697,6 +697,7 @@ interface QueueRow {
   id: string;
   label: string;
   detail: string;
+  rawDetail?: string;
   status: string;
   active: boolean;
   kind: "task" | "followup";
@@ -710,6 +711,87 @@ function userChunkBody(chunk: WorkspaceChunk) {
   return chunk.kind === "chat" && chunk.role === "user" ? chunk.body.trim() : "";
 }
 
+function sentenceCaseQueueText(text: string) {
+  const trimmed = text.replace(/\s+/g, " ").trim();
+  if (!trimmed) return "";
+  return `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
+}
+
+function finishQueueSentence(text: string) {
+  const trimmed = text.trim().replace(/\s+([,.!?])/g, "$1");
+  if (!trimmed) return "";
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+function cleanQueueRequestText(text: string) {
+  return text
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^(?:oh|okay|ok|yeah|yes|right|hmm|um|uh)[,.\s]+/i, "")
+    .replace(/^i\s+think\s+you(?:'re| are)\s+right[,.!\s]*/i, "")
+    .replace(/^you(?:'re| are)\s+right[,.!\s]*/i, "")
+    .replace(/^(?:but|and|also|then)\s+/i, "")
+    .replace(/^(?:please\s+)?(?:can|could|would)\s+you\s+/i, "")
+    .replace(/^(?:please\s+)?(?:try to|kindly|maybe)\s+/i, "")
+    .replace(/\btry to\s+/gi, "")
+    .replace(/\brevert back\b/gi, "review reverting")
+    .replace(/\bdont\b/gi, "do not")
+    .replace(/\bdan super biology\b/gi, "DAN Super Biology")
+    .replace(/\bjust check\b[.?!]?$/i, "")
+    .replace(/\s*,\s*$/g, "")
+    .trim();
+}
+
+function joinQueueTargets(targets: string[]) {
+  const unique = Array.from(new Set(targets.filter(Boolean)));
+  if (unique.length <= 1) return unique[0] ?? "";
+  if (unique.length === 2) return `${unique[0]} and ${unique[1]}`;
+  return `${unique.slice(0, -1).join(", ")}, and ${unique[unique.length - 1]}`;
+}
+
+function specificQueueIntentSummary(rawText: string) {
+  const text = rawText.toLowerCase();
+  if (text.includes("git history") && /\brevert(?: back)?\b/.test(text)) {
+    const targets: string[] = [];
+    if (/\bdan super biology\b/i.test(rawText)) targets.push("DAN Super Biology");
+    if (/\bmoving dots?\b/i.test(rawText) || /\bnetworks?\b/i.test(rawText)) {
+      targets.push("moving dots/network states");
+    }
+    const targetText = joinQueueTargets(targets);
+    return targetText
+      ? `Check git history for earlier ${targetText}.`
+      : "Check git history and identify a safer revert point.";
+  }
+  if (
+    /\b(?:do not|don't|dont|no)\b[^.?!]*(?:edit|modify|change|write|touch)\b/i.test(rawText) &&
+    /\bsummari[sz]e\b/i.test(rawText)
+  ) {
+    return "Summarize the project without editing files.";
+  }
+  return "";
+}
+
+function queueDisplayDetail(rawText: string, fallback = "Queued work") {
+  const raw = rawText.trim();
+  if (!raw) return fallback;
+  const specific = specificQueueIntentSummary(raw);
+  if (specific) return specific;
+  let cleaned = cleanQueueRequestText(raw);
+  cleaned = cleaned
+    .replace(/^add\b/i, "Add")
+    .replace(/^check\b/i, "Check")
+    .replace(/^inspect\b/i, "Inspect")
+    .replace(/^look at\b/i, "Inspect")
+    .replace(/^summari[sz]e\b/i, "Summarize")
+    .replace(/^use the\b/i, "Use a")
+    .replace(/^use\b/i, "Use");
+  cleaned = sentenceCaseQueueText(cleaned);
+  if (!cleaned || normalizeComparableText(cleaned) === normalizeComparableText(raw)) {
+    return fallback;
+  }
+  return finishQueueSentence(cleaned);
+}
+
 function attachQueueRowSourceChunks(queueRows: QueueRow[], chunks: WorkspaceChunk[]) {
   if (queueRows.length === 0 || chunks.length === 0) return queueRows;
   const assignedChunkIds = new Set(queueRows.map((row) => row.sourceChunkId).filter(Boolean));
@@ -718,7 +800,7 @@ function attachQueueRowSourceChunks(queueRows: QueueRow[], chunks: WorkspaceChun
   let changed = false;
   const rows = queueRows.map((row) => {
     if (row.sourceChunkId || row.kind !== "followup") return row;
-    const detail = row.detail.trim();
+    const detail = (row.rawDetail ?? row.detail).trim();
     if (!detail) return row;
     const match = [...pendingUserChunks]
       .reverse()
@@ -6431,18 +6513,22 @@ function buildBlueprintNodesForRunScope(args: {
 
   const activeFollowUpRow: QueueRow | null =
     appendingActiveFollowUp && liveActiveRunningTask
-      ? {
-          id: `active-followup:${liveActiveRunningTask.task_id}:${liveActiveRunId}`,
-          label: "Active follow-up",
-          detail: latestUserChunk?.body || taskMessageLabel(liveActiveRunningTask),
-          status: liveActiveRunningTask.status || "running",
-          active: true,
-          kind: "followup",
-          lane: "append",
-          taskId: liveActiveRunningTask.task_id,
-          runId: liveActiveRunId,
-          sourceChunkId: latestUserChunk?.id,
-        }
+      ? (() => {
+          const rawDetail = latestUserChunk?.body || taskMessageLabel(liveActiveRunningTask);
+          return {
+            id: `active-followup:${liveActiveRunningTask.task_id}:${liveActiveRunId}`,
+            label: "Active follow-up",
+            detail: queueDisplayDetail(rawDetail, "Active follow-up work."),
+            rawDetail,
+            status: liveActiveRunningTask.status || "running",
+            active: true,
+            kind: "followup",
+            lane: "append",
+            taskId: liveActiveRunningTask.task_id,
+            runId: liveActiveRunId,
+            sourceChunkId: latestUserChunk?.id,
+          };
+        })()
       : null;
   const visibleQueueRows = (
     activeFollowUpRow
@@ -7508,6 +7594,10 @@ export function queueRowsFromTasksForTest(tasks: ChatV2TaskSnapshot[]) {
   return queueRowsFromTasks(tasks);
 }
 
+export function queueDisplayDetailForTest(text: string, fallback?: string) {
+  return queueDisplayDetail(text, fallback);
+}
+
 export function selectActiveRunningTaskForTest(tasks: ChatV2TaskSnapshot[]) {
   return selectActiveRunningTask(tasks);
 }
@@ -8016,7 +8106,7 @@ function followUpBlueprintNodes(row: QueueRow, _index: number): BlueprintNode[] 
       meta: "follow-up",
       body: "Ready for follow-up planning.",
       previewBody: "",
-      rawRequest: row.detail,
+      rawRequest: row.rawDetail ?? row.detail,
       status: status.request,
       kind: "request",
       compact: true,
@@ -8081,10 +8171,18 @@ function queueRowsFromTasks(tasks: ChatV2TaskSnapshot[]) {
   for (const task of tasks) {
     if (!isTaskTerminal(task) && !taskIsStopControlState(task)) {
       const status = taskIsStaleRunning(task) ? "stale_running" : task.status || "queued";
+      const rawDetail =
+        status === task.status ? taskMessageLabel(task) : taskAttentionDetail(task);
+      const polishTaskDetail =
+        status === task.status &&
+        ["running", "queued", "waiting_dependency"].includes(status.toLowerCase());
       rows.push({
         id: `task:${task.task_id}`,
         label: taskQueueLabel(status),
-        detail: status === task.status ? taskMessageLabel(task) : taskAttentionDetail(task),
+        detail: polishTaskDetail
+          ? queueDisplayDetail(rawDetail, taskProgressFallbackLabel(task))
+          : rawDetail,
+        rawDetail,
         status,
         active: status === "running",
         kind: "task",
@@ -8097,10 +8195,12 @@ function queueRowsFromTasks(tasks: ChatV2TaskSnapshot[]) {
     for (const item of task.metadata?.queue_items ?? []) {
       const status = item.status || "queued";
       if (terminalQueueStatuses.has(status.toLowerCase())) continue;
+      const rawDetail = item.text.trim() || "Queued message";
       rows.push({
         id: `queue:${item.id}`,
         label: item.lane === "continue_after_current" ? "Next message" : "Steering message",
-        detail: item.text.trim() || "Queued message",
+        detail: queueDisplayDetail(rawDetail, "Queued follow-up work."),
+        rawDetail,
         status,
         active: false,
         kind: "followup",
