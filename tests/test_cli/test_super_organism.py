@@ -13,6 +13,125 @@ import dan.cli.super_organism as super_cli
 from dan.cli.main import _SUBCOMMANDS
 from dan.providers import CompletionResult
 from dan.cli.super_organism import build_parser, main
+from dan.worker.core.contracts import OutputContract
+from dan.worker.core.structured_output import validate_structured_output
+
+
+def _fake_request_understanding_completion(messages, model) -> CompletionResult | None:
+    rendered_messages = "\n".join(
+        str(message.get("content") or "")
+        for message in messages
+        if isinstance(message, dict)
+    )
+    is_request_understanding = (
+        "request_understanding" in rendered_messages
+        and "confidence_scoped_acceptance" in rendered_messages
+        and (
+            "Generate the model-authored request understanding" in rendered_messages
+            or "Self-heal the request-understanding preflight" in rendered_messages
+            or "Original expected return shape" in rendered_messages
+        )
+    )
+    if not is_request_understanding:
+        return None
+    if "multi-part local project system" in rendered_messages:
+        task_graph = [
+            {
+                "task_id": "1-1",
+                "goal": "Create the shared local core",
+                "branch_id": "b1",
+                "parent_id": "1",
+                "depends_on": [],
+                "owned_paths": ["src/core.js"],
+                "deliverables": ["src/core.js"],
+                "validation": ["node --check src/core.js"],
+                "status": "ready",
+                "parallel_safe": True,
+            },
+            {
+                "task_id": "1-2",
+                "goal": "Create the gallery shell",
+                "branch_id": "b1",
+                "parent_id": "1",
+                "depends_on": [],
+                "owned_paths": ["apps/index.html"],
+                "deliverables": ["apps/index.html"],
+                "validation": ["link check"],
+                "status": "ready",
+                "parallel_safe": True,
+            },
+            {
+                "task_id": "2-1",
+                "goal": "Create the first app demo",
+                "branch_id": "b2",
+                "parent_id": "2",
+                "depends_on": ["1-1", "1-2"],
+                "owned_paths": ["apps/edu-cell/"],
+                "deliverables": ["apps/edu-cell/index.html"],
+                "validation": ["open app page"],
+                "status": "deferred",
+                "parallel_safe": True,
+            },
+        ]
+        ready_task_ids = ["1-1", "1-2"]
+        deferred_task_ids = ["2-1"]
+        changed_task_ids = ["1-1", "1-2", "2-1"]
+    else:
+        task_graph = [
+            {
+                "task_id": "1",
+                "goal": "Execute the requested live workspace change",
+                "branch_id": "b1",
+                "parent_id": "",
+                "depends_on": [],
+                "owned_paths": [],
+                "deliverables": ["Requested workspace change or explicit blocker"],
+                "validation": ["Compare the result against the operator request"],
+                "status": "ready",
+                "parallel_safe": True,
+            }
+        ]
+        ready_task_ids = ["1"]
+        deferred_task_ids = []
+        changed_task_ids = ["1"]
+    return CompletionResult(
+        text=json.dumps(
+            {
+                "request_understanding": {
+                    "request_kind": "software",
+                    "aspect_reviews": [
+                        {
+                            "aspect": "delivery_target",
+                            "question": "What should this live run deliver?",
+                            "request_comment": "Complete the requested workspace change or explain the concrete blocker.",
+                            "confidence": 0.86,
+                        }
+                    ],
+                    "confidence_scoped_acceptance": [
+                        {
+                            "criterion": "The requested change is completed with evidence, or the final response names the blocker and remaining work.",
+                            "confidence": 0.84,
+                            "action": "do_or_explain",
+                        }
+                    ],
+                    "stop_rule": "Stop after the requested deliverable is done and checked, or after reporting a concrete blocker.",
+                },
+                "task_graph": task_graph,
+                "ready_task_ids": ready_task_ids,
+                "deferred_task_ids": deferred_task_ids,
+                "task_graph_update": {
+                    "scope": "whole_graph",
+                    "changed_task_ids": changed_task_ids,
+                    "reason": "Test request-understanding preflight.",
+                },
+                "source_tracking": {"files_read": [], "links_opened": [], "commands_run": []},
+            },
+            sort_keys=True,
+        ),
+        model=model,
+        usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        finish_reason="stop",
+    )
 
 
 class _FakeLiveWebsiteProvider:
@@ -27,6 +146,9 @@ class _FakeLiveWebsiteProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         if self.calls == 1:
             tool_calls = [
@@ -160,6 +282,9 @@ class _FakePatchContinuationWebsiteProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         if self.calls == 1:
             rendered_messages = "\n".join(
@@ -303,6 +428,9 @@ class _FakeRecoveringLiveWebsiteProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         tools = kwargs.get("tools") or []
         tool_names = [
@@ -480,6 +608,9 @@ class _FakeSoftBudgetLiveWebsiteProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         tools = kwargs.get("tools") or []
         tool_names = [
@@ -623,6 +754,9 @@ class _FakeGenericReportPostwriteBudgetProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         self.max_tokens_seen.append(max_tokens)
         tools = kwargs.get("tools") or []
@@ -779,6 +913,9 @@ class _FakeLiveCodingProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         rendered = "\n".join(str(message.get("content") or "") for message in messages)
         self.rendered_messages.append(rendered)
@@ -918,6 +1055,9 @@ class _FakeLivePlannerProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         rendered = "\n".join(str(message.get("content") or "") for message in messages)
         self.rendered_messages.append(rendered)
@@ -1166,6 +1306,9 @@ class _FakeLiveDagPlannerProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         rendered = "\n".join(str(message.get("content") or "") for message in messages)
         self.rendered_messages.append(rendered)
@@ -1428,6 +1571,9 @@ class _FakeLiveWorktreeParallelProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         rendered = "\n".join(str(message.get("content") or "") for message in messages)
         self.rendered_messages.append(rendered)
@@ -1662,6 +1808,9 @@ class _FakeLiveCodingValidationFailureProvider(_FakeLiveCodingProvider):
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         if self.calls == 1:
             tool_calls = [
@@ -1734,6 +1883,9 @@ class _FakeLiveCodingRepairProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         if self.calls == 1:
             tool_calls = [
@@ -1868,6 +2020,9 @@ class _FakeGenericReportGitBaselineRepairProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         rendered_messages = "\n".join(
             str(message.get("content") or "")
@@ -2045,6 +2200,9 @@ class _FakeNoOpWebsiteProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         return CompletionResult(
             text=json.dumps(
@@ -2077,6 +2235,9 @@ class _FakeReadOnlyDirectReplyProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         self.tool_names_by_call.append(
             [
@@ -2113,6 +2274,9 @@ class _FakeMissingThenRecoveredAnswerProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         self.tool_names_by_call.append(
             [
@@ -2165,6 +2329,9 @@ class _FakeBuilderRetryWebsiteProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         if self.calls == 1:
             return CompletionResult(
@@ -2268,6 +2435,9 @@ class _FakeTargetedBuilderRetryHtmlProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         tools = kwargs.get("tools") or []
         tool_names = [
@@ -2392,6 +2562,9 @@ class _FakeBuilderRetryTimeoutThenAliasProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         if self.calls == 1:
             return CompletionResult(
@@ -2446,6 +2619,9 @@ class _FakeOperatorPolicyOtherFileReadProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         tools = kwargs.get("tools") or []
         tool_names = [
@@ -2541,6 +2717,9 @@ class _FakeAdditiveBuilderRetryReportProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         rendered_messages = "\n".join(
             str(message.get("content") or "")
@@ -2670,6 +2849,9 @@ class _FakeTemplateWebsiteProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         if self.calls == 1:
             tool_calls = [
@@ -2758,6 +2940,9 @@ class _FakeTemplateRepairWebsiteProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         if self.calls == 1:
             tool_calls = [
@@ -2923,6 +3108,9 @@ class _FakeSingleFileExistingWebsiteProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         if self.calls == 1:
             tool_calls = [
@@ -2997,6 +3185,9 @@ class _FakeRepairingExistingWebsiteProvider:
         max_tokens=None,
         **kwargs,
     ) -> CompletionResult:
+        request_understanding = _fake_request_understanding_completion(messages, model)
+        if request_understanding is not None:
+            return request_understanding
         self.calls += 1
         if self.calls == 1:
             tool_calls = [
@@ -3456,6 +3647,104 @@ def test_super_dan_model_authored_request_understanding_supplies_generated_rules
         "Return a useful project summary"
     )
     assert "project summary" in payload["stop_rule"]
+
+
+def test_super_dan_request_understanding_contract_rejects_partial_model_output(tmp_path) -> None:
+    fallback = super_cli._request_understanding_payload(
+        "Polish the game UI and make swarm controls feel classic and convenient.",
+        workspace_root=tmp_path,
+        operator_intent_policy=super_cli.OperatorIntentPolicy(),
+    )
+
+    partial_payload = super_cli._extract_request_understanding_from_outputs(
+        {
+            "request_understanding": {
+                "aspect_reviews": [
+                    {
+                        "aspect": "gameplay_polish",
+                        "request_comment": "Improve visible units and user controls.",
+                    }
+                ],
+                "stop_rule": "Stop after the visible game polish is implemented or a blocker is named.",
+            }
+        },
+        fallback=fallback,
+    )
+    assert partial_payload is None
+
+    contract = OutputContract(
+        definition_of_done="A model-authored request_understanding payload is returned.",
+        expected_return_shape=super_cli._live_request_understanding_return_shape(),
+        output_schema=super_cli._live_request_understanding_output_schema(),
+    )
+    invalid = validate_structured_output(
+        json.dumps(
+            {
+                "request_understanding": {
+                    "aspect_reviews": [
+                        {
+                            "aspect": "gameplay_polish",
+                            "request_comment": "Improve visible units and user controls.",
+                        }
+                    ],
+                    "stop_rule": "Stop after the visible game polish is implemented or a blocker is named.",
+                }
+            }
+        ),
+        contract,
+    )
+    assert not invalid.valid
+
+    valid_payload = {
+        "request_understanding": {
+            "request_kind": "software",
+            "aspect_reviews": [
+                {
+                    "aspect": "gameplay_polish",
+                    "request_comment": "Replace dot-like soldiers with textured readable units.",
+                    "confidence": 0.86,
+                }
+            ],
+            "confidence_scoped_acceptance": [
+                {
+                    "criterion": "Units are no longer rendered only as dots and controls support convenient swarm movement.",
+                    "confidence": 0.84,
+                    "action": "do_or_explain",
+                }
+            ],
+            "stop_rule": "Stop after the polish is implemented and checked, or after naming a concrete blocker.",
+        }
+    }
+    valid = validate_structured_output(json.dumps(valid_payload), contract)
+    assert valid.valid
+    assert valid.parsed == valid_payload
+
+
+def test_super_dan_validation_payload_unwraps_structured_result_dict() -> None:
+    payload = {
+        "result": {
+            "request_understanding": {
+                "aspect_reviews": [
+                    {
+                        "aspect": "controls",
+                        "request_comment": "Make the user interaction less stiff.",
+                    }
+                ],
+                "confidence_scoped_acceptance": [
+                    {
+                        "criterion": "Classic keyboard and swarm control actions are implemented or explicitly blocked.",
+                    }
+                ],
+                "stop_rule": "Stop after controls are checked or a blocker is reported.",
+            },
+            "task_graph": [{"task_id": "1", "goal": "Improve controls"}],
+        }
+    }
+
+    unwrapped = super_cli._extract_validation_payload(payload)
+
+    assert unwrapped["request_understanding"]["stop_rule"].startswith("Stop after controls")
+    assert unwrapped["task_graph"][0]["task_id"] == "1"
 
 
 def test_super_dan_generic_prompts_include_request_understanding_contract(tmp_path) -> None:
@@ -5734,7 +6023,7 @@ def test_main_live_generic_uses_optional_run_local_planner_for_broad_work(
     assert "[planning] started" in stdout
     assert "[planning] validation passed" in stdout
     assert "Live Run: completed" in stdout
-    assert fake_provider.calls == 7
+    assert fake_provider.calls == 6
     assert (tmp_path / "cleaned-dataset-validation.md").exists()
     plan_root = tmp_path / ".dan-super" / "runs" / "turn-01" / "plans"
     assert (plan_root / "1-dataset-cleaning-pipeline.md").exists()
@@ -5795,7 +6084,7 @@ def test_main_live_interactive_source_objective_skips_run_local_planner(
     stdout = capsys.readouterr().out
     assert "[planning] started" not in stdout
     assert "Live Run: completed" in stdout
-    assert fake_provider.calls == 4
+    assert fake_provider.calls == 3
     assert fake_provider.rendered_messages
     first_builder_prompt = fake_provider.rendered_messages[1]
     assert "Interactive source implementation condition" in first_builder_prompt
@@ -5917,7 +6206,7 @@ def test_main_live_targeted_repair_prompt_requires_material_edit_or_blocker(
     assert exit_code == 0
     stdout = capsys.readouterr().out
     assert "[planning] started" not in stdout
-    assert fake_provider.calls == 4
+    assert fake_provider.calls == 3
     assert fake_provider.rendered_messages
     first_prompt = fake_provider.rendered_messages[1]
     assert "targeted source repair objectives" in first_prompt
@@ -5952,7 +6241,7 @@ def test_main_live_generic_dag_deferred_tasks_do_not_trigger_repair(
     assert exit_code == 0
     stdout = capsys.readouterr().out
     assert "Live Run: completed" in stdout
-    assert fake_provider.calls == 7
+    assert fake_provider.calls == 6
     assert (tmp_path / "src" / "core.js").exists()
     event_log_path = (tmp_path / ".dan-super" / "runs" / "turn-01" / "events.jsonl").resolve()
     event_rows = [
@@ -6049,7 +6338,7 @@ def test_main_live_generic_admits_ready_frontier_worktree_task(
     assert "[worktree] frontier started: 1-2" in stdout
     assert "[worktree] diff admitted" in stdout
     assert "Live Run: completed" in stdout
-    assert fake_provider.calls == 9
+    assert fake_provider.calls == 8
     assert (tmp_path / "src" / "core.js").read_text(encoding="utf-8") == (
         "export const coreReady = true;\n"
     )
@@ -6655,7 +6944,12 @@ def test_main_live_generic_operator_policy_blocks_other_file_reads_and_alias_reu
         row.get("event") == "live.builder_retry.started"
         for row in event_rows
     )
-    build_started = next(row for row in event_rows if row.get("event") == "worker.started")
+    build_started = next(
+        row
+        for row in event_rows
+        if row.get("event") == "worker.started"
+        and row.get("worker_id") == "super-dan.live.general-builder"
+    )
     assert build_started["tool_count"] == 1
     final_validation = [
         row for row in event_rows if row.get("event") == "live.validation.completed"

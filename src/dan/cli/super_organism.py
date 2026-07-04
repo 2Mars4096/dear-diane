@@ -76,6 +76,7 @@ _SUPER_DAN_VALIDATOR_MAX_TOKENS = 12_000
 _SUPER_DAN_PLANNER_MAX_TOKENS = 16_000
 _SUPER_DAN_PLAN_VALIDATOR_MAX_TOKENS = 8_000
 _SUPER_DAN_REQUEST_UNDERSTANDING_MAX_TOKENS = 8_000
+_SUPER_DAN_REQUEST_UNDERSTANDING_SELF_HEAL_ATTEMPTS = 2
 _SUPER_DAN_GENERIC_BUILDER_RETRY_ATTEMPTS = 2
 _SUPER_DAN_PLAN_CHECKBOX_RE = re.compile(r"^(\s*)-\s*\[([ xX])\]\s*(.+?)\s*$")
 _GENERIC_ALIAS_TEXT_EXTENSIONS = frozenset(
@@ -3804,6 +3805,79 @@ def _live_request_understanding_return_shape() -> str:
     )
 
 
+def _live_request_understanding_output_schema() -> dict[str, Any]:
+    string_schema = {"type": "string", "minLength": 1}
+    confidence_schema = {"type": "number", "minimum": 0, "maximum": 1}
+    return {
+        "type": "object",
+        "properties": {
+            "request_understanding": {
+                "type": "object",
+                "properties": {
+                    "request_kind": string_schema,
+                    "aspect_reviews": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "aspect": string_schema,
+                                "question": {"type": "string"},
+                                "request_comment": string_schema,
+                                "confidence": confidence_schema,
+                            },
+                            "required": ["aspect", "request_comment"],
+                        },
+                    },
+                    "confidence_scoped_acceptance": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "criterion": string_schema,
+                                "confidence": confidence_schema,
+                                "action": {"type": "string"},
+                            },
+                            "required": ["criterion"],
+                        },
+                    },
+                    "stop_rule": string_schema,
+                },
+                "required": [
+                    "aspect_reviews",
+                    "confidence_scoped_acceptance",
+                    "stop_rule",
+                ],
+            },
+            "task_graph": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": string_schema,
+                        "goal": string_schema,
+                        "branch_id": {"type": "string"},
+                        "parent_id": {"type": "string"},
+                        "depends_on": {"type": "array"},
+                        "owned_paths": {"type": "array"},
+                        "deliverables": {"type": "array"},
+                        "validation": {"type": "array"},
+                        "status": {"type": "string"},
+                        "parallel_safe": {"type": "boolean"},
+                    },
+                    "required": ["task_id", "goal"],
+                },
+            },
+            "ready_task_ids": {"type": "array"},
+            "deferred_task_ids": {"type": "array"},
+            "task_graph_update": {"type": "object"},
+            "source_tracking": {"type": "object"},
+        },
+        "required": ["request_understanding"],
+    }
+
+
 def _live_validation_return_shape() -> str:
     return json.dumps(
         {
@@ -4208,7 +4282,14 @@ def _normalize_model_request_understanding_payload(
         )
 
     stop_rule = _single_line(parsed.get("stop_rule") or parsed.get("completion_rule") or "")
-    if not aspect_items and not criteria_items and not stop_rule:
+    fallback_has_contract = (
+        bool(fallback.get("aspect_reviews"))
+        and bool(fallback.get("confidence_scoped_acceptance"))
+        and bool(_single_line(fallback.get("stop_rule") or ""))
+    )
+    if not fallback_has_contract and (not aspect_items or not criteria_items or not stop_rule):
+        return None
+    if fallback_has_contract and not (aspect_items or criteria_items or stop_rule):
         return None
 
     return {
@@ -4949,6 +5030,43 @@ def _live_request_understanding_task(
         "plus a small initial `task_graph` that reflects the actual user-visible work path for this request. The graph should "
         "name ready versus deferred work, expected validation for each node, and branch ids when work can proceed in parallel; "
         "for a tiny answer-only request, a one- or two-node graph is enough. Also return source_tracking for context actually used."
+    )
+
+
+def _live_request_understanding_repair_task(
+    report: SuperOrganismReport,
+    *,
+    workspace_root: Path,
+    operator_intent_policy: OperatorIntentPolicy | None = None,
+    request_understanding: Mapping[str, Any] | None = None,
+    previous_output: Any = None,
+    previous_error: str = "",
+) -> str:
+    policy_note = _operator_intent_policy_prompt(operator_intent_policy or OperatorIntentPolicy())
+    previous_text = _truncate_text(previous_output, limit=4000)
+    error_text = _truncate_text(previous_error, limit=800)
+    understanding_note = _request_understanding_contract(request_understanding, stage="request_understanding")
+    if understanding_note:
+        understanding_note += " "
+    previous_parts = []
+    if error_text:
+        previous_parts.append(f"Previous failure: {error_text}.")
+    if previous_text:
+        previous_parts.append(f"Previous output, for salvage only: {previous_text}.")
+    previous_note = " ".join(previous_parts)
+    return (
+        "Self-heal the request-understanding preflight. The previous attempt either read enough context but did not "
+        "return the required structured contract, or failed while shaping that contract. "
+        f"Operator objective: {report.target}. "
+        f"Workspace root: {workspace_root}. "
+        f"{policy_note} "
+        f"{understanding_note}"
+        f"{previous_note} "
+        "Do not call tools, create files, edit files, validate files, or continue planning/execution. "
+        "Return only compact JSON matching the required output schema. The JSON must include "
+        "`request_understanding.aspect_reviews`, `request_understanding.confidence_scoped_acceptance`, and "
+        "`request_understanding.stop_rule`, all authored for this exact operator request, plus a small task graph if "
+        "the visible work path is clear from the request."
     )
 
 
@@ -6825,6 +6943,8 @@ def _extract_validation_payload(outputs: Any) -> Any:
         return outputs
     for key in ("result", "text"):
         raw = outputs.get(key)
+        if isinstance(raw, Mapping):
+            return dict(raw)
         if not isinstance(raw, str):
             continue
         text = raw.strip()
@@ -8393,7 +8513,7 @@ async def _run_live_generic_execution(
         nonlocal request_understanding_tool_calls_total
         nonlocal request_understanding_event_count_total
         nonlocal task_graph_revision
-        understanding_tool_ids = (
+        base_understanding_tool_ids = (
             []
             if prompt_only_creation_target
             else [
@@ -8402,205 +8522,288 @@ async def _run_live_generic_execution(
                 if tool_id in set(generic_read_only_tool_ids)
             ]
         )
-        _log_live_event(
-            event_logger,
-            "live.request_understanding.started",
-            model=model,
-            workspace_root=str(workspace_root),
-            tool_ids=list(understanding_tool_ids),
-            operator_intent_policy=operator_intent_payload if operator_intent_policy.active else None,
-        )
         understanding_worker_id = "super-dan.live.general.request-understanding"
-        understanding_brief = role_brief(
-            role=RoleSpec(
-                role_label="request_understander",
-                responsibility="Generate the request-specific understanding contract before planning or execution.",
-                success_criteria=[
-                    "The output contains model-authored aspect reviews tailored to the operator request.",
-                    "The output contains request-specific acceptance criteria and a stop rule.",
-                    "The output contains a compact initial task graph for the user-visible work path.",
-                    "No workspace files are created, edited, deleted, or validated in this stage.",
-                ],
-                trace_role="super-dan.live.general.request-understanding",
-            ),
-            task=_live_request_understanding_task(
-                report,
-                workspace_root=workspace_root,
-                operator_intent_policy=operator_intent_policy,
-                request_understanding=request_understanding,
-            ),
-            scope=f"workspace={workspace_root}; Super DAN request understanding preflight",
-            hard_constraints=[
-                "Do not create, edit, delete, or otherwise mutate workspace files.",
-                "Do not write plan files or execute the deliverable.",
-                "Return structured request-understanding and initial task-graph data only.",
-                *list(operator_intent_policy.constraints),
-            ],
-            soft_constraints=[
-                "Use no tools when the request can be understood from the conversation and work contract.",
-                "Prefer explicit targets, project rules, and central files before broad discovery when read tools are enabled.",
-                "If a criterion is uncertain, turn that uncertainty into a do-or-explain acceptance rule rather than hidden future work.",
-            ],
-            tool_policy={
-                "allowed_tool_ids": list(understanding_tool_ids),
-                "preferred_tool_ids": [
-                    tool_id
-                    for tool_id in ("file_read", "list_directory", "web_search")
-                    if tool_id in set(understanding_tool_ids)
-                ],
-                "max_tool_calls": max(1, min(int(args.max_tool_calls), 8)),
-            },
-            contract_snippets=[
-                *_super_dan_stage_snippets("planner", tool_ids=understanding_tool_ids),
-            ],
-            output_contract=OutputContract(
-                definition_of_done=(
-                    "A model-authored request_understanding payload is returned before planning or execution."
-                ),
-                expected_return_shape=_live_request_understanding_return_shape(),
-            ),
-            sampling_policy={
-                "profile": "deterministic",
-                "temperature": 0.0,
-                "max_tokens": _SUPER_DAN_REQUEST_UNDERSTANDING_MAX_TOKENS,
-            },
-            evidence=[] if prompt_only_creation_target else _super_report_evidence_blocks(report),
-            input_payload={
+        previous_output: Any = None
+        previous_error = ""
+        last_status = ""
+        last_error = ""
+
+        for attempt in range(1, _SUPER_DAN_REQUEST_UNDERSTANDING_SELF_HEAL_ATTEMPTS + 1):
+            is_repair_attempt = attempt > 1
+            understanding_tool_ids = [] if is_repair_attempt else list(base_understanding_tool_ids)
+            _log_live_event(
+                event_logger,
+                "live.request_understanding.repair_started"
+                if is_repair_attempt
+                else "live.request_understanding.started",
+                model=model,
+                workspace_root=str(workspace_root),
+                tool_ids=list(understanding_tool_ids),
+                attempt=attempt,
+                max_attempts=_SUPER_DAN_REQUEST_UNDERSTANDING_SELF_HEAL_ATTEMPTS,
+                operator_intent_policy=operator_intent_payload if operator_intent_policy.active else None,
+                previous_error=previous_error if is_repair_attempt else None,
+            )
+            task = (
+                _live_request_understanding_repair_task(
+                    report,
+                    workspace_root=workspace_root,
+                    operator_intent_policy=operator_intent_policy,
+                    request_understanding=request_understanding,
+                    previous_output=previous_output,
+                    previous_error=previous_error,
+                )
+                if is_repair_attempt
+                else _live_request_understanding_task(
+                    report,
+                    workspace_root=workspace_root,
+                    operator_intent_policy=operator_intent_policy,
+                    request_understanding=request_understanding,
+                )
+            )
+            input_payload = {
                 "objective": report.target,
                 "workspace_root": str(workspace_root),
                 "operator_intent_policy": operator_intent_payload,
                 "request_understanding": dict(request_understanding),
-            },
-            metadata={
-                "surface": "super_organism",
-                "mode": "live",
-                "tool_budget_profile": "super_dan_live",
-                "trace_id": run_trace_id,
-                "root_task_id": run_task_id,
-                "organism_id": report.organism_id,
-                "organ_id": "super-dan.live.general",
-                "organism_stage": "request_understanding",
-                "worker_id": understanding_worker_id,
-                "operator_intent_policy": operator_intent_payload,
-            },
-        )
-        understanding_worker = _live_cell_from_brief(
-            model=model,
-            brief=understanding_brief,
-            worker_id=understanding_worker_id,
-            organism_stage="request_understanding",
-        )
-        understanding_result, understanding_tools, understanding_events = await _execute_live_request(
-            worker=understanding_worker,
-            request=_request_from_live_brief(understanding_brief, args=args),
-            tool_ids=understanding_tool_ids,
-            workspace_root=workspace_root,
-            args=args,
-            model=model,
-            provider=provider,
-            event_logger=event_logger,
-        )
-        request_understanding_token_usage = _extract_execution_usage(understanding_result)
-        request_understanding_tool_calls_total += len(understanding_tools)
-        request_understanding_event_count_total += len(understanding_events)
-        payload_source = (
-            dict(understanding_result.outputs)
-            if isinstance(understanding_result.outputs, Mapping)
-            else understanding_result.outputs
-        )
-        understanding_payload = _extract_validation_payload(payload_source)
-        updated_understanding = _extract_request_understanding_from_outputs(
-            understanding_payload,
-            fallback=request_understanding,
-        )
-        if updated_understanding is not None:
-            request_understanding = updated_understanding
-            generic_input_payload["request_understanding"] = dict(request_understanding)
-            initial_task_graph = _super_plan_task_graph(
-                understanding_payload.get("task_graph") if isinstance(understanding_payload, Mapping) else []
-            )
-            initial_ready_task_ids = _super_plan_string_list(
-                understanding_payload.get("ready_task_ids") if isinstance(understanding_payload, Mapping) else []
-            )
-            if not initial_ready_task_ids and initial_task_graph:
-                initial_ready_task_ids = _super_plan_ready_task_ids(initial_task_graph)
-            initial_deferred_task_ids = _super_plan_string_list(
-                understanding_payload.get("deferred_task_ids") if isinstance(understanding_payload, Mapping) else []
-            )
-            if not initial_deferred_task_ids and initial_task_graph:
-                initial_deferred_task_ids = _super_plan_deferred_task_ids(
-                    initial_task_graph,
-                    initial_ready_task_ids,
-                )
-            if initial_task_graph:
-                graph_update = _super_plan_graph_update_payload(understanding_payload)
-                task_graph_revision += 1
-                initial_context: dict[str, Any] = {
-                    "enabled": True,
-                    "usable": True,
-                    "persistence": "run_memory",
-                    "plan_root": "",
-                    "plan_root_relative": "",
-                    "plan_files": [],
-                    "assigned_task_ids": list(initial_ready_task_ids),
-                    "ready_task_ids": list(initial_ready_task_ids),
-                    "deferred_task_ids": list(initial_deferred_task_ids),
-                    "task_graph": list(initial_task_graph),
-                    "dependency_revisions": [],
-                    "execution_mode": "dependency_frontier",
-                    "request_understanding": dict(request_understanding),
-                }
-                understanding_plan_context = _super_plan_context_with_graph_state(
-                    initial_context,
-                    revision=task_graph_revision,
-                    source="request_understanding",
-                    update_reason=(
-                        graph_update.get("reason")
-                        or "Initial model-authored task graph from request understanding."
+            }
+            if is_repair_attempt:
+                input_payload["previous_request_understanding_output"] = previous_output
+                input_payload["previous_request_understanding_error"] = previous_error
+            understanding_brief = role_brief(
+                role=RoleSpec(
+                    role_label="request_understander",
+                    responsibility="Generate the request-specific understanding contract before planning or execution.",
+                    success_criteria=[
+                        "The output contains model-authored aspect reviews tailored to the operator request.",
+                        "The output contains request-specific acceptance criteria and a stop rule.",
+                        "The output contains a compact initial task graph for the user-visible work path.",
+                        "No workspace files are created, edited, deleted, or validated in this stage.",
+                    ],
+                    trace_role="super-dan.live.general.request-understanding",
+                ),
+                task=task,
+                scope=f"workspace={workspace_root}; Super DAN request understanding preflight",
+                hard_constraints=[
+                    "Do not create, edit, delete, or otherwise mutate workspace files.",
+                    "Do not write plan files or execute the deliverable.",
+                    "Return structured request-understanding and initial task-graph data only.",
+                    *(
+                        ["Do not call tools; this is a no-tool request-understanding self-heal attempt."]
+                        if is_repair_attempt
+                        else []
                     ),
-                    update_scope=graph_update.get("scope") or "whole_graph",
-                    changed_task_ids=list(graph_update.get("changed_task_ids") or []),
-                    ready_task_ids=initial_ready_task_ids,
-                    deferred_task_ids=initial_deferred_task_ids,
-                ) or initial_context
-                generic_input_payload["plan_context"] = _super_plan_context_payload(
-                    understanding_plan_context,
-                    plan_root=plan_root,
+                    *list(operator_intent_policy.constraints),
+                ],
+                soft_constraints=[
+                    "Use no tools when the request can be understood from the conversation and work contract.",
+                    "Prefer explicit targets, project rules, and central files before broad discovery when read tools are enabled.",
+                    "If a criterion is uncertain, turn that uncertainty into a do-or-explain acceptance rule rather than hidden future work.",
+                ],
+                tool_policy={
+                    "allowed_tool_ids": list(understanding_tool_ids),
+                    "preferred_tool_ids": [
+                        tool_id
+                        for tool_id in ("file_read", "list_directory", "web_search")
+                        if tool_id in set(understanding_tool_ids)
+                    ],
+                    "max_tool_calls": 0
+                    if is_repair_attempt or not understanding_tool_ids
+                    else max(1, min(int(args.max_tool_calls), 8)),
+                },
+                contract_snippets=[
+                    *_super_dan_stage_snippets("planner", tool_ids=understanding_tool_ids),
+                ],
+                output_contract=OutputContract(
+                    definition_of_done=(
+                        "A model-authored request_understanding payload is returned before planning or execution."
+                    ),
+                    expected_return_shape=_live_request_understanding_return_shape(),
+                    output_schema=_live_request_understanding_output_schema(),
+                ),
+                sampling_policy={
+                    "profile": "deterministic",
+                    "temperature": 0.0,
+                    "max_tokens": _SUPER_DAN_REQUEST_UNDERSTANDING_MAX_TOKENS,
+                },
+                evidence=[] if prompt_only_creation_target else _super_report_evidence_blocks(report),
+                input_payload=input_payload,
+                metadata={
+                    "surface": "super_organism",
+                    "mode": "live",
+                    "tool_budget_profile": "super_dan_live",
+                    "trace_id": run_trace_id,
+                    "root_task_id": run_task_id,
+                    "organism_id": report.organism_id,
+                    "organ_id": "super-dan.live.general",
+                    "organism_stage": "request_understanding",
+                    "worker_id": understanding_worker_id,
+                    "operator_intent_policy": operator_intent_payload,
+                    "request_understanding_attempt": attempt,
+                    "request_understanding_self_heal": is_repair_attempt,
+                },
+            )
+            understanding_worker = _live_cell_from_brief(
+                model=model,
+                brief=understanding_brief,
+                worker_id=understanding_worker_id,
+                organism_stage="request_understanding",
+            )
+            try:
+                understanding_result, understanding_tools, understanding_events = await _execute_live_request(
+                    worker=understanding_worker,
+                    request=_request_from_live_brief(understanding_brief, args=args),
+                    tool_ids=understanding_tool_ids,
                     workspace_root=workspace_root,
+                    args=args,
+                    model=model,
+                    provider=provider,
+                    event_logger=event_logger,
                 )
+            except Exception as exc:  # defensive: one self-heal pass may still recover shape-only failures.
+                previous_output = None
+                previous_error = f"{type(exc).__name__}: {exc}"
+                last_status = "exception"
+                last_error = previous_error
                 _log_live_event(
                     event_logger,
-                    "live.task_graph.updated",
-                    source="request_understanding",
-                    plan_context=_super_plan_context_payload(
+                    "live.request_understanding.attempt_failed",
+                    model=model,
+                    attempt=attempt,
+                    status=last_status,
+                    error=last_error,
+                )
+                continue
+
+            request_understanding_token_usage = _merge_token_usage(
+                request_understanding_token_usage,
+                _extract_execution_usage(understanding_result),
+            )
+            request_understanding_tool_calls_total += len(understanding_tools)
+            request_understanding_event_count_total += len(understanding_events)
+            payload_source = (
+                dict(understanding_result.outputs)
+                if isinstance(understanding_result.outputs, Mapping)
+                else understanding_result.outputs
+            )
+            understanding_payload = _extract_validation_payload(payload_source)
+            updated_understanding = _extract_request_understanding_from_outputs(
+                understanding_payload,
+                fallback=request_understanding,
+            )
+            if updated_understanding is not None:
+                request_understanding = updated_understanding
+                generic_input_payload["request_understanding"] = dict(request_understanding)
+                initial_task_graph = _super_plan_task_graph(
+                    understanding_payload.get("task_graph") if isinstance(understanding_payload, Mapping) else []
+                )
+                initial_ready_task_ids = _super_plan_string_list(
+                    understanding_payload.get("ready_task_ids") if isinstance(understanding_payload, Mapping) else []
+                )
+                if not initial_ready_task_ids and initial_task_graph:
+                    initial_ready_task_ids = _super_plan_ready_task_ids(initial_task_graph)
+                initial_deferred_task_ids = _super_plan_string_list(
+                    understanding_payload.get("deferred_task_ids")
+                    if isinstance(understanding_payload, Mapping)
+                    else []
+                )
+                if not initial_deferred_task_ids and initial_task_graph:
+                    initial_deferred_task_ids = _super_plan_deferred_task_ids(
+                        initial_task_graph,
+                        initial_ready_task_ids,
+                    )
+                if initial_task_graph:
+                    graph_update = _super_plan_graph_update_payload(understanding_payload)
+                    task_graph_revision += 1
+                    initial_context: dict[str, Any] = {
+                        "enabled": True,
+                        "usable": True,
+                        "persistence": "run_memory",
+                        "plan_root": "",
+                        "plan_root_relative": "",
+                        "plan_files": [],
+                        "assigned_task_ids": list(initial_ready_task_ids),
+                        "ready_task_ids": list(initial_ready_task_ids),
+                        "deferred_task_ids": list(initial_deferred_task_ids),
+                        "task_graph": list(initial_task_graph),
+                        "dependency_revisions": [],
+                        "execution_mode": "dependency_frontier",
+                        "request_understanding": dict(request_understanding),
+                    }
+                    update_source = (
+                        "request_understanding_repair" if is_repair_attempt else "request_understanding"
+                    )
+                    understanding_plan_context = _super_plan_context_with_graph_state(
+                        initial_context,
+                        revision=task_graph_revision,
+                        source=update_source,
+                        update_reason=(
+                            graph_update.get("reason")
+                            or "Initial model-authored task graph from request understanding."
+                        ),
+                        update_scope=graph_update.get("scope") or "whole_graph",
+                        changed_task_ids=list(graph_update.get("changed_task_ids") or []),
+                        ready_task_ids=initial_ready_task_ids,
+                        deferred_task_ids=initial_deferred_task_ids,
+                    ) or initial_context
+                    generic_input_payload["plan_context"] = _super_plan_context_payload(
                         understanding_plan_context,
                         plan_root=plan_root,
                         workspace_root=workspace_root,
-                    ),
-                    task_graph_state=dict(understanding_plan_context.get("task_graph_state") or {}),
+                    )
+                    _log_live_event(
+                        event_logger,
+                        "live.task_graph.updated",
+                        source=update_source,
+                        plan_context=_super_plan_context_payload(
+                            understanding_plan_context,
+                            plan_root=plan_root,
+                            workspace_root=workspace_root,
+                        ),
+                        task_graph_state=dict(understanding_plan_context.get("task_graph_state") or {}),
+                    )
+                _log_live_event(
+                    event_logger,
+                    "live.request_understanding.updated",
+                    source="request_understanding_repair" if is_repair_attempt else "request_understanding",
+                    attempt=attempt,
+                    request_understanding=dict(request_understanding),
+                    request_understanding_schema=request_understanding.get("schema"),
+                    request_kind=request_understanding.get("request_kind"),
+                    original_request=request_understanding.get("original_request"),
+                    workspace_root=request_understanding.get("workspace_root"),
+                    target_paths=list(request_understanding.get("target_paths") or []),
+                    aspect_reviews=list(request_understanding.get("aspect_reviews") or []),
+                    confidence_scoped_acceptance=list(request_understanding.get("confidence_scoped_acceptance") or []),
+                    stop_rule=request_understanding.get("stop_rule"),
                 )
-            _log_live_event(
-                event_logger,
-                "live.request_understanding.updated",
-                source="request_understanding",
-                request_understanding=dict(request_understanding),
-                request_understanding_schema=request_understanding.get("schema"),
-                request_kind=request_understanding.get("request_kind"),
-                original_request=request_understanding.get("original_request"),
-                workspace_root=request_understanding.get("workspace_root"),
-                target_paths=list(request_understanding.get("target_paths") or []),
-                aspect_reviews=list(request_understanding.get("aspect_reviews") or []),
-                confidence_scoped_acceptance=list(request_understanding.get("confidence_scoped_acceptance") or []),
-                stop_rule=request_understanding.get("stop_rule"),
+                return True
+
+            previous_output = payload_source
+            previous_error = (
+                understanding_result.error
+                or "model did not return request_understanding with aspect reviews, acceptance criteria, and a stop rule"
             )
-            return True
+            last_status = str(understanding_result.status or "")
+            last_error = str(understanding_result.error or "")
+            if attempt < _SUPER_DAN_REQUEST_UNDERSTANDING_SELF_HEAL_ATTEMPTS:
+                _log_live_event(
+                    event_logger,
+                    "live.request_understanding.repair_requested",
+                    model=model,
+                    attempt=attempt,
+                    reason=previous_error,
+                )
         _log_live_event(
             event_logger,
             "live.request_understanding.fallback",
             model=model,
-            status=understanding_result.status,
-            error=understanding_result.error,
-            reason="model did not return request_understanding with aspect reviews, acceptance criteria, or a stop rule",
+            status=last_status,
+            error=last_error,
+            reason=(
+                "model did not return request_understanding with aspect reviews, acceptance criteria, "
+                "and a stop rule after bounded self-heal"
+            ),
             request_understanding=dict(request_understanding),
         )
         return False
