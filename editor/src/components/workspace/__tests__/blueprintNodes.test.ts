@@ -1903,6 +1903,7 @@ describe("workspace blueprint nodes", () => {
                 summary: "Dependent plan is generating.",
                 source: "gui_selection",
                 ref: "plan-3",
+                created_at: "2026-07-04T09:30:00Z",
               },
             ],
           },
@@ -1929,6 +1930,7 @@ describe("workspace blueprint nodes", () => {
               kind: "file_scan",
               summary: "README confirms the current milestone.",
               raw_refs: [{ path: "README.md" }],
+              created_at: "2026-07-04T09:31:00Z",
             },
           ],
         },
@@ -1960,6 +1962,12 @@ describe("workspace blueprint nodes", () => {
     const evidence = sharedEvidenceItemsForTest(build!, [activeTask], events, activeTask);
     expect(evidence.map((item) => item.title)).toContain("Selected card: Plan 3");
     expect(evidence.map((item) => item.summary)).toContain("README confirms the current milestone.");
+    expect(evidence.find((item) => item.title === "Selected card: Plan 3")?.timestamp).toBe(
+      "2026-07-04T09:30:00Z",
+    );
+    expect(evidence.find((item) => item.summary === "README confirms the current milestone.")?.timestamp).toBe(
+      "2026-07-04T09:31:00Z",
+    );
   });
 
   it("keeps graph revision telemetry out of task progress card text", () => {

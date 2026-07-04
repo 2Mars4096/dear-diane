@@ -4133,6 +4133,7 @@ interface SharedEvidenceItem {
   summary: string;
   source: string;
   ref: string;
+  timestamp: string;
 }
 
 function humanizeDetailKey(key: string) {
@@ -4247,6 +4248,11 @@ function sharedEvidenceItemFromRecord(
     summary,
     source: textValue(record.source) || fallbackSource,
     ref,
+    timestamp:
+      textValue(record.created_at) ||
+      textValue(record.updated_at) ||
+      textValue(record.timestamp) ||
+      textValue(record.time),
   };
 }
 
@@ -4301,6 +4307,11 @@ function isUsefulSharedEvidenceText(text: string) {
 function sharedEvidenceItemsFromEvent(event: ChatV2AgentRunEvent, index: number) {
   const source = eventSource(event);
   const payload = eventPayload(event);
+  const eventTimestamp =
+    textValue(payload.created_at) ||
+    textValue(payload.updated_at) ||
+    textValue(payload.timestamp) ||
+    textValue(payload.time);
   const items: SharedEvidenceItem[] = [];
   const capsules = payload.capsules || payload.context_capsules;
   if (Array.isArray(capsules)) {
@@ -4321,6 +4332,11 @@ function sharedEvidenceItemsFromEvent(event: ChatV2AgentRunEvent, index: number)
         summary,
         source: "worker_context_capsule",
         ref: firstCapsuleRef(record),
+        timestamp:
+          textValue(record.created_at) ||
+          textValue(record.updated_at) ||
+          textValue(record.timestamp) ||
+          eventTimestamp,
       });
     });
   }
@@ -4336,6 +4352,7 @@ function sharedEvidenceItemsFromEvent(event: ChatV2AgentRunEvent, index: number)
       summary,
       source,
       ref: "",
+      timestamp: eventTimestamp,
     });
   } else if (event.type === "failed" || event.type === "blocked") {
     items.push({
@@ -4346,6 +4363,7 @@ function sharedEvidenceItemsFromEvent(event: ChatV2AgentRunEvent, index: number)
       summary,
       source,
       ref: "",
+      timestamp: eventTimestamp,
     });
   } else if (terminalTaskStatuses.has(event.type) && isUsableFinalResponseSource(summary)) {
     items.push({
@@ -4356,6 +4374,7 @@ function sharedEvidenceItemsFromEvent(event: ChatV2AgentRunEvent, index: number)
       summary,
       source,
       ref: "",
+      timestamp: eventTimestamp,
     });
   }
   return items;
@@ -10207,6 +10226,17 @@ function RichStatusLine({ text }: { text: string }) {
   );
 }
 
+function sharedEvidenceTimestampLabel(value: string) {
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return "";
+  return new Date(timestamp).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 function SharedEvidencePreview({ items }: { items: SharedEvidenceItem[] }) {
   if (items.length === 0) return null;
   return (
@@ -10220,29 +10250,42 @@ function SharedEvidencePreview({ items }: { items: SharedEvidenceItem[] }) {
         </span>
       </div>
       <ul className="space-y-2">
-        {items.map((item) => (
-          <li
-            key={`${item.id}:${item.title}:${item.summary}`}
-            className="rounded border border-slate-200/80 bg-white/70 px-2.5 py-2 text-sm dark:border-slate-800 dark:bg-slate-950/40"
-          >
-            <div className="flex flex-wrap items-start justify-between gap-2">
-              <div className="min-w-0 flex-1 font-semibold text-slate-800 dark:text-slate-100">
-                {item.title}
+        {items.map((item) => {
+          const timestampLabel = sharedEvidenceTimestampLabel(item.timestamp);
+          return (
+            <li
+              key={`${item.id}:${item.title}:${item.summary}`}
+              className="rounded border border-slate-200/80 bg-white/70 px-2.5 py-2 text-sm dark:border-slate-800 dark:bg-slate-950/40"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0 flex-1 font-semibold text-slate-800 dark:text-slate-100">
+                  {item.title}
+                </div>
+                <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                  {timestampLabel && (
+                    <span
+                      className="text-[10px] font-medium text-slate-400 dark:text-slate-500"
+                      title={new Date(item.timestamp).toLocaleString()}
+                    >
+                      {timestampLabel}
+                    </span>
+                  )}
+                  <span className="rounded-full border border-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-500 dark:border-slate-700 dark:text-slate-300">
+                    {item.status}
+                  </span>
+                </div>
               </div>
-              <span className="rounded-full border border-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-500 dark:border-slate-700 dark:text-slate-300">
-                {item.status}
-              </span>
-            </div>
-            <div className="mt-1 leading-6 text-slate-700 dark:text-slate-300">
-              <RichStatusLine text={item.summary} />
-            </div>
-            {(item.source || item.ref) && (
-              <div className="mt-1 break-all text-[11px] text-slate-400">
-                {[item.source, item.ref].filter(Boolean).join(" · ")}
+              <div className="mt-1 leading-6 text-slate-700 dark:text-slate-300">
+                <RichStatusLine text={item.summary} />
               </div>
-            )}
-          </li>
-        ))}
+              {(item.source || item.ref) && (
+                <div className="mt-1 break-all text-[11px] text-slate-400">
+                  {[item.source, item.ref].filter(Boolean).join(" · ")}
+                </div>
+              )}
+            </li>
+          );
+        })}
       </ul>
     </section>
   );
