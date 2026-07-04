@@ -1,6 +1,12 @@
 # Changelog
 
 ## 2026-07-04
+- [fix] Restored the ignored static Super DAN website from local run traces. The landing page now has the 20-cell biology copy, canvas-backed organism network motion, real work cases, and eight app links again; the app showcase no longer has a duplicated/nested Finance card and shared CSS braces are balanced.
+- [fix] Made execution blockers take precedence over answer-shaped progress text. A failed run with a parser-limit blocker now keeps Final response blocked and displays the blocker instead of treating "I'll trace..." operational prose as a completed answer.
+- [fix] Settled stale Blueprint planning checklist rows from final-answer evidence. A done Final response now clears active task-graph rows even when the selected task snapshot still briefly reports `running`.
+- [fix] Added timestamps to Work Preview Evidence cards. Shared evidence and worker context capsules now carry their recorded time into the Evidence card header beside the status pill.
+- [fix] Stopped Message Queue rows from echoing rough operator text verbatim. Active and queued rows now render a compact cleaned task-intent summary while retaining raw request text for source matching and selected Work Plan context; stale/blocked rows keep diagnostic detail literal.
+- [fix] Scoped Work composer text drafts to session cards. Unsent text is now stored by workflow/thread id, switching to another session restores that session's draft or an empty composer, and submitted or Notes-draft text clears only the owning session draft.
 - [feat] Lengthened bounded Chat V2 continuation execution. Super TUI/GUI promoted continuations now default to 16, and scheduler continuation caps grant up to two audited +2-continuation leases by default while keeping parallel-run admission as hard queue capacity.
 - [fix] Kept validation-stage live progress on the Validate card only. Once validation starts, the broad Execute card now settles as done with a static handoff summary instead of reusing the run's latest model/tool activity.
 - [fix] Added bounded self-healing to Super DAN request understanding. The preflight now validates model-authored understanding against a JSON schema, lets the worker-core structured-output repair pass fix malformed output, then runs one no-tool salvage attempt before failing missing acceptance criteria.

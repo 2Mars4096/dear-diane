@@ -1,6 +1,12 @@
 # Todo
 
 ## Current Backlog
+- [x] 2026-07-04 Static Super DAN website revert — restored the ignored `website/` landing and app showcase to the biology/network version with canvas organism motion and fixed broken app-card markup.
+- [x] 2026-07-04 Blocked final-response precedence — fixed: execution attention now keeps Final response blocked and rejects first-person progress promises such as "I'll trace..." as completed answers.
+- [x] 2026-07-04 Work Plan final/active graph consistency — fixed: a done Final response now clears stale active Blueprint planning checklist rows even if the task snapshot still says running.
+- [x] 2026-07-04 Evidence card timestamps — fixed: Work Preview Evidence cards now show a compact recorded time beside each evidence item's status.
+- [x] 2026-07-04 Message Queue request wording — fixed: active/queued Message Queue rows now show cleaned task-intent summaries instead of echoing the user's rough request verbatim.
+- [x] 2026-07-04 Work composer session-scoped text drafts — fixed: unsent Work composer text now belongs to the selected session card, disappears when switching away, and restores when returning to that session.
 - [x] 2026-07-04 Longer continuation runway — changed: Super TUI/Chat V2 promoted continuations now default to 16, and scheduler soft-budget exhaustion grants two audited +2-continuation leases by default while `max_parallel_runs` remains hard traffic control.
 - [x] 2026-07-04 Work Run Steps validation progress ownership — fixed: validation-stage model/tool activity now stays on the Validate card while the completed Execute card settles to a static handoff summary.
 - [x] 2026-07-04 Request-understanding self-heal — fixed: Super DAN request-understanding preflight now uses a JSON-schema-backed output contract plus one no-tool repair attempt before failing missing model-authored acceptance criteria.
