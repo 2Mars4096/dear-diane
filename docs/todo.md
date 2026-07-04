@@ -1,6 +1,8 @@
 # Todo
 
 ## Current Backlog
+- [x] 2026-07-04 Request-understanding self-heal — fixed: Super DAN request-understanding preflight now uses a JSON-schema-backed output contract plus one no-tool repair attempt before failing missing model-authored acceptance criteria.
+- [x] 2026-07-03 Work composer screenshot base64 dispatch — fixed: inline clipboard screenshot data URLs are canonicalized before provider dispatch so multimodal endpoints do not reject folded base64.
 - [x] 2026-07-03 Preview Card session scope — fixed: blank/new sessions no longer inherit workspace-wide previewable files; the card now lists only current-session artifacts, changed files, or explicit file mentions.
 - [x] 2026-07-03 Work pane selected-session active run sync — fixed: the visible Work pane now merges background task snapshots for the selected thread so a newer active follow-up appears instead of leaving the previous final response as the apparent latest card.
 - [x] 2026-07-03 Work queued Steer/Next card projection — fixed: queued active-run composer messages now keep their source chat turn paired with the queue card, without replacing the active request or spawning duplicate pending-run cards.

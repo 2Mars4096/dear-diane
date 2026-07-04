@@ -1,6 +1,10 @@
 # Changelog
 
+## 2026-07-04
+- [fix] Added bounded self-healing to Super DAN request understanding. The preflight now validates model-authored understanding against a JSON schema, lets the worker-core structured-output repair pass fix malformed output, then runs one no-tool salvage attempt before failing missing acceptance criteria.
+
 ## 2026-07-03
+- [fix] Canonicalized inline screenshot data URLs before provider dispatch. Browser-pasted screenshots now have folded/whitespace base64 stripped, validated, and re-emitted as one-line data URLs so OpenAI-compatible multimodal endpoints no longer reject them with invalid-base64 errors.
 - [fix] Scoped the Work Preview Card to the selected session. It now shows emitted artifacts, changed files, and explicitly mentioned files from the current session instead of scanning every previewable file in the workspace.
 - [fix] Synced selected Work panes with background active-run snapshots. When the Sessions rail already knows the selected thread has a newer running follow-up, the Work pane now merges that selected-thread background task into its visible task list before computing active run cards, queue rows, elapsed counters, and previews.
 - [fix] Stabilized Work Panel cards for queued Steer/Next messages. Queue-backed composer turns now retain their source chat card, do not replace the active run's Operator request, and no longer create duplicate synthetic pending-run groups while waiting for backend promotion.

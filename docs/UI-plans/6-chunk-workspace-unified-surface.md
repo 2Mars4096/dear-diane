@@ -254,6 +254,8 @@
   - [x] 6-212. Keep queued Steer/Next composer messages from replacing the active request card or creating duplicate pending-run cards.
   - [x] 6-213. Merge selected-thread background task snapshots into the visible Work pane so a newer active follow-up appears even when the selected-thread task fetch lags behind the Sessions rail.
   - [x] 6-214. Scope the Work Preview Card to the current session's emitted artifacts, changed files, and explicit file mentions instead of scanning every previewable workspace file.
+  - [x] 6-215. Canonicalize inline clipboard screenshot data URLs before multimodal provider dispatch.
+  - [x] 6-216. Add bounded request-understanding self-heal so missing model-authored acceptance criteria can be repaired without leaving the live board blocked after successful context reads.
 
 ## Decisions
 - The workspace route is a surface, not another product mode.
@@ -288,6 +290,7 @@
 - Policy resolution reads operator labels, not generated context labels. Flattened GUI packets may include internal instructions such as `do not quote context labels`; those must be cut away before classifying whether the user asked for read-only work or workspace mutation.
 - Run-start policy is authoritative. Already-running backends keep the policy/tools they started with, but each newly admitted run recomputes the effective mutation policy before adapter execution so stale payload permissions can upgrade or downgrade from the current objective packet.
 - Run Steps are for current/completed operator-facing progress. Future, ready, queued, and planned blueprint nodes may exist for graph/preview context, but the main card stack should show only done, active, or blocked cards so phases do not appear during request understanding and disappear during execution.
+- Request-understanding recovery should be bounded and no-mutation. The preflight may repair malformed/missing structured output through schema validation and one no-tool self-heal attempt, but it should not loop indefinitely or start execution until model-authored aspect reviews, acceptance criteria, and a stop rule exist.
 - Session auto-restore should be implicit unless the user actively opens a session. Rehydrating every run record/event for a thread is useful for old sessions, but restore should use a hidden in-flight guard, avoid clearing the visible board during hydration, and commit the restored state only once the first history load is ready.
 - Blocked Run Step cards should use the same promoted evidence as the Preview pane. If task progress only says "needs attention", the card should fall through to related blocker/failed/error evidence capsules before claiming no reason was emitted.
 - Deterministic syntax checks must not become project blockers merely because the workspace contains unsupported file types. `workspace_check` may validate known profiles such as CSS, but unsupported `syntax=auto` results are informational and should send workers to counts, file reads, or project-native lint/build checks.
@@ -423,6 +426,7 @@
 
 ## Notes
 - 2026-07-03: Added screenshot paste to the Work composer. Clipboard image items are persisted as temporary attachments when the desktop bridge is available, shown as fixed-size removable thumbnails in the chat bar, and forwarded through `appended_attachments` / command `attachments`; provider multimodal helpers also accept inline `data_url` screenshots when no local path is available.
+- 2026-07-03: Fixed browser inline screenshot dispatch by stripping folded base64 whitespace, validating the decoded bytes, and re-emitting canonical one-line data URLs before provider calls.
 - 2026-07-03: Prevented duplicate auto-restore history loads without visible board churn. Startup/session restore now keeps a hidden restoring-thread marker while historical Agent run records/events hydrate, and only commits the restored Work board after that history is ready.
 - 2026-06-30: Added the Work Preview Card and root-aware file preview route. The card lists backend artifact refs plus previewable workspace outputs, file-tree/card clicks clear selected Work steps, and the Preview pane renders HTML in a sandboxed iframe with neighboring assets, images/PDFs natively, and Markdown/text through the existing renderers.
 - 2026-06-29: Released Stop from the Message Queue. Stop-requested Agent task snapshots no longer become queue rows or synthetic Work cards, while the stopped run can still render as needing attention if it did not produce a final response.
