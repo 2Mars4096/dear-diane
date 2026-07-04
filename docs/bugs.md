@@ -1,5 +1,8 @@
 # Known Issues & Failed Approaches
 
+- ~~**P3: Validation-stage tool progress could also appear on the completed Execute card.**~~ **FIXED 2026-07-04.** The broad Execute card used the run's latest working chunk for its body and did not treat validation start as a phase handoff. During validation, model/tool activity such as `Thinking with kimi-k2.6` or `Using git log` could therefore appear on both Execute and Validate. Validation start/completion now settles Execute as done, and workspace-change Execute cards use a static validation-handoff summary instead of the latest live run chunk.
+- **Failed approach recorded:** a run-wide latest-progress fallback is too broad for phase cards. Broad Run Step cards need phase ownership: live model/tool progress belongs to the currently active phase, while completed phases should keep stable summaries.
+
 - ~~**P2: Request-understanding preflight could block after successful context reads because the model did not emit acceptance criteria.**~~ **FIXED 2026-07-04.** A Super DAN run could read the relevant workspace files, then fail before execution with `request understanding stage did not return model-authored acceptance criteria` because the final model response did not include `aspect_reviews`, `confidence_scoped_acceptance`, and `stop_rule`. The preflight now has a JSON-schema-backed output contract, worker-core structured-output repair, stricter partial-output rejection, and one no-tool self-heal attempt before reporting a real blocker.
 - **Failed approach recorded:** an unbounded `while True` retry would make the live lane hard to audit and could burn model budget indefinitely. Request-understanding recovery should be bounded, no-mutation, and explicitly logged as a self-heal attempt.
 

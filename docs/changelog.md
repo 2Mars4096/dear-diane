@@ -1,6 +1,8 @@
 # Changelog
 
 ## 2026-07-04
+- [feat] Lengthened bounded Chat V2 continuation execution. Super TUI/GUI promoted continuations now default to 16, and scheduler continuation caps grant up to two audited +2-continuation leases by default while keeping parallel-run admission as hard queue capacity.
+- [fix] Kept validation-stage live progress on the Validate card only. Once validation starts, the broad Execute card now settles as done with a static handoff summary instead of reusing the run's latest model/tool activity.
 - [fix] Added bounded self-healing to Super DAN request understanding. The preflight now validates model-authored understanding against a JSON schema, lets the worker-core structured-output repair pass fix malformed output, then runs one no-tool salvage attempt before failing missing acceptance criteria.
 
 ## 2026-07-03

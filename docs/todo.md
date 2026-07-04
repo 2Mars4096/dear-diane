@@ -1,6 +1,8 @@
 # Todo
 
 ## Current Backlog
+- [x] 2026-07-04 Longer continuation runway — changed: Super TUI/Chat V2 promoted continuations now default to 16, and scheduler soft-budget exhaustion grants two audited +2-continuation leases by default while `max_parallel_runs` remains hard traffic control.
+- [x] 2026-07-04 Work Run Steps validation progress ownership — fixed: validation-stage model/tool activity now stays on the Validate card while the completed Execute card settles to a static handoff summary.
 - [x] 2026-07-04 Request-understanding self-heal — fixed: Super DAN request-understanding preflight now uses a JSON-schema-backed output contract plus one no-tool repair attempt before failing missing model-authored acceptance criteria.
 - [x] 2026-07-03 Work composer screenshot base64 dispatch — fixed: inline clipboard screenshot data URLs are canonicalized before provider dispatch so multimodal endpoints do not reject folded base64.
 - [x] 2026-07-03 Preview Card session scope — fixed: blank/new sessions no longer inherit workspace-wide previewable files; the card now lists only current-session artifacts, changed files, or explicit file mentions.
