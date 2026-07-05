@@ -133,6 +133,7 @@ const UI_STATE_STORAGE_KEY = "dan.chunkWorkspace.uiState.v1";
 const AGENT_SELECTION_STORAGE_KEY = "dan.chunkWorkspace.agentSelection.v1";
 const MODEL_SELECTION_STORAGE_KEY = "dan.chunkWorkspace.modelSelection.v1";
 const MODEL_SELECTIONS_BY_AGENT_STORAGE_KEY = "dan.chunkWorkspace.modelSelectionsByAgent.v1";
+const AUTONOMY_MODE_STORAGE_KEY = "dan.chunkWorkspace.autonomyMode.v1";
 const WORKSPACE_DRAG_MIME = "application/x-dan-workspace-id";
 type WorkspaceDropPlacement = "before" | "after";
 const WORKSPACE_ROOT_ALIASES = new Map([
@@ -156,6 +157,7 @@ const NOTES_WORKSPACE_WRITE_POLICY =
   "Use the notes workspace as context by default; create or edit notes only when the operator asks for notes, memory, documentation, or a saved artifact.";
 type WorkspaceAgentSelectionId = "native" | "codex";
 type WorkspaceCodexReasoningEffort = "low" | "medium" | "high" | "xhigh";
+type WorkspaceAutonomyMode = "auto" | "review";
 type WorkspaceAgentOption = {
   id: WorkspaceAgentSelectionId;
   label: string;
@@ -171,12 +173,33 @@ type WorkspaceModelOption = {
   reasoningEffort?: WorkspaceCodexReasoningEffort;
 };
 type WorkspaceModelSelectionByAgent = Record<WorkspaceAgentSelectionId, string>;
+type WorkspaceAutonomyOption = {
+  id: WorkspaceAutonomyMode;
+  label: string;
+  shortLabel: string;
+  description: string;
+};
 type StoredWorkspaceSelection = {
   agentId: WorkspaceAgentSelectionId;
   modelId: string;
   modelSelectionsByAgent: WorkspaceModelSelectionByAgent;
 };
 const DEFAULT_AGENT_SELECTION_ID: WorkspaceAgentSelectionId = "native";
+const DEFAULT_AUTONOMY_MODE: WorkspaceAutonomyMode = "auto";
+const WORKSPACE_AUTONOMY_OPTIONS: WorkspaceAutonomyOption[] = [
+  {
+    id: "auto",
+    label: "Auto",
+    shortLabel: "Auto",
+    description: "Let DAN choose the best next action inside the active run contract.",
+  },
+  {
+    id: "review",
+    label: "Review",
+    shortLabel: "Review",
+    description: "Pause on ambiguous needs-attention choices so you can decide.",
+  },
+];
 const WORKSPACE_AGENT_OPTIONS: WorkspaceAgentOption[] = [
   {
     id: "native",
@@ -259,6 +282,24 @@ function workspaceAgentOptionForId(id: string | null | undefined): WorkspaceAgen
     WORKSPACE_AGENT_OPTIONS.find((option) => option.id === DEFAULT_AGENT_SELECTION_ID) ??
     WORKSPACE_AGENT_OPTIONS[0]
   );
+}
+
+function isWorkspaceAutonomyMode(value: string | null | undefined): value is WorkspaceAutonomyMode {
+  return value === "auto" || value === "review";
+}
+
+function workspaceAutonomyOptionForId(id: string | null | undefined): WorkspaceAutonomyOption {
+  return (
+    WORKSPACE_AUTONOMY_OPTIONS.find((option) => option.id === id) ??
+    WORKSPACE_AUTONOMY_OPTIONS.find((option) => option.id === DEFAULT_AUTONOMY_MODE) ??
+    WORKSPACE_AUTONOMY_OPTIONS[0]
+  );
+}
+
+function readStoredWorkspaceAutonomyMode(): WorkspaceAutonomyMode {
+  if (typeof window === "undefined") return DEFAULT_AUTONOMY_MODE;
+  const stored = window.localStorage.getItem(AUTONOMY_MODE_STORAGE_KEY);
+  return isWorkspaceAutonomyMode(stored) ? stored : DEFAULT_AUTONOMY_MODE;
 }
 
 function workspaceModelOptionsForAgent(agentId: WorkspaceAgentSelectionId) {
@@ -365,10 +406,14 @@ function readStoredWorkspaceSelection(): StoredWorkspaceSelection {
 function buildWorkspaceAgentExecutePayload(
   agentOption: WorkspaceAgentOption,
   modelOption: WorkspaceModelOption,
+  autonomyMode: WorkspaceAutonomyMode = DEFAULT_AUTONOMY_MODE,
 ) {
+  const autonomyOption = workspaceAutonomyOptionForId(autonomyMode);
   const profilePolicy: Record<string, unknown> = {
     backend: agentOption.backend,
     surface_profile: SUPER_TUI_PROFILE,
+    autonomy_mode: autonomyOption.id,
+    attention_resolution_mode: autonomyOption.id,
   };
   if (modelOption.model) {
     if (agentOption.backend === CODEX_BACKEND) {
@@ -388,12 +433,19 @@ function buildWorkspaceAgentExecutePayload(
     surface_profile: SUPER_TUI_PROFILE,
     background: true,
     profile_policy: profilePolicy,
+    approval_policy: {
+      mode: autonomyOption.id === "review" ? "ask_on_attention" : "auto_within_workspace",
+      attention_resolution: autonomyOption.id,
+    },
     metadata: {
       backend: agentOption.backend,
       surface_profile: SUPER_TUI_PROFILE,
       compatibility_profile: SUPER_TUI_PROFILE,
       surface: "gui:chunk-workspace",
       requested_from: "chunk_workspace",
+      autonomy_mode: autonomyOption.id,
+      attention_resolution_mode: autonomyOption.id,
+      attention_resolution_label: autonomyOption.label,
       gui_for: agentOption.backend === CODEX_BACKEND ? "codex exec" : "dan super-tui",
       selected_backend: agentOption.backend,
       selected_agent: agentOption.id,
@@ -3498,6 +3550,44 @@ function isGenericNeedsAttentionText(value: string) {
   );
 }
 
+function looksLikeHardAttentionItem(value: string) {
+  return /\b(?:blocked?|blocker|failed?|failure|error|exception|denied|invalid|missing|required|unable|cannot|can't|needs approval|need you to|must choose|conflict|stopped)\b/i.test(
+    value.trim(),
+  );
+}
+
+function looksLikeOptionalContinuationItem(value: string) {
+  const normalized = value.trim();
+  if (!normalized || looksLikeHardAttentionItem(normalized)) return false;
+  return /\b(?:if you want|if you'd like|if you would like|i can also|i could also|we can also|could also|optional|next steps?|follow[- ]?ups?|just say the word|say the word|when you want)\b/i.test(
+    normalized,
+  );
+}
+
+function markdownSectionTextAfterHeading(content: string, headingIndex: number) {
+  const rest = content.slice(headingIndex);
+  const firstLineEnd = rest.indexOf("\n");
+  if (firstLineEnd < 0) return "";
+  const bodyStart = headingIndex + firstLineEnd + 1;
+  const nextHeading = content.slice(bodyStart).search(/^#{2,6}\s+\S/gm);
+  return (nextHeading >= 0
+    ? content.slice(bodyStart, bodyStart + nextHeading)
+    : content.slice(bodyStart)
+  ).trim();
+}
+
+function normalizeOptionalAttentionMarkdown(content: string) {
+  return content.replace(
+    /^(#{2,6}\s+)(?:Remaining Attention|Needs Attention)\s*$/gim,
+    (match, prefix: string, offset: number, fullText: string) => {
+      const sectionText = markdownSectionTextAfterHeading(fullText, offset);
+      return sectionText && looksLikeOptionalContinuationItem(sectionText)
+        ? `${prefix}Optional next steps`
+        : match;
+    },
+  );
+}
+
 function pathBullets(paths: string[], verb: string) {
   return paths.map((path) => `${verb}: \`${path}\``);
 }
@@ -3581,12 +3671,31 @@ function structuredAgentDisplayFromRecord(data: Record<string, unknown>): Struct
     "checks",
     "tests",
   ]);
-  const remainingItems = detailItemsForKeys(data, [
+  const optionalSeedItems = detailItemsForKeys(data, [
+    "next_steps",
+    "next_step",
+    "optional_next_steps",
+    "follow_up",
+    "follow_ups",
+    "suggestions",
+  ]);
+  const remainingSeedItems = detailItemsForKeys(data, [
     "remaining_work",
     "remaining",
     "blockers",
     "blocked_on",
-    "next_steps",
+    "attention_needed",
+    "needs_attention",
+  ]);
+  const optionalItems = uniqueStringList([
+    ...optionalSeedItems,
+    ...remainingSeedItems.filter(looksLikeOptionalContinuationItem),
+    ...riskItems.filter(looksLikeOptionalContinuationItem),
+  ]);
+  const remainingItems = remainingSeedItems.filter((item) => !looksLikeOptionalContinuationItem(item));
+  const attentionItems = uniqueStringList([
+    ...remainingItems,
+    ...riskItems.filter((item) => !looksLikeOptionalContinuationItem(item)),
   ]);
   const bodyItems = finalAnswerItems.length
     ? finalAnswerItems
@@ -3596,8 +3705,8 @@ function structuredAgentDisplayFromRecord(data: Record<string, unknown>): Struct
         ? compactDetailItems(fileItems, 2)
         : checkItems.length
           ? compactDetailItems(checkItems, 2)
-          : remainingItems.length
-            ? compactDetailItems(remainingItems, 2)
+          : attentionItems.length
+            ? compactDetailItems(attentionItems, 2)
             : riskItems.length
               ? compactDetailItems(riskItems, 2)
               : [];
@@ -3608,8 +3717,8 @@ function structuredAgentDisplayFromRecord(data: Record<string, unknown>): Struct
     changeItems.length > 0 ||
     fileItems.length > 0 ||
     checkItems.length > 0 ||
-    remainingItems.length > 0 ||
-    riskItems.length > 0;
+    attentionItems.length > 0 ||
+    optionalItems.length > 0;
   const summaryItems = hasPreviewSections ? bodyItems : [];
   const previewBody = detailMarkdown("", [
     {
@@ -3622,7 +3731,8 @@ function structuredAgentDisplayFromRecord(data: Record<string, unknown>): Struct
     },
     { title: "Files", items: fileItems },
     { title: "Checks", items: checkItems },
-    { title: "Needs Attention", items: [...remainingItems, ...riskItems] },
+    { title: "Optional next steps", items: optionalItems },
+    { title: "Needs Attention", items: attentionItems },
   ]);
 
   if (!body && !previewBody) return null;
@@ -3758,9 +3868,10 @@ function userFacingAgentDisplay(content: string): StructuredAgentDisplay {
     };
   }
   const normalized = normalizeStructuredMarkdown(content);
+  const previewBody = normalizeOptionalAttentionMarkdown(normalized);
   return {
     body: normalized,
-    previewBody: normalized,
+    previewBody,
   };
 }
 
@@ -7520,6 +7631,16 @@ export function workspaceAgentExecutePayloadForTest(agentId: string, modelId?: s
   return buildWorkspaceAgentExecutePayload(agentOption, modelOption);
 }
 
+export function workspaceAgentExecutePayloadWithAutonomyForTest(
+  agentId: string,
+  modelId: string | undefined,
+  autonomyMode: WorkspaceAutonomyMode,
+) {
+  const agentOption = workspaceAgentOptionForId(agentId);
+  const modelOption = workspaceModelOptionForId(modelId, agentOption.id);
+  return buildWorkspaceAgentExecutePayload(agentOption, modelOption, autonomyMode);
+}
+
 export function workspaceSurfaceContextForTest(
   args: Partial<Parameters<typeof buildSurfaceContext>[0]> = {},
 ) {
@@ -7536,6 +7657,7 @@ export function workspaceSurfaceContextForTest(
       DEFAULT_MODEL_SELECTION_BY_AGENT[DEFAULT_AGENT_SELECTION_ID],
       DEFAULT_AGENT_SELECTION_ID,
     ),
+    autonomyMode: DEFAULT_AUTONOMY_MODE,
     activeFile: null,
     activeFileContent: "",
     wireGuardStatus: null,
@@ -8325,6 +8447,7 @@ function buildSurfaceContext(args: {
   workspaceMode: WorkspacePane;
   agentSelection?: WorkspaceAgentOption;
   modelSelection?: WorkspaceModelOption;
+  autonomyMode?: WorkspaceAutonomyMode;
   activeFile: WorkspaceFileEntry | null;
   activeFileContent: string;
   wireGuardStatus: WorkspaceWireGuardStatus | null;
@@ -8342,6 +8465,7 @@ function buildSurfaceContext(args: {
     workspaceMode,
     agentSelection,
     modelSelection,
+    autonomyMode = DEFAULT_AUTONOMY_MODE,
     activeFile,
     activeFileContent,
     wireGuardStatus,
@@ -8353,6 +8477,7 @@ function buildSurfaceContext(args: {
   const selectedModel =
     modelSelection ??
     workspaceModelOptionForId(DEFAULT_MODEL_SELECTION_BY_AGENT[selectedAgent.id], selectedAgent.id);
+  const autonomyOption = workspaceAutonomyOptionForId(autonomyMode);
   const parsedNote = note ? extractHugoPage(note.content, note.title) : null;
   const activeNoteContext = note
     ? {
@@ -8388,6 +8513,13 @@ function buildSurfaceContext(args: {
     surface_profile: SUPER_TUI_PROFILE,
     agent_profile: SUPER_TUI_PROFILE,
     agent_backend: selectedAgent.backend,
+    autonomy_mode: autonomyOption.id,
+    attention_resolution_mode: autonomyOption.id,
+    attention_resolution: {
+      mode: autonomyOption.id,
+      label: autonomyOption.label,
+      description: autonomyOption.description,
+    },
     agent_selection: {
       id: selectedAgent.id,
       label: selectedAgent.label,
@@ -12893,11 +13025,15 @@ export default function ChunkWorkspaceApp() {
   const [selectedAgentId, setSelectedAgentId] = useState<WorkspaceAgentSelectionId>(() => {
     return readStoredWorkspaceSelection().agentId;
   });
+  const [autonomyMode, setAutonomyMode] = useState<WorkspaceAutonomyMode>(() =>
+    readStoredWorkspaceAutonomyMode(),
+  );
   const [modelSelectionsByAgent, setModelSelectionsByAgent] = useState<WorkspaceModelSelectionByAgent>(() => {
     return readStoredWorkspaceSelection().modelSelectionsByAgent;
   });
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [autonomyMenuOpen, setAutonomyMenuOpen] = useState(false);
   const selectedAgentOption = useMemo(
     () => workspaceAgentOptionForId(selectedAgentId),
     [selectedAgentId],
@@ -12909,6 +13045,10 @@ export default function ChunkWorkspaceApp() {
   const selectedModelOption = useMemo(
     () => workspaceModelOptionForId(selectedModelId, selectedAgentId),
     [selectedAgentId, selectedModelId],
+  );
+  const selectedAutonomyOption = useMemo(
+    () => workspaceAutonomyOptionForId(autonomyMode),
+    [autonomyMode],
   );
   const persistedModelSelectionsByAgent = useMemo(() => {
     const next = defaultWorkspaceModelSelectionsByAgent();
@@ -12928,6 +13068,10 @@ export default function ChunkWorkspaceApp() {
   useEffect(() => {
     window.localStorage.setItem(AGENT_SELECTION_STORAGE_KEY, selectedAgentId);
   }, [selectedAgentId]);
+
+  useEffect(() => {
+    window.localStorage.setItem(AUTONOMY_MODE_STORAGE_KEY, autonomyMode);
+  }, [autonomyMode]);
   useEffect(() => {
     window.localStorage.setItem(MODEL_SELECTION_STORAGE_KEY, selectedModelOption.id);
     window.localStorage.setItem(
@@ -14317,6 +14461,7 @@ export default function ChunkWorkspaceApp() {
               workspaceMode: activePane,
               agentSelection: selectedAgentOption,
               modelSelection: selectedModelOption,
+              autonomyMode,
               activeFile: activePreviewFileEntry,
               activeFileContent,
               wireGuardStatus,
@@ -14377,6 +14522,7 @@ export default function ChunkWorkspaceApp() {
           workspaceMode: activePane,
           agentSelection: selectedAgentOption,
           modelSelection: selectedModelOption,
+          autonomyMode,
           activeFile: activePreviewFileEntry,
           activeFileContent,
           wireGuardStatus,
@@ -14456,7 +14602,7 @@ export default function ChunkWorkspaceApp() {
       }
       const executed = await executeChatV2AgentRun(
         runId,
-        buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption),
+        buildWorkspaceAgentExecutePayload(selectedAgentOption, selectedModelOption, autonomyMode),
       );
       if (executed.task) {
         mergeBackgroundTasks([executed.task]);
@@ -14488,6 +14634,7 @@ export default function ChunkWorkspaceApp() {
       selectedChunk,
       selectedAgentOption,
       selectedModelOption,
+      autonomyMode,
       selectedBlueprintNode,
       taskWorkspaceByThreadId,
       taskWorkspaceRootByThreadId,
@@ -14790,6 +14937,69 @@ export default function ChunkWorkspaceApp() {
             })}
           </div>
           <div className="min-w-0 flex-1" />
+          <div
+            className="relative shrink-0"
+            onBlur={(event) => {
+              const nextFocus = event.relatedTarget;
+              if (nextFocus instanceof Node && event.currentTarget.contains(nextFocus)) {
+                return;
+              }
+              setAutonomyMenuOpen(false);
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setAutonomyMenuOpen((open) => !open)}
+              className="inline-flex h-7 min-w-[4.5rem] max-w-[6.5rem] items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50/95 px-2 text-[11px] font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-white dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-slate-700 sm:min-w-20 sm:max-w-[7rem]"
+              title={selectedAutonomyOption.description}
+              aria-expanded={autonomyMenuOpen}
+            >
+              {selectedAutonomyOption.id === "review" ? (
+                <Shield size={12} />
+              ) : (
+                <WandSparkles size={12} />
+              )}
+              <span className="truncate">{selectedAutonomyOption.shortLabel}</span>
+              <ChevronDown size={12} className={cx("transition", autonomyMenuOpen && "rotate-180")} />
+            </button>
+            {autonomyMenuOpen && (
+              <div className="absolute bottom-full right-0 z-50 mb-2 w-64 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-xl shadow-slate-950/10 dark:border-slate-800 dark:bg-slate-950">
+                {WORKSPACE_AUTONOMY_OPTIONS.map((option) => {
+                  const selected = option.id === selectedAutonomyOption.id;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => {
+                        setAutonomyMode(option.id);
+                        setAutonomyMenuOpen(false);
+                      }}
+                      className={cx(
+                        "flex w-full items-start gap-2 px-2.5 py-2 text-left transition",
+                        selected
+                          ? "bg-slate-100 text-slate-950 dark:bg-slate-800 dark:text-white"
+                          : "text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-900 dark:hover:text-white",
+                      )}
+                    >
+                      {option.id === "review" ? (
+                        <Shield size={13} className="mt-0.5 shrink-0" />
+                      ) : (
+                        <WandSparkles size={13} className="mt-0.5 shrink-0" />
+                      )}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-xs font-semibold">{option.label}</span>
+                        <span className="block text-[11px] font-medium leading-4 text-slate-500 dark:text-slate-400">
+                          {option.description}
+                        </span>
+                      </span>
+                      {selected && <Check size={13} className="mt-0.5 shrink-0" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
           <div
             className="relative shrink-0"
             onBlur={(event) => {

@@ -48,6 +48,7 @@ import {
   workPanelTasksForTest,
   workspaceSelectedSkillInvocationForTest,
   workspaceAgentExecutePayloadForTest,
+  workspaceAgentExecutePayloadWithAutonomyForTest,
   workspaceAgentOptionsForTest,
   workspaceModelOptionsForTest,
   workspacePreviewArtifactsForTest,
@@ -183,6 +184,36 @@ describe("workspace blueprint nodes", () => {
       selected_model: "gpt-5.5",
       selected_reasoning_effort: "high",
       gui_for: "codex exec",
+    });
+  });
+
+  it("carries workspace autonomy mode into Agent execute payloads", () => {
+    const autoPayload = workspaceAgentExecutePayloadWithAutonomyForTest(
+      "native",
+      "native_default",
+      "auto",
+    );
+    const reviewPayload = workspaceAgentExecutePayloadWithAutonomyForTest(
+      "native",
+      "native_default",
+      "review",
+    );
+
+    expect(autoPayload.profile_policy).toMatchObject({
+      autonomy_mode: "auto",
+      attention_resolution_mode: "auto",
+    });
+    expect(autoPayload.approval_policy).toMatchObject({
+      mode: "auto_within_workspace",
+      attention_resolution: "auto",
+    });
+    expect(reviewPayload.profile_policy).toMatchObject({
+      autonomy_mode: "review",
+      attention_resolution_mode: "review",
+    });
+    expect(reviewPayload.approval_policy).toMatchObject({
+      mode: "ask_on_attention",
+      attention_resolution: "review",
     });
   });
 
@@ -4715,6 +4746,56 @@ describe("workspace blueprint nodes", () => {
     expect(nodes.map((node) => `${node.title} ${node.detail}`).join("\n")).not.toContain(
       "Execute workspace change Use tools, edit files",
     );
+  });
+
+  it("renames optional final follow-ups instead of showing them as remaining attention", () => {
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      chunks: [
+        {
+          id: "message:user-button-polish",
+          kind: "chat",
+          title: "You · Request",
+          body: "Fix the button inconsistency.",
+          status: "clean",
+          meta: "user",
+          role: "user",
+          runId: "button-run",
+          taskId: "button-task",
+        },
+        {
+          id: "agent-answer:button-run",
+          kind: "agent",
+          title: "DAN · Answer",
+          body:
+            "### Remaining Attention\n\n" +
+            "- I found the website files and fixed the button inconsistency. " +
+            "If you want me to align the remaining app pages or polish other details, just say the word.",
+          status: "clean",
+          meta: "final",
+          runId: "button-run",
+          taskId: "button-task",
+        },
+      ],
+      tasks: [
+        task({
+          task_id: "button-task",
+          status: "completed",
+          latest_progress: "Completed.",
+          metadata: { active_run_id: "button-run" },
+        }),
+      ],
+    });
+
+    const answer = nodes.find((node) => node.id === "blueprint:agent-answer:button-run");
+
+    expect(answer).toMatchObject({
+      title: "Final response",
+      status: "done",
+    });
+    expect(answer?.previewBody).toContain("### Optional next steps");
+    expect(answer?.previewBody).not.toContain("### Remaining Attention");
+    expect(answer?.previewBody).not.toContain("### Needs Attention");
   });
 
   it("uses completed task progress as the final blueprint answer when terminal events are thin", () => {
