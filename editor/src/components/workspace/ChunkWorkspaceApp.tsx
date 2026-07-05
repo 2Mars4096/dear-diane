@@ -11389,18 +11389,26 @@ function WorkspacePreviewArtifactsCard({
   selectedPath: string | null;
   onSelect: (entry: WorkspaceFileEntry) => void;
 }) {
+  const [expanded, setExpanded] = useState(true);
   return (
     <section className="mt-3 rounded-md border border-slate-200/80 bg-white/75 p-3 shadow-sm dark:border-slate-800 dark:bg-slate-950/65">
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
+      <div className={cx("flex items-center justify-between gap-3", expanded && "mb-2")}>
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
+          title={expanded ? "Collapse Preview Card" : "Expand Preview Card"}
+          className="flex min-w-0 items-center gap-2 rounded px-1 py-0.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 transition hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-slate-200"
+        >
+          {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
           <Eye size={13} />
           Preview Card
-        </div>
+        </button>
         <span className="rounded-full border border-slate-200 bg-white/70 px-2 py-0.5 text-[10px] font-semibold text-slate-500 dark:border-slate-800 dark:bg-slate-950/70 dark:text-slate-400">
           {artifacts.length}
         </span>
       </div>
-      {artifacts.length > 0 ? (
+      {!expanded ? null : artifacts.length > 0 ? (
         <div className="grid gap-1.5">
           {artifacts.map((artifact) => {
             const selected =
