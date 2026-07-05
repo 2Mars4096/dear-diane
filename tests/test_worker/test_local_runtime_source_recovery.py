@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+import dan.worker.organisms.local_runtime as local_runtime_module
 from dan.providers import CompletionResult
 from dan.worker.core.contracts import OutputContract
 from dan.worker.core.interfaces import CompletionRequest
@@ -239,3 +240,53 @@ async def test_source_structure_rejection_reopens_focused_recovery_read(tmp_path
         "file_edit",
         "file_write",
     ]
+
+
+def test_compact_messages_for_provider_prompt_preserves_image_data_urls() -> None:
+    data_url = "data:image/png;base64," + ("a" * 50_000)
+    messages = [
+        {"role": "system", "content": "System prompt."},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Please inspect this screenshot. " + ("x" * 5_000)},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        },
+    ]
+
+    compacted_messages, stats = local_runtime_module._compact_messages_for_provider_prompt(
+        messages,
+        budget_chars=1_200,
+        emergency_budget_chars=1_200,
+        tool_schema_chars=0,
+        emergency=True,
+    )
+
+    assert stats["prompt_context_hard_compaction"] is True
+    compacted_content = compacted_messages[1]["content"]
+    assert isinstance(compacted_content, list)
+    assert compacted_content[1]["image_url"]["url"] == data_url
+    assert "truncated" not in compacted_content[1]["image_url"]["url"]
+    assert compacted_messages is not messages
+    assert messages[1]["content"][1]["image_url"]["url"] == data_url
+
+
+def test_debug_prompt_messages_summarizes_image_data_urls() -> None:
+    data_url = "data:image/png;base64," + ("a" * 12_000)
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Please inspect this screenshot."},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        }
+    ]
+
+    debug_messages = local_runtime_module._debug_prompt_messages(messages)
+
+    debug_url = debug_messages[0]["content"][1]["image_url"]["url"]
+    assert debug_url.startswith("<image data URL: image/png, base64_chars=12000")
+    assert data_url not in json.dumps(debug_messages)
+    assert messages[0]["content"][1]["image_url"]["url"] == data_url

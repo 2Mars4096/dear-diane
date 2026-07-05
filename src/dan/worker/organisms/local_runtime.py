@@ -16,7 +16,11 @@ import tempfile
 from typing import Any, Callable, Mapping, Sequence
 
 from dan.providers import CompletionResult, LLMProvider, apply_cache_hints
-from dan.providers.multimodal import content_with_image_attachments, image_attachments_from_metadata
+from dan.providers.multimodal import (
+    content_with_image_attachments,
+    image_attachments_from_metadata,
+    parse_data_url_image,
+)
 from dan.tools import get_all_tools
 from dan.tools._git_helpers import _find_repo, _git_binary
 from dan.worker.context_capsules import (
@@ -198,10 +202,50 @@ def _compact_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if value is not None}
 
 
+def _image_data_url_summary(value: Any) -> str | None:
+    parsed = parse_data_url_image(str(value or ""))
+    if parsed is None:
+        return None
+    mime_type, data = parsed
+    digest = hashlib.sha256(data.encode("utf-8", errors="replace")).hexdigest()[:12]
+    return f"<image data URL: {mime_type}, base64_chars={len(data)}, sha256={digest}>"
+
+
+def _image_url_from_content_block(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return ""
+    if str(value.get("type") or "").strip() != "image_url":
+        return ""
+    image_url = value.get("image_url")
+    if isinstance(image_url, Mapping):
+        return str(image_url.get("url") or "")
+    return str(value.get("url") or "")
+
+
+def _value_has_image_content_block(value: Any) -> bool:
+    if _image_url_from_content_block(value):
+        return True
+    if isinstance(value, list):
+        return any(_value_has_image_content_block(item) for item in value)
+    if isinstance(value, Mapping):
+        return any(_value_has_image_content_block(item) for item in value.values())
+    return False
+
+
+def _prompt_debug_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return _image_data_url_summary(value) or value
+    if isinstance(value, list):
+        return [_prompt_debug_value(item) for item in value]
+    if isinstance(value, Mapping):
+        return {str(key): _prompt_debug_value(item) for key, item in value.items()}
+    return value
+
+
 def _debug_prompt_messages(messages: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return a JSON-safe copy of provider-facing messages for debug logs."""
 
-    copied = copy.deepcopy([message for message in messages if isinstance(message, dict)])
+    copied = _prompt_debug_value([message for message in messages if isinstance(message, dict)])
     try:
         json.dumps(copied, ensure_ascii=False, default=str)
     except (TypeError, ValueError):
@@ -263,7 +307,11 @@ def _compact_prompt_value(
     *,
     text_limit: int = _TOOL_PROMPT_TEXT_LIMIT,
 ) -> tuple[Any, bool]:
+    if _image_url_from_content_block(value):
+        return copy.deepcopy(value), False
     if isinstance(value, str):
+        if _image_data_url_summary(value) is not None:
+            return value, False
         return _truncate_prompt_text(value, limit=text_limit)
     if isinstance(value, list):
         changed = False
@@ -305,11 +353,12 @@ def _compact_tool_payload_for_prompt(
 
 def _message_content_text(content: Any) -> str:
     if isinstance(content, str):
-        return content
+        return _image_data_url_summary(content) or content
+    content_for_count = _prompt_debug_value(content)
     try:
-        return json.dumps(content, ensure_ascii=False, sort_keys=True, default=str)
+        return json.dumps(content_for_count, ensure_ascii=False, sort_keys=True, default=str)
     except Exception:
-        return str(content)
+        return str(content_for_count)
 
 
 def _message_prompt_char_count(messages: Sequence[dict[str, Any]]) -> int:
@@ -724,6 +773,7 @@ def _compact_message_content_hard_for_prompt(
     if original_chars <= text_limit:
         return False, 0
     role = str(message.get("role") or "").strip()
+    has_image_content = _value_has_image_content_block(content)
     if role == "tool" and isinstance(content, str):
         try:
             payload = json.loads(content)
@@ -767,6 +817,11 @@ def _compact_message_content_hard_for_prompt(
     if changed and compacted_chars <= text_limit:
         message["content"] = compacted_content
         return True, max(original_chars - compacted_chars, 0)
+    if has_image_content:
+        if changed:
+            message["content"] = compacted_content
+            return True, max(original_chars - compacted_chars, 0)
+        return False, 0
 
     serialized = _message_content_text(content)
     retained_excerpt, omitted = _compact_arbitrary_prompt_text(
