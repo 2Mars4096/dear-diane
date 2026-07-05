@@ -260,6 +260,7 @@
   - [x] 6-217. Keep validation-stage model/tool progress scoped to the Validate card by settling the broad Execute card once validation starts and freezing its body to a handoff summary.
   - [x] 6-218. Lengthen bounded background execution by raising promoted continuations to 16 and allowing two audited +2 scheduler continuation leases by default while keeping parallel capacity hard.
   - [x] 6-219. Scope unsent Work composer text drafts to each session card so switching sessions clears unrelated text and returning restores that session's draft.
+  - [x] 6-220. Add a default-expanded collapse button to the Work Preview Card header.
   - [x] 6-220. Show polished task-intent summaries in Message Queue rows instead of replaying rough operator request text verbatim.
   - [x] 6-221. Settle stale active Blueprint planning checklist rows when a Final response is already done, even if the task snapshot has not cleared `running` yet.
   - [x] 6-222. Keep Final response blocked when execution needs attention, and reject first-person operational progress promises as completed answers.
@@ -435,8 +436,10 @@
 - Notes taxonomy clicks should drill into article lists without switching users back to the Pages folder tree. Tags and Categories remain their own rail contexts; Pages stays the folder hierarchy.
 
 ## Notes
+- 2026-07-05: Added Auto/Review run modes to the Work composer and payload contract. Optional final-response follow-up prose now appears as Optional next steps instead of Remaining/Needs Attention, while real blockers continue to use attention styling.
 - 2026-07-03: Added screenshot paste to the Work composer. Clipboard image items are persisted as temporary attachments when the desktop bridge is available, shown as fixed-size removable thumbnails in the chat bar, and forwarded through `appended_attachments` / command `attachments`; provider multimodal helpers also accept inline `data_url` screenshots when no local path is available.
 - 2026-07-03: Fixed browser inline screenshot dispatch by stripping folded base64 whitespace, validating the decoded bytes, and re-emitting canonical one-line data URLs before provider calls.
+- 2026-07-04: Protected screenshot attachments during provider prompt compaction. `image_url` content blocks are preserved for model calls, while data URLs are represented as compact placeholders only in prompt-size accounting and debug logs.
 - 2026-07-03: Prevented duplicate auto-restore history loads without visible board churn. Startup/session restore now keeps a hidden restoring-thread marker while historical Agent run records/events hydrate, and only commits the restored Work board after that history is ready.
 - 2026-06-30: Added the Work Preview Card and root-aware file preview route. The card lists backend artifact refs plus previewable workspace outputs, file-tree/card clicks clear selected Work steps, and the Preview pane renders HTML in a sandboxed iframe with neighboring assets, images/PDFs natively, and Markdown/text through the existing renderers.
 - 2026-06-29: Released Stop from the Message Queue. Stop-requested Agent task snapshots no longer become queue rows or synthetic Work cards, while the stopped run can still render as needing attention if it did not produce a final response.

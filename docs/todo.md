@@ -1,6 +1,9 @@
 # Todo
 
 ## Current Backlog
+- [x] 2026-07-05 Preview Card collapse control — fixed: the Work Preview Card is expanded by default and now has a header chevron button to collapse or reopen the output list.
+- [x] 2026-07-05 Work composer autonomy mode and optional attention wording — fixed: the Work composer now exposes Auto/Review run modes, forwards the choice into Agent run policy/context, and Preview relabels optional follow-up suggestions as optional next steps instead of needs-attention work.
+- [x] 2026-07-04 Prompt compaction screenshot preservation — fixed: provider prompt replay now treats `image_url` blocks as atomic content, while debug/event logs summarize data URLs instead of truncating base64 into invalid image payloads.
 - [x] 2026-07-04 Static Super DAN website revert — restored the ignored `website/` landing and app showcase to the biology/network version with canvas organism motion and fixed broken app-card markup.
 - [x] 2026-07-04 Blocked final-response precedence — fixed: execution attention now keeps Final response blocked and rejects first-person progress promises such as "I'll trace..." as completed answers.
 - [x] 2026-07-04 Work Plan final/active graph consistency — fixed: a done Final response now clears stale active Blueprint planning checklist rows even if the task snapshot still says running.

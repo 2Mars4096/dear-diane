@@ -1,5 +1,11 @@
 # Known Issues & Failed Approaches
 
+- ~~**P3: Optional final-response suggestions could look like unresolved attention.**~~ **FIXED 2026-07-05.** Work Preview treated `next_steps`/optional continuation wording and model-authored `Remaining Attention` headings like blockers, so successful runs could look as if they still required operator action even when the text was only "if you want..." follow-up guidance. Optional continuation text now renders as Optional next steps, while hard blocker/error words still keep Needs Attention.
+- **Failed approach recorded:** one generic "remaining attention" bucket is too broad. Follow-up suggestions, optional polish ideas, blockers, and required approvals need separate UI semantics, otherwise successful work looks suspicious.
+
+- ~~**P2: Hard prompt compaction could corrupt pasted screenshot attachments.**~~ **FIXED 2026-07-04.** Request-understanding runs with screenshots could fail before the model answered because the replay prompt compactor recursively truncated the `image_url.url` data URL and inserted a text marker inside base64. Providers rejected the mutated payload as invalid base64, and the Work Plan then surfaced the downstream `request understanding stage did not return model-authored acceptance criteria` blocker. Provider prompt compaction now preserves image blocks, uses compact placeholders only for budget counting and debug logs, and keeps debug prompt events from storing raw base64.
+- **Failed approach recorded:** canonicalizing incoming clipboard data URLs is necessary but not sufficient. Later prompt-replay compaction must also understand multimodal blocks; generic recursive string truncation is unsafe for provider-owned payload fields.
+
 - **P3: Static website artifacts cannot be reverted through git history.** The root `.gitignore` ignores `/website/`, so `git log -- website/...` returns no recoverable history for the local static site even when files exist on disk. **Workaround 2026-07-04:** recovered the biology/network landing page from local `.dan-super` trace snapshots and restored `website/index.html`, `website/styles.css`, and `website/apps/index.html` manually.
 - **Failed approach recorded:** trying to use git history for ignored website artifacts cannot work unless the files are first tracked or a separate snapshot/export process exists.
 

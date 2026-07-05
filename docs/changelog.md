@@ -1,6 +1,11 @@
 # Changelog
 
+## 2026-07-05
+- [fix] Added a default-expanded collapse control to the Work Preview Card so previewable outputs can be tucked away without changing the selected preview.
+- [fix] Split optional follow-up suggestions from real attention states in the Work Preview. Final responses that say "if you want..." or populate `next_steps` now render as Optional next steps, while real blockers/errors still render as Needs Attention; the Work composer also gained persisted Auto/Review modes that flow into Agent run profile, approval policy, metadata, and surface context.
+
 ## 2026-07-04
+- [fix] Preserved screenshot data URLs through provider prompt compaction. The local runtime now treats `image_url` content blocks as atomic provider payloads, counts embedded base64 through compact placeholders for replay budgeting, and redacts image data URLs in debug prompt logs without mutating the model-facing message.
 - [fix] Restored the ignored static Super DAN website from local run traces. The landing page now has the 20-cell biology copy, canvas-backed organism network motion, real work cases, and eight app links again; the app showcase no longer has a duplicated/nested Finance card and shared CSS braces are balanced.
 - [fix] Made execution blockers take precedence over answer-shaped progress text. A failed run with a parser-limit blocker now keeps Final response blocked and displays the blocker instead of treating "I'll trace..." operational prose as a completed answer.
 - [fix] Settled stale Blueprint planning checklist rows from final-answer evidence. A done Final response now clears active task-graph rows even when the selected task snapshot still briefly reports `running`.
