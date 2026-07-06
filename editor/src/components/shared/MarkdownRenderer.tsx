@@ -31,6 +31,49 @@ const INLINE_FILE_EXT_RE =
 
 interface MarkdownRenderOptions {
   autoHighlightCode?: boolean;
+  renderMathCodeSpans?: boolean;
+}
+
+function mathCodeSpanToTex(source: string): string | null {
+  const trimmed = source.trim();
+  if (!trimmed || trimmed.length > 160) return null;
+  if (/^https?:\/\//i.test(trimmed) || INLINE_FILE_EXT_RE.test(trimmed) || /[{};]/.test(trimmed)) {
+    return null;
+  }
+  if (/[\\/]/.test(trimmed) && /[a-z]{3,}|[a-z]-[a-z]/.test(trimmed)) {
+    return null;
+  }
+  if (/\b(?:dm|ll)-[a-z0-9-]+\b/i.test(trimmed) || /^[a-z]+-[a-z0-9-]+$/i.test(trimmed)) {
+    return null;
+  }
+
+  const hasMathWord =
+    /\b(?:not\s+in|in|subset(?:eq)?|cap|cup|implies|iff|lim|Integral|Sigma|Delta)\b/i.test(
+      trimmed,
+    );
+  const hasMathOperator = /[=+*/^_()]|->/.test(trimmed);
+  const looksLikeVariable = /^[A-Za-z](?:\/[A-Za-z])?$/.test(trimmed);
+  const looksLikeShortSymbol = /^[A-Za-z]{1,4}$/.test(trimmed) && /[A-Z]/.test(trimmed);
+  const hasOnlyMathishChars = /^[A-Za-z0-9\s()[\],.+*/=<>^_'|-]+$/.test(trimmed);
+  if (!(hasMathWord || looksLikeVariable || looksLikeShortSymbol || (hasMathOperator && hasOnlyMathishChars))) {
+    return null;
+  }
+
+  let tex = trimmed;
+  tex = tex.replace(/->/g, "\\to ");
+  tex = tex.replace(/\bnot\s+in\b/gi, "\\notin ");
+  tex = tex.replace(/\bin\b/gi, "\\in ");
+  tex = tex.replace(/\bsubseteq\b/gi, "\\subseteq ");
+  tex = tex.replace(/\bsubset\b/gi, "\\subseteq ");
+  tex = tex.replace(/\bcap\b/gi, "\\cap ");
+  tex = tex.replace(/\bcup\b/gi, "\\cup ");
+  tex = tex.replace(/\bimplies\b/gi, "\\Rightarrow ");
+  tex = tex.replace(/\biff\b/gi, "\\Leftrightarrow ");
+  tex = tex.replace(/\bIntegral\b/g, "\\int ");
+  tex = tex.replace(/\bSigma\b/g, "\\sum ");
+  tex = tex.replace(/\bDelta\b/g, "\\Delta ");
+  tex = tex.replace(/\blim\b/g, "\\lim ");
+  return tex.replace(/\s+/g, " ").trim();
 }
 
 function shouldAutoHighlightCodeToken(source: string, tokenStart: number, token: string): boolean {
@@ -109,6 +152,7 @@ function renderKatex(source: string, displayMode: boolean): string {
 
 function createRenderer(options: MarkdownRenderOptions = {}): Marked {
   const autoHighlightCode = options.autoHighlightCode !== false;
+  const renderMathCodeSpans = options.renderMathCodeSpans === true;
   const renderer = new Renderer();
 
   renderer.text = function text(token: any) {
@@ -159,8 +203,15 @@ function createRenderer(options: MarkdownRenderOptions = {}): Marked {
     );
   };
 
-  renderer.codespan = ({ text }: { text: string }) =>
-    `<code class="${inlineCodeClass(text)}">${escapeHtml(text)}</code>`;
+  renderer.codespan = ({ text }: { text: string }) => {
+    if (renderMathCodeSpans) {
+      const tex = mathCodeSpanToTex(text);
+      if (tex) {
+        return `<span class="dan-markdown-inline-math-code">${renderKatex(tex, false)}</span>`;
+      }
+    }
+    return `<code class="${inlineCodeClass(text)}">${escapeHtml(text)}</code>`;
+  };
 
   renderer.blockquote = function blockquote(token: any) {
     const body = this.parser.parse(token.tokens);
@@ -244,6 +295,11 @@ function createRenderer(options: MarkdownRenderOptions = {}): Marked {
 
 const markedInstance = createRenderer();
 const markedNoAutoCodeInstance = createRenderer({ autoHighlightCode: false });
+const markedMathCodeInstance = createRenderer({ renderMathCodeSpans: true });
+const markedNoAutoMathCodeInstance = createRenderer({
+  autoHighlightCode: false,
+  renderMathCodeSpans: true,
+});
 
 export function renderMarkdownToHtml(
   source: string,
@@ -263,7 +319,14 @@ export function renderMarkdownToHtml(
       preserve(renderKatex(tex, false)),
     );
 
-  const instance = options.autoHighlightCode === false ? markedNoAutoCodeInstance : markedInstance;
+  const instance =
+    options.renderMathCodeSpans === true
+      ? options.autoHighlightCode === false
+        ? markedNoAutoMathCodeInstance
+        : markedMathCodeInstance
+      : options.autoHighlightCode === false
+        ? markedNoAutoCodeInstance
+        : markedInstance;
   let html = instance.parse(text) as string;
   preserved.forEach((value, index) => {
     html = html.replaceAll(`\u0000DAN_MD_${index}\u0000`, value);
@@ -275,16 +338,18 @@ export default function MarkdownRenderer({
   content,
   className = "",
   autoHighlightCode = true,
+  renderMathCodeSpans = false,
   onClick,
 }: {
   content: string;
   className?: string;
   autoHighlightCode?: boolean;
+  renderMathCodeSpans?: boolean;
   onClick?: (event: MouseEvent<HTMLDivElement>) => void;
 }) {
   const html = useMemo(
-    () => renderMarkdownToHtml(content, { autoHighlightCode }),
-    [autoHighlightCode, content],
+    () => renderMarkdownToHtml(content, { autoHighlightCode, renderMathCodeSpans }),
+    [autoHighlightCode, content, renderMathCodeSpans],
   );
   return (
     <div

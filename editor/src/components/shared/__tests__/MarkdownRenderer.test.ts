@@ -31,6 +31,30 @@ describe("MarkdownRenderer", () => {
     expect(html).not.toContain("DAN_MD_");
   });
 
+  it("can render math-like code spans as inline math on math notes", () => {
+    const html = renderMarkdownToHtml(
+      "Prime if `ab in P` implies `a in P`. Always `IJ subset I cap J`, and `R/P` is a quotient.",
+      { renderMathCodeSpans: true },
+    );
+
+    expect(html).toContain("dan-markdown-inline-math-code");
+    expect(html).toContain("katex");
+    expect(html).not.toContain(">ab in P</code>");
+    expect(html).not.toContain(">IJ subset I cap J</code>");
+  });
+
+  it("keeps source ids and files as code even when math-code rendering is enabled", () => {
+    const html = renderMarkdownToHtml(
+      "Use `dm-aa-small-01-structure-and-proof-language`, `decision-math/abstract-algebra-structures-and-proofs`, and `website/styles.css`.",
+      { renderMathCodeSpans: true },
+    );
+
+    expect(html).toContain(">dm-aa-small-01-structure-and-proof-language</code>");
+    expect(html).toContain(">decision-math/abstract-algebra-structures-and-proofs</code>");
+    expect(html).toContain("dan-markdown-inline-file");
+    expect(html).not.toContain("dan-markdown-inline-math-code");
+  });
+
   it("classifies inline highlights by role", () => {
     const html = renderMarkdownToHtml(
       "Open `website/styles.css`, set `--font-display`, and use `css body { font-family: var(--font-body); }`.",
