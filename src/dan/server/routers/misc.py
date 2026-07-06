@@ -4,6 +4,8 @@ test cases, memory, errors, and rules."""
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 import mimetypes
 import os
 import re
@@ -714,6 +716,8 @@ _WORKSPACE_NOTE_SUMMARY_CACHE: dict[str, dict[str, Any]] = {}
 _WORKSPACE_NOTE_READ_CACHE: dict[str, dict[str, Any]] = {}
 _WORKSPACE_NOTE_PREVIEW_CACHE: dict[str, dict[str, Any]] = {}
 _WORKSPACE_NOTE_CACHE_LIMIT = 512
+_WORKSPACE_LEARN_DIR_NAME = ".dan-learn"
+_WORKSPACE_LEARN_COURSE_VERSION = 1
 
 
 def _expand_workspace_home(raw: str) -> Path:
@@ -1145,6 +1149,229 @@ def _workspace_note_preview_route(relative_path: str) -> str:
         parts[-1] = Path(parts[-1]).with_suffix("").name
     cleaned = [part for part in parts if part and part != "."]
     return "/" + "/".join(cleaned) + ("/" if cleaned else "")
+
+
+def _workspace_note_relative_path(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
+
+
+def _workspace_note_content_signature(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+
+
+def _workspace_note_learn_path(path: Path, root: Path) -> Path:
+    relative_path = _workspace_note_relative_path(path, root)
+    digest = hashlib.sha256(relative_path.encode("utf-8")).hexdigest()[:24]
+    return root / _WORKSPACE_LEARN_DIR_NAME / "courses" / f"{digest}.json"
+
+
+def _clean_markdown_text(value: str) -> str:
+    text = re.sub(r"```[\s\S]*?```", " ", value)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = re.sub(r"!\[[^\]]*]\([^)]+\)", " ", text)
+    text = re.sub(r"\[([^\]]+)]\([^)]+\)", r"\1", text)
+    text = re.sub(r"^\s{0,3}#{1,6}\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*[-*+]\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"[*_~>#|]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _learning_summary(value: str, limit: int = 260) -> str:
+    text = _clean_markdown_text(value)
+    if len(text) <= limit:
+        return text
+    sentence = re.split(r"(?<=[.!?])\s+", text[: limit + 120], maxsplit=1)[0].strip()
+    if 60 <= len(sentence) <= limit:
+        return sentence
+    return f"{text[:limit].rstrip()}..."
+
+
+def _learning_word_count(value: str) -> int:
+    return len(re.findall(r"\b[\w'-]+\b", _clean_markdown_text(value)))
+
+
+def _learning_session_id(index: int) -> str:
+    return f"session-{index + 1:02d}"
+
+
+def _markdown_learning_sections(body: str, fallback_title: str) -> list[dict[str, str]]:
+    heading_pattern = re.compile(r"^(#{1,3})\s+(.+?)\s*$", re.MULTILINE)
+    matches = list(heading_pattern.finditer(body))
+    if not matches:
+        return []
+
+    sections: list[dict[str, str]] = []
+    preface = body[: matches[0].start()].strip()
+    if _learning_word_count(preface) >= 80:
+        sections.append({"title": "Orientation", "body": preface})
+
+    for index, match in enumerate(matches):
+        title = _clean_markdown_text(match.group(2)) or f"Session {index + 1}"
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        section_body = body[start:end].strip()
+        if _learning_word_count(section_body) < 8 and len(matches) > 1:
+            continue
+        if index == 0 and title.strip().lower() == fallback_title.strip().lower():
+            if _learning_word_count(section_body) < 120:
+                continue
+        sections.append({"title": title, "body": section_body or title})
+    return sections
+
+
+def _paragraph_learning_sections(body: str, fallback_title: str) -> list[dict[str, str]]:
+    paragraphs = [
+        item.strip()
+        for item in re.split(r"\n\s*\n", body)
+        if _learning_word_count(item) >= 12
+    ]
+    if not paragraphs:
+        compact = _clean_markdown_text(body)
+        return [{"title": fallback_title or "Manual", "body": compact}] if compact else []
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_words = 0
+    target_words = 520
+    for paragraph in paragraphs:
+        words = _learning_word_count(paragraph)
+        if current and current_words + words > target_words:
+            chunks.append("\n\n".join(current))
+            current = []
+            current_words = 0
+        current.append(paragraph)
+        current_words += words
+    if current:
+        chunks.append("\n\n".join(current))
+
+    return [
+        {
+            "title": f"{fallback_title or 'Manual'} · Part {index + 1}",
+            "body": chunk,
+        }
+        for index, chunk in enumerate(chunks)
+    ]
+
+
+def _bounded_learning_sections(body: str, fallback_title: str) -> list[dict[str, str]]:
+    sections = _markdown_learning_sections(body, fallback_title)
+    if len(sections) < 2:
+        sections = _paragraph_learning_sections(body, fallback_title)
+    if len(sections) <= 10:
+        return sections
+
+    target_count = 10
+    merged: list[dict[str, str]] = []
+    bucket_size = max(1, round(len(sections) / target_count))
+    for start in range(0, len(sections), bucket_size):
+        group = sections[start : start + bucket_size]
+        if not group:
+            continue
+        title = group[0]["title"]
+        if len(group) > 1:
+            title = f"{title} + {len(group) - 1} more"
+        merged.append(
+            {
+                "title": title,
+                "body": "\n\n".join(item["body"] for item in group),
+            }
+        )
+    return merged[:target_count]
+
+
+def _generate_workspace_learn_course(
+    *,
+    note_path: Path,
+    root: Path,
+    summary: dict[str, Any],
+    content: str,
+) -> dict[str, Any]:
+    relative_path = _workspace_note_relative_path(note_path, root)
+    note_title = str(summary.get("title") or note_path.stem or "Manual")
+    body = _strip_markdown_frontmatter(content)
+    sections = _bounded_learning_sections(body, note_title)
+    now = datetime.now(timezone.utc).isoformat()
+    course_id = "learn-" + hashlib.sha256(relative_path.encode("utf-8")).hexdigest()[:16]
+    sessions: list[dict[str, Any]] = []
+    for index, section in enumerate(sections):
+        title = section["title"].strip() or f"Session {index + 1}"
+        section_body = section["body"].strip()
+        words = _learning_word_count(section_body)
+        sessions.append(
+            {
+                "id": _learning_session_id(index),
+                "title": title,
+                "summary": _learning_summary(section_body or title),
+                "duration_minutes": max(8, min(45, round(words / 135) * 5 or 10)),
+                "source_heading": title,
+                "body": section_body[:7000],
+                "objectives": [
+                    f"Understand the core idea in {title}.",
+                    f"Connect {title} back to {note_title}.",
+                ],
+                "practice": [
+                    "Write a three-bullet recall note without looking back.",
+                    "Name one question or example to revisit before moving on.",
+                ],
+            }
+        )
+
+    if not sessions:
+        sessions.append(
+            {
+                "id": _learning_session_id(0),
+                "title": note_title,
+                "summary": "Read the manual as a single study session.",
+                "duration_minutes": 15,
+                "source_heading": note_title,
+                "body": body[:7000],
+                "objectives": [f"Read {note_title} end to end."],
+                "practice": ["Write a short recall note after reading."],
+            }
+        )
+
+    return {
+        "version": _WORKSPACE_LEARN_COURSE_VERSION,
+        "course_id": course_id,
+        "note_path": str(note_path),
+        "note_relative_path": relative_path,
+        "note_title": note_title,
+        "note_mtime": summary.get("mtime"),
+        "content_signature": _workspace_note_content_signature(content),
+        "source": "dan-notes-heading-split",
+        "generated_at": now,
+        "updated_at": now,
+        "stale": False,
+        "sessions": sessions,
+        "progress": {
+            "active_session_id": sessions[0]["id"],
+            "completed_session_ids": [],
+        },
+    }
+
+
+def _read_workspace_learn_course(course_path: Path) -> dict[str, Any] | None:
+    if not course_path.exists():
+        return None
+    try:
+        data = json.loads(course_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_workspace_learn_course(course_path: Path, course: dict[str, Any]) -> None:
+    try:
+        course_path.parent.mkdir(parents=True, exist_ok=True)
+        course_path.write_text(
+            json.dumps(course, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 def _markdown_note_metadata(path: Path) -> dict[str, Any]:
@@ -1700,6 +1927,123 @@ async def write_workspace_note(body: dict[str, Any]) -> dict[str, Any]:
     _trim_note_cache(_WORKSPACE_NOTE_READ_CACHE)
     _trim_note_cache(_WORKSPACE_NOTE_SUMMARY_CACHE)
     return {"status": "ok", "note": summary}
+
+
+@router.get("/api/workspace-notes/learn/course")
+async def get_workspace_note_learn_course(path: str) -> dict[str, Any]:
+    """Return an existing note-linked course without generating one."""
+
+    resolved = _resolve_workspace_note_path(path)
+    if not resolved.exists() or not resolved.is_file():
+        raise HTTPException(status_code=404, detail="Note not found")
+    root = _workspace_notes_root()
+    summary = _workspace_note_summary(resolved, root)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="Note not found")
+    try:
+        content = resolved.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Note is not valid UTF-8 text")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    course_path = _workspace_note_learn_path(resolved, root)
+    course = _read_workspace_learn_course(course_path)
+    if course is not None:
+        course = {
+            **course,
+            "note_path": str(resolved),
+            "note_relative_path": _workspace_note_relative_path(resolved, root),
+            "note_title": summary.get("title") or course.get("note_title") or resolved.stem,
+            "stale": course.get("content_signature") != _workspace_note_content_signature(content),
+        }
+    return {
+        "status": "ok",
+        "root": str(root),
+        "course_path": str(course_path),
+        "note": summary,
+        "course": course,
+    }
+
+
+@router.post("/api/workspace-notes/learn/course")
+async def generate_workspace_note_learn_course(body: dict[str, Any]) -> dict[str, Any]:
+    """Generate and persist course sessions for a note on explicit request."""
+
+    resolved = _resolve_workspace_note_path(str(body.get("path") or ""))
+    if not resolved.exists() or not resolved.is_file():
+        raise HTTPException(status_code=404, detail="Note not found")
+    root = _workspace_notes_root()
+    summary = _workspace_note_summary(resolved, root)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="Note not found")
+    try:
+        content = resolved.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Note is not valid UTF-8 text")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    course_path = _workspace_note_learn_path(resolved, root)
+    existing = _read_workspace_learn_course(course_path)
+    previous_progress = existing.get("progress") if isinstance(existing, dict) else None
+    course = _generate_workspace_learn_course(
+        note_path=resolved,
+        root=root,
+        summary=summary,
+        content=content,
+    )
+    if isinstance(previous_progress, dict):
+        session_ids = {str(session.get("id")) for session in course["sessions"]}
+        completed = [
+            str(item)
+            for item in previous_progress.get("completed_session_ids", [])
+            if str(item) in session_ids
+        ]
+        active_session_id = str(previous_progress.get("active_session_id") or "")
+        course["progress"] = {
+            "active_session_id": active_session_id if active_session_id in session_ids else course["sessions"][0]["id"],
+            "completed_session_ids": completed,
+        }
+    _write_workspace_learn_course(course_path, course)
+    return {
+        "status": "ok",
+        "root": str(root),
+        "course_path": str(course_path),
+        "note": summary,
+        "course": course,
+    }
+
+
+@router.put("/api/workspace-notes/learn/course/progress")
+async def update_workspace_note_learn_progress(body: dict[str, Any]) -> dict[str, Any]:
+    """Persist per-note learning progress for an existing generated course."""
+
+    resolved = _resolve_workspace_note_path(str(body.get("path") or ""))
+    root = _workspace_notes_root()
+    course_path = _workspace_note_learn_path(resolved, root)
+    course = _read_workspace_learn_course(course_path)
+    if course is None:
+        raise HTTPException(status_code=404, detail="Learning course has not been generated")
+    session_ids = {str(session.get("id")) for session in course.get("sessions", [])}
+    active_session_id = str(body.get("active_session_id") or "")
+    completed_session_ids = [
+        str(item)
+        for item in body.get("completed_session_ids", [])
+        if str(item) in session_ids
+    ]
+    course["progress"] = {
+        "active_session_id": active_session_id if active_session_id in session_ids else None,
+        "completed_session_ids": completed_session_ids,
+    }
+    course["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _write_workspace_learn_course(course_path, course)
+    return {
+        "status": "ok",
+        "root": str(root),
+        "course_path": str(course_path),
+        "course": course,
+    }
 
 
 @router.get("/api/code-refs/{workflow_id}")

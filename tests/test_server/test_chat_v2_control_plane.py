@@ -644,6 +644,44 @@ def test_v2_backend_request_recompute_keeps_hard_no_edits_binding(tmp_path) -> N
     assert request.mutation_policy["operator_mutation_policy"] == "forbidden"
 
 
+def test_v2_backend_request_recompute_treats_learn_improvements_as_read_only(
+    tmp_path,
+) -> None:
+    prompt = "please learn this website, then let me know what to improve"
+    run = AgentRunRecord(
+        run_id="run-learn",
+        task_id="task-learn",
+        thread_id="thread-learn",
+        workspace_root=str(tmp_path),
+        workspace_id=str(tmp_path),
+        command=AgentRunCommand(
+            command="start",
+            task_id="task-learn",
+            run_id="run-learn",
+            payload={
+                "text": prompt,
+                "mutation_policy": {
+                    "mode": "workspace_mutation",
+                    "permission": "workspace_mutation",
+                },
+            },
+        ),
+    )
+    task = V2TaskRecord(
+        task_id="task-learn",
+        thread_id="thread-learn",
+        workspace_root=str(tmp_path),
+        workspace_id=str(tmp_path),
+    )
+
+    request = build_agent_backend_request(run, task)
+
+    assert request.mutation_policy["source"] == "operator_intent_policy"
+    assert request.mutation_policy["mode"] == "workspace_read"
+    assert request.mutation_policy["permission"] == "forbidden"
+    assert request.mutation_policy["operator_mutation_policy"] == "forbidden"
+
+
 def test_v2_scheduler_budget_default_allows_two_larger_leases(tmp_path) -> None:
     run = AgentRunRecord(
         run_id="run-budget",
