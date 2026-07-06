@@ -381,6 +381,36 @@ export interface WorkspaceNoteSummary {
   mtime: number;
 }
 
+export interface WorkspaceLearnSession {
+  id: string;
+  title: string;
+  summary: string;
+  duration_minutes: number;
+  source_heading: string;
+  body: string;
+  objectives: string[];
+  practice: string[];
+}
+
+export interface WorkspaceLearnCourse {
+  version: number;
+  course_id: string;
+  note_path: string;
+  note_relative_path: string;
+  note_title: string;
+  note_mtime: number;
+  content_signature: string;
+  source: string;
+  generated_at: string;
+  updated_at: string;
+  stale?: boolean;
+  sessions: WorkspaceLearnSession[];
+  progress: {
+    active_session_id: string | null;
+    completed_session_ids: string[];
+  };
+}
+
 export interface WorkspaceFileEntry {
   path: string;
   relative_path: string;
@@ -448,6 +478,45 @@ export const writeWorkspaceNote = (path: string, content: string) =>
       body: JSON.stringify({ path, content }),
     },
   );
+
+export const getWorkspaceNoteLearnCourse = (path: string) =>
+  request<{
+    status: string;
+    root: string;
+    course_path: string;
+    note: WorkspaceNoteSummary;
+    course: WorkspaceLearnCourse | null;
+  }>(`/workspace-notes/learn/course?path=${encodeURIComponent(path)}`);
+
+export const generateWorkspaceNoteLearnCourse = (path: string) =>
+  request<{
+    status: string;
+    root: string;
+    course_path: string;
+    note: WorkspaceNoteSummary;
+    course: WorkspaceLearnCourse;
+  }>("/workspace-notes/learn/course", {
+    method: "POST",
+    body: JSON.stringify({ path }),
+    timeoutMs: 30000,
+  });
+
+export const updateWorkspaceNoteLearnProgress = (
+  path: string,
+  body: {
+    active_session_id?: string | null;
+    completed_session_ids: string[];
+  },
+) =>
+  request<{
+    status: string;
+    root: string;
+    course_path: string;
+    course: WorkspaceLearnCourse;
+  }>("/workspace-notes/learn/course/progress", {
+    method: "PUT",
+    body: JSON.stringify({ path, ...body }),
+  });
 
 export const moveWorkspaceNotePath = (source: string, destination: string) =>
   request<{ status: string; root: string; note: WorkspaceNoteSummary | null }>(

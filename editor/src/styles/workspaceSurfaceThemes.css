@@ -101,6 +101,34 @@
   color: var(--machine-text) !important;
 }
 
+:root[data-resolved-surface-appearance="light"]
+  .dan-machine-theme:not(.dan-factory-worn-theme)
+  .dan-workspace-root-inline {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+:root[data-resolved-surface-appearance="light"]
+  .dan-machine-theme:not(.dan-factory-worn-theme)
+  .dan-workspace-root-inline:hover,
+:root[data-resolved-surface-appearance="light"]
+  .dan-machine-theme:not(.dan-factory-worn-theme)
+  .dan-workspace-root-inline:focus-within {
+  background: oklch(0.540 0.020 220 / 0.075) !important;
+  border-color: oklch(0.520 0.018 220 / 0.18) !important;
+}
+
+:root[data-resolved-surface-appearance="light"]
+  .dan-machine-theme:not(.dan-factory-worn-theme)
+  .dan-workspace-root-path-input {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  color: var(--machine-muted) !important;
+}
+
 :root[data-resolved-surface-appearance="light"] .dan-machine-theme:not(.dan-factory-worn-theme) .dan-blueprint-board {
   background:
     radial-gradient(circle at 16px 12px, oklch(0.450 0.024 220 / 0.055) 0 0.8px, transparent 1.5px),
@@ -275,6 +303,26 @@
 
 :root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme :where(input, textarea)::placeholder {
   color: var(--machine-faint) !important;
+}
+
+:root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme .dan-workspace-root-inline {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+:root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme .dan-workspace-root-inline:hover,
+:root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme .dan-workspace-root-inline:focus-within {
+  background: oklch(0.430 0.012 88 / 0.075) !important;
+  border-color: oklch(0.430 0.012 88 / 0.18) !important;
+}
+
+:root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme .dan-workspace-root-path-input {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  color: var(--machine-muted) !important;
 }
 
 :root[data-resolved-surface-appearance="light"] .dan-factory-worn-theme :where(button) {

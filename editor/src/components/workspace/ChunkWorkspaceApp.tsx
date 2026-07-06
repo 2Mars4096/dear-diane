@@ -62,13 +62,18 @@ import {
   listWorkspaceRootSuggestions,
   listWorkspaceSkillSuggestions,
   createWorkspaceFolder,
+  generateWorkspaceNoteLearnCourse,
+  getWorkspaceNoteLearnCourse,
   getWorkspaceWireGuardStatus,
   moveWorkspaceNotePath,
   moveWorkspacePath,
   readWorkspaceFile,
   readWorkspaceNote,
+  updateWorkspaceNoteLearnProgress,
   workspaceFilePreviewUrl,
   writeWorkspaceNote,
+  type WorkspaceLearnCourse,
+  type WorkspaceLearnSession,
   type WorkspaceFileEntry,
   type WorkspaceNoteSummary,
   type WorkspaceRootSuggestion,
@@ -508,6 +513,7 @@ interface HugoPageMeta {
   link: string;
   figure: string;
   layout: string;
+  math: string;
   draft: string;
   tags: string[];
   categories: string[];
@@ -558,7 +564,15 @@ type BlueprintNodeKind =
   | "answer"
   | "queue";
 type WorkspacePane = "work" | "notes";
-type PhonePage = "chat" | "sessions" | "files" | "preview" | "note-list" | "note-edit" | "note-preview";
+type PhonePage =
+  | "chat"
+  | "sessions"
+  | "files"
+  | "preview"
+  | "note-list"
+  | "note-edit"
+  | "note-preview"
+  | "note-learn";
 type NoteRailView = "pages" | "tags" | "sections";
 type ActiveRunPlacement = "steer" | "queue";
 type ComposerSubmitMode = ActiveRunPlacement;
@@ -899,6 +913,7 @@ interface LayoutPreferences {
   showNotesRail: boolean;
   showNoteEditor: boolean;
   showNotesPreview: boolean;
+  showLearnPanel: boolean;
   leftRailWidth: number;
   rootPickerWidth: number;
   rootPickerHeight: number;
@@ -1719,6 +1734,7 @@ function extractHugoPage(content: string, fallbackTitle: string): ParsedHugoPage
       link: metaString(data, "link"),
       figure: metaString(data, "figure"),
       layout: metaString(data, "layout"),
+      math: metaString(data, "math"),
       draft: metaString(data, "draft"),
       tags: metaList(data, "tags"),
       categories: metaList(data, "categories"),
@@ -2191,6 +2207,7 @@ function readStoredLayout(): LayoutPreferences {
     showNotesRail: true,
     showNoteEditor: true,
     showNotesPreview: true,
+    showLearnPanel: false,
     leftRailWidth: LEFT_RAIL_DEFAULT_WIDTH,
     rootPickerWidth: ROOT_PICKER_DEFAULT_WIDTH,
     rootPickerHeight: ROOT_PICKER_DEFAULT_HEIGHT,
@@ -2227,6 +2244,10 @@ function readStoredLayout(): LayoutPreferences {
         typeof parsed.showNotesPreview === "boolean"
           ? parsed.showNotesPreview
           : defaults.showNotesPreview,
+      showLearnPanel:
+        typeof parsed.showLearnPanel === "boolean"
+          ? parsed.showLearnPanel
+          : defaults.showLearnPanel,
       leftRailWidth:
         typeof parsed.leftRailWidth === "number"
           ? clampLeftRailWidth(parsed.leftRailWidth)
@@ -5478,9 +5499,13 @@ function textRequestsWorkspaceMutation(text: string) {
   const normalized = " ".concat(text.trim().toLowerCase().replace(/\s+/g, " "), " ");
   if (!normalized.trim()) return false;
   return (
-    /\b(?:edit|modify|change|write|create|delete|touch|mutate|fix|repair|implement|build|add|update|save|export|materialize)\b/.test(normalized) ||
+    /\b(?:edit|modify|change|write|create|delete|touch|mutate|fix|repair|patch|patching|implement|build|add|update|save|export|materialize|redesign|refactor|enhance|enrich|complete|develop|code|clean)\b/.test(normalized) ||
     /\bmake\s+(?:a\s+)?(?:change|changes|edit|edits|fix|fixes|patch|patches|improvement|improvements)\b/.test(normalized) ||
-    /\b(?:produce|generate)\s+(?:a\s+)?(?:file|artifact|document|markdown|report|memo|patch|diff)\b/.test(normalized)
+    /\bmake\s+(?:a|an|the)\s+[^.?!]*(?:animation|demo|app|application|website|site|page|report|artifact|file|tool|component)\b/.test(normalized) ||
+    /\bmake\s+[^.?!]*\bmore\s+\w+/.test(normalized) ||
+    /\bmake\s+sure\s+(?:the\s+)?(?:website|site|app|application|game|software|code)\b/.test(normalized) ||
+    /\bimprove\s+[^.?!]*\binto\b/.test(normalized) ||
+    /\b(?:produce|generate)\s+(?:a\s+)?(?:[\w-]+\s+){0,4}(?:file|artifact|document|markdown|report|memo|patch|diff)\b/.test(normalized)
   );
 }
 
@@ -5576,7 +5601,7 @@ function addRequestTask(
 }
 
 function deriveRequestPlanContext(text: string): BlueprintPlanContext | null {
-  if (!text.trim() || textForbidsWorkspaceMutation(text) || textRequestsAssessmentOnly(text)) return null;
+  if (!text.trim() || textForbidsWorkspaceMutation(text) || !textRequestsWorkspaceMutation(text)) return null;
   const targets = requestTargetPaths(text);
   if (targets.length === 0) return null;
   const folderTargets = targets.filter((path) => !/\.[a-z0-9]+$/i.test(path));
@@ -6140,9 +6165,12 @@ function buildBlueprintNodesForRunScope(args: {
     const comparison = textValue(eventPayload(event).comparison_note).toLowerCase();
     return comparison.includes("forbade workspace mutation");
   });
+  const mutationRequested = textRequestsWorkspaceMutation(requestBody);
   const assessmentOnlyRun = textRequestsAssessmentOnly(requestBody);
   const projectAnswerRun = assessmentOnlyRun && textRequestsProjectAnswer(requestBody);
-  const readOnlyRun = assessmentOnlyRun || textForbidsWorkspaceMutation(requestBody) || validationSaysNoMutation;
+  const mutationForbiddenByRequest = textForbidsWorkspaceMutation(requestBody);
+  const readOnlyRun = assessmentOnlyRun || mutationForbiddenByRequest || validationSaysNoMutation;
+  const defaultReadOnlyProjection = Boolean(primaryUserChunk?.body) && !mutationRequested && !readOnlyRun;
   const noShellRun = textForbidsShellCommands(requestBody);
   const directAnswerRequired = readOnlyRun || assessmentOnlyRun;
   const latestAnswerEventRaw = latestAnswerEvent ? eventSummary(latestAnswerEvent).trim() : "";
@@ -6173,6 +6201,7 @@ function buildBlueprintNodesForRunScope(args: {
   const planContext = shouldSettlePlanGraph
     ? settlePlanContextAfterFinalResponse(rawPlanContext)
     : rawPlanContext;
+  const displayReadOnlyRun = readOnlyRun || (defaultReadOnlyProjection && !rawPlanContext);
   const graphHistory = shouldSettlePlanGraph
     ? settleLatestPlanContextHistoryAfterFinalResponse(rawGraphHistory)
     : rawGraphHistory;
@@ -6221,7 +6250,7 @@ function buildBlueprintNodesForRunScope(args: {
   const showActiveRunSkeleton = Boolean(
     requestBody &&
       hasActiveRun &&
-      !readOnlyRun &&
+      !displayReadOnlyRun &&
       !hasPlannedTaskGraph &&
       !buildStarted &&
       !executionPhaseCompleted &&
@@ -6253,11 +6282,15 @@ function buildBlueprintNodesForRunScope(args: {
       : "Review response; no file edits expected"
     : noShellRun
     ? "No file edits or shell commands allowed"
+    : mutationForbiddenByRequest
+    ? "No file edits allowed"
+    : displayReadOnlyRun
+    ? "Read-only response; no file edits expected"
     : "No file edits allowed";
   const requestTargetCount = requestBody ? requestTargetPaths(requestBody).length : 0;
   const requestNodeDetail = requestTargetCount
     ? `${requestTargetCount} explicit target${requestTargetCount === 1 ? "" : "s"} captured`
-    : readOnlyRun || noShellRun
+    : displayReadOnlyRun || noShellRun
       ? "Request constraints captured"
       : "Request captured";
 
@@ -6272,7 +6305,7 @@ function buildBlueprintNodesForRunScope(args: {
         requestBody,
         understanding: requestUnderstanding,
         operatorContexts,
-        readOnlyRun,
+        readOnlyRun: displayReadOnlyRun,
         assessmentOnlyRun,
         noShellRun,
       }),
@@ -6445,10 +6478,10 @@ function buildBlueprintNodesForRunScope(args: {
     }
   } else if (buildStarted || buildCompleted || attentionTask || showActiveRunSkeleton) {
     const buildHandoffBody =
-      !readOnlyRun && (validationStarted || validationCompleted)
+      !displayReadOnlyRun && (validationStarted || validationCompleted)
         ? "Execution handed off to validation for the current frontier."
         : "";
-    const buildDoneBody = !readOnlyRun && buildCompleted && !hasActiveRun ? "Execution is complete." : "";
+    const buildDoneBody = !displayReadOnlyRun && buildCompleted && !hasActiveRun ? "Execution is complete." : "";
     const buildProgressBody =
       buildStarted && hasActiveRun && !buildHandoffBody
         ? latestWorkingChunk?.body || ""
@@ -6458,14 +6491,14 @@ function buildBlueprintNodesForRunScope(args: {
       buildProgressBody ||
       buildHandoffBody ||
       buildDoneBody ||
-      (readOnlyRun ? directResponseDetail : "Execution details will appear as Super DAN emits events.");
+      (displayReadOnlyRun ? directResponseDetail : "Execution details will appear as Super DAN emits events.");
     nodes.push({
       id: "blueprint:build",
       title: attentionTask
         ? "Execution needs attention"
         : planContext?.readyTaskIds.length
         ? `Execute ready frontier ${planContext.readyTaskIds.join(", ")}`
-        : readOnlyRun
+        : displayReadOnlyRun
           ? assessmentOnlyRun
             ? projectAnswerRun
               ? "Prepare answer"
@@ -6477,7 +6510,7 @@ function buildBlueprintNodesForRunScope(args: {
         buildProgressBody ||
         buildHandoffBody ||
         buildDoneBody ||
-        (readOnlyRun ? directResponseDetail : "Use tools, edit files, and collect artifacts"),
+        (displayReadOnlyRun ? directResponseDetail : "Use tools, edit files, and collect artifacts"),
       meta: attentionTask?.status || latestSource || "workspace lane",
       body: buildIntro,
       previewBody: executionPreviewBody({
@@ -7663,6 +7696,15 @@ export function workspaceSurfaceContextForTest(
     wireGuardStatus: null,
     ...args,
   });
+}
+
+export function workspaceIntentClassificationForTest(text: string) {
+  return {
+    forbidsMutation: textForbidsWorkspaceMutation(text),
+    requestsMutation: textRequestsWorkspaceMutation(text),
+    assessmentOnly: textRequestsAssessmentOnly(text),
+    hasRequestPlan: deriveRequestPlanContext(text) !== null,
+  };
 }
 
 export function liveTaskTreeForTest(nodes: BlueprintNode[]) {
@@ -8907,6 +8949,295 @@ function FacetArticlePanel({
         </div>
       </div>
     </div>
+  );
+}
+
+function formatLearnDate(value: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+const LEARN_COURSE_NOT_GENERATED_MESSAGE = "Course not generated yet.";
+
+function learnPanelMessage(error: unknown, fallback = "Learning sessions are not ready yet.") {
+  const raw = error instanceof Error ? error.message : String(error || "");
+  const message = raw.trim();
+  if (!message) return fallback;
+  if (/not found/i.test(message) || /\b404\b/.test(message)) {
+    return LEARN_COURSE_NOT_GENERATED_MESSAGE;
+  }
+  if (/course has not been generated/i.test(message)) {
+    return LEARN_COURSE_NOT_GENERATED_MESSAGE;
+  }
+  return message;
+}
+
+function NoteLearningPanel({
+  note,
+  root,
+  course,
+  activeSession,
+  completedSessionIds,
+  status,
+  error,
+  onGenerate,
+  onRegenerate,
+  onSelectSession,
+  onToggleSession,
+  onOpenManual,
+  onCollapse,
+}: {
+  note: WorkspaceNote | null;
+  root: string;
+  course: WorkspaceLearnCourse | null;
+  activeSession: WorkspaceLearnSession | null;
+  completedSessionIds: Set<string>;
+  status: "idle" | "loading" | "generating" | "saving" | "error";
+  error: string;
+  onGenerate: () => void;
+  onRegenerate: () => void;
+  onSelectSession: (sessionId: string) => void;
+  onToggleSession: (sessionId: string) => void;
+  onOpenManual: () => void;
+  onCollapse: () => void;
+}) {
+  const sessions = course?.sessions ?? [];
+  const completedCount = sessions.filter((session) => completedSessionIds.has(session.id)).length;
+  const progressPercent = sessions.length
+    ? Math.round((completedCount / sessions.length) * 100)
+    : 0;
+  const busy = status === "loading" || status === "generating" || status === "saving";
+  const canGenerate = note
+    ? Boolean(note.path) && !isTemporaryDraftNote(note) && note.source !== "local" && !busy
+    : false;
+  const emptyCourseMessage = error || LEARN_COURSE_NOT_GENERATED_MESSAGE;
+  const emptyCourseIsNotice = emptyCourseMessage === LEARN_COURSE_NOT_GENERATED_MESSAGE;
+
+  return (
+    <aside className="dan-phone-page flex min-h-0 flex-col border-l border-slate-200/80 bg-white dark:border-slate-800 dark:bg-slate-950">
+      <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-slate-200/80 px-4 dark:border-slate-800">
+        <div className="min-w-0">
+          <div className="truncate text-[14px] font-semibold leading-5">Learn</div>
+          <div className="truncate text-[11px] leading-4 text-slate-500">
+            {note ? noteDisplayPath(note, root) : "No note selected"}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            onClick={onOpenManual}
+            disabled={!note}
+            className="grid h-7 w-7 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 transition enabled:hover:border-slate-300 enabled:hover:text-slate-800 disabled:opacity-35 dark:border-slate-800 dark:bg-slate-950"
+            title="Open manual"
+            aria-label="Open manual"
+          >
+            <ScrollText size={13} />
+          </button>
+          <PaneHeaderButton title="Collapse Learn" onClick={onCollapse}>
+            <ChevronRight size={13} />
+          </PaneHeaderButton>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-4">
+        {!note ? (
+          <div className="rounded-lg border border-dashed border-slate-200 px-3 py-4 text-sm text-slate-400 dark:border-slate-800">
+            No note selected.
+          </div>
+        ) : status === "loading" ? (
+          <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">
+            <Loader2 size={14} className="animate-spin" />
+            <span>Loading sessions</span>
+          </div>
+        ) : !course ? (
+          <div className="space-y-3">
+            <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-800 dark:bg-slate-900/60">
+              <div className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400">
+                Manual
+              </div>
+              <div className="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100">
+                {note.title || "Untitled note"}
+              </div>
+              <div className="mt-1 truncate text-[12px] text-slate-500">
+                {noteDisplayPath(note, root)}
+              </div>
+            </div>
+            {emptyCourseMessage && (
+              <div
+                className={cx(
+                  "rounded-lg border px-3 py-2 text-[12px] leading-5",
+                  emptyCourseIsNotice
+                    ? "border-slate-200 bg-white text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400"
+                    : "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-200",
+                )}
+              >
+                {emptyCourseMessage}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={onGenerate}
+              disabled={!canGenerate}
+              className="flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-slate-900 bg-slate-900 px-3 text-[13px] font-semibold text-white transition enabled:hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-100 dark:bg-slate-100 dark:text-slate-950 dark:enabled:hover:bg-white"
+            >
+              {status === "generating" ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <WandSparkles size={14} />
+              )}
+              <span>Generate sessions</span>
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-800 dark:bg-slate-900/60">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    {course.note_title || note.title}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-slate-500">
+                    {completedCount}/{sessions.length} sessions
+                    {course.generated_at ? ` · ${formatLearnDate(course.generated_at)}` : ""}
+                  </div>
+                </div>
+                <span className="shrink-0 rounded-full border border-slate-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-500 dark:border-slate-800 dark:bg-slate-950">
+                  {progressPercent}%
+                </span>
+              </div>
+              <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+                <div
+                  className="h-full rounded-full bg-emerald-500 transition-all"
+                  style={{ width: `${progressPercent}%` }}
+                />
+              </div>
+              {course.stale && (
+                <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[12px] text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                  <span>Note changed after generation.</span>
+                  <button
+                    type="button"
+                    onClick={onRegenerate}
+                    disabled={busy}
+                    className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-amber-300 bg-white px-2 font-semibold transition enabled:hover:bg-amber-100 disabled:opacity-50 dark:border-amber-800 dark:bg-amber-950/50"
+                  >
+                    <RotateCcw size={12} />
+                    <span>Refresh</span>
+                  </button>
+                </div>
+              )}
+              {error && (
+                <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-2 text-[12px] leading-5 text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-200">
+                  {error}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              {sessions.map((session, index) => {
+                const active = session.id === activeSession?.id;
+                const done = completedSessionIds.has(session.id);
+                return (
+                  <button
+                    key={session.id}
+                    type="button"
+                    onClick={() => onSelectSession(session.id)}
+                    className={cx(
+                      "flex w-full min-w-0 items-start gap-2 rounded-lg border px-2.5 py-2 text-left transition",
+                      active
+                        ? "border-slate-900 bg-slate-900 text-white shadow-sm dark:border-slate-100 dark:bg-slate-100 dark:text-slate-950"
+                        : "border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-900",
+                    )}
+                  >
+                    <span
+                      className={cx(
+                        "mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-md border text-[10px]",
+                        done
+                          ? "border-emerald-500 bg-emerald-500 text-white"
+                          : active
+                            ? "border-current/30"
+                            : "border-slate-200 text-slate-400 dark:border-slate-800",
+                      )}
+                    >
+                      {done ? <Check size={12} /> : index + 1}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] font-semibold">
+                        {session.title}
+                      </span>
+                      <span className={cx("block truncate text-[11px]", active ? "opacity-70" : "text-slate-400")}>
+                        {session.duration_minutes} min · {session.summary}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {activeSession && (
+              <article className="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-950">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold text-slate-950 dark:text-slate-100">
+                      {activeSession.title}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-slate-500">
+                      {activeSession.duration_minutes} min
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onToggleSession(activeSession.id)}
+                    className={cx(
+                      "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg border px-2 text-[12px] font-semibold transition",
+                      completedSessionIds.has(activeSession.id)
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200"
+                        : "border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300 hover:bg-white dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300",
+                    )}
+                  >
+                    <Check size={12} />
+                    <span>{completedSessionIds.has(activeSession.id) ? "Done" : "Mark done"}</span>
+                  </button>
+                </div>
+                {activeSession.objectives.length > 0 && (
+                  <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-800 dark:bg-slate-900/70">
+                    <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">
+                      Objectives
+                    </div>
+                    <ul className="mt-1 space-y-1 text-[12px] leading-5 text-slate-600 dark:text-slate-300">
+                      {activeSession.objectives.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <div className="mt-3 max-h-72 overflow-auto rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2 dark:border-slate-800 dark:bg-slate-900/45">
+                  <MarkdownRenderer
+                    content={activeSession.body || activeSession.summary || "_No session text._"}
+                    className="text-sm leading-6 [&_h1]:text-base [&_h2]:text-base [&_h3]:text-sm"
+                  />
+                </div>
+                {activeSession.practice.length > 0 && (
+                  <div className="mt-3">
+                    <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">
+                      Practice
+                    </div>
+                    <div className="mt-1 space-y-1 text-[12px] leading-5 text-slate-600 dark:text-slate-300">
+                      {activeSession.practice.map((item) => (
+                        <div key={item}>{item}</div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </article>
+            )}
+          </div>
+        )}
+      </div>
+    </aside>
   );
 }
 
@@ -11734,6 +12065,11 @@ export default function ChunkWorkspaceApp() {
   const [showNotesRail, setShowNotesRail] = useState(initialLayout.showNotesRail);
   const [showNoteEditor, setShowNoteEditor] = useState(initialLayout.showNoteEditor);
   const [showNotesPreview, setShowNotesPreview] = useState(initialLayout.showNotesPreview);
+  const [showLearnPanel, setShowLearnPanel] = useState(initialLayout.showLearnPanel);
+  const [learnCourse, setLearnCourse] = useState<WorkspaceLearnCourse | null>(null);
+  const [learnStatus, setLearnStatus] = useState<"idle" | "loading" | "generating" | "saving" | "error">("idle");
+  const [learnError, setLearnError] = useState("");
+  const [activeLearnSessionId, setActiveLearnSessionId] = useState<string | null>(null);
   const [leftRailWidth, setLeftRailWidth] = useState(initialLayout.leftRailWidth);
   const [rootPickerWidth, setRootPickerWidth] = useState(initialLayout.rootPickerWidth);
   const [rootPickerHeight, setRootPickerHeight] = useState(initialLayout.rootPickerHeight);
@@ -11833,6 +12169,21 @@ export default function ChunkWorkspaceApp() {
     () => formatHugoPreviewBody(parsedActiveNote.body),
     [parsedActiveNote.body],
   );
+  const activeNoteMathEnabled = parsedActiveNote.meta.math === "true";
+  const completedLearnSessionIds = useMemo(
+    () => new Set(learnCourse?.progress?.completed_session_ids ?? []),
+    [learnCourse?.progress?.completed_session_ids],
+  );
+  const activeLearnSession = useMemo(() => {
+    if (!learnCourse?.sessions.length) return null;
+    return (
+      learnCourse.sessions.find((session) => session.id === activeLearnSessionId) ??
+      learnCourse.sessions.find(
+        (session) => session.id === learnCourse.progress?.active_session_id,
+      ) ??
+      learnCourse.sessions[0]
+    );
+  }, [activeLearnSessionId, learnCourse]);
   useEffect(() => {
     for (const item of workspaces) {
       const canonicalPaths = item.pinnedPaths
@@ -12150,6 +12501,105 @@ export default function ChunkWorkspaceApp() {
   }, [activeNoteSection, noteFacet, notes, notesRoot]);
 
   useEffect(() => {
+    if (!showLearnPanel || !activeNote?.path || isTemporaryDraftNote(activeNote)) {
+      setLearnCourse(null);
+      setActiveLearnSessionId(null);
+      setLearnStatus("idle");
+      setLearnError("");
+      return;
+    }
+    let cancelled = false;
+    setLearnStatus("loading");
+    setLearnError("");
+    void getWorkspaceNoteLearnCourse(activeNote.path)
+      .then((payload) => {
+        if (cancelled) return;
+        const course = payload.course;
+        setLearnCourse(course);
+        setActiveLearnSessionId(
+          course?.progress?.active_session_id || course?.sessions[0]?.id || null,
+        );
+        setLearnStatus("idle");
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const message = learnPanelMessage(error, LEARN_COURSE_NOT_GENERATED_MESSAGE);
+        setLearnCourse(null);
+        setActiveLearnSessionId(null);
+        setLearnStatus(message === LEARN_COURSE_NOT_GENERATED_MESSAGE ? "idle" : "error");
+        setLearnError(message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeNote?.path, activeNote?.updatedAt, showLearnPanel]);
+
+  const generateLearnCourse = useCallback(async () => {
+    if (!activeNote?.path || isTemporaryDraftNote(activeNote)) return;
+    setLearnStatus("generating");
+    setLearnError("");
+    try {
+      if (activeNote.status === "dirty") {
+        await saveNoteNow(activeNote, true);
+      }
+      const payload = await generateWorkspaceNoteLearnCourse(activeNote.path);
+      setLearnCourse(payload.course);
+      setActiveLearnSessionId(
+        payload.course.progress?.active_session_id || payload.course.sessions[0]?.id || null,
+      );
+      setLearnStatus("idle");
+      setStatus("Learning sessions ready");
+    } catch (error) {
+      const message = learnPanelMessage(error, "Session generation failed");
+      setLearnStatus("error");
+      setLearnError(message);
+      setStatus(message);
+    }
+  }, [activeNote, saveNoteNow]);
+
+  const updateLearnProgress = useCallback(
+    async (activeSessionId: string | null, completedIds: string[]) => {
+      if (!activeNote?.path || !learnCourse) return;
+      setLearnStatus("saving");
+      setLearnError("");
+      try {
+        const payload = await updateWorkspaceNoteLearnProgress(activeNote.path, {
+          active_session_id: activeSessionId,
+          completed_session_ids: completedIds,
+        });
+        setLearnCourse(payload.course);
+        setActiveLearnSessionId(activeSessionId || payload.course.sessions[0]?.id || null);
+        setLearnStatus("idle");
+      } catch (error) {
+        const message = learnPanelMessage(error, "Could not save progress");
+        setLearnStatus("error");
+        setLearnError(message);
+      }
+    },
+    [activeNote?.path, learnCourse],
+  );
+
+  const selectLearnSession = useCallback(
+    (sessionId: string) => {
+      setActiveLearnSessionId(sessionId);
+      if (!learnCourse) return;
+      void updateLearnProgress(sessionId, learnCourse.progress?.completed_session_ids ?? []);
+    },
+    [learnCourse, updateLearnProgress],
+  );
+
+  const toggleLearnSession = useCallback(
+    (sessionId: string) => {
+      if (!learnCourse) return;
+      const completed = new Set(learnCourse.progress?.completed_session_ids ?? []);
+      if (completed.has(sessionId)) completed.delete(sessionId);
+      else completed.add(sessionId);
+      void updateLearnProgress(activeLearnSessionId || sessionId, [...completed]);
+    },
+    [activeLearnSessionId, learnCourse, updateLearnProgress],
+  );
+
+  useEffect(() => {
     if (!rootEditing) setRootInput(developmentRoot);
   }, [developmentRoot, rootEditing]);
 
@@ -12190,6 +12640,7 @@ export default function ChunkWorkspaceApp() {
       showNotesRail,
       showNoteEditor,
       showNotesPreview,
+      showLearnPanel,
       leftRailWidth,
       rootPickerWidth,
       rootPickerHeight,
@@ -12202,6 +12653,7 @@ export default function ChunkWorkspaceApp() {
     showNotesRail,
     showNoteEditor,
     showNotesPreview,
+    showLearnPanel,
     leftRailWidth,
     rootPickerWidth,
     rootPickerHeight,
@@ -13165,6 +13617,7 @@ export default function ChunkWorkspaceApp() {
     showNotesRail ? `${leftRailWidth}px` : `${COLLAPSED_PANE_WIDTH}px`,
     showNoteEditor ? "minmax(0,1fr)" : `${COLLAPSED_PANE_WIDTH}px`,
     showNotesPreview ? "minmax(0,1fr)" : `${COLLAPSED_PANE_WIDTH}px`,
+    showLearnPanel ? "minmax(300px,380px)" : `${COLLAPSED_PANE_WIDTH}px`,
   ].join(" ");
   const renderSessionRail = isPhoneViewport ? phonePage === "sessions" : showSessionRail;
   const renderFileExplorer = isPhoneViewport ? phonePage === "files" : showFileExplorer;
@@ -13173,6 +13626,7 @@ export default function ChunkWorkspaceApp() {
   const renderNotesRail = isPhoneViewport ? phonePage === "note-list" : showNotesRail;
   const renderNoteEditor = isPhoneViewport ? phonePage === "note-edit" : showNoteEditor;
   const renderNotesPreview = isPhoneViewport ? phonePage === "note-preview" : showNotesPreview;
+  const renderLearnPanel = isPhoneViewport ? phonePage === "note-learn" : showLearnPanel;
   const phoneNotesGridTemplate = "minmax(0,1fr)";
   const effectiveNotesGridTemplate = isPhoneViewport
     ? phoneNotesGridTemplate
@@ -13259,7 +13713,7 @@ export default function ChunkWorkspaceApp() {
     }
     if (
       activePane === "notes" &&
-      !["note-list", "note-edit", "note-preview"].includes(phonePage)
+      !["note-list", "note-edit", "note-preview", "note-learn"].includes(phonePage)
     ) {
       setPhonePage("note-preview");
     }
@@ -15531,7 +15985,8 @@ export default function ChunkWorkspaceApp() {
                     maxWidth: "100%",
                   }}
                 >
-                  <label className="flex h-5 min-w-0 items-center gap-1.5 rounded-md border border-transparent pr-1 text-[11px] leading-4 text-slate-500 transition hover:border-slate-200 hover:bg-slate-50 focus-within:border-slate-300 focus-within:bg-white dark:hover:border-slate-800 dark:hover:bg-slate-900 dark:focus-within:bg-slate-950">
+                  <label className="dan-workspace-root-inline flex h-5 min-w-0 items-center gap-1 rounded-md border border-transparent pr-1 text-[11px] leading-4 text-slate-500 transition">
+                    <Folder size={10} className="shrink-0 text-slate-400/80" />
                     <span className="shrink-0 text-slate-400">Root</span>
                     <input
                       value={rootInput}
@@ -15550,7 +16005,7 @@ export default function ChunkWorkspaceApp() {
                         }
                       }}
                       placeholder="/path/to/workspace"
-                      className="min-w-0 flex-1 bg-transparent font-mono text-[11px] outline-none placeholder:text-slate-400"
+                      className="dan-workspace-root-path-input min-w-0 flex-1 bg-transparent font-mono text-[11px] outline-none placeholder:text-slate-400"
                       title="Type workspace root and press Enter"
                     />
                     {loadingRoots && rootEditing && (
@@ -15816,6 +16271,20 @@ export default function ChunkWorkspaceApp() {
                 )}
               >
                 <PanelRight size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowLearnPanel((visible) => !visible)}
+                title="Toggle Learn"
+                aria-label="Toggle Learn"
+                className={cx(
+                  "grid h-8 w-8 place-items-center rounded-lg border transition",
+                  showLearnPanel
+                    ? "border-slate-300 bg-slate-100 text-slate-800 shadow-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                    : "border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-950",
+                )}
+              >
+                <Lightbulb size={14} />
               </button>
             </div>
           )}
@@ -16422,12 +16891,47 @@ export default function ChunkWorkspaceApp() {
                   )}
                   <MarkdownRenderer
                     content={renderedNoteBody || "_No note content yet._"}
+                    renderMathCodeSpans={activeNoteMathEnabled}
                     onClick={handleNotePreviewClick}
                   />
                 </article>
               )}
             </div>
           </div>
+          )}
+
+          {!isPhoneViewport && !renderLearnPanel && (
+            <CollapsedPaneRail
+              label="Learn"
+              title="Show Learn panel"
+              onClick={() => setShowLearnPanel(true)}
+              edge="left"
+            >
+              <Lightbulb size={14} />
+            </CollapsedPaneRail>
+          )}
+          {renderLearnPanel && (
+            <NoteLearningPanel
+              note={activeNote}
+              root={notesRoot}
+              course={learnCourse}
+              activeSession={activeLearnSession}
+              completedSessionIds={completedLearnSessionIds}
+              status={learnStatus}
+              error={learnError}
+              onGenerate={generateLearnCourse}
+              onRegenerate={generateLearnCourse}
+              onSelectSession={selectLearnSession}
+              onToggleSession={toggleLearnSession}
+              onOpenManual={() => {
+                setShowNotesPreview(true);
+                setPhonePage("note-preview");
+              }}
+              onCollapse={() => {
+                setShowLearnPanel(false);
+                if (isPhoneViewport) setPhonePage("note-preview");
+              }}
+            />
           )}
         </section>
       ) : (
@@ -17249,6 +17753,7 @@ export default function ChunkWorkspaceApp() {
               ["note-list", NotebookPen, "Pages"],
               ["note-edit", FileText, "Edit"],
               ["note-preview", PanelRight, "Read"],
+              ["note-learn", Lightbulb, "Learn"],
               ["chat", TerminalSquare, "Work"],
             ] as const).map(([page, Icon, label]) => (
               <button

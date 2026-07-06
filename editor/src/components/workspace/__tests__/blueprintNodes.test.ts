@@ -44,6 +44,7 @@ import {
   workspaceComposerPrimaryActionLabelForTest,
   workspaceComposerSuggestionsForTest,
   workspaceComposerTokenForTest,
+  workspaceIntentClassificationForTest,
   workspaceMentionedFilesFromTextForTest,
   workPanelTasksForTest,
   workspaceSelectedSkillInvocationForTest,
@@ -2320,6 +2321,77 @@ describe("workspace blueprint nodes", () => {
       detail: "Review response; no file edits expected",
       body: "Review response; no file edits expected",
     });
+  });
+
+  it("defaults learn-and-suggest-improvements wording to read-only without edit authorization", () => {
+    const prompt = "please learn this website, then let me know what to improve";
+    const classification = workspaceIntentClassificationForTest(prompt);
+    expect(classification).toMatchObject({
+      assessmentOnly: false,
+      requestsMutation: false,
+      hasRequestPlan: false,
+    });
+    expect(workspaceIntentClassificationForTest("please improve the website")).toMatchObject({
+      assessmentOnly: false,
+      requestsMutation: false,
+      hasRequestPlan: false,
+    });
+    expect(workspaceIntentClassificationForTest("please learn this website and improve it")).toMatchObject({
+      assessmentOnly: false,
+      requestsMutation: false,
+      hasRequestPlan: false,
+    });
+    expect(workspaceIntentClassificationForTest("please edit the website")).toMatchObject({
+      assessmentOnly: false,
+      requestsMutation: true,
+    });
+    expect(workspaceIntentClassificationForTest("please learn this website and then update styles.css")).toMatchObject({
+      assessmentOnly: false,
+      requestsMutation: true,
+    });
+
+    const activeTask = task({
+      task_id: "website-learn-task",
+      status: "running",
+      latest_progress: "Inspecting the website.",
+      metadata: { active_run_id: "website-learn-run" },
+    });
+    const nodes = buildBlueprintNodesForTest({
+      ...baseArgs,
+      activeRunId: "website-learn-run",
+      activeRunningTask: activeTask,
+      tasks: [activeTask],
+      chunks: [
+        {
+          id: "message:user-website-learn",
+          kind: "chat",
+          title: "You · Request",
+          body: prompt,
+          status: "clean",
+          meta: "user",
+          role: "user",
+        },
+      ],
+      agentEvents: [
+        {
+          type: "worker_started",
+          source_event_type: "live.generic_build.started",
+          run_id: "website-learn-run",
+          task_id: "website-learn-task",
+          summary: "Working in this workspace.",
+        },
+      ],
+    });
+
+    expect(nodes.find((node) => node.id === "blueprint:planning")).toBeUndefined();
+    expect(nodes.find((node) => node.id === "blueprint:build")).toMatchObject({
+      title: "Prepare direct response",
+      detail: "Read-only response; no file edits expected",
+      body: "Read-only response; no file edits expected",
+    });
+    expect(nodes.find((node) => node.kind === "request")?.previewBody).toContain(
+      "Workspace file mutation is not expected for this request.",
+    );
   });
 
   it("treats project-summary wording as an in-session answer request", () => {
