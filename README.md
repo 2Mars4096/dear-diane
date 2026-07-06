@@ -117,6 +117,8 @@ The workspace composer remembers the selected Agent and each Agent's own Model/c
 
 The Notes content rail includes a compact Recent shelf with Working Now edit/agent cards and the five most recently modified pages.
 
+Notes also has a folded-by-default Learn panel on the far right. Manuals stay readable as normal Markdown/Hugo notes; pressing Generate sessions creates per-note learning sessions and progress under `.dan-learn` without changing the source manual.
+
 Temporary Notes drafts are internal: they can show in Working Now and the editor, but they do not appear as a `tmp` folder, Recent page, taxonomy item, graph node, or `@pageID` suggestion until saved into a real Hugo bundle.
 
 Active Work cards highlight the selected Agent as `Codex` or `DAN`, while model/config detail stays in the composer selectors unless progress text mentions it.

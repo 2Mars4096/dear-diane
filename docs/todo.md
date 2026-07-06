@@ -1,6 +1,11 @@
 # Todo
 
 ## Current Backlog
+- [x] 2026-07-05 Learning Assistant manual purification - fixed: knowledge-base course manuals now keep learner-facing knowledge, practice, solutions, and final-readiness material while removing source, audit, teacher, session, runtime, and benchmark-blueprint scaffolding from the manual body.
+- [x] 2026-07-05 Notes math manual rendering - fixed: math-enabled Notes pages now render course-notation inline code spans such as `a in P`, `IJ subset I cap J`, and `R/P` through KaTeX while leaving normal source ids and file paths as code.
+- [x] 2026-07-05 Work header root-path affordance - fixed: the root directory line now uses a muted inline folder cue and transparent path input instead of a second filled background.
+- [x] 2026-07-05 Learning Assistant corrected-source manual import - fixed: imported the complete course-manual Markdown files from `/Volumes/data/Dropbox/Projects/learning-assistant` as one Notes page per course, with derivative session/teacher/learner packs excluded.
+- [x] 2026-07-05 Super DAN mutation-permission default - fixed: workspace requests without explicit mutation or artifact-producing action intent now route read-only, so "learn this website, then let me know what to improve" cannot authorize file edits by implication.
 - [x] 2026-07-05 Preview Card collapse control — fixed: the Work Preview Card is expanded by default and now has a header chevron button to collapse or reopen the output list.
 - [x] 2026-07-05 Work composer autonomy mode and optional attention wording — fixed: the Work composer now exposes Auto/Review run modes, forwards the choice into Agent run policy/context, and Preview relabels optional follow-up suggestions as optional next steps instead of needs-attention work.
 - [x] 2026-07-04 Prompt compaction screenshot preservation — fixed: provider prompt replay now treats `image_url` blocks as atomic content, while debug/event logs summarize data URLs instead of truncating base64 into invalid image payloads.

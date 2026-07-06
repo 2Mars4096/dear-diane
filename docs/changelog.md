@@ -1,6 +1,15 @@
 # Changelog
 
 ## 2026-07-05
+- [docs] Purified the copied Learning Assistant knowledge-base manuals. The live Notes copies now remove source/audit/teacher/session/runtime/benchmark-blueprint scaffolding from manual bodies while retaining course spines, chapter maps, detailed knowledge, worked examples, practice, solutions, and final-readiness checks.
+- [fix] Rendered math-like inline code spans as KaTeX on math-enabled Notes pages, so imported Learning Assistant manuals show algebra notation such as membership, subset, intersection, and quotient expressions instead of code chips.
+- [fix] Quieted the Work header root-path affordance. The root directory now uses a muted inline folder cue and transparent path input, with only subtle hover/focus feedback, so it no longer appears as a second filled panel.
+- [docs] Imported the corrected Learning Assistant course-manual sources from `/Volumes/data/Dropbox/Projects/learning-assistant` as single full-manual Notes pages for Italian A2, Calculus, Stochastic Processes, Stochastic Calculus, and Abstract Algebra, while keeping derivative packs out of the live knowledge-base tree.
+- [fix] Tightened Super DAN mutation-permission defaults. Workspace requests now require explicit mutation or artifact-producing action intent before file mutation is allowed, so "learn this website, then let me know what to improve" routes read-only by default instead of relying on a phrase-specific assessment classifier.
+- [docs] Collapsed the Learning Assistant knowledge-base import to a single full-manual note, removing generated derivative day/session, concepts, benchmark, and preserved-source pages from the live notes tree.
+- [docs] Imported the Learning Assistant linear-algebra course into the Hugo notes knowledge base as a complete course-manual section with full manual, day/session pages, benchmark/concepts pages, and preserved source artifacts.
+- [fix] Replaced raw Learn panel 404/Not Found messages with a calm "Course not generated yet" empty state.
+- [feat] Added a folded-by-default Learn panel to the Notes workspace. Existing manuals remain readable as normal notes, while explicit Generate sessions creates persistent per-note learning sessions and progress sidecars under `.dan-learn` through new workspace-notes learn APIs.
 - [fix] Added a default-expanded collapse control to the Work Preview Card so previewable outputs can be tucked away without changing the selected preview.
 - [fix] Split optional follow-up suggestions from real attention states in the Work Preview. Final responses that say "if you want..." or populate `next_steps` now render as Optional next steps, while real blockers/errors still render as Needs Attention; the Work composer also gained persisted Auto/Review modes that flow into Agent run profile, approval policy, metadata, and surface context.
 
