@@ -5604,10 +5604,13 @@ def _objective_requests_workspace_mutation(objective: str) -> bool:
     if not lowered:
         return False
     patterns = (
-        r"\b(?:edit|modify|change|write|create|delete|touch|mutate|fix|repair|patch|implement|build|add|update|save|export|materialize|redesign|refactor|enhance|enrich|complete|develop|code)\b",
+        r"\b(?:edit|modify|change|write|create|delete|touch|mutate|fix|repair|patch|patching|implement|build|add|update|save|export|materialize|redesign|refactor|enhance|enrich|complete|develop|code|clean)\b",
         r"\bmake\s+(?:a\s+)?(?:change|changes|edit|edits|fix|fixes|patch|patches|improvement|improvements)\b",
+        r"\bmake\s+(?:a|an|the)\s+[^.?!]*(?:animation|demo|app|application|website|site|page|report|artifact|file|tool|component)\b",
+        r"\bmake\s+[^.?!]*\bmore\s+\w+",
         r"\bmake\s+sure\s+(?:the\s+)?(?:website|site|app|application|game|software|code)\b",
-        r"\b(?:produce|generate)\s+(?:a\s+)?(?:file|artifact|document|markdown|report|memo|patch|diff)\b",
+        r"\bimprove\s+[^.?!]*\binto\b",
+        r"\b(?:produce|generate)\s+(?:a\s+)?(?:[\w-]+\s+){0,4}(?:file|artifact|document|markdown|report|memo|patch|diff)\b",
     )
     return any(re.search(pattern, lowered) for pattern in patterns)
 
@@ -5734,7 +5737,8 @@ def _resolve_work_contract_for_objective(
         return "chat_answer", "forbidden", "none"
     if _objective_requests_workspace_mutation(objective) or target_artifacts:
         return "workspace_change", "required", "reads_and_checks"
-    return "workspace_change", "optional", "reads_and_checks"
+    evidence_policy = "workspace_and_internet_reads" if external_facts else "workspace_reads"
+    return "workspace_read", "forbidden", evidence_policy
 
 
 def _objective_forbids_shell_command(objective: str) -> bool:
@@ -5823,7 +5827,12 @@ def _operator_intent_policy_from_objective(
         forbid_workspace_mutation=forbid_workspace_mutation,
         assessment_only=assessment_only,
     )
-    forbid_shell_command = forbid_workspace_mutation or assessment_only or _objective_forbids_shell_command(policy_objective)
+    forbid_shell_command = (
+        forbid_workspace_mutation
+        or assessment_only
+        or (work_mode == "workspace_read" and mutation_policy == "forbidden")
+        or _objective_forbids_shell_command(policy_objective)
+    )
     constraints: list[str] = []
     if work_mode == "chat_answer":
         constraints.append("This is a plain chat answer; answer in-session without reading workspace files or using tools.")
@@ -5837,6 +5846,10 @@ def _operator_intent_policy_from_objective(
     if forbid_workspace_mutation:
         constraints.append("Do not write, edit, create, delete, or otherwise mutate workspace files.")
         constraints.append("Return a direct answer or read-only findings only; no workspace mutation is required.")
+    elif work_mode == "workspace_read" and mutation_policy == "forbidden":
+        constraints.append(
+            "No explicit workspace mutation was requested; inspect/read and answer without editing files."
+        )
     if forbid_shell_command:
         constraints.append("Do not run shell, terminal, or external commands.")
     if mutation_policy == "optional":

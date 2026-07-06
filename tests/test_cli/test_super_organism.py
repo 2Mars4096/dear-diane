@@ -4778,6 +4778,49 @@ def test_operator_intent_policy_defaults_review_requests_to_answer_only(tmp_path
     assert "Actually mutate workspace files" not in task
 
 
+def test_operator_intent_policy_defaults_learn_improvement_suggestions_to_read_only(
+    tmp_path,
+) -> None:
+    policy = super_cli._operator_intent_policy_from_objective(
+        "please learn this website, then let me know what to improve",
+        workspace_root=tmp_path,
+    )
+
+    assert policy.active is True
+    assert policy.work_mode == "workspace_read"
+    assert policy.mutation_policy == "forbidden"
+    assert policy.evidence_policy == "workspace_reads"
+    assert policy.allow_workspace_mutation is False
+    assert policy.allow_shell_command is False
+    assert policy.source_scope == "workspace_allowed"
+    assert "No explicit workspace mutation" in " ".join(policy.constraints)
+
+    filtered = super_cli._filter_tool_ids_for_operator_intent(
+        ["file_read", "file_edit", "file_write", "shell_command", "workspace_check"],
+        policy,
+    )
+    assert filtered == ["file_read", "workspace_check"]
+
+
+def test_operator_intent_policy_keeps_explicit_edit_request_write_capable(
+    tmp_path,
+) -> None:
+    for objective in (
+        "please edit the website",
+        "please learn this website and then update styles.css",
+    ):
+        policy = super_cli._operator_intent_policy_from_objective(
+            objective,
+            workspace_root=tmp_path,
+        )
+
+        assert policy.active is True
+        assert policy.work_mode == "workspace_change"
+        assert policy.mutation_policy == "required"
+        assert policy.allow_workspace_mutation is True
+        assert policy.allow_shell_command is True
+
+
 @pytest.mark.parametrize(
     "objective",
     [
@@ -4933,7 +4976,7 @@ def test_operator_intent_policy_write_followup_keeps_original_no_edits_binding(
     assert "Do not write" in " ".join(policy.constraints)
 
 
-def test_operator_intent_policy_marks_ambiguous_workspace_work_optional(tmp_path) -> None:
+def test_operator_intent_policy_defaults_ambiguous_workspace_work_to_read_only(tmp_path) -> None:
     objective = "help me improve this project"
     report = super_cli.run_super_organism_demo(objective)
     policy = super_cli._operator_intent_policy_from_objective(
@@ -4942,18 +4985,17 @@ def test_operator_intent_policy_marks_ambiguous_workspace_work_optional(tmp_path
     )
 
     assert policy.active is True
-    assert policy.work_mode == "workspace_change"
-    assert policy.mutation_policy == "optional"
-    assert policy.allow_workspace_mutation is True
-    assert "optional" in " ".join(policy.constraints)
+    assert policy.work_mode == "workspace_read"
+    assert policy.mutation_policy == "forbidden"
+    assert policy.allow_workspace_mutation is False
+    assert "No explicit workspace mutation" in " ".join(policy.constraints)
 
     task = super_cli._live_generic_task(
         report,
         workspace_root=tmp_path,
         operator_intent_policy=policy,
     )
-    assert "Mutation policy is optional" in task
-    assert "do not invent an artifact" in task
+    assert "do not create or edit workspace files" in task.lower()
     assert "Actually mutate workspace files" not in task
 
 
