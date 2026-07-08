@@ -24,6 +24,7 @@ const INLINE_CODE_STYLE_BY_KIND = {
 const MATH_PLACEHOLDER_RE = /(\u0000DAN_MD_\d+\u0000)/g;
 const MATH_PLACEHOLDER_PART_RE = /^\u0000DAN_MD_\d+\u0000$/;
 const PROSE_DOTTED_ABBREVIATIONS = new Set(["a.m", "e.g", "i.e", "n.b", "p.m", "p.s", "u.k", "u.s"]);
+const PROSE_CODELIKE_WORDS = new Set(["SaaS"]);
 const AUTO_CODE_TOKEN_RE =
   /(^|[^\w./$-])((?:[\w.-]+\/)*[\w.-]+\.(?:c|cc|cpp|css|csv|gd|go|h|hpp|html|ini|java|json|jsx|log|md|mdx|py|rs|sh|sql|toml|ts|tsx|txt|xml|ya?ml)\b|_?[A-Za-z][A-Za-z0-9_]*(?:\._?[A-Za-z][A-Za-z0-9_]*)+(?:\(\))?|_[A-Za-z][A-Za-z0-9_]*(?:\(\))?|[A-Z][A-Z0-9]+(?:_[A-Z0-9]+)+\b|[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+\b)(?=$|[^\w/])/g;
 const INLINE_FILE_EXT_RE =
@@ -79,6 +80,7 @@ function mathCodeSpanToTex(source: string): string | null {
 function shouldAutoHighlightCodeToken(source: string, tokenStart: number, token: string): boolean {
   if (token.length > 72) return false;
   if (PROSE_DOTTED_ABBREVIATIONS.has(token.replace(/\.+$/, "").toLowerCase())) return false;
+  if (PROSE_CODELIKE_WORDS.has(token)) return false;
 
   const tokenEnd = tokenStart + token.length;
   const nextCharacter = source[tokenEnd] ?? "";
@@ -150,6 +152,72 @@ function renderKatex(source: string, displayMode: boolean): string {
   }
 }
 
+function isEscapedMarkdownDelimiter(source: string, index: number): boolean {
+  let slashCount = 0;
+  for (let cursor = index - 1; cursor >= 0 && source[cursor] === "\\"; cursor -= 1) {
+    slashCount += 1;
+  }
+  return slashCount % 2 === 1;
+}
+
+function looksLikeCurrencySpan(source: string, openIndex: number, closeIndex: number, body: string): boolean {
+  const trimmed = body.trim();
+  const afterClose = source[closeIndex + 1] ?? "";
+  if (!/^\d/.test(trimmed)) return false;
+  if (/^\d[\d,]*(?:\.\d+)?\s*(?:[kmbt]|million|billion|trillion)?\s*(?:[-–—~]|to)?$/i.test(trimmed)) {
+    return true;
+  }
+  if (/\d/.test(afterClose)) return true;
+  const beforeOpen = source[openIndex - 1] ?? "";
+  return (
+    (beforeOpen === "~" || beforeOpen === "(") &&
+    /^\d[\d,]*(?:\.\d+)?\s*(?:[kmbt]|million|billion|trillion)\b/i.test(trimmed)
+  );
+}
+
+function replaceInlineMath(source: string, preserve: (html: string) => string): string {
+  let output = "";
+  let cursor = 0;
+  while (cursor < source.length) {
+    const openIndex = source.indexOf("$", cursor);
+    if (openIndex === -1) {
+      output += source.slice(cursor);
+      break;
+    }
+
+    output += source.slice(cursor, openIndex);
+    const openIsDisplay = source[openIndex + 1] === "$";
+    if (openIsDisplay || isEscapedMarkdownDelimiter(source, openIndex)) {
+      output += source[openIndex];
+      cursor = openIndex + 1;
+      continue;
+    }
+
+    let closeIndex = openIndex + 1;
+    let matched = false;
+    while ((closeIndex = source.indexOf("$", closeIndex)) !== -1) {
+      if (source[closeIndex + 1] === "$" || isEscapedMarkdownDelimiter(source, closeIndex)) {
+        closeIndex += 1;
+        continue;
+      }
+      const body = source.slice(openIndex + 1, closeIndex);
+      if (body.includes("\n") || !body.trim() || looksLikeCurrencySpan(source, openIndex, closeIndex, body)) {
+        break;
+      }
+      output += preserve(renderKatex(body, false));
+      cursor = closeIndex + 1;
+      matched = true;
+      break;
+    }
+
+    if (!matched) {
+      output += source[openIndex];
+      cursor = openIndex + 1;
+    }
+  }
+  return output;
+}
+
 function createRenderer(options: MarkdownRenderOptions = {}): Marked {
   const autoHighlightCode = options.autoHighlightCode !== false;
   const renderMathCodeSpans = options.renderMathCodeSpans === true;
@@ -215,7 +283,7 @@ function createRenderer(options: MarkdownRenderOptions = {}): Marked {
 
   renderer.blockquote = function blockquote(token: any) {
     const body = this.parser.parse(token.tokens);
-    return `<blockquote class="my-3 border-l-2 border-slate-300 pl-3 text-slate-600 dark:border-slate-600 dark:text-slate-300">${body}</blockquote>`;
+    return `<blockquote class="my-3 rounded-md border border-slate-300 bg-slate-50/70 px-3 py-2 text-slate-700 dark:border-slate-700 dark:bg-slate-900/55 dark:text-slate-300">${body}</blockquote>`;
   };
 
   renderer.list = function list(token: any) {
@@ -314,10 +382,8 @@ export function renderMarkdownToHtml(
   let text = source
     .replace(/\$\$([\s\S]+?)\$\$/g, (_, tex) =>
       preserve(`<div class="my-3 overflow-x-auto text-center">${renderKatex(tex, true)}</div>`),
-    )
-    .replace(/(?<!\$)\$(?!\$)([^\n$]+?)\$(?!\$)/g, (_, tex) =>
-      preserve(renderKatex(tex, false)),
     );
+  text = replaceInlineMath(text, preserve);
 
   const instance =
     options.renderMathCodeSpans === true

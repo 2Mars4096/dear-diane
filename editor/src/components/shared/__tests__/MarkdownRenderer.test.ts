@@ -31,6 +31,62 @@ describe("MarkdownRenderer", () => {
     expect(html).not.toContain("DAN_MD_");
   });
 
+  it("respects escaped dollar signs inside bold notes prose", () => {
+    const html = renderMarkdownToHtml(
+      "**\\$2M–\\$4M vs. ~\\$300K at typical public SaaS companies**",
+    );
+
+    expect(html).toContain("<strong");
+    expect(html).toContain(">$2M–$4M vs. ~$300K at typical public SaaS companies</strong>");
+    expect(html).not.toContain("katex");
+    expect(html).not.toContain("**");
+  });
+
+  it("keeps escaped dollar bold spans readable inside a full notes bullet", () => {
+    const html = renderMarkdownToHtml(
+      "- AI has created a structural shift in business economics: revenue-per-employee at AI-native startups runs " +
+        "**\\$2M–\\$4M vs. ~\\$300K at typical public SaaS companies** (Forbes, 2026). " +
+        "The top 10 lean AI startups average **\\$3.48M revenue per employee** with an average team of just 24 people.",
+    );
+
+    expect(html).toContain("<strong");
+    expect(html).toContain(">$2M–$4M vs. ~$300K at typical public SaaS companies</strong>");
+    expect(html).toContain(">$3.48M revenue per employee</strong>");
+    expect(html).not.toContain("katex");
+    expect(html).not.toContain("\\$");
+    expect(html).not.toContain("**");
+  });
+
+  it("does not treat adjacent currency amounts as inline math", () => {
+    const html = renderMarkdownToHtml(
+      "**$2M–$4M vs. ~$300K at typical public SaaS companies** and **$3.48M revenue per employee**.",
+    );
+
+    expect(html).toContain(">$2M–$4M vs. ~$300K at typical public SaaS companies</strong>");
+    expect(html).toContain(">$3.48M revenue per employee</strong>");
+    expect(html).not.toContain("katex");
+    expect(html).not.toContain("**");
+  });
+
+  it("keeps dollar figures readable inside Markdown tables", () => {
+    const html = renderMarkdownToHtml(
+      "| Metric | Figure | Source/Year |\n" +
+        "| --- | --- | --- |\n" +
+        "| Gartner forecast | \\$206.5B (+\\$13986.4B) | Gartner, 2026 |\n" +
+        "| Dedicated AI agents market | \\$11–\\$12B in 2026, \\$45–\\$50B by 2030 | Research and Markets |\n" +
+        "| Vertical AI agents segment | $13–$18B (2025) -> $17.6–26.8B (2026) | ResearchIntelo, 2026 |\n" +
+        "| BPO/services market | $300B+ today, -> $525B by 2030 | a16z estimate |",
+    );
+
+    expect(html).toContain("<table");
+    expect(html).toContain("$206.5B (+$13986.4B)");
+    expect(html).toContain("$11–$12B in 2026, $45–$50B by 2030");
+    expect(html).toContain("$13–$18B (2025) -&gt; $17.6–26.8B (2026)");
+    expect(html).toContain("$300B+ today, -&gt; $525B by 2030");
+    expect(html).not.toContain("katex");
+    expect(html).not.toContain("\\$");
+  });
+
   it("can render math-like code spans as inline math on math notes", () => {
     const html = renderMarkdownToHtml(
       "Prime if `ab in P` implies `a in P`. Always `IJ subset I cap J`, and `R/P` is a quotient.",
