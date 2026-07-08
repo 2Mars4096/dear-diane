@@ -15,6 +15,7 @@ import {
   liveTaskGraphRevisionsForTest,
   liveTaskTreeForTest,
   materializeTemporaryDraftNoteForTest,
+  formatHugoPreviewBodyForTest,
   noteMetaItemsForTest,
   notesComposerRequestsNewDraftForTest,
   noteRailViewForFacetForTest,
@@ -60,6 +61,7 @@ import {
   workspaceRootForTasksForTest,
   workingNoteCardsForTest,
 } from "../ChunkWorkspaceApp";
+import { renderMarkdownToHtml } from "../../shared/MarkdownRenderer";
 import type { WorkspaceFileEntry } from "../../../lib/api";
 import type {
   ChatV2AgentRunEvent,
@@ -2197,6 +2199,25 @@ describe("workspace blueprint nodes", () => {
     expect(preview).not.toContain("selected_card");
     expect(preview).not.toContain("selected_chunk");
     expect(preview).not.toContain("active_note");
+  });
+
+  it("renders Hugo callout shortcodes as readable Notes callouts", () => {
+    const normalized = formatHugoPreviewBodyForTest(
+      '{{< callout warning "Critical Caveat" >}}\n' +
+        'Failure rates are extreme for "AI wrapper" products.\n' +
+        "{{< /callout >}}",
+    );
+    const html = renderMarkdownToHtml(normalized);
+
+    expect(normalized).toContain("dan-markdown-callout");
+    expect(normalized).not.toContain("callout warning");
+    expect(normalized).not.toContain("/callout");
+    expect(html).toContain("<aside");
+    expect(html).toContain("data-callout-kind=\"warning\"");
+    expect(html).toContain("dan-markdown-callout-marker");
+    expect(html).toContain("Warning: Critical Caveat</span>");
+    expect(html).toContain("Failure rates are extreme for &quot;AI wrapper&quot; products.");
+    expect(html).not.toContain("dan-markdown-inline-code");
   });
 
   it("restores flattened pipe tables in final-answer markdown", () => {

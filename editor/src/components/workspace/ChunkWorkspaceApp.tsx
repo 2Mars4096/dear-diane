@@ -1742,11 +1742,84 @@ function extractHugoPage(content: string, fallbackTitle: string): ParsedHugoPage
   };
 }
 
+function escapeHugoPreviewHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function calloutToneClasses(kind: string) {
+  switch (kind.toLowerCase()) {
+    case "warning":
+    case "caution":
+      return {
+        shell:
+          "border-amber-300/80 bg-amber-50/90 text-amber-950 dark:border-amber-700/80 dark:bg-amber-950/35 dark:text-amber-100",
+        header:
+          "border-amber-200/80 bg-amber-100/70 text-amber-900 dark:border-amber-800/80 dark:bg-amber-900/35 dark:text-amber-100",
+        marker:
+          "border-amber-500/70 bg-amber-200 text-amber-950 dark:border-amber-500/70 dark:bg-amber-700/40 dark:text-amber-100",
+      };
+    case "danger":
+    case "error":
+      return {
+        shell:
+          "border-red-300/80 bg-red-50/90 text-red-950 dark:border-red-800/80 dark:bg-red-950/35 dark:text-red-100",
+        header:
+          "border-red-200/80 bg-red-100/70 text-red-900 dark:border-red-800/80 dark:bg-red-900/35 dark:text-red-100",
+        marker:
+          "border-red-500/70 bg-red-200 text-red-950 dark:border-red-500/70 dark:bg-red-700/40 dark:text-red-100",
+      };
+    default:
+      return {
+        shell:
+          "border-slate-300/80 bg-slate-50/90 text-slate-900 dark:border-slate-700/80 dark:bg-slate-900/60 dark:text-slate-100",
+        header:
+          "border-slate-200/80 bg-slate-100/70 text-slate-800 dark:border-slate-700/80 dark:bg-slate-800/60 dark:text-slate-100",
+        marker:
+          "border-slate-400/70 bg-slate-200 text-slate-900 dark:border-slate-500/70 dark:bg-slate-700 dark:text-slate-100",
+      };
+  }
+}
+
 function formatHugoPreviewBody(body: string) {
+  const formatCallout = (_match: string, rawArgs: string, inner: string) => {
+    const args = String(rawArgs || "").trim();
+    const titleMatch = /"([^"]+)"/.exec(args);
+    const title = titleMatch?.[1]?.trim() || "";
+    const variant = args.replace(/"[^"]*"/g, "").trim().split(/\s+/)[0] || "note";
+    const variantLabel = variant && variant !== "note" ? variant.charAt(0).toUpperCase() + variant.slice(1) : "";
+    const safeKind = /^[a-z0-9_-]+$/i.test(variant) ? variant.toLowerCase() : "note";
+    const label = [variantLabel, title].filter(Boolean).join(": ") || "Note";
+    const tone = calloutToneClasses(safeKind);
+    const bodyHtml = String(inner || "")
+      .trim()
+      .split(/\n{2,}/)
+      .map((paragraph) => paragraph.replace(/\s*\r?\n\s*/g, " ").trim())
+      .filter(Boolean)
+      .map(
+        (paragraph) =>
+          `<p class="m-0 leading-7 text-current">${escapeHugoPreviewHtml(paragraph)}</p>`,
+      )
+      .join("");
+    return (
+      `<aside class="dan-markdown-callout my-4 overflow-hidden rounded-md border shadow-sm ${tone.shell}" data-callout-kind="${escapeHugoPreviewHtml(safeKind)}">` +
+      `<div class="dan-markdown-callout-header flex items-center gap-2 border-b px-3 py-2 ${tone.header}">` +
+      `<span class="dan-markdown-callout-marker grid h-5 w-5 flex-none place-items-center rounded border text-[11px] font-bold leading-none ${tone.marker}">!</span>` +
+      `<span class="text-sm font-semibold leading-5">${escapeHugoPreviewHtml(label)}</span>` +
+      `</div>` +
+      `<div class="dan-markdown-callout-body space-y-2 px-3 py-3 text-base leading-7">${bodyHtml || `<p class="m-0 leading-7 text-current">No callout content.</p>`}</div>` +
+      `</aside>`
+    );
+  };
+
   return body
     .replace(/{{<\s*summary\s+"([^"]+)"\s*>}}/g, (_, pageId) =>
       `> Summary transclusion: @${pageId}`,
     )
+    .replace(/{{<\s*callout\b([^>]*)>}}([\s\S]*?){{<\s*\/callout\s*>}}/g, formatCallout)
     .replace(/{{<\s*([^>\s]+)([\s\S]*?)>}}/g, (_, shortcode, args) =>
       `\`${shortcode}${String(args || "").trim() ? ` ${String(args).trim()}` : ""}\``,
     )
@@ -7902,6 +7975,10 @@ export function normalizeStructuredMarkdownForTest(content: string) {
 
 export function previewMarkdownContentForTest(content: string) {
   return previewMarkdownContent(content);
+}
+
+export function formatHugoPreviewBodyForTest(content: string) {
+  return formatHugoPreviewBody(content);
 }
 
 export function statusLineUsesMarkdownForTest(content: string) {
